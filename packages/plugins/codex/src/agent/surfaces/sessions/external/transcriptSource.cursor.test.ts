@@ -155,6 +155,22 @@ describe('Codex external transcript cursor generations', () => {
     }))).toBeNull();
   });
 
+  it('rejects duplicate rollout paths in an anchored backward vector', () => {
+    const stream = {
+      fileRelPath: 'sessions/2026/07/23/rollout-session.jsonl',
+      physicalGeneration: '1:2:3',
+      endOffsetBytes: 42,
+      fingerprintOffsetBytes: 42,
+      contentFingerprint: 'a'.repeat(64),
+    };
+    expect(decodeCodexExternalBackwardCursor(encodeCursorRecord({
+      v: 5,
+      kind: 'codexBackwardStreamVector',
+      sourceGeneration: ['home-generation', 'sessions-generation'],
+      streams: [stream, stream],
+    }))).toBeNull();
+  });
+
   it('reports an unavailable source when neither rollout streams nor app-server metadata exist', async () => {
     const fixture = await createFixture();
     try {
