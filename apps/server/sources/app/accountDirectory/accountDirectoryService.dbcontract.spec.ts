@@ -18,6 +18,7 @@ import {
     upsertAccountHomeDirectoryEntry,
 } from "./accountDirectoryService";
 import { canonicalHomeLoginAssertionBytes } from "./accountDirectorySigner";
+import { createHomeApprovalGate } from "@/app/api/routes/auth/homeApprovalGate";
 
 type ContractProvider = "postgres" | "mysql" | "sqlite";
 
@@ -85,6 +86,31 @@ function signedAssertion(params: Readonly<{
             "base64url",
         ),
     };
+}
+
+async function approveAssertionRequest(params: Readonly<{
+    accountId: string;
+    assertion: ReturnType<typeof signedAssertion>;
+    nowMs: number;
+}>): Promise<string> {
+    const pending = await redeemHomeLoginAssertion({
+        assertion: params.assertion,
+        nowMs: params.nowMs,
+        env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
+        homeApprovalGate: createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "1" }),
+        issueHomeToken: async () => {
+            throw new Error("approval request must not issue a Home token");
+        },
+    });
+    expect(pending).toMatchObject({ outcome: "approval_required" });
+    if (!("outcome" in pending) || pending.outcome !== "approval_required") {
+        throw new Error("expected an approval_required result");
+    }
+    await db.authPairingSession.update({
+        where: { id: pending.approvalId },
+        data: { approvalStatus: "approved", decidedAt: new Date(params.nowMs) },
+    });
+    return pending.approvalId;
 }
 
 describe("Account Directory database contract", () => {
@@ -338,6 +364,138 @@ describe("Account Directory database contract", () => {
                 issueHomeToken,
             })).rejects.toMatchObject({ code: "assertion_issuer_untrusted" });
             expect(issueCalls).toBe(0);
+        } finally {
+            await db.account.delete({ where: { id: account.id }, select: { id: true } });
+        }
+    });
+
+    it("binds an approval to the exact signed assertion", async () => {
+        const account = await db.account.create({
+            data: { publicKey: uniqueValue("account-directory-assertion-binding") },
+            select: { id: true },
+        });
+        const issuerServerIdentityId = uniqueValue("srv_issuer_assertion_binding");
+        const issuerSubjectId = uniqueValue("issuer-subject");
+        const key = signingKey(31);
+        const nowMs = Date.now();
+        const originalAssertion = signedAssertion({ issuerServerIdentityId, issuerSubjectId, signingSeed: 31, nowMs });
+        const freshAssertion = signedAssertion({ issuerServerIdentityId, issuerSubjectId, signingSeed: 31, nowMs: nowMs + 1 });
+        let issueCalls = 0;
+
+        try {
+            await upsertAccountDirectoryLink({
+                accountId: account.id,
+                issuerServerIdentityId,
+                issuerSubjectId,
+                issuerSigningKeyId: key.id,
+                issuerSigningPublicKeyBase64Url: key.publicKeyBase64Url,
+            });
+            const approvalId = await approveAssertionRequest({ accountId: account.id, assertion: originalAssertion, nowMs });
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: freshAssertion,
+                approvalId,
+                nowMs: nowMs + 1,
+                env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
+                homeApprovalGate: createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "1" }),
+                issueHomeToken: async () => {
+                    issueCalls += 1;
+                    return "must-never-issue";
+                },
+            })).rejects.toMatchObject({ code: "home_unavailable" });
+            expect(issueCalls).toBe(0);
+        } finally {
+            await db.account.delete({ where: { id: account.id }, select: { id: true } });
+        }
+    });
+
+    it("invalidates an approved assertion request on explicit relink", async () => {
+        const account = await db.account.create({
+            data: { publicKey: uniqueValue("account-directory-relink-binding") },
+            select: { id: true },
+        });
+        const issuerServerIdentityId = uniqueValue("srv_issuer_relink_binding");
+        const issuerSubjectId = uniqueValue("issuer-subject");
+        const originalKey = signingKey(32);
+        const replacementKey = signingKey(33);
+        const nowMs = Date.now();
+        const originalAssertion = signedAssertion({ issuerServerIdentityId, issuerSubjectId, signingSeed: 32, nowMs });
+        const replacementAssertion = signedAssertion({ issuerServerIdentityId, issuerSubjectId, signingSeed: 33, nowMs: nowMs + 1 });
+        let issueCalls = 0;
+
+        try {
+            const link = {
+                accountId: account.id,
+                issuerServerIdentityId,
+                issuerSubjectId,
+                issuerSigningKeyId: originalKey.id,
+                issuerSigningPublicKeyBase64Url: originalKey.publicKeyBase64Url,
+            };
+            await upsertAccountDirectoryLink(link);
+            const approvalId = await approveAssertionRequest({ accountId: account.id, assertion: originalAssertion, nowMs });
+            await upsertAccountDirectoryLink({
+                ...link,
+                issuerSigningKeyId: replacementKey.id,
+                issuerSigningPublicKeyBase64Url: replacementKey.publicKeyBase64Url,
+                relink: true,
+            });
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: replacementAssertion,
+                approvalId,
+                nowMs: nowMs + 1,
+                env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
+                homeApprovalGate: createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "1" }),
+                issueHomeToken: async () => {
+                    issueCalls += 1;
+                    return "must-never-issue";
+                },
+            })).rejects.toMatchObject({ code: "home_unavailable" });
+            expect(issueCalls).toBe(0);
+            await expect(db.authPairingSession.findUnique({ where: { id: approvalId } })).resolves.toBeNull();
+        } finally {
+            await db.account.delete({ where: { id: account.id }, select: { id: true } });
+        }
+    });
+
+    it("invalidates an approved assertion request when the same issuer link is deleted and recreated", async () => {
+        const account = await db.account.create({
+            data: { publicKey: uniqueValue("account-directory-recreated-link-binding") },
+            select: { id: true },
+        });
+        const issuerServerIdentityId = uniqueValue("srv_issuer_recreated_link_binding");
+        const issuerSubjectId = uniqueValue("issuer-subject");
+        const key = signingKey(34);
+        const nowMs = Date.now();
+        const assertion = signedAssertion({ issuerServerIdentityId, issuerSubjectId, signingSeed: 34, nowMs });
+        let issueCalls = 0;
+
+        try {
+            const link = {
+                accountId: account.id,
+                issuerServerIdentityId,
+                issuerSubjectId,
+                issuerSigningKeyId: key.id,
+                issuerSigningPublicKeyBase64Url: key.publicKeyBase64Url,
+            };
+            await upsertAccountDirectoryLink(link);
+            const approvalId = await approveAssertionRequest({ accountId: account.id, assertion, nowMs });
+            await deleteAccountDirectoryLink({ accountId: account.id, issuerServerIdentityId });
+            await upsertAccountDirectoryLink(link);
+
+            await expect(redeemHomeLoginAssertion({
+                assertion,
+                approvalId,
+                nowMs,
+                env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
+                homeApprovalGate: createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "1" }),
+                issueHomeToken: async () => {
+                    issueCalls += 1;
+                    return "must-never-issue";
+                },
+            })).rejects.toMatchObject({ code: "home_unavailable" });
+            expect(issueCalls).toBe(0);
+            await expect(db.authPairingSession.findUnique({ where: { id: approvalId } })).resolves.toBeNull();
         } finally {
             await db.account.delete({ where: { id: account.id }, select: { id: true } });
         }

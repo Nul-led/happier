@@ -298,6 +298,17 @@ export function registerPairingAuthRoutes(app: Fastify): void {
                         accountId: request.userId,
                         flow: "direct_qr",
                         expiresAt: { gt: now },
+                        OR: [
+                            {
+                                approvalStatus: null,
+                                requestedPublicKey: null,
+                                requestedBindingProof: null,
+                            },
+                            {
+                                approvalStatus: "approved",
+                                decidedAt: { not: null },
+                            },
+                        ],
                     },
                 });
                 if (deleted.count === 1) return reply.send({ success: true });
