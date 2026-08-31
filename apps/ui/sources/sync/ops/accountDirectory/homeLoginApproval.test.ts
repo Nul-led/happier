@@ -615,6 +615,99 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         expect(adoptHomeProfileMock).not.toHaveBeenCalled();
     });
 
+    it('propagates a failed-closed Iroh transport reason without collapsing it', async () => {
+        acquireIrohHomeRuntimeOriginMock.mockRejectedValueOnce(
+            Object.assign(new Error('identity mismatch'), { name: 'IrohError', code: 'identity_mismatch' }),
+        );
+        const keyPair = sodium.crypto_box_keypair();
+
+        const result = await continueHomeLoginEnrollment({
+            home: {
+                ...HOME_B,
+                connectionDescriptor: {
+                    ...HOME_B.connectionDescriptor,
+                    endpoints: [
+                        { kind: 'iroh', endpointId: 'a'.repeat(64) },
+                        { kind: 'https', url: 'https://home-b.test' },
+                    ],
+                },
+            },
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+        });
+
+        expect(result).toEqual({
+            kind: 'transport_unavailable',
+            reason: 'iroh_transport_failed_closed',
+        });
+        expect(endpointFetchMock).not.toHaveBeenCalled();
+    });
+
+    it('retains approval when Iroh reacquisition is transient and retries with a later lease', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        const lease = {
+            leaseId: 'lease-home-b',
+            runtimeOrigin: 'http://127.0.0.1:45991',
+            release: irohReleaseMock,
+        };
+        acquireIrohHomeRuntimeOriginMock
+            .mockResolvedValueOnce(lease)
+            .mockRejectedValueOnce(Object.assign(
+                new Error('native unavailable'),
+                { name: 'IrohError', code: 'unavailable' },
+            ))
+            .mockResolvedValueOnce(lease);
+        endpointFetchMock
+            .mockResolvedValueOnce(json(202, {
+                v: 1,
+                outcome: 'approval_required',
+                homeServerIdentityId: 'srv_home_b',
+                approvalId: 'approval-transport-retry',
+                deviceLabel: 'Phone',
+                expiresAtMs: Date.now() + 60_000,
+            }))
+            .mockResolvedValueOnce(json(200, {
+                v: 1,
+                homeServerIdentityId: 'srv_home_b',
+                sealedHomeTokenBase64Url: sealCredentials('home-b-after-transport-retry', keyPair.publicKey),
+                issuedAtMs: Date.now() - 500,
+                expiresAtMs: Date.now() + 120_000,
+            }));
+        const home = {
+            ...HOME_B,
+            connectionDescriptor: {
+                ...HOME_B.connectionDescriptor,
+                canonicalServerUrl: 'http://localhost:3010',
+                endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+            },
+        };
+
+        const first = await continueHomeLoginEnrollment({
+            home,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+        });
+        if (first.kind !== 'approval_required') throw new Error('Expected approval continuation');
+
+        const retry = await first.resume();
+        expect(retry).toMatchObject({
+            kind: 'approval_required',
+            approvalId: 'approval-transport-retry',
+        });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
+        expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(2);
+        expect(irohReleaseMock).toHaveBeenCalledTimes(1);
+        if (retry.kind !== 'approval_required') return;
+
+        await expect(retry.resume()).resolves.toEqual({
+            kind: 'enrolled',
+            homeServerIdentityId: 'srv_home_b',
+        });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(2);
+        expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(3);
+        expect(irohReleaseMock).toHaveBeenCalledTimes(2);
+    });
+
     it('rejects malformed UTF-8 token bytes before persistence', async () => {
         const keyPair = sodium.crypto_box_keypair();
         endpointFetchMock.mockResolvedValueOnce(json(200, {

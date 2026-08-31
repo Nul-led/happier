@@ -363,21 +363,28 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
     });
 
     it('activates the adopted first local Home only when the existing selection remains implicit', async () => {
+        const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `personal-home-implicit-${Date.now()}`;
-        const profiles = await import('@/sync/domains/server/serverProfiles');
-        const initialSelection = profiles.getActiveServerSnapshot();
-        expect(initialSelection.isSelectionExplicit).toBe(false);
+        try {
+            const profiles = await import('@/sync/domains/server/serverProfiles');
+            const initialSelection = profiles.getActiveServerSnapshot();
+            expect(initialSelection.isSelectionExplicit).toBe(false);
 
-        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
-        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
-        await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+            const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+            const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+            await hook.getCurrent().operations['prepare-home']?.(initialFacts);
 
-        const selected = profiles.getActiveServerSnapshot();
-        expect(selected).toMatchObject({ isSelectionExplicit: false });
-        expect(profiles.getServerProfileById(selected.serverId)).toMatchObject({
-            source: 'desktop-personal-home',
-            serverIdentityId: 'srv_home_b_identity',
-        });
+            const selected = profiles.getActiveServerSnapshot();
+            expect(selected).toMatchObject({ isSelectionExplicit: false });
+            expect(profiles.getServerProfileById(selected.serverId)).toMatchObject({
+                source: 'desktop-personal-home',
+                serverIdentityId: 'srv_home_b_identity',
+            });
+            await hook.unmount();
+        } finally {
+            if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+            else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
+        }
     });
 
     it('surfaces retained data as existing-Home recovery before installing or creating an account', async () => {
