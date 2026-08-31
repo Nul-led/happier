@@ -27,6 +27,7 @@ import {
   TRIAGE_EDITOR_SUBJECTS_V1,
   TRIAGE_EDITOR_TARGET_KINDS_V1,
   TRIAGE_EDITOR_WORKSPACE_MODES_V1,
+  isTriageActionDraftRevisionStaleV1,
   newTriageActionDraftV1,
   triageActionDraftBlockerV1,
   triageActionDraftV1,
@@ -35,6 +36,7 @@ import {
   withTriageActionTargetKindV1,
   withTriageDeliveryV1,
   withTriageProfileIdV1,
+  withTriagePromptArgsTextV1,
   withTriagePromptTokenV1,
 } from './editorModel.js';
 import type { TriageMountedActionsV1 } from './useTriageActions.js';
@@ -62,8 +64,8 @@ export type TriageActionsEditorPropsV1 = Readonly<{
 }>;
 
 type EditorTarget =
-  | Readonly<{ kind: 'create' }>
-  | Readonly<{ kind: 'update'; actionId: string }>;
+  | Readonly<{ kind: 'create'; baseRevision: string }>
+  | Readonly<{ kind: 'update'; actionId: string; baseRevision: string }>;
 
 const SUBJECT_LABELS: Readonly<Record<string, Readonly<{ key: string; text: string }>>> = {
   pullRequest: { key: 'plugins.triage.surface.actions.subject.pullRequest', text: 'Pull requests' },
@@ -151,6 +153,10 @@ export function TriageActionsEditor(props: TriageActionsEditorPropsV1): React.Re
       'Prompt no longer in your library',
     ),
   }), [held, invocations, translate]);
+  const promptAllowsArgs = held !== null && (
+    invocations.invocations.find((invocation) => invocation.id === held)?.allowArgs === true
+    || draft?.target.promptArgsText !== undefined
+  );
 
   /**
    * The Account's profiles, plus the two entries a list of them cannot supply:
@@ -203,11 +209,11 @@ export function TriageActionsEditor(props: TriageActionsEditorPropsV1): React.Re
   }, []);
 
   const submit = React.useCallback(async () => {
-    if (target === null || draft === null || actions.revision === null) return;
+    if (target === null || draft === null) return;
     const applied = await actions.administer(
       target.kind === 'create'
-        ? triageCreateActionInputV1(draft, actions.revision)
-        : triageUpdateActionInputV1(target.actionId, draft, actions.revision),
+        ? triageCreateActionInputV1(draft, target.baseRevision)
+        : triageUpdateActionInputV1(target.actionId, draft, target.baseRevision),
     );
     // The draft survives a refusal: throwing away what somebody typed because
     // another device won the revision race is the one thing this editor must
@@ -232,6 +238,9 @@ export function TriageActionsEditor(props: TriageActionsEditorPropsV1): React.Re
    */
   const busy = actions.busy || actions.unavailableReason !== null || actions.revision === null;
   const blocker = draft === null ? null : triageActionDraftBlockerV1(draft);
+  const draftRevisionStale = target === null
+    ? false
+    : isTriageActionDraftRevisionStaleV1(target.baseRevision, actions.revision);
 
   return (
     <Stack gap="small">
@@ -247,7 +256,8 @@ export function TriageActionsEditor(props: TriageActionsEditorPropsV1): React.Re
           variant="primary"
           disabled={busy}
           onPress={() => {
-            setTarget({ kind: 'create' });
+            if (actions.revision === null) return;
+            setTarget({ kind: 'create', baseRevision: actions.revision });
             setDraft(newTriageActionDraftV1());
           }}
         />
@@ -262,7 +272,15 @@ export function TriageActionsEditor(props: TriageActionsEditorPropsV1): React.Re
       </Row>
 
       {actions.unavailableReason === null ? null : (
-        <Status tone="warning" label={actions.unavailableReason} />
+        <Row gap="small" align="center">
+          <Status tone="warning" label={actions.unavailableReason} />
+          <Button
+            titleKey="plugins.triage.surface.actions.retry"
+            title="Retry"
+            variant="secondary"
+            onPress={actions.retry}
+          />
+        </Row>
       )}
       {actions.notice === null ? null : (
         <Status
@@ -270,7 +288,7 @@ export function TriageActionsEditor(props: TriageActionsEditorPropsV1): React.Re
           label={actions.notice.message}
         />
       )}
-      {actions.read.kind === 'unreadable' ? (
+      {actions.loaded && actions.read.kind === 'unreadable' ? (
         <Status
           tone="warning"
           labelKey="plugins.triage.surface.actions.unreadable"
@@ -295,7 +313,12 @@ export function TriageActionsEditor(props: TriageActionsEditorPropsV1): React.Re
               first={index === 0}
               last={index === actions.actions.length - 1}
               onEdit={() => {
-                setTarget({ kind: 'update', actionId: action.actionId });
+                if (actions.revision === null) return;
+                setTarget({
+                  kind: 'update',
+                  actionId: action.actionId,
+                  baseRevision: actions.revision,
+                });
                 setDraft(triageActionDraftV1(action));
               }}
               onDelete={() => {
@@ -410,6 +433,16 @@ export function TriageActionsEditor(props: TriageActionsEditorPropsV1): React.Re
               setDraft(withTriagePromptTokenV1(draft, firstString(value) ?? ''));
             }}
           />
+          {!promptAllowsArgs || draft.target.promptInvocationId === null ? null : (
+            <TextField
+              labelKey="plugins.triage.surface.actions.field.promptArgs"
+              label="Prompt arguments"
+              value={draft.target.promptArgsText ?? ''}
+              onChange={(promptArgsText) => {
+                setDraft(withTriagePromptArgsTextV1(draft, promptArgsText));
+              }}
+            />
+          )}
           {draft.target.kind !== 'agent' ? null : (
             <Stack gap="small">
               <Select
@@ -431,18 +464,62 @@ export function TriageActionsEditor(props: TriageActionsEditorPropsV1): React.Re
               tone="muted"
               labelKey={blocker === 'label'
                 ? 'plugins.triage.surface.actions.blocker.label'
-                : 'plugins.triage.surface.actions.blocker.appliesTo'}
+                : blocker === 'appliesTo'
+                  ? 'plugins.triage.surface.actions.blocker.appliesTo'
+                  : 'plugins.triage.surface.actions.blocker.instruction'}
               label={blocker === 'label'
                 ? 'Give this action a name.'
-                : 'Choose at least one kind of entry to offer it on.'}
+                : blocker === 'appliesTo'
+                  ? 'Choose at least one kind of entry to offer it on.'
+                  : 'Choose a Prompt Library entry before this action can start work.'}
             />
+          )}
+          {!draftRevisionStale ? null : (
+            <Row gap="small" align="center">
+              <Status
+                tone="warning"
+                labelKey="plugins.triage.surface.actions.draftStale"
+                label="Actions changed while this draft was open. Reload or reapply it before saving."
+              />
+              <Button
+                titleKey={target.kind === 'update'
+                  ? 'plugins.triage.surface.actions.reload'
+                  : 'plugins.triage.surface.actions.reapply'}
+                title={target.kind === 'update'
+                  ? translate('plugins.triage.surface.actions.reload', 'Reload action')
+                  : translate('plugins.triage.surface.actions.reapply', 'Reapply draft')}
+                variant="secondary"
+                disabled={actions.revision === null}
+                onPress={() => {
+                  const currentRevision = actions.revision;
+                  if (currentRevision === null) return;
+                  if (target.kind === 'create') {
+                    setTarget({ kind: 'create', baseRevision: currentRevision });
+                    return;
+                  }
+                  const current = actions.actions.find(
+                    (action) => action.actionId === target.actionId,
+                  );
+                  if (current === undefined) {
+                    close();
+                    return;
+                  }
+                  setDraft(triageActionDraftV1(current));
+                  setTarget({
+                    kind: 'update',
+                    actionId: target.actionId,
+                    baseRevision: currentRevision,
+                  });
+                }}
+              />
+            </Row>
           )}
           <Row gap="small" align="center">
             <Button
               titleKey="plugins.triage.surface.actions.save"
               title="Save"
               variant="primary"
-              disabled={busy || blocker !== null}
+              disabled={busy || blocker !== null || draftRevisionStale}
               onPress={() => { void submit(); }}
             />
             <Button

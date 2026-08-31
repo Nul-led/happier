@@ -127,10 +127,10 @@ export function buildBitbucketRepositoryReviewLaneUrl(
 }
 
 export function buildBitbucketPullRequestUrl(
-  input: Readonly<{ workspaceUuid: string; repositoryUuid: string; entryId: string }>,
+  input: Readonly<{ workspaceUuid: string; repositorySlug: string; entryId: string }>,
 ): string {
   const workspace = encodeBitbucketPathSegment(input.workspaceUuid);
-  const repository = encodeBitbucketPathSegment(input.repositoryUuid);
+  const repository = encodeBitbucketPathSegment(input.repositorySlug);
   const entry = encodeBitbucketPathSegment(input.entryId);
   return `${BITBUCKET_CLOUD_API_BASE_URL}/repositories/${workspace}/${repository}/pullrequests/${entry}`;
 }
@@ -525,7 +525,9 @@ export async function getBitbucketPullRequest(
   input: Readonly<{
     client: BitbucketTriageApiClient;
     workspaceUuid: string;
-    repositoryUuid: string;
+    repositorySlug: string;
+    expectedRepositoryUuid: string;
+    expectedRepositoryKey: string;
     entryId: string;
     signal?: AbortSignal;
   }>,
@@ -533,7 +535,7 @@ export async function getBitbucketPullRequest(
   const response = await input.client.requestJson({
     url: buildBitbucketPullRequestUrl({
       workspaceUuid: input.workspaceUuid,
-      repositoryUuid: input.repositoryUuid,
+      repositorySlug: input.repositorySlug,
       entryId: input.entryId,
     }),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
@@ -549,7 +551,8 @@ export async function getBitbucketPullRequest(
     };
   }
 
-  const sameRepository = decoded.entry.repository.uuid === input.repositoryUuid;
+  const sameRepository = decoded.entry.repository.uuid === input.expectedRepositoryUuid
+    && decoded.entry.repository.repositoryKey === input.expectedRepositoryKey;
   if (!sameRepository || decoded.entry.entryId !== input.entryId) {
     return {
       kind: 'unresolved',

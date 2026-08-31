@@ -6,6 +6,7 @@ import {
   bindingPermissionIntentOptions,
   parseBindingPermissionIntent,
 } from './permissionIntentOptions.js';
+import { CHANNELS_UI_TRANSLATIONS } from './translations.js';
 
 /**
  * The canonical intent vocabulary, read from the same Protocol schema the
@@ -37,6 +38,25 @@ describe('Channels permission-intent presentation', () => {
       'yolo',
       'plan',
     ]);
+  });
+
+  it('keeps English and German mode labels attached to their matching locales', () => {
+    const translate = (locale: 'en' | 'de') => (key: string, fallback: string) =>
+      CHANNELS_UI_TRANSLATIONS[locale][key as keyof typeof CHANNELS_UI_TRANSLATIONS.en] ?? fallback;
+
+    expect({
+      en: {
+        yolo: bindingPermissionIntentLabel('yolo', translate('en')),
+        plan: bindingPermissionIntentLabel('plan', translate('en')),
+      },
+      de: {
+        yolo: bindingPermissionIntentLabel('yolo', translate('de')),
+        plan: bindingPermissionIntentLabel('plan', translate('de')),
+      },
+    }).toEqual({
+      en: { yolo: 'Yolo mode', plan: 'Plan mode' },
+      de: { yolo: 'Risikomodus', plan: 'Planungsmodus' },
+    });
   });
 
   it('rejects an unknown permission intent instead of presenting a different intent', () => {

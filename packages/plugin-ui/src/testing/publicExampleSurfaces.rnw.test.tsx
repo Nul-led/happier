@@ -3,12 +3,12 @@ import {
   createSurfaceContextFixture,
 } from '@happier-dev/plugin-sdk/testing';
 import type { RenderSurface } from '@happier-dev/plugin-sdk/ui';
+import { createPluginUiRnwSemanticSurfaceAdapter } from '@happier-dev/plugin-ui/testing';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderSurface as renderDevelopmentSurface } from '../../../plugin-sdk/examples/react-native-dev-hot-reload/ui/panel.native.tsx';
 import { renderSurface as renderInstalledSurface } from '../../../plugin-sdk/examples/react-native-installed/ui/panel.native.tsx';
 import { renderSurface as renderFallbackSurface } from '../../../plugin-sdk/examples/multi-mode-fallback/ui/panel.tsx';
-import { createPluginUiRnwSemanticSurfaceAdapter } from './rnwSemanticAdapter.testSupport.js';
 
 const publicExampleSurfaces = [
   {

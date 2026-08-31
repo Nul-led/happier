@@ -63,6 +63,7 @@ const INSTANCE = '11111111-1111-4111-8111-111111111111';
 const SCOPE = 'example/repository';
 const VIEW_ID = '0000000a-0000-4000-8000-00000000000a';
 const VIEW_LABEL = 'Needs my review';
+const VIEW_QUERY = 'normalizer';
 
 function configuredInstance(): TriageConfiguredSourceInstanceV1 {
     return TriageConfiguredSourceInstanceV1Schema.parse({
@@ -95,6 +96,7 @@ function storedSetting(selectedViewId: string | null) {
         views: [{
             viewId: VIEW_ID,
             label: VIEW_LABEL,
+            query: VIEW_QUERY,
             filters: { sources: [], types: [], scopes: [], states: ['done'], attention: [] },
             order: 'smart',
             smartPolicy: { v: 1, precedence: ['activity', 'attention'] },
@@ -103,7 +105,11 @@ function storedSetting(selectedViewId: string | null) {
     };
 }
 
-function createHarness(selectedViewId: string | null, gateViewsRead?: Promise<void>) {
+function createHarness(
+    selectedViewId: string | null,
+    gateViewsRead?: Promise<void>,
+    viewsReadUnavailable = false,
+) {
     const { collections, control } = createTestkitCorpusCollections({ accountEncryptionMode: 'e2ee' });
     control.sourceInstances.seed(toCorpusStoredValue(instanceRow()));
     const accountKv = createTestkitAccountKv();
@@ -154,6 +160,9 @@ function createHarness(selectedViewId: string | null, gateViewsRead?: Promise<vo
     async function executeAction(request: Readonly<{ action: unknown; input: unknown }>) {
         const action = String(request.action);
         if (action === TRIAGE_READ_SAVED_VIEWS_ACTION_LOCAL_ID_V1) {
+            if (viewsReadUnavailable) {
+                throw new Error('account temporarily unavailable');
+            }
             // An Account read is a round trip; a test that always answers it
             // within the same tick cannot see what the reader did while it was
             // in flight.
@@ -183,7 +192,11 @@ function createHarness(selectedViewId: string | null, gateViewsRead?: Promise<vo
         });
     }
 
-    return { executeAction, accountKv };
+    return {
+        executeAction,
+        accountKv,
+        enableViewsRead: () => { viewsReadUnavailable = false; },
+    };
 }
 
 const mounted: PluginUiTestkit[] = [];
@@ -192,12 +205,19 @@ async function mountShell(options: Readonly<{
     subPath?: string;
     selectedViewId?: string | null;
     gateViewsRead?: Promise<void>;
+    viewsReadUnavailable?: boolean;
+    rejectRoute?: boolean;
 }> = {}): Promise<Readonly<{
     shell: PluginUiTestkit;
     locations: readonly string[];
     accountKv: ReturnType<typeof createTestkitAccountKv>;
+    enableViewsRead: () => void;
 }>> {
-    const harness = createHarness(options.selectedViewId ?? null, options.gateViewsRead);
+    const harness = createHarness(
+        options.selectedViewId ?? null,
+        options.gateViewsRead,
+        options.viewsReadUnavailable,
+    );
     const ephemeralSharedScope = createTriageEphemeralSharedScopeFixture();
     const locations: string[] = [];
     let fixture!: PluginUiTestkit;
@@ -217,6 +237,7 @@ async function mountShell(options: Readonly<{
                 publishCurrentUiContext: () => undefined,
                 executeAction: async ({ action, input }) => await harness.executeAction({ action, input }),
                 replacePageLocation: ({ subPath: written }) => {
+                    if (options.rejectRoute === true) throw new Error('host rejected replacement');
                     locations.push(written);
                     return written;
                 },
@@ -229,7 +250,12 @@ async function mountShell(options: Readonly<{
     });
     // Let the saved-view read settle before anything is asserted about it.
     await act(async () => { await Promise.resolve(); });
-    return { shell: fixture, locations, accountKv: harness.accountKv };
+    return {
+        shell: fixture,
+        locations,
+        accountKv: harness.accountKv,
+        enableViewsRead: harness.enableViewsRead,
+    };
 }
 
 function storedValue(accountKv: ReturnType<typeof createTestkitAccountKv>) {
@@ -237,6 +263,7 @@ function storedValue(accountKv: ReturnType<typeof createTestkitAccountKv>) {
         views: readonly {
             viewId: string;
             label: string;
+            query: string;
             filters: { states: readonly string[] };
         }[];
         selectedViewId: string | null;
@@ -248,7 +275,29 @@ afterEach(async () => {
 });
 
 describe('the PRs & Issues saved-view lens', () => {
-    it('applies a selected view’s facets, order and Smart policy together', async () => {
+    it('offers an explicit retry when the Account read is transiently unavailable', async () => {
+        const { shell, enableViewsRead } = await mountShell({ viewsReadUnavailable: true });
+
+        await expect(shell.getByText(
+            'Happier cannot reach your account right now, so saved views cannot be changed.',
+        )).resolves.toBeTruthy();
+        await expect(shell.getByRole('button', { name: 'Retry' })).resolves.toBeTruthy();
+
+        enableViewsRead();
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Retry' }));
+        });
+        for (let settle = 0; settle < 3; settle += 1) {
+            await act(async () => { await Promise.resolve(); });
+        }
+
+        await expect(shell.getByRole('radio', { name: VIEW_LABEL })).resolves.toBeTruthy();
+        await expect(shell.queryByText(
+            'Happier cannot reach your account right now, so saved views cannot be changed.',
+        )).resolves.toBeUndefined();
+    });
+
+    it('applies a selected view’s query, facets, order and Smart policy together', async () => {
         const { shell, locations } = await mountShell();
 
         const option = await shell.getByRole('radio', { name: VIEW_LABEL });
@@ -263,9 +312,31 @@ describe('the PRs & Issues saved-view lens', () => {
         expect(written).toContain('o,smart');
         expect(written).toContain('sp,activity');
         expect(written).toContain('fst,done');
+        expect(written).toContain(`q,${VIEW_QUERY}`);
+        expect((await shell.getByRole('textbox')).value).toBe(VIEW_QUERY);
         await expect(shell.getByRole('checkbox', {
             name: 'Done',
             state: { checked: true },
+        })).resolves.toBeTruthy();
+    });
+
+    it('settles the route before selecting durably', async () => {
+        const { shell, accountKv, locations } = await mountShell({ rejectRoute: true });
+
+        await act(async () => {
+            await shell.press(await shell.getByRole('radio', { name: VIEW_LABEL }));
+        });
+        for (let settle = 0; settle < 3; settle += 1) {
+            await act(async () => { await Promise.resolve(); });
+        }
+
+        expect(locations).toEqual([]);
+        expect(accountKv.setCallCount()).toBe(0);
+        expect(storedValue(accountKv).selectedViewId).toBeNull();
+        expect((await shell.getByRole('textbox')).value).toBe('');
+        await expect(shell.getByRole('checkbox', {
+            name: 'Done',
+            state: { checked: false },
         })).resolves.toBeTruthy();
     });
 

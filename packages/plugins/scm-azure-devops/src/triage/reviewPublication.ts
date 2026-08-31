@@ -1,5 +1,6 @@
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import {
+  createReviewCommentPublicationSettlementRequestV1,
   formatReviewCommentPublicationMarkerV1,
   matchReviewCommentPublicationMarkerV1,
   parseReviewCommentPublicationPlanV1,
@@ -545,6 +546,11 @@ async function executePublication(input: Readonly<{
       entries,
       verdict,
     });
+    await input.context.services.actions.execute(
+      'reviews.comments.claimPublicationDispatch',
+      createReviewCommentPublicationSettlementRequestV1(input.plan, claim, publication),
+      { signal: input.mutation.signal },
+    ).catch(() => undefined);
     const exact = await finalObservation(input.mutation);
     return Object.freeze({
       kind: 'settled', publication, ...exact,
@@ -555,13 +561,22 @@ async function executePublication(input: Readonly<{
   if (claim.disposition === 'reconcile') {
     const inventory = await readThreadInventory(input.mutation);
     const complete = inventory.ok ? inventory.value : null;
-    const entries = input.plan.entries.map((entry, index) => reconcileEntry(
-      entry, claim.entries[index]!.publicationCorrelationId, complete,
-      input.mode.kind === 'reply' ? input.mode.threadId : undefined,
-    ));
+    const entries = input.plan.entries.map((entry, index) => {
+      const instruction = claim.instructions.entries[index];
+      const prior = claim.priorResult?.entries[index];
+      return (instruction === 'confirmed' || instruction === 'held') && prior !== undefined
+        ? prior
+        : reconcileEntry(
+          entry, claim.entries[index]!.publicationCorrelationId, complete,
+          input.mode.kind === 'reply' ? input.mode.threadId : undefined,
+        );
+    });
     let verdict: ReviewCommentPublicationResultV1['verdict'];
     if (input.plan.verdict === null || claim.verdict === null) {
       verdict = Object.freeze({ kind: 'notRequested' as const });
+    } else if ((claim.instructions.verdict === 'confirmed' || claim.instructions.verdict === 'held')
+      && claim.priorResult !== null && !('kind' in claim.priorResult.verdict)) {
+      verdict = claim.priorResult.verdict;
     } else {
       const found = complete === null
         ? undefined
@@ -589,6 +604,12 @@ async function executePublication(input: Readonly<{
   for (let index = 0; index < input.plan.entries.length; index += 1) {
     const entry = input.plan.entries[index]!;
     const correlation = claim.entries[index]!;
+    const instruction = claim.instructions.entries[index]!;
+    const prior = claim.priorResult?.entries[index];
+    if ((instruction === 'confirmed' || instruction === 'held') && prior !== undefined) {
+      entryResults[index] = prior;
+      continue;
+    }
     if (summaryEntryIndexes.includes(index)) continue;
     if (stopped) {
       entryResults[index] = Object.freeze({
@@ -677,6 +698,7 @@ async function executePublication(input: Readonly<{
 
   if (stopped) {
     for (const index of summaryEntryIndexes) {
+      if (entryResults[index] !== undefined) continue;
       const entry = input.plan.entries[index]!;
       entryResults[index] = Object.freeze({
         happierCommentId: entry.happierCommentId,
@@ -689,6 +711,9 @@ async function executePublication(input: Readonly<{
   let verdict: ReviewCommentPublicationResultV1['verdict'];
   if (input.plan.verdict === null || claim.verdict === null) {
     verdict = Object.freeze({ kind: 'notRequested' as const });
+  } else if ((claim.instructions.verdict === 'confirmed' || claim.instructions.verdict === 'held')
+    && claim.priorResult !== null && !('kind' in claim.priorResult.verdict)) {
+    verdict = claim.priorResult.verdict;
   } else if (stopped) {
     verdict = Object.freeze({
       publicationCorrelationId: claim.verdict.publicationCorrelationId,
@@ -715,6 +740,7 @@ async function executePublication(input: Readonly<{
       } else {
         const summaryParts = [
           ...summaryEntryIndexes.flatMap((index) => {
+            if (claim.instructions.entries[index] !== 'dispatch') return [];
             const entry = input.plan.entries[index]!;
             return [entry.body, formatReviewCommentPublicationMarkerV1('entry', claim.entries[index]!.publicationCorrelationId)];
           }),
@@ -741,6 +767,8 @@ async function executePublication(input: Readonly<{
       }
     }
     for (const index of summaryEntryIndexes) {
+      if (claim.instructions.entries[index] === 'confirmed'
+        || claim.instructions.entries[index] === 'held') continue;
       const entry = input.plan.entries[index]!;
       const entryOutcome: ReviewCommentPublicationEntryResultV1['outcome'] =
         summaryOutcome.kind === 'published' && summaryOutcome.externalRef !== undefined

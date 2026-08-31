@@ -128,27 +128,25 @@ export function buildGitlabEntryIdentity(input: GitlabIdentityInput): GitlabIden
  * different origin would silently merge two deployments' entries.
  */
 export function isGitlabIdentityWithinOrigin(
-  identity: GitlabEntryIdentity,
+  identity: Readonly<{ collisionScope: string }>,
   origin: GitlabConfiguredOrigin,
 ): boolean {
-  return identity.collisionScope.startsWith(
-    `gitlab:${encodeGitlabConfiguredOriginScope(origin)}:`,
-  );
+  const prefix = `gitlab:${encodeGitlabConfiguredOriginScope(origin)}:`;
+  if (!identity.collisionScope.startsWith(prefix)) return false;
+  return /^[1-9][0-9]*$/u.test(identity.collisionScope.slice(prefix.length));
 }
 
 /**
- * The project id an authoritative route needs, read back out of a scope this
- * builder produced for this exact origin. A scope built for another origin
- * returns `null` rather than a project id: reading it would address a different
- * deployment's project with the same number.
+ * Admits the opaque routing token this identity owner mints. The token is the
+ * full repository path and is the provider-supported project locator; the
+ * collision scope remains identity evidence and is never decoded into a route.
  */
-export function readGitlabScopeProjectId(
-  collisionScope: string,
-  origin: GitlabConfiguredOrigin,
-): number | null {
-  const prefix = `gitlab:${encodeGitlabConfiguredOriginScope(origin)}:`;
-  if (!collisionScope.startsWith(prefix)) return null;
-  const suffix = collisionScope.slice(prefix.length);
-  if (!/^[1-9][0-9]*$/u.test(suffix)) return null;
-  return readPositiveInteger(Number(suffix));
+export function readGitlabRepositoryRoutingToken(value: unknown): string | null {
+  if (typeof value !== 'string' || value === '' || value !== value.trim()) return null;
+  if (value !== value.toLowerCase() || value.includes('\\')) return null;
+  const segments = value.split('/');
+  if (segments.length < 2 || segments.some((segment) => (
+    segment === '' || segment === '.' || segment === '..'
+  ))) return null;
+  return value;
 }

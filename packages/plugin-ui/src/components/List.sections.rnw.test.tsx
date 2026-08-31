@@ -219,6 +219,35 @@ function SectionedReviewList(props: SectionedListProps): React.ReactElement {
 }
 
 describe('sectioned virtualized List', () => {
+  it('rejects duplicate section identities before the platform virtualizer receives them', () => {
+    expect(() => mountSectionedList(
+      <SectionedReviewList
+        sections={[
+          { key: 'duplicate', title: 'First', data: sections[0]!.data.slice(0, 1) },
+          { key: 'duplicate', title: 'Second', data: sections[1]!.data.slice(0, 1) },
+        ]}
+        onSelectedKeyChange={() => {}}
+      />,
+    )).toThrow('List sections contain duplicate key "duplicate".');
+  });
+
+  it('rejects duplicate row identities across sections before the platform virtualizer receives them', () => {
+    const duplicateKey = sections[0]!.data[0]!.id;
+    expect(() => mountSectionedList(
+      <SectionedReviewList
+        sections={[
+          { key: 'first', title: 'First', data: sections[0]!.data.slice(0, 1) },
+          {
+            key: 'second',
+            title: 'Second',
+            data: [{ ...sections[1]!.data[0]!, id: duplicateKey }],
+          },
+        ]}
+        onSelectedKeyChange={() => {}}
+      />,
+    )).toThrow(`List rows contain duplicate key "${duplicateKey}".`);
+  });
+
   it('renders section headers and rows through the platform section virtualizer with a bounded mounted window', async () => {
     resetCapture();
     const mount = mountSectionedList(<SectionedReviewList sections={sections} onSelectedKeyChange={() => {}} />);
@@ -443,6 +472,31 @@ describe('sectioned virtualized List', () => {
     const before = sectionListCapture.sections.at(-1);
     await mount.render(tree(1));
     expect(sectionListCapture.sections.at(-1)).toBe(before);
+    mount.unmount();
+  });
+
+  it('keeps a retained section identity when filtering removes an earlier section', async () => {
+    resetCapture();
+    const context = createSurfaceContext();
+    const hostApi = createHostApiStub(context);
+    const tree = (query: string) => (
+      <PluginUiProvider hostApi={hostApi} context={context}>
+        <SectionedReviewList
+          sections={sections}
+          onSelectedKeyChange={() => {}}
+          search={{ label: 'Filter reviews', value: query, onValueChange: () => {} }}
+        />
+      </PluginUiProvider>
+    );
+    const mount = mountThroughReactNativeWeb(tree(''));
+    const retainedAuthorKey = sections[1]!.key;
+    const before = sectionListCapture.sections.at(-1)?.find((section) => section.title === sections[1]!.title)?.key;
+
+    await mount.render(tree(sections[1]!.data[0]!.label));
+    const after = sectionListCapture.sections.at(-1)?.find((section) => section.title === sections[1]!.title)?.key;
+
+    expect(before).toBe(`section:${retainedAuthorKey.length}:${retainedAuthorKey}`);
+    expect(after).toBe(before);
     mount.unmount();
   });
 });

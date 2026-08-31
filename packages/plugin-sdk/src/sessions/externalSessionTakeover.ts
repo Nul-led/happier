@@ -29,7 +29,6 @@ export const AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS = Object.freeze({
     maxRemoteSessionIdCodeUnits: 2_000,
     maxLinkedDirectoryCodeUnits: 10_000,
     maxDirectoryCodeUnits: 10_000,
-    maxBackendModeHintCodeUnits: 256,
     maxEnvironmentVariableEntries: 64,
     maxEnvironmentVariableKeyCodeUnits: 128,
     maxEnvironmentVariableValueCodeUnits: 16_384,
@@ -43,12 +42,6 @@ export const AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS = Object.freeze({
 } as const);
 
 export type AgentExternalSessionTakeoverLaunchPlan = Readonly<{
-    /**
-     * Agent-native backend-mode selection hint. The host routes it through the
-     * launch's Agent-owned runtime descriptor; it never becomes a generic
-     * spawn field and never selects the process cwd.
-     */
-    backendModeHint?: string;
     environmentVariables?: Readonly<Record<string, string>>;
     /** Agent-owned identity carried to the target Agent's session opener. */
     runtimeDescriptorV1?: RuntimeDescriptorV1;
@@ -315,21 +308,12 @@ export function validateAgentExternalSessionTakeoverLaunchPlan(
     const record = readRecord(
         value,
         [
-            'backendModeHint',
             'environmentVariables',
             'runtimeDescriptorV1',
         ],
         [],
         'launch plan',
     );
-    const backendModeHint = record.backendModeHint === undefined
-        ? undefined
-        : boundedString(
-            record.backendModeHint,
-            1,
-            AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS.maxBackendModeHintCodeUnits,
-            'launch plan backendModeHint',
-        );
     const environmentVariables = record.environmentVariables === undefined
         ? undefined
         : snapshotEnvironmentVariables(record.environmentVariables);
@@ -358,7 +342,6 @@ export function validateAgentExternalSessionTakeoverLaunchPlan(
             return parsed.data;
         })();
     return Object.freeze({
-        ...(backendModeHint === undefined ? {} : { backendModeHint }),
         ...(environmentVariables === undefined ? {} : { environmentVariables }),
         ...(runtimeDescriptorV1 === undefined ? {} : { runtimeDescriptorV1 }),
     });

@@ -91,6 +91,7 @@ const FIRST_PAGE = changedFilePage(['src/alpha.ts', 'src/beta.ts'], 'github-file
 const SECOND_PAGE = changedFilePage(['src/gamma.ts'], null);
 
 const dispatched: string[] = [];
+const changedFileContinuations: Array<string | undefined> = [];
 const mounted: PluginUiTestkit[] = [];
 
 /**
@@ -103,10 +104,17 @@ const mounted: PluginUiTestkit[] = [];
  * handler is the transport, and the transport is exactly what has to be slow.
  */
 let secondPageGate: Promise<void> | null = null;
+let refreshedFirstPageGate: Promise<void> | null = null;
 
 function openSecondPageGate(): () => void {
   let release!: () => void;
   secondPageGate = new Promise<void>((resolve) => { release = resolve; });
+  return release;
+}
+
+function openRefreshedFirstPageGate(): () => void {
+  let release!: () => void;
+  refreshedFirstPageGate = new Promise<void>((resolve) => { release = resolve; });
   return release;
 }
 
@@ -130,6 +138,13 @@ async function mountDetail(): Promise<PluginUiTestkit> {
           dispatched.push(localId);
           if (localId === GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.listChangedFiles) {
             const continuation = (input as { continuation?: string }).continuation;
+            changedFileContinuations.push(continuation);
+            if (continuation === undefined
+              && changedFileContinuations.length > 1
+              && refreshedFirstPageGate !== null
+            ) {
+              await refreshedFirstPageGate;
+            }
             if (continuation === undefined) return FIRST_PAGE;
             if (secondPageGate !== null) await secondPageGate;
             return SECOND_PAGE;
@@ -189,7 +204,9 @@ function readCount(localId: string): number {
 
 afterEach(async () => {
   dispatched.splice(0);
+  changedFileContinuations.splice(0);
   secondPageGate = null;
+  refreshedFirstPageGate = null;
   for (const fixture of mounted.splice(0)) await fixture.dispose();
 });
 
@@ -269,6 +286,37 @@ describe('the mounted GitHub Files panel across a tab leave', () => {
     expect(readCount(GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.listChangedFiles)).toBe(4);
     await expect(detail.getByText('2 changed file(s) read.'))
       .resolves.toEqual({ content: '2 changed file(s) read.' });
+  });
+
+  it('restarts a warm refresh at page one when its active interval is cancelled', async () => {
+    const detail = await mountDetail();
+    await openTab(detail, 'Files');
+    await pressLoadMore(detail);
+    await expect(detail.getByText('3 changed file(s) read.'))
+      .resolves.toEqual({ content: '3 changed file(s) read.' });
+
+    const releaseRefresh = openRefreshedFirstPageGate();
+    await act(async () => {
+      await detail.press(await detail.getByRole('button', {
+        name: 'Re-read the changed files from GitHub',
+      }));
+    });
+    await openTab(detail, 'Checks');
+    releaseRefresh();
+    await act(async () => { await Promise.resolve(); });
+
+    await openTab(detail, 'Files');
+
+    expect(changedFileContinuations).toEqual([
+      undefined,
+      'github-files-page-2',
+      undefined,
+      undefined,
+    ]);
+    await expect(detail.getByText('2 changed file(s) read.'))
+      .resolves.toEqual({ content: '2 changed file(s) read.' });
+    await expect(detail.getByText('src/alpha.ts')).resolves.toEqual({ content: 'src/alpha.ts' });
+    expect(await detail.queryByText('src/gamma.ts')).toBeUndefined();
   });
 
   it('still restarts a panel that declares discard', async () => {

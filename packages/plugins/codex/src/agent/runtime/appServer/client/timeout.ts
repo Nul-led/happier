@@ -1,7 +1,15 @@
 type CodexAppServerTimeoutEnv = Readonly<Record<string, string | undefined>>;
 
 const STARTUP_RPC_METHODS = new Set(['initialize', 'thread/start']);
-const LONG_RUNNING_RPC_METHODS = new Set(['thread/resume', 'thread/fork', 'conversation/fork']);
+const LONG_RUNNING_RPC_METHODS = new Set([
+    'thread/resume',
+    'thread/fork',
+    'conversation/fork',
+    // A timeout cannot establish whether Codex accepted this side effect. Keep the
+    // request lifecycle-owned so slow admission never becomes ambiguous delivery.
+    'turn/start',
+    'turn/steer',
+]);
 const REALTIME_START_RPC_METHOD = 'thread/realtime/start';
 
 // A retained Codex 0.146 provider-boundary run needed 17.118s to produce the

@@ -47,7 +47,11 @@ const plugin = definePlugin({
       execution: { target: 'daemon' },
       inputSchema: TriageGetInputV1Schema,
       resultSchema: TriageGetResultV1Schema,
-      run: async () => ({ kind: 'failed' as const, failure: unavailable }),
+      run: async ({ localRef }) => ({
+        kind: 'unresolved' as const,
+        localRef,
+        failure: unavailable,
+      }),
     },
   },
   ui: {

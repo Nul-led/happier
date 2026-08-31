@@ -235,6 +235,10 @@ export async function publishBitbucketReviewComment(
     plan: ReviewCommentPublicationPlanV1;
     mode: SingleCommentMode;
     claim: () => Promise<ReviewCommentClaimPublicationDispatchResponseV1>;
+    settle?: (
+      claim: ReviewCommentClaimPublicationDispatchResponseV1,
+      result: ReviewCommentPublicationResultV1,
+    ) => Promise<void>;
   }>,
   dependencies: PublicationDependencies,
 ): Promise<BitbucketReviewPublicationOutcomeV1> {
@@ -304,9 +308,13 @@ export async function publishBitbucketReviewComment(
   const before = await reconcileOne(dependencies, marker);
   let outcome: ProviderEffect;
   let failure: TriageSourceFailureV1 | undefined;
-  if (before.kind === 'found') {
+  const instruction = claim.instructions.entries[0];
+  const prior = claim.priorResult?.entries[0]?.outcome;
+  if ((instruction === 'confirmed' || instruction === 'held') && prior !== undefined) {
+    outcome = prior;
+  } else if (before.kind === 'found') {
     outcome = { kind: 'published', externalRef: before.externalRef };
-  } else if (before.kind === 'failed' || claim.disposition === 'reconcile') {
+  } else if (before.kind === 'failed' || instruction === 'reconcile') {
     outcome = { kind: 'uncertain' };
     if (before.kind === 'failed') failure = dependencies.toTriageFailure(before.failure);
   } else {
@@ -339,6 +347,7 @@ export async function publishBitbucketReviewComment(
     }],
     verdict: { kind: 'notRequested' },
   });
+  await input.settle?.(claim, publication).catch(() => undefined);
   const latest = await dependencies.observe();
   return {
     kind: 'settled',
@@ -355,6 +364,10 @@ export async function publishBitbucketReview(
   input: Readonly<{
     plan: ReviewCommentPublicationPlanV1;
     claim: () => Promise<ReviewCommentClaimPublicationDispatchResponseV1>;
+    settle?: (
+      claim: ReviewCommentClaimPublicationDispatchResponseV1,
+      result: ReviewCommentPublicationResultV1,
+    ) => Promise<void>;
   }>,
   dependencies: PublicationDependencies,
 ): Promise<BitbucketReviewPublicationOutcomeV1> {
@@ -416,6 +429,12 @@ export async function publishBitbucketReview(
     const entry = input.plan.entries[index]!;
     const correlation = claim.entries[index]!;
     const projection = inline[index]!;
+    const instruction = claim.instructions.entries[index]!;
+    const prior = claim.priorResult?.entries[index]?.outcome;
+    if ((instruction === 'confirmed' || instruction === 'held') && prior !== undefined) {
+      settleEntry(index, prior);
+      continue;
+    }
     if (stopped) {
       settleEntry(index, { kind: 'skippedPriorFailure' });
       continue;
@@ -437,7 +456,7 @@ export async function publishBitbucketReview(
     let outcome: ProviderEffect;
     if (before.kind === 'found') {
       outcome = { kind: 'published', externalRef: before.externalRef };
-    } else if (claim.disposition === 'reconcile') {
+    } else if (instruction === 'reconcile') {
       outcome = { kind: 'uncertain' };
       stopped = true;
     } else {
@@ -474,6 +493,9 @@ export async function publishBitbucketReview(
   let verdict: ReviewCommentPublicationResultV1['verdict'];
   if (requestedVerdict === null || input.plan.verdict === null || claim.verdict === null) {
     verdict = { kind: 'notRequested' };
+  } else if ((claim.instructions.verdict === 'confirmed' || claim.instructions.verdict === 'held')
+    && claim.priorResult !== null && !('kind' in claim.priorResult.verdict)) {
+    verdict = claim.priorResult.verdict;
   } else if (stopped) {
     verdict = {
       publicationCorrelationId: claim.verdict.publicationCorrelationId,
@@ -481,11 +503,15 @@ export async function publishBitbucketReview(
     };
   } else {
     const marker = formatReviewCommentPublicationMarkerV1('verdict', claim.verdict.publicationCorrelationId);
-    const foldedEntries = summaryIndexes.map((index) => ({
-      index,
-      entry: input.plan.entries[index]!,
-      marker: formatReviewCommentPublicationMarkerV1('entry', claim.entries[index]!.publicationCorrelationId),
-    }));
+    const foldedEntries = summaryIndexes.flatMap((index) => (
+      claim.instructions.entries[index] === 'confirmed' || claim.instructions.entries[index] === 'held'
+        ? []
+        : [{
+          index,
+          entry: input.plan.entries[index]!,
+          marker: formatReviewCommentPublicationMarkerV1('entry', claim.entries[index]!.publicationCorrelationId),
+        }]
+    ));
     const summaryMarkers = [...foldedEntries.map((folded) => folded.marker), marker];
     const before = await reconcileSummary(dependencies, summaryMarkers);
     let summaryRef = before.kind === 'found' ? before.externalRef : null;
@@ -493,7 +519,10 @@ export async function publishBitbucketReview(
     let summaryFailure: BitbucketTriageFailure | undefined = before.kind === 'failed'
       ? before.failure
       : undefined;
-    if (summaryRef === null && summaryFailure === undefined && claim.disposition === 'dispatch') {
+    if (summaryRef === null
+      && summaryFailure === undefined
+      && claim.instructions.verdict === 'dispatch'
+      && foldedEntries.every((folded) => claim.instructions.entries[folded.index] === 'dispatch')) {
       const summary = await writeComment(dependencies, [
         ...foldedEntries.map((folded) => `${folded.entry.body}\n\n${folded.marker}`),
         `${input.plan.verdict.body}\n\n${marker}`,
@@ -507,7 +536,7 @@ export async function publishBitbucketReview(
     }
     const summaryEffect: ProviderEffect = summaryFailure !== undefined
       ? summaryReconciliationFailed
-        || claim.disposition === 'reconcile'
+        || claim.instructions.verdict === 'reconcile'
         || isAmbiguous(summaryFailure)
         ? { kind: 'uncertain' }
         : failedOutcome(summaryFailure)
@@ -520,7 +549,7 @@ export async function publishBitbucketReview(
       verdict = {
         publicationCorrelationId: claim.verdict.publicationCorrelationId,
         outcome: summaryReconciliationFailed
-          || claim.disposition === 'reconcile'
+          || claim.instructions.verdict === 'reconcile'
           || isAmbiguous(summaryFailure)
           ? { kind: 'uncertain' }
           : failedOutcome(summaryFailure),
@@ -535,7 +564,7 @@ export async function publishBitbucketReview(
         publicationCorrelationId: claim.verdict.publicationCorrelationId,
         outcome: { kind: 'published', externalRef: summaryRef },
       };
-    } else if (claim.disposition === 'reconcile') {
+    } else if (claim.instructions.verdict === 'reconcile') {
       // The summary marker is correlated; Bitbucket's verdict endpoint is not.
       // Never attribute a matching participant state to this invocation.
       verdict = {
@@ -594,6 +623,7 @@ export async function publishBitbucketReview(
     entries: entries as ReviewCommentPublicationResultV1['entries'],
     verdict,
   });
+  await input.settle?.(claim, publication).catch(() => undefined);
   const latest = await dependencies.observe();
   return {
     kind: 'settled',

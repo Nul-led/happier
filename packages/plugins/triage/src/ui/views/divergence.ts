@@ -16,16 +16,13 @@ import type { TriageSavedViewLensV1 } from './savedViewsCommand.js';
  *
  * It is deliberately NOT `ui/state/narrowing.ts`. That module answers "is the
  * reader's own lens hiding rows from them", and its own contract says in
- * writing that `order`, `grouping` and `smartPolicy` do not count there because
+ * writing that `order` and `smartPolicy` do not count there because
  * they can never remove a row — while a surface asking "have you customised
  * this view" is asking a different question and must not borrow that answer.
  * This is that different question, with its own owner.
  *
- * **The query counts, and it is never equal to a stored view.** A saved view
- * carries no query text at all (`core/CORPUS.md` §6.3), so any settled query is
- * a constraint the saved view does not describe. Saying so is the honest
- * statement; the alternative — ignoring it — would show a reader a list narrowed
- * by their own search under the unqualified name of a saved view.
+ * The settled query is one stored lens field and is compared exactly. IME draft
+ * text never reaches this lens.
  */
 
 export type TriageSavedViewLensStatusV1 =
@@ -76,6 +73,7 @@ export function sameTriageSavedViewLensV1(
   right: TriageSavedViewLensV1,
 ): boolean {
   return left.order === right.order
+    && left.query === right.query
     && left.smartPolicy.precedence[0] === right.smartPolicy.precedence[0]
     && sameTriageFilterSelectionV1(left.filters, right.filters);
 }
@@ -84,10 +82,7 @@ export function readTriageSavedViewLensStatusV1(input: Readonly<{
   /** The stored view the reducer's `selectedViewId` names, or `null`. */
   selected: CorpusSavedViewV1 | null;
   lens: TriageSavedViewLensV1;
-  /** The settled query. IME-intermediate text reaches neither this nor the window. */
-  query: string;
 }>): TriageSavedViewLensStatusV1 {
   if (input.selected === null) return 'unsaved';
-  if (input.query.length > 0) return 'modified';
   return sameTriageSavedViewLensV1(input.selected, input.lens) ? 'saved' : 'modified';
 }

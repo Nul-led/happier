@@ -1,8 +1,8 @@
 /**
  * Every GitLab detail URL this source builds, built here and nowhere else.
  *
- * The first request of a walk is constructed from a project id this source read
- * back out of its own collision scope and an IID it proved is a positive decimal.
+ * The first request of a walk is constructed from the canonical repository
+ * locator this source minted for the row and an IID it proved is a positive decimal.
  * Every FOLLOWING request is GitLab's own `Link rel="next"` URL, byte-for-byte:
  * GitLab documents keyset pagination as "use only the given link", so a rebuilt
  * page URL is not the page GitLab offered. That is the exact opposite of the
@@ -76,15 +76,16 @@ const IID_PATTERN = /^[1-9][0-9]*$/u;
 
 export type GitlabDetailRouteInputV1 = Readonly<{
   origin: GitlabConfiguredOrigin;
-  projectId: number;
+  repositoryKey: string;
   /** The per-project internal id, as it appears in the local ref. */
   iid: string;
   kindId: GitlabKindId;
 }>;
 
 function assertRoute(input: GitlabDetailRouteInputV1, perPage?: number): void {
-  if (!Number.isSafeInteger(input.projectId) || input.projectId < 1) {
-    throw new Error('gitlab_detail_project_invalid');
+  if (input.repositoryKey === '' || input.repositoryKey !== input.repositoryKey.trim()
+    || !input.repositoryKey.includes('/')) {
+    throw new Error('gitlab_detail_repository_invalid');
   }
   if (!IID_PATTERN.test(input.iid)) {
     throw new Error('gitlab_detail_iid_invalid');
@@ -96,7 +97,7 @@ function assertRoute(input: GitlabDetailRouteInputV1, perPage?: number): void {
 }
 
 function itemPath(input: GitlabDetailRouteInputV1, suffix: string): string {
-  return `/projects/${input.projectId}/${KIND_ITEM_SEGMENT[input.kindId]}/${input.iid}${suffix}`;
+  return `/projects/${encodeURIComponent(input.repositoryKey)}/${KIND_ITEM_SEGMENT[input.kindId]}/${input.iid}${suffix}`;
 }
 
 /**
@@ -217,11 +218,12 @@ export function buildGitlabMergeRequestPipelinesUrl(
  */
 export function buildGitlabPipelineJobsUrl(input: Readonly<{
   origin: GitlabConfiguredOrigin;
-  projectId: number;
+  repositoryKey: string;
   pipelineId: number;
   perPage: number;
 }>): string {
-  if (!Number.isSafeInteger(input.projectId) || input.projectId < 1
+  if (input.repositoryKey === '' || input.repositoryKey !== input.repositoryKey.trim()
+    || !input.repositoryKey.includes('/')
     || !Number.isSafeInteger(input.pipelineId) || input.pipelineId < 1) {
     throw new Error('gitlab_detail_pipeline_invalid');
   }
@@ -232,7 +234,7 @@ export function buildGitlabPipelineJobsUrl(input: Readonly<{
   }
   return buildGitlabApiUrl(
     input.origin,
-    `/projects/${input.projectId}/pipelines/${input.pipelineId}/jobs`,
+    `/projects/${encodeURIComponent(input.repositoryKey)}/pipelines/${input.pipelineId}/jobs`,
     [['per_page', String(input.perPage)]],
   );
 }

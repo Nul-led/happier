@@ -14,6 +14,7 @@ import {
 import {
   MAX_TRIAGE_IDENTIFIER_UTF8_BYTES_V1,
   TriageConfiguredSourceInstanceV1Schema,
+  TriageEntryLocatorV1Schema,
   TriageSourceEntryLocalRefV1Schema,
   TriageSourceFailureV1Schema,
   TriageSourceObservationV1Schema,
@@ -32,6 +33,17 @@ import { BitbucketCommentResolutionV1Schema } from './detailContracts.js';
  * to issue a second read to learn what happened, and that second read is a second race.
  */
 
+/** The Action ids the detail surface invokes for a Bitbucket pull-request write. */
+export const BITBUCKET_TRIAGE_MUTATION_ACTION_IDS = Object.freeze({
+  merge: 'pull-request-merge',
+  decline: 'pull-request-decline',
+  resolveComment: 'pull-request-comment-resolve',
+  unresolveComment: 'pull-request-comment-unresolve',
+  submitReview: 'pull-request-submit-review',
+  createReviewComment: 'pull-request-review-comment-create',
+  replyToReviewComment: 'pull-request-thread-reply',
+});
+
 const HeadCommitSchema = defineProtocolUtf8String({
   maxUtf8Bytes: MAX_TRIAGE_IDENTIFIER_UTF8_BYTES_V1,
   minLength: 1,
@@ -45,6 +57,12 @@ const BooleanSchema = defineProtocolUnion([
   defineProtocolLiteral(true),
   defineProtocolLiteral(false),
 ]);
+
+const BitbucketEntryTargetFieldsV1 = {
+  instance: TriageConfiguredSourceInstanceV1Schema,
+  localRef: TriageSourceEntryLocalRefV1Schema,
+  lastKnownLocator: TriageEntryLocatorV1Schema,
+} as const;
 
 /**
  * Bitbucket's own three merge strategies, and no fourth.
@@ -70,8 +88,7 @@ export type BitbucketMergeStrategyV1 = ReturnType<typeof BitbucketMergeStrategyV
  */
 export const BitbucketMergeInputV1Schema = defineProtocolObject({
   v: defineProtocolLiteral(1),
-  instance: TriageConfiguredSourceInstanceV1Schema,
-  localRef: TriageSourceEntryLocalRefV1Schema,
+  ...BitbucketEntryTargetFieldsV1,
   /** The source-branch commit hash the user's own read reported. */
   observedHeadCommit: HeadCommitSchema,
   /**
@@ -96,8 +113,7 @@ export type BitbucketMergeInputV1 = ReturnType<typeof BitbucketMergeInputV1Schem
  */
 export const BitbucketDeclineInputV1Schema = defineProtocolObject({
   v: defineProtocolLiteral(1),
-  instance: TriageConfiguredSourceInstanceV1Schema,
-  localRef: TriageSourceEntryLocalRefV1Schema,
+  ...BitbucketEntryTargetFieldsV1,
 }, { policy: 'closed' });
 export type BitbucketDeclineInputV1 = ReturnType<typeof BitbucketDeclineInputV1Schema.parse>;
 
@@ -190,8 +206,7 @@ export type BitbucketMutationResultV1 = ReturnType<typeof BitbucketMutationResul
  */
 export const BitbucketCommentResolutionInputV1Schema = defineProtocolObject({
   v: defineProtocolLiteral(1),
-  instance: TriageConfiguredSourceInstanceV1Schema,
-  localRef: TriageSourceEntryLocalRefV1Schema,
+  ...BitbucketEntryTargetFieldsV1,
   /** The comment id exactly as this source's own Comments projection published it. */
   commentId: defineProtocolUtf8String({
     maxUtf8Bytes: MAX_TRIAGE_IDENTIFIER_UTF8_BYTES_V1,
@@ -277,8 +292,7 @@ const BitbucketReviewCommentCreatePlanV1Schema =
  */
 export const BitbucketReviewPublicationInputV1Schema = defineProtocolObject({
   v: defineProtocolLiteral(1),
-  instance: TriageConfiguredSourceInstanceV1Schema,
-  localRef: TriageSourceEntryLocalRefV1Schema,
+  ...BitbucketEntryTargetFieldsV1,
   publicationPlan: BitbucketReviewPublicationPlanV1Schema,
 }, { policy: 'closed' });
 export type BitbucketReviewPublicationInputV1 = ReturnType<
@@ -288,8 +302,7 @@ export type BitbucketReviewPublicationInputV1 = ReturnType<
 /** Publishes one canonical proposal at its exact pinned Bitbucket diff anchor. */
 export const BitbucketReviewCommentCreateInputV1Schema = defineProtocolObject({
   v: defineProtocolLiteral(1),
-  instance: TriageConfiguredSourceInstanceV1Schema,
-  localRef: TriageSourceEntryLocalRefV1Schema,
+  ...BitbucketEntryTargetFieldsV1,
   publicationPlan: BitbucketReviewCommentCreatePlanV1Schema,
 }, { policy: 'closed' });
 export type BitbucketReviewCommentCreateInputV1 = ReturnType<
@@ -299,8 +312,7 @@ export type BitbucketReviewCommentCreateInputV1 = ReturnType<
 /** Publishes one canonical proposal as a reply to one exact Bitbucket comment. */
 export const BitbucketReviewCommentReplyInputV1Schema = defineProtocolObject({
   v: defineProtocolLiteral(1),
-  instance: TriageConfiguredSourceInstanceV1Schema,
-  localRef: TriageSourceEntryLocalRefV1Schema,
+  ...BitbucketEntryTargetFieldsV1,
   publicationPlan: ReviewCommentUnversionedSingleEntryPublicationPlanV1ProtocolSchema,
   parentCommentId: defineProtocolUtf8String({
     minLength: 1,

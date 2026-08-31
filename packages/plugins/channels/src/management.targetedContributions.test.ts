@@ -18,6 +18,7 @@ import {
 } from './collections.js';
 import {
   createConversationConnectionForInvocation,
+  deleteConversationConnectionForInvocation,
   prepareConversationConnectionForInvocation,
   retestConversationConnectionForInvocation,
   setConversationBindingEnabledForInvocation,
@@ -772,6 +773,80 @@ describe('prepareConversationConnectionForInvocation targeted provider selection
       credentialRef: null,
     }, context)).rejects.toBeInstanceOf(Error);
     expect(executeAdmittedTargetedOperationWithExecutionOrigin).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteConversationConnectionForInvocation transport ownership', () => {
+  it('detaches a durable-push Channels connection without invoking provider stop or webhook revoke', async () => {
+    const connectionId = 'connection-durable-push-delete';
+    const collection = createMutableConnectionStateCollection();
+    const authority = {
+      providerPluginId: providerSelection.contributor.pluginId,
+      providerContributionSelection: {
+        contributionId: providerSelection.contributor.contributionId,
+        immutableGenerationId: providerSelection.contributor.immutableGenerationId,
+      },
+      providerSetupInput: { source: 'saved' },
+      credentialRef: null,
+      transportOrigin: {
+        serverIdentityId: 'srv-example',
+        materializationRef: {
+          pluginId: providerSelection.contributor.pluginId,
+          machineId: 'machine-example',
+          materializationId: 'materialization-example',
+        },
+      },
+      providerConnectionKey: 'example:connection',
+      providerConfig: { opaque: true },
+      routingIdentityKey: 'r'.repeat(43),
+      integrationPrincipal: { id: 'example-bot' },
+      authorityEpoch: 4,
+    } as const satisfies ConversationConnectionFixtureAuthority;
+    collection.rows.set(connectionId, {
+      rowId: connectionId,
+      revision: 4,
+      value: createCurrentConversationConnectionFixture({
+        connectionId,
+        authority,
+        transport: {
+          kind: 'durablePush',
+          webhookContributionRef: { pluginId: providerSelection.contributor.pluginId, localId: 'webhook' },
+          webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+          webhookSourceInstanceId: `channels.connection.${connectionId}`,
+        },
+        overlapSafety: 'safe',
+        replayContinuity: 'none',
+        outboundTextLimit: { maximum: 4_000, unit: 'unicodeCodePoints' },
+      }),
+    });
+    const { context, executeAdmittedTargetedOperationWithExecutionOrigin } = readyConnectionCreateContext({
+      stateCollection: collection,
+    });
+
+    await expect(deleteConversationConnectionForInvocation({
+      connectionId,
+      expectedRevision: 4,
+    }, context)).resolves.toEqual({
+      kind: 'deleteFinalizing',
+      connectionId,
+      revision: 6,
+      authorityEpoch: 5,
+      acceptedPossibleLoss: false,
+    });
+    expect(executeAdmittedTargetedOperationWithExecutionOrigin).not.toHaveBeenCalled();
+    expect(collection.rows.get(connectionId)).toMatchObject({
+      revision: 6,
+      value: {
+        payload: {
+          transport: {
+            kind: 'durablePush',
+            webhookEndpointId: DURABLE_PUSH_WEBHOOK_ENDPOINT_ID,
+          },
+          deletionState: 'finalizingDelete',
+          pendingOldTransportStop: null,
+        },
+      },
+    });
   });
 });
 

@@ -6,6 +6,10 @@ import {
     readHostedWebAccountDataTransport,
 } from './hostedWebClientBootstrap.js';
 import type { PluginUiHostApi, RenderContext } from './hostApi.js';
+import {
+    PLUGIN_UI_PRIVATE_HOSTED_WEB_ACCOUNT_DATA_TRANSPORT_KEY,
+    PLUGIN_UI_PRIVATE_MOUNTED_COMPOSER_REF_KEY,
+} from '../host/ui/privateCarrierKeys.js';
 
 type CreatePluginUiHostApiClientOptions = Readonly<{ signal?: AbortSignal }>;
 
@@ -13,13 +17,6 @@ type CreatePluginUiHostApiClientOptions = Readonly<{ signal?: AbortSignal }>;
 // artifact wrapper is the sole consumer and copies the public RenderContext
 // before author code runs, so hosted Data capability cannot become a second
 // author-visible bootstrap contract.
-const PLUGIN_UI_PRIVATE_HOSTED_WEB_COLLECTION_UI_QUERY_TRANSPORT_KEY = Symbol.for(
-    'happier.pluginUi.privateHostedWebAccountDataTransport.v1',
-);
-const PLUGIN_UI_PRIVATE_MOUNTED_COMPOSER_REF_KEY = Symbol.for(
-    'happier.pluginUi.privateMountedComposerRef.v1',
-);
-
 async function requireBootstrap(options: CreatePluginUiHostApiClientOptions) {
     return awaitHostedWebPluginUiHostApiClientBootstrapFromCurrentRealm(options);
 }
@@ -91,7 +88,7 @@ export const createPluginUiRenderContext = async (
     };
     const accountDataTransport = readHostedWebAccountDataTransport(bootstrap);
     if (isHostedWebAccountDataCapabilityKnown(bootstrap)) {
-        Object.defineProperty(context, PLUGIN_UI_PRIVATE_HOSTED_WEB_COLLECTION_UI_QUERY_TRANSPORT_KEY, {
+        Object.defineProperty(context, PLUGIN_UI_PRIVATE_HOSTED_WEB_ACCOUNT_DATA_TRANSPORT_KEY, {
             configurable: false,
             enumerable: false,
             writable: false,

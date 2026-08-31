@@ -12,7 +12,14 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { FlatList, I18nManager, Platform, SectionList, View } from 'react-native';
+import {
+  FlatList,
+  I18nManager,
+  Platform,
+  SectionList,
+  View,
+  type SectionListData as ReactNativeSectionListData,
+} from 'react-native';
 
 import { useOptionalHappierUiLocalization } from '../environment/context.js';
 import type {
@@ -28,6 +35,8 @@ import {
   resolveHappierPointerPlatform,
 } from '../presentation/collection/multiSelection.js';
 import {
+  encodeHappierSectionCellKey,
+  encodeHappierSectionRowCellKey,
   resolveHappierItemBehavior,
   resolveHappierRovingSelection,
   resolveHappierRovingTabStop,
@@ -229,6 +238,14 @@ export type ListSectionData<Item> = Readonly<{
   title: string;
   data: readonly Item[];
 }>;
+
+type VirtualizedListSectionMetadata = Readonly<{
+  key: string;
+  title: string;
+  authorKey: string;
+}>;
+
+type VirtualizedListSectionData<Item> = ReactNativeSectionListData<Item, VirtualizedListSectionMetadata>;
 
 type VirtualizedListSharedProps<Item> = Readonly<{
   /** Stable identity is mandatory for inserts/reorders and virtualized state retention. */
@@ -614,6 +631,7 @@ function useRowFocusRequest(): RowFocusRequest {
 }
 
 function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>): ReactElement {
+  const listRootRef = useRef<View | null>(null);
   const translate = usePluginTranslation();
   // Density changes only the spacing between authored rows. It does not select
   // a separate item implementation or carry core row policy into the public
@@ -629,8 +647,25 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
   const searchFocusTarget = usePluginUiFocusTarget();
   const displayedQuery = composingQuery ?? query;
   const filter = props.search?.filter;
-  const authorItems = props.items;
-  const authorSections = props.sections;
+  const keyForItem = props.keyForItem;
+  const [authorItems, authorSections] = useMemo(() => {
+    const items = props.items;
+    const sections = props.sections;
+    const admittedKeys = new Set<string>();
+    const admit = (item: Item, index: number) => {
+      const key = keyForItem(item, index);
+      if (admittedKeys.has(key)) {
+        throw new Error(`List rows contain duplicate key "${key}".`);
+      }
+      admittedKeys.add(key);
+    };
+    if (sections !== undefined) {
+      for (const section of sections) section.data.forEach(admit);
+    } else {
+      items?.forEach(admit);
+    }
+    return [items, sections] as const;
+  }, [keyForItem, props.items, props.sections]);
   const visibleItems = useMemo(() => {
     // Keep the caller's input identity intact unless a non-empty query truly
     // derives a smaller window. This is the one measured large-list derivation;
@@ -647,6 +682,13 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
   // the same fact, so one owner drops both.
   const visibleSections = useMemo(() => {
     if (authorSections === undefined) return undefined;
+    const admittedSectionKeys = new Set<string>();
+    for (const section of authorSections) {
+      if (admittedSectionKeys.has(section.key)) {
+        throw new Error(`List sections contain duplicate key "${section.key}".`);
+      }
+      admittedSectionKeys.add(section.key);
+    }
     if (query === '' || filter === undefined) {
       return authorSections.every((section) => section.data.length > 0)
         ? authorSections
@@ -657,60 +699,64 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
       return data.length === 0 ? [] : [{ ...section, data }];
     });
   }, [authorSections, filter, query]);
+  const virtualizedSections = useMemo<readonly VirtualizedListSectionData<Item>[]>(() => (
+    (visibleSections ?? []).map((section) => ({
+      ...section,
+      authorKey: section.key,
+      key: encodeHappierSectionCellKey(section.key),
+    }))
+  ), [visibleSections]);
 
-  const keyForItem = props.keyForItem;
   // ONE flattened traversal order for both arms. The roving tab stop, arrow
   // movement and pending focus all address a row by its position here, so a
   // section boundary never becomes a second navigation owner.
   const rows = useMemo<readonly ListRow<Item>[]>(() => {
-    if (visibleSections !== undefined) {
-      return visibleSections.flatMap((section, sectionIndex) => section.data.map((item, index) => ({
+    return visibleSections !== undefined
+      ? visibleSections.flatMap((section, sectionIndex) => section.data.map((item, index) => ({
         item,
         key: keyForItem(item, index),
         index,
         setSize: section.data.length,
         sectionKey: section.key,
         sectionIndex,
-      })));
-    }
-    const items = visibleItems ?? [];
-    return items.map((item, index) => ({
-      item,
-      key: keyForItem(item, index),
-      index,
-      setSize: items.length,
-      sectionKey: null,
-      sectionIndex: -1,
-    }));
+      })))
+      : (visibleItems ?? []).map((item, index) => ({
+          item,
+          key: keyForItem(item, index),
+          index,
+          setSize: visibleItems?.length ?? 0,
+          sectionKey: null,
+          sectionIndex: -1,
+        }));
   }, [keyForItem, visibleItems, visibleSections]);
   // One keyed lookup replaces the per-fact linear scans selection, focus and
   // the pending-focus prune would each otherwise run over the whole array.
   const rowIndexByKey = useMemo(() => {
     const indexes = new Map<string, number>();
     rows.forEach((row, rowIndex) => {
-      if (!indexes.has(row.key)) indexes.set(row.key, rowIndex);
+      indexes.set(row.key, rowIndex);
     });
     return indexes;
   }, [rows]);
   const sectionRowOffsets = useMemo(() => {
     const offsets = new Map<string, number>();
     let offset = 0;
-    for (const section of visibleSections ?? []) {
+    for (const section of virtualizedSections ?? []) {
       offsets.set(section.key, offset);
       offset += section.data.length;
     }
     return offsets;
-  }, [visibleSections]);
+  }, [virtualizedSections]);
   const sectionGridRowOffsets = useMemo(() => {
     const offsets = new Map<string, number>();
     let offset = 0;
-    for (const section of visibleSections ?? []) {
+    for (const section of virtualizedSections ?? []) {
       offsets.set(section.key, offset);
       // A section header is a real row in the grid projection.
       offset += 1 + section.data.length;
     }
     return offsets;
-  }, [visibleSections]);
+  }, [virtualizedSections]);
 
   // ---- Opt-in keyed multi-selection ---------------------------------------
   // The store is the single owner of the selected set; this List owns only the
@@ -881,6 +927,14 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
     if (!searchEnabled || Platform.OS !== 'web' || typeof document === 'undefined') return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== '/' || event.isComposing || event.defaultPrevented) return;
+      const root = listRootRef.current;
+      const activeElement = document.activeElement;
+      if (
+        activeElement === null
+        || root === null
+        || typeof (root as unknown as { contains?: unknown }).contains !== 'function'
+        || !(root as unknown as { contains(node: Node): boolean }).contains(activeElement)
+      ) return;
       const target = event.target;
       if (target instanceof HTMLElement && (
         target.isContentEditable
@@ -941,7 +995,7 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
   tabStopIndexRef.current = tabStopIndex;
 
   const listRef = useRef<FlatList<Item> | null>(null);
-  const sectionListRef = useRef<SectionList<Item, ListSectionData<Item>> | null>(null);
+  const sectionListRef = useRef<SectionList<Item, VirtualizedListSectionMetadata> | null>(null);
   const previousRowKeysRef = useRef<readonly string[]>([]);
   const previousInsertAnchorRef = useRef<Readonly<{
     anchorKey: string;
@@ -1271,7 +1325,7 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
   const renderSectionRow = useCallback(({ item, index, section }: Readonly<{
     item: Item;
     index: number;
-    section: ListSectionData<Item>;
+    section: VirtualizedListSectionData<Item>;
   }>) => renderRow({
     item,
     rowIndex: (sectionRowOffsets.get(section.key) ?? 0) + index,
@@ -1279,7 +1333,7 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
     index,
     setSize: section.data.length,
     collectionSize: rows.length + (visibleSections?.length ?? 0),
-    sectionKey: section.key,
+    sectionKey: section.authorKey,
   }), [renderRow, rows.length, sectionGridRowOffsets, sectionRowOffsets, visibleSections?.length]);
   // A listbox that admits more than one chosen option has to say so. The
   // capability marks every chosen row `aria-selected`, and without this fact a
@@ -1310,7 +1364,7 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
   // The shared section owner, told which collection element the virtualizer
   // makes this header a direct child of. The rows are its siblings there, so
   // the header has to be a child that collection role actually permits.
-  const renderSectionHeader = useCallback(({ section }: Readonly<{ section: ListSectionData<Item> }>) => (
+  const renderSectionHeader = useCallback(({ section }: Readonly<{ section: VirtualizedListSectionData<Item> }>) => (
     <HappierListSection
       title={section.title}
       virtualizedCollectionRole={collectionRole}
@@ -1325,15 +1379,19 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
 
   // Both facts reach the mounted cells: the tab stop follows focus, so a
   // focus-only move must still commit the two rows whose tab order changed.
-  const extraData = selectionEnabled
-    ? `${selectedKey ?? ''}\u0000${focusedKey ?? ''}\u0000${multiStore === null ? '' : multiSnapshot.version}`
-    : undefined;
+  const extraData = useMemo(() => selectionEnabled
+    ? Object.freeze({
+        selectedKey,
+        focusedKey,
+        multiSelectionVersion: multiStore === null ? null : multiSnapshot.version,
+      })
+    : undefined, [focusedKey, multiSnapshot.version, multiStore, selectedKey, selectionEnabled]);
 
   const collection = visibleSections !== undefined ? (
     <SectionList
       ref={sectionListRef}
-      sections={visibleSections}
-      keyExtractor={keyForItem}
+      sections={virtualizedSections}
+      keyExtractor={(item, index) => encodeHappierSectionRowCellKey(keyForItem(item, index))}
       accessibilityRole={selectionEnabled ? undefined : 'list'}
       // @ts-expect-error React Native's role union omits RNW's standard listbox role.
       role={collectionRole}
@@ -1419,7 +1477,7 @@ function VirtualizedList<Item>(props: ListBaseProps & VirtualizedListProps<Item>
   // own row affordance, and to `List.SelectionActionBar` in the footer.
   return (
     <ListMultiSelectionProvider store={multiStore}>
-      <View style={virtualizedListBoxStyle}>
+      <View ref={listRootRef} style={virtualizedListBoxStyle}>
         {headerContent}
         {collection}
         {emptyContent}

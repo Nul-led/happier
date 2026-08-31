@@ -190,6 +190,45 @@ const DETAIL_SURFACE = Object.freeze({
 });
 
 /**
+ * The complete final declarative projection carried by a current daemon mount.
+ *
+ * This fixture used to provide only `{ visible: true }` because the mount wire
+ * treated `model` as an opaque record. The wire now composes the strict
+ * Protocol-owned projected-model schema, so retaining that partial predecessor
+ * makes the host refuse the whole mount before Triage's input is considered.
+ * Keep this at the real boundary rather than omitting `model`: current producers
+ * publish this shape and the mounted vertical is meant to exercise it.
+ */
+function projectedDetailModel(input: Readonly<{
+    pluginId: string;
+    generation: string;
+    text: string;
+}>) {
+    return Object.freeze({
+        identity: Object.freeze({
+            pluginId: input.pluginId,
+            localId: DETAIL_RENDERER_ID,
+            qualifiedId: `${input.pluginId}/${DETAIL_RENDERER_ID}`,
+            generation: input.generation,
+        }),
+        visible: true,
+        requiredHostMethods: Object.freeze([]),
+        declarativeInventory: Object.freeze({
+            actions: Object.freeze([]),
+            destinations: Object.freeze([]),
+            settings: Object.freeze([]),
+            uiQueries: Object.freeze([]),
+        }),
+        root: Object.freeze({
+            kind: 'text' as const,
+            path: 'root',
+            order: 0,
+            text: input.text,
+        }),
+    });
+}
+
+/**
  * The exact cold admission the physical host would hold. Its `inputSchema` is
  * the PUBLISHED detail role schema, so a launch input the contract would reject
  * renders the fallback instead of the child — which is what makes this a proof
@@ -206,7 +245,15 @@ const ADMITTED_MOUNT = Object.freeze({
     rendererChain: [{ pluginId: SOURCE.pluginId, localId: DETAIL_RENDERER_ID }],
     selectedRenderer: {
         identity: { pluginId: SOURCE.pluginId, localId: DETAIL_RENDERER_ID },
-        renderer: { kind: 'declarative', contributionId: DETAIL_RENDERER_ID, model: { visible: true } },
+        renderer: {
+            kind: 'declarative',
+            contributionId: DETAIL_RENDERER_ID,
+            model: projectedDetailModel({
+                pluginId: SOURCE.pluginId,
+                generation: CONTRIBUTOR_GENERATION,
+                text: DETAIL_BODY_TEXT,
+            }),
+        },
         availability: { state: 'available', reason: 'available', diagnostics: [] },
     },
     executionOrigin: {
@@ -230,7 +277,15 @@ const OTHER_ADMITTED_MOUNT = Object.freeze({
     rendererChain: [{ pluginId: OTHER_SOURCE.pluginId, localId: DETAIL_RENDERER_ID }],
     selectedRenderer: {
         identity: { pluginId: OTHER_SOURCE.pluginId, localId: DETAIL_RENDERER_ID },
-        renderer: { kind: 'declarative', contributionId: DETAIL_RENDERER_ID, model: { visible: true } },
+        renderer: {
+            kind: 'declarative',
+            contributionId: DETAIL_RENDERER_ID,
+            model: projectedDetailModel({
+                pluginId: OTHER_SOURCE.pluginId,
+                generation: OTHER_CONTRIBUTOR.immutableGenerationId,
+                text: OTHER_DETAIL_BODY_TEXT,
+            }),
+        },
         availability: { state: 'available', reason: 'available', diagnostics: [] },
     },
     executionOrigin: {
@@ -336,8 +391,13 @@ function createHarness(options: Readonly<{
     const observes = { current: true };
     /** Makes one same-entry pass publish a genuinely newer observation. */
     const observationRevision = { current: 3_000 };
-    let blockedDetailRead: Readonly<{ promise: Promise<void>; release: () => void }> | null = null;
+    let blockedDetailRead: Readonly<{
+        promise: Promise<void>;
+        release: () => void;
+        entryId?: string;
+    }> | null = null;
     let failNextLinkedSessionPage = false;
+    let failNextDetailRead = false;
     let repeatNextLinkedSessionCursor = false;
     let finalLinkedSessionId: string | null = null;
 
@@ -393,14 +453,21 @@ function createHarness(options: Readonly<{
             // The real handler over the real Collections; only the invocation
             // context's caller stamp is the host's to supply.
             const detailInput = TriageReadEntryDetailInputV1Schema.parse(request.input);
+            if (detailInput.linkedSessionsCursor === undefined && failNextDetailRead) {
+                failNextDetailRead = false;
+                throw new Error('account read unavailable');
+            }
             if (detailInput.linkedSessionsCursor !== undefined && failNextLinkedSessionPage) {
                 failNextLinkedSessionPage = false;
                 throw new Error('linked Session page unavailable');
             }
             readDetailInstanceIds.push(detailInput.sourceInstanceId);
             const blocked = blockedDetailRead;
-            blockedDetailRead = null;
-            if (blocked !== null) await blocked.promise;
+            if (blocked !== null
+                && (blocked.entryId === undefined || blocked.entryId === detailInput.entryRef.entryId)) {
+                blockedDetailRead = null;
+                await blocked.promise;
+            }
             const result = await readTriageEntryDetail(
                 detailInput,
                 {
@@ -478,16 +545,19 @@ function createHarness(options: Readonly<{
         failNextLinkedSessionPage(): void {
             failNextLinkedSessionPage = true;
         },
+        failNextDetailRead(): void {
+            failNextDetailRead = true;
+        },
         repeatNextLinkedSessionCursor(): void {
             repeatNextLinkedSessionCursor = true;
         },
         publishNewerObservation(): void {
             observationRevision.current += 1;
         },
-        blockNextDetailRead(): () => void {
+        blockNextDetailRead(entryId?: string): () => void {
             let release!: () => void;
             const promise = new Promise<void>((resolve) => { release = resolve; });
-            blockedDetailRead = { promise, release };
+            blockedDetailRead = { promise, release, ...(entryId === undefined ? {} : { entryId }) };
             return release;
         },
     };
@@ -513,6 +583,11 @@ async function mountShell(
         secondInstance?: boolean;
         secondInstanceObservesEntry?: boolean;
         linkedSessionCount?: number;
+        replacePageLocation?: (request: Readonly<{
+            subPath: string;
+            backLocation: string | undefined;
+            signal: AbortSignal;
+        }>) => string | Promise<string>;
     }> = {},
 ): Promise<PluginUiTestkit> {
     const harness = createHarness({
@@ -553,9 +628,11 @@ async function mountShell(
             handlers: {
                 publishCurrentUiContext: () => undefined,
                 executeAction: async ({ action, input }) => await harness.executeAction({ action, input }),
-                replacePageLocation: ({ subPath, backLocation }) => {
+                replacePageLocation: async ({ subPath, backLocation, signal }) => {
                     lastPageLocation = { subPath, backLocation };
-                    return subPath;
+                    return options.replacePageLocation === undefined
+                        ? subPath
+                        : await options.replacePageLocation({ subPath, backLocation, signal });
                 },
             },
         });
@@ -606,12 +683,115 @@ function detailBodyNode(): Element {
     return node;
 }
 
+function focusButton(name: string): void {
+    const button = Array.from(document.querySelectorAll<HTMLElement>('[role="button"]')).find(
+        (candidate) => candidate.getAttribute('aria-label') === name || candidate.textContent === name,
+    );
+    if (button === undefined) throw new Error(`The ${name} button is not mounted.`);
+    button.focus();
+}
+
+function activeElementName(): string | null {
+    return document.activeElement?.getAttribute('aria-label')
+        ?? document.activeElement?.textContent
+        ?? null;
+}
+
 afterEach(async () => {
     currentHarness = null;
     for (const fixture of mounted.splice(0)) await fixture.dispose();
 });
 
 describe('opening a row into the source detail', () => {
+    it('retries an Account-read failure without closing the selected entry', async () => {
+        const shell = await mountShell();
+        const harness = currentHarness;
+        if (harness === null) throw new Error('the shell was not mounted');
+        harness.failNextDetailRead();
+
+        await openTheRow(shell);
+
+        await expect(shell.getByText('Your account could not be read')).resolves.toBeDefined();
+        await expect(shell.getByRole('heading', { name: 'Replace the duplicated normalizer' }))
+            .resolves.toBeDefined();
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Retry' }));
+        });
+        for (let settle = 0; settle < 4; settle += 1) {
+            await act(async () => { await Promise.resolve(); });
+        }
+
+        await expect(shell.getByText(DETAIL_BODY_TEXT)).resolves.toBeDefined();
+        await expect(shell.queryByText('Your account could not be read')).resolves.toBeUndefined();
+    });
+
+    it('restores the settled list and announces a host-rejected selection', async () => {
+        const shell = await mountShell({
+            replacePageLocation: async () => { throw new Error('host rejected replacement'); },
+        });
+
+        await openTheRow(shell);
+
+        await expect(shell.queryByText(DETAIL_BODY_TEXT)).resolves.toBeUndefined();
+        await expect(shell.getByRole('button', { name: 'Replace the duplicated normalizer' }))
+            .resolves.toBeDefined();
+        await expect(shell.getByText('This page could not be updated')).resolves.toBeDefined();
+    });
+
+    it('adopts only the newest host-canonical location when an earlier acknowledgement is delayed', async () => {
+        let settleFirst!: (subPath: string) => void;
+        const first = new Promise<string>((resolve) => { settleFirst = resolve; });
+        let calls = 0;
+        const canonicalQuery = 'x';
+        const longEntryRef = TriageEntryRefV1Schema.parse({
+            source: SOURCE,
+            kindId: 'pull-request',
+            collisionScope: LONG_SCOPE,
+            entryId: LONG_ENTRY_ID,
+        });
+        const canonicalSecond = buildTriageRouteSubPathV1({
+            ...TRIAGE_ROUTE_DEFAULT_LENS_V1,
+            query: canonicalQuery,
+            selection: longEntryRef,
+        });
+        const shell = await mountShell({
+            replacePageLocation: async () => {
+                calls += 1;
+                return calls === 1 ? await first : canonicalSecond;
+            },
+        });
+        await measureFillRegion(900);
+
+        await openTheRow(shell);
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: LONG_REF_ROW_TITLE }));
+        });
+        await act(async () => { await Promise.resolve(); });
+        await expect(shell.getByRole('heading', { name: LONG_REF_ROW_TITLE })).resolves.toBeDefined();
+
+        // A's returned location is deliberately stale and canonicalized. It is
+        // now the host's temporary base for B, but it must never repaint A over
+        // the newer optimistic B selection.
+        await act(async () => {
+            settleFirst(buildTriageRouteSubPathV1({
+                ...TRIAGE_ROUTE_DEFAULT_LENS_V1,
+                query: 'stale',
+                selection: {
+                    source: SOURCE,
+                    kindId: 'pull-request',
+                    collisionScope: 'example/repository',
+                    entryId: '17',
+                },
+            }));
+            for (let turn = 0; turn < 6; turn += 1) await Promise.resolve();
+        });
+        expect(calls).toBe(2);
+
+        await expect(shell.getByRole('heading', { name: LONG_REF_ROW_TITLE })).resolves.toBeDefined();
+        expect((await shell.getByRole('textbox')).value).toBe(canonicalQuery);
+        await expect(shell.queryByText('This page could not be updated')).resolves.toBeUndefined();
+    });
+
     it('loads another linked-Session page without dropping or duplicating earlier rows, and retries a failed page', async () => {
         const shell = await mountShell({ linkedSessionCount: MAX_TRIAGE_LINKED_SESSIONS_PAGE_SIZE_V1 + 1 });
         await openTheRow(shell);
@@ -729,7 +909,7 @@ describe('opening a row into the source detail', () => {
         await openTheRow(shell);
         const harness = currentHarness;
         if (harness === null) throw new Error('the shell was not mounted');
-        const releaseDetailRead = harness.blockNextDetailRead();
+        const releaseDetailRead = harness.blockNextDetailRead(LONG_ENTRY_ID);
 
         await act(async () => {
             await shell.press(await shell.getByRole('button', { name: LONG_REF_ROW_TITLE }));
@@ -739,6 +919,7 @@ describe('opening a row into the source detail', () => {
         // Ready detail is useful only for the exact entry and source instance
         // that produced it. Retaining it here would show the old provider body
         // beneath the newly selected entry's aggregate header.
+        await expect(shell.getByRole('heading', { name: LONG_REF_ROW_TITLE })).resolves.toBeDefined();
         expect(queryDetailBodyNode()).toBeNull();
         await expect(shell.getByText('Reading this entry')).resolves.toBeDefined();
 
@@ -783,12 +964,15 @@ describe('opening a row into the source detail', () => {
         const shell = await mountShell();
 
         await openTheRow(shell);
+        await act(async () => { focusButton('Close'); });
         await act(async () => {
             await shell.press(await shell.getByRole('button', { name: 'Close' }));
         });
+        await act(async () => { await Promise.resolve(); });
 
         await expect(shell.getByText('Replace the duplicated normalizer')).resolves.toBeDefined();
         await expect(shell.queryByText(DETAIL_BODY_TEXT)).resolves.toBeUndefined();
+        expect(activeElementName()).toContain('Replace the duplicated normalizer');
     });
 
     it('clears the stacked selection once when the host settles the declared Back step', async () => {
@@ -814,14 +998,17 @@ describe('opening a row into the source detail', () => {
         // render after every press.
         await act(async () => { await shell.updatePageLocation(declared.subPath); });
         await expect(shell.getByText(DETAIL_BODY_TEXT)).resolves.toBeDefined();
+        await act(async () => { focusButton('Close'); });
 
         // Now the host walks the declared step. The location names no entry.
         await act(async () => { await shell.updatePageLocation(backLocation as string); });
+        await act(async () => { await Promise.resolve(); });
 
         await expect(shell.queryByText(DETAIL_BODY_TEXT)).resolves.toBeUndefined();
         await expect(shell.getByRole('button', {
             name: 'Replace the duplicated normalizer',
         })).resolves.toBeDefined();
+        expect(activeElementName()).toContain('Replace the duplicated normalizer');
     });
 
     it('says the selected entry left the list rather than closing the detail by itself', async () => {

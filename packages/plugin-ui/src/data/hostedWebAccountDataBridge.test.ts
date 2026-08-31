@@ -123,6 +123,7 @@ function createTransportHarness(openSnapshots: readonly unknown[] = [firstSnapsh
       if (operation.operation === 'accountKv.transaction.begin') return { kind: 'data', value: 'transaction_1' };
       if (operation.operation === 'accountKv.transaction.get') return { kind: 'data', value: { version: 4, deleted: true } };
       if (operation.operation === 'accountKv.transaction.set') return { kind: 'data', value: { version: 5 } };
+      if (operation.operation === 'accountKv.transaction.delete') return { kind: 'data', value: { version: 6, deleted: true } };
       if (operation.operation === 'accountKv.transaction.commit') return { kind: 'data', value: null };
     }
     throw new Error('Unexpected bridge operation');
@@ -184,6 +185,48 @@ describe('hosted-web Collection UI-query guest pager', () => {
 
     expect(harness.request.mock.calls.filter(([operation]) => operation.kind === 'data')).toHaveLength(16);
     expect(JSON.stringify(harness.request.mock.calls)).not.toContain('account-a');
+  });
+
+  it('keeps each hosted transaction method cancellation signal on its own bridge request', async () => {
+    const harness = createTransportHarness();
+    const client = createClient(harness);
+    const getCancellation = new AbortController();
+    const setCancellation = new AbortController();
+    const deleteCancellation = new AbortController();
+
+    await client.accountKv.transaction(async (transaction) => {
+      await transaction.get('cursor', { signal: getCancellation.signal });
+      await transaction.set('cursor', { cursor: 9 }, {
+        expectedVersion: 4,
+        signal: setCancellation.signal,
+      });
+      await transaction.delete('cursor', {
+        expectedVersion: 5,
+        signal: deleteCancellation.signal,
+      });
+    });
+
+    const transactionRequests = harness.request.mock.calls.filter(([operation]) => (
+      typeof operation.operation === 'string'
+      && operation.operation.startsWith('accountKv.transaction.')
+    ));
+    expect(transactionRequests.slice(1, 4)).toEqual([
+      [{
+        kind: 'data',
+        operation: 'accountKv.transaction.get',
+        arguments: ['transaction_1', 'cursor'],
+      }, { signal: getCancellation.signal }],
+      [{
+        kind: 'data',
+        operation: 'accountKv.transaction.set',
+        arguments: ['transaction_1', 'cursor', { value: { cursor: 9 }, expectedVersion: 4 }],
+      }, { signal: setCancellation.signal }],
+      [{
+        kind: 'data',
+        operation: 'accountKv.transaction.delete',
+        arguments: ['transaction_1', 'cursor', { expectedVersion: 5 }],
+      }, { signal: deleteCancellation.signal }],
+    ]);
   });
 
   it('preserves typed host conflict and currentness failures at the public hosted boundary', async () => {

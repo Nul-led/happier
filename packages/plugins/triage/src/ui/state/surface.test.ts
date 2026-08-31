@@ -255,40 +255,8 @@ describe('Triage surface reducer — corpus movement never steals a cursor', () 
   });
 });
 
-describe('Triage surface reducer — collapse, lens and search', () => {
-  it('keeps collapsed section ids so an unseen section defaults open', () => {
-    const collapsed = reduceTriageSurfaceV1(TRIAGE_SURFACE_INITIAL_STATE_V1, {
-      kind: 'sectionCollapseToggled',
-      sectionId: '3-done',
-      previousOrder: VISIBLE,
-      visibleOrder: VISIBLE.filter((visible) => visible.sectionId !== '3-done'),
-    });
-
-    expect(collapsed.collapsedSectionIds).toEqual(['3-done']);
-    expect(TRIAGE_SURFACE_INITIAL_STATE_V1.collapsedSectionIds).toEqual([]);
-    expect(reduceTriageSurfaceV1(collapsed, {
-      kind: 'sectionCollapseToggled',
-      sectionId: '3-done',
-      previousOrder: VISIBLE.filter((visible) => visible.sectionId !== '3-done'),
-      visibleOrder: VISIBLE,
-    }).collapsedSectionIds).toEqual([]);
-  });
-
-  it('repairs focus out of a section the user just collapsed, without changing selection', () => {
-    const selected = selectedAndFocused();
-
-    const collapsed = reduceTriageSurfaceV1(selected, {
-      kind: 'sectionCollapseToggled',
-      sectionId: '2-open',
-      previousOrder: VISIBLE,
-      visibleOrder: VISIBLE.filter((visible) => visible.sectionId !== '2-open'),
-    });
-
-    expect(collapsed.focus).toEqual({ sectionId: '2-open', entryRef: null });
-    expect(collapsed.selection).toEqual(selected.selection);
-  });
-
-  it('changes order and grouping explicitly and never as a side effect of selection', () => {
+describe('Triage surface reducer — lens and search', () => {
+  it('changes order explicitly and never as a side effect of selection', () => {
     const ordered = reduceTriageSurfaceV1(TRIAGE_SURFACE_INITIAL_STATE_V1, {
       kind: 'orderChanged',
       order: 'smart',
@@ -296,10 +264,6 @@ describe('Triage surface reducer — collapse, lens and search', () => {
 
     expect(TRIAGE_SURFACE_INITIAL_STATE_V1.order).toBe('newest');
     expect(ordered.order).toBe('smart');
-    expect(reduceTriageSurfaceV1(ordered, {
-      kind: 'groupingChanged',
-      grouping: 'scope',
-    }).grouping).toBe('scope');
     expect(selectedAndFocused().order).toBe('newest');
   });
 
@@ -477,5 +441,20 @@ describe('Triage surface reducer — the five filter facets compose', () => {
       kind: 'smartPolicyChanged',
       smartPolicy: { v: 1, precedence: ['activity', 'attention'] },
     })).toBe(policy);
+  });
+
+  it('applies a saved query with the rest of the stored lens', () => {
+    const applied = reduceTriageSurfaceV1(TRIAGE_SURFACE_INITIAL_STATE_V1, {
+      kind: 'savedViewApplied',
+      viewId: '0000000a-0000-4000-8000-00000000000a',
+      query: 'authentication',
+      filters: { ...TRIAGE_LIST_NO_FILTERS_V1, states: ['done'] },
+      order: 'smart',
+      smartPolicy: { v: 1, precedence: ['activity', 'attention'] },
+    });
+
+    expect(applied.search).toEqual({ query: 'authentication', composing: null });
+    expect(applied.selectedViewId).toBe('0000000a-0000-4000-8000-00000000000a');
+    expect(applied.filters.states).toEqual(['done']);
   });
 });

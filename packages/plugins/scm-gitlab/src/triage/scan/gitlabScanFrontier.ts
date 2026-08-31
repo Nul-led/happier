@@ -214,6 +214,20 @@ export async function runGitlabScan(input: GitlabScanInput): Promise<GitlabScanR
       return { kind: 'failed', failure: result.failure };
     }
 
+    // GitLab accepted the fixed `per_page` geometry. More raw rows than that —
+    // or more than this call's remaining public budget — is provider
+    // overdelivery, not data this source may push into the aggregate envelope.
+    // Reject before decoding/mapping or advancing the frontier, so the failure
+    // is atomic at this source boundary rather than at the host envelope.
+    const rawItemCount = result.response.rawItemCount;
+    if (rawItemCount !== null && (rawItemCount > frontier.nativePageSize
+      || consumedItemCount + rawItemCount > frontier.scanLimit)) {
+      return {
+        kind: 'failed',
+        failure: { class: 'unsupportedContract', code: 'provider-overdelivery' },
+      };
+    }
+
     const decoded = decodeGitlabPage({
       kindId: lane.request.kindId,
       origin: input.invocation.origin,
@@ -254,7 +268,7 @@ export async function runGitlabScan(input: GitlabScanInput): Promise<GitlabScanR
       // UNFINISHED, and a lane that stopped unfinished is not a lane that ran out.
       // Without this the walk settles `complete`/`walkFinished` and tells the reader
       // their inbox is whole over a lane that was cut off.
-      if (selection.kind === 'refused' || selection.kind === 'next') {
+      if (selection.kind === 'refused' || selection.kind === 'malformed' || selection.kind === 'next') {
         frontier.walkHealth.add('lane-unresolved');
       }
     }

@@ -32,7 +32,7 @@ export const BITBUCKET_DIFFSTAT_PAGE_LENGTH_V1 = BITBUCKET_MAX_PAGE_LENGTH;
 
 export type BitbucketDetailRouteInputV1 = Readonly<{
   workspaceUuid: string;
-  repositoryUuid: string;
+  repositorySlug: string;
   entryId: string;
 }>;
 
@@ -43,7 +43,7 @@ function pullRequestPath(input: BitbucketDetailRouteInputV1, suffix: string): st
     throw new Error('bitbucket_detail_entry_id_invalid');
   }
   const workspace = encodeBitbucketPathSegment(input.workspaceUuid);
-  const repository = encodeBitbucketPathSegment(input.repositoryUuid);
+  const repository = encodeBitbucketPathSegment(input.repositorySlug);
   const entry = encodeBitbucketPathSegment(input.entryId);
   return `${BITBUCKET_CLOUD_API_BASE_URL}/repositories/${workspace}/${repository}`
     + `/pullrequests/${entry}${suffix}`;

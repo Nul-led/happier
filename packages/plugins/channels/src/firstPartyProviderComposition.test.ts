@@ -26,6 +26,7 @@ import {
   createCurrentConversationConnectionFixture,
   type ConversationConnectionFixtureAuthority,
 } from './testkit/currentConnectionFixture.js';
+import { channelsTargetedContributionServices } from './testkit/operationOnlyTargetedContributionsFixture.js';
 
 /**
  * These compositions cross only the credential-materialization and HTTP
@@ -142,6 +143,8 @@ describe('Channels first-party provider composition', () => {
         providerSelection: providerSelection(telegramCore),
         providerSetupInput: { credentialRef: telegramCredential },
         credentialRef: telegramCredential,
+      }, {
+        services: channelsTargetedContributionServices(telegramCore),
       })).resolves.toEqual({
         kind: 'ready',
         supportedTransports: ['checkpointedPull'],
@@ -212,6 +215,8 @@ describe('Channels first-party provider composition', () => {
         providerSelection: providerSelection(discordCore),
         providerSetupInput: { credentialRef: discordCredential },
         credentialRef: discordCredential,
+      }, {
+        services: channelsTargetedContributionServices(discordCore),
       })).resolves.toEqual({
         kind: 'ready',
         supportedTransports: ['socket'],
@@ -281,6 +286,8 @@ describe('Channels first-party provider composition', () => {
         providerSelection: providerSelection(githubCore),
         providerSetupInput: { credentialRef: githubCredential, repository: 'acme/widgets' },
         credentialRef: githubCredential,
+      }, {
+        services: channelsTargetedContributionServices(githubCore),
       })).resolves.toEqual({
         kind: 'ready',
         supportedTransports: ['checkpointedPull'],

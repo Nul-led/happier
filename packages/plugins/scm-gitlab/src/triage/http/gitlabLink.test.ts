@@ -93,4 +93,15 @@ describe('selectGitlabNextPageUrl', () => {
       'https://gitlab.com',
     )).toEqual({ kind: 'end' });
   });
+
+  it('distinguishes a present malformed Link from an absent header', () => {
+    expect(selectGitlabNextPageUrl(
+      createGitlabResponseHeaders({ Link: 'not-a-link-value' }),
+      'https://gitlab.com',
+    )).toEqual({ kind: 'malformed' });
+    expect(selectGitlabNextPageUrl(
+      createGitlabResponseHeaders({}),
+      'https://gitlab.com',
+    )).toEqual({ kind: 'end' });
+  });
 });

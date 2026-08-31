@@ -5,7 +5,6 @@ import type {
 } from '@happier-dev/plugin-sdk/actions';
 import {
     admitTriageSourceDescriptorV1,
-    type TriageScanContinuationV1,
     type TriageScanInputV1,
     type TriageScanResultV1,
 } from '@happier-dev/triage-protocol/v1';
@@ -17,6 +16,7 @@ import {
     readActiveConfiguredSourceRows,
 } from '../corpus/configuration/readConfiguredSourceRows.js';
 import type { CorpusCollectionHandleV1 } from '../corpus/collections/handles.js';
+import type { CorpusRowV1 } from '../corpus/collections/rowCodec.js';
 import type { CorpusSourceInstanceRowV1 } from '../corpus/collections/rows.js';
 import { renderSourceQualifiedId } from '../corpus/identity/components.js';
 import {
@@ -144,10 +144,13 @@ function selectionAdmits(input: TriageListEntriesInputV1, sourceInstanceId: stri
  */
 function resumeByInstanceId(
     input: TriageListEntriesInputV1,
-): ReadonlyMap<string, TriageScanContinuationV1> {
-    const byInstance = new Map<string, TriageScanContinuationV1>();
+): ReadonlyMap<string, NonNullable<TriageListEntriesInputV1['resume']>[number]> {
+    const byInstance = new Map<
+        string,
+        NonNullable<TriageListEntriesInputV1['resume']>[number]
+    >();
     for (const entry of input.resume ?? []) {
-        byInstance.set(entry.sourceInstanceId, entry.continuation);
+        byInstance.set(entry.sourceInstanceId, entry);
     }
     return byInstance;
 }
@@ -161,6 +164,7 @@ export async function listTriageEntries(
     const admittedPromise = deps.readAdmittedSources(options);
     const sources = input.sources;
     let configuredRows: readonly CorpusSourceInstanceRowV1[];
+    let configuredRecords: readonly CorpusRowV1<CorpusSourceInstanceRowV1>[];
     let configuredSourcesStatus: 'complete' | 'truncated';
     let configuredSourcesNextCursor: string | undefined;
     if (sources.kind === 'allConfigured') {
@@ -169,12 +173,16 @@ export async function listTriageEntries(
             ...(sources.cursor === undefined ? {} : { cursor: sources.cursor }),
         }, options);
         configuredRows = page.rows;
+        configuredRecords = page.records;
         configuredSourcesStatus = page.status;
         configuredSourcesNextCursor = page.nextCursor;
     } else {
         const configured = await readActiveConfiguredSourceRows(deps.sourceInstances, options);
         configuredRows = configured.rows.filter((row) => sources.sourceInstanceIds.includes(
             row.configured.instance.sourceInstanceId,
+        ));
+        configuredRecords = configured.records.filter((record) => sources.sourceInstanceIds.includes(
+            record.value.configured.instance.sourceInstanceId,
         ));
         configuredSourcesStatus = 'complete';
         configuredSourcesNextCursor = undefined;
@@ -187,6 +195,11 @@ export async function listTriageEntries(
     /** Every instance this request set out to cover, invocable or not. */
     const intended: TriageListIntendedSourceV1[] = [];
     const lanes: TriageScanLaneV1[] = [];
+    const configurationRevisionBySourceInstanceId = new Map(configuredRecords.map((record) => [
+        record.value.configured.instance.sourceInstanceId,
+        record.revision,
+    ]));
+    const contributionGenerationBySourceInstanceId = new Map<string, string>();
     for (const row of configuredRows) {
         const contribution = admittedByQualifiedId.get(row.sourceQualifiedId);
         const source = {
@@ -199,9 +212,13 @@ export async function listTriageEntries(
         // stays exactly as it is, because absence from the admitted view is
         // never retirement evidence.
         const available = contribution !== undefined && declaredKindIds.length > 0;
+        const configurationRevision = configurationRevisionBySourceInstanceId.get(
+            row.configured.instance.sourceInstanceId,
+        );
         configuredSources.push({
             sourceInstanceId: row.configured.instance.sourceInstanceId,
             source,
+            ...(configurationRevision === undefined ? {} : { configurationRevision }),
             ...(row.configured.locator === undefined
                 ? {}
                 : { displayLabel: row.configured.locator.displayLabel }),
@@ -213,13 +230,19 @@ export async function listTriageEntries(
         // absence, which is what keeps the coverage claim about what was asked.
         intended.push({ sourceInstanceId: row.configured.instance.sourceInstanceId, source });
         if (!available || contribution === undefined) continue;
+        contributionGenerationBySourceInstanceId.set(
+            row.configured.instance.sourceInstanceId,
+            contribution.contributor.immutableGenerationId,
+        );
         const resume = resumeByInstance.get(row.configured.instance.sourceInstanceId);
         lanes.push({
             sourceInstanceId: row.configured.instance.sourceInstanceId,
             source,
             declaredKindIds,
             configured: row.configured,
-            ...(resume === undefined ? {} : { resume }),
+            ...(resume === undefined
+                ? {}
+                : { resume: resume.continuation, pageLimit: resume.pageLimit }),
             scan: (scanInput, scanOptions) => deps.executeScan(
                 contribution.operations.scan,
                 scanInput,
@@ -246,11 +269,82 @@ export async function listTriageEntries(
         ...(deps.signal ? { signal: deps.signal } : {}),
     });
 
+    /**
+     * Re-read both currentness owners after provider work settles.
+     *
+     * A configured row can be removed or rewritten under the same stable
+     * `sourceInstanceId` while an admitted source is answering. The initial row
+     * granted authority to start that call; it does not grant authority to
+     * publish after its Collection revision or admitted immutable generation
+     * changed. No durable scan generation is needed: compare the two canonical
+     * identities at this one result boundary and discard only stale lanes.
+     */
+    const currentConfigured = input.limit === 0
+        ? null
+        : await readActiveConfiguredSourceRows(deps.sourceInstances, options);
+    const currentAdmittedByQualifiedId = input.limit === 0
+        ? admittedByQualifiedId
+        : indexTriageAdmittedSourcesV1(await deps.readAdmittedSources(options));
+    const initialSourceInstanceIds = new Set(
+        configuredRows.map((row) => row.configured.instance.sourceInstanceId),
+    );
+    const currentRecords = currentConfigured === null
+        ? configuredRecords
+        : currentConfigured.records.filter((record) => (
+            initialSourceInstanceIds.has(record.value.configured.instance.sourceInstanceId)
+            && selectionAdmits(input, record.value.configured.instance.sourceInstanceId)
+        ));
+    const currentRecordBySourceInstanceId = new Map(currentRecords.map((record) => [
+        record.value.configured.instance.sourceInstanceId,
+        record,
+    ]));
+    const currentGenerationMatches = (sourceInstanceId: string): boolean => {
+        const record = currentRecordBySourceInstanceId.get(sourceInstanceId);
+        const initialRevision = configurationRevisionBySourceInstanceId.get(sourceInstanceId);
+        if (record === undefined || initialRevision === undefined || record.revision !== initialRevision) return false;
+        const currentContribution = currentAdmittedByQualifiedId.get(record.value.sourceQualifiedId);
+        return currentContribution !== undefined
+            && currentContribution.contributor.immutableGenerationId
+                === contributionGenerationBySourceInstanceId.get(sourceInstanceId);
+    };
+
+    const settledConfiguredSources: TriageListEntriesResultV1['configuredSources'][number][] = [];
+    const settledIntended: TriageListIntendedSourceV1[] = [];
+    for (const record of currentRecords) {
+        const row = record.value;
+        const contribution = currentAdmittedByQualifiedId.get(row.sourceQualifiedId);
+        const declaredKindIds = contribution?.descriptor?.kinds.map((kind) => kind.id) ?? [];
+        const available = contribution !== undefined && declaredKindIds.length > 0;
+        const source = {
+            pluginId: row.configured.instance.source.pluginId,
+            localId: row.configured.instance.source.localId,
+        };
+        settledConfiguredSources.push({
+            sourceInstanceId: row.configured.instance.sourceInstanceId,
+            source,
+            configurationRevision: record.revision,
+            ...(row.configured.locator === undefined
+                ? {}
+                : { displayLabel: row.configured.locator.displayLabel }),
+            available,
+        });
+        if (input.limit > 0 && selectionAdmits(input, row.configured.instance.sourceInstanceId)) {
+            settledIntended.push({ sourceInstanceId: row.configured.instance.sourceInstanceId, source });
+        }
+    }
+    const settledLanes = pass.lanes.filter((lane) => currentGenerationMatches(lane.sourceInstanceId));
+    const settledObservations = pass.observations.filter(
+        (observation) => currentGenerationMatches(observation.sourceInstanceId),
+    );
+
     const window: TriageListWindowV1 = foldTriageListWindow({
-        observations: pass.observations,
-        lanes: triageListCoverageLanes({ intended, walked: pass.lanes }),
+        observations: settledObservations,
+        lanes: triageListCoverageLanes({
+            intended: currentConfigured === null ? intended : settledIntended,
+            walked: settledLanes,
+        }),
         configuredSourcesStatus,
-        activeSourceInstanceIds: configuredSources
+        activeSourceInstanceIds: settledConfiguredSources
             .filter((summary) => summary.available)
             .map((summary) => summary.sourceInstanceId),
         lens,
@@ -262,11 +356,11 @@ export async function listTriageEntries(
     // frontier per walked lane, so there is nothing here to cut — and cutting
     // is what starved the tail of the rotation on every page (`PLAN.md` §0a
     // A9a).
-    const continuations = pass.stopped;
+    const continuations = pass.stopped.filter((stop) => currentGenerationMatches(stop.sourceInstanceId));
 
     return {
         v: 1,
-        configuredSources,
+        configuredSources: input.limit === 0 ? configuredSources : settledConfiguredSources,
         configuredSourcesStatus,
         ...(configuredSourcesNextCursor === undefined ? {} : { configuredSourcesNextCursor }),
         window: {

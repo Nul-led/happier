@@ -179,7 +179,11 @@ describe('Telegram Channel provider actions', () => {
     // `allAllowedMessages` binding apparently ready. Only a re-authenticated
     // `getMe` can answer this, so the two sources are deliberately opposed here.
     const http = {
-      request: vi.fn(async () => response(botIdentity())),
+      request: vi.fn(async (input: TelegramHttpRequestInput) => response(
+        input.url.endsWith('/getWebhookInfo')
+          ? { ok: true, result: { url: '', pending_update_count: 0 } }
+          : botIdentity(),
+      )),
     };
 
     await expect(testTelegramConnection(
@@ -203,10 +207,14 @@ describe('Telegram Channel provider actions', () => {
     // may read every group message. A probe that echoed the retained value
     // would keep withholding `allAllowedMessages` the platform now delivers.
     const http = {
-      request: vi.fn(async () => response({
-        ok: true,
-        result: { ...botIdentity().result, can_read_all_group_messages: true },
-      })),
+      request: vi.fn(async (input: TelegramHttpRequestInput) => response(
+        input.url.endsWith('/getWebhookInfo')
+          ? { ok: true, result: { url: '', pending_update_count: 0 } }
+          : {
+              ok: true,
+              result: { ...botIdentity().result, can_read_all_group_messages: true },
+            },
+      )),
     };
 
     await expect(testTelegramConnection(
@@ -216,6 +224,28 @@ describe('Telegram Channel provider actions', () => {
       kind: 'ready',
       sharedEndpointInputModes: ['directMentionsOnly', 'addressedMessages', 'allAllowedMessages'],
     });
+  });
+
+  it('does not report a saved polling connection ready while a webhook owns Telegram updates', async () => {
+    const http = {
+      request: vi.fn(async (input: TelegramHttpRequestInput) => {
+        if (input.url.endsWith('/getMe')) return response(botIdentity());
+        if (input.url.endsWith('/getWebhookInfo')) {
+          return response({ ok: true, result: { url: 'https://other.example/telegram', pending_update_count: 2 } });
+        }
+        throw new Error(`Unexpected Telegram request: ${input.url}`);
+      }),
+    };
+
+    await expect(testTelegramConnection(
+      { ...connection, selectedTransport: 'checkpointedPull' },
+      coreContext(http),
+    )).resolves.toEqual({
+      kind: 'notReady',
+      reason: 'invalidConfiguration',
+      diagnostic: 'Telegram has an active webhook. Remove it before using checkpointed polling.',
+    });
+    expect(http.request).toHaveBeenCalledTimes(2);
   });
 
   it('resolves an observed Telegram topic identity through its authenticated parent chat', async () => {

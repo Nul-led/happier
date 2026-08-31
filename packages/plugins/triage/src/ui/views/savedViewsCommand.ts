@@ -56,8 +56,9 @@ export type TriageSavedViewsHostV1 = Readonly<{
   ): Promise<unknown>;
 }>;
 
-/** The lens half of a view: exactly what a saved view stores, and no query. */
+/** The lens half of a view: exactly what a saved view stores. */
 export type TriageSavedViewLensV1 = Readonly<{
+  query: string;
   filters: SurfaceFilterSelectionV1;
   order: TriageListOrderV1;
   smartPolicy: CorpusSmartPolicyV1;
@@ -167,6 +168,7 @@ export function readTriageSavedViewsProjectionV1(projection: Readonly<{
     views.push({
       viewId: view.viewId,
       label: view.label,
+      query: view.query,
       filters: view.filters,
       order: view.order,
       smartPolicy,
@@ -189,11 +191,13 @@ export function triageCreateSavedViewInputV1(
     kind: 'create',
     expectedRevision,
     label,
+    query: lens.query,
     filters: lens.filters,
     order: lens.order,
     smartPolicy: lens.smartPolicy,
-    // A view the reader just saved is the view they are now looking through.
-    select: true,
+    // Creation cannot select before the route carrying the writer-minted id has
+    // settled. The mounted controller performs the explicit select afterward.
+    select: false,
   };
 }
 
@@ -216,6 +220,7 @@ export function triageRenameSavedViewInputV1(
     expectedRevision,
     viewId: view.viewId,
     label,
+    query: view.query,
     filters: view.filters,
     order: view.order,
     smartPolicy: view.smartPolicy,
@@ -234,6 +239,7 @@ export function triageUpdateSavedViewInputV1(
     expectedRevision,
     viewId: view.viewId,
     label: view.label,
+    query: lens.query,
     filters: lens.filters,
     order: lens.order,
     smartPolicy: lens.smartPolicy,

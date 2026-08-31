@@ -217,7 +217,7 @@
               "type": "string"
             },
             "sourceQualifiedId": {
-              "maxLength": 128,
+              "maxLength": 513,
               "minLength": 1,
               "type": "string"
             }
@@ -799,7 +799,7 @@
                         "minLength": 1,
                         "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
                         "type": "string",
-                        "x-happier-max-utf8-bytes": 40350
+                        "x-happier-max-utf8-bytes": 40322
                       },
                       "v": {
                         "const": 1
@@ -811,6 +811,11 @@
                     ],
                     "type": "object"
                   },
+                  "pageLimit": {
+                    "maximum": 56,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "sourceInstanceId": {
                     "maxLength": 36,
                     "minLength": 36,
@@ -820,6 +825,7 @@
                 },
                 "required": [
                   "sourceInstanceId",
+                  "pageLimit",
                   "continuation"
                 ],
                 "type": "object"
@@ -931,6 +937,11 @@
                       }
                     ]
                   },
+                  "configurationRevision": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "displayLabel": {
                     "minLength": 1,
                     "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
@@ -1014,7 +1025,7 @@
                             "minLength": 1,
                             "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
                             "type": "string",
-                            "x-happier-max-utf8-bytes": 40350
+                            "x-happier-max-utf8-bytes": 40322
                           },
                           "v": {
                             "const": 1
@@ -1026,6 +1037,11 @@
                         ],
                         "type": "object"
                       },
+                      "pageLimit": {
+                        "maximum": 56,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
                       "sourceInstanceId": {
                         "maxLength": 36,
                         "minLength": 36,
@@ -1035,6 +1051,7 @@
                     },
                     "required": [
                       "sourceInstanceId",
+                      "pageLimit",
                       "continuation"
                     ],
                     "type": "object"
@@ -9250,6 +9267,19 @@
                       }
                     ]
                   },
+                  "query": {
+                    "anyOf": [
+                      {
+                        "const": ""
+                      },
+                      {
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                        "type": "string",
+                        "x-happier-max-utf8-bytes": 512
+                      }
+                    ]
+                  },
                   "smartPolicy": {
                     "additionalProperties": false,
                     "properties": {
@@ -9288,6 +9318,7 @@
                 "required": [
                   "viewId",
                   "label",
+                  "query",
                   "filters",
                   "order",
                   "smartPolicy"
@@ -9525,6 +9556,19 @@
                     }
                   ]
                 },
+                "query": {
+                  "anyOf": [
+                    {
+                      "const": ""
+                    },
+                    {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 512
+                    }
+                  ]
+                },
                 "select": {
                   "anyOf": [
                     {
@@ -9572,6 +9616,7 @@
                 "kind",
                 "expectedRevision",
                 "label",
+                "query",
                 "filters",
                 "order",
                 "smartPolicy"
@@ -9771,6 +9816,19 @@
                     }
                   ]
                 },
+                "query": {
+                  "anyOf": [
+                    {
+                      "const": ""
+                    },
+                    {
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                      "type": "string",
+                      "x-happier-max-utf8-bytes": 512
+                    }
+                  ]
+                },
                 "smartPolicy": {
                   "additionalProperties": false,
                   "properties": {
@@ -9815,6 +9873,7 @@
                 "viewId",
                 "expectedRevision",
                 "label",
+                "query",
                 "filters",
                 "order",
                 "smartPolicy"
@@ -9899,6 +9958,9 @@
                   "const": "label"
                 },
                 {
+                  "const": "query"
+                },
+                {
                   "const": "duplicateFacetValue"
                 },
                 {
@@ -9954,6 +10016,19 @@
             },
             "v": {
               "const": 1
+            },
+            "viewId": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                  "type": "string"
+                },
+                {
+                  "const": null
+                }
+              ]
             },
             "views": {
               "items": {
@@ -10141,6 +10216,19 @@
                       }
                     ]
                   },
+                  "query": {
+                    "anyOf": [
+                      {
+                        "const": ""
+                      },
+                      {
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+                        "type": "string",
+                        "x-happier-max-utf8-bytes": 512
+                      }
+                    ]
+                  },
                   "smartPolicy": {
                     "additionalProperties": false,
                     "properties": {
@@ -10179,6 +10267,7 @@
                 "required": [
                   "viewId",
                   "label",
+                  "query",
                   "filters",
                   "order",
                   "smartPolicy"
@@ -10306,6 +10395,9 @@
                           "kind": {
                             "const": "agent"
                           },
+                          "promptArgsText": {
+                            "type": "string"
+                          },
                           "promptInvocationId": {
                             "anyOf": [
                               {
@@ -10318,6 +10410,10 @@
                                 "const": null
                               }
                             ]
+                          },
+                          "seededFallbackInstruction": {
+                            "minLength": 1,
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -10333,6 +10429,9 @@
                           "kind": {
                             "const": "reviewStart"
                           },
+                          "promptArgsText": {
+                            "type": "string"
+                          },
                           "promptInvocationId": {
                             "anyOf": [
                               {
@@ -10345,6 +10444,10 @@
                                 "const": null
                               }
                             ]
+                          },
+                          "seededFallbackInstruction": {
+                            "minLength": 1,
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -10515,6 +10618,9 @@
                         "kind": {
                           "const": "agent"
                         },
+                        "promptArgsText": {
+                          "type": "string"
+                        },
                         "promptInvocationId": {
                           "anyOf": [
                             {
@@ -10541,6 +10647,9 @@
                       "properties": {
                         "kind": {
                           "const": "reviewStart"
+                        },
+                        "promptArgsText": {
+                          "type": "string"
                         },
                         "promptInvocationId": {
                           "anyOf": [
@@ -10677,6 +10786,9 @@
                         "kind": {
                           "const": "agent"
                         },
+                        "promptArgsText": {
+                          "type": "string"
+                        },
                         "promptInvocationId": {
                           "anyOf": [
                             {
@@ -10703,6 +10815,9 @@
                       "properties": {
                         "kind": {
                           "const": "reviewStart"
+                        },
+                        "promptArgsText": {
+                          "type": "string"
                         },
                         "promptInvocationId": {
                           "anyOf": [
@@ -10901,6 +11016,9 @@
                           "kind": {
                             "const": "agent"
                           },
+                          "promptArgsText": {
+                            "type": "string"
+                          },
                           "promptInvocationId": {
                             "anyOf": [
                               {
@@ -10913,6 +11031,10 @@
                                 "const": null
                               }
                             ]
+                          },
+                          "seededFallbackInstruction": {
+                            "minLength": 1,
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -10928,6 +11050,9 @@
                           "kind": {
                             "const": "reviewStart"
                           },
+                          "promptArgsText": {
+                            "type": "string"
+                          },
                           "promptInvocationId": {
                             "anyOf": [
                               {
@@ -10940,6 +11065,10 @@
                                 "const": null
                               }
                             ]
+                          },
+                          "seededFallbackInstruction": {
+                            "minLength": 1,
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -11005,6 +11134,12 @@
                 },
                 {
                   "const": "promptInvocationId"
+                },
+                {
+                  "const": "promptArgsText"
+                },
+                {
+                  "const": "instruction"
                 },
                 {
                   "const": "delivery"
@@ -13961,7 +14096,7 @@
                                     "minLength": 1,
                                     "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
                                     "type": "string",
-                                    "x-happier-max-utf8-bytes": 40350
+                                    "x-happier-max-utf8-bytes": 40322
                                   },
                                   "v": {
                                     "const": 1
@@ -14011,7 +14146,7 @@
                               "minLength": 1,
                               "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
                               "type": "string",
-                              "x-happier-max-utf8-bytes": 40350
+                              "x-happier-max-utf8-bytes": 40322
                             },
                             "v": {
                               "const": 1
@@ -16858,6 +16993,7 @@
             "plugins.triage.surface.actions.arm.agent": "Start a session with an agent",
             "plugins.triage.surface.actions.arm.reviewStart": "Run a code review",
             "plugins.triage.surface.actions.blocker.appliesTo": "Choose at least one kind of entry to offer it on.",
+            "plugins.triage.surface.actions.blocker.instruction": "Choose a Prompt Library entry before this action can start work.",
             "plugins.triage.surface.actions.blocker.label": "Give this action a name.",
             "plugins.triage.surface.actions.cancel": "Cancel",
             "plugins.triage.surface.actions.close": "Done",
@@ -16866,6 +17002,7 @@
             "plugins.triage.surface.actions.delivery.compose": "Wait in the composer",
             "plugins.triage.surface.actions.delivery.send": "Send it straight away",
             "plugins.triage.surface.actions.disabled": "Not offered",
+            "plugins.triage.surface.actions.draftStale": "Actions changed while this draft was open. Reload or reapply it before saving.",
             "plugins.triage.surface.actions.edit": "Configure",
             "plugins.triage.surface.actions.empty.description": "Nothing can be started from an entry until you add an action here.",
             "plugins.triage.surface.actions.empty.title": "No actions",
@@ -16880,6 +17017,7 @@
             "plugins.triage.surface.actions.field.profileNone": "Choose at start",
             "plugins.triage.surface.actions.field.profileUnchecked": "Keeping the profile you configured",
             "plugins.triage.surface.actions.field.prompt": "Prompt",
+            "plugins.triage.surface.actions.field.promptArgs": "Prompt arguments",
             "plugins.triage.surface.actions.field.promptMissing": "Prompt no longer in your library",
             "plugins.triage.surface.actions.field.promptNone": "No prompt",
             "plugins.triage.surface.actions.field.workspaceMode": "It needs",
@@ -16887,10 +17025,14 @@
             "plugins.triage.surface.actions.form.update": "Edit action",
             "plugins.triage.surface.actions.moveDown": "Move down",
             "plugins.triage.surface.actions.moveUp": "Move up",
+            "plugins.triage.surface.actions.noLongerAvailable": "That action is no longer available for this entry.",
+            "plugins.triage.surface.actions.reapply": "Reapply draft",
             "plugins.triage.surface.actions.rejected.appliesTo": "Choose at least one kind of entry for this action, and each one only once.",
             "plugins.triage.surface.actions.rejected.label": "That name is empty or too long.",
             "plugins.triage.surface.actions.rejected.other": "That action could not be saved, so nothing was changed.",
+            "plugins.triage.surface.actions.reload": "Reload action",
             "plugins.triage.surface.actions.remove": "Remove",
+            "plugins.triage.surface.actions.retry": "Retry",
             "plugins.triage.surface.actions.save": "Save",
             "plugins.triage.surface.actions.settled": "Actions updated",
             "plugins.triage.surface.actions.subject.errorIssue": "Error groups",
@@ -16909,6 +17051,7 @@
             "plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring": "This action needs a new checkout. Use Attach to New Session so you can choose where to create it.",
             "plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring": "This action needs review before sending. Use Attach to New Session so its prompt and entries are ready before anything starts.",
             "plugins.triage.surface.bulk.dispatch": "Nothing was started: this screen could not reach the sessions it asked for.",
+            "plugins.triage.surface.bulk.instructionMissing": "This action needs an instruction before it can start work. Choose a Prompt Library entry in Configure actions.",
             "plugins.triage.surface.bulk.label": "Bulk actions",
             "plugins.triage.surface.bulk.newSession": "Attach to New Session",
             "plugins.triage.surface.bulk.newSessionUnavailable": "The New Session surface did not settle on something a session can be started from.",
@@ -16926,8 +17069,10 @@
             "plugins.triage.surface.bulk.retry": "Try again",
             "plugins.triage.surface.bulk.reviewStartUnsupported": "A formal code review cannot be started in bulk from here, so nothing was started.",
             "plugins.triage.surface.bulk.seeded": "{count} attached to New Session",
+            "plugins.triage.surface.bulk.selectionRetainedWhileRunning": "The selection stays visible until the running action stops.",
             "plugins.triage.surface.bulk.sessionPerEntry": "A session each",
             "plugins.triage.surface.bulk.settled": "{opened} started, {unknown} unconfirmed, {notStarted} not started, {left} could not be used",
+            "plugins.triage.surface.bulk.sharedPlacementIncompatible": "These entries do not share one compatible repository placement. Use A session each or Attach to New Session.",
             "plugins.triage.surface.bulk.starting": "Starting {started} of {total}…",
             "plugins.triage.surface.close": "Close",
             "plugins.triage.surface.detail.accountError.description": "Happier could not reach your account, so this entry's details are unavailable right now.",
@@ -17047,6 +17192,9 @@
             "plugins.triage.surface.reviewChooser.unknown": "Happier could not confirm whether the review started. It will not be started a second time.",
             "plugins.triage.surface.routeTooLong.description": "Opening it would make this page’s shareable location longer than it can carry, so nothing was changed.",
             "plugins.triage.surface.routeTooLong.title": "That entry could not be opened",
+            "plugins.triage.surface.routeWriteFailed.rejected": "Happier refused the location change, so the last settled view was restored. Try again.",
+            "plugins.triage.surface.routeWriteFailed.title": "This page could not be updated",
+            "plugins.triage.surface.routeWriteFailed.unavailable": "This screen cannot update its shareable location, so the last settled view was restored.",
             "plugins.triage.surface.row.deselect": "Deselect {title}",
             "plugins.triage.surface.row.moreActions": "More actions for {title}",
             "plugins.triage.surface.row.pin": "Pin {title}",
@@ -17065,6 +17213,7 @@
             "plugins.triage.surface.session.deliveryUnknown": "The session opened, but Happier could not confirm whether this action’s prompt was sent. Pressing again resends the same one rather than a second.",
             "plugins.triage.surface.session.dispatchFailed": "Nothing was started: this screen could not reach the session it asked for.",
             "plugins.triage.surface.session.fix": "Fix",
+            "plugins.triage.surface.session.instructionMissing": "This action needs an instruction before it can start work. Choose a Prompt Library entry in Configure actions.",
             "plugins.triage.surface.session.linkPending": "The session was created, but this entry is not linked to it yet.",
             "plugins.triage.surface.session.linkedNotOpened": "The session was created and linked, but it was not opened.",
             "plugins.triage.surface.session.newSessionUnavailable": "The New Session surface did not settle on something a session can be started from.",
@@ -17117,6 +17266,7 @@
             "plugins.triage.surface.views.rejected.other": "That view could not be saved, so nothing was changed.",
             "plugins.triage.surface.views.rejected.tooLarge": "Your saved views are as large as Happier keeps them. Delete one to save another.",
             "plugins.triage.surface.views.rename": "Rename",
+            "plugins.triage.surface.views.retry": "Retry",
             "plugins.triage.surface.views.save": "Save as new view",
             "plugins.triage.surface.views.settled": "Saved views updated",
             "plugins.triage.surface.views.unavailable": "Happier cannot reach your account right now, so saved views cannot be changed.",
@@ -17174,6 +17324,7 @@
             "plugins.triage.surface.actions.arm.agent": "Eine Session mit einem Agenten starten",
             "plugins.triage.surface.actions.arm.reviewStart": "Ein Code-Review ausführen",
             "plugins.triage.surface.actions.blocker.appliesTo": "Wähle mindestens eine Eintragsart aus, für die sie angeboten werden soll.",
+            "plugins.triage.surface.actions.blocker.instruction": "Wähle einen Eintrag aus der Prompt Library aus, bevor diese Aktion Arbeit starten kann.",
             "plugins.triage.surface.actions.blocker.label": "Gib dieser Aktion einen Namen.",
             "plugins.triage.surface.actions.cancel": "Abbrechen",
             "plugins.triage.surface.actions.close": "Fertig",
@@ -17182,6 +17333,7 @@
             "plugins.triage.surface.actions.delivery.compose": "Im Eingabefeld warten",
             "plugins.triage.surface.actions.delivery.send": "Sofort senden",
             "plugins.triage.surface.actions.disabled": "Nicht angeboten",
+            "plugins.triage.surface.actions.draftStale": "Aktionen wurden geändert, während dieser Entwurf geöffnet war. Lade die Aktion neu oder wende den Entwurf erneut an, bevor du speicherst.",
             "plugins.triage.surface.actions.edit": "Konfigurieren",
             "plugins.triage.surface.actions.empty.description": "Von einem Eintrag kann nichts gestartet werden, bis du hier eine Aktion hinzufügst.",
             "plugins.triage.surface.actions.empty.title": "Keine Aktionen",
@@ -17196,6 +17348,7 @@
             "plugins.triage.surface.actions.field.profileNone": "Beim Start auswählen",
             "plugins.triage.surface.actions.field.profileUnchecked": "Das konfigurierte Profil wird beibehalten",
             "plugins.triage.surface.actions.field.prompt": "Prompt",
+            "plugins.triage.surface.actions.field.promptArgs": "Prompt-Argumente",
             "plugins.triage.surface.actions.field.promptMissing": "Prompt nicht mehr in deiner Bibliothek vorhanden",
             "plugins.triage.surface.actions.field.promptNone": "Kein Prompt",
             "plugins.triage.surface.actions.field.workspaceMode": "Benötigt",
@@ -17203,10 +17356,14 @@
             "plugins.triage.surface.actions.form.update": "Aktion bearbeiten",
             "plugins.triage.surface.actions.moveDown": "Nach unten",
             "plugins.triage.surface.actions.moveUp": "Nach oben",
+            "plugins.triage.surface.actions.noLongerAvailable": "Diese Aktion ist für diesen Eintrag nicht mehr verfügbar.",
+            "plugins.triage.surface.actions.reapply": "Entwurf erneut anwenden",
             "plugins.triage.surface.actions.rejected.appliesTo": "Wähle mindestens eine Eintragsart für diese Aktion aus und jede davon nur einmal.",
             "plugins.triage.surface.actions.rejected.label": "Dieser Name ist leer oder zu lang.",
             "plugins.triage.surface.actions.rejected.other": "Diese Aktion konnte nicht gespeichert werden. Es wurde nichts geändert.",
+            "plugins.triage.surface.actions.reload": "Aktion neu laden",
             "plugins.triage.surface.actions.remove": "Entfernen",
+            "plugins.triage.surface.actions.retry": "Erneut versuchen",
             "plugins.triage.surface.actions.save": "Speichern",
             "plugins.triage.surface.actions.settled": "Aktionen aktualisiert",
             "plugins.triage.surface.actions.subject.errorIssue": "Fehlergruppen",
@@ -17225,6 +17382,7 @@
             "plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring": "Diese Aktion benötigt einen neuen Checkout. Verwende „An New Session anhängen“, damit du auswählen kannst, wo er erstellt wird.",
             "plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring": "Diese Aktion muss vor dem Senden geprüft werden. Verwende „An New Session anhängen“, damit ihr Prompt und ihre Einträge bereitstehen, bevor etwas gestartet wird.",
             "plugins.triage.surface.bulk.dispatch": "Es wurde nichts gestartet: Diese Ansicht konnte die angeforderten Sessions nicht erreichen.",
+            "plugins.triage.surface.bulk.instructionMissing": "Diese Aktion benötigt eine Anweisung, bevor sie Arbeit starten kann. Wähle unter „Aktionen konfigurieren“ einen Eintrag aus der Prompt Library aus.",
             "plugins.triage.surface.bulk.label": "Sammelaktionen",
             "plugins.triage.surface.bulk.newSession": "An New Session anhängen",
             "plugins.triage.surface.bulk.newSessionUnavailable": "In New Session wurde nichts ausgewählt, womit eine Session gestartet werden kann.",
@@ -17242,8 +17400,10 @@
             "plugins.triage.surface.bulk.retry": "Erneut versuchen",
             "plugins.triage.surface.bulk.reviewStartUnsupported": "Ein formelles Code-Review kann hier nicht als Sammelaktion gestartet werden. Es wurde nichts gestartet.",
             "plugins.triage.surface.bulk.seeded": "{count} an New Session angehängt",
+            "plugins.triage.surface.bulk.selectionRetainedWhileRunning": "Die Auswahl bleibt sichtbar, bis die laufende Aktion beendet ist.",
             "plugins.triage.surface.bulk.sessionPerEntry": "Je eine Session",
             "plugins.triage.surface.bulk.settled": "{opened} gestartet, {unknown} unbestätigt, {notStarted} nicht gestartet, {left} konnten nicht verwendet werden",
+            "plugins.triage.surface.bulk.sharedPlacementIncompatible": "Diese Einträge haben keinen gemeinsamen kompatiblen Repository-Speicherort. Verwende „Je eine Sitzung“ oder „An New Session anhängen“.",
             "plugins.triage.surface.bulk.starting": "{started} von {total} werden gestartet…",
             "plugins.triage.surface.close": "Schließen",
             "plugins.triage.surface.detail.accountError.description": "Happier konnte dein Konto nicht erreichen. Die Details dieses Eintrags sind daher gerade nicht verfügbar.",
@@ -17363,6 +17523,9 @@
             "plugins.triage.surface.reviewChooser.unknown": "Happier konnte nicht bestätigen, ob das Review gestartet wurde. Es wird nicht ein zweites Mal gestartet.",
             "plugins.triage.surface.routeTooLong.description": "Beim Öffnen würde die teilbare Adresse dieser Seite zu lang. Daher wurde nichts geändert.",
             "plugins.triage.surface.routeTooLong.title": "Dieser Eintrag konnte nicht geöffnet werden",
+            "plugins.triage.surface.routeWriteFailed.rejected": "Happier hat die Ortsänderung abgelehnt. Daher wurde die zuletzt bestätigte Ansicht wiederhergestellt. Versuche es erneut.",
+            "plugins.triage.surface.routeWriteFailed.title": "Diese Seite konnte nicht aktualisiert werden",
+            "plugins.triage.surface.routeWriteFailed.unavailable": "Diese Ansicht kann ihren teilbaren Ort nicht aktualisieren. Daher wurde die zuletzt bestätigte Ansicht wiederhergestellt.",
             "plugins.triage.surface.row.deselect": "Auswahl von {title} aufheben",
             "plugins.triage.surface.row.moreActions": "Weitere Aktionen für {title}",
             "plugins.triage.surface.row.pin": "{title} anheften",
@@ -17381,6 +17544,7 @@
             "plugins.triage.surface.session.deliveryUnknown": "Die Session wurde geöffnet, aber Happier konnte nicht bestätigen, ob der Prompt dieser Aktion gesendet wurde. Erneutes Drücken sendet denselben Prompt noch einmal statt eines zweiten.",
             "plugins.triage.surface.session.dispatchFailed": "Es wurde nichts gestartet: Diese Ansicht konnte die angeforderte Session nicht erreichen.",
             "plugins.triage.surface.session.fix": "Beheben",
+            "plugins.triage.surface.session.instructionMissing": "Diese Aktion benötigt eine Anweisung, bevor sie Arbeit starten kann. Wähle unter „Aktionen konfigurieren“ einen Eintrag aus der Prompt Library aus.",
             "plugins.triage.surface.session.linkPending": "Die Session wurde erstellt, aber dieser Eintrag ist noch nicht mit ihr verknüpft.",
             "plugins.triage.surface.session.linkedNotOpened": "Die Session wurde erstellt und verknüpft, aber nicht geöffnet.",
             "plugins.triage.surface.session.newSessionUnavailable": "In New Session wurde nichts ausgewählt, womit eine Session gestartet werden kann.",
@@ -17433,6 +17597,7 @@
             "plugins.triage.surface.views.rejected.other": "Diese Ansicht konnte nicht gespeichert werden. Daher wurde nichts geändert.",
             "plugins.triage.surface.views.rejected.tooLarge": "Deine gespeicherten Ansichten haben die von Happier unterstützte Gesamtgröße erreicht. Lösche eine Ansicht, um eine andere zu speichern.",
             "plugins.triage.surface.views.rename": "Umbenennen",
+            "plugins.triage.surface.views.retry": "Erneut versuchen",
             "plugins.triage.surface.views.save": "Als neue Ansicht speichern",
             "plugins.triage.surface.views.settled": "Gespeicherte Ansichten aktualisiert",
             "plugins.triage.surface.views.unavailable": "Happier kann dein Konto gerade nicht erreichen. Daher können gespeicherte Ansichten nicht geändert werden.",
@@ -17490,6 +17655,7 @@
             "plugins.triage.surface.actions.arm.agent": "Начать сессию с агентом",
             "plugins.triage.surface.actions.arm.reviewStart": "Запустить проверку кода",
             "plugins.triage.surface.actions.blocker.appliesTo": "Выберите хотя бы один вид записи, где его предлагать.",
+            "plugins.triage.surface.actions.blocker.instruction": "Выберите запись из Prompt Library, прежде чем это действие сможет начать работу.",
             "plugins.triage.surface.actions.blocker.label": "Дайте этому действию название.",
             "plugins.triage.surface.actions.cancel": "Отмена",
             "plugins.triage.surface.actions.close": "Готово",
@@ -17498,6 +17664,7 @@
             "plugins.triage.surface.actions.delivery.compose": "Ждать в редакторе сообщения",
             "plugins.triage.surface.actions.delivery.send": "Отправить сразу",
             "plugins.triage.surface.actions.disabled": "Не предлагается",
+            "plugins.triage.surface.actions.draftStale": "Действия изменились, пока этот черновик был открыт. Перед сохранением перезагрузите действие или примените черновик заново.",
             "plugins.triage.surface.actions.edit": "Настроить",
             "plugins.triage.surface.actions.empty.description": "Из записи ничего нельзя начать, пока вы не добавите здесь действие.",
             "plugins.triage.surface.actions.empty.title": "Нет действий",
@@ -17512,6 +17679,7 @@
             "plugins.triage.surface.actions.field.profileNone": "Выбрать при старте",
             "plugins.triage.surface.actions.field.profileUnchecked": "Профиль сохранён как настроен",
             "plugins.triage.surface.actions.field.prompt": "Промпт",
+            "plugins.triage.surface.actions.field.promptArgs": "Аргументы промпта",
             "plugins.triage.surface.actions.field.promptMissing": "Промпта больше нет в библиотеке",
             "plugins.triage.surface.actions.field.promptNone": "Без промпта",
             "plugins.triage.surface.actions.field.workspaceMode": "Требуется",
@@ -17519,10 +17687,14 @@
             "plugins.triage.surface.actions.form.update": "Изменить действие",
             "plugins.triage.surface.actions.moveDown": "Ниже",
             "plugins.triage.surface.actions.moveUp": "Выше",
+            "plugins.triage.surface.actions.noLongerAvailable": "Это действие больше недоступно для этой записи.",
+            "plugins.triage.surface.actions.reapply": "Применить черновик заново",
             "plugins.triage.surface.actions.rejected.appliesTo": "Выберите хотя бы один вид записи для этого действия, и каждый только один раз.",
             "plugins.triage.surface.actions.rejected.label": "Название пустое или слишком длинное.",
             "plugins.triage.surface.actions.rejected.other": "Это действие не удалось сохранить, поэтому ничего не изменилось.",
+            "plugins.triage.surface.actions.reload": "Перезагрузить действие",
             "plugins.triage.surface.actions.remove": "Удалить",
+            "plugins.triage.surface.actions.retry": "Повторить",
             "plugins.triage.surface.actions.save": "Сохранить",
             "plugins.triage.surface.actions.settled": "Действия обновлены",
             "plugins.triage.surface.actions.subject.errorIssue": "Группы ошибок",
@@ -17541,6 +17713,7 @@
             "plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring": "Для этого действия нужна новая рабочая копия. Выберите «Прикрепить к новой сессии», чтобы указать, где её создать.",
             "plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring": "Это действие нужно проверить перед отправкой. Используйте «Прикрепить к новой сессии», чтобы подготовить запрос и записи до запуска.",
             "plugins.triage.surface.bulk.dispatch": "Ничего не запущено: этот экран не смог обратиться к запрошенным сессиям.",
+            "plugins.triage.surface.bulk.instructionMissing": "Для запуска этому действию нужна инструкция. Выберите запись из Prompt Library в разделе «Настроить действия».",
             "plugins.triage.surface.bulk.label": "Массовые действия",
             "plugins.triage.surface.bulk.newSession": "Прикрепить к новой сессии",
             "plugins.triage.surface.bulk.newSessionUnavailable": "Окно новой сессии не вернуло данные, из которых можно запустить сессию.",
@@ -17558,8 +17731,10 @@
             "plugins.triage.surface.bulk.retry": "Повторить",
             "plugins.triage.surface.bulk.reviewStartUnsupported": "Формальное ревью кода нельзя запустить здесь массово, поэтому ничего не запущено.",
             "plugins.triage.surface.bulk.seeded": "{count} прикреплено к новой сессии",
+            "plugins.triage.surface.bulk.selectionRetainedWhileRunning": "Выбор останется видимым, пока выполняемое действие не остановится.",
             "plugins.triage.surface.bulk.sessionPerEntry": "По сессии на каждый",
             "plugins.triage.surface.bulk.settled": "Запущено: {opened}, не подтверждено: {unknown}, не запущено: {notStarted}, не удалось использовать: {left}",
+            "plugins.triage.surface.bulk.sharedPlacementIncompatible": "У этих записей нет общего совместимого размещения репозитория. Используйте «Отдельная сессия для каждой» или «Прикрепить к новой сессии».",
             "plugins.triage.surface.bulk.starting": "Запуск {started} из {total}…",
             "plugins.triage.surface.close": "Закрыть",
             "plugins.triage.surface.detail.accountError.description": "Happier не может достучаться до вашего аккаунта, поэтому детали этой записи недоступны в настоящее время.",
@@ -17679,6 +17854,9 @@
             "plugins.triage.surface.reviewChooser.unknown": "Happier не смог подтвердить запуск проверки и не будет запускать её повторно.",
             "plugins.triage.surface.routeTooLong.description": "При открытии общий адрес страницы стал бы слишком длинным, поэтому ничего не изменилось.",
             "plugins.triage.surface.routeTooLong.title": "Не удалось открыть эту запись",
+            "plugins.triage.surface.routeWriteFailed.rejected": "Happier отклонил изменение адреса, поэтому восстановлен последний подтверждённый вид. Повторите попытку.",
+            "plugins.triage.surface.routeWriteFailed.title": "Не удалось обновить эту страницу",
+            "plugins.triage.surface.routeWriteFailed.unavailable": "Этот экран не может обновить общую ссылку, поэтому восстановлен последний подтверждённый вид.",
             "plugins.triage.surface.row.deselect": "Снять выбор с {title}",
             "plugins.triage.surface.row.moreActions": "Другие действия для {title}",
             "plugins.triage.surface.row.pin": "Закрепить {title}",
@@ -17697,6 +17875,7 @@
             "plugins.triage.surface.session.deliveryUnknown": "Сессия открылась, но Happier не смог подтвердить, был ли отправлен промпт этого действия. Повторное нажатие отправит тот же промпт, а не второй.",
             "plugins.triage.surface.session.dispatchFailed": "Ничего не запущено: этот экран не смог связаться с запрошенной сессией.",
             "plugins.triage.surface.session.fix": "Исправить",
+            "plugins.triage.surface.session.instructionMissing": "Для запуска этому действию нужна инструкция. Выберите запись из Prompt Library в разделе «Настроить действия».",
             "plugins.triage.surface.session.linkPending": "Сессия создана, но эта запись пока не связана с ней.",
             "plugins.triage.surface.session.linkedNotOpened": "Сессия создана и связана, но не была открыта.",
             "plugins.triage.surface.session.newSessionUnavailable": "Окно новой сессии не выбрало то, с чего можно начать сессию.",
@@ -17749,6 +17928,7 @@
             "plugins.triage.surface.views.rejected.other": "Это представление не удалось сохранить, поэтому ничего не изменилось.",
             "plugins.triage.surface.views.rejected.tooLarge": "Ваши сохранённые представления достигли предельного размера. Удалите одно, чтобы сохранить другое.",
             "plugins.triage.surface.views.rename": "Переименовать",
+            "plugins.triage.surface.views.retry": "Повторить",
             "plugins.triage.surface.views.save": "Сохранить как представление",
             "plugins.triage.surface.views.settled": "Сохранённые представления обновлены",
             "plugins.triage.surface.views.unavailable": "Happier сейчас не может связаться с вашей учётной записью, поэтому сохранённые представления нельзя изменить.",
@@ -17806,6 +17986,7 @@
             "plugins.triage.surface.actions.arm.agent": "Rozpocznij sesję z agentem",
             "plugins.triage.surface.actions.arm.reviewStart": "Uruchom przegląd kodu",
             "plugins.triage.surface.actions.blocker.appliesTo": "Wybierz co najmniej jeden rodzaj wpisu, przy którym ma być oferowana.",
+            "plugins.triage.surface.actions.blocker.instruction": "Wybierz wpis z biblioteki promptów, zanim ta akcja będzie mogła rozpocząć pracę.",
             "plugins.triage.surface.actions.blocker.label": "Nadaj tej akcji nazwę.",
             "plugins.triage.surface.actions.cancel": "Anuluj",
             "plugins.triage.surface.actions.close": "Gotowe",
@@ -17814,6 +17995,7 @@
             "plugins.triage.surface.actions.delivery.compose": "Czekaj w polu wiadomości",
             "plugins.triage.surface.actions.delivery.send": "Wyślij od razu",
             "plugins.triage.surface.actions.disabled": "Nieoferowane",
+            "plugins.triage.surface.actions.draftStale": "Akcje zmieniły się, gdy ten szkic był otwarty. Przed zapisaniem wczytaj akcję ponownie lub ponownie zastosuj szkic.",
             "plugins.triage.surface.actions.edit": "Skonfiguruj",
             "plugins.triage.surface.actions.empty.description": "Z wpisu nie da się nic rozpocząć, dopóki nie dodasz tu akcji.",
             "plugins.triage.surface.actions.empty.title": "Brak akcji",
@@ -17828,6 +18010,7 @@
             "plugins.triage.surface.actions.field.profileNone": "Wybierz przy starcie",
             "plugins.triage.surface.actions.field.profileUnchecked": "Zachowujemy skonfigurowany profil",
             "plugins.triage.surface.actions.field.prompt": "Prompt",
+            "plugins.triage.surface.actions.field.promptArgs": "Argumenty promptu",
             "plugins.triage.surface.actions.field.promptMissing": "Promptu nie ma już w bibliotece",
             "plugins.triage.surface.actions.field.promptNone": "Bez promptu",
             "plugins.triage.surface.actions.field.workspaceMode": "Potrzebuje",
@@ -17835,10 +18018,14 @@
             "plugins.triage.surface.actions.form.update": "Edytuj akcję",
             "plugins.triage.surface.actions.moveDown": "W dół",
             "plugins.triage.surface.actions.moveUp": "W górę",
+            "plugins.triage.surface.actions.noLongerAvailable": "Ta akcja nie jest już dostępna dla tego wpisu.",
+            "plugins.triage.surface.actions.reapply": "Zastosuj szkic ponownie",
             "plugins.triage.surface.actions.rejected.appliesTo": "Wybierz co najmniej jeden rodzaj wpisu dla tej akcji, każdy tylko raz.",
             "plugins.triage.surface.actions.rejected.label": "Ta nazwa jest pusta lub za długa.",
             "plugins.triage.surface.actions.rejected.other": "Tej akcji nie udało się zapisać, więc nic się nie zmieniło.",
+            "plugins.triage.surface.actions.reload": "Wczytaj akcję ponownie",
             "plugins.triage.surface.actions.remove": "Usuń",
+            "plugins.triage.surface.actions.retry": "Spróbuj ponownie",
             "plugins.triage.surface.actions.save": "Zapisz",
             "plugins.triage.surface.actions.settled": "Akcje zaktualizowane",
             "plugins.triage.surface.actions.subject.errorIssue": "Grupy błędów",
@@ -17857,6 +18044,7 @@
             "plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring": "Ta akcja wymaga nowej kopii roboczej. Użyj opcji „Dołącz do nowej sesji”, aby wybrać miejsce jej utworzenia.",
             "plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring": "Ta akcja wymaga sprawdzenia przed wysłaniem. Użyj opcji „Dołącz do nowej sesji”, aby przygotować monit i wpisy przed uruchomieniem.",
             "plugins.triage.surface.bulk.dispatch": "Nic nie uruchomiono: ten ekran nie mógł dosięgnąć żądanych sesji.",
+            "plugins.triage.surface.bulk.instructionMissing": "Ta akcja potrzebuje instrukcji, zanim będzie mogła rozpocząć pracę. Wybierz wpis z biblioteki promptów w sekcji „Skonfiguruj akcje”.",
             "plugins.triage.surface.bulk.label": "Akcje zbiorcze",
             "plugins.triage.surface.bulk.newSession": "Dołącz do nowej sesji",
             "plugins.triage.surface.bulk.newSessionUnavailable": "Ekran nowej sesji nie zwrócił danych, z których można uruchomić sesję.",
@@ -17874,8 +18062,10 @@
             "plugins.triage.surface.bulk.retry": "Spróbuj ponownie",
             "plugins.triage.surface.bulk.reviewStartUnsupported": "Formalnego przeglądu kodu nie można uruchomić tu zbiorczo, więc nic nie uruchomiono.",
             "plugins.triage.surface.bulk.seeded": "{count} dołączono do nowej sesji",
+            "plugins.triage.surface.bulk.selectionRetainedWhileRunning": "Zaznaczenie pozostanie widoczne do zatrzymania trwającej akcji.",
             "plugins.triage.surface.bulk.sessionPerEntry": "Sesja dla każdego",
             "plugins.triage.surface.bulk.settled": "Uruchomiono: {opened}, niepotwierdzone: {unknown}, nieuruchomione: {notStarted}, nie można użyć: {left}",
+            "plugins.triage.surface.bulk.sharedPlacementIncompatible": "Te wpisy nie mają wspólnej zgodnej lokalizacji repozytorium. Użyj opcji „Osobna sesja dla każdego” lub „Dołącz do nowej sesji”.",
             "plugins.triage.surface.bulk.starting": "Uruchamianie {started} z {total}…",
             "plugins.triage.surface.close": "Zamknij",
             "plugins.triage.surface.detail.accountError.description": "Happier nie mógł dojść do Twojego konta, więc szczegółów tego wpisu nie ma obecnie.",
@@ -17995,6 +18185,9 @@
             "plugins.triage.surface.reviewChooser.unknown": "Happier nie mógł potwierdzić rozpoczęcia przeglądu i nie uruchomi go ponownie.",
             "plugins.triage.surface.routeTooLong.description": "Otwarcie go przekroczyłoby limit udostępnianego adresu tej strony, więc nic nie zmieniono.",
             "plugins.triage.surface.routeTooLong.title": "Nie udało się otworzyć tego wpisu",
+            "plugins.triage.surface.routeWriteFailed.rejected": "Happier odrzucił zmianę lokalizacji, więc przywrócono ostatni zatwierdzony widok. Spróbuj ponownie.",
+            "plugins.triage.surface.routeWriteFailed.title": "Nie udało się zaktualizować tej strony",
+            "plugins.triage.surface.routeWriteFailed.unavailable": "Ten ekran nie może zaktualizować udostępnianej lokalizacji, więc przywrócono ostatni zatwierdzony widok.",
             "plugins.triage.surface.row.deselect": "Odznacz {title}",
             "plugins.triage.surface.row.moreActions": "Więcej akcji dla {title}",
             "plugins.triage.surface.row.pin": "Przypnij {title}",
@@ -18013,6 +18206,7 @@
             "plugins.triage.surface.session.deliveryUnknown": "Sesja została otwarta, ale Happier nie mógł potwierdzić, czy prompt tej akcji został wysłany. Ponowne naciśnięcie wyśle ten sam prompt, a nie drugi.",
             "plugins.triage.surface.session.dispatchFailed": "Nic nie uruchomiono: ten ekran nie mógł połączyć się z żądaną sesją.",
             "plugins.triage.surface.session.fix": "Napraw",
+            "plugins.triage.surface.session.instructionMissing": "Ta akcja potrzebuje instrukcji, zanim będzie mogła rozpocząć pracę. Wybierz wpis z biblioteki promptów w sekcji „Skonfiguruj akcje”.",
             "plugins.triage.surface.session.linkPending": "Sesja została utworzona, ale ten wpis nie jest jeszcze z nią powiązany.",
             "plugins.triage.surface.session.linkedNotOpened": "Sesja została utworzona i połączona, ale nie została otwarta.",
             "plugins.triage.surface.session.newSessionUnavailable": "Okno nowej sesji nie ustaliło niczego, od czego można rozpocząć sesję.",
@@ -18065,6 +18259,7 @@
             "plugins.triage.surface.views.rejected.other": "Tego widoku nie udało się zapisać, więc nic nie zmieniono.",
             "plugins.triage.surface.views.rejected.tooLarge": "Twoje zapisane widoki osiągnęły maksymalny rozmiar. Usuń jeden, aby zapisać kolejny.",
             "plugins.triage.surface.views.rename": "Zmień nazwę",
+            "plugins.triage.surface.views.retry": "Spróbuj ponownie",
             "plugins.triage.surface.views.save": "Zapisz jako nowy widok",
             "plugins.triage.surface.views.settled": "Zapisane widoki zaktualizowane",
             "plugins.triage.surface.views.unavailable": "Happier nie może teraz połączyć się z Twoim kontem, więc zapisanych widoków nie da się zmienić.",
@@ -18122,6 +18317,7 @@
             "plugins.triage.surface.actions.arm.agent": "Iniciar una sesión con un agente",
             "plugins.triage.surface.actions.arm.reviewStart": "Ejecutar una revisión de código",
             "plugins.triage.surface.actions.blocker.appliesTo": "Elige al menos un tipo de entrada donde ofrecerla.",
+            "plugins.triage.surface.actions.blocker.instruction": "Elige una entrada de la biblioteca de prompts antes de que esta acción pueda empezar a trabajar.",
             "plugins.triage.surface.actions.blocker.label": "Ponle un nombre a esta acción.",
             "plugins.triage.surface.actions.cancel": "Cancelar",
             "plugins.triage.surface.actions.close": "Listo",
@@ -18130,6 +18326,7 @@
             "plugins.triage.surface.actions.delivery.compose": "Esperar en el redactor",
             "plugins.triage.surface.actions.delivery.send": "Enviarlo de inmediato",
             "plugins.triage.surface.actions.disabled": "No se ofrece",
+            "plugins.triage.surface.actions.draftStale": "Las acciones cambiaron mientras este borrador estaba abierto. Vuelve a cargar la acción o aplica de nuevo el borrador antes de guardar.",
             "plugins.triage.surface.actions.edit": "Configurar",
             "plugins.triage.surface.actions.empty.description": "No se puede iniciar nada desde una entrada hasta que añadas una acción aquí.",
             "plugins.triage.surface.actions.empty.title": "Sin acciones",
@@ -18144,6 +18341,7 @@
             "plugins.triage.surface.actions.field.profileNone": "Elegir al iniciar",
             "plugins.triage.surface.actions.field.profileUnchecked": "Se mantiene el perfil que configuraste",
             "plugins.triage.surface.actions.field.prompt": "Prompt",
+            "plugins.triage.surface.actions.field.promptArgs": "Argumentos del prompt",
             "plugins.triage.surface.actions.field.promptMissing": "El prompt ya no está en tu biblioteca",
             "plugins.triage.surface.actions.field.promptNone": "Sin prompt",
             "plugins.triage.surface.actions.field.workspaceMode": "Necesita",
@@ -18151,10 +18349,14 @@
             "plugins.triage.surface.actions.form.update": "Editar acción",
             "plugins.triage.surface.actions.moveDown": "Bajar",
             "plugins.triage.surface.actions.moveUp": "Subir",
+            "plugins.triage.surface.actions.noLongerAvailable": "Esta acción ya no está disponible para esta entrada.",
+            "plugins.triage.surface.actions.reapply": "Volver a aplicar el borrador",
             "plugins.triage.surface.actions.rejected.appliesTo": "Elige al menos un tipo de entrada para esta acción, y cada uno solo una vez.",
             "plugins.triage.surface.actions.rejected.label": "Ese nombre está vacío o es demasiado largo.",
             "plugins.triage.surface.actions.rejected.other": "Esa acción no se pudo guardar, así que no se cambió nada.",
+            "plugins.triage.surface.actions.reload": "Volver a cargar la acción",
             "plugins.triage.surface.actions.remove": "Quitar",
+            "plugins.triage.surface.actions.retry": "Reintentar",
             "plugins.triage.surface.actions.save": "Guardar",
             "plugins.triage.surface.actions.settled": "Acciones actualizadas",
             "plugins.triage.surface.actions.subject.errorIssue": "Grupos de errores",
@@ -18173,6 +18375,7 @@
             "plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring": "Esta acción necesita una copia de trabajo nueva. Usa Adjuntar a Nueva sesión para elegir dónde crearla.",
             "plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring": "Esta acción necesita revisión antes de enviarse. Usa Adjuntar a Nueva sesión para preparar el mensaje y las entradas antes de iniciar nada.",
             "plugins.triage.surface.bulk.dispatch": "No se inició nada: esta pantalla no pudo alcanzar las sesiones solicitadas.",
+            "plugins.triage.surface.bulk.instructionMissing": "Esta acción necesita una instrucción antes de empezar a trabajar. Elige una entrada de la biblioteca de prompts en Configurar acciones.",
             "plugins.triage.surface.bulk.label": "Acciones en lote",
             "plugins.triage.surface.bulk.newSession": "Adjuntar a Nueva sesión",
             "plugins.triage.surface.bulk.newSessionUnavailable": "Nueva sesión no devolvió algo con lo que iniciar una sesión.",
@@ -18190,8 +18393,10 @@
             "plugins.triage.surface.bulk.retry": "Reintentar",
             "plugins.triage.surface.bulk.reviewStartUnsupported": "Una revisión de código formal no se puede iniciar en lote aquí, así que no se inició nada.",
             "plugins.triage.surface.bulk.seeded": "{count} adjuntados a Nueva sesión",
+            "plugins.triage.surface.bulk.selectionRetainedWhileRunning": "La selección seguirá visible hasta que se detenga la acción en curso.",
             "plugins.triage.surface.bulk.sessionPerEntry": "Una sesión por cada uno",
             "plugins.triage.surface.bulk.settled": "{opened} iniciadas, {unknown} sin confirmar, {notStarted} sin iniciar, {left} no se pudieron usar",
+            "plugins.triage.surface.bulk.sharedPlacementIncompatible": "Estas entradas no comparten una ubicación de repositorio compatible. Usa Una sesión para cada una o Adjuntar a Nueva sesión.",
             "plugins.triage.surface.bulk.starting": "Iniciando {started} de {total}…",
             "plugins.triage.surface.close": "Cerrar",
             "plugins.triage.surface.detail.accountError.description": "Happier no pudo alcanzar tu cuenta, por lo que los detalles de esta entrada no están disponibles en este momento.",
@@ -18311,6 +18516,9 @@
             "plugins.triage.surface.reviewChooser.unknown": "Happier no pudo confirmar si comenzó la revisión y no la iniciará por segunda vez.",
             "plugins.triage.surface.routeTooLong.description": "Al abrirla, la dirección compartible de esta página superaría su límite, así que no se cambió nada.",
             "plugins.triage.surface.routeTooLong.title": "No se pudo abrir esta entrada",
+            "plugins.triage.surface.routeWriteFailed.rejected": "Happier rechazó el cambio de ubicación, así que se restauró la última vista confirmada. Inténtalo de nuevo.",
+            "plugins.triage.surface.routeWriteFailed.title": "No se pudo actualizar esta página",
+            "plugins.triage.surface.routeWriteFailed.unavailable": "Esta pantalla no puede actualizar su ubicación compartible, así que se restauró la última vista confirmada.",
             "plugins.triage.surface.row.deselect": "Anular la selección de {title}",
             "plugins.triage.surface.row.moreActions": "Más acciones para {title}",
             "plugins.triage.surface.row.pin": "Fijar {title}",
@@ -18329,6 +18537,7 @@
             "plugins.triage.surface.session.deliveryUnknown": "La sesión se abrió, pero Happier no pudo confirmar si se envió el prompt de esta acción. Volver a pulsar reenvía el mismo, no un segundo.",
             "plugins.triage.surface.session.dispatchFailed": "No se inició nada: esta pantalla no pudo alcanzar la sesión que pidió.",
             "plugins.triage.surface.session.fix": "Arreglar",
+            "plugins.triage.surface.session.instructionMissing": "Esta acción necesita una instrucción antes de empezar a trabajar. Elige una entrada de la biblioteca de prompts en Configurar acciones.",
             "plugins.triage.surface.session.linkPending": "La sesión se creó, pero esta entrada aún no está vinculada a ella.",
             "plugins.triage.surface.session.linkedNotOpened": "La sesión se creó y vinculó, pero no se abrió.",
             "plugins.triage.surface.session.newSessionUnavailable": "La pantalla de sesión nueva no decidió nada desde lo que iniciar una sesión.",
@@ -18381,6 +18590,7 @@
             "plugins.triage.surface.views.rejected.other": "Esa vista no se pudo guardar, así que no se cambió nada.",
             "plugins.triage.surface.views.rejected.tooLarge": "Tus vistas guardadas han alcanzado el tamaño máximo. Elimina una para guardar otra.",
             "plugins.triage.surface.views.rename": "Cambiar nombre",
+            "plugins.triage.surface.views.retry": "Reintentar",
             "plugins.triage.surface.views.save": "Guardar como vista nueva",
             "plugins.triage.surface.views.settled": "Vistas guardadas actualizadas",
             "plugins.triage.surface.views.unavailable": "Happier no puede acceder a tu cuenta ahora mismo, así que las vistas guardadas no se pueden cambiar.",
@@ -18438,6 +18648,7 @@
             "plugins.triage.surface.actions.arm.agent": "Démarrer une session avec un agent",
             "plugins.triage.surface.actions.arm.reviewStart": "Lancer une revue de code",
             "plugins.triage.surface.actions.blocker.appliesTo": "Choisissez au moins un type d’entrée où la proposer.",
+            "plugins.triage.surface.actions.blocker.instruction": "Choisissez une entrée de la bibliothèque de prompts avant que cette action puisse commencer.",
             "plugins.triage.surface.actions.blocker.label": "Donnez un nom à cette action.",
             "plugins.triage.surface.actions.cancel": "Annuler",
             "plugins.triage.surface.actions.close": "Terminé",
@@ -18446,6 +18657,7 @@
             "plugins.triage.surface.actions.delivery.compose": "Attendre dans le champ de message",
             "plugins.triage.surface.actions.delivery.send": "L’envoyer tout de suite",
             "plugins.triage.surface.actions.disabled": "Non proposée",
+            "plugins.triage.surface.actions.draftStale": "Les actions ont changé pendant que ce brouillon était ouvert. Rechargez l’action ou réappliquez le brouillon avant d’enregistrer.",
             "plugins.triage.surface.actions.edit": "Configurer",
             "plugins.triage.surface.actions.empty.description": "Rien ne peut être démarré depuis une entrée tant que vous n’ajoutez pas une action ici.",
             "plugins.triage.surface.actions.empty.title": "Aucune action",
@@ -18460,6 +18672,7 @@
             "plugins.triage.surface.actions.field.profileNone": "Choisir au démarrage",
             "plugins.triage.surface.actions.field.profileUnchecked": "Le profil que vous avez configuré est conservé",
             "plugins.triage.surface.actions.field.prompt": "Prompt",
+            "plugins.triage.surface.actions.field.promptArgs": "Arguments du prompt",
             "plugins.triage.surface.actions.field.promptMissing": "Ce prompt n’est plus dans votre bibliothèque",
             "plugins.triage.surface.actions.field.promptNone": "Aucun prompt",
             "plugins.triage.surface.actions.field.workspaceMode": "Elle nécessite",
@@ -18467,10 +18680,14 @@
             "plugins.triage.surface.actions.form.update": "Modifier l’action",
             "plugins.triage.surface.actions.moveDown": "Descendre",
             "plugins.triage.surface.actions.moveUp": "Monter",
+            "plugins.triage.surface.actions.noLongerAvailable": "Cette action n’est plus disponible pour cette entrée.",
+            "plugins.triage.surface.actions.reapply": "Réappliquer le brouillon",
             "plugins.triage.surface.actions.rejected.appliesTo": "Choisissez au moins un type d’entrée pour cette action, et chacun une seule fois.",
             "plugins.triage.surface.actions.rejected.label": "Ce nom est vide ou trop long.",
             "plugins.triage.surface.actions.rejected.other": "Cette action n’a pas pu être enregistrée, rien n’a donc été modifié.",
+            "plugins.triage.surface.actions.reload": "Recharger l’action",
             "plugins.triage.surface.actions.remove": "Supprimer",
+            "plugins.triage.surface.actions.retry": "Réessayer",
             "plugins.triage.surface.actions.save": "Enregistrer",
             "plugins.triage.surface.actions.settled": "Actions mises à jour",
             "plugins.triage.surface.actions.subject.errorIssue": "Groupes d’erreurs",
@@ -18489,6 +18706,7 @@
             "plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring": "Cette action nécessite une nouvelle copie de travail. Utilisez Ajouter à une nouvelle session pour choisir où la créer.",
             "plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring": "Cette action doit être vérifiée avant l’envoi. Utilisez Ajouter à une nouvelle session pour préparer le message et les éléments avant tout démarrage.",
             "plugins.triage.surface.bulk.dispatch": "Rien n’a été démarré : cet écran n’a pas pu atteindre les sessions demandées.",
+            "plugins.triage.surface.bulk.instructionMissing": "Cette action a besoin d’une instruction avant de commencer. Choisissez une entrée de la bibliothèque de prompts dans Configurer les actions.",
             "plugins.triage.surface.bulk.label": "Actions groupées",
             "plugins.triage.surface.bulk.newSession": "Joindre à Nouvelle session",
             "plugins.triage.surface.bulk.newSessionUnavailable": "Nouvelle session n’a rien renvoyé qui permette de démarrer une session.",
@@ -18506,8 +18724,10 @@
             "plugins.triage.surface.bulk.retry": "Réessayer",
             "plugins.triage.surface.bulk.reviewStartUnsupported": "Une revue de code formelle ne peut pas être lancée en lot ici, donc rien n’a été démarré.",
             "plugins.triage.surface.bulk.seeded": "{count} joints à Nouvelle session",
+            "plugins.triage.surface.bulk.selectionRetainedWhileRunning": "La sélection reste visible jusqu’à l’arrêt de l’action en cours.",
             "plugins.triage.surface.bulk.sessionPerEntry": "Une session chacun",
             "plugins.triage.surface.bulk.settled": "{opened} démarrées, {unknown} non confirmées, {notStarted} non démarrées, {left} inutilisables",
+            "plugins.triage.surface.bulk.sharedPlacementIncompatible": "Ces éléments ne partagent aucun emplacement de dépôt compatible. Utilisez Une session par élément ou Ajouter à une nouvelle session.",
             "plugins.triage.surface.bulk.starting": "Démarrage de {started} sur {total}…",
             "plugins.triage.surface.close": "Fermer",
             "plugins.triage.surface.detail.accountError.description": "Happier ne peut pas atteindre votre compte, donc les détails de cette entrée ne sont pas disponibles pour le moment.",
@@ -18627,6 +18847,9 @@
             "plugins.triage.surface.reviewChooser.unknown": "Happier n’a pas pu confirmer le démarrage de la revue et ne la relancera pas.",
             "plugins.triage.surface.routeTooLong.description": "Son ouverture dépasserait la longueur permise pour l’adresse partageable de cette page ; rien n’a donc été modifié.",
             "plugins.triage.surface.routeTooLong.title": "Impossible d’ouvrir cette entrée",
+            "plugins.triage.surface.routeWriteFailed.rejected": "Happier a refusé le changement d’emplacement. La dernière vue confirmée a donc été restaurée. Réessayez.",
+            "plugins.triage.surface.routeWriteFailed.title": "Impossible de mettre cette page à jour",
+            "plugins.triage.surface.routeWriteFailed.unavailable": "Cet écran ne peut pas mettre à jour son emplacement partageable. La dernière vue confirmée a donc été restaurée.",
             "plugins.triage.surface.row.deselect": "Désélectionner {title}",
             "plugins.triage.surface.row.moreActions": "Plus d’actions pour {title}",
             "plugins.triage.surface.row.pin": "Épingler {title}",
@@ -18645,6 +18868,7 @@
             "plugins.triage.surface.session.deliveryUnknown": "La session s’est ouverte, mais Happier n’a pas pu confirmer si le prompt de cette action a été envoyé. Appuyer à nouveau renvoie le même, pas un second.",
             "plugins.triage.surface.session.dispatchFailed": "Rien n’a été lancé : cet écran n’a pas pu joindre la session demandée.",
             "plugins.triage.surface.session.fix": "Corriger",
+            "plugins.triage.surface.session.instructionMissing": "Cette action a besoin d’une instruction avant de commencer. Choisissez une entrée de la bibliothèque de prompts dans Configurer les actions.",
             "plugins.triage.surface.session.linkPending": "La session a été créée, mais cette entrée n’y est pas encore liée.",
             "plugins.triage.surface.session.linkedNotOpened": "La session a été créée et liée, mais elle n’a pas été ouverte.",
             "plugins.triage.surface.session.newSessionUnavailable": "L’écran Nouvelle session n’a rien retenu à partir de quoi démarrer une session.",
@@ -18697,6 +18921,7 @@
             "plugins.triage.surface.views.rejected.other": "Cette vue n’a pas pu être enregistrée, rien n’a donc été modifié.",
             "plugins.triage.surface.views.rejected.tooLarge": "Vos vues enregistrées ont atteint leur taille maximale. Supprimez-en une pour en enregistrer une autre.",
             "plugins.triage.surface.views.rename": "Renommer",
+            "plugins.triage.surface.views.retry": "Réessayer",
             "plugins.triage.surface.views.save": "Enregistrer comme nouvelle vue",
             "plugins.triage.surface.views.settled": "Vues enregistrées mises à jour",
             "plugins.triage.surface.views.unavailable": "Happier ne peut pas joindre votre compte pour le moment, les vues enregistrées ne peuvent donc pas être modifiées.",
@@ -18754,6 +18979,7 @@
             "plugins.triage.surface.actions.arm.agent": "Avvia una sessione con un agente",
             "plugins.triage.surface.actions.arm.reviewStart": "Esegui una revisione del codice",
             "plugins.triage.surface.actions.blocker.appliesTo": "Scegli almeno un tipo di voce su cui proporla.",
+            "plugins.triage.surface.actions.blocker.instruction": "Scegli una voce dalla libreria dei prompt prima che questa azione possa iniziare.",
             "plugins.triage.surface.actions.blocker.label": "Dai un nome a questa azione.",
             "plugins.triage.surface.actions.cancel": "Annulla",
             "plugins.triage.surface.actions.close": "Fatto",
@@ -18762,6 +18988,7 @@
             "plugins.triage.surface.actions.delivery.compose": "Attendi nel campo messaggio",
             "plugins.triage.surface.actions.delivery.send": "Inviala subito",
             "plugins.triage.surface.actions.disabled": "Non proposta",
+            "plugins.triage.surface.actions.draftStale": "Le azioni sono cambiate mentre questa bozza era aperta. Ricarica l’azione o riapplica la bozza prima di salvare.",
             "plugins.triage.surface.actions.edit": "Configura",
             "plugins.triage.surface.actions.empty.description": "Da una voce non si può avviare nulla finché non aggiungi un’azione qui.",
             "plugins.triage.surface.actions.empty.title": "Nessuna azione",
@@ -18776,6 +19003,7 @@
             "plugins.triage.surface.actions.field.profileNone": "Scegli all’avvio",
             "plugins.triage.surface.actions.field.profileUnchecked": "Manteniamo il profilo che hai configurato",
             "plugins.triage.surface.actions.field.prompt": "Prompt",
+            "plugins.triage.surface.actions.field.promptArgs": "Argomenti del prompt",
             "plugins.triage.surface.actions.field.promptMissing": "Il prompt non è più nella tua libreria",
             "plugins.triage.surface.actions.field.promptNone": "Nessun prompt",
             "plugins.triage.surface.actions.field.workspaceMode": "Richiede",
@@ -18783,10 +19011,14 @@
             "plugins.triage.surface.actions.form.update": "Modifica azione",
             "plugins.triage.surface.actions.moveDown": "Sposta giù",
             "plugins.triage.surface.actions.moveUp": "Sposta su",
+            "plugins.triage.surface.actions.noLongerAvailable": "Questa azione non è più disponibile per questa voce.",
+            "plugins.triage.surface.actions.reapply": "Riapplica bozza",
             "plugins.triage.surface.actions.rejected.appliesTo": "Scegli almeno un tipo di voce per questa azione, e ciascuno una sola volta.",
             "plugins.triage.surface.actions.rejected.label": "Quel nome è vuoto o troppo lungo.",
             "plugins.triage.surface.actions.rejected.other": "Quell’azione non è stata salvata, quindi non è cambiato nulla.",
+            "plugins.triage.surface.actions.reload": "Ricarica azione",
             "plugins.triage.surface.actions.remove": "Rimuovi",
+            "plugins.triage.surface.actions.retry": "Riprova",
             "plugins.triage.surface.actions.save": "Salva",
             "plugins.triage.surface.actions.settled": "Azioni aggiornate",
             "plugins.triage.surface.actions.subject.errorIssue": "Gruppi di errori",
@@ -18805,6 +19037,7 @@
             "plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring": "Questa azione richiede una nuova copia di lavoro. Usa Allega a nuova sessione per scegliere dove crearla.",
             "plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring": "Questa azione va verificata prima dell’invio. Usa Allega a nuova sessione per preparare il prompt e gli elementi prima di avviare qualsiasi cosa.",
             "plugins.triage.surface.bulk.dispatch": "Non è stato avviato nulla: questa schermata non ha raggiunto le sessioni richieste.",
+            "plugins.triage.surface.bulk.instructionMissing": "Questa azione richiede un’istruzione prima di iniziare. Scegli una voce dalla libreria dei prompt in Configura azioni.",
             "plugins.triage.surface.bulk.label": "Azioni in blocco",
             "plugins.triage.surface.bulk.newSession": "Allega a Nuova sessione",
             "plugins.triage.surface.bulk.newSessionUnavailable": "Nuova sessione non ha restituito qualcosa da cui avviare una sessione.",
@@ -18822,8 +19055,10 @@
             "plugins.triage.surface.bulk.retry": "Riprova",
             "plugins.triage.surface.bulk.reviewStartUnsupported": "Una revisione formale del codice non può essere avviata in blocco qui, quindi non è stato avviato nulla.",
             "plugins.triage.surface.bulk.seeded": "{count} allegati a Nuova sessione",
+            "plugins.triage.surface.bulk.selectionRetainedWhileRunning": "La selezione resta visibile finché l’azione in corso non si arresta.",
             "plugins.triage.surface.bulk.sessionPerEntry": "Una sessione ciascuno",
             "plugins.triage.surface.bulk.settled": "{opened} avviate, {unknown} non confermate, {notStarted} non avviate, {left} non utilizzabili",
+            "plugins.triage.surface.bulk.sharedPlacementIncompatible": "Questi elementi non condividono una posizione del repository compatibile. Usa Una sessione ciascuno o Allega a nuova sessione.",
             "plugins.triage.surface.bulk.starting": "Avvio di {started} su {total}…",
             "plugins.triage.surface.close": "Chiudi",
             "plugins.triage.surface.detail.accountError.description": "Happier non può raggiungere il tuo account, quindi le dettagli di questa voce non sono disponibili ora.",
@@ -18943,6 +19178,9 @@
             "plugins.triage.surface.reviewChooser.unknown": "Happier non ha potuto confermare l’avvio della revisione e non la avvierà una seconda volta.",
             "plugins.triage.surface.routeTooLong.description": "Aprendola, l’indirizzo condivisibile della pagina supererebbe il limite, quindi non è cambiato nulla.",
             "plugins.triage.surface.routeTooLong.title": "Impossibile aprire questa voce",
+            "plugins.triage.surface.routeWriteFailed.rejected": "Happier ha rifiutato la modifica della posizione, quindi è stata ripristinata l’ultima vista confermata. Riprova.",
+            "plugins.triage.surface.routeWriteFailed.title": "Impossibile aggiornare questa pagina",
+            "plugins.triage.surface.routeWriteFailed.unavailable": "Questa schermata non può aggiornare la posizione condivisibile, quindi è stata ripristinata l’ultima vista confermata.",
             "plugins.triage.surface.row.deselect": "Deseleziona {title}",
             "plugins.triage.surface.row.moreActions": "Altre azioni per {title}",
             "plugins.triage.surface.row.pin": "Fissa {title}",
@@ -18961,6 +19199,7 @@
             "plugins.triage.surface.session.deliveryUnknown": "La sessione si è aperta, ma Happier non ha potuto confermare se il prompt di questa azione sia stato inviato. Premendo di nuovo si rinvia lo stesso, non un secondo.",
             "plugins.triage.surface.session.dispatchFailed": "Non è stato avviato nulla: questa schermata non è riuscita a raggiungere la sessione richiesta.",
             "plugins.triage.surface.session.fix": "Correggi",
+            "plugins.triage.surface.session.instructionMissing": "Questa azione richiede un’istruzione prima di iniziare. Scegli una voce dalla libreria dei prompt in Configura azioni.",
             "plugins.triage.surface.session.linkPending": "La sessione è stata creata, ma questa voce non è ancora collegata a essa.",
             "plugins.triage.surface.session.linkedNotOpened": "La sessione è stata creata e collegata, ma non è stata aperta.",
             "plugins.triage.surface.session.newSessionUnavailable": "La schermata Nuova sessione non ha definito nulla da cui avviare una sessione.",
@@ -19013,6 +19252,7 @@
             "plugins.triage.surface.views.rejected.other": "Quella vista non è stata salvata, quindi non è cambiato nulla.",
             "plugins.triage.surface.views.rejected.tooLarge": "Le tue viste salvate hanno raggiunto la dimensione massima. Eliminane una per salvarne un’altra.",
             "plugins.triage.surface.views.rename": "Rinomina",
+            "plugins.triage.surface.views.retry": "Riprova",
             "plugins.triage.surface.views.save": "Salva come nuova vista",
             "plugins.triage.surface.views.settled": "Viste salvate aggiornate",
             "plugins.triage.surface.views.unavailable": "Happier non riesce a raggiungere il tuo account in questo momento, quindi le viste salvate non possono essere modificate.",
@@ -19070,6 +19310,7 @@
             "plugins.triage.surface.actions.arm.agent": "Iniciar uma sessão com um agente",
             "plugins.triage.surface.actions.arm.reviewStart": "Executar uma revisão de código",
             "plugins.triage.surface.actions.blocker.appliesTo": "Escolha pelo menos um tipo de entrada onde a oferecer.",
+            "plugins.triage.surface.actions.blocker.instruction": "Escolhe uma entrada da biblioteca de prompts antes de esta ação poder começar.",
             "plugins.triage.surface.actions.blocker.label": "Dê um nome a esta ação.",
             "plugins.triage.surface.actions.cancel": "Cancelar",
             "plugins.triage.surface.actions.close": "Concluído",
@@ -19078,6 +19319,7 @@
             "plugins.triage.surface.actions.delivery.compose": "Esperar no editor de mensagem",
             "plugins.triage.surface.actions.delivery.send": "Enviá-la já",
             "plugins.triage.surface.actions.disabled": "Não oferecida",
+            "plugins.triage.surface.actions.draftStale": "As ações foram alteradas enquanto este rascunho estava aberto. Recarregue a ação ou reaplique o rascunho antes de guardar.",
             "plugins.triage.surface.actions.edit": "Configurar",
             "plugins.triage.surface.actions.empty.description": "Não é possível iniciar nada a partir de uma entrada até adicionar uma ação aqui.",
             "plugins.triage.surface.actions.empty.title": "Sem ações",
@@ -19092,6 +19334,7 @@
             "plugins.triage.surface.actions.field.profileNone": "Escolher ao iniciar",
             "plugins.triage.surface.actions.field.profileUnchecked": "A manter o perfil que configurou",
             "plugins.triage.surface.actions.field.prompt": "Prompt",
+            "plugins.triage.surface.actions.field.promptArgs": "Argumentos do prompt",
             "plugins.triage.surface.actions.field.promptMissing": "O prompt já não está na sua biblioteca",
             "plugins.triage.surface.actions.field.promptNone": "Sem prompt",
             "plugins.triage.surface.actions.field.workspaceMode": "Precisa de",
@@ -19099,10 +19342,14 @@
             "plugins.triage.surface.actions.form.update": "Editar ação",
             "plugins.triage.surface.actions.moveDown": "Descer",
             "plugins.triage.surface.actions.moveUp": "Subir",
+            "plugins.triage.surface.actions.noLongerAvailable": "Esta ação já não está disponível para esta entrada.",
+            "plugins.triage.surface.actions.reapply": "Reaplicar rascunho",
             "plugins.triage.surface.actions.rejected.appliesTo": "Escolha pelo menos um tipo de entrada para esta ação, e cada um apenas uma vez.",
             "plugins.triage.surface.actions.rejected.label": "Esse nome está vazio ou é demasiado longo.",
             "plugins.triage.surface.actions.rejected.other": "Essa ação não pôde ser guardada, por isso nada foi alterado.",
+            "plugins.triage.surface.actions.reload": "Recarregar ação",
             "plugins.triage.surface.actions.remove": "Remover",
+            "plugins.triage.surface.actions.retry": "Tentar novamente",
             "plugins.triage.surface.actions.save": "Guardar",
             "plugins.triage.surface.actions.settled": "Ações atualizadas",
             "plugins.triage.surface.actions.subject.errorIssue": "Grupos de erros",
@@ -19121,6 +19368,7 @@
             "plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring": "Esta ação precisa de uma nova cópia de trabalho. Use Anexar à nova sessão para escolher onde criá-la.",
             "plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring": "Esta ação precisa ser revisada antes do envio. Use Anexar à nova sessão para preparar o prompt e os itens antes de iniciar qualquer coisa.",
             "plugins.triage.surface.bulk.dispatch": "Nada foi iniciado: esta tela não conseguiu alcançar as sessões solicitadas.",
+            "plugins.triage.surface.bulk.instructionMissing": "Esta ação precisa de uma instrução antes de começar. Escolhe uma entrada da biblioteca de prompts em Configurar ações.",
             "plugins.triage.surface.bulk.label": "Ações em lote",
             "plugins.triage.surface.bulk.newSession": "Anexar à Nova sessão",
             "plugins.triage.surface.bulk.newSessionUnavailable": "A Nova sessão não retornou algo com que iniciar uma sessão.",
@@ -19138,8 +19386,10 @@
             "plugins.triage.surface.bulk.retry": "Tentar novamente",
             "plugins.triage.surface.bulk.reviewStartUnsupported": "Uma revisão de código formal não pode ser iniciada em lote aqui, então nada foi iniciado.",
             "plugins.triage.surface.bulk.seeded": "{count} anexados à Nova sessão",
+            "plugins.triage.surface.bulk.selectionRetainedWhileRunning": "A seleção permanece visível até a ação em andamento parar.",
             "plugins.triage.surface.bulk.sessionPerEntry": "Uma sessão para cada",
             "plugins.triage.surface.bulk.settled": "{opened} iniciadas, {unknown} não confirmadas, {notStarted} não iniciadas, {left} não puderam ser usadas",
+            "plugins.triage.surface.bulk.sharedPlacementIncompatible": "Estes itens não compartilham um local de repositório compatível. Use Uma sessão para cada ou Anexar à nova sessão.",
             "plugins.triage.surface.bulk.starting": "Iniciando {started} de {total}…",
             "plugins.triage.surface.close": "Fechar",
             "plugins.triage.surface.detail.accountError.description": "Happier não conseguiu alcançar sua conta, então os detalhes desta entrada estão indisponíveis por enquanto.",
@@ -19259,6 +19509,9 @@
             "plugins.triage.surface.reviewChooser.unknown": "O Happier não conseguiu confirmar se a revisão começou e não a iniciará novamente.",
             "plugins.triage.surface.routeTooLong.description": "A abertura excederia o limite do endereço compartilhável desta página, por isso nada foi alterado.",
             "plugins.triage.surface.routeTooLong.title": "Não foi possível abrir esta entrada",
+            "plugins.triage.surface.routeWriteFailed.rejected": "O Happier recusou a alteração da localização, por isso a última vista confirmada foi restaurada. Tenta novamente.",
+            "plugins.triage.surface.routeWriteFailed.title": "Não foi possível atualizar esta página",
+            "plugins.triage.surface.routeWriteFailed.unavailable": "Este ecrã não pode atualizar a localização partilhável, por isso a última vista confirmada foi restaurada.",
             "plugins.triage.surface.row.deselect": "Desmarcar {title}",
             "plugins.triage.surface.row.moreActions": "Mais ações para {title}",
             "plugins.triage.surface.row.pin": "Fixar {title}",
@@ -19277,6 +19530,7 @@
             "plugins.triage.surface.session.deliveryUnknown": "A sessão abriu, mas o Happier não pôde confirmar se o prompt desta ação foi enviado. Pressionar novamente reenvia o mesmo, não um segundo.",
             "plugins.triage.surface.session.dispatchFailed": "Nada foi iniciado: este ecrã não conseguiu alcançar a sessão que pediu.",
             "plugins.triage.surface.session.fix": "Corrigir",
+            "plugins.triage.surface.session.instructionMissing": "Esta ação precisa de uma instrução antes de começar. Escolhe uma entrada da biblioteca de prompts em Configurar ações.",
             "plugins.triage.surface.session.linkPending": "A sessão foi criada, mas esta entrada ainda não está associada a ela.",
             "plugins.triage.surface.session.linkedNotOpened": "A sessão foi criada e associada, mas não foi aberta.",
             "plugins.triage.surface.session.newSessionUnavailable": "O ecrã de nova sessão não definiu nada a partir do qual iniciar uma sessão.",
@@ -19329,6 +19583,7 @@
             "plugins.triage.surface.views.rejected.other": "Essa visão não pôde ser salva, então nada foi alterado.",
             "plugins.triage.surface.views.rejected.tooLarge": "Suas visões salvas atingiram o tamanho máximo. Exclua uma para salvar outra.",
             "plugins.triage.surface.views.rename": "Renomear",
+            "plugins.triage.surface.views.retry": "Tentar novamente",
             "plugins.triage.surface.views.save": "Salvar como nova visão",
             "plugins.triage.surface.views.settled": "Visões salvas atualizadas",
             "plugins.triage.surface.views.unavailable": "O Happier não consegue acessar sua conta agora, então as visões salvas não podem ser alteradas.",
@@ -19386,6 +19641,7 @@
             "plugins.triage.surface.actions.arm.agent": "Inicia una sessió amb un agent",
             "plugins.triage.surface.actions.arm.reviewStart": "Executa una revisió de codi",
             "plugins.triage.surface.actions.blocker.appliesTo": "Tria almenys un tipus d’entrada on oferir-la.",
+            "plugins.triage.surface.actions.blocker.instruction": "Tria una entrada de la biblioteca de prompts abans que aquesta acció pugui començar.",
             "plugins.triage.surface.actions.blocker.label": "Dona un nom a aquesta acció.",
             "plugins.triage.surface.actions.cancel": "Cancel·la",
             "plugins.triage.surface.actions.close": "Fet",
@@ -19394,6 +19650,7 @@
             "plugins.triage.surface.actions.delivery.compose": "Espera al redactor",
             "plugins.triage.surface.actions.delivery.send": "Envia-la de seguida",
             "plugins.triage.surface.actions.disabled": "No s’ofereix",
+            "plugins.triage.surface.actions.draftStale": "Les accions han canviat mentre aquest esborrany era obert. Torna a carregar l’acció o aplica de nou l’esborrany abans de desar.",
             "plugins.triage.surface.actions.edit": "Configura",
             "plugins.triage.surface.actions.empty.description": "No es pot iniciar res des d’una entrada fins que hi afegeixis una acció.",
             "plugins.triage.surface.actions.empty.title": "Cap acció",
@@ -19408,6 +19665,7 @@
             "plugins.triage.surface.actions.field.profileNone": "Tria en iniciar",
             "plugins.triage.surface.actions.field.profileUnchecked": "Es manté el perfil que has configurat",
             "plugins.triage.surface.actions.field.prompt": "Prompt",
+            "plugins.triage.surface.actions.field.promptArgs": "Arguments del prompt",
             "plugins.triage.surface.actions.field.promptMissing": "El prompt ja no és a la teva biblioteca",
             "plugins.triage.surface.actions.field.promptNone": "Sense prompt",
             "plugins.triage.surface.actions.field.workspaceMode": "Necessita",
@@ -19415,10 +19673,14 @@
             "plugins.triage.surface.actions.form.update": "Edita l’acció",
             "plugins.triage.surface.actions.moveDown": "Baixa",
             "plugins.triage.surface.actions.moveUp": "Puja",
+            "plugins.triage.surface.actions.noLongerAvailable": "Aquesta acció ja no està disponible per a aquesta entrada.",
+            "plugins.triage.surface.actions.reapply": "Torna a aplicar l’esborrany",
             "plugins.triage.surface.actions.rejected.appliesTo": "Tria almenys un tipus d’entrada per a aquesta acció, i cadascun només una vegada.",
             "plugins.triage.surface.actions.rejected.label": "Aquest nom és buit o massa llarg.",
             "plugins.triage.surface.actions.rejected.other": "Aquesta acció no s’ha pogut desar, així que no s’ha canviat res.",
+            "plugins.triage.surface.actions.reload": "Torna a carregar l’acció",
             "plugins.triage.surface.actions.remove": "Elimina",
+            "plugins.triage.surface.actions.retry": "Torna-ho a provar",
             "plugins.triage.surface.actions.save": "Desa",
             "plugins.triage.surface.actions.settled": "Accions actualitzades",
             "plugins.triage.surface.actions.subject.errorIssue": "Grups d’errors",
@@ -19437,6 +19699,7 @@
             "plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring": "Aquesta acció necessita una còpia de treball nova. Fes servir Adjunta a una sessió nova per triar on crear-la.",
             "plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring": "Aquesta acció s’ha de revisar abans d’enviar-la. Fes servir Adjunta a una sessió nova per preparar la indicació i les entrades abans d’iniciar res.",
             "plugins.triage.surface.bulk.dispatch": "No s’ha iniciat res: aquesta pantalla no ha pogut arribar a les sessions demanades.",
+            "plugins.triage.surface.bulk.instructionMissing": "Aquesta acció necessita una instrucció abans de començar. Tria una entrada de la biblioteca de prompts a Configura les accions.",
             "plugins.triage.surface.bulk.label": "Accions en lot",
             "plugins.triage.surface.bulk.newSession": "Adjunta a Nova sessió",
             "plugins.triage.surface.bulk.newSessionUnavailable": "Nova sessió no ha retornat res amb què iniciar una sessió.",
@@ -19454,8 +19717,10 @@
             "plugins.triage.surface.bulk.retry": "Torna-ho a provar",
             "plugins.triage.surface.bulk.reviewStartUnsupported": "Una revisió de codi formal no es pot iniciar en lot des d’aquí, així que no s’ha iniciat res.",
             "plugins.triage.surface.bulk.seeded": "{count} adjuntats a Nova sessió",
+            "plugins.triage.surface.bulk.selectionRetainedWhileRunning": "La selecció es manté visible fins que s’aturi l’acció en curs.",
             "plugins.triage.surface.bulk.sessionPerEntry": "Una sessió per a cadascun",
             "plugins.triage.surface.bulk.settled": "{opened} iniciades, {unknown} sense confirmar, {notStarted} sense iniciar, {left} no s’han pogut fer servir",
+            "plugins.triage.surface.bulk.sharedPlacementIncompatible": "Aquestes entrades no comparteixen cap ubicació de repositori compatible. Fes servir Una sessió per entrada o Adjunta a una sessió nova.",
             "plugins.triage.surface.bulk.starting": "S’està iniciant {started} de {total}…",
             "plugins.triage.surface.close": "Tancar",
             "plugins.triage.surface.detail.accountError.description": "Happier no pot arribar al seu compte, així que els detalls d'aquesta entrada no estan disponibles ara mateix.",
@@ -19575,6 +19840,9 @@
             "plugins.triage.surface.reviewChooser.unknown": "Happier no ha pogut confirmar si la revisió ha començat i no la tornarà a iniciar.",
             "plugins.triage.surface.routeTooLong.description": "En obrir-la, l’adreça compartible de la pàgina superaria el límit, així que no s’ha canviat res.",
             "plugins.triage.surface.routeTooLong.title": "No s’ha pogut obrir aquesta entrada",
+            "plugins.triage.surface.routeWriteFailed.rejected": "Happier ha rebutjat el canvi d’ubicació, així que s’ha restaurat l’última vista confirmada. Torna-ho a provar.",
+            "plugins.triage.surface.routeWriteFailed.title": "No s’ha pogut actualitzar aquesta pàgina",
+            "plugins.triage.surface.routeWriteFailed.unavailable": "Aquesta pantalla no pot actualitzar la ubicació compartible, així que s’ha restaurat l’última vista confirmada.",
             "plugins.triage.surface.row.deselect": "Desselecciona {title}",
             "plugins.triage.surface.row.moreActions": "Més accions per a {title}",
             "plugins.triage.surface.row.pin": "Fixa {title}",
@@ -19593,6 +19861,7 @@
             "plugins.triage.surface.session.deliveryUnknown": "La sessió s’ha obert, però el Happier no ha pogut confirmar si el prompt d’aquesta acció s’ha enviat. Tornar a premér-ho reenvia el mateix, no pas un segon.",
             "plugins.triage.surface.session.dispatchFailed": "No s’ha iniciat res: aquesta pantalla no ha pogut arribar a la sessió que ha demanat.",
             "plugins.triage.surface.session.fix": "Corregeix",
+            "plugins.triage.surface.session.instructionMissing": "Aquesta acció necessita una instrucció abans de començar. Tria una entrada de la biblioteca de prompts a Configura les accions.",
             "plugins.triage.surface.session.linkPending": "La sessió s’ha creat, però aquesta entrada encara no hi està vinculada.",
             "plugins.triage.surface.session.linkedNotOpened": "La sessió s’ha creat i enllaçat, però no s’ha obert.",
             "plugins.triage.surface.session.newSessionUnavailable": "La pantalla de sessió nova no ha decidit res des d’on iniciar una sessió.",
@@ -19645,6 +19914,7 @@
             "plugins.triage.surface.views.rejected.other": "Aquesta vista no s’ha pogut desar, així que no s’ha canviat res.",
             "plugins.triage.surface.views.rejected.tooLarge": "Les teves vistes desades han arribat a la mida màxima. Suprimeix-ne una per desar-ne una altra.",
             "plugins.triage.surface.views.rename": "Canvia el nom",
+            "plugins.triage.surface.views.retry": "Torna-ho a provar",
             "plugins.triage.surface.views.save": "Desa com a vista nova",
             "plugins.triage.surface.views.settled": "Vistes desades actualitzades",
             "plugins.triage.surface.views.unavailable": "Happier no pot accedir al teu compte ara mateix, així que les vistes desades no es poden canviar.",
@@ -19702,6 +19972,7 @@
             "plugins.triage.surface.actions.arm.agent": "与智能体开启会话",
             "plugins.triage.surface.actions.arm.reviewStart": "运行代码评审",
             "plugins.triage.surface.actions.blocker.appliesTo": "至少选择一种要提供该操作的条目类型。",
+            "plugins.triage.surface.actions.blocker.instruction": "请先选择提示词库条目，此操作才能开始工作。",
             "plugins.triage.surface.actions.blocker.label": "给这个操作起个名字。",
             "plugins.triage.surface.actions.cancel": "取消",
             "plugins.triage.surface.actions.close": "完成",
@@ -19710,6 +19981,7 @@
             "plugins.triage.surface.actions.delivery.compose": "在输入框中等待",
             "plugins.triage.surface.actions.delivery.send": "立即发送",
             "plugins.triage.surface.actions.disabled": "不提供",
+            "plugins.triage.surface.actions.draftStale": "此草稿打开期间，操作已发生更改。请先重新加载操作或重新应用草稿，再保存。",
             "plugins.triage.surface.actions.edit": "配置",
             "plugins.triage.surface.actions.empty.description": "在这里添加操作之前，无法从条目启动任何内容。",
             "plugins.triage.surface.actions.empty.title": "没有操作",
@@ -19724,6 +19996,7 @@
             "plugins.triage.surface.actions.field.profileNone": "启动时选择",
             "plugins.triage.surface.actions.field.profileUnchecked": "保留你配置的配置文件",
             "plugins.triage.surface.actions.field.prompt": "提示词",
+            "plugins.triage.surface.actions.field.promptArgs": "提示词参数",
             "plugins.triage.surface.actions.field.promptMissing": "该提示词已不在你的提示词库中",
             "plugins.triage.surface.actions.field.promptNone": "不使用提示词",
             "plugins.triage.surface.actions.field.workspaceMode": "需要",
@@ -19731,10 +20004,14 @@
             "plugins.triage.surface.actions.form.update": "编辑操作",
             "plugins.triage.surface.actions.moveDown": "下移",
             "plugins.triage.surface.actions.moveUp": "上移",
+            "plugins.triage.surface.actions.noLongerAvailable": "此操作不再适用于此条目。",
+            "plugins.triage.surface.actions.reapply": "重新应用草稿",
             "plugins.triage.surface.actions.rejected.appliesTo": "为该操作至少选择一种条目类型，且每种只能选一次。",
             "plugins.triage.surface.actions.rejected.label": "该名称为空或过长。",
             "plugins.triage.surface.actions.rejected.other": "该操作无法保存，因此没有任何改动。",
+            "plugins.triage.surface.actions.reload": "重新加载操作",
             "plugins.triage.surface.actions.remove": "移除",
+            "plugins.triage.surface.actions.retry": "重试",
             "plugins.triage.surface.actions.save": "保存",
             "plugins.triage.surface.actions.settled": "操作已更新",
             "plugins.triage.surface.actions.subject.errorIssue": "错误分组",
@@ -19753,6 +20030,7 @@
             "plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring": "此操作需要新的工作副本。请使用“附加到新会话”来选择创建位置。",
             "plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring": "此操作需要在发送前审阅。请使用“附加到新会话”，以便在启动前准备好提示和条目。",
             "plugins.triage.surface.bulk.dispatch": "未启动任何内容：此界面无法连接到所请求的会话。",
+            "plugins.triage.surface.bulk.instructionMissing": "此操作需要指令才能开始工作。请在“配置操作”中选择提示词库条目。",
             "plugins.triage.surface.bulk.label": "批量操作",
             "plugins.triage.surface.bulk.newSession": "附加到新会话",
             "plugins.triage.surface.bulk.newSessionUnavailable": "“新会话”未返回可用于启动会话的内容。",
@@ -19770,8 +20048,10 @@
             "plugins.triage.surface.bulk.retry": "重试",
             "plugins.triage.surface.bulk.reviewStartUnsupported": "此处无法批量启动正式代码审查，因此未启动任何内容。",
             "plugins.triage.surface.bulk.seeded": "已将 {count} 项附加到新会话",
+            "plugins.triage.surface.bulk.selectionRetainedWhileRunning": "正在运行的操作停止前，所选内容会保持可见。",
             "plugins.triage.surface.bulk.sessionPerEntry": "每项一个会话",
             "plugins.triage.surface.bulk.settled": "已启动 {opened} 个，{unknown} 个未确认，{notStarted} 个未启动，{left} 个无法使用",
+            "plugins.triage.surface.bulk.sharedPlacementIncompatible": "这些条目没有共同的兼容仓库位置。请使用“每项一个会话”或“附加到新会话”。",
             "plugins.triage.surface.bulk.starting": "正在启动第 {started} / {total} 个…",
             "plugins.triage.surface.close": "关闭",
             "plugins.triage.surface.detail.accountError.description": "Happier无法到达您的账户，因此此条目的详细信息目前不可用。",
@@ -19891,6 +20171,9 @@
             "plugins.triage.surface.reviewChooser.unknown": "Happier 无法确认审查是否已开始，因此不会再次启动。",
             "plugins.triage.surface.routeTooLong.description": "打开后会使此页面的共享地址超出长度限制，因此未进行任何更改。",
             "plugins.triage.surface.routeTooLong.title": "无法打开此条目",
+            "plugins.triage.surface.routeWriteFailed.rejected": "Happier 拒绝了位置更改，因此已恢复上次确认的视图。请重试。",
+            "plugins.triage.surface.routeWriteFailed.title": "无法更新此页面",
+            "plugins.triage.surface.routeWriteFailed.unavailable": "此屏幕无法更新可共享位置，因此已恢复上次确认的视图。",
             "plugins.triage.surface.row.deselect": "取消选择 {title}",
             "plugins.triage.surface.row.moreActions": "{title} 的更多操作",
             "plugins.triage.surface.row.pin": "置顶 {title}",
@@ -19909,6 +20192,7 @@
             "plugins.triage.surface.session.deliveryUnknown": "会话已打开，但 Happier 无法确认此操作的提示词是否已发送。再次按下将重发同一条，而不是第二条。",
             "plugins.triage.surface.session.dispatchFailed": "未启动任何内容：此界面无法访问它请求的会话。",
             "plugins.triage.surface.session.fix": "修复",
+            "plugins.triage.surface.session.instructionMissing": "此操作需要指令才能开始工作。请在“配置操作”中选择提示词库条目。",
             "plugins.triage.surface.session.linkPending": "会话已创建，但该条目尚未与其关联。",
             "plugins.triage.surface.session.linkedNotOpened": "会话已创建并关联，但未能打开。",
             "plugins.triage.surface.session.newSessionUnavailable": "新建会话界面未确定可用于启动会话的内容。",
@@ -19961,6 +20245,7 @@
             "plugins.triage.surface.views.rejected.other": "该视图无法保存，因此没有做任何更改。",
             "plugins.triage.surface.views.rejected.tooLarge": "你的已保存视图已达到最大体积。删除一个才能再保存。",
             "plugins.triage.surface.views.rename": "重命名",
+            "plugins.triage.surface.views.retry": "重试",
             "plugins.triage.surface.views.save": "另存为新视图",
             "plugins.triage.surface.views.settled": "已保存视图已更新",
             "plugins.triage.surface.views.unavailable": "Happier 目前无法访问你的账户，因此无法更改已保存视图。",
@@ -20018,6 +20303,7 @@
             "plugins.triage.surface.actions.arm.agent": "與代理開啟工作階段",
             "plugins.triage.surface.actions.arm.reviewStart": "執行程式碼審查",
             "plugins.triage.surface.actions.blocker.appliesTo": "請至少選擇一種要提供此操作的項目類型。",
+            "plugins.triage.surface.actions.blocker.instruction": "請先選擇提示詞庫項目，此操作才能開始工作。",
             "plugins.triage.surface.actions.blocker.label": "請為這個操作命名。",
             "plugins.triage.surface.actions.cancel": "取消",
             "plugins.triage.surface.actions.close": "完成",
@@ -20026,6 +20312,7 @@
             "plugins.triage.surface.actions.delivery.compose": "在輸入框中等待",
             "plugins.triage.surface.actions.delivery.send": "立即傳送",
             "plugins.triage.surface.actions.disabled": "不提供",
+            "plugins.triage.surface.actions.draftStale": "此草稿開啟期間，操作已變更。請先重新載入操作或重新套用草稿，再儲存。",
             "plugins.triage.surface.actions.edit": "設定",
             "plugins.triage.surface.actions.empty.description": "在這裡新增操作之前，無法從項目啟動任何內容。",
             "plugins.triage.surface.actions.empty.title": "沒有操作",
@@ -20040,6 +20327,7 @@
             "plugins.triage.surface.actions.field.profileNone": "啟動時選擇",
             "plugins.triage.surface.actions.field.profileUnchecked": "保留你設定的設定檔",
             "plugins.triage.surface.actions.field.prompt": "提示詞",
+            "plugins.triage.surface.actions.field.promptArgs": "提示詞參數",
             "plugins.triage.surface.actions.field.promptMissing": "該提示詞已不在你的提示詞庫中",
             "plugins.triage.surface.actions.field.promptNone": "不使用提示詞",
             "plugins.triage.surface.actions.field.workspaceMode": "需要",
@@ -20047,10 +20335,14 @@
             "plugins.triage.surface.actions.form.update": "編輯操作",
             "plugins.triage.surface.actions.moveDown": "下移",
             "plugins.triage.surface.actions.moveUp": "上移",
+            "plugins.triage.surface.actions.noLongerAvailable": "此操作已不再適用於此項目。",
+            "plugins.triage.surface.actions.reapply": "重新套用草稿",
             "plugins.triage.surface.actions.rejected.appliesTo": "請為此操作至少選擇一種項目類型，且每種只能選一次。",
             "plugins.triage.surface.actions.rejected.label": "該名稱為空或過長。",
             "plugins.triage.surface.actions.rejected.other": "該操作無法儲存，因此沒有任何改動。",
+            "plugins.triage.surface.actions.reload": "重新載入操作",
             "plugins.triage.surface.actions.remove": "移除",
+            "plugins.triage.surface.actions.retry": "重試",
             "plugins.triage.surface.actions.save": "儲存",
             "plugins.triage.surface.actions.settled": "操作已更新",
             "plugins.triage.surface.actions.subject.errorIssue": "錯誤群組",
@@ -20069,6 +20361,7 @@
             "plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring": "此操作需要新的工作副本。請使用「附加到新工作階段」來選擇建立位置。",
             "plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring": "此操作需要在傳送前檢閱。請使用「附加到新工作階段」，以便在啟動前準備好提示和項目。",
             "plugins.triage.surface.bulk.dispatch": "未啟動任何內容：此畫面無法連線到所請求的工作階段。",
+            "plugins.triage.surface.bulk.instructionMissing": "此操作需要指令才能開始工作。請在「設定操作」中選擇提示詞庫項目。",
             "plugins.triage.surface.bulk.label": "批次操作",
             "plugins.triage.surface.bulk.newSession": "附加到新工作階段",
             "plugins.triage.surface.bulk.newSessionUnavailable": "「新工作階段」未回傳可用於啟動工作階段的內容。",
@@ -20086,8 +20379,10 @@
             "plugins.triage.surface.bulk.retry": "重試",
             "plugins.triage.surface.bulk.reviewStartUnsupported": "此處無法批次啟動正式程式碼審查，因此未啟動任何內容。",
             "plugins.triage.surface.bulk.seeded": "已將 {count} 項附加到新工作階段",
+            "plugins.triage.surface.bulk.selectionRetainedWhileRunning": "執行中的操作停止前，選取內容會保持可見。",
             "plugins.triage.surface.bulk.sessionPerEntry": "每項一個工作階段",
             "plugins.triage.surface.bulk.settled": "已啟動 {opened} 個，{unknown} 個未確認，{notStarted} 個未啟動，{left} 個無法使用",
+            "plugins.triage.surface.bulk.sharedPlacementIncompatible": "這些項目沒有共同的相容儲存庫位置。請使用「每個項目一個工作階段」或「附加到新工作階段」。",
             "plugins.triage.surface.bulk.starting": "正在啟動第 {started} / {total} 個…",
             "plugins.triage.surface.close": "關閉",
             "plugins.triage.surface.detail.accountError.description": "Happier 无法連接到您的賬戶，因此此項目詳情目前無法使用。",
@@ -20207,6 +20502,9 @@
             "plugins.triage.surface.reviewChooser.unknown": "Happier 無法確認審查是否已開始，因此不會再次啟動。",
             "plugins.triage.surface.routeTooLong.description": "開啟後會使此頁面的共享位址超出長度限制，因此未進行任何變更。",
             "plugins.triage.surface.routeTooLong.title": "無法開啟此項目",
+            "plugins.triage.surface.routeWriteFailed.rejected": "Happier 拒絕了位置變更，因此已還原上次確認的檢視。請再試一次。",
+            "plugins.triage.surface.routeWriteFailed.title": "無法更新此頁面",
+            "plugins.triage.surface.routeWriteFailed.unavailable": "此畫面無法更新可分享的位置，因此已還原上次確認的檢視。",
             "plugins.triage.surface.row.deselect": "取消選取 {title}",
             "plugins.triage.surface.row.moreActions": "{title} 的更多操作",
             "plugins.triage.surface.row.pin": "置頂 {title}",
@@ -20225,6 +20523,7 @@
             "plugins.triage.surface.session.deliveryUnknown": "工作階段已開啟，但 Happier 無法確認此動作的提示詞是否已傳送。再次按下將重傳同一條，而不是第二條。",
             "plugins.triage.surface.session.dispatchFailed": "未啟動任何內容：此畫面無法連上它請求的工作階段。",
             "plugins.triage.surface.session.fix": "修復",
+            "plugins.triage.surface.session.instructionMissing": "此操作需要指令才能開始工作。請在「設定操作」中選擇提示詞庫項目。",
             "plugins.triage.surface.session.linkPending": "工作階段已建立，但此項目尚未與其關聯。",
             "plugins.triage.surface.session.linkedNotOpened": "工作階段已建立並連結，但未能開啟。",
             "plugins.triage.surface.session.newSessionUnavailable": "新增工作階段畫面未決定可用於啟動工作階段的內容。",
@@ -20277,6 +20576,7 @@
             "plugins.triage.surface.views.rejected.other": "該檢視無法儲存，因此沒有做任何更動。",
             "plugins.triage.surface.views.rejected.tooLarge": "你的已儲存檢視已達最大容量。刪除一個才能再儲存。",
             "plugins.triage.surface.views.rename": "重新命名",
+            "plugins.triage.surface.views.retry": "再試一次",
             "plugins.triage.surface.views.save": "另存為新檢視",
             "plugins.triage.surface.views.settled": "已儲存檢視已更新",
             "plugins.triage.surface.views.unavailable": "Happier 目前無法存取你的帳戶，因此無法變更已儲存檢視。",
@@ -20334,6 +20634,7 @@
             "plugins.triage.surface.actions.arm.agent": "エージェントとセッションを開始",
             "plugins.triage.surface.actions.arm.reviewStart": "コードレビューを実行",
             "plugins.triage.surface.actions.blocker.appliesTo": "表示する項目の種類を少なくとも 1 つ選んでください。",
+            "plugins.triage.surface.actions.blocker.instruction": "このアクションで作業を開始する前に、プロンプトライブラリの項目を選択してください。",
             "plugins.triage.surface.actions.blocker.label": "このアクションに名前を付けてください。",
             "plugins.triage.surface.actions.cancel": "キャンセル",
             "plugins.triage.surface.actions.close": "完了",
@@ -20342,6 +20643,7 @@
             "plugins.triage.surface.actions.delivery.compose": "入力欄で待機",
             "plugins.triage.surface.actions.delivery.send": "すぐに送信",
             "plugins.triage.surface.actions.disabled": "表示しない",
+            "plugins.triage.surface.actions.draftStale": "この下書きを開いている間にアクションが変更されました。保存する前にアクションを再読み込みするか、下書きを再適用してください。",
             "plugins.triage.surface.actions.edit": "設定",
             "plugins.triage.surface.actions.empty.description": "ここにアクションを追加するまで、項目から何も開始できません。",
             "plugins.triage.surface.actions.empty.title": "アクションがありません",
@@ -20356,6 +20658,7 @@
             "plugins.triage.surface.actions.field.profileNone": "開始時に選択",
             "plugins.triage.surface.actions.field.profileUnchecked": "設定したプロファイルを保持します",
             "plugins.triage.surface.actions.field.prompt": "プロンプト",
+            "plugins.triage.surface.actions.field.promptArgs": "プロンプト引数",
             "plugins.triage.surface.actions.field.promptMissing": "このプロンプトはライブラリにありません",
             "plugins.triage.surface.actions.field.promptNone": "プロンプトなし",
             "plugins.triage.surface.actions.field.workspaceMode": "必要なもの",
@@ -20363,10 +20666,14 @@
             "plugins.triage.surface.actions.form.update": "アクションを編集",
             "plugins.triage.surface.actions.moveDown": "下へ",
             "plugins.triage.surface.actions.moveUp": "上へ",
+            "plugins.triage.surface.actions.noLongerAvailable": "このアクションはこの項目では利用できなくなりました。",
+            "plugins.triage.surface.actions.reapply": "下書きを再適用",
             "plugins.triage.surface.actions.rejected.appliesTo": "このアクションに少なくとも 1 つの項目の種類を、それぞれ 1 回だけ選んでください。",
             "plugins.triage.surface.actions.rejected.label": "その名前は空か、長すぎます。",
             "plugins.triage.surface.actions.rejected.other": "そのアクションは保存できなかったため、何も変更されていません。",
+            "plugins.triage.surface.actions.reload": "アクションを再読み込み",
             "plugins.triage.surface.actions.remove": "削除",
+            "plugins.triage.surface.actions.retry": "再試行",
             "plugins.triage.surface.actions.save": "保存",
             "plugins.triage.surface.actions.settled": "アクションを更新しました",
             "plugins.triage.surface.actions.subject.errorIssue": "エラーグループ",
@@ -20385,6 +20692,7 @@
             "plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring": "このアクションには新しい作業コピーが必要です。作成場所を選ぶには「新規セッションに添付」を使用してください。",
             "plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring": "このアクションは送信前に確認が必要です。開始前にプロンプトと項目を準備するには「新規セッションに添付」を使用してください。",
             "plugins.triage.surface.bulk.dispatch": "何も開始されませんでした。この画面は要求したセッションに到達できませんでした。",
+            "plugins.triage.surface.bulk.instructionMissing": "このアクションで作業を開始するには指示が必要です。「アクションを設定」でプロンプトライブラリの項目を選択してください。",
             "plugins.triage.surface.bulk.label": "一括アクション",
             "plugins.triage.surface.bulk.newSession": "新規セッションに添付",
             "plugins.triage.surface.bulk.newSessionUnavailable": "新規セッションから、セッションを開始できる内容が返りませんでした。",
@@ -20402,8 +20710,10 @@
             "plugins.triage.surface.bulk.retry": "再試行",
             "plugins.triage.surface.bulk.reviewStartUnsupported": "正式なコードレビューはここから一括で開始できないため、何も開始されませんでした。",
             "plugins.triage.surface.bulk.seeded": "{count} 件を新規セッションに添付しました",
+            "plugins.triage.surface.bulk.selectionRetainedWhileRunning": "実行中のアクションが停止するまで、選択内容は表示されたままになります。",
             "plugins.triage.surface.bulk.sessionPerEntry": "それぞれにセッション",
             "plugins.triage.surface.bulk.settled": "{opened} 件を開始、{unknown} 件は未確認、{notStarted} 件は未開始、{left} 件は使用できませんでした",
+            "plugins.triage.surface.bulk.sharedPlacementIncompatible": "これらの項目に共通する互換性のあるリポジトリ配置がありません。「項目ごとにセッション」または「新規セッションに添付」を使用してください。",
             "plugins.triage.surface.bulk.starting": "{total} 件中 {started} 件を開始中…",
             "plugins.triage.surface.close": "閉じる",
             "plugins.triage.surface.detail.accountError.description": "Happierはあなたのアカウントに達できませんでしたので、このエントリの詳細は現在利用できません。",
@@ -20523,6 +20833,9 @@
             "plugins.triage.surface.reviewChooser.unknown": "レビュー開始を確認できなかったため、Happier は二重に開始しません。",
             "plugins.triage.surface.routeTooLong.description": "開くとこのページの共有用アドレスが上限を超えるため、変更は行われませんでした。",
             "plugins.triage.surface.routeTooLong.title": "この項目を開けませんでした",
+            "plugins.triage.surface.routeWriteFailed.rejected": "Happier が場所の変更を拒否したため、最後に確定した表示を復元しました。もう一度お試しください。",
+            "plugins.triage.surface.routeWriteFailed.title": "このページを更新できませんでした",
+            "plugins.triage.surface.routeWriteFailed.unavailable": "この画面では共有可能な場所を更新できないため、最後に確定した表示を復元しました。",
             "plugins.triage.surface.row.deselect": "{title} の選択を解除",
             "plugins.triage.surface.row.moreActions": "{title} のその他の操作",
             "plugins.triage.surface.row.pin": "{title} をピン留め",
@@ -20541,6 +20854,7 @@
             "plugins.triage.surface.session.deliveryUnknown": "セッションは開きましたが、このアクションのプロンプトが送信されたか Happier は確認できませんでした。もう一度押すと、二つ目ではなく同じものを再送信します。",
             "plugins.triage.surface.session.dispatchFailed": "何も開始されませんでした: この画面は要求したセッションに到達できませんでした。",
             "plugins.triage.surface.session.fix": "修正",
+            "plugins.triage.surface.session.instructionMissing": "このアクションで作業を開始するには指示が必要です。「アクションを設定」でプロンプトライブラリの項目を選択してください。",
             "plugins.triage.surface.session.linkPending": "セッションは作成されましたが、この項目はまだ紐づいていません。",
             "plugins.triage.surface.session.linkedNotOpened": "セッションは作成されリンクされましたが、開かれませんでした。",
             "plugins.triage.surface.session.newSessionUnavailable": "新規セッション画面は、セッションを開始できる対象を確定しませんでした。",
@@ -20593,6 +20907,7 @@
             "plugins.triage.surface.views.rejected.other": "そのビューは保存できなかったため、何も変更していません。",
             "plugins.triage.surface.views.rejected.tooLarge": "保存済みビューが最大サイズに達しています。ひとつ削除すると保存できます。",
             "plugins.triage.surface.views.rename": "名前を変更",
+            "plugins.triage.surface.views.retry": "再試行",
             "plugins.triage.surface.views.save": "新しいビューとして保存",
             "plugins.triage.surface.views.settled": "保存済みビューを更新しました",
             "plugins.triage.surface.views.unavailable": "Happier は現在アカウントに接続できないため、保存済みビューを変更できません。",

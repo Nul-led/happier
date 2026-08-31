@@ -316,7 +316,7 @@ async function readCompleteGitlabPipelineRollup(
     if (next.kind === 'end') {
       return Object.freeze({ failingCount, runningCount, passingCount });
     }
-    if (next.kind === 'refused' || visited.has(next.url)) return null;
+    if (next.kind !== 'next' || visited.has(next.url)) return null;
     url = next.url;
   }
 
@@ -364,7 +364,7 @@ export async function readGitlabPipelinesPage(
   try {
     jobsUrl = buildGitlabPipelineJobsUrl({
       origin: dependencies.invocation.origin,
-      projectId: input.route.projectId,
+      repositoryKey: input.route.repositoryKey,
       pipelineId,
       perPage: input.perPage,
     });

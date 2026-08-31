@@ -71,12 +71,15 @@ export type TriageScanLaneV1 = Readonly<{
      * anywhere, and is gone when the pass returns.
      */
     resume?: TriageScanContinuationV1;
+    /** Geometry retained beside `resume`; omitted for a new lane. */
+    pageLimit?: number;
     scan: (input: TriageScanInputV1, options?: PluginCancellationOptions) => Promise<TriageScanResultV1>;
 }>;
 
 /** Where one lane's walk stopped, when it stopped with more to give. */
 export type TriageScanPassStopV1 = Readonly<{
     sourceInstanceId: string;
+    pageLimit: number;
     continuation: TriageScanContinuationV1;
 }>;
 
@@ -98,6 +101,7 @@ export type TriageScanPassResultV1 = Readonly<{
 
 type LaneState = {
     readonly lane: TriageScanLaneV1;
+    readonly pageLimit: number;
     continuation: TriageScanContinuationV1 | null;
     health: TriageListLaneHealthV1;
     exhausted: boolean;
@@ -207,9 +211,9 @@ function chargedAgainstLimit(result: Extract<TriageScanResultV1, { kind: 'page' 
         + (result.evidence.kind === 'partial' ? result.evidence.omittedItemCount ?? 0 : 0);
 }
 
-function scanInputFor(state: LaneState, pageLimit: number): TriageScanInputV1 {
+function scanInputFor(state: LaneState): TriageScanInputV1 {
     return state.continuation === null
-        ? { v: 1, instance: state.lane.configured, page: { kind: 'initial', limit: pageLimit } }
+        ? { v: 1, instance: state.lane.configured, page: { kind: 'initial', limit: state.pageLimit } }
         : { v: 1, instance: state.lane.configured, page: { kind: 'continuation', continuation: state.continuation } };
 }
 
@@ -230,6 +234,7 @@ export async function runTriageScanPass(input: Readonly<{
         const deadline = new AbortController();
         return {
             lane,
+            pageLimit: Math.max(1, Math.trunc(lane.pageLimit ?? pageLimit)),
             continuation: lane.resume ?? null,
             // A lane that never ran is not evidence that the walk finished.
             health: { kind: 'unavailable' },
@@ -259,7 +264,7 @@ export async function runTriageScanPass(input: Readonly<{
                 state.active = false;
                 continue;
             }
-            if (input.observationBudget - observations.length < pageLimit) {
+            if (input.observationBudget - observations.length < state.pageLimit) {
                 // A provider page is atomic: its continuation advances past every
                 // row it returns. Asking for a page the caller cannot carry and
                 // truncating after the fact would strand the discarded suffix
@@ -291,7 +296,7 @@ export async function runTriageScanPass(input: Readonly<{
             const options: PluginCancellationOptions = { signal: state.signal };
             let settled: RaceWithTimeoutResult<TriageScanResultV1>;
             try {
-                const pending = state.lane.scan(scanInputFor(state, pageLimit), options);
+                const pending = state.lane.scan(scanInputFor(state), options);
                 settled = remainingMs === null
                     ? { type: 'resolved', value: await pending }
                     : await raceWithTimeout(pending, remainingMs);
@@ -327,7 +332,7 @@ export async function runTriageScanPass(input: Readonly<{
             }
 
             const charged = chargedAgainstLimit(result);
-            if (charged > pageLimit) {
+            if (charged > state.pageLimit) {
                 // Over-limit is a source-contract failure of the whole lane, not
                 // partially valid data: truncating would publish a conforming
                 // page for a source whose accounting is not conforming, and
@@ -402,14 +407,13 @@ export async function runTriageScanPass(input: Readonly<{
                 continue;
             }
 
-            // Exact zero progress can settle immediately. An advancing cursor,
-            // however, may legitimately traverse any number of empty provider
-            // containers before reaching a row; counting those pages against an
-            // observation-derived ceiling made deep repositories unreachable.
+            // A page continuation is the provider's position, so it must
+            // advance independently of whether the page delivered rows or
+            // reported omitted observations. An advancing cursor may
+            // legitimately traverse any number of empty provider containers;
+            // an unchanged one can only replay this page until the deadline.
             if (
-                page.length === 0
-                && charged === 0
-                && state.continuation !== null
+                state.continuation !== null
                 && state.continuation.token === result.continuation.token
             ) {
                 state.health = stalledWalkFailure();
@@ -453,6 +457,7 @@ export async function runTriageScanPass(input: Readonly<{
                 && !contractFailed.has(state.lane.sourceInstanceId)
                 ? [Object.freeze({
                     sourceInstanceId: state.lane.sourceInstanceId,
+                    pageLimit: state.pageLimit,
                     continuation: state.continuation,
                 })]
                 : []

@@ -5,6 +5,7 @@ import {
   validateReviewCommentPublicationResultAgainstPlanV1,
   type ReviewCommentClaimPublicationDispatchResponseV1,
   type ReviewCommentPublicationPlanV1,
+  type ReviewCommentPublicationResultV1,
 } from '@happier-dev/plugin-sdk/reviews';
 
 import type {
@@ -29,6 +30,7 @@ import { readGithubIssueCommentPublicationRecords } from '../reviews.js';
 import type { GithubTriageEntryLocalRefV1 } from '../types.js';
 
 import type { GithubIssueCloseReasonV1 } from './contracts.js';
+import { preflightGithubPublicationCapability } from './publicationCapability.js';
 import {
   type GithubMutationDependenciesV1,
   type GithubPullRequestReviewPublicationOutcomeV1,
@@ -213,6 +215,10 @@ export async function publishGithubIssueComment(
     route: GithubRepositoryRouteV1;
     publicationPlan: ReviewCommentPublicationPlanV1;
     claimPublicationDispatch: () => Promise<ReviewCommentClaimPublicationDispatchResponseV1>;
+    settlePublicationDispatch?: (
+      claim: ReviewCommentClaimPublicationDispatchResponseV1,
+      result: ReviewCommentPublicationResultV1,
+    ) => Promise<void>;
   }>,
   dependencies: GithubMutationDependenciesV1,
 ): Promise<GithubPullRequestReviewPublicationOutcomeV1> {
@@ -231,6 +237,19 @@ export async function publishGithubIssueComment(
       kind: 'rejected' as const,
       reason: 'unsupported_anchor' as const,
       observation: current.observation,
+    });
+  }
+  const capability = await preflightGithubPublicationCapability({
+    localRef: input.localRef,
+    route: input.route,
+    operation: 'issueComment',
+  }, dependencies);
+  if (!capability.ok) {
+    return Object.freeze({
+      kind: 'rejected' as const,
+      reason: 'admission_failed' as const,
+      observation: current.observation,
+      failure: capability.failure,
     });
   }
   let claim: ReviewCommentClaimPublicationDispatchResponseV1;
@@ -265,6 +284,11 @@ export async function publishGithubIssueComment(
         marker,
       )
       : { kind: 'absent' as const };
+    const prior = claim.priorResult?.entries[0];
+    const preservedOutcome = (claim.instructions.entries[0] === 'confirmed'
+      || claim.instructions.entries[0] === 'held')
+      ? prior?.outcome
+      : undefined;
     const publication = validateReviewCommentPublicationResultAgainstPlanV1(
       input.publicationPlan,
       claim,
@@ -273,13 +297,14 @@ export async function publishGithubIssueComment(
         entries: [{
           happierCommentId: entry.happierCommentId,
           publicationCorrelationId: correlation.publicationCorrelationId,
-          outcome: matched.kind !== 'unique'
+          outcome: preservedOutcome ?? (matched.kind !== 'unique'
             ? { kind: 'uncertain' }
-            : { kind: 'published', externalRef: matched.externalRef },
+            : { kind: 'published', externalRef: matched.externalRef }),
         }],
         verdict: { kind: 'notRequested' },
       },
     );
+    await input.settlePublicationDispatch?.(claim, publication).catch(() => undefined);
     const confirmed = await confirm(input.localRef, input.route, repositories, dependencies);
     return Object.freeze({
       kind: 'settled' as const,
@@ -310,6 +335,7 @@ export async function publishGithubIssueComment(
         verdict: { kind: 'notRequested' },
       },
     );
+    await input.settlePublicationDispatch?.(claim, publication).catch(() => undefined);
     const confirmed = await confirm(input.localRef, input.route, repositories, dependencies);
     return Object.freeze({
       kind: 'settled' as const,

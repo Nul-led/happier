@@ -231,7 +231,17 @@ function reviewPeople(
   if (historical.length === 0 && requests.length === 0) return NO_REVIEW_PEOPLE;
   const latestByAuthor = new Map<string, GithubFeedbackReviewV1>();
   for (const review of historical) {
-    if (review.author !== null) latestByAuthor.set(review.author, review);
+    if (review.author === null) continue;
+    const previous = latestByAuthor.get(review.author);
+    // Feedback pages are appended newest connection first, so arrival order is
+    // not chronology: an older page must never replace the current state. A
+    // missing/equal timestamp keeps the first-seen record, which is the only
+    // ordering fact GitHub supplied for that tie.
+    if (previous === undefined
+      || (review.submittedAtMs !== null
+        && (previous.submittedAtMs === null || review.submittedAtMs > previous.submittedAtMs))) {
+      latestByAuthor.set(review.author, review);
+    }
   }
   return Object.freeze({
     reviewed: Object.freeze([...latestByAuthor.entries()].map(([login, review]) => Object.freeze({

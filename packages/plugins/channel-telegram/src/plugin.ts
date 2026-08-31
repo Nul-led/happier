@@ -14,6 +14,7 @@ import {
   TELEGRAM_BOT_CONNECTED_ACCOUNT_ID,
   TELEGRAM_BOT_CREDENTIAL_PURPOSE,
   TELEGRAM_CHANNEL_ACTION_IDS,
+  TELEGRAM_CHANNEL_PLUGIN_ID,
   TELEGRAM_CHANNEL_PROVIDER_CONTRIBUTION_ID,
 } from './constants.js';
 import {
@@ -49,7 +50,7 @@ const TELEGRAM_CREDENTIAL_REF_INPUT_SCHEMA: PluginJsonSchema =
   TELEGRAM_SETUP_INPUT_PROTOCOL_SCHEMA.jsonSchema;
 
 export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
-  id: 'happier.channel.telegram',
+  id: TELEGRAM_CHANNEL_PLUGIN_ID,
   version: '0.0.0',
   displayName: 'Telegram Channels',
   description: 'Connects Telegram bot conversations to Happier Channels.',
@@ -302,7 +303,7 @@ export const { manifest: PLUGIN_MANIFEST, activate } = definePlugin({
             supportedObservationTransports: ['checkpointedPull'],
             sourceConfigSchema: TELEGRAM_AUTOMATION_MESSAGE_SOURCE_CONFIG_SCHEMA,
             setupActionRef: {
-              pluginId: 'happier.channel.telegram',
+              pluginId: TELEGRAM_CHANNEL_PLUGIN_ID,
               localId: TELEGRAM_AUTOMATION_MESSAGE_SETUP_ACTION_ID,
             },
           },

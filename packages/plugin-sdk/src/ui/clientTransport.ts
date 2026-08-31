@@ -53,6 +53,7 @@ import {
     decodePluginUiResourceContent,
     encodePluginUiDiagnostic,
 } from '../host/ui/hostApiCodecs.js';
+import { qualifyPluginContributionReference } from '../host/ui/pluginReferences.js';
 import type { PluginErrorData } from '../errors.js';
 import type { JsonValue, PluginReference } from '../identity.js';
 import type { Disposable, PluginCancellationOptions } from '../lifecycle.js';
@@ -256,15 +257,6 @@ function createExecuteActionRequest(action: PluginReference, input?: JsonValue) 
         throw new PluginUiHostApiClientError('invalid_payload', 'executeAction request is invalid.');
     }
     return parsed.data;
-}
-function normalizePluginSurfaceDestination(
-    reference: PluginReference,
-    pluginId: string,
-): Readonly<{ pluginId: string; localId: string }> {
-    if (typeof reference === 'string') {
-        return { pluginId, localId: reference };
-    }
-    return { pluginId: reference.pluginId, localId: reference.localId };
 }
 function isJsonRecord(value: JsonValue | undefined): value is Readonly<Record<string, JsonValue>> {
     return value !== undefined && value !== null && !Array.isArray(value) && typeof value === 'object';
@@ -1166,7 +1158,7 @@ export async function createPluginUiHostApiClientFromTransport(
         // values; this client only binds a bare local id to its own plugin. A
         // qualified destination stays intact for the host Surface Registry.
         openSurface: async (view, input, requestOptions) => {
-            const destination = normalizePluginSurfaceDestination(view, options.identity.pluginId);
+            const destination = qualifyPluginContributionReference(view, options.identity.pluginId);
             await request('openSurface', {
                 destination,
                 ...(input === undefined ? {} : { input }),

@@ -79,6 +79,47 @@ describe('GitHub detail paged panel state', () => {
     expect(failed.pending).toBe(false);
   });
 
+  it('keeps the last-known-good walk visible when an explicit refresh fails', () => {
+    const loaded = githubPagedReducer(afterFirstRequest(), {
+      kind: 'pageSettled',
+      token: 1,
+      page: page({ rows: [{ id: 'a' }], continuation: 'token-1' }),
+    });
+    const refreshing = githubPagedReducer(loaded, {
+      kind: 'refreshStarted',
+      token: 2,
+    });
+    const failed = githubPagedReducer(refreshing, {
+      kind: 'pageFailed',
+      token: 2,
+      failure: PERMISSION_FAILURE,
+    });
+
+    expect(failed.kind).toBe('ready');
+    expect(failed.rows).toEqual([{ id: 'a' }]);
+    expect(failed.failure).toEqual(PERMISSION_FAILURE);
+  });
+
+  it('atomically replaces a warm walk when its refreshed first page succeeds', () => {
+    const loaded = githubPagedReducer(afterFirstRequest(), {
+      kind: 'pageSettled',
+      token: 1,
+      page: page({ rows: [{ id: 'old' }], continuation: 'old-token' }),
+    });
+    const refreshing = githubPagedReducer(loaded, {
+      kind: 'refreshStarted',
+      token: 2,
+    });
+    const refreshed = githubPagedReducer(refreshing, {
+      kind: 'pageSettled',
+      token: 2,
+      page: page({ rows: [{ id: 'new' }], continuation: 'new-token' }),
+    });
+
+    expect(refreshed.rows).toEqual([{ id: 'new' }]);
+    expect(refreshed.continuation).toBe('new-token');
+  });
+
   it('appends a later page and accumulates what it could not read', () => {
     const first = githubPagedReducer(afterFirstRequest(), {
       kind: 'pageSettled',

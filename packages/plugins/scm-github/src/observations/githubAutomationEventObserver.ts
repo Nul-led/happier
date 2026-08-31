@@ -60,7 +60,7 @@ import {
 } from './githubRepositoryEventsCursor.js';
 import { GithubObservationRequestCoalescer } from './githubRequestCoalescer.js';
 import { requireGithubAccountStorage } from '../requiredAccountStorage.js';
-import { githubAutomationAdmissionCounterDeltas } from './githubAutomationAdmissionAccounting.js';
+import { classifyGithubAutomationAdmissionTelemetry } from './githubAutomationAdmissionAccounting.js';
 
 const REPOSITORY_EVENTS_ENDPOINT_KIND = 'repositoryEvents' as const;
 const REPOSITORY_EVENTS_PAGE_SIZE = 100;
@@ -315,7 +315,13 @@ function parseNextPageUrl(
   headers: Readonly<Record<string, string>>,
   repository: GithubRepositorySourceConfigV1,
 ): string | null {
-  const next = parseForgeLinkHeader(readTriageResponseHeaderV1(headers, 'link')).next;
+  const parsed = parseForgeLinkHeader(readTriageResponseHeaderV1(headers, 'link'));
+  if (parsed.kind === 'malformed') {
+    throw new GithubRepositoryEventsHistoryGapError(
+      'GitHub repository Events returned a malformed Link header',
+    );
+  }
+  const next = parsed.kind === 'parsed' ? parsed.links.next : undefined;
   return next === undefined ? null : validateRepositoryEventsPageUrl(next, repository);
 }
 
@@ -1465,9 +1471,9 @@ async function runObservedSource(input: Readonly<{
       }
       safeObservationCount += 1;
       lastContiguousOccurrenceId = observation.occurrenceId;
-      const counterDeltas = githubAutomationAdmissionCounterDeltas(outcome);
-      admittedDelta += counterDeltas.admittedDelta;
-      skippedDelta += counterDeltas.skippedDelta;
+      const telemetry = classifyGithubAutomationAdmissionTelemetry(outcome);
+      admittedDelta += telemetry.admittedDelta;
+      skippedDelta += telemetry.skippedDelta;
     }
 
     const checkpoint = checkpointForSafeObservations({
@@ -1777,6 +1783,10 @@ export function createGithubAutomationEventCheckpointedPullObserver(
       // loop or discard its last fully adopted source snapshot.
       return addDelay(readObserverNow(now), retryDelayMs);
     }
+    // A last-complete catalog is retained only to inform the next refresh.
+    // Once the host says it is stale, it cannot authorize provider I/O,
+    // checkpoint custody, admission, or source health for this cycle.
+    if (!refreshed.isCurrent) return addDelay(readObserverNow(now), retryDelayMs);
     const adopted = refreshed.adopted;
     if (adopted === null) return addDelay(readObserverNow(now), retryDelayMs);
 

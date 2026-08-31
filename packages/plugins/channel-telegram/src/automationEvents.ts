@@ -17,6 +17,7 @@ import {
 } from '@happier-dev/plugin-sdk/events';
 
 import {
+  TELEGRAM_CHANNEL_PLUGIN_ID,
   TELEGRAM_AUTOMATION_MESSAGE_EVENT_ID,
   TELEGRAM_AUTOMATION_MESSAGE_SOURCE_CONTRACT_VERSION,
 } from './constants.js';
@@ -127,7 +128,7 @@ export async function projectTelegramAutomationSourceConnectionStatus(input: Rea
   status: PluginEventSourceConnectionStatusV1;
 }>, context: PluginInvocationContext): Promise<void> {
   await projectPluginEventSourceConnectionStatusV1({
-    eventRef: { pluginId: 'happier.channel.telegram', localId: TELEGRAM_AUTOMATION_MESSAGE_EVENT_ID },
+    eventRef: { pluginId: TELEGRAM_CHANNEL_PLUGIN_ID, localId: TELEGRAM_AUTOMATION_MESSAGE_EVENT_ID },
     sourceContractVersion: TELEGRAM_AUTOMATION_MESSAGE_SOURCE_CONTRACT_VERSION,
     sourceInstanceIdPrefix: `telegram:chat:${input.botId}:`,
     scope: { kind: 'checkpointedPull' },
@@ -175,7 +176,7 @@ export function createTelegramAutomationEventCandidate(input: Readonly<{
   const message = input.update.message;
   return {
     eventRef: {
-      pluginId: 'happier.channel.telegram',
+      pluginId: TELEGRAM_CHANNEL_PLUGIN_ID,
       localId: TELEGRAM_AUTOMATION_MESSAGE_EVENT_ID,
     },
     sourceInstanceId: buildTelegramAutomationSourceInstanceId({

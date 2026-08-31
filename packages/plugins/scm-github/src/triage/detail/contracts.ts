@@ -29,7 +29,7 @@ import {
 } from '../feedback.js';
 
 /**
- * The six source-native detail Action contracts.
+ * The seven source-native detail Action contracts.
  *
  * The detail body runs in a UI artifact that holds no credential and speaks no
  * HTTP, while `observations/githubApiClient.ts` is this source's sole credential
@@ -189,6 +189,66 @@ export const GithubCapabilitiesResultV1Schema = defineProtocolUnion([
   GithubDetailUnavailableSchema,
 ]);
 export type GithubCapabilitiesResultV1 = ReturnType<typeof GithubCapabilitiesResultV1Schema.parse>;
+
+/* -------------------------------------------------------------------- overview */
+
+export const GithubOverviewInputV1Schema = GithubCapabilitiesInputV1Schema;
+
+const GithubOverviewCommonV1 = {
+  kind: defineProtocolLiteral('overview'),
+  observedAtMs: TimestampSchema,
+  title: defineProtocolString().optional(),
+  state: LabelSchema.optional(),
+  author: LabelSchema.optional(),
+  createdAtMs: TimestampSchema.optional(),
+  updatedAtMs: TimestampSchema.optional(),
+  /** Exact GitHub Markdown. `null` is GitHub's stated empty body. */
+  body: defineProtocolString().nullable().optional(),
+  webUrl: defineProtocolString({ minLength: 1 }).optional(),
+  labels: defineProtocolArray(LabelSchema).optional(),
+  assignees: defineProtocolArray(LabelSchema).optional(),
+  /** `null` is the provider-stated absence of a milestone. */
+  milestone: LabelSchema.nullable().optional(),
+} as const;
+
+const GithubRequestedReviewerV1Schema = defineProtocolUnion([
+  defineProtocolObject({
+    kind: defineProtocolLiteral('user'),
+    subject: LabelSchema,
+  }, { policy: 'closed' }),
+  defineProtocolObject({
+    kind: defineProtocolLiteral('team'),
+    subject: LabelSchema,
+  }, { policy: 'closed' }),
+]);
+
+const GithubBranchUpdateEligibilityV1Schema = defineProtocolUnion([
+  defineProtocolLiteral('behind'),
+  defineProtocolLiteral('not-behind'),
+  defineProtocolLiteral('unknown'),
+]);
+
+export const GithubOverviewResultV1Schema = defineProtocolUnion([
+  defineProtocolObject({
+    ...GithubOverviewCommonV1,
+    kindId: defineProtocolLiteral('pull-request'),
+    draft: GithubBooleanSchema.optional(),
+    merged: GithubBooleanSchema.optional(),
+    headBranch: LabelSchema.optional(),
+    baseBranch: LabelSchema.optional(),
+    requestedReviewers: defineProtocolArray(GithubRequestedReviewerV1Schema).optional(),
+    headRevision: IdentifierSchema.optional(),
+    additions: CountSchema.optional(),
+    deletions: CountSchema.optional(),
+    branchUpdateEligibility: GithubBranchUpdateEligibilityV1Schema,
+  }, { policy: 'closed' }),
+  defineProtocolObject({
+    ...GithubOverviewCommonV1,
+    kindId: defineProtocolLiteral('issue'),
+  }, { policy: 'closed' }),
+  GithubDetailUnavailableSchema,
+]);
+export type GithubOverviewResultV1 = ReturnType<typeof GithubOverviewResultV1Schema.parse>;
 
 /* ------------------------------------------------------------------- timeline */
 

@@ -145,7 +145,7 @@ describe('author package boundary', () => {
     expect(packageJson.exports).toHaveProperty('./advanced');
     expect(packageJson.exports).not.toHaveProperty('./compatibility');
     expect(existsSync(join(packageRoot, 'src/compatibility.ts'))).toBe(false);
-    expect(readFileSync(join(packageRoot, 'src/index.ts'), 'utf8'))
+    expect(readFileSync(join(packageRoot, 'src/index.public.ts'), 'utf8'))
       .not.toContain("./compatibility.js");
     expect(packageJson.devDependencies?.['react-native']).toMatch(/^\d+\.\d+\.\d+$/u);
     // The framework-neutral semantic fixture remains SDK-owned. Plugin UI
@@ -191,6 +191,21 @@ describe('author package boundary', () => {
     expect(packageJson.scripts?.['test:local']).toContain('test:external-authoring');
   });
 
+  it('keeps every declared package entrypoint as a thin wrapper over one author-owned source spec', () => {
+    const packageRoot = resolve(new URL('.', import.meta.url).pathname, '..');
+    const packageJson = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as {
+      exports: Record<string, unknown>;
+    };
+
+    for (const specifier of Object.keys(packageJson.exports)) {
+      const directory = specifier === '.' ? '' : specifier.slice(2);
+      const entrypoint = join(packageRoot, 'src', directory, 'index.ts');
+      const sourceSpec = join(packageRoot, 'src', directory, 'index.public.ts');
+      expect(existsSync(sourceSpec), `${specifier} has no author-owned source spec`).toBe(true);
+      expect(readFileSync(entrypoint, 'utf8')).toBe("export * from './index.public.js';\n");
+    }
+  });
+
   it('derives renderable-image diagnostics from the browser-safe UI contract', () => {
     const packageRoot = resolve(new URL('.', import.meta.url).pathname, '..');
     for (const relativePath of [
@@ -209,7 +224,7 @@ describe('author package boundary', () => {
 
   it('exports environment facts only from their dedicated public entry', () => {
     const packageRoot = resolve(new URL('.', import.meta.url).pathname, '..');
-    const presentationEntry = readFileSync(join(packageRoot, 'src/presentation/index.ts'), 'utf8');
+    const presentationEntry = readFileSync(join(packageRoot, 'src/presentation/index.public.ts'), 'utf8');
 
     expect(presentationEntry).not.toContain("from '../environment/index.js'");
   });
@@ -227,8 +242,8 @@ describe('author package boundary', () => {
       && /\b(?:interface|type)\s+PluginUiHostApi\b/u.test(readFileSync(filePath, 'utf8')),
     );
     const authorBarrels = [
-      join(packageRoot, 'src/index.ts'),
-      join(packageRoot, 'src/hostApi/index.ts'),
+      join(packageRoot, 'src/index.public.ts'),
+      join(packageRoot, 'src/hostApi/index.public.ts'),
     ].map((filePath) => readFileSync(filePath, 'utf8')).join('\n');
 
     expect(declarations.map((filePath) => relative(resolve(packageRoot, '..'), filePath))).toEqual([
@@ -240,9 +255,9 @@ describe('author package boundary', () => {
 
   it('keeps Resource lifetime injection behind the bundled-entry boundary', () => {
     const packageRoot = resolve(new URL('.', import.meta.url).pathname, '..');
-    const hostApiBarrel = readFileSync(join(packageRoot, 'src/hostApi/index.ts'), 'utf8');
+    const hostApiBarrel = readFileSync(join(packageRoot, 'src/hostApi/index.public.ts'), 'utf8');
     const hostApiContext = readFileSync(join(packageRoot, 'src/hostApi/context.ts'), 'utf8');
-    const componentsBarrel = readFileSync(join(packageRoot, 'src/components/index.ts'), 'utf8');
+    const componentsBarrel = readFileSync(join(packageRoot, 'src/components/index.public.ts'), 'utf8');
     const providerSource = readFileSync(join(packageRoot, 'src/components/PluginUiProvider.tsx'), 'utf8');
     const publicProviderProps = providerSource.match(/export type PluginUiProviderProps = Readonly<\{[\s\S]*?\}>;/u)?.[0] ?? '';
     const publicHostApiProviderProps = hostApiContext.match(/export type PluginHostApiProviderProps = Readonly<\{[\s\S]*?\}>;/u)?.[0] ?? '';

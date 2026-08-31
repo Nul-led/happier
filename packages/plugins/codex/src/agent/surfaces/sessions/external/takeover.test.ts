@@ -62,6 +62,7 @@ describe('Codex External Sessions takeover launch derivation', () => {
     expect(plan).not.toHaveProperty('existingSessionId');
     expect(plan).not.toHaveProperty('resume');
     expect(plan).not.toHaveProperty('backendTarget');
+    expect(plan).not.toHaveProperty('backendModeHint');
     expect(plan).not.toHaveProperty('transcriptStorage');
   });
 

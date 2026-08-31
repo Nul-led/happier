@@ -77,7 +77,10 @@ immutable plugin generation. Acquire a versioned plugin-local key only from a
 committed effect, subscription or event lifecycle—not during React render—keep
 the returned lease for exactly as long as the surface uses the value, and
 release it on cleanup. The host disposes the value after its final lease or
-when that scope retires. This capability is unavailable to hosted-web frames:
+when that scope retires. Values that retain opaque execution-origin state such
+as provider continuations can return `onExecutionOriginChange`; the host calls
+it before a surviving lease on another origin becomes active, while same-origin
+client replacement remains uninterrupted. This capability is unavailable to hosted-web frames:
 object and function identity cannot cross an iframe, and the hosted bridge has
 no scope field. Authors must not replace that boundary with a realm global,
 artifact-local cache, JSON mirror or private RPC bridge.

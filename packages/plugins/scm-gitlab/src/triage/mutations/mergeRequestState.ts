@@ -64,6 +64,7 @@ export async function closeGitlabMergeRequest(
   const outcome = await runGitlabStateTransition({
     instance: parsed.data.instance,
     localRef: parsed.data.localRef,
+    routingToken: parsed.data.routingToken,
     subject: GITLAB_MERGE_REQUEST_MUTATION_SUBJECT_V1,
     transition: CLOSE_TRANSITION,
   }, context);
@@ -83,6 +84,7 @@ export async function reopenGitlabMergeRequest(
   const outcome = await runGitlabStateTransition({
     instance: parsed.data.instance,
     localRef: parsed.data.localRef,
+    routingToken: parsed.data.routingToken,
     subject: GITLAB_MERGE_REQUEST_MUTATION_SUBJECT_V1,
     transition: REOPEN_TRANSITION,
   }, context);

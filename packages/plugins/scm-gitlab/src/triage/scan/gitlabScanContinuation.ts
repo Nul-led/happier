@@ -39,6 +39,25 @@ import { deriveGitlabNativePageSize } from './gitlabScanFrontier.js';
 import type { GitlabLaneFrontier, GitlabScanFrontier } from './gitlabScanFrontier.js';
 
 const CONTINUATION_VERSION = 1;
+const ROOT_KEYS = Object.freeze([
+  'v', 'scanLimit', 'nativePageSize', 'nextLaneIndex', 'walkHealth', 'lanes', 'provenance',
+]);
+const LANE_KEYS = Object.freeze(['key', 'nextUrl', 'ended', 'cycleProbe']);
+const CYCLE_PROBE_KEYS = Object.freeze(['cursor', 'stepsSince', 'interval']);
+const PROVENANCE_KEYS = Object.freeze(['plane', 'sourceInstanceId', 'configuredBaseUrl']);
+
+export type GitlabScanContinuationProvenance = Readonly<{
+  plane: 'scan';
+  sourceInstanceId: string;
+  configuredBaseUrl: string;
+}>;
+
+function hasExactKeys(record: Readonly<Record<string, unknown>>, expected: readonly string[]): boolean {
+  const actual = Object.keys(record);
+  return actual.length === expected.length && expected.every((key) => (
+    Object.prototype.hasOwnProperty.call(record, key)
+  ));
+}
 
 /**
  * A lane's identity in the token. A lane id alone is ambiguous — `authored` exists
@@ -51,6 +70,7 @@ function laneKey(request: GitlabLaneRequest): string {
 
 export function encodeGitlabScanContinuation(
   frontier: GitlabScanFrontier,
+  provenance: GitlabScanContinuationProvenance,
 ): TriageScanContinuationV1 | null {
   const token = encodeTriagePagingTokenV1({
     v: CONTINUATION_VERSION,
@@ -60,6 +80,7 @@ export function encodeGitlabScanContinuation(
     // Declaration order, not insertion order, so the same walk state always encodes to
     // the same bytes.
     walkHealth: GITLAB_STICKY_WALK_REASONS.filter((reason) => frontier.walkHealth.has(reason)),
+    provenance,
     lanes: frontier.lanes.map((lane) => ({
       key: laneKey(lane.request),
       nextUrl: lane.nextUrl,
@@ -100,13 +121,32 @@ export type GitlabScanContinuationDecodeInput = Readonly<{
   origin: GitlabConfiguredOrigin;
   /** The lanes this invocation built, in the order it built them. */
   lanes: readonly GitlabLaneRequest[];
+  provenance: GitlabScanContinuationProvenance;
 }>;
+
+/** Reject cross-instance/base/plane replay before any credential is requested. */
+export function hasExpectedGitlabScanContinuationProvenance(input: Readonly<{
+  continuation: TriageScanContinuationV1;
+  provenance: GitlabScanContinuationProvenance;
+}>): boolean {
+  const record = decodeTriagePagingTokenV1(input.continuation.token);
+  if (record === null || record.v !== CONTINUATION_VERSION || !hasExactKeys(record, ROOT_KEYS)) {
+    return false;
+  }
+  const provenance = readRecord(record.provenance);
+  return provenance !== null
+    && hasExactKeys(provenance, PROVENANCE_KEYS)
+    && provenance.plane === input.provenance.plane
+    && provenance.sourceInstanceId === input.provenance.sourceInstanceId
+    && provenance.configuredBaseUrl === input.provenance.configuredBaseUrl;
+}
 
 export function decodeGitlabScanContinuation(
   input: GitlabScanContinuationDecodeInput,
 ): GitlabScanFrontier | null {
   const record = decodeTriagePagingTokenV1(input.continuation.token);
   if (record === null || record.v !== CONTINUATION_VERSION) return null;
+  if (!hasExpectedGitlabScanContinuationProvenance(input)) return null;
 
   // The geometry is re-DERIVED, not adopted. The positive scan limit is the one
   // this invocation originally received, and the native size must still be the
@@ -162,7 +202,9 @@ function readLanes(
     const request = input.lanes[index];
     if (request === undefined) return null;
     const record = readRecord(entry);
-    if (record === null || record.key !== laneKey(request)) return null;
+    if (record === null || !hasExactKeys(record, LANE_KEYS) || record.key !== laneKey(request)) {
+      return null;
+    }
     if (typeof record.ended !== 'boolean') return null;
     if (typeof record.nextUrl !== 'string') return null;
     // The URL is re-admitted against the configured origin exactly as a provider
@@ -170,7 +212,9 @@ function readLanes(
     // the binding's credential at another host and answer the user's list from it.
     const nextUrl = admitForgeRequestUrl(record.nextUrl, input.origin.normalized);
     if (nextUrl === null) return null;
-    const cycleProbe = readCursorCycleProbeV1(record.cycleProbe);
+    const rawProbe = readRecord(record.cycleProbe);
+    if (rawProbe === null || !hasExactKeys(rawProbe, CYCLE_PROBE_KEYS)) return null;
+    const cycleProbe = readCursorCycleProbeV1(rawProbe);
     if (cycleProbe === null) return null;
     const admittedProbeCursor = admitForgeRequestUrl(cycleProbe.cursor, input.origin.normalized);
     if (admittedProbeCursor === null) return null;

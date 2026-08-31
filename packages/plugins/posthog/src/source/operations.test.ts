@@ -48,6 +48,7 @@ import {
     toTriageSourceFailure,
 } from './operations.js';
 import { encodePosthogConfiguration } from './instance.js';
+import { deriveTriageConfiguredSourceInstanceDigestV1 } from '@happier-dev/triage-sources/runtime';
 
 // The purpose doubles as this plugin's connected-account contribution id, so the
 // account ref names it in the one spelling the canonical local-id pattern admits.
@@ -384,7 +385,22 @@ describe('PostHog Triage source operations', () => {
 
         expect(() => PosthogConfigurationDirectoryResultV1Schema.parse(result)).not.toThrow();
         expect(result).toMatchObject({ kind: 'organizations', incomplete: true });
-        expect(result.kind === 'organizations' ? result.rows : []).toHaveLength(100);
+        expect(result.kind === 'organizations' ? result.rows : []).toHaveLength(1);
+    });
+
+    it('deduplicates repeated organization rows before discovery reads their environments', async () => {
+        const host = context([{
+            ...organizationsPage,
+            next: null,
+            results: [organizationsPage.results[0], organizationsPage.results[0]],
+        }, { ...projectsPage, next: null }]);
+
+        const result = await listPosthogInstances({ v: 1 }, host.value);
+
+        expect(result.kind).toBe('complete');
+        if (result.kind === 'failed') return;
+        expect(result.candidates).toHaveLength(1);
+        expect(host.request).toHaveBeenCalledTimes(2);
     });
 
     it('does not publish a directory continuation whose offset does not advance', async () => {
@@ -419,6 +435,11 @@ describe('PostHog Triage source operations', () => {
         if (first.kind !== 'page') return;
         expect(first.observations).toHaveLength(3);
         expect(first.continuation.token).not.toContain('Bearer');
+        expect(JSON.parse(first.continuation.token)).toMatchObject({
+            sourceInstanceDigest: deriveTriageConfiguredSourceInstanceDigestV1(instance),
+            environmentTeamUuid: '00000000-0000-4000-8000-0000000000d1',
+        });
+        expect(JSON.parse(first.continuation.token)).not.toHaveProperty('environmentIndex');
 
         const second = await scanPosthogSource({
             v: 1,
@@ -433,7 +454,8 @@ describe('PostHog Triage source operations', () => {
     it('preserves a wide continuation and leaves size to the Action envelope', async () => {
         const geometry = (offset: number, pad: number): string => JSON.stringify({
             v: 1,
-            environmentIndex: 0,
+            sourceInstanceDigest: deriveTriageConfiguredSourceInstanceDigestV1(configuredInstance()),
+            environmentTeamUuid: '00000000-0000-4000-8000-0000000000d1',
             offset,
             from: `2026-07-01T00:00:00.000Z${'x'.repeat(pad)}`,
             to: null,

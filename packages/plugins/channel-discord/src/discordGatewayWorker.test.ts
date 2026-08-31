@@ -479,7 +479,7 @@ describe('Discord Gateway worker', () => {
     const admitObservation = vi.fn(async (input: unknown) => {
       ConversationProviderObservationIngestInputV1Schema.parse(input);
     });
-    const reportReadiness = vi.fn();
+    const reportConnectionStatus = vi.fn();
     const worker = startDiscordGatewayWorker({
       connection: {
         connectionId: 'connection-replay-content',
@@ -499,7 +499,7 @@ describe('Discord Gateway worker', () => {
       admitObservation,
       signal: new AbortController().signal,
       clock: immediateClock,
-      reportReadiness,
+      reportConnectionStatus,
     });
 
     await expect(worker.result).resolves.toEqual({ kind: 'terminal', reason: 'authenticationFailed' });
@@ -536,7 +536,10 @@ describe('Discord Gateway worker', () => {
       }),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(reportReadiness).toHaveBeenCalledTimes(2);
+    expect(reportConnectionStatus).toHaveBeenCalledTimes(3);
+    expect(reportConnectionStatus).toHaveBeenNthCalledWith(1, 'ready');
+    expect(reportConnectionStatus).toHaveBeenNthCalledWith(2, 'reconnecting');
+    expect(reportConnectionStatus).toHaveBeenNthCalledWith(3, 'ready');
   });
 
   it('settles an incumbent admission before a resumed socket can admit later product data', async () => {
@@ -1477,7 +1480,7 @@ describe('Discord Gateway worker', () => {
     ], 4_000);
     const invalidOpenWebSocket = vi.fn(async () => {
       if (invalidOpenWebSocket.mock.calls.length === 1) return invalidResumeSocket;
-      throw new Error('The generic host must not be asked to admit an untrusted Discord resume URL.');
+      return socketWithFrames([], 4_004);
     });
     const invalidWorker = startDiscordGatewayWorker({
       connection: {
@@ -1496,8 +1499,10 @@ describe('Discord Gateway worker', () => {
       clock: immediateClock,
     });
 
-    await expect(invalidWorker.result).resolves.toEqual({ kind: 'historyGap', reason: 'providerHistoryUnavailable' });
-    expect(invalidOpenWebSocket).toHaveBeenCalledTimes(1);
+    await expect(invalidWorker.result).resolves.toEqual({ kind: 'terminal', reason: 'authenticationFailed' });
+    // A rejected untrusted READY resume URL means only that the next attempt
+    // must IDENTIFY; no prior interval was proved lost.
+    expect(invalidOpenWebSocket).toHaveBeenCalledTimes(2);
   });
 
   it('backs off inside the reconnect bounds the Gateway session emitted and restarts the ramp after a healthy session', async () => {
@@ -1537,6 +1542,7 @@ describe('Discord Gateway worker', () => {
       if (!socket) throw new Error('The worker opened more Gateway sockets than this scenario supplies.');
       return socket;
     });
+    const reportedStatuses: Array<'ready' | 'reconnecting'> = [];
     const worker = startDiscordGatewayWorker({
       connection: {
         connectionId: 'connection-reconnect-bounds',
@@ -1556,6 +1562,7 @@ describe('Discord Gateway worker', () => {
       admitObservation: vi.fn(),
       signal: new AbortController().signal,
       clock,
+      reportConnectionStatus: (status) => { reportedStatuses.push(status); },
     });
 
     await expect(worker.result).resolves.toEqual({ kind: 'terminal', reason: 'authenticationFailed' });
@@ -1563,5 +1570,14 @@ describe('Discord Gateway worker', () => {
     // would have produced 8_000 on the fourth); the RESUMED session restarts
     // the ramp (the unreset ramp would have produced 16_000).
     expect(sleeps).toEqual([1_000, 2_000, 4_000, 5_000, 1_000]);
+    expect(reportedStatuses).toEqual([
+      'ready',
+      'reconnecting',
+      'reconnecting',
+      'reconnecting',
+      'reconnecting',
+      'ready',
+      'reconnecting',
+    ]);
   });
 });

@@ -84,8 +84,25 @@ export function createStubGitlabTransport(input: Readonly<{
   let materializeCount = 0;
 
   const connectedAccounts = {
-    async listAccounts(): Promise<never> {
-      throw new Error('No stubbed GitLab Connected Account listing for this test');
+    async listAccounts() {
+      return Object.freeze({
+        status: 'complete' as const,
+        accounts: Object.freeze([Object.freeze({
+          account: GITLAB_TEST_ACCOUNT,
+          displayName: 'GitLab test account',
+          state: 'connected' as const,
+          connectedAccountOrigins: Object.freeze([GITLAB_TEST_ORIGIN]),
+          connectedAccountBases: Object.freeze([GITLAB_TEST_ORIGIN]),
+        })]),
+      });
+    },
+    async getBinding() {
+      return Object.freeze({
+        purpose: GITLAB_CONNECTED_ACCOUNT_PURPOSE,
+        service: GITLAB_TEST_ACCOUNT.service,
+        account: GITLAB_TEST_ACCOUNT,
+        target: Object.freeze({ kind: 'account' as const, displayName: 'GitLab test account' }),
+      });
     },
     async materializeListedAccount(): Promise<Readonly<{
       kind: 'httpHeaders';

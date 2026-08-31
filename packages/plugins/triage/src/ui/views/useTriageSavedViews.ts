@@ -48,6 +48,8 @@ export type TriageMountedSavedViewsV1 = Readonly<{
   notice: TriageSavedViewsNoticeV1 | null;
   /** Why views cannot be changed right now, in words, or `null` when they can. */
   unavailableReason: string | null;
+  /** Retry the authoritative Account-KV read after a transient failure. */
+  retry(): void;
   /**
    * Run one explicit create/rename/update/delete/select.
    *
@@ -55,7 +57,11 @@ export type TriageMountedSavedViewsV1 = Readonly<{
    * write, and to `null` for every settled refusal — so a caller can make the
    * applied projection its lens without ever guessing at one.
    */
-  administer(input: TriageAdministerSavedViewInputV1): Promise<CorpusSavedViewsReadV1 | null>;
+  administer(input: TriageAdministerSavedViewInputV1): Promise<Readonly<{
+    projection: CorpusSavedViewsReadV1;
+    viewId: string | null;
+    revision: string;
+  }> | null>;
 }>;
 
 const UNAVAILABLE_REASON = 'Happier cannot reach your account right now, so saved views cannot be changed.';
@@ -104,9 +110,21 @@ export function useTriageSavedViews(): TriageMountedSavedViewsV1 {
     return () => { controller.abort(); };
   }, [read]);
 
+  const retry = useCallback(() => {
+    const controller = new AbortController();
+    // Keep the unavailable state visible until the Account actually answers;
+    // clearing it at press time would enable stale-view writes while this read
+    // is still unresolved.
+    void read(controller.signal);
+  }, [read]);
+
   const administer = useCallback(async (
     input: TriageAdministerSavedViewInputV1,
-  ): Promise<CorpusSavedViewsReadV1 | null> => {
+  ): Promise<Readonly<{
+    projection: CorpusSavedViewsReadV1;
+    viewId: string | null;
+    revision: string;
+  }> | null> => {
     if (busy || unavailableReason !== null || revision === null) return null;
     const controller = new AbortController();
     setBusy(true);
@@ -120,12 +138,16 @@ export function useTriageSavedViews(): TriageMountedSavedViewsV1 {
           selectedViewId: result.selectedViewId ?? null,
         });
         setSaved(projection);
-        if (result.revision !== undefined) setRevision(result.revision);
+        if (result.revision === undefined || result.viewId === undefined) {
+          setUnavailableReason(text('plugins.triage.surface.views.unavailable', UNAVAILABLE_REASON));
+          return null;
+        }
+        setRevision(result.revision);
         setNotice({
           tone: 'success',
           message: text('plugins.triage.surface.views.settled', 'Saved views updated'),
         });
-        return projection;
+        return { projection, viewId: result.viewId, revision: result.revision };
       }
       setNotice({ tone: 'warning', message: refusalMessage(result, text) });
       // A conflict and an unknown view are the two refusals that mean the set
@@ -151,8 +173,9 @@ export function useTriageSavedViews(): TriageMountedSavedViewsV1 {
     busy,
     notice,
     unavailableReason,
+    retry,
     administer,
-  }), [administer, busy, notice, revision, saved, unavailableReason]);
+  }), [administer, busy, notice, retry, revision, saved, unavailableReason]);
 }
 
 /**

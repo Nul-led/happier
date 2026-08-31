@@ -44,13 +44,18 @@ async function create(
     fixture: ReturnType<typeof createTestkitAccountKv>,
     deps: ReturnType<typeof createDeps>,
     label: string,
-    overrides: Partial<Readonly<{ filters: SurfaceFilterSelectionV1; order: 'newest' | 'oldest' | 'smart' }>> = {},
+    overrides: Partial<Readonly<{
+        query: string;
+        filters: SurfaceFilterSelectionV1;
+        order: 'newest' | 'oldest' | 'smart';
+    }>> = {},
 ) {
     void fixture;
     return await mutateTriageSavedViews(deps, {
         kind: 'create',
         expectedRevision: fixture.revision(TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1),
         label,
+        query: overrides.query ?? '',
         filters: overrides.filters ?? filters(),
         order: overrides.order ?? 'newest',
         smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
@@ -116,6 +121,7 @@ describe('mutateTriageSavedViews', () => {
             kind: 'update' as const,
             viewId: original.viewId,
             label,
+            query: original.query,
             filters: original.filters,
             order,
             smartPolicy: original.smartPolicy,
@@ -140,7 +146,11 @@ describe('mutateTriageSavedViews', () => {
             states: ['open'],
             attention: ['required'],
         });
-        const first = await create(fixture, deps, 'Needs my review', { filters: lens, order: 'smart' });
+        const first = await create(fixture, deps, 'Needs my review', {
+            query: 'authentication',
+            filters: lens,
+            order: 'smart',
+        });
         const second = await create(fixture, deps, 'Everything');
         expect(first.status).toBe('applied');
         expect(second.status).toBe('applied');
@@ -154,6 +164,7 @@ describe('mutateTriageSavedViews', () => {
         expect(restarted.value.views[0]).toEqual({
             viewId: first.viewId,
             label: 'Needs my review',
+            query: 'authentication',
             filters: lens,
             order: 'smart',
             smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
@@ -275,6 +286,7 @@ describe('mutateTriageSavedViews', () => {
                 kind: 'create',
                 expectedRevision: wide.revision(TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1),
                 label: `view ${index}`,
+                query: '',
                 filters: filters({ scopes: scopeValues(17) }),
                 order: 'newest',
                 smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
@@ -318,6 +330,7 @@ describe('mutateTriageSavedViews', () => {
             kind: 'create',
             expectedRevision: fixture.revision(TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1),
             label: 'Bad order',
+            query: '',
             filters: filters(),
             order: 'attention' as unknown as 'newest',
             smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
@@ -326,6 +339,7 @@ describe('mutateTriageSavedViews', () => {
             kind: 'create',
             expectedRevision: fixture.revision(TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1),
             label: 'Bad policy',
+            query: '',
             filters: filters(),
             order: 'smart',
             smartPolicy: { v: 1, precedence: ['attention', 'staleness'] } as never,
@@ -339,6 +353,7 @@ describe('mutateTriageSavedViews', () => {
             kind: 'create',
             expectedRevision: fixture.revision(TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1),
             label: 'Activity first',
+            query: '',
             filters: filters(),
             order: 'smart',
             smartPolicy: { v: 1, precedence: ['activity', 'attention'] },
@@ -350,6 +365,7 @@ describe('mutateTriageSavedViews', () => {
             expectedRevision: fixture.revision(TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1),
             viewId: created.viewId,
             label: 'Activity first',
+            query: '',
             filters: filters(),
             order: 'newest',
             smartPolicy: { v: 1, precedence: ['activity', 'attention'] },
@@ -379,6 +395,7 @@ describe('mutateTriageSavedViews', () => {
             kind: 'create',
             expectedRevision: fixture.revision(TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1),
             label: 'Ours',
+            query: '',
             filters: filters(),
             order: 'newest',
             smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
@@ -428,6 +445,7 @@ describe('mutateTriageSavedViews', () => {
                 kind: 'create',
                 expectedRevision: fixture.revision(TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1),
                 label: 'Mine',
+                query: '',
                 filters: filters(),
                 order: 'newest',
                 smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
@@ -473,6 +491,7 @@ describe('mutateTriageSavedViews', () => {
             views: [{
                 viewId: created.viewId,
                 label: 'Canonical',
+                query: '',
                 filters: lens,
                 order: 'newest',
                 smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,

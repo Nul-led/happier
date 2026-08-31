@@ -1483,13 +1483,19 @@ function collectPackageSources(directory: string): string[] {
  * API, not component families.
  */
 function publicComponentPaths(): readonly string[] {
-  const componentIndex = read(join(packageSourceRoot, 'components/index.ts'));
+  const componentIndex = read(join(packageSourceRoot, 'components/index.public.ts'));
   const modulePaths = [...componentIndex.matchAll(/^export \* from '\.\/([^']+)\.js';$/gmu)]
     .map((match) => match[1])
     .filter((moduleName) => moduleName !== 'PluginUiProvider');
 
   return modulePaths.flatMap((moduleName) => {
-    const source = read(join(packageSourceRoot, 'components', `${moduleName}.tsx`));
+    const moduleBase = join(packageSourceRoot, 'components', moduleName);
+    const modulePath = [`${moduleBase}.tsx`, `${moduleBase}.ts`]
+      .find((candidate) => existsSync(candidate));
+    if (modulePath === undefined) {
+      throw new Error(`Expected public component module ${moduleName} to exist`);
+    }
+    const source = read(modulePath);
     const roots = [...source.matchAll(/^export\s+(?:const|function)\s+([A-Za-z][A-Za-z0-9_]*)\b/gmu)]
       .map((match) => match[1]);
     const namespaceRoots = new Set(

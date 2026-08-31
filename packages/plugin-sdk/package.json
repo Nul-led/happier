@@ -61,6 +61,7 @@
     },
     "./events": {
       "types": "./dist/events/index.d.ts",
+      "browser": "./dist/events/index.browser.js",
       "default": "./dist/events/index.js"
     },
     "./exec": {

@@ -5,19 +5,21 @@ import {
   fitActionResultSequenceV1,
 } from '@happier-dev/triage-sources/projection/actionResultSequence';
 
-import { admitGithubDetailInvocation } from './admission.js';
+import { admitGithubDetailInvocation, admitGithubEntryInvocation } from './admission.js';
 import {
   GithubCapabilitiesInputV1Schema,
   GithubChangedFilesInputV1Schema,
   GithubChecksInputV1Schema,
   GithubFeedbackInputV1Schema,
   GithubFeedbackResultV1Schema,
+  GithubOverviewInputV1Schema,
   GithubReviewsInputV1Schema,
   GithubTimelineInputV1Schema,
   type GithubChangedFilesResultV1,
   type GithubCapabilitiesResultV1,
   type GithubChecksResultV1,
   type GithubFeedbackResultV1,
+  type GithubOverviewResultV1,
   type GithubReviewsResultV1,
   type GithubTimelineResultV1,
 } from './detail/contracts.js';
@@ -44,9 +46,11 @@ import {
   type GithubDetailPageV1,
 } from './detail/reads.js';
 import { toTriageFailure } from './mapping/protocol.js';
+import { readGithubIssue, readGithubPullRequest } from './get.js';
+import { createGithubRepositoryReader } from './repositories.js';
 
 /**
- * The six bound source-native detail operations.
+ * The seven bound source-native detail operations.
  *
  * Each is the whole vertical for one Action invocation: it validates the
  * published input, admits the configured instance through the SAME rule `scan`
@@ -151,6 +155,83 @@ export async function readGithubCapabilities(
   return Object.freeze({
     kind: 'capabilities' as const,
     ...projectGithubRepositoryCapabilities(admitted.repository),
+  });
+}
+
+/* -------------------------------------------------------------------- overview */
+
+const ENTRY_ABSENT_FAILURE: TriageSourceFailureV1 = Object.freeze({
+  class: 'unknown',
+  code: 'github_entry_absent',
+});
+
+const ENTRY_NOT_OBSERVED_FAILURE: TriageSourceFailureV1 = Object.freeze({
+  class: 'unknown',
+  code: 'github_entry_not_observed',
+});
+
+/** One explicit exact entity reread; the launched observation remains the initial view. */
+export async function readGithubOverview(
+  input: unknown,
+  context: PluginInvocationContext,
+): Promise<GithubOverviewResultV1> {
+  const parsed = GithubOverviewInputV1Schema.safeParse(input);
+  if (!parsed.success) return unavailable(INVALID_INPUT_FAILURE);
+  const request = parsed.data;
+  const admitted = await admitGithubEntryInvocation({
+    instance: request.instance,
+    localRef: request.localRef,
+    routingToken: request.routingToken,
+    admissibleKinds: ['pull-request', 'issue'],
+  }, context);
+  if (!admitted.ok) return unavailable(admitted.failure);
+
+  const dependencies = Object.freeze({
+    client: admitted.client,
+    now: Date.now,
+    signal: admitted.signal,
+    repositories: createGithubRepositoryReader({ client: admitted.client, now: Date.now }),
+  });
+  if (admitted.kindId === 'pull-request') {
+    const read = await readGithubPullRequest(
+      admitted.localRef,
+      admitted.route,
+      dependencies.repositories,
+      dependencies,
+    );
+    if (read.observation.kind === 'unresolved') {
+      return unavailable(toTriageFailure(read.observation.failure));
+    }
+    if (read.observation.kind === 'absent') return unavailable(ENTRY_ABSENT_FAILURE);
+    if (read.observation.kind !== 'present' || read.overview === null) {
+      return unavailable(ENTRY_NOT_OBSERVED_FAILURE);
+    }
+    return Object.freeze({
+      kind: 'overview' as const,
+      kindId: 'pull-request' as const,
+      observedAtMs: Date.now(),
+      ...read.overview,
+    });
+  }
+
+  const read = await readGithubIssue(
+    admitted.localRef,
+    admitted.route,
+    dependencies.repositories,
+    dependencies,
+  );
+  if (read.observation.kind === 'unresolved') {
+    return unavailable(toTriageFailure(read.observation.failure));
+  }
+  if (read.observation.kind === 'absent') return unavailable(ENTRY_ABSENT_FAILURE);
+  if (read.observation.kind !== 'present' || read.overview === null) {
+    return unavailable(ENTRY_NOT_OBSERVED_FAILURE);
+  }
+  return Object.freeze({
+    kind: 'overview' as const,
+    kindId: 'issue' as const,
+    observedAtMs: Date.now(),
+    ...read.overview,
   });
 }
 

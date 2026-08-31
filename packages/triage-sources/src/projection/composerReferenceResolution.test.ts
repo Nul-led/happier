@@ -32,4 +32,28 @@ describe('fitComposerReferenceResolutionPrefixV1', () => {
       contextForPrefix: () => 'evidence',
     })).toBeNull();
   });
+
+  it('finds a later fitting prefix when omission disclosure makes admission non-monotonic', () => {
+    let oversizedContext = 'x';
+    while (ProtocolComposerReferenceResolutionV1Schema.safeParse({
+      id: 'candidate-1',
+      label: 'Selected evidence',
+      context: oversizedContext,
+    }).success) {
+      oversizedContext += oversizedContext;
+    }
+    const fitted = fitComposerReferenceResolutionPrefixV1({
+      identity: { id: 'candidate-1', label: 'Selected evidence' },
+      itemCount: 4,
+      contextForPrefix: (includedCount) => (
+        includedCount === 3
+          ? 'Three whole items; the final omission category disappeared.'
+          : oversizedContext
+      ),
+    });
+
+    expect(fitted?.context).toBe(
+      'Three whole items; the final omission category disappeared.',
+    );
+  });
 });

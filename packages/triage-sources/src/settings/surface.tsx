@@ -212,10 +212,10 @@ function createTriageSourceSettingsSurfaceWithDiscoveryDeadline(
 
     const runDiscovery = discovery.execute;
     const runConfiguredRead = configuredRead.execute;
-    const activeDiscoveryDeadline = React.useRef<AbortController | null>(null);
+    const activeDiscoveryController = React.useRef<AbortController | null>(null);
     React.useEffect(() => () => {
-      const active = activeDiscoveryDeadline.current;
-      activeDiscoveryDeadline.current = null;
+      const active = activeDiscoveryController.current;
+      activeDiscoveryController.current = null;
       active?.abort();
     }, []);
 
@@ -223,16 +223,16 @@ function createTriageSourceSettingsSurfaceWithDiscoveryDeadline(
       // `useExecutePluginAction` owns the action's in-flight guard. Keeping the
       // controller until that execution settles means a Refresh cannot start a
       // second request in the small cancellation-to-settlement gap.
-      if (activeDiscoveryDeadline.current !== null) return;
-      const deadline = new AbortController();
-      activeDiscoveryDeadline.current = deadline;
-      const invocation = runDiscovery({ v: 1 }, { signal: deadline.signal });
+      if (activeDiscoveryController.current !== null) return;
+      const controller = new AbortController();
+      activeDiscoveryController.current = controller;
+      const invocation = runDiscovery({ v: 1 }, { signal: controller.signal });
       void invocation.then(
         () => {
-          if (activeDiscoveryDeadline.current === deadline) activeDiscoveryDeadline.current = null;
+          if (activeDiscoveryController.current === controller) activeDiscoveryController.current = null;
         },
         () => {
-          if (activeDiscoveryDeadline.current === deadline) activeDiscoveryDeadline.current = null;
+          if (activeDiscoveryController.current === controller) activeDiscoveryController.current = null;
         },
       );
       void (async () => {
@@ -245,7 +245,7 @@ function createTriageSourceSettingsSurfaceWithDiscoveryDeadline(
         } finally {
           // This invocation is no longer current to this page. The mounted
           // host/action boundary owns the resulting outcome-unknown state.
-          deadline.abort();
+          controller.abort();
         }
       })();
     }, [discoveryDeadlineMs, runDiscovery]);

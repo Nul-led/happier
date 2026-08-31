@@ -1,6 +1,7 @@
 export type { CreateReviewCommentFingerprintInput } from './comments.js';
 export { REVIEW_SCM_SCOPE_INPUT_KEY } from './scope.js';
 export type { ReviewCommentAnchorV1 } from './comments.js';
+export type { ReviewCommentClaimPublicationDispatchRequestV1 } from './comments.js';
 export type { ReviewCommentClaimPublicationDispatchResponseV1 } from './comments.js';
 export type { ReviewCommentEvidenceV1 } from './comments.js';
 export type { ReviewCommentFingerprintV1 } from './comments.js';
@@ -52,6 +53,7 @@ export type { ScmPullRequestReviewScopeV1 } from './scope.js';
 export { ScmPullRequestReviewScopeV1Schema } from './scope.js';
 export { createReviewCommentFingerprint } from './comments.js';
 export { createReviewCommentLinkedIssueIdV1 } from './comments.js';
+export { createReviewCommentPublicationSettlementRequestV1 } from './comments.js';
 export { defineReviewCommentRevisionedPublicationPlanV1ProtocolSchema } from './comments.js';
 export { defineReviewCommentRevisionedSingleEntryPublicationPlanV1ProtocolSchema } from './comments.js';
 export { formatReviewCommentPublicationMarkerV1 } from './comments.js';

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  encodeHappierSectionCellKey,
+  encodeHappierSectionRowCellKey,
   resolveHappierItemBehavior,
   resolveHappierItemGroupConstraints,
   resolveHappierItemSemantics,
@@ -102,6 +104,28 @@ describe('shared item and group semantics', () => {
       entries: [{ disabled: true }],
       selectedIndex: -1,
     })).toBeNull();
+  });
+
+  it('encodes sectioned cell identity so no composed virtualizer cell key collides', () => {
+    // The platform section virtualizer composes cell keys by plain string
+    // concatenation — `sectionKey + ':header'`, `sectionKey + ':footer'`, and
+    // `sectionKey + ':' + rowKey`. These author keys collide pairwise under
+    // raw concatenation ('a' + 'b:header' is 'a:b:header', the header cell of
+    // section 'a:b').
+    const sectionKeys = ['', '0', 'a', 'a:b', 'a:b:header'];
+    const rowKeys = ['', 'header', 'footer', 'b:header', 'b:c', 'c'];
+    const composed = new Set<string>();
+    for (const sectionKey of sectionKeys) {
+      const sectionCellKey = encodeHappierSectionCellKey(sectionKey);
+      composed.add(`${sectionCellKey}:header`);
+      composed.add(`${sectionCellKey}:footer`);
+      for (const rowKey of rowKeys) {
+        composed.add(`${sectionCellKey}:${encodeHappierSectionRowCellKey(rowKey)}`);
+      }
+    }
+    // Every section contributes 2 synthetic cells plus one row cell per row
+    // key, and every one of those cells must be addressable on its own.
+    expect(composed.size).toBe(sectionKeys.length * (2 + rowKeys.length));
   });
 
   it('rejects group combinations whose visual and semantic orders disagree', () => {

@@ -16,6 +16,24 @@ import type {
 } from '../services/targetedContributions.js';
 
 /**
+ * The exact structural subset synthesized by the daemon-independent testkit.
+ * Descriptor and Surface admission remain production CLI responsibilities;
+ * this fixture exposes only stable identity plus host-issued operation handles.
+ */
+export type PluginTestkitTargetedContributionFixtureEntry = Readonly<{
+    contributor: Readonly<{
+        pluginId: string;
+        contributionId: string;
+        immutableGenerationId: string;
+    }>;
+    protocol: Readonly<{
+        id: string;
+        version: number;
+    }>;
+    operations: Readonly<Record<string, AdmittedTargetedOperationExecutionHandle>>;
+}>;
+
+/**
  * One target-local fixture selection. The contributor testkit supplies only
  * fixture membership; the testkit itself resolves its current generation,
  * declared Action binding, and opaque execution capability.
@@ -151,7 +169,11 @@ export type PluginTestkitOptions = Readonly<{
     /**
      * Contributor testkits used only to derive a structural targeted-
      * contribution fixture from their parsed manifests and current synthetic
-     * generations. This is not production catalog or cold-admission input.
+     * generations. This is not production catalog or cold-admission input and
+     * does not install a production-shaped `targetedContributions` service.
+     * Tests that need descriptor or Surface semantics must use the real host;
+     * operation-only tests use `readTargetedContributionFixture` and
+     * `issueAdmittedTargetedOperation`.
      */
     targetedContributionContributors?: readonly PluginTestkit[];
     /**
@@ -200,9 +222,9 @@ export interface PluginTestkit {
      * declarations and current synthetic generations; it does not perform
      * production CLI cold admission, diagnostics, or semantic projection.
      */
-    readTargetedContributionFixture<TContribution>(
-        point: TargetedContributionPointRef<TContribution>,
-    ): TargetedContributionSnapshot<TContribution>;
+    readTargetedContributionFixture(
+        point: TargetedContributionPointRef<unknown>,
+    ): TargetedContributionSnapshot<PluginTestkitTargetedContributionFixtureEntry>;
     /**
      * Selects one original, host-issued operation from this target testkit's
      * currently admitted structural fixture. Callers cannot supply an Action,

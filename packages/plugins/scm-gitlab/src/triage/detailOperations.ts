@@ -19,7 +19,11 @@
  */
 
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
-import type { TriageSourceFailureV1 } from '@happier-dev/triage-protocol/v1';
+import type {
+  TriageConfiguredSourceInstanceV1,
+  TriageSourceEntryLocalRefV1,
+  TriageSourceFailureV1,
+} from '@happier-dev/triage-protocol/v1';
 import {
   fitActionResultPageV1,
   fitActionResultSequenceV1,
@@ -33,6 +37,8 @@ import {
   GitlabChangesInputV1Schema,
   GitlabDiscussionsInputV1Schema,
   GitlabNotesInputV1Schema,
+  GitlabOverviewInputV1Schema,
+  GitlabOverviewResultV1Schema,
   GitlabPipelinesInputV1Schema,
   GitlabRawDiffInputV1Schema,
   type GitlabActivityEventsResultV1,
@@ -40,12 +46,15 @@ import {
   type GitlabChangesResultV1,
   type GitlabDiscussionsResultV1,
   type GitlabNotesResultV1,
+  type GitlabOverviewResultV1,
   type GitlabPipelinesResultV1,
   type GitlabRawDiffResultV1,
 } from './detail/contracts.js';
 import {
   decodeGitlabDetailContinuation,
   encodeGitlabDetailContinuation,
+  type GitlabDetailContinuationPlaneV1,
+  type GitlabDetailContinuationProvenanceV1,
 } from './detail/continuation.js';
 import type { GitlabDetailRouteInputV1 } from './detail/routes.js';
 import {
@@ -60,6 +69,8 @@ import {
   type GitlabWalkPositionV1,
 } from './detail/reads.js';
 import { projectGitlabSourceFailure } from './sourceFailure.js';
+import { createGitlabHttpFetcher, readGitlabConnectedAccounts } from './invocation.js';
+import { readGitlabTriageEntryForOverview } from './sourceGet.js';
 
 const INVALID_INPUT_FAILURE: TriageSourceFailureV1 = Object.freeze({
   class: 'unsupportedContract',
@@ -75,6 +86,51 @@ type GitlabApprovalRulesResultV1 = Extract<
   GitlabApprovalsResultV1,
   Readonly<{ kind: 'approvals' }>
 >['rules'];
+
+/* ------------------------------------------------------------------ overview */
+
+export async function readGitlabOverview(
+  input: unknown,
+  context: PluginInvocationContext,
+): Promise<GitlabOverviewResultV1> {
+  const parsed = GitlabOverviewInputV1Schema.safeParse(input);
+  if (!parsed.success) return unavailable(INVALID_INPUT_FAILURE);
+  const request = parsed.data;
+  const read = await readGitlabTriageEntryForOverview({
+    get: {
+      v: 1,
+      instance: request.instance,
+      localRef: request.localRef,
+      lastKnownLocator: { v: 1, routingToken: request.routingToken },
+    },
+    connectedAccounts: readGitlabConnectedAccounts(context),
+    fetcher: createGitlabHttpFetcher(context),
+    signal: context.signal,
+    nowMs: Date.now(),
+  });
+  if (read.result.kind !== 'present') {
+    return unavailable('failure' in read.result
+      ? read.result.failure
+      : { class: 'unknown', code: 'gitlab-overview-not-observed' });
+  }
+
+  const base = {
+    kind: 'overview' as const,
+    observedAtMs: Date.now(),
+    observation: read.result,
+  };
+  if (read.description === null) {
+    return GitlabOverviewResultV1Schema.parse({
+      ...base,
+      descriptionTruncated: false,
+    });
+  }
+  return fitActionResultTextV1(read.description, (description, descriptionTruncated) => ({
+    ...base,
+    description,
+    descriptionTruncated,
+  }));
+}
 
 function unavailable(failure: TriageSourceFailureV1): Readonly<{
   kind: 'unavailable';
@@ -95,6 +151,7 @@ function resolvePosition(
   continuation: string | undefined,
   route: GitlabDetailRouteInputV1,
   limit: number,
+  provenance: GitlabDetailContinuationProvenanceV1,
 ): Readonly<{ ok: true; position: GitlabDetailPagePositionV1 }> | Readonly<{ ok: false }> {
   if (continuation === undefined) {
     return Object.freeze({ ok: true as const, position: Object.freeze({ kind: 'first' as const }) });
@@ -103,6 +160,7 @@ function resolvePosition(
     token: continuation,
     origin: route.origin,
     limit,
+    provenance,
   });
   if (frontier === null) return Object.freeze({ ok: false as const });
   return Object.freeze({
@@ -117,9 +175,33 @@ type PagedShape = Readonly<{
 }>;
 
 /** Mints the provider position once so the canonical Action-envelope fitter can admit it. */
-function mintWalkContinuation(page: GitlabWalkPositionV1, limit: number): string | undefined {
+function mintWalkContinuation(
+  page: GitlabWalkPositionV1,
+  limit: number,
+  provenance: GitlabDetailContinuationProvenanceV1,
+): string | undefined {
   if (page.nextUrl === null) return undefined;
-  return encodeGitlabDetailContinuation({ nextUrl: page.nextUrl, limit }) ?? undefined;
+  return encodeGitlabDetailContinuation({ nextUrl: page.nextUrl, limit, provenance }) ?? undefined;
+}
+
+function detailContinuationProvenance(
+  request: Readonly<{
+    instance: TriageConfiguredSourceInstanceV1;
+    localRef: TriageSourceEntryLocalRefV1;
+    routingToken: string;
+  }>,
+  route: GitlabDetailRouteInputV1,
+  plane: GitlabDetailContinuationPlaneV1,
+): GitlabDetailContinuationProvenanceV1 {
+  return Object.freeze({
+    plane,
+    sourceInstanceId: request.instance.instance.sourceInstanceId,
+    configuredBaseUrl: route.origin.normalized,
+    routingToken: request.routingToken,
+    kindId: request.localRef.kindId,
+    collisionScope: request.localRef.collisionScope,
+    entryId: request.localRef.entryId,
+  });
 }
 
 /** Shapes one settled walk position into the members every paged plane shares. */
@@ -161,11 +243,13 @@ async function listGitlabNotesUnbounded(
   const admitted = await admitGitlabItemInvocation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     admissibleKinds: ['merge-request', 'issue'],
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
 
-  const position = resolvePosition(request.continuation, admitted.route, request.limit);
+  const provenance = detailContinuationProvenance(request, admitted.route, 'notes');
+  const position = resolvePosition(request.continuation, admitted.route, request.limit, provenance);
   if (!position.ok) return unavailable(CONTINUATION_UNREADABLE_FAILURE);
 
   const page = await readGitlabNotesPage({
@@ -175,7 +259,7 @@ async function listGitlabNotesUnbounded(
   }, admitted.dependencies);
   if (!page.ok) return unavailable(projectGitlabSourceFailure(page.failure));
 
-  const continuation = mintWalkContinuation(page.value, request.limit);
+  const continuation = mintWalkContinuation(page.value, request.limit, provenance);
   return fitActionResultPageV1(page.value.rows, continuation, (
     rows,
     omittedByEnvelope,
@@ -211,11 +295,17 @@ async function listGitlabActivityEventsUnbounded(
   const admitted = await admitGitlabItemInvocation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     admissibleKinds: ['merge-request', 'issue'],
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
 
-  const position = resolvePosition(request.continuation, admitted.route, request.limit);
+  const provenance = detailContinuationProvenance(
+    request,
+    admitted.route,
+    `activity:${request.eventSource}`,
+  );
+  const position = resolvePosition(request.continuation, admitted.route, request.limit, provenance);
   if (!position.ok) return unavailable(CONTINUATION_UNREADABLE_FAILURE);
 
   const page = await readGitlabActivityEventsPage({
@@ -226,7 +316,7 @@ async function listGitlabActivityEventsUnbounded(
   }, admitted.dependencies);
   if (!page.ok) return unavailable(projectGitlabSourceFailure(page.failure));
 
-  const continuation = mintWalkContinuation(page.value, request.limit);
+  const continuation = mintWalkContinuation(page.value, request.limit, provenance);
   return fitActionResultPageV1(page.value.rows, continuation, (
     rows,
     omittedByEnvelope,
@@ -256,13 +346,15 @@ async function listGitlabDiscussionsUnbounded(
   const admitted = await admitGitlabItemInvocation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     // An issue has discussions too, but the `Reviews` tab is a merge-request
     // composition; the issue vertical reads its notes collection instead.
     admissibleKinds: ['merge-request'],
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
 
-  const position = resolvePosition(request.continuation, admitted.route, request.limit);
+  const provenance = detailContinuationProvenance(request, admitted.route, 'discussions');
+  const position = resolvePosition(request.continuation, admitted.route, request.limit, provenance);
   if (!position.ok) return unavailable(CONTINUATION_UNREADABLE_FAILURE);
 
   const page = await readGitlabDiscussionsPage({
@@ -272,7 +364,7 @@ async function listGitlabDiscussionsUnbounded(
   }, admitted.dependencies);
   if (!page.ok) return unavailable(projectGitlabSourceFailure(page.failure));
 
-  const continuation = mintWalkContinuation(page.value, request.limit);
+  const continuation = mintWalkContinuation(page.value, request.limit, provenance);
   return fitActionResultPageV1(page.value.rows, continuation, (
     rows,
     omittedByEnvelope,
@@ -308,6 +400,7 @@ async function readGitlabApprovalsUnbounded(
   const admitted = await admitGitlabItemInvocation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     admissibleKinds: ['merge-request'],
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
@@ -404,11 +497,13 @@ async function listGitlabPipelinesUnbounded(
   const admitted = await admitGitlabItemInvocation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     admissibleKinds: ['merge-request'],
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
 
-  const position = resolvePosition(request.continuation, admitted.route, request.limit);
+  const provenance = detailContinuationProvenance(request, admitted.route, 'pipelines');
+  const position = resolvePosition(request.continuation, admitted.route, request.limit, provenance);
   if (!position.ok) return unavailable(CONTINUATION_UNREADABLE_FAILURE);
 
   const page = await readGitlabPipelinesPage({
@@ -419,7 +514,7 @@ async function listGitlabPipelinesUnbounded(
   if (!page.ok) return unavailable(projectGitlabSourceFailure(page.failure));
 
   const { rollup, rollupPipelineId } = page.value;
-  const continuation = mintWalkContinuation(page.value, request.limit);
+  const continuation = mintWalkContinuation(page.value, request.limit, provenance);
   return fitActionResultPageV1(page.value.rows, continuation, (
     rows,
     omittedByEnvelope,
@@ -463,11 +558,13 @@ async function listGitlabChangesUnbounded(
   const admitted = await admitGitlabItemInvocation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     admissibleKinds: ['merge-request'],
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
 
-  const position = resolvePosition(request.continuation, admitted.route, request.limit);
+  const provenance = detailContinuationProvenance(request, admitted.route, 'changes');
+  const position = resolvePosition(request.continuation, admitted.route, request.limit, provenance);
   if (!position.ok) return unavailable(CONTINUATION_UNREADABLE_FAILURE);
 
   const page = await readGitlabChangesPage({
@@ -477,7 +574,7 @@ async function listGitlabChangesUnbounded(
   }, admitted.dependencies);
   if (!page.ok) return unavailable(projectGitlabSourceFailure(page.failure));
 
-  const continuation = mintWalkContinuation(page.value, request.limit);
+  const continuation = mintWalkContinuation(page.value, request.limit, provenance);
   return fitActionResultPageV1(page.value.rows, continuation, (
     rows,
     omittedByEnvelope,
@@ -511,6 +608,7 @@ async function readGitlabRawDiffUnbounded(
   const admitted = await admitGitlabItemInvocation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     admissibleKinds: ['merge-request'],
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);

@@ -15,6 +15,7 @@ import {
   type AzureProjectPage,
   type AzurePullRequestLanePage,
   type AzureRepositoryFrontierResult,
+  type AzureScanContinuationProvenance,
   type AzureScanFrontier,
   type AzureScanStickyReason,
 } from './types.js';
@@ -27,6 +28,8 @@ import {
  */
 export const AZURE_PROJECT_PAGE_SIZE = 1;
 export const AZURE_CONTINUATION_TOKEN_HEADER = 'x-ms-continuationtoken';
+/** Azure's provider-native PR page used by the approved scan geometry. */
+export const AZURE_NATIVE_PAGE_SIZE = 30;
 
 const LANE_ORDER: readonly AzureInvolvementLaneId[] = ['authored', 'reviewer'];
 
@@ -38,10 +41,13 @@ const LANE_ORDER: readonly AzureInvolvementLaneId[] = ['authored', 'reviewer'];
  */
 export function createAzureScanFrontier(input: Readonly<{
   scanLimit: number;
+  provenance: AzureScanContinuationProvenance;
 }>): AzureScanFrontier {
   const scanLimit = Math.max(1, Math.floor(input.scanLimit));
   return {
     scanLimit,
+    nativePageSize: deriveAzureNativePageSize(scanLimit),
+    provenance: input.provenance,
     projectId: null,
     projectNextToken: null,
     lastCompletedRepositoryId: null,
@@ -51,6 +57,15 @@ export function createAzureScanFrontier(input: Readonly<{
     walkHealth: [],
     observed: 0,
   };
+}
+
+/**
+ * The initial call binds the smaller of the public page budget and Azure's native PR page. Keeping
+ * the derivation here gives initial construction and untrusted-token decoding one owner for the
+ * geometry; later calls reuse the encoded value and never shrink `$top` to a page remainder.
+ */
+export function deriveAzureNativePageSize(scanLimit: number): number {
+  return Math.min(Math.max(1, Math.floor(scanLimit)), AZURE_NATIVE_PAGE_SIZE);
 }
 
 /** The two distinct provider queries every enabled repository is walked through. */
@@ -76,7 +91,7 @@ export function recordAzureWalkHealth(
 
 /** True while the caller's projection budget has room for another provider row. */
 export function azurePageFitsBudget(frontier: AzureScanFrontier): boolean {
-  return frontier.observed < frontier.scanLimit;
+  return frontier.observed + frontier.nativePageSize <= frontier.scanLimit;
 }
 
 /**

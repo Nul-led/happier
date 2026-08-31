@@ -5,6 +5,7 @@ import {
     TRIAGE_SAVED_VIEWS_ACCOUNT_KV_KEY_V1,
     mutateTriageSavedViews,
     readTriageSavedViews,
+    type CorpusSavedViewDraftV1,
 } from './settings/savedViews.js';
 import { createTestkitAccountKv } from './settings/testkit/accountKv.test-support.js';
 
@@ -36,10 +37,11 @@ afterEach(() => {
 });
 
 const LENS = {
+    query: '',
     filters: { sources: [], types: [], scopes: [], states: ['open'], attention: ['required'] },
     order: 'smart',
     smartPolicy: { v: 1, precedence: ['attention', 'activity'] },
-} as const;
+} as const satisfies Omit<CorpusSavedViewDraftV1, 'label'>;
 
 describe('the Triage opaque-id owner', () => {
     it('mints distinct ids', () => {

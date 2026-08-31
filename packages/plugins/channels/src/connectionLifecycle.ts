@@ -642,6 +642,20 @@ export function startConversationConnectionTransfer(input: Readonly<{
   };
 }
 
+/** The one lifecycle projection after delete custody has been settled. */
+function finalizingConversationConnectionDelete(
+  current: ConversationConnectionLifecycleStateV1,
+): ConversationConnectionLifecycleStateV1 {
+  return {
+    ...current,
+    deletionState: 'finalizingDelete',
+    pendingOldTransportStop: null,
+    historyGap: current.historyGap,
+    providerReadiness: null,
+    pollFailure: null,
+  };
+}
+
 /**
  * Accepts stop evidence only for the exact authority epoch that was persisted
  * in the pending delete row. Provider/materialization/current-generation
@@ -678,13 +692,65 @@ export function confirmConversationConnectionStop(input: Readonly<{
   }
   return {
     kind: 'deleteFinalizing',
+    connection: finalizingConversationConnectionDelete(current),
+  };
+}
+
+/**
+ * Finalizes a delete whose selected transport has no provider-owned process
+ * to stop. The caller establishes that transport fact before invoking this
+ * lifecycle owner; this transition only removes the already-fenced Channels
+ * reference and never represents an external endpoint revoke or stop proof.
+ */
+export function finalizeConversationConnectionDeleteWithoutProviderStop(input: Readonly<{
+  current: ConversationConnectionLifecycleStateV1;
+}>): Extract<ConversationConnectionStopConfirmationResultV1, Readonly<{
+  kind: 'deleteFinalizing';
+}>> | Readonly<{ kind: 'staleAuthority' }> {
+  const { current } = input;
+  const pending = current.pendingOldTransportStop;
+  if (
+    current.deletionState !== 'pendingStopReconciliation'
+    || current.enabled
+    || pending === null
+    || pending.acceptedPossibleLoss
+    || pending.stopRequest.reason !== 'delete'
+  ) {
+    return { kind: 'staleAuthority' };
+  }
+  return {
+    kind: 'deleteFinalizing',
+    connection: finalizingConversationConnectionDelete(current),
+  };
+}
+
+/**
+ * Settles transfer custody when the retired transport has no provider-owned
+ * process. Durable-push endpoint retarget/correspondence is already complete
+ * at the generic webhook owner; this transition deliberately neither invokes
+ * a provider stop nor revokes the Account-managed endpoint.
+ */
+export function finalizeConversationConnectionTransferWithoutProviderStop(input: Readonly<{
+  current: ConversationConnectionLifecycleStateV1;
+}>): Extract<ConversationConnectionStopConfirmationResultV1, Readonly<{
+  kind: 'transportStopConfirmed';
+}>> | Readonly<{ kind: 'staleAuthority' }> {
+  const { current } = input;
+  const pending = current.pendingOldTransportStop;
+  if (
+    current.deletionState !== 'none'
+    || pending === null
+    || pending.acceptedPossibleLoss
+    || pending.stopRequest.reason !== 'transfer'
+    || pending.stopRequest.authorityEpoch !== current.authorityEpoch
+  ) {
+    return { kind: 'staleAuthority' };
+  }
+  return {
+    kind: 'transportStopConfirmed',
     connection: {
       ...current,
-      deletionState: 'finalizingDelete',
       pendingOldTransportStop: null,
-      historyGap: current.historyGap,
-      providerReadiness: null,
-      pollFailure: null,
     },
   };
 }

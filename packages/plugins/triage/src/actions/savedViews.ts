@@ -42,6 +42,7 @@ function projectViews(views: readonly CorpusSavedViewV1[]): TriageReadSavedViews
     return views.map((view) => ({
         viewId: view.viewId,
         label: view.label,
+        query: view.query,
         filters: view.filters,
         order: view.order,
         smartPolicy: view.smartPolicy,
@@ -78,6 +79,7 @@ function commandFrom(input: TriageAdministerSavedViewInputV1): CorpusSavedViewCo
     if (smartPolicy === null) return null;
     const draft = {
         label: input.label,
+        query: input.query,
         filters: input.filters,
         order: input.order,
         smartPolicy,
@@ -114,6 +116,7 @@ export async function administerTriageSavedView(
         v: 1,
         status: 'applied',
         views: projectViews(result.value.views),
+        viewId: result.viewId,
         selectedViewId: result.value.selectedViewId,
         revision: result.revision,
     };

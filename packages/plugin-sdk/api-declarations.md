@@ -3123,14 +3123,26 @@ type PluginActionInputById = {
         targetMachineId?: string | undefined;
         targetPath?: string | undefined;
         targetSessionStorageMode?: 'direct' | 'persisted' | undefined;
-        workspaceTransfer?: {
-            [x: string]: unknown;
-            enabled: boolean;
-            conflictPolicy: 'create_sibling_copy' | 'replace_existing';
-            strategy?: 'transfer_snapshot' | 'sync_changes' | undefined;
-            includeIgnoredMode?: 'exclude' | 'include_selected' | undefined;
-            ignoredIncludeGlobs?: readonly string[] | undefined;
+        workspaceAction?: {
+            kind: 'none';
+        } | {
+            kind: 'copy_once';
+            contentPolicy: {
+                v: 1;
+                selection: 'git_worktree' | 'all_files';
+                extraIgnorePatterns: readonly string[];
+                extraIncludePatterns: readonly string[];
+                includeGitDirectory: boolean;
+                policyDigest: string;
+            };
+        } | {
+            kind: 'relationship';
+            relationshipId: string;
+            flushBeforeCommit: boolean;
         } | undefined;
+        workspaceSyncSourceWorkspaceRefId?: string | undefined;
+        workspaceSyncTargetWorkspaceRefId?: string | undefined;
+        workspaceSyncSettingsVersion?: number | undefined;
     };
     readonly "session.handoff.status.get": {
         [x: string]: unknown;
@@ -4218,6 +4230,47 @@ type PluginActionInputById = {
             kind: 'comment' | 'approve' | 'requestChanges';
             body: string;
         } | null;
+        settlement?: {
+            dispatchToken: string | null;
+            result: {
+                publicationPlanId: string;
+                entries: {
+                    happierCommentId: string;
+                    publicationCorrelationId: string;
+                    outcome: {
+                        kind: 'published';
+                        externalRef: string;
+                    } | {
+                        kind: 'failed';
+                        code: string;
+                        message?: string | undefined;
+                    } | {
+                        kind: 'uncertain';
+                    } | {
+                        kind: 'skippedPriorFailure';
+                    };
+                }[];
+                verdict: {
+                    kind: 'notRequested';
+                } | {
+                    publicationCorrelationId: string;
+                    outcome: {
+                        kind: 'published';
+                        externalRef?: string | undefined;
+                    } | {
+                        kind: 'failed';
+                        code: string;
+                        message?: string | undefined;
+                        externalRef?: string | undefined;
+                    } | {
+                        kind: 'uncertain';
+                        externalRef?: string | undefined;
+                    } | {
+                        kind: 'skippedPriorFailure';
+                    };
+                };
+            };
+        } | undefined;
     };
     readonly "sessions.subagents.list": {
         [x: string]: unknown;
@@ -12449,6 +12502,7 @@ type PluginActionResultById = {
     };
     readonly "reviews.comments.claimPublicationDispatch": {
         disposition: 'dispatch' | 'reconcile';
+        dispatchToken: string | null;
         publicationPlanId: string;
         entries: {
             happierCommentId: string;
@@ -12456,6 +12510,48 @@ type PluginActionResultById = {
         }[];
         verdict: {
             publicationCorrelationId: string;
+        } | null;
+        instructions: {
+            entries: ('confirmed' | 'dispatch' | 'reconcile' | 'held')[];
+            verdict: 'confirmed' | 'dispatch' | 'reconcile' | 'held' | null;
+        };
+        priorResult: {
+            publicationPlanId: string;
+            entries: {
+                happierCommentId: string;
+                publicationCorrelationId: string;
+                outcome: {
+                    kind: 'published';
+                    externalRef: string;
+                } | {
+                    kind: 'failed';
+                    code: string;
+                    message?: string | undefined;
+                } | {
+                    kind: 'uncertain';
+                } | {
+                    kind: 'skippedPriorFailure';
+                };
+            }[];
+            verdict: {
+                kind: 'notRequested';
+            } | {
+                publicationCorrelationId: string;
+                outcome: {
+                    kind: 'published';
+                    externalRef?: string | undefined;
+                } | {
+                    kind: 'failed';
+                    code: string;
+                    message?: string | undefined;
+                    externalRef?: string | undefined;
+                } | {
+                    kind: 'uncertain';
+                    externalRef?: string | undefined;
+                } | {
+                    kind: 'skippedPriorFailure';
+                };
+            };
         } | null;
     };
     readonly "sessions.subagents.list": {
@@ -12645,10 +12741,78 @@ type PluginActionResultById = {
             ok: true;
             status: 'failed' | 'cancelled' | 'succeeded' | 'timeout';
             result: {
+                [x: string]: unknown;
                 run: {
+                    [x: string]: unknown;
                     runId: string;
-                    status: 'failed' | 'cancelled' | 'succeeded' | 'timeout';
+                    callId: string;
+                    sidechainId: string;
+                    intent: 'scm_diff_summary' | 'plan' | 'review' | 'delegate' | 'task' | 'voice_agent' | 'memory_hints' | 'scm_commit_message';
+                    backendTarget: {
+                        kind: 'builtInAgent';
+                        agentId: string;
+                    } | {
+                        kind: 'configuredAcpBackend';
+                        backendId: string;
+                    };
+                    permissionMode: string;
+                    retentionPolicy: 'ephemeral' | 'resumable';
+                    runClass: 'bounded' | 'long_lived';
+                    ioMode: 'request_response' | 'streaming';
+                    status: 'failed' | 'cancelled' | 'succeeded' | 'running' | 'timeout';
+                    startedAtMs: number;
+                    display?: {
+                        [x: string]: unknown;
+                        title?: string | undefined;
+                        participantLabel?: string | undefined;
+                        groupId?: string | undefined;
+                    } | undefined;
+                    turnInFlight?: boolean | undefined;
+                    availableActionIds?: string[] | undefined;
+                    resumeHandle?: {
+                        [x: string]: unknown;
+                        kind: 'provider_session.v1';
+                        backendTarget: {
+                            kind: 'backend';
+                            backendId: string;
+                            configuredBackendId?: string | undefined;
+                            sourceKind?: 'built_in' | 'configured' | undefined;
+                        };
+                        providerSessionId: string;
+                    } | {
+                        [x: string]: unknown;
+                        kind: 'voice_agent_sessions.v1';
+                        backendTarget: {
+                            kind: 'backend';
+                            backendId: string;
+                            configuredBackendId?: string | undefined;
+                            sourceKind?: 'built_in' | 'configured' | undefined;
+                        };
+                        chatProviderSessionId: string;
+                        commitProviderSessionId: string;
+                    } | undefined;
+                    transcript?: {
+                        [x: string]: unknown;
+                        persistenceMode: 'ephemeral' | 'persistent';
+                        epoch: number;
+                    } | undefined;
+                    finishedAtMs?: number | undefined;
+                    error?: {
+                        [x: string]: unknown;
+                        code: string;
+                        message?: string | undefined;
+                    } | undefined;
                 };
+                latestToolResult?: unknown;
+                structuredMeta?: {
+                    [x: string]: unknown;
+                    kind: string;
+                    payload: unknown;
+                } | undefined;
+                structuredMetaArtifactRef?: {
+                    [x: string]: unknown;
+                    artifactId: string;
+                } | undefined;
             };
         } | {
             ok: false;
@@ -12893,10 +13057,78 @@ type PluginActionResultById = {
         ok: true;
         status: 'failed' | 'cancelled' | 'succeeded' | 'timeout';
         result: {
+            [x: string]: unknown;
             run: {
+                [x: string]: unknown;
                 runId: string;
-                status: 'failed' | 'cancelled' | 'succeeded' | 'timeout';
+                callId: string;
+                sidechainId: string;
+                intent: 'scm_diff_summary' | 'plan' | 'review' | 'delegate' | 'task' | 'voice_agent' | 'memory_hints' | 'scm_commit_message';
+                backendTarget: {
+                    kind: 'builtInAgent';
+                    agentId: string;
+                } | {
+                    kind: 'configuredAcpBackend';
+                    backendId: string;
+                };
+                permissionMode: string;
+                retentionPolicy: 'ephemeral' | 'resumable';
+                runClass: 'bounded' | 'long_lived';
+                ioMode: 'request_response' | 'streaming';
+                status: 'failed' | 'cancelled' | 'succeeded' | 'running' | 'timeout';
+                startedAtMs: number;
+                display?: {
+                    [x: string]: unknown;
+                    title?: string | undefined;
+                    participantLabel?: string | undefined;
+                    groupId?: string | undefined;
+                } | undefined;
+                turnInFlight?: boolean | undefined;
+                availableActionIds?: string[] | undefined;
+                resumeHandle?: {
+                    [x: string]: unknown;
+                    kind: 'provider_session.v1';
+                    backendTarget: {
+                        kind: 'backend';
+                        backendId: string;
+                        configuredBackendId?: string | undefined;
+                        sourceKind?: 'built_in' | 'configured' | undefined;
+                    };
+                    providerSessionId: string;
+                } | {
+                    [x: string]: unknown;
+                    kind: 'voice_agent_sessions.v1';
+                    backendTarget: {
+                        kind: 'backend';
+                        backendId: string;
+                        configuredBackendId?: string | undefined;
+                        sourceKind?: 'built_in' | 'configured' | undefined;
+                    };
+                    chatProviderSessionId: string;
+                    commitProviderSessionId: string;
+                } | undefined;
+                transcript?: {
+                    [x: string]: unknown;
+                    persistenceMode: 'ephemeral' | 'persistent';
+                    epoch: number;
+                } | undefined;
+                finishedAtMs?: number | undefined;
+                error?: {
+                    [x: string]: unknown;
+                    code: string;
+                    message?: string | undefined;
+                } | undefined;
             };
+            latestToolResult?: unknown;
+            structuredMeta?: {
+                [x: string]: unknown;
+                kind: string;
+                payload: unknown;
+            } | undefined;
+            structuredMetaArtifactRef?: {
+                [x: string]: unknown;
+                artifactId: string;
+            } | undefined;
         };
     } | {
         ok: false;
@@ -25561,7 +25793,7 @@ type PluginActionResultById = {
                 flow: {
                     flowId: string;
                     flowKind: 'bounded_transfer' | 'tcp_tunnel' | 'voice_media' | 'live_stream' | 'machine_rpc';
-                    routeKind?: 'loopback_direct' | 'lan_direct' | 'tailscale_serve_direct' | 'server_relay' | undefined;
+                    routeKind?: 'loopback_direct' | 'lan_direct' | 'tailscale_serve_direct' | 'server_relay' | 'iroh_peer' | undefined;
                     tunnelId?: string | undefined;
                     substreamId?: string | undefined;
                     streamId?: string | undefined;
@@ -25641,7 +25873,7 @@ type PluginActionResultById = {
                 flow: {
                     flowId: string;
                     flowKind: 'bounded_transfer' | 'tcp_tunnel' | 'voice_media' | 'live_stream' | 'machine_rpc';
-                    routeKind?: 'loopback_direct' | 'lan_direct' | 'tailscale_serve_direct' | 'server_relay' | undefined;
+                    routeKind?: 'loopback_direct' | 'lan_direct' | 'tailscale_serve_direct' | 'server_relay' | 'iroh_peer' | undefined;
                     tunnelId?: string | undefined;
                     substreamId?: string | undefined;
                     streamId?: string | undefined;
@@ -33605,6 +33837,7 @@ Declared by `dist/agentRuntime/connectedAccountContinuity.d.ts` as `AgentConnect
 ```ts
 type AgentConnectedAccountRuntimeAuthAdapterResultV1 = Readonly<{
     supported?: boolean;
+    supportsInTurnApply?: boolean;
     applied?: boolean;
     status?: 'applied' | 'superseded_after_apply' | 'available' | 'unknown' | 'unsupported' | 'refreshed' | 'pending' | 'unavailable' | 'forbidden' | 'failed';
     reason?: string;
@@ -40898,7 +41131,7 @@ function unsupportedAccountUsage<const Reason extends string>(reason: Reason): U
 Declared by `dist/targetedContributionAuthoring.d.ts` as `ContributionActionDangerLevel`.
 
 ```ts
-type ContributionActionDangerLevel = PluginActionDangerLevelV2;
+type ContributionActionDangerLevel = 'safe' | 'writesLocal' | 'writesRemote' | 'externalSideEffect' | 'destructive';
 ```
 
 
@@ -40907,7 +41140,7 @@ type ContributionActionDangerLevel = PluginActionDangerLevelV2;
 Declared by `dist/targetedContributionAuthoring.d.ts` as `ContributionActionSurface`.
 
 ```ts
-type ContributionActionSurface = PluginActionSurfaceV2;
+type ContributionActionSurface = 'cli' | 'mcp' | 'agent' | 'ui' | 'plugin' | 'voice';
 ```
 
 
@@ -41263,7 +41496,7 @@ type ContributionSurfaceNodeInput<TInput extends JsonValue = JsonValue> = Readon
 Declared by `dist/targetedContributionAuthoring.d.ts` as `ContributionSurfacePresentation`.
 
 ```ts
-type ContributionSurfacePresentation = PluginTargetedContributionSurfacePresentationV1;
+type ContributionSurfacePresentation = 'content' | 'fill';
 ```
 
 
@@ -41592,7 +41825,7 @@ const PluginEventAutomationHistoryGapResetActionInputV1Schema: Readonly<{
 Declared by `node_modules/@happier-dev/protocol/dist/automations/automationEventHistoryGapResetActionV1.d.ts` as `PluginEventAutomationHistoryGapResetActionResultV1`.
 
 ```ts
-type PluginEventAutomationHistoryGapResetActionResultV1 = z.infer<typeof PluginEventAutomationHistoryGapResetActionResultV1Schema>;
+type PluginEventAutomationHistoryGapResetActionResultV1 = ReturnType<typeof PluginEventAutomationHistoryGapResetActionResultV1Schema.parse>;
 ```
 
 
@@ -48552,6 +48785,15 @@ type ReviewCommentAnchorV1 = z.infer<typeof ReviewCommentAnchorV1Schema>;
 ```
 
 
+### `./reviews` — `ReviewCommentClaimPublicationDispatchRequestV1` (type)
+
+Declared by `node_modules/@happier-dev/protocol/dist/reviews/comments/actions.d.ts` as `ReviewCommentClaimPublicationDispatchRequestV1`.
+
+```ts
+type ReviewCommentClaimPublicationDispatchRequestV1 = z.infer<typeof ReviewCommentClaimPublicationDispatchRequestV1Schema>;
+```
+
+
 ### `./reviews` — `ReviewCommentClaimPublicationDispatchResponseV1` (type)
 
 Declared by `node_modules/@happier-dev/protocol/dist/reviews/comments/actions.d.ts` as `ReviewCommentClaimPublicationDispatchResponseV1`.
@@ -51530,6 +51772,15 @@ Declared by `node_modules/@happier-dev/protocol/dist/reviews/comments/v1.d.ts` a
 
 ```ts
 function createReviewCommentLinkedIssueIdV1(input: ReviewCommentLinkedIssueIdentityV1): string;
+```
+
+
+### `./reviews` — `createReviewCommentPublicationSettlementRequestV1` (value)
+
+Declared by `node_modules/@happier-dev/protocol/dist/reviews/comments/actions.d.ts` as `createReviewCommentPublicationSettlementRequestV1`.
+
+```ts
+function createReviewCommentPublicationSettlementRequestV1(plan: ReviewCommentPublicationPlanV1, claim: ReviewCommentClaimPublicationDispatchResponseV1, result: ReviewCommentPublicationResultV1): ReviewCommentClaimPublicationDispatchRequestV1;
 ```
 
 
@@ -61799,7 +62050,6 @@ const AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS: Readonly<{
     readonly maxRemoteSessionIdCodeUnits: 2000;
     readonly maxLinkedDirectoryCodeUnits: 10000;
     readonly maxDirectoryCodeUnits: 10000;
-    readonly maxBackendModeHintCodeUnits: 256;
     readonly maxEnvironmentVariableEntries: 64;
     readonly maxEnvironmentVariableKeyCodeUnits: 128;
     readonly maxEnvironmentVariableValueCodeUnits: 16384;
@@ -61826,7 +62076,29 @@ type AgentExternalSessionCandidate = Readonly<{
     createdAtMs?: number;
     archived?: boolean;
     linkData?: AgentExternalSessionLinkData;
+    candidateIndexState?: AgentExternalSessionCandidateIndexState;
 }>;
+```
+
+
+### `./sessions/external` — `AgentExternalSessionCandidateIndexLookup` (type)
+
+Declared by `dist/externalSessions.d.ts` as `AgentExternalSessionCandidateIndexLookup`.
+
+```ts
+type AgentExternalSessionCandidateIndexLookup = (candidate: Readonly<{
+    remoteSessionId: string;
+    linkData?: AgentExternalSessionLinkData;
+}>) => AgentExternalSessionCandidateIndexState | undefined;
+```
+
+
+### `./sessions/external` — `AgentExternalSessionCandidateIndexState` (type)
+
+Declared by `dist/externalSessions.d.ts` as `AgentExternalSessionCandidateIndexState`.
+
+```ts
+type AgentExternalSessionCandidateIndexState = AgentExternalSessionLinkData;
 ```
 
 
@@ -62199,7 +62471,6 @@ Declared by `dist/sessions/externalSessionTakeover.d.ts` as `AgentExternalSessio
 
 ```ts
 type AgentExternalSessionTakeoverLaunchPlan = Readonly<{
-    backendModeHint?: string;
     environmentVariables?: Readonly<Record<string, string>>;
     runtimeDescriptorV1?: RuntimeDescriptorV1;
 }>;
@@ -62368,6 +62639,7 @@ type AgentExternalSessionsListCandidatesRequest = AgentExternalSessionsInvocatio
     maxItems: number;
     searchTerm?: string;
     searchMode?: 'fast' | 'full';
+    readCandidateIndexState?: AgentExternalSessionCandidateIndexLookup;
 }>;
 ```
 
@@ -65618,7 +65890,7 @@ interface PluginTestkit {
     registrations(): readonly PluginTestkitRegistration[];
     registration<F extends keyof PluginTestkitRegistrationByFamily>(family: F, localId: PluginContributionLocalId): PluginTestkitRegistrationByFamily[F] | undefined;
     invokeAction(localId: PluginContributionLocalId, input: JsonValue, options?: PluginTestkitInvokeActionOptions): Promise<JsonValue | null>;
-    readTargetedContributionFixture<TContribution>(point: TargetedContributionPointRef<TContribution>): TargetedContributionSnapshot<TContribution>;
+    readTargetedContributionFixture(point: TargetedContributionPointRef<unknown>): TargetedContributionSnapshot<PluginTestkitTargetedContributionFixtureEntry>;
     issueAdmittedTargetedOperation<TContribution, TRole extends string>(request: PluginTestkitAdmittedTargetedOperationRequest<TContribution, TRole>): PluginTestkitAdmittedTargetedOperation<TContribution, TRole>;
     dispose(): Promise<void>;
 }
@@ -65741,6 +66013,26 @@ type PluginTestkitRegistrationByFamily = Readonly<{
     resources: Parameters<PluginApi['resources']['registerDynamicResource']>[1];
     composerReferences: Parameters<PluginApi['composerReferences']['register']>[1];
     composerAttachments: Parameters<PluginApi['composerAttachments']['register']>[1];
+}>;
+```
+
+
+### `./testing` — `PluginTestkitTargetedContributionFixtureEntry` (type)
+
+Declared by `dist/testing/types.d.ts` as `PluginTestkitTargetedContributionFixtureEntry`.
+
+```ts
+type PluginTestkitTargetedContributionFixtureEntry = Readonly<{
+    contributor: Readonly<{
+        pluginId: string;
+        contributionId: string;
+        immutableGenerationId: string;
+    }>;
+    protocol: Readonly<{
+        id: string;
+        version: number;
+    }>;
+    operations: Readonly<Record<string, AdmittedTargetedOperationExecutionHandle>>;
 }>;
 ```
 
@@ -71911,29 +72203,10 @@ Reached from a published signature; not itself a published export.
 ```ts
 const PluginEventAutomationHistoryGapResetActionInputV1Schema: z.ZodObject<{
     automationId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-    triggerId: z.core.$ZodBranded<z.ZodString, "AutomationTriggerId", "out">;
-    triggerRevision: z.ZodNumber;
+    triggerId: z.core.$ZodBranded<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>, "AutomationTriggerId", "out">;
+    triggerRevision: z.ZodType<number, number, z.core.$ZodTypeInternals<number, number>>;
     sourceSelectorId: z.core.$ZodBranded<z.ZodString, "AutomationSourceSelectorIdV1", "out">;
 }, z.core.$strict>;
-```
-
-
-### `node_modules/@happier-dev/protocol/dist/automations/automationEventHistoryGapResetActionV1.d.ts` — `PluginEventAutomationHistoryGapResetActionResultV1Schema`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-const PluginEventAutomationHistoryGapResetActionResultV1Schema: z.ZodDiscriminatedUnion<[
-    z.ZodObject<{
-        kind: z.ZodLiteral<"baselined">;
-    }, z.core.$strict>,
-    z.ZodObject<{
-        kind: z.ZodLiteral<"noHistoryGap">;
-    }, z.core.$strict>,
-    z.ZodObject<{
-        kind: z.ZodLiteral<"stale">;
-    }, z.core.$strict>
-], "kind">;
 ```
 
 
@@ -88576,55 +88849,6 @@ parse(value: TInput): TOutput;
 ```
 
 
-### `node_modules/@happier-dev/protocol/dist/plugins/actions/vocabulary.d.ts` — `PluginActionDangerLevelV2`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-type PluginActionDangerLevelV2 = z.infer<typeof PluginActionDangerLevelV2Schema>;
-```
-
-
-### `node_modules/@happier-dev/protocol/dist/plugins/actions/vocabulary.d.ts` — `PluginActionDangerLevelV2Schema`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-const PluginActionDangerLevelV2Schema: z.ZodEnum<{
-    destructive: "destructive";
-    externalSideEffect: "externalSideEffect";
-    safe: "safe";
-    writesLocal: "writesLocal";
-    writesRemote: "writesRemote";
-}>;
-```
-
-
-### `node_modules/@happier-dev/protocol/dist/plugins/actions/vocabulary.d.ts` — `PluginActionSurfaceV2`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-type PluginActionSurfaceV2 = z.infer<typeof PluginActionSurfaceV2Schema>;
-```
-
-
-### `node_modules/@happier-dev/protocol/dist/plugins/actions/vocabulary.d.ts` — `PluginActionSurfaceV2Schema`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-const PluginActionSurfaceV2Schema: z.ZodEnum<{
-    agent: "agent";
-    cli: "cli";
-    mcp: "mcp";
-    plugin: "plugin";
-    ui: "ui";
-    voice: "voice";
-}>;
-```
-
-
 ### `node_modules/@happier-dev/protocol/dist/plugins/backendSurfaceDeclarationV1.d.ts` — `AttachSurfaceStaticMetadataV1Schema`
 
 Reached from a published signature; not itself a published export.
@@ -90876,15 +91100,6 @@ const PluginSystemToolContributionV1Schema: z.ZodObject<{
     }>>>;
     metadata: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodType<import("./jsonSchema.js").PluginJsonValueV2, unknown, z.core.$ZodTypeInternals<import("./jsonSchema.js").PluginJsonValueV2, unknown>>>>;
 }, z.core.$strict>;
-```
-
-
-### `node_modules/@happier-dev/protocol/dist/plugins/contributions/targetedContributions.d.ts` — `PluginTargetedContributionSurfacePresentationV1`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-type PluginTargetedContributionSurfacePresentationV1 = PluginUiTargetedContributionSurfacePresentationV1;
 ```
 
 
@@ -100692,8 +100907,8 @@ const AutomationRunStateChangedHostEventV1Schema: z.ZodObject<{
     runCause: z.ZodUnion<readonly [
         z.ZodObject<{
             kind: z.ZodLiteral<"trigger">;
-            triggerId: z.core.$ZodBranded<z.ZodString, "AutomationTriggerId", "out">;
-            triggerRevision: z.ZodNumber;
+            triggerId: z.core.$ZodBranded<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>, "AutomationTriggerId", "out">;
+            triggerRevision: z.ZodType<number, number, z.core.$ZodTypeInternals<number, number>>;
             triggerKind: z.ZodLiteral<"schedule">;
             occurrenceKey: z.core.$ZodBranded<z.ZodString, "AutomationOccurrenceKeyV1", "out">;
             occurredAt: z.ZodNumber;
@@ -100703,8 +100918,8 @@ const AutomationRunStateChangedHostEventV1Schema: z.ZodObject<{
         }, z.core.$strict>,
         z.ZodObject<{
             kind: z.ZodLiteral<"trigger">;
-            triggerId: z.core.$ZodBranded<z.ZodString, "AutomationTriggerId", "out">;
-            triggerRevision: z.ZodNumber;
+            triggerId: z.core.$ZodBranded<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>, "AutomationTriggerId", "out">;
+            triggerRevision: z.ZodType<number, number, z.core.$ZodTypeInternals<number, number>>;
             triggerKind: z.ZodLiteral<"pluginEvent">;
             occurrenceKey: z.core.$ZodBranded<z.ZodString, "AutomationOccurrenceKeyV1", "out">;
             occurredAt: z.ZodNumber;
@@ -100727,8 +100942,8 @@ const AutomationRunStateChangedHostEventV1Schema: z.ZodObject<{
         }, z.core.$strict>,
         z.ZodObject<{
             kind: z.ZodLiteral<"trigger">;
-            triggerId: z.core.$ZodBranded<z.ZodString, "AutomationTriggerId", "out">;
-            triggerRevision: z.ZodNumber;
+            triggerId: z.core.$ZodBranded<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>, "AutomationTriggerId", "out">;
+            triggerRevision: z.ZodType<number, number, z.core.$ZodTypeInternals<number, number>>;
             triggerKind: z.ZodLiteral<"sessionLifecycle">;
             occurrenceKey: z.core.$ZodBranded<z.ZodString, "AutomationOccurrenceKeyV1", "out">;
             occurredAt: z.ZodNumber;
@@ -102127,27 +102342,6 @@ type PluginUiTargetedContributionSelectorV1 = Readonly<{
         pluginId: string;
         contributionId: string;
     }>;
-}>;
-```
-
-
-### `node_modules/@happier-dev/protocol/dist/plugins/ui/targetedContributions.d.ts` — `PluginUiTargetedContributionSurfacePresentationV1`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-type PluginUiTargetedContributionSurfacePresentationV1 = z.infer<typeof PluginUiTargetedContributionSurfacePresentationV1Schema>;
-```
-
-
-### `node_modules/@happier-dev/protocol/dist/plugins/ui/targetedContributions.d.ts` — `PluginUiTargetedContributionSurfacePresentationV1Schema`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-const PluginUiTargetedContributionSurfacePresentationV1Schema: z.ZodEnum<{
-    content: "content";
-    fill: "fill";
 }>;
 ```
 
@@ -105409,6 +105603,249 @@ function resolveSessionModelSelectionIntentV1(input: Readonly<{
 ```
 
 
+### `node_modules/@happier-dev/protocol/dist/reviews/comments/actions.d.ts` — `ReviewCommentClaimPublicationDispatchRequestV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const ReviewCommentClaimPublicationDispatchRequestV1Schema: z.ZodObject<{
+    target: z.ZodObject<{
+        providerId: z.ZodString;
+        configuredAccountId: z.ZodString;
+        entryRef: z.ZodObject<{
+            sourceId: z.ZodString;
+            kindId: z.ZodString;
+            collisionScope: z.ZodString;
+            entryId: z.ZodString;
+        }, z.core.$strict>;
+        subtarget: z.ZodNullable<z.ZodObject<{
+            kindId: z.ZodEnum<{
+                "review-comment": "review-comment";
+                "review-thread": "review-thread";
+            }>;
+            targetId: z.ZodString;
+        }, z.core.$strict>>;
+    }, z.core.$strict>;
+    baseRevision: z.ZodNullable<z.ZodString>;
+    headRevision: z.ZodNullable<z.ZodString>;
+    entries: z.ZodArray<z.ZodObject<{
+        happierCommentId: z.ZodString;
+        expectedServerRevision: z.ZodNumber;
+        anchor: z.ZodUnion<readonly [
+            z.ZodObject<{
+                kind: z.ZodLiteral<"line">;
+                filePath: z.ZodString;
+                line: z.ZodNumber;
+                side: z.ZodOptional<z.ZodEnum<{
+                    after: "after";
+                    before: "before";
+                }>>;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"range">;
+                filePath: z.ZodString;
+                startLine: z.ZodNumber;
+                endLine: z.ZodNumber;
+                side: z.ZodOptional<z.ZodEnum<{
+                    after: "after";
+                    before: "before";
+                }>>;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"hunk">;
+                filePath: z.ZodString;
+                hunkId: z.ZodString;
+                side: z.ZodOptional<z.ZodEnum<{
+                    after: "after";
+                    before: "before";
+                }>>;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"file">;
+                filePath: z.ZodString;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"folder">;
+                folderPath: z.ZodString;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"workspace">;
+                workspaceId: z.ZodString;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"project">;
+                projectId: z.ZodString;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"run">;
+                runId: z.ZodString;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"finding">;
+                runId: z.ZodString;
+                findingId: z.ZodString;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"binary">;
+                filePath: z.ZodString;
+                sizeBytes: z.ZodNumber;
+                sha256: z.ZodString;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"submodule">;
+                filePath: z.ZodString;
+                commitSha: z.ZodOptional<z.ZodString>;
+                url: z.ZodOptional<z.ZodString>;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"symlink">;
+                filePath: z.ZodString;
+                targetPath: z.ZodString;
+            }, z.core.$strict>
+        ]>;
+        snapshot: z.ZodUnion<readonly [
+            z.ZodObject<{
+                kind: z.ZodLiteral<"text">;
+                selectedLines: z.ZodArray<z.ZodString>;
+                beforeContext: z.ZodArray<z.ZodString>;
+                afterContext: z.ZodArray<z.ZodString>;
+                selectedLinesHash: z.ZodString;
+                contextWindowHash: z.ZodString;
+                capturedAt: z.ZodNumber;
+                fileLength: z.ZodNumber;
+                source: z.ZodEnum<{
+                    agentBuffer: "agentBuffer";
+                    committed: "committed";
+                    diffSide: "diffSide";
+                    untracked: "untracked";
+                    workingTree: "workingTree";
+                }>;
+                commitSha: z.ZodOptional<z.ZodString>;
+                isUncommitted: z.ZodBoolean;
+                isUntracked: z.ZodBoolean;
+                truncated: z.ZodBoolean;
+                truncationReason: z.ZodOptional<z.ZodEnum<{
+                    context_cap: "context_cap";
+                    file_too_large: "file_too_large";
+                    line_too_long: "line_too_long";
+                }>>;
+                hasBidiControls: z.ZodBoolean;
+                likelyMinified: z.ZodBoolean;
+                diffContext: z.ZodOptional<z.ZodObject<{
+                    side: z.ZodEnum<{
+                        after: "after";
+                        before: "before";
+                    }>;
+                    baseSha: z.ZodOptional<z.ZodString>;
+                    headSha: z.ZodOptional<z.ZodString>;
+                    startSha: z.ZodOptional<z.ZodString>;
+                }, z.core.$strict>>;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"binary">;
+                sizeBytes: z.ZodNumber;
+                sha256: z.ZodString;
+                mimeType: z.ZodOptional<z.ZodString>;
+                source: z.ZodEnum<{
+                    agentBuffer: "agentBuffer";
+                    committed: "committed";
+                    diffSide: "diffSide";
+                    untracked: "untracked";
+                    workingTree: "workingTree";
+                }>;
+                capturedAt: z.ZodNumber;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"submodule">;
+                filePath: z.ZodString;
+                commitSha: z.ZodOptional<z.ZodString>;
+                url: z.ZodOptional<z.ZodString>;
+                capturedAt: z.ZodNumber;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"symlink">;
+                filePath: z.ZodString;
+                targetPath: z.ZodString;
+                targetExists: z.ZodOptional<z.ZodBoolean>;
+                capturedAt: z.ZodNumber;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                kind: z.ZodLiteral<"too_large">;
+                filePath: z.ZodString;
+                sizeBytes: z.ZodNumber;
+                sha256: z.ZodOptional<z.ZodString>;
+                capBytes: z.ZodNumber;
+                capturedAt: z.ZodNumber;
+            }, z.core.$strict>
+        ]>;
+        body: z.ZodString;
+    }, z.core.$strict>>;
+    verdict: z.ZodNullable<z.ZodObject<{
+        kind: z.ZodEnum<{
+            approve: "approve";
+            comment: "comment";
+            requestChanges: "requestChanges";
+        }>;
+        body: z.ZodString;
+    }, z.core.$strict>>;
+    settlement: z.ZodOptional<z.ZodObject<{
+        dispatchToken: z.ZodNullable<z.ZodString>;
+        result: z.ZodObject<{
+            publicationPlanId: z.ZodString;
+            entries: z.ZodArray<z.ZodObject<{
+                happierCommentId: z.ZodString;
+                publicationCorrelationId: z.ZodString;
+                outcome: z.ZodUnion<readonly [
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"published">;
+                        externalRef: z.ZodString;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"failed">;
+                        code: z.ZodString;
+                        message: z.ZodOptional<z.ZodString>;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"uncertain">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"skippedPriorFailure">;
+                    }, z.core.$strict>
+                ]>;
+            }, z.core.$strict>>;
+            verdict: z.ZodUnion<readonly [
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"notRequested">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    publicationCorrelationId: z.ZodString;
+                    outcome: z.ZodUnion<readonly [
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"published">;
+                            externalRef: z.ZodOptional<z.ZodString>;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"failed">;
+                            code: z.ZodString;
+                            message: z.ZodOptional<z.ZodString>;
+                            externalRef: z.ZodOptional<z.ZodString>;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"uncertain">;
+                            externalRef: z.ZodOptional<z.ZodString>;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"skippedPriorFailure">;
+                        }, z.core.$strict>
+                    ]>;
+                }, z.core.$strict>
+            ]>;
+        }, z.core.$strict>;
+    }, z.core.$strict>>;
+}, z.core.$strict>;
+```
+
+
 ### `node_modules/@happier-dev/protocol/dist/reviews/comments/actions.d.ts` — `ReviewCommentClaimPublicationDispatchResponseV1Schema`
 
 Reached from a published signature; not itself a published export.
@@ -105419,6 +105856,7 @@ const ReviewCommentClaimPublicationDispatchResponseV1Schema: z.ZodObject<{
         dispatch: "dispatch";
         reconcile: "reconcile";
     }>;
+    dispatchToken: z.ZodNullable<z.ZodString>;
     publicationPlanId: z.ZodString;
     entries: z.ZodArray<z.ZodObject<{
         happierCommentId: z.ZodString;
@@ -105426,6 +105864,71 @@ const ReviewCommentClaimPublicationDispatchResponseV1Schema: z.ZodObject<{
     }, z.core.$strict>>;
     verdict: z.ZodNullable<z.ZodObject<{
         publicationCorrelationId: z.ZodString;
+    }, z.core.$strict>>;
+    instructions: z.ZodObject<{
+        entries: z.ZodArray<z.ZodEnum<{
+            confirmed: "confirmed";
+            dispatch: "dispatch";
+            held: "held";
+            reconcile: "reconcile";
+        }>>;
+        verdict: z.ZodNullable<z.ZodEnum<{
+            confirmed: "confirmed";
+            dispatch: "dispatch";
+            held: "held";
+            reconcile: "reconcile";
+        }>>;
+    }, z.core.$strict>;
+    priorResult: z.ZodNullable<z.ZodObject<{
+        publicationPlanId: z.ZodString;
+        entries: z.ZodArray<z.ZodObject<{
+            happierCommentId: z.ZodString;
+            publicationCorrelationId: z.ZodString;
+            outcome: z.ZodUnion<readonly [
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"published">;
+                    externalRef: z.ZodString;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"failed">;
+                    code: z.ZodString;
+                    message: z.ZodOptional<z.ZodString>;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"uncertain">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"skippedPriorFailure">;
+                }, z.core.$strict>
+            ]>;
+        }, z.core.$strict>>;
+        verdict: z.ZodUnion<readonly [
+            z.ZodObject<{
+                kind: z.ZodLiteral<"notRequested">;
+            }, z.core.$strict>,
+            z.ZodObject<{
+                publicationCorrelationId: z.ZodString;
+                outcome: z.ZodUnion<readonly [
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"published">;
+                        externalRef: z.ZodOptional<z.ZodString>;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"failed">;
+                        code: z.ZodString;
+                        message: z.ZodOptional<z.ZodString>;
+                        externalRef: z.ZodOptional<z.ZodString>;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"uncertain">;
+                        externalRef: z.ZodOptional<z.ZodString>;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"skippedPriorFailure">;
+                    }, z.core.$strict>
+                ]>;
+            }, z.core.$strict>
+        ]>;
     }, z.core.$strict>>;
 }, z.core.$strict>;
 ```
@@ -115817,6 +116320,15 @@ Reached from a published signature; not itself a published export.
 ```ts
 interface _ZodType<out Internals extends core.$ZodTypeInternals = core.$ZodTypeInternals> extends ZodType<any, any, Internals> {
 }
+```
+
+
+### `node_modules/@happier-dev/protocol/node_modules/zod/v4/classic/schemas.d.cts` — `parse`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+parse(data: unknown, params?: core.ParseContext<core.$ZodIssue>): core.output<this>;
 ```
 
 

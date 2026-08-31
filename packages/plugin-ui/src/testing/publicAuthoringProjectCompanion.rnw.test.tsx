@@ -2,10 +2,10 @@ import {
   createPluginUiTestkit,
   createSurfaceContextFixture,
 } from '@happier-dev/plugin-sdk/testing';
+import { createPluginUiRnwSemanticSurfaceAdapter } from '@happier-dev/plugin-ui/testing';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderSurface } from '../../../plugin-sdk/examples/public-authoring/ui/reviewPanel.native.tsx';
-import { createPluginUiRnwSemanticSurfaceAdapter } from './rnwSemanticAdapter.testSupport.js';
 
 const REVIEW_STATUS_DIGEST = `sha256:${'a'.repeat(64)}`;
 

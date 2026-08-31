@@ -27,6 +27,46 @@ function listTree(context: ReturnType<typeof createSurfaceContext>, children: Re
 }
 
 describe('plugin-ui List item presentation', () => {
+  it('rejects duplicate row identities before the flat virtualizer receives them', () => {
+    const context = createSurfaceContext();
+    expect(() => mountThroughReactNativeWeb(
+      <PluginUiProvider hostApi={createHostApiStub(context)} context={context}>
+        <List
+          accessibilityLabel="Repositories"
+          items={[
+            { id: 'duplicate', title: 'First' },
+            { id: 'duplicate', title: 'Second' },
+          ]}
+          keyForItem={(item) => item.id}
+          renderItem={(item) => <List.Item title={item.title} />}
+        />
+      </PluginUiProvider>,
+    )).toThrow('List rows contain duplicate key "duplicate".');
+  });
+
+  it('rejects duplicate authored row identities even when search hides one occurrence', () => {
+    const context = createSurfaceContext();
+    expect(() => mountThroughReactNativeWeb(
+      <PluginUiProvider hostApi={createHostApiStub(context)} context={context}>
+        <List
+          accessibilityLabel="Repositories"
+          items={[
+            { id: 'duplicate', title: 'First' },
+            { id: 'duplicate', title: 'Second' },
+          ]}
+          keyForItem={(item) => item.id}
+          renderItem={(item) => <List.Item title={item.title} />}
+          search={{
+            label: 'Filter repositories',
+            value: 'First',
+            onValueChange: () => undefined,
+            filter: (item, query) => item.title.includes(query),
+          }}
+        />
+      </PluginUiProvider>,
+    )).toThrow('List rows contain duplicate key "duplicate".');
+  });
+
   it('restores physical focus through the virtualized List owner on request', async () => {
     const repositories = [
       { id: 'happier', title: 'happier' },

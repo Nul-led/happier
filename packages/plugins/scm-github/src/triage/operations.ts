@@ -132,7 +132,7 @@ function resolveInstance(instance: TriageConfiguredSourceInstanceV1): ResolvedIn
  * one credential holder and retains nothing beyond the call.
  *
  * Exported for the same reason as the admission above: every GitHub Triage read,
- * including the six source-native detail planes, materializes its account
+ * including the seven source-native detail planes, materializes its account
  * through this one seam.
  */
 export async function openGithubTriageClient(

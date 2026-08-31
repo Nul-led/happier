@@ -120,11 +120,3 @@ export const GITLAB_ISSUE_MUTATION_SUBJECT_V1: GitlabMutationSubjectV1<GitlabIss
     decode: decodeGitlabIssueStateRow,
     observedPin: (row) => row.revision,
   });
-
-/** The project path (`group/project`) carried by GitLab's own issue reference. */
-export function readGitlabIssueProjectPath(body: unknown): string | null {
-  const reference = readNonEmptyString(readRecord(readRecord(body)?.references)?.full);
-  if (reference === null) return null;
-  const path = reference.split('#')[0] ?? '';
-  return path === '' ? null : path;
-}

@@ -49,6 +49,7 @@ export async function runGitlabMemberDelta<TRow extends NamedRow>(
   input: Readonly<{
     instance: Parameters<typeof preflightGitlabItemMutation>[0]['instance'];
     localRef: Readonly<{ kindId: string; entryId: string; collisionScope: string }>;
+    routingToken: string;
     subject: GitlabMutationSubjectV1<TRow>;
     expectedRevision: string;
     operation: 'add' | 'remove';
@@ -64,6 +65,7 @@ export async function runGitlabMemberDelta<TRow extends NamedRow>(
   const preflight = await preflightGitlabItemMutation({
     instance: input.instance,
     localRef: input.localRef,
+    routingToken: input.routingToken,
     subject: input.subject,
     expectedRevision: input.expectedRevision,
   }, context);

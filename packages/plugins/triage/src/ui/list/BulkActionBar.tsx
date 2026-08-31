@@ -62,6 +62,12 @@ export type TriageBulkActionBarPropsV1 = Readonly<{
    * empty answer means no selected row currently resolves one.
    */
   selectedWorkflowSubjects: (keys: readonly string[]) => readonly TriageSourceWorkflowSubjectV1[];
+  /** Reads the press owner's destination compatibility for these exact keys. */
+  destinationUnavailableReason: (input: Readonly<{
+    action: TriageActionV1;
+    destination: TriageBulkSessionDestinationV1;
+    keys: readonly string[];
+  }>) => TriageBulkUnavailableReasonV1 | null;
   phase: TriageBulkSessionsPhaseV1;
   onRun: (input: Readonly<{
     action: TriageActionV1;
@@ -71,6 +77,8 @@ export type TriageBulkActionBarPropsV1 = Readonly<{
   retryable: boolean;
   onRetry: () => void;
   onCancel: () => void;
+  /** Clears the shared selection and retires any settled bulk result. */
+  onDismiss: () => void;
 }>;
 
 const DESTINATIONS: readonly Readonly<{
@@ -115,12 +123,16 @@ export function TriageBulkActionBar(props: TriageBulkActionBarPropsV1): React.Re
   const text = usePluginTranslation();
   const snapshot = useListMultiSelectionSnapshot();
   const selectedWorkflowSubjects = props.selectedWorkflowSubjects;
+  const selectedKeys = React.useMemo(
+    () => [...snapshot.selectedKeys],
+    [snapshot.selectedKeys],
+  );
   // The set's own identity is the dependency: the shared store replaces it only
   // when the selection actually changed, so this resolves once per change
   // rather than on every render of the list around it.
   const subjects = React.useMemo(
-    () => selectedWorkflowSubjects([...snapshot.selectedKeys]),
-    [selectedWorkflowSubjects, snapshot.selectedKeys],
+    () => selectedWorkflowSubjects(selectedKeys),
+    [selectedKeys, selectedWorkflowSubjects],
   );
   const offered = React.useMemo(() => {
     const offerable = planTriageOfferableActionsV1(props.actions);
@@ -140,6 +152,19 @@ export function TriageBulkActionBar(props: TriageBulkActionBarPropsV1): React.Re
   // effect means a catalog that changes under the bar can never leave it
   // pointing at an action that is gone.
   const action = offered.find((candidate) => candidate.actionId === selectedActionId) ?? offered[0];
+  const destinations = React.useMemo(() => action === undefined
+    ? []
+    : DESTINATIONS.map((candidate) => ({
+      ...candidate,
+      reason: props.destinationUnavailableReason({
+        action,
+        destination: candidate.destination,
+        keys: selectedKeys,
+      }),
+    })), [action, props.destinationUnavailableReason, selectedKeys]);
+  const unavailableDestinationReason = destinations.find(
+    (candidate) => candidate.reason !== null,
+  )?.reason ?? null;
 
   if (!snapshot.isSelectionMode) return null;
   const busy = props.phase.kind === 'resolving'
@@ -190,12 +215,17 @@ export function TriageBulkActionBar(props: TriageBulkActionBarPropsV1): React.Re
       <List.SelectionActionBar
         accessibilityLabel={text('plugins.triage.surface.bulk.label', 'Bulk actions')}
         testID="triage-bulk-action-bar"
-        actions={DESTINATIONS.map((candidate) => ({
+        actions={destinations.filter((candidate) => candidate.reason === null).map((candidate) => ({
           id: candidate.destination,
           label: text(candidate.labelKey, candidate.fallback),
           disabled: busy,
           testID: `triage-bulk-${candidate.destination}`,
         }))}
+        // Clear may not make live work disappear. While work is active the
+        // same control first withdraws it and leaves the shared selection (and
+        // therefore progress/result reporting) mounted; once settled, the
+        // normal dismiss path exits the shared selection owner.
+        onDismiss={busy ? props.onCancel : props.onDismiss}
         onAction={(actionId, keys) => {
           const destination = destinationOf(actionId);
           if (destination === null) return;
@@ -203,7 +233,9 @@ export function TriageBulkActionBar(props: TriageBulkActionBarPropsV1): React.Re
         }}
       />
       <Row gap="small" align="center">
-        <TriageBulkPhaseStatus phase={props.phase} />
+        {props.phase.kind === 'idle' && unavailableDestinationReason !== null
+          ? <TriageBulkUnavailableStatus reason={unavailableDestinationReason} />
+          : <TriageBulkPhaseStatus phase={props.phase} />}
         {props.phase.kind !== 'settled'
           || !props.retryable
           || !isSameSelection(snapshot.selectedKeys, props.phase.selectionKeys) ? null : (
@@ -215,12 +247,21 @@ export function TriageBulkActionBar(props: TriageBulkActionBarPropsV1): React.Re
           />
         )}
         {!busy ? null : (
-          <Button
-            titleKey="plugins.triage.surface.bulk.cancel"
-            title="Stop"
-            variant="plain"
-            onPress={props.onCancel}
-          />
+          <>
+            <Status
+              tone="info"
+              label={text(
+                'plugins.triage.surface.bulk.selectionRetainedWhileRunning',
+                'The selection stays visible until the running action stops.',
+              )}
+            />
+            <Button
+              titleKey="plugins.triage.surface.bulk.cancel"
+              title="Stop"
+              variant="plain"
+              onPress={props.onCancel}
+            />
+          </>
         )}
       </Row>
     </Stack>
@@ -311,7 +352,13 @@ function TriageBulkPhaseStatus(props: Readonly<{
       />
     );
   }
-  const copy = UNAVAILABLE_COPY[phase.reason];
+  return <TriageBulkUnavailableStatus reason={phase.reason} />;
+}
+
+function TriageBulkUnavailableStatus(props: Readonly<{
+  reason: TriageBulkUnavailableReasonV1;
+}>): React.ReactElement {
+  const copy = UNAVAILABLE_COPY[props.reason];
   return <Status tone="warning" labelKey={copy.key} label={copy.fallback} />;
 }
 
@@ -339,9 +386,9 @@ const UNAVAILABLE_COPY: Readonly<Record<
     key: 'plugins.triage.surface.bulk.checkoutRequiresNewSessionAuthoring',
     fallback: 'This action needs a new checkout. Use Attach to New Session so you can choose where to create it.',
   },
-  composeRequiresNewSessionAuthoring: {
-    key: 'plugins.triage.surface.bulk.composeRequiresNewSessionAuthoring',
-    fallback: 'This action needs review before sending. Use Attach to New Session so its prompt and entries are ready before anything starts.',
+  sharedPlacementIncompatible: {
+    key: 'plugins.triage.surface.bulk.sharedPlacementIncompatible',
+    fallback: 'These entries do not share one compatible repository placement. Use A session each or Attach to New Session.',
   },
   preparedWorkspaceUnsupported: {
     key: 'plugins.triage.surface.bulk.preparedWorkspaceUnsupported',
@@ -369,6 +416,10 @@ const UNAVAILABLE_COPY: Readonly<Record<
   promptInvalid: {
     key: 'plugins.triage.surface.bulk.promptInvalid',
     fallback: 'This action\u2019s prompt resolved to no content, so nothing was started. Edit the prompt before trying again.',
+  },
+  instructionMissing: {
+    key: 'plugins.triage.surface.bulk.instructionMissing',
+    fallback: 'This action needs an instruction before it can start work. Choose a Prompt Library entry in Configure actions.',
   },
   promptUnavailable: {
     key: 'plugins.triage.surface.bulk.promptUnavailable',

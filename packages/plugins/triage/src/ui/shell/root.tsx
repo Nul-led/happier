@@ -60,7 +60,10 @@ import {
 } from '../list/bulkSelectionEntries.js';
 import { readTriageBulkSelectionScopeKeyV1 } from '../list/bulkSelectionScope.js';
 import type { TriageBulkSessionDestinationV1 } from '../list/bulkSessionPlan.js';
-import { useTriageBulkEntrySessions } from '../list/useBulkEntrySessions.js';
+import {
+  readTriageBulkDestinationUnavailableReasonV1,
+  useTriageBulkEntrySessions,
+} from '../list/useBulkEntrySessions.js';
 import { planTriageListContinuationV1, type TriageListContinuationCopyV1 } from '../list/continuation.js';
 import {
   readTriageListSectionItemKey,
@@ -73,11 +76,15 @@ import {
 } from '../marks/pinnedRows.js';
 import { useTriagePinnedEntries } from '../marks/useTriagePinnedEntries.js';
 import {
+  buildTriageRouteSubPathV1,
   hasTriageRouteLensV1,
   createTriageRouteWriteQueueV1,
   parseTriageRouteSubPathV1,
   preflightTriageRouteLensV1,
   readTriageRouteLensV1,
+  type TriageRouteLensV1,
+  type TriageRouteQueueSettlementV1,
+  type TriageRouteWriteQueueV1,
 } from '../navigation/location.js';
 import { TriageActionsEditor } from '../actions/ActionsEditor.js';
 import { useTriageActions } from '../actions/useTriageActions.js';
@@ -173,12 +180,87 @@ function seedFromLocation(subPath: string | undefined): TriageSurfaceStateV1 {
   const lens = parseTriageRouteSubPathV1(subPath);
   return {
     ...TRIAGE_SURFACE_INITIAL_STATE_V1,
-    grouping: lens.grouping,
     order: lens.order,
     smartPolicy: lens.smartPolicy,
     filters: lens.filters,
     selectedViewId: lens.selectedViewId,
     search: { query: lens.query, composing: null },
+  };
+}
+
+/** The effective canonical spelling of a host-settled page location. */
+function canonicalTriageSubPathV1(subPath: string | undefined): string {
+  return buildTriageRouteSubPathV1(parseTriageRouteSubPathV1(subPath));
+}
+
+type TriageSettledRouteV1 = Readonly<{
+  subPath: string;
+  state: TriageSurfaceStateV1;
+}>;
+
+type TriageRouteRowIndexV1 = ReadonlyMap<
+  string,
+  Readonly<{ sectionId: string; row: TriageListDisplayRowV1 }>
+>;
+
+type TriageSettledLensEditV1 = Readonly<{
+  previous: TriageSurfaceStateV1;
+  next: TriageSurfaceStateV1;
+  subPath: string;
+}>;
+
+function settleQueuedTriageRouteV1(
+  queue: TriageRouteWriteQueueV1,
+  lens: TriageRouteLensV1,
+): Promise<TriageRouteQueueSettlementV1> {
+  return new Promise((resolve) => { queue.write(lens, resolve); });
+}
+
+/**
+ * Apply the location the host actually settled to one optimistic candidate.
+ *
+ * The route carries the canonical entry ref but never the selected connection,
+ * so qualification is retained only when that exact ref already belongs to
+ * the candidate/base, or is supplied by the current mounted window. No other
+ * connection is guessed.
+ */
+function applyTriageSettledSubPathV1(input: Readonly<{
+  candidate: TriageSurfaceStateV1;
+  previous: TriageSurfaceStateV1;
+  subPath: string;
+  rowsByKey: TriageRouteRowIndexV1;
+}>): TriageSurfaceStateV1 {
+  const lens = parseTriageRouteSubPathV1(input.subPath);
+  const located = lens.selection;
+  let selection: TriageSurfaceStateV1['selection'] = null;
+  if (located !== null) {
+    if (input.candidate.selection !== null
+      && sameTriageEntryRefV1(input.candidate.selection.entryRef, located)) {
+      selection = input.candidate.selection;
+    } else if (input.previous.selection !== null
+      && sameTriageEntryRefV1(input.previous.selection.entryRef, located)) {
+      selection = input.previous.selection;
+    } else {
+      for (const hit of input.rowsByKey.values()) {
+        if (!sameTriageEntryRefV1(hit.row.entryRef, located)
+          || hit.row.sourceInstanceId === null) continue;
+        selection = {
+          sectionId: hit.sectionId,
+          entryRef: hit.row.entryRef,
+          sourceInstanceId: hit.row.sourceInstanceId,
+        };
+        break;
+      }
+    }
+  }
+  return {
+    ...input.candidate,
+    order: lens.order,
+    smartPolicy: lens.smartPolicy,
+    filters: lens.filters,
+    selectedViewId: lens.selectedViewId,
+    search: { query: lens.query, composing: null },
+    selection,
   };
 }
 
@@ -331,6 +413,14 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
     props.subPath,
     seedFromLocation,
   );
+  const settledRoute = React.useRef<TriageSettledRouteV1>({
+    subPath: canonicalTriageSubPathV1(props.subPath),
+    state: surface,
+  });
+  /** Latest accepted local intent, published synchronously before React commits it. */
+  const latestRouteIntentSubPath = React.useRef(settledRoute.current.subPath);
+  const routeQueue = React.useMemo(() => createTriageRouteWriteQueueV1(hostApi), [hostApi]);
+  React.useEffect(() => () => { routeQueue.dispose(); }, [routeQueue]);
   const [listFocusRequest, setListFocusRequest] = React.useState<Readonly<{ key: string }> | undefined>();
   const refresh = React.useCallback(() => window.refresh('manual'), [window]);
   /**
@@ -402,11 +492,15 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
    * what is true — nothing has been walked.
    */
   const sections = React.useMemo(
-    () => (state.kind === 'window' || state.kind === 'sourcesUnreachable'
+    () => (state.kind === 'window'
+      || state.kind === 'sourcesUnreachable'
+      || state.kind === 'configureSources'
       ? planTriageListSections({
           rows: state.kind === 'window' ? state.window.rows : [],
           pins: marks.pins,
-          coverage: state.kind === 'window' ? state.window.coverage : 'partial',
+          coverage: state.kind === 'window'
+            ? state.window.coverage
+            : state.kind === 'configureSources' ? 'complete' : 'partial',
           morePins: marks.more,
         }).map((section) => ({
           ...section,
@@ -450,6 +544,8 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
 
   /** Whether the reader has changed the lens yet; see `useTriageRouteBinding`. */
   const readerChangedLens = React.useRef(false);
+  const rowsByKeyRef = React.useRef<TriageRouteRowIndexV1>(rowsByKey);
+  rowsByKeyRef.current = rowsByKey;
   /**
    * The last edit this surface refused because its route would not fit
    * (`core/SURFACE.md` §3.2), and which kind of edit it was.
@@ -460,6 +556,10 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
    * filter.
    */
   const [routeRefused, setRouteRefused] = React.useState<'selection' | 'lens' | null>(null);
+  /** A legal location the host itself refused after an optimistic edit. */
+  const [routeWriteFailure, setRouteWriteFailure] = React.useState<
+    'unavailable' | 'rejected' | null
+  >(null);
   /**
    * Whether the reader's own lens is hiding rows, read from the one narrowing
    * owner (`ui/state/narrowing.ts`) rather than measured here.
@@ -500,16 +600,120 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
     action: TriageSurfaceActionV1,
     refusal: 'selection' | 'lens',
   ) => {
+    const currentRoute = preflightTriageRouteLensV1(readTriageRouteLensV1(surface));
+    if (currentRoute.kind === 'accepted'
+      && currentRoute.subPath === settledRoute.current.subPath) {
+      // Qualification and focus are not carried in the path. Capture them when
+      // this render is still the host-settled route so a later refusal restores
+      // the whole visible state rather than only its serializable lens.
+      settledRoute.current = { subPath: currentRoute.subPath, state: surface };
+    }
     const next = reduceTriageSurfaceV1(surface, action);
     if (next === surface) return;
-    if (preflightTriageRouteLensV1(readTriageRouteLensV1(next)).kind === 'refused') {
+    const preflight = preflightTriageRouteLensV1(readTriageRouteLensV1(next));
+    if (preflight.kind === 'refused') {
       setRouteRefused(refusal);
       return;
     }
     setRouteRefused(null);
+    setRouteWriteFailure(null);
+    latestRouteIntentSubPath.current = preflight.subPath;
+    if (preflight.subPath === settledRoute.current.subPath) {
+      // A copied/deep-linked location was already settled by the host; this
+      // edit only supplies the selected connection the route intentionally
+      // does not carry, so it is authoritative without a redundant write.
+      settledRoute.current = { subPath: preflight.subPath, state: next };
+    }
     readerChangedLens.current = true;
     dispatch(action);
   }, [surface]);
+
+  /**
+   * Saved-view selection is durable preference, so its complete route settles
+   * before the Account KV selection write. Other lens edits remain optimistic
+   * and are reconciled by the same queue in `useTriageRouteBinding`.
+   */
+  const settleLensEditBeforeDurable = React.useCallback(async (
+    action: TriageSurfaceActionV1,
+  ): Promise<TriageSettledLensEditV1 | null> => {
+    const previous = surface;
+    const next = reduceTriageSurfaceV1(previous, action);
+    if (next === previous) {
+      const existing = preflightTriageRouteLensV1(readTriageRouteLensV1(previous));
+      return existing.kind === 'accepted'
+        ? { previous, next, subPath: existing.subPath }
+        : null;
+    }
+    const preflight = preflightTriageRouteLensV1(readTriageRouteLensV1(next));
+    if (preflight.kind === 'refused') {
+      setRouteRefused('lens');
+      return null;
+    }
+    setRouteRefused(null);
+    setRouteWriteFailure(null);
+    readerChangedLens.current = true;
+    latestRouteIntentSubPath.current = preflight.subPath;
+    const settlement = await settleQueuedTriageRouteV1(routeQueue, readTriageRouteLensV1(next));
+    const superseded = settlement.superseded
+      || latestRouteIntentSubPath.current !== preflight.subPath;
+    if (superseded) return null;
+    const result = settlement.result;
+    if (result === null) return null;
+    if (result.kind === 'refused') {
+      latestRouteIntentSubPath.current = settledRoute.current.subPath;
+      setRouteWriteFailure(result.reason === 'unavailable' ? 'unavailable' : 'rejected');
+      return null;
+    }
+    const settledSubPath = canonicalTriageSubPathV1(result.subPath);
+    if (settledSubPath !== preflight.subPath) {
+      const settledState = applyTriageSettledSubPathV1({
+        candidate: next,
+        previous,
+        subPath: settledSubPath,
+        rowsByKey: rowsByKeyRef.current,
+      });
+      settledRoute.current = { subPath: settledSubPath, state: settledState };
+      latestRouteIntentSubPath.current = settledSubPath;
+      dispatch({ kind: 'settledRouteApplied', state: settledState });
+      return null;
+    }
+    settledRoute.current = { subPath: settledSubPath, state: next };
+    latestRouteIntentSubPath.current = settledSubPath;
+    dispatch(action);
+    return { previous, next, subPath: settledSubPath };
+  }, [routeQueue, surface]);
+
+  const rollbackSettledLensEdit = React.useCallback(async (
+    edit: TriageSettledLensEditV1,
+  ): Promise<void> => {
+    // A newer reader intent owns the page. Never roll it back for an older
+    // durable refusal.
+    if (latestRouteIntentSubPath.current !== edit.subPath) return;
+    const previousLens = readTriageRouteLensV1(edit.previous);
+    const previousPreflight = preflightTriageRouteLensV1(previousLens);
+    if (previousPreflight.kind === 'refused') return;
+    latestRouteIntentSubPath.current = previousPreflight.subPath;
+    const settlement = await settleQueuedTriageRouteV1(routeQueue, previousLens);
+    if (settlement.superseded) return;
+    const result = settlement.result;
+    if (result === null) return;
+    if (result.kind === 'refused') {
+      setRouteWriteFailure(result.reason === 'unavailable' ? 'unavailable' : 'rejected');
+      return;
+    }
+    const subPath = canonicalTriageSubPathV1(result.subPath);
+    const state = subPath === previousPreflight.subPath
+      ? edit.previous
+      : applyTriageSettledSubPathV1({
+          candidate: edit.previous,
+          previous: edit.next,
+          subPath,
+          rowsByKey: rowsByKeyRef.current,
+        });
+    settledRoute.current = { subPath, state };
+    latestRouteIntentSubPath.current = subPath;
+    dispatch({ kind: 'settledRouteApplied', state });
+  }, [routeQueue]);
 
   /**
    * The one activation path. The shared `List` reports pointer, touch and
@@ -609,51 +813,65 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
    * control's own idea of the view, so there is exactly one place a stored view
    * turns into a lens — the same one the restore path uses.
    */
-  const applyProjectedSelection = React.useCallback((projection: CorpusSavedViewsReadV1) => {
+  const readProjectedSelectionAction = React.useCallback((
+    projection: CorpusSavedViewsReadV1,
+    viewId: string,
+  ): TriageSurfaceActionV1 | null => {
     const effective = resolveTriageEffectiveView({
-      saved: projection,
+      saved: { kind: projection.kind, value: { ...projection.value, selectedViewId: viewId } },
       configuredSources: configuredSourceIdentities,
     });
-    if (effective.viewId === null) return;
-    applyLensEdit({
+    if (effective.viewId === null) return null;
+    return {
       kind: 'savedViewApplied',
       viewId: effective.viewId,
+      query: effective.query,
       filters: effective.filters,
       order: effective.order,
       smartPolicy: effective.smartPolicy,
-    }, 'lens');
-  }, [applyLensEdit, configuredSourceIdentities]);
+    };
+  }, [configuredSourceIdentities]);
 
   const selectView = React.useCallback((viewId: string | null) => {
     const expectedRevision = savedViews.revision;
     if (expectedRevision === null) return;
     void (async () => {
-      const projection = await savedViews.administer(
+      const action = viewId === null
+        ? { kind: 'savedViewSelectionCleared' } as const
+        : savedViews.saved === null
+          ? null
+          : readProjectedSelectionAction(savedViews.saved, viewId);
+      if (action === null) return;
+      const route = await settleLensEditBeforeDurable(action);
+      if (route === null) return;
+      const applied = await savedViews.administer(
         triageSelectSavedViewInputV1(viewId, expectedRevision),
       );
-      if (projection === null) return;
-      // Choosing "no saved view" detaches the lens from the view; it does not
-      // reset it. The reader is still looking at what they were looking at.
-      if (viewId === null) {
-        applyLensEdit({ kind: 'savedViewSelectionCleared' }, 'lens');
-        return;
-      }
-      applyProjectedSelection(projection);
+      if (applied === null) await rollbackSettledLensEdit(route);
     })();
-  }, [applyLensEdit, applyProjectedSelection, savedViews]);
+  }, [readProjectedSelectionAction, rollbackSettledLensEdit, savedViews, settleLensEditBeforeDurable]);
 
   const createView = React.useCallback((label: string) => {
     const expectedRevision = savedViews.revision;
     if (expectedRevision === null) return;
     void (async () => {
-      const projection = await savedViews.administer(triageCreateSavedViewInputV1(label, {
+      const created = await savedViews.administer(triageCreateSavedViewInputV1(label, {
+        query: surface.search.query,
         filters: surface.filters,
         order: surface.order,
         smartPolicy: surface.smartPolicy,
       }, expectedRevision));
-      if (projection !== null) applyProjectedSelection(projection);
+      if (created === null || created.viewId === null) return;
+      const action = readProjectedSelectionAction(created.projection, created.viewId);
+      if (action === null) return;
+      const route = await settleLensEditBeforeDurable(action);
+      if (route === null) return;
+      const selected = await savedViews.administer(
+        triageSelectSavedViewInputV1(created.viewId, created.revision),
+      );
+      if (selected === null) await rollbackSettledLensEdit(route);
     })();
-  }, [applyProjectedSelection, savedViews, surface.filters, surface.order, surface.smartPolicy]);
+  }, [readProjectedSelectionAction, rollbackSettledLensEdit, savedViews, settleLensEditBeforeDurable, surface.filters, surface.order, surface.search.query, surface.smartPolicy]);
 
   const renameView = React.useCallback((view: CorpusSavedViewV1, label: string) => {
     if (savedViews.revision === null) return;
@@ -667,27 +885,27 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
     // dispatched: the lens is already on screen, and it is the stored view that
     // moves to meet it.
     void savedViews.administer(triageUpdateSavedViewInputV1(view, {
+      query: surface.search.query,
       filters: surface.filters,
       order: surface.order,
       smartPolicy: surface.smartPolicy,
     }, savedViews.revision));
-  }, [savedViews, surface.filters, surface.order, surface.smartPolicy]);
+  }, [savedViews, surface.filters, surface.order, surface.search.query, surface.smartPolicy]);
 
   const deleteView = React.useCallback((view: CorpusSavedViewV1) => {
     const expectedRevision = savedViews.revision;
     if (expectedRevision === null) return;
     void (async () => {
-      const projection = await savedViews.administer(
+      const route = view.viewId === surface.selectedViewId
+        ? await settleLensEditBeforeDurable({ kind: 'savedViewSelectionCleared' })
+        : null;
+      if (view.viewId === surface.selectedViewId && route === null) return;
+      const deleted = await savedViews.administer(
         triageDeleteSavedViewInputV1(view.viewId, expectedRevision),
       );
-      if (projection === null) return;
-      // The one CAS owner cleared the selection in the same write; the lens the
-      // deleted view produced is still what the reader is looking at.
-      if (view.viewId === surface.selectedViewId) {
-        applyLensEdit({ kind: 'savedViewSelectionCleared' }, 'lens');
-      }
+      if (deleted === null && route !== null) await rollbackSettledLensEdit(route);
     })();
-  }, [applyLensEdit, savedViews, surface.selectedViewId]);
+  }, [rollbackSettledLensEdit, savedViews, settleLensEditBeforeDurable, surface.selectedViewId]);
 
   const facets = React.useMemo(
     () => planTriageFilterFacetsV1({
@@ -946,42 +1164,71 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
     destination: TriageBulkSessionDestinationV1;
     keys: readonly string[];
   }>) => {
-    const selected = readSelectedBulkEntries(input.keys);
-    bulkSessions.run({
-      action: input.action,
-      destination: input.destination,
-      entries: selected.entries.map((entry) => {
-        const configured = configuredSources.sources.find(
-          (candidate) => candidate.sourceInstanceId === entry.sourceInstance.sourceInstanceId,
-        )?.configured;
-        const operation = resolveTriageSourcePrepareReviewWorkspaceOperationV1(
-          surfaceContext.targetedContributions,
-          entry.entryRef.source,
-        );
-        return {
-          ...entry,
-          workflowSubject: resolveTriageSourceWorkflowSubjectV1(
+    void (async () => {
+      const executable = await configuredActions.resolveForExecution(
+        input.action.actionId,
+        selectedBulkWorkflowSubjects(input.keys),
+      );
+      if (executable.status !== 'resolved') return;
+      const selected = readSelectedBulkEntries(input.keys);
+      bulkSessions.run({
+        action: executable.action,
+        destination: input.destination,
+        entries: selected.entries.map((entry) => {
+          const configured = configuredSources.sources.find(
+            (candidate) => candidate.sourceInstanceId === entry.sourceInstance.sourceInstanceId,
+          )?.configured;
+          const operation = resolveTriageSourcePrepareReviewWorkspaceOperationV1(
             surfaceContext.targetedContributions,
-            entry.entryRef,
-          ),
-          ...(configured === undefined
-            || operation === undefined
-            || entry.reviewWorkspacePreparation === undefined
-            ? {}
-            : {
-                reviewWorkspace: {
-                  operation,
-                  preparation: {
-                    ...entry.reviewWorkspacePreparation,
-                    instance: configured,
+            entry.entryRef.source,
+          );
+          return {
+            ...entry,
+            workflowSubject: resolveTriageSourceWorkflowSubjectV1(
+              surfaceContext.targetedContributions,
+              entry.entryRef,
+            ),
+            ...(configured === undefined
+              || operation === undefined
+              || entry.reviewWorkspacePreparation === undefined
+              ? {}
+              : {
+                  reviewWorkspace: {
+                    operation,
+                    preparation: {
+                      ...entry.reviewWorkspacePreparation,
+                      instance: configured,
+                    },
                   },
-                },
-              }),
-        };
-      }),
-      unavailableKeys: selected.unavailableKeys,
-    });
-  }, [bulkSessions, configuredSources.sources, readSelectedBulkEntries, surfaceContext.targetedContributions]);
+                }),
+          };
+        }),
+        unavailableKeys: selected.unavailableKeys,
+      });
+    })();
+  }, [
+    bulkSessions,
+    configuredActions,
+    configuredSources.sources,
+    readSelectedBulkEntries,
+    selectedBulkWorkflowSubjects,
+    surfaceContext.targetedContributions,
+  ]);
+
+  const readBulkDestinationUnavailableReason = React.useCallback((input: Readonly<{
+    action: TriageActionV1;
+    destination: TriageBulkSessionDestinationV1;
+    keys: readonly string[];
+  }>) => readTriageBulkDestinationUnavailableReasonV1({
+    action: input.action,
+    destination: input.destination,
+    entries: readSelectedBulkEntries(input.keys).entries,
+  }), [readSelectedBulkEntries]);
+
+  const dismissBulkSelection = React.useCallback(() => {
+    bulkSessions.reset();
+    bulkSelection.exit();
+  }, [bulkSelection, bulkSessions]);
 
   const visibleOrder = React.useMemo(
     () => [...rowsByKey.values()].map((hit) => ({
@@ -991,13 +1238,21 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
     [rowsByKey],
   );
   const dismissDetail = React.useCallback(() => {
-    readerChangedLens.current = true;
     if (selectedKey !== null) setListFocusRequest({ key: selectedKey });
-    dispatch({ kind: 'detailDismissed', visibleOrder });
-  }, [selectedKey, visibleOrder]);
+    applyLensEdit({ kind: 'detailDismissed', visibleOrder }, 'selection');
+  }, [applyLensEdit, selectedKey, visibleOrder]);
 
   useTriageWindowLensBinding(window.setLens, readTriageWindowLensV1(surface));
-  useTriageRouteBinding(hostApi, surface, readerChangedLens);
+  useTriageRouteBinding({
+    queue: routeQueue,
+    surface,
+    readerChangedLens,
+    settledRoute,
+    latestRouteIntentSubPath,
+    rowsByKeyRef,
+    dispatch,
+    onFailure: setRouteWriteFailure,
+  });
   useTriageSavedViewBinding({
     saved: savedViews.saved,
     routeCarriedLens,
@@ -1026,6 +1281,9 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
     applyLensEdit,
     dispatch,
     readerChangedLens,
+    settledRoute,
+    latestRouteIntentSubPath,
+    onRouteWriteFailure: setRouteWriteFailure,
   });
 
   /**
@@ -1144,55 +1402,6 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
     );
   }
 
-  if (state.kind === 'configureSources') {
-    return (
-      <Screen safeArea>
-        <Stack gap="small">
-          <EmptyState
-            titleKey="plugins.triage.surface.noSources.title"
-            title="No sources are configured"
-            descriptionKey="plugins.triage.surface.noSources.description"
-            description="Connect a source in Settings to see its pull requests, issues and error groups here."
-            {...(configureOffers.length === 0 ? {} : {
-              action: (
-                /*
-                 * One control per source that named a page, rather than one
-                 * "Configure sources" that has to pick. With several installed
-                 * there is no single right destination, and a control that
-                 * opened the first would send most readers to the wrong page.
-                 */
-                <Row gap="small" wrap justify="center">
-                  {configureOffers.map((offer) => (
-                    <Button
-                      key={`${offer.destination.pluginId}/${offer.destination.localId}`}
-                      title={text(
-                        'plugins.triage.surface.noSources.configure',
-                        'Configure {name}',
-                        { name: offer.displayName },
-                      )}
-                      variant="secondary"
-                      onPress={() => openConfigureSource(offer)}
-                    />
-                  ))}
-                </Row>
-              ),
-            })}
-          />
-          {configureRefused === null ? null : (
-            <Banner
-              tone="warning"
-              title={text(
-                'plugins.triage.surface.noSources.openFailed',
-                '{name} settings could not be opened',
-                { name: configureRefused },
-              )}
-            />
-          )}
-        </Stack>
-      </Screen>
-    );
-  }
-
   /**
    * The assembled window, when there is one. The chrome below serves both it
    * and §6.2's reachability state 5, where the reader's pins are the only rows
@@ -1288,6 +1497,7 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
           />
           <Button titleKey="plugins.triage.surface.close" title="Close" variant="secondary" onPress={dismissDetail} />
         </Row>
+
         <EmptyState
           titleKey="plugins.triage.surface.entryGone.title"
           title="Nothing to show for it"
@@ -1342,6 +1552,25 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
 
   return (
     <Screen safeArea style={TRIAGE_FILL_STYLE_V1}>
+      <Stack gap="small" style={TRIAGE_FILL_STYLE_V1}>
+      {routeWriteFailure === null ? null : (
+        <Banner
+          tone="warning"
+          title={text(
+            'plugins.triage.surface.routeWriteFailed.title',
+            'This page could not be updated',
+          )}
+          description={routeWriteFailure === 'unavailable'
+            ? text(
+                'plugins.triage.surface.routeWriteFailed.unavailable',
+                'This screen cannot update its shareable location, so the last settled view was restored.',
+              )
+            : text(
+                'plugins.triage.surface.routeWriteFailed.rejected',
+                'Happier refused the location change, so the last settled view was restored. Try again.',
+              )}
+        />
+      )}
       <Row
         gap="small"
         align="stretch"
@@ -1368,6 +1597,45 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
           />
         </Row>
 
+        {state.kind !== 'configureSources' ? null : (
+          <Stack gap="small">
+            <EmptyState
+              titleKey="plugins.triage.surface.noSources.title"
+              title="No sources are configured"
+              descriptionKey="plugins.triage.surface.noSources.description"
+              description="Connect a source in Settings to see its pull requests, issues and error groups here."
+              {...(configureOffers.length === 0 ? {} : {
+                action: (
+                  <Row gap="small" wrap justify="center">
+                    {configureOffers.map((offer) => (
+                      <Button
+                        key={`${offer.destination.pluginId}/${offer.destination.localId}`}
+                        title={text(
+                          'plugins.triage.surface.noSources.configure',
+                          'Configure {name}',
+                          { name: offer.displayName },
+                        )}
+                        variant="secondary"
+                        onPress={() => openConfigureSource(offer)}
+                      />
+                    ))}
+                  </Row>
+                ),
+              })}
+            />
+            {configureRefused === null ? null : (
+              <Banner
+                tone="warning"
+                title={text(
+                  'plugins.triage.surface.noSources.openFailed',
+                  '{name} settings could not be opened',
+                  { name: configureRefused },
+                )}
+              />
+            )}
+          </Stack>
+        )}
+
         {/*
           The wait, said before the press rather than after one that does
           nothing. It is a notice and not an error: nothing is broken, the next
@@ -1392,7 +1660,7 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
           why this is a notice above their pins rather than a screen instead of
           them.
         */}
-        {listWindow !== null ? null : (
+        {state.kind !== 'sourcesUnreachable' ? null : (
           <Banner
             tone="warning"
             title={text('plugins.triage.surface.sourcesUnreachable.title', 'Your sources could not be reached')}
@@ -1417,22 +1685,23 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
           status={readTriageSavedViewLensStatusV1({
             selected: selectedStoredView,
             lens: {
+              query: surface.search.query,
               filters: surface.filters,
               order: surface.order,
               smartPolicy: surface.smartPolicy,
             },
-            query: surface.search.query,
           })}
           // Only once a pass has answered: before one has, no source is
           // configured as far as this mount knows, and every view would be
           // reported as naming sources that are gone.
-          namesUnavailableSources={state.kind === 'window'
+          namesUnavailableSources={(state.kind === 'window' || state.kind === 'configureSources')
             && (effectiveView?.unavailableSources.length ?? 0) > 0}
           busy={savedViews.busy || savedViews.revision === null}
           unavailableReason={savedViews.unavailableReason}
           unreadable={savedViews.saved?.kind === 'unreadable'}
           notice={savedViews.notice}
           text={text}
+          onRetry={savedViews.retry}
           onSelectView={selectView}
           onCreateView={createView}
           onRenameView={renameView}
@@ -1688,11 +1957,13 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
                 <TriageBulkActionBar
                   actions={configuredActions.actions}
                   selectedWorkflowSubjects={selectedBulkWorkflowSubjects}
+                  destinationUnavailableReason={readBulkDestinationUnavailableReason}
                   phase={bulkSessions.phase}
                   onRun={runBulkAction}
                   retryable={bulkSessions.retryable}
                   onRetry={bulkSessions.retry}
                   onCancel={bulkSessions.cancel}
+                  onDismiss={dismissBulkSelection}
                 />
               )}
               empty={empty === null ? null : empty.kind === 'sourceFailure' ? (
@@ -1719,6 +1990,7 @@ export function TriageListShell(props: TriageListShellProps = {}): React.ReactEl
           {detailContent}
         </Stack>
       </Row>
+      </Stack>
     </Screen>
   );
 }
@@ -1799,16 +2071,22 @@ function useTriageSettledLocation(input: Readonly<{
   applyLensEdit: (action: TriageSurfaceActionV1, refusal: 'selection' | 'lens') => void;
   dispatch: React.Dispatch<TriageSurfaceActionV1>;
   readerChangedLens: React.RefObject<boolean>;
+  settledRoute: React.RefObject<TriageSettledRouteV1>;
+  latestRouteIntentSubPath: React.RefObject<string>;
+  onRouteWriteFailure: (failure: 'unavailable' | 'rejected' | null) => void;
 }>): void {
   const {
     applyLensEdit,
     dispatch,
     launch,
+    latestRouteIntentSubPath,
     readerChangedLens,
     rowsByKey,
+    settledRoute,
     subPath,
     surface,
     windowSettled,
+    onRouteWriteFailure,
   } = input;
   const selection = surface.selection;
   /** The last location the host actually handed this mount. */
@@ -1821,12 +2099,35 @@ function useTriageSettledLocation(input: Readonly<{
     observedSubPath.current = subPath;
 
     const pendingLaunch = launch !== undefined && adoptedLaunch.current !== launch ? launch : null;
+    const canonicalSubPath = canonicalTriageSubPathV1(subPath);
+    if (changed) {
+      const previous = settledRoute.current;
+      const state = applyTriageSettledSubPathV1({
+        candidate: previous.state,
+        previous: previous.state,
+        subPath: canonicalSubPath,
+        rowsByKey,
+      });
+      settledRoute.current = { subPath: canonicalSubPath, state };
+      latestRouteIntentSubPath.current = canonicalSubPath;
+      onRouteWriteFailure(null);
+      // A delivered launch outranks the location it arrived over. The new
+      // location is still the rollback base, but only an ordinary host move is
+      // rendered immediately.
+      if (pendingLaunch === null) {
+        dispatch({ kind: 'settledRouteApplied', state });
+        return;
+      }
+    }
     // The location speaks for the host only while it is one the host has just
     // handed over, or while this mount has produced no intent of its own yet.
     // In between — a selection accepted and its replacement still in flight —
     // the prop names the location the mount is LEAVING, and reading it as
     // current would pull the reader back to the entry they left.
-    if (pendingLaunch === null && !changed && readerChangedLens.current) return;
+    if (pendingLaunch === null
+      && !changed
+      && readerChangedLens.current
+      && canonicalSubPath !== settledRoute.current.subPath) return;
     const located = pendingLaunch === null
       ? parseTriageRouteSubPathV1(subPath).selection
       : pendingLaunch.entryRef;
@@ -1908,11 +2209,14 @@ function useTriageSettledLocation(input: Readonly<{
     applyLensEdit,
     dispatch,
     launch,
+    latestRouteIntentSubPath,
     readerChangedLens,
     rowsByKey,
     selection,
+    settledRoute,
     subPath,
     windowSettled,
+    onRouteWriteFailure,
   ]);
 }
 
@@ -1923,8 +2227,8 @@ function useTriageSettledLocation(input: Readonly<{
  * is starting or has drifted, and neither of them writes Account KV:
  *
  * - **Restore.** On the first authoritative answer, a page whose location
- *   carried no lens of its own applies the selected view's exact facets, order
- *   and policy. A page that DID arrive carrying a lens keeps it: the location
+ *   carried no lens of its own applies the selected view's exact query, facets,
+ *   order and policy. A page that DID arrive carrying a lens keeps it: the location
  *   the reader followed is the more specific statement of what they came to
  *   look at, and overwriting it with a durable preference would make every
  *   copied link land somewhere else.
@@ -1978,6 +2282,7 @@ function useTriageSavedViewBinding(input: Readonly<{
           applyLensEdit({
             kind: 'savedViewApplied',
             viewId: effective.viewId,
+            query: effective.query,
             filters: effective.filters,
             order: effective.order,
             smartPolicy: effective.smartPolicy,
@@ -2014,14 +2319,27 @@ function useTriageSavedViewBinding(input: Readonly<{
  * to — the reducer cannot seed a selection from a location alone, because a
  * selection needs the qualified instance only the window can supply.
  */
-function useTriageRouteBinding(
-  hostApi: PluginUiHostApi,
-  surface: TriageSurfaceStateV1,
-  readerChangedLens: React.RefObject<boolean>,
-): void {
-  const queue = React.useMemo(() => createTriageRouteWriteQueueV1(hostApi), [hostApi]);
+function useTriageRouteBinding(input: Readonly<{
+  queue: TriageRouteWriteQueueV1;
+  surface: TriageSurfaceStateV1;
+  readerChangedLens: React.RefObject<boolean>;
+  settledRoute: React.RefObject<TriageSettledRouteV1>;
+  latestRouteIntentSubPath: React.RefObject<string>;
+  rowsByKeyRef: React.RefObject<TriageRouteRowIndexV1>;
+  dispatch: React.Dispatch<TriageSurfaceActionV1>;
+  onFailure: (failure: 'unavailable' | 'rejected' | null) => void;
+}>): void {
+  const {
+    dispatch,
+    latestRouteIntentSubPath,
+    onFailure,
+    readerChangedLens,
+    rowsByKeyRef,
+    settledRoute,
+    surface,
+    queue,
+  } = input;
   const lens = readTriageRouteLensV1(surface);
-  const grouping = lens.grouping;
   const order = lens.order;
   const smartPolicy = lens.smartPolicy;
   const filters = lens.filters;
@@ -2031,20 +2349,69 @@ function useTriageRouteBinding(
 
   React.useEffect(() => {
     if (!readerChangedLens.current) return undefined;
-    queue.write({ grouping, order, smartPolicy, filters, query, selectedViewId, selection });
+    const requested = { order, smartPolicy, filters, query, selectedViewId, selection };
+    const requestedSubPath = buildTriageRouteSubPathV1(requested);
+    if (requestedSubPath === settledRoute.current.subPath) {
+      settledRoute.current = { subPath: requestedSubPath, state: surface };
+      return undefined;
+    }
+    queue.write(requested, (settlement) => {
+      const previous = settledRoute.current;
+      const superseded = settlement.superseded
+        || requestedSubPath !== latestRouteIntentSubPath.current;
+      const result = settlement.result;
+      if (result === null) return;
+      if (result.kind === 'settled') {
+        const subPath = canonicalTriageSubPathV1(result.subPath);
+        if (subPath === requestedSubPath) {
+          // The optimistic state already is the host's exact answer. Recording
+          // it as settled is sufficient; dispatching a whole-state clone here
+          // would restart entry-scoped reads for no visible location change.
+          settledRoute.current = { subPath, state: surface };
+          if (!superseded) {
+            latestRouteIntentSubPath.current = subPath;
+            onFailure(null);
+          }
+          return;
+        }
+        const state = applyTriageSettledSubPathV1({
+          candidate: surface,
+          previous: previous.state,
+          subPath,
+          rowsByKey: rowsByKeyRef.current,
+        });
+        // Even a superseded acknowledgement is now the host's actual base. It
+        // is retained for a successor rejection, but only the newest intent is
+        // allowed to repaint the mounted page.
+        settledRoute.current = { subPath, state };
+        if (superseded) return;
+        latestRouteIntentSubPath.current = subPath;
+        onFailure(null);
+        dispatch({ kind: 'settledRouteApplied', state });
+        return;
+      }
+      if (superseded) return;
+      latestRouteIntentSubPath.current = previous.subPath;
+      onFailure(result.reason === 'unavailable' ? 'unavailable' : 'rejected');
+      dispatch({ kind: 'settledRouteApplied', state: previous.state });
+    });
     return undefined;
   }, [
+    dispatch,
     filters,
-    grouping,
+    latestRouteIntentSubPath,
+    onFailure,
     order,
     queue,
     query,
     readerChangedLens,
+    rowsByKeyRef,
     selectedViewId,
     selection,
+    settledRoute,
     smartPolicy,
+    surface,
   ]);
-  React.useEffect(() => () => { queue.dispose(); }, [queue]);
 }
 
 /**

@@ -108,18 +108,13 @@ describe('what happens to the resolved prompt once a Session exists', () => {
         expect(plan.attachments).toHaveLength(1);
     });
 
-    it('sends the entry attachment when a send action names no prompt', () => {
-        // `settings/actions.ts` states the contract: without a prompt, `delivery`
-        // says whether the Session opens with the entry attached and waiting, or
-        // SENDS THAT ATTACHMENT STRAIGHT AWAY. Returning `none` here contradicted
-        // it and made a promptless send action deliver nothing at all — the exact
-        // silent context loss `PLAN.md` §0a A4a names.
+    it('refuses a direct send with no instruction even when the entry is attachable', () => {
+        // An attachment supplies facts, not intent. Direct send may only start
+        // after the configured action or Prompt Library supplied an actual
+        // instruction; otherwise it would create an empty/generic agent task.
         for (const promptText of [null, '   ']) {
             const plan = planTriageActionDeliveryV1({ ...BASE, delivery: 'send', promptText });
-            expect(plan.kind).toBe('send');
-            if (plan.kind !== 'send') continue;
-            expect(plan.text).toBe('');
-            expect(plan.attachments).toHaveLength(1);
+            expect(plan).toEqual({ kind: 'none' });
         }
     });
 

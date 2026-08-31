@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    isTriageBulkSharedPlacementCompatibleV1,
     isTriageBulkSessionOutcomeRetryableV1,
+    mergeTriageBulkRetryResultsV1,
     resolveTriageBulkSeedPlacementV1,
 } from './useBulkEntrySessions.js';
 
@@ -29,6 +31,19 @@ function candidate(input: Readonly<{
 }
 
 describe('bulk New Session placement seeding', () => {
+    it('does not call equal repository text shared when its provider identity differs', () => {
+        expect(isTriageBulkSharedPlacementCompatibleV1({
+            workspaceMode: 'repository',
+            entries: [{ repository: REPOSITORY }, {
+                repository: {
+                    kind: 'gitlab',
+                    deployment: 'https://example.test',
+                    repository: REPOSITORY.repository,
+                },
+            }],
+        })).toBe(false);
+    });
+
     it('keeps common ambiguous candidates for the reader instead of dropping the placement question', () => {
         const result = resolveTriageBulkSeedPlacementV1({
             workspaceMode: 'repository',
@@ -135,5 +150,124 @@ describe('bulk retry custody', () => {
                 entries: [entryOutcome],
             },
         })).toBe(false);
+    });
+
+    it('keeps a known Session result when a cancelled retry observes nothing newer', () => {
+        const unit = { creationKey: 'creation-17', entries: [] } as const;
+        const previous = [{
+            unit,
+            status: 'settled' as const,
+            outcome: {
+                start: {
+                    v: 1 as const,
+                    type: 'openPending' as const,
+                    sessionId: 'session-17',
+                    disposition: 'created' as const,
+                    delivery: 'accepted' as const,
+                },
+                entries: [],
+            },
+        }];
+
+        expect(mergeTriageBulkRetryResultsV1(previous, [{
+            unit,
+            status: 'unknownOutcome' as const,
+        }])).toEqual(previous);
+        expect(mergeTriageBulkRetryResultsV1(previous, [{
+            unit,
+            status: 'notStarted' as const,
+        }])).toEqual(previous);
+    });
+
+    it('keeps accepted delivery and entry successes while adopting a later retry phase', () => {
+        const entryRef = {
+            source: { pluginId: 'happier.test', localId: 'entries' },
+            kindId: 'issue',
+            collisionScope: 'example',
+            entryId: '17',
+        } as const;
+        const unit = { creationKey: 'creation-17', entries: [] } as const;
+        const previous = [{
+            unit,
+            status: 'settled' as const,
+            outcome: {
+                start: {
+                    v: 1 as const,
+                    type: 'openPending' as const,
+                    sessionId: 'session-17',
+                    disposition: 'created' as const,
+                    delivery: 'accepted' as const,
+                },
+                entries: [{
+                    entryRef,
+                    session: 'created' as const,
+                    attachment: 'carried' as const,
+                    link: 'created' as const,
+                    newSessionSeed: 'notRequested' as const,
+                    directSend: 'applied' as const,
+                }],
+            },
+        }];
+
+        expect(mergeTriageBulkRetryResultsV1(previous, [{
+            unit,
+            status: 'settled' as const,
+            outcome: {
+                start: {
+                    v: 1 as const,
+                    type: 'opened' as const,
+                    sessionId: 'session-17',
+                    disposition: 'created' as const,
+                    delivery: 'outcomeUnknown' as const,
+                },
+                entries: [{
+                    entryRef,
+                    session: 'uncertain' as const,
+                    attachment: 'uncertain' as const,
+                    link: 'conflictedOrUnavailable' as const,
+                    newSessionSeed: 'notRequested' as const,
+                    directSend: 'uncertain' as const,
+                }],
+            },
+        }])).toEqual([expect.objectContaining({
+            status: 'settled',
+            outcome: {
+                start: expect.objectContaining({
+                    type: 'opened',
+                    delivery: 'accepted',
+                }),
+                entries: [expect.objectContaining({
+                    session: 'created',
+                    attachment: 'carried',
+                    link: 'created',
+                    directSend: 'applied',
+                })],
+            },
+        })]);
+    });
+
+    it('adopts a terminal creation answer over an earlier creation-pending observation', () => {
+        const unit = { creationKey: 'creation-17', entries: [] } as const;
+        const previous = [{
+            unit,
+            status: 'settled' as const,
+            outcome: {
+                start: { v: 1 as const, type: 'creationPending' as const, outcome: 'unknown' as const },
+                entries: [],
+            },
+        }];
+
+        expect(mergeTriageBulkRetryResultsV1(previous, [{
+            unit,
+            status: 'settled' as const,
+            outcome: {
+                start: { v: 1 as const, type: 'creationFailed' as const },
+                entries: [],
+            },
+        }])).toEqual([expect.objectContaining({
+            outcome: expect.objectContaining({
+                start: { v: 1, type: 'creationFailed' },
+            }),
+        })]);
     });
 });

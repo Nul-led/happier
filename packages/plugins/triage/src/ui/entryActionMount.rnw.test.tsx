@@ -41,6 +41,7 @@ import {
 import { CORPUS_SOURCE_INSTANCE_LIFECYCLE } from '../corpus/collections/ids.js';
 import { toCorpusStoredValue } from '../corpus/collections/rowCodec.js';
 import type { CorpusSourceInstanceRowV1 } from '../corpus/collections/rows.js';
+import { TRIAGE_DEFAULT_ACTIONS_V1 } from '../settings/actions.js';
 import { createTestkitCorpusCollections } from '../corpus/testkit/corpusCollections.test-support.js';
 import {
     testkitLocator,
@@ -51,6 +52,10 @@ import { refreshTriageListWindow } from './window/mountedWindow.js';
 import { createTriageEphemeralSharedScopeFixture } from './window/ephemeralSharedScope.test-support.js';
 import { renderSurface as renderShellSurface } from './surface.js';
 import { triageActionImmediateRefusalV1 } from './header/useEntrySessionStart.js';
+import {
+    TRIAGE_ROUTE_DEFAULT_LENS_V1,
+    buildTriageRouteSubPathV1,
+} from './navigation/location.js';
 
 /**
  * The product's headline feature, pressed.
@@ -80,6 +85,11 @@ const ENTRY_REF = Object.freeze({
     kindId: 'pull-request',
     collisionScope: 'example/repository',
     entryId: '17',
+});
+const SECOND_ENTRY_TITLE = 'Remove the stale route mirror';
+const SECOND_ENTRY_REF = Object.freeze({
+    ...ENTRY_REF,
+    entryId: '18',
 });
 
 const PREPARE_REVIEW_WORKSPACE_OPERATION = Object.freeze({
@@ -199,7 +209,10 @@ type Harness = Readonly<{
     reviewEngineListRequests: readonly unknown[];
 }>;
 
-function createHarness(options: Readonly<{ formalReviewReady?: boolean }> = {}): Harness {
+function createHarness(options: Readonly<{
+    formalReviewReady?: boolean;
+    includeSecondEntry?: boolean;
+}> = {}): Harness {
     const { collections, control } = createTestkitCorpusCollections({ accountEncryptionMode: 'e2ee' });
     control.sourceInstances.seed(toCorpusStoredValue(instanceRow()));
     const startRequests: TriageStartEntrySessionInputV1[] = [];
@@ -210,7 +223,7 @@ function createHarness(options: Readonly<{ formalReviewReady?: boolean }> = {}):
         items: [],
         truncated: false,
     };
-    let actions: readonly unknown[] | null = null;
+    let actions: readonly unknown[] | null = TRIAGE_DEFAULT_ACTIONS_V1;
     let profiles: readonly unknown[] = [];
     let backends: readonly unknown[] = [];
     let startResults: readonly unknown[] = [{
@@ -239,24 +252,35 @@ function createHarness(options: Readonly<{ formalReviewReady?: boolean }> = {}):
 
     const executeScan: TriageAdmittedOperationExecutorV1 = async () => ({
         kind: 'complete',
-        observations: [{
-            kind: 'present',
-            localRef: { kindId: 'pull-request', collisionScope: 'example/repository', entryId: '17' },
-            locator: testkitLocator(),
-            snapshot: testkitSnapshot({
-                title: ENTRY_TITLE,
-                ...(formalReviewReady ? {
-                    reviewRevision: {
-                        baseSha: 'a'.repeat(40),
-                        headSha: 'b'.repeat(40),
-                        nativeRevision: 'revision-1',
-                    },
-                } : {}),
-            }),
-            viewer: testkitViewer(),
-            sourceUpdatedAtMs: 3_000,
-            repository: REPOSITORY,
-        }],
+        observations: [
+            {
+                kind: 'present',
+                localRef: { kindId: 'pull-request', collisionScope: 'example/repository', entryId: '17' },
+                locator: testkitLocator(),
+                snapshot: testkitSnapshot({
+                    title: ENTRY_TITLE,
+                    ...(formalReviewReady ? {
+                        reviewRevision: {
+                            baseSha: 'a'.repeat(40),
+                            headSha: 'b'.repeat(40),
+                            nativeRevision: 'revision-1',
+                        },
+                    } : {}),
+                }),
+                viewer: testkitViewer(),
+                sourceUpdatedAtMs: 3_000,
+                repository: REPOSITORY,
+            },
+            ...(options.includeSecondEntry === true ? [{
+                kind: 'present' as const,
+                localRef: { kindId: 'pull-request', collisionScope: 'example/repository', entryId: '18' },
+                locator: testkitLocator(),
+                snapshot: testkitSnapshot({ title: SECOND_ENTRY_TITLE }),
+                viewer: testkitViewer(),
+                sourceUpdatedAtMs: 2_000,
+                repository: REPOSITORY,
+            }] : []),
+        ],
         evidence: { kind: 'walkFinished' },
     } satisfies TriageScanResultV1);
 
@@ -290,8 +314,9 @@ function createHarness(options: Readonly<{ formalReviewReady?: boolean }> = {}):
                 items: [{ engineId: 'codex', label: 'Codex', enabled: true }],
             };
         }
-        // Only a test that PINS a catalogue answers here; otherwise the read
-        // fails exactly as it did before and the mount shows the shipped seed.
+        // The default answer is an authoritative absent-catalog projection of
+        // the shipped seed. A seed is never exposed merely because this read
+        // failed; `null` remains available to tests that need that outage.
         if (action === TRIAGE_READ_ACTIONS_ACTION_LOCAL_ID_V1 && actions !== null) {
             return { v: 1, availability: 'parsed', actions, revision: 'revision-1' };
         }
@@ -480,6 +505,69 @@ afterEach(async () => {
 });
 
 describe('the entry action controls on the mounted detail header', () => {
+    it('gives a newly selected entry its own action controller while the prior entry is still starting', async () => {
+        const harness = createHarness({ includeSecondEntry: true });
+        harness.setActions([{
+            actionId: 'start',
+            label: 'Start',
+            enabled: true,
+            appliesTo: ['pullRequest'],
+            profileId: null,
+            workspaceMode: 'reference_only',
+            target: { kind: 'agent', promptInvocationId: null, seededFallbackInstruction: 'Start this entry.', delivery: 'send' },
+        }]);
+        let settleFirst!: (result: unknown) => void;
+        let settleSecond!: (result: unknown) => void;
+        harness.setStartResults([
+            () => new Promise((resolve) => { settleFirst = resolve; }),
+            () => new Promise((resolve) => { settleSecond = resolve; }),
+        ]);
+        const shell = await mountShell(harness);
+        await openTheRow(shell);
+
+        await act(async () => {
+            await shell.press(await shell.findByRole('button', { name: 'Start' }));
+        });
+        await settle();
+        expect(harness.startRequests).toHaveLength(1);
+        await expect(shell.getByText('Starting a session for this entry…')).resolves.toBeDefined();
+
+        // The host settles a neighboring selection while A still owns an
+        // unresolved start. B must not inherit A's synchronous in-flight gate,
+        // phase notice, review chooser, or eventual result.
+        await act(async () => {
+            await shell.updatePageLocation(buildTriageRouteSubPathV1({
+                ...TRIAGE_ROUTE_DEFAULT_LENS_V1,
+                selection: SECOND_ENTRY_REF,
+            }));
+        });
+        await settle();
+        await expect(shell.getByText(SECOND_ENTRY_TITLE)).resolves.toBeDefined();
+        await expect(shell.queryByText('Starting a session for this entry…')).resolves.toBeUndefined();
+
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Start' }));
+        });
+        await settle();
+        expect(harness.startRequests).toHaveLength(2);
+        expect(harness.startRequests[1]?.entryRef).toEqual(SECOND_ENTRY_REF);
+
+        settleFirst({
+            v: 1,
+            type: 'creationFailed',
+            reason: 'failed',
+        });
+        settleSecond({
+            v: 1,
+            type: 'opened',
+            sessionId: 'session-b',
+            disposition: 'created',
+            delivery: 'notRequested',
+        });
+        await settle();
+        await expect(shell.queryByText('This session could not be created.')).resolves.toBeUndefined();
+    }, 15_000);
+
     it('renders the actions this entry subject is offered', async () => {
         const shell = await mountShell(createHarness());
         await openTheRow(shell);
@@ -491,6 +579,32 @@ describe('the entry action controls on the mounted detail header', () => {
         await expect(shell.getByRole('button', { name: 'Ask' })).resolves.toBeDefined();
         await expect(shell.getByRole('button', { name: 'Fix' })).resolves.toBeDefined();
         await expect(shell.getByRole('button', { name: 'Review' })).resolves.toBeDefined();
+    }, 60_000);
+
+    it('revalidates a visible action at Account KV so a remote deletion cannot execute', async () => {
+        const harness = createHarness();
+        harness.setActions([{
+            actionId: 'delete-remotely',
+            label: 'Delete remotely',
+            enabled: true,
+            appliesTo: ['pullRequest'],
+            profileId: null,
+            workspaceMode: 'reference_only',
+            target: { kind: 'agent', promptInvocationId: null, seededFallbackInstruction: 'Start this entry.', delivery: 'send' },
+        }]);
+        const shell = await mountShell(harness);
+        await openTheRow(shell);
+        await expect(shell.getByRole('button', { name: 'Delete remotely' })).resolves.toBeDefined();
+
+        // Another device deletes it after this mount rendered the control.
+        harness.setActions([]);
+        await pressAction(shell, 'Delete remotely');
+
+        expect(harness.startRequests).toEqual([]);
+        expect(draftsOpened).toBe(0);
+        expect(newSessionSeeds).toEqual([]);
+        await expect(shell.queryByRole('button', { name: 'Delete remotely' }))
+            .resolves.toBeUndefined();
     }, 60_000);
 
     it('opens compose in New Session authoring with the selected entry and creates nothing', async () => {
@@ -578,7 +692,7 @@ describe('the entry action controls on the mounted detail header', () => {
             appliesTo: ['pullRequest', 'issue', 'errorIssue'],
             profileId: null,
             workspaceMode: 'reference_only',
-            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+            target: { kind: 'agent', promptInvocationId: null, seededFallbackInstruction: 'Start this entry.', delivery: 'send' },
         }]);
         harness.setStartResults([
             { v: 1, type: 'creationPending', outcome: 'unknown' },
@@ -606,7 +720,7 @@ describe('the entry action controls on the mounted detail header', () => {
         expect(retry?.resume).toEqual({ phase: 'creationPending' });
     }, 15_000);
 
-    it('retries an unknown mounted delivery with the same creation and delivery identities', async () => {
+    it('retries an unknown mounted delivery against the linked Session with the same delivery identity', async () => {
         const harness = createHarness();
         harness.setActions([{
             actionId: 'send',
@@ -615,7 +729,7 @@ describe('the entry action controls on the mounted detail header', () => {
             appliesTo: ['pullRequest', 'issue', 'errorIssue'],
             profileId: null,
             workspaceMode: 'reference_only',
-            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+            target: { kind: 'agent', promptInvocationId: null, seededFallbackInstruction: 'Start this entry.', delivery: 'send' },
         }]);
         harness.setStartResults([
             {
@@ -646,7 +760,11 @@ describe('the entry action controls on the mounted detail header', () => {
         const [first, retry] = harness.startRequests;
         expect(retry?.destination).toEqual(first?.destination);
         expect(retry?.delivery?.idempotencyKey).toBe(first?.delivery?.idempotencyKey);
-        expect(retry?.resume).toEqual({ phase: 'creationPending' });
+        expect(retry?.resume).toEqual({
+            phase: 'openPending',
+            sessionId: 'session-a',
+            disposition: 'created',
+        });
     }, 15_000);
 
     it('carries a settled spawn delivery through a mounted open retry', async () => {
@@ -658,7 +776,7 @@ describe('the entry action controls on the mounted detail header', () => {
             appliesTo: ['pullRequest', 'issue', 'errorIssue'],
             profileId: null,
             workspaceMode: 'reference_only',
-            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+            target: { kind: 'agent', promptInvocationId: null, seededFallbackInstruction: 'Start this entry.', delivery: 'send' },
         }]);
         harness.setStartResults([
             {
@@ -702,7 +820,7 @@ describe('the entry action controls on the mounted detail header', () => {
             appliesTo: ['pullRequest', 'issue', 'errorIssue'],
             profileId: null,
             workspaceMode: 'repository',
-            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+            target: { kind: 'agent', promptInvocationId: null, seededFallbackInstruction: 'Fix this entry.', delivery: 'send' },
         }]);
         const shell = await mountShell(harness);
         await openTheRow(shell);
@@ -727,7 +845,7 @@ describe('the entry action controls on the mounted detail header', () => {
             appliesTo: ['pullRequest'],
             profileId: null,
             workspaceMode: 'pull_request',
-            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+            target: { kind: 'agent', promptInvocationId: null, seededFallbackInstruction: 'Repair this pull request.', delivery: 'send' },
         }]);
         const shell = await mountShell(harness);
         await openTheRow(shell);
@@ -781,7 +899,7 @@ describe('the entry action controls on the mounted detail header', () => {
             appliesTo: ['pullRequest', 'issue', 'errorIssue'],
             profileId: 'profile-1',
             workspaceMode: 'repository',
-            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+            target: { kind: 'agent', promptInvocationId: null, seededFallbackInstruction: 'Fix this entry.', delivery: 'send' },
         }]);
         harness.setProfiles([{
             id: 'profile-1',
@@ -850,7 +968,7 @@ describe('the entry action controls on the mounted detail header', () => {
             appliesTo: ['pullRequest', 'issue', 'errorIssue'],
             profileId: 'profile-1',
             workspaceMode: 'repository',
-            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+            target: { kind: 'agent', promptInvocationId: null, seededFallbackInstruction: 'Fix this entry.', delivery: 'send' },
         }]);
         harness.setProfiles([{
             id: 'profile-1',
@@ -923,7 +1041,7 @@ describe('the entry action controls on the mounted detail header', () => {
             appliesTo: ['pullRequest', 'issue', 'errorIssue'],
             profileId: null,
             workspaceMode: 'repository',
-            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+            target: { kind: 'agent', promptInvocationId: null, seededFallbackInstruction: 'Fix this entry.', delivery: 'send' },
         }]);
         harness.setRegistry({
             items: [projectRow({ machineId: 'machine-b' })],
@@ -985,7 +1103,11 @@ describe('the entry action controls on the mounted detail header', () => {
                 appliesTo: ['pullRequest'],
                 profileId: null,
                 workspaceMode: 'repository',
-                target: { kind: 'reviewStart', promptInvocationId: null },
+                target: {
+                    kind: 'reviewStart',
+                    promptInvocationId: null,
+                    seededFallbackInstruction: 'Review this change.',
+                },
             },
             {
                 // Labelled `Run code review`, and it is the ORDINARY AGENT arm.
@@ -995,7 +1117,7 @@ describe('the entry action controls on the mounted detail header', () => {
                 appliesTo: ['pullRequest'],
                 profileId: null,
                 workspaceMode: 'repository',
-                target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+                target: { kind: 'agent', promptInvocationId: null, seededFallbackInstruction: 'Start this entry.', delivery: 'send' },
             },
             {
                 actionId: 'catalogue-loaded',
@@ -1020,10 +1142,24 @@ describe('the entry action controls on the mounted detail header', () => {
         expect(harness.startRequests).toEqual([]);
         expect(draftsOpened).toBe(0);
         expect(triageActionImmediateRefusalV1({
-            target: { kind: 'reviewStart', promptInvocationId: null },
+            target: {
+                kind: 'reviewStart',
+                promptInvocationId: null,
+                seededFallbackInstruction: 'Review this change.',
+            },
             workspaceMode: 'repository',
             appliesTo: ['pullRequest'],
         })).toBe('preparedWorkspaceUnsupported');
+        expect(triageActionImmediateRefusalV1({
+            target: { kind: 'reviewStart', promptInvocationId: null },
+            workspaceMode: 'pull_request',
+            appliesTo: ['pullRequest'],
+        })).toBe('instructionMissing');
+        expect(triageActionImmediateRefusalV1({
+            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+            workspaceMode: 'repository',
+            appliesTo: ['pullRequest'],
+        })).toBe('instructionMissing');
 
         // The agent arm, under the label that says "review", starts normally.
         await pressAction(shell, 'Run code review');
@@ -1121,6 +1257,57 @@ describe('the entry action controls on the mounted detail header', () => {
         expect(harness.reviewEngineListRequests).toEqual([{ sessionId: 'session-review' }]);
     }, 60_000);
 
+    it('prepares a selected-PR workspace for a custom ordinary-agent action keyed only by workspaceMode', async () => {
+        const harness = createHarness({ formalReviewReady: true });
+        harness.setActions([{
+            actionId: 'custom-agent-pr-workspace',
+            label: 'Investigate with custom agent',
+            enabled: true,
+            appliesTo: ['pullRequest'],
+            profileId: null,
+            workspaceMode: 'pull_request',
+            target: { kind: 'agent', promptInvocationId: 'review-prompt', delivery: 'send' },
+        }]);
+        harness.setRegistry({
+            items: [projectRow({ rootPath: '/workspaces/example' })],
+            truncated: false,
+        });
+        const shell = await mountShell(harness);
+        await openTheRow(shell);
+
+        await pressAction(shell, 'Investigate with custom agent');
+        await settle();
+
+        expect(harness.startRequests).toHaveLength(1);
+        expect(harness.startRequests[0]).toMatchObject({
+            workspaceMode: 'pull_request',
+            destination: {
+                kind: 'new',
+                materialization: {
+                    kind: 'reviewWorkspace',
+                    request: {
+                        entryRef: ENTRY_REF,
+                        workflowSubject: 'pullRequest',
+                        workspace: {
+                            serverId: 'server-a',
+                            machineId: 'machine-a',
+                            rootPath: '/workspaces/example',
+                        },
+                    },
+                },
+            },
+            prepareReviewWorkspaceSelection: {
+                selection: {
+                    contributor: PREPARE_REVIEW_WORKSPACE_OPERATION.contributor,
+                    point: PREPARE_REVIEW_WORKSPACE_OPERATION.point,
+                },
+                credentialRef: configuredInstance().binding.account,
+            },
+            delivery: { kind: 'send' },
+        });
+        expect(harness.reviewEngineListRequests).toEqual([]);
+    });
+
     it('does not launch directly from a registry that admitted it was partial', async () => {
         const harness = createHarness();
         harness.setActions([{
@@ -1130,7 +1317,7 @@ describe('the entry action controls on the mounted detail header', () => {
             appliesTo: ['pullRequest', 'issue', 'errorIssue'],
             profileId: 'profile-1',
             workspaceMode: 'repository',
-            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+            target: { kind: 'agent', promptInvocationId: null, seededFallbackInstruction: 'Fix this entry.', delivery: 'send' },
         }]);
         harness.setProfiles([{ id: 'profile-1', name: 'Repair', placement: 'automatic', preferredAgentTargetKey: 'backend:claude' }]);
         harness.setBackends([{

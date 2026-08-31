@@ -1,6 +1,7 @@
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import type {
   TriageConfiguredSourceInstanceV1,
+  TriageEntryLocatorV1,
   TriageSourceFailureV1,
 } from '@happier-dev/triage-protocol/v1';
 
@@ -9,6 +10,7 @@ import { createBitbucketFailure } from '../failures.js';
 import {
   isBitbucketEntryId,
   readBitbucketCollisionScopeRepositoryUuid,
+  readBitbucketRepositoryKey,
 } from '../identity.js';
 import { decodeBitbucketConfiguration } from '../instance.js';
 import {
@@ -30,16 +32,18 @@ import { toTriageSourceFailure } from './failures.js';
  * check would be two answers to "may this reference route through this configured workspace", and
  * the copy that drifted would be the one guarding a write.
  *
- * The repository UUID is read back out of the collision scope rather than taken from a routing
- * token: the scope is the value this source itself minted, and a reference keyed against another
- * workspace cannot address a repository here. The account is rematerialized on every invocation
+ * The mutable repository route comes only from the last known locator this source minted. The
+ * collision scope contributes the immutable repository UUID used to verify the provider body; it
+ * is never reconstructed into a request path. The account is rematerialized on every invocation
  * and grants no standing authority.
  */
 
 /** The provider-native triple a proven local ref addresses. */
 export type BitbucketEntryRouteV1 = Readonly<{
   workspaceUuid: string;
-  repositoryUuid: string;
+  repositorySlug: string;
+  repositoryKey: string;
+  expectedRepositoryUuid: string;
   entryId: string;
 }>;
 
@@ -64,6 +68,10 @@ const COLLISION_SCOPE_INVALID = createBitbucketFailure(
   'unsupportedContract',
   'collision-scope-invalid',
 );
+const LOCATOR_ROUTING_TOKEN_INVALID = createBitbucketFailure(
+  'unsupportedContract',
+  'locator-routing-token-invalid',
+);
 const ENTRY_ID_INVALID = createBitbucketFailure('unsupportedContract', 'entry-id-invalid');
 
 /** The host services one bounded invocation reaches, bound to the signal that owns its lifetime. */
@@ -83,6 +91,7 @@ export async function admitBitbucketEntryInvocation(
   input: Readonly<{
     instance: TriageConfiguredSourceInstanceV1;
     localRef: Readonly<{ kindId: string; entryId: string; collisionScope: string }>;
+    lastKnownLocator: TriageEntryLocatorV1 | undefined;
   }>,
   runtime: BitbucketSourceRuntime,
 ): Promise<BitbucketAdmittedInvocation> {
@@ -101,12 +110,17 @@ export async function admitBitbucketEntryInvocation(
     return { ok: false, failure: toTriageSourceFailure(CONFIGURATION_INSTANCE_MISMATCH) };
   }
 
-  const repositoryUuid = readBitbucketCollisionScopeRepositoryUuid(input.localRef.collisionScope);
-  if (repositoryUuid === null) {
+  const expectedRepositoryUuid = readBitbucketCollisionScopeRepositoryUuid(input.localRef.collisionScope);
+  if (expectedRepositoryUuid === null) {
     return { ok: false, failure: toTriageSourceFailure(COLLISION_SCOPE_INVALID) };
   }
   if (!isBitbucketEntryId(input.localRef.entryId)) {
     return { ok: false, failure: toTriageSourceFailure(ENTRY_ID_INVALID) };
+  }
+  const routingToken = input.lastKnownLocator?.routingToken;
+  const repositoryRoute = readBitbucketRepositoryKey(routingToken);
+  if (repositoryRoute === null || repositoryRoute.repositoryKey !== routingToken) {
+    return { ok: false, failure: toTriageSourceFailure(LOCATOR_ROUTING_TOKEN_INVALID) };
   }
 
   const authorized = await createAuthorizedBitbucketClient(runtime, {
@@ -119,7 +133,9 @@ export async function admitBitbucketEntryInvocation(
     ok: true,
     route: Object.freeze({
       workspaceUuid: configuration.workspaceUuid,
-      repositoryUuid,
+      repositorySlug: repositoryRoute.repositorySlug,
+      repositoryKey: repositoryRoute.repositoryKey,
+      expectedRepositoryUuid,
       entryId: input.localRef.entryId,
     }),
     client: authorized.client,

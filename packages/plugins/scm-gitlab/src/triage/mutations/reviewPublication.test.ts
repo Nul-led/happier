@@ -14,13 +14,14 @@ import {
   publishGitlabMergeRequestThreadReply,
 } from './operations.js';
 
-const ITEM_URL = 'https://gitlab.com/api/v4/projects/3/merge_requests/7';
+const ROUTING_TOKEN = 'group/project';
+const ITEM_URL = `https://gitlab.com/api/v4/projects/${encodeURIComponent(ROUTING_TOKEN)}/merge_requests/7`;
 const DRAFTS_URL = `${ITEM_URL}/draft_notes`;
 const DRAFTS_LIST_URL = `${DRAFTS_URL}?per_page=100`;
 const NOTES_LIST_URL = `${ITEM_URL}/notes?per_page=100`;
 const DISCUSSIONS_URL = `${ITEM_URL}/discussions`;
 const DISCUSSIONS_LIST_URL = `${DISCUSSIONS_URL}?per_page=100`;
-const ISSUE_URL = 'https://gitlab.com/api/v4/projects/3/issues/7';
+const ISSUE_URL = `https://gitlab.com/api/v4/projects/${encodeURIComponent(ROUTING_TOKEN)}/issues/7`;
 const ISSUE_NOTES_URL = `${ISSUE_URL}/notes`;
 const ISSUE_NOTES_LIST_URL = `${ISSUE_NOTES_URL}?per_page=100`;
 const OBSERVED_HEAD = 'a'.repeat(40);
@@ -116,6 +117,7 @@ function actionInput(overrides: Readonly<Record<string, unknown>> = {}) {
     v: 1,
     instance: gitlabTestConfiguredInstance(),
     localRef: LOCAL_REF,
+    routingToken: ROUTING_TOKEN,
     publicationPlan: plan(),
     ...overrides,
   };
@@ -130,9 +132,12 @@ function createTransport(respond: (request: RecordedGitlabRequest) => StubGitlab
       claimCount += 1;
       return {
         disposition: 'dispatch',
+        dispatchToken: 'dispatch-token-1',
         publicationPlanId: PLAN_ID,
         entries: [{ happierCommentId: 'comment-1', publicationCorrelationId: ENTRY_CORRELATION }],
         verdict: { publicationCorrelationId: VERDICT_CORRELATION },
+        instructions: { entries: ['dispatch'], verdict: 'dispatch' },
+        priorResult: null,
       };
     },
   };
@@ -191,7 +196,7 @@ describe('gitlab/merge-request/submit-review', () => {
         verdict: { outcome: { kind: 'published', externalRef: '92' } },
       },
     });
-    expect(transport.claimCount()).toBe(1);
+    expect(transport.claimCount()).toBe(2);
     expect(bodyOf(transport.requests[3])).toMatchObject({
       note: `Please explain this constant.\n\n<!-- happier-review-comment:v1:${ENTRY_CORRELATION} -->`,
       position: {
@@ -260,11 +265,14 @@ describe('gitlab/merge-request/submit-review', () => {
       async execute() {
         return {
           disposition: 'dispatch', publicationPlanId: PLAN_ID,
+          dispatchToken: 'dispatch-token-1',
           entries: [
             { happierCommentId: 'comment-1', publicationCorrelationId: ENTRY_CORRELATION },
             { happierCommentId: 'comment-2', publicationCorrelationId: SUMMARY_ENTRY_CORRELATION },
           ],
           verdict: { publicationCorrelationId: VERDICT_CORRELATION },
+          instructions: { entries: ['dispatch', 'dispatch'], verdict: 'dispatch' },
+          priorResult: null,
         };
       },
     };
@@ -368,11 +376,14 @@ describe('gitlab/merge-request/submit-review', () => {
       async execute() {
         return {
           disposition: 'dispatch', publicationPlanId: PLAN_ID,
+          dispatchToken: 'dispatch-token-1',
           entries: [
             { happierCommentId: 'comment-1', publicationCorrelationId: ENTRY_CORRELATION },
             { happierCommentId: 'comment-2', publicationCorrelationId: SUMMARY_ENTRY_CORRELATION },
           ],
           verdict: null,
+          instructions: { entries: ['dispatch', 'dispatch'], verdict: null },
+          priorResult: null,
         };
       },
     };
@@ -461,11 +472,14 @@ describe('gitlab/merge-request/submit-review', () => {
       async execute() {
         return {
           disposition: 'dispatch', publicationPlanId: PLAN_ID,
+          dispatchToken: 'dispatch-token-1',
           entries: [
             { happierCommentId: 'comment-1', publicationCorrelationId: ENTRY_CORRELATION },
             { happierCommentId: 'comment-2', publicationCorrelationId: 'F'.repeat(43) },
           ],
           verdict: { publicationCorrelationId: VERDICT_CORRELATION },
+          instructions: { entries: ['dispatch', 'dispatch'], verdict: 'dispatch' },
+          priorResult: null,
         };
       },
     };
@@ -503,8 +517,11 @@ describe('gitlab/merge-request/submit-review', () => {
       async execute() {
         return {
           disposition: 'reconcile', publicationPlanId: PLAN_ID,
+          dispatchToken: null,
           entries: [{ happierCommentId: 'comment-1', publicationCorrelationId: ENTRY_CORRELATION }],
           verdict: { publicationCorrelationId: VERDICT_CORRELATION },
+          instructions: { entries: ['reconcile'], verdict: 'reconcile' },
+          priorResult: null,
         };
       },
     };
@@ -536,7 +553,10 @@ describe('gitlab/merge-request/submit-review', () => {
       async execute() {
         return {
           disposition: 'reconcile', publicationPlanId: PLAN_ID, entries: [],
+          dispatchToken: null,
           verdict: { publicationCorrelationId: VERDICT_CORRELATION },
+          instructions: { entries: [], verdict: 'reconcile' },
+          priorResult: null,
         };
       },
     };
@@ -574,7 +594,10 @@ describe('gitlab/merge-request/submit-review', () => {
       async execute() {
         return {
           disposition: 'dispatch', publicationPlanId: PLAN_ID, entries: [],
+          dispatchToken: 'dispatch-token-1',
           verdict: { publicationCorrelationId: VERDICT_CORRELATION },
+          instructions: { entries: [], verdict: 'dispatch' },
+          priorResult: null,
         };
       },
     };
@@ -595,14 +618,18 @@ function installSingleClaim(
 ) {
   (transport.context.services as unknown as { actions: { execute: Function } }).actions = {
     async execute() {
+      const disposition = options.disposition ?? 'dispatch';
       return {
-        disposition: options.disposition ?? 'dispatch',
+        disposition,
+        dispatchToken: disposition === 'dispatch' ? 'dispatch-token-1' : null,
         publicationPlanId: PLAN_ID,
         entries: [{
           happierCommentId: options.commentId ?? 'comment-1',
           publicationCorrelationId: ENTRY_CORRELATION,
         }],
         verdict: null,
+        instructions: { entries: [disposition], verdict: null },
+        priorResult: null,
       };
     },
   };
@@ -615,12 +642,14 @@ describe('GitLab single-comment publication Actions', () => {
         v: 1,
         instance: gitlabTestConfiguredInstance(),
         localRef: LOCAL_REF,
+        routingToken: ROUTING_TOKEN,
         publicationPlan: plan({ verdict: null }),
       }, transport.context),
       (transport: ReturnType<typeof createTransport>) => publishGitlabMergeRequestThreadReply({
         v: 1,
         instance: gitlabTestConfiguredInstance(),
         localRef: LOCAL_REF,
+        routingToken: ROUTING_TOKEN,
         discussionId: 'discussion-1',
         publicationPlan: plan({
           target: { ...plan().target, subtarget: { kindId: 'review-thread', targetId: 'discussion-1' } },
@@ -665,6 +694,7 @@ describe('GitLab single-comment publication Actions', () => {
       v: 1,
       instance: gitlabTestConfiguredInstance(),
       localRef: LOCAL_REF,
+      routingToken: ROUTING_TOKEN,
       publicationPlan: plan({ entries: [entry], verdict: null }),
     }, transport.context);
     expect(result).toMatchObject({ kind: 'settled', publication: { entries: [{ outcome: { kind: 'published', externalRef: '101' } }] } });
@@ -697,6 +727,7 @@ describe('GitLab single-comment publication Actions', () => {
       v: 1,
       instance: gitlabTestConfiguredInstance(),
       localRef: LOCAL_REF,
+      routingToken: ROUTING_TOKEN,
       publicationPlan: plan({ verdict: null }),
     }, transport.context);
 
@@ -736,6 +767,7 @@ describe('GitLab single-comment publication Actions', () => {
       v: 1,
       instance: gitlabTestConfiguredInstance(),
       localRef: LOCAL_REF,
+      routingToken: ROUTING_TOKEN,
       discussionId: 'discussion-1',
       publicationPlan,
     }, transport.context);
@@ -770,6 +802,7 @@ describe('GitLab single-comment publication Actions', () => {
       v: 1,
       instance: gitlabTestConfiguredInstance(),
       localRef: issueRef,
+      routingToken: ROUTING_TOKEN,
       publicationPlan,
     }, transport.context);
     expect(result).toMatchObject({

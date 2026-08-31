@@ -197,6 +197,10 @@ async function mountShell(harness: Harness): Promise<PluginUiTestkit> {
             handlers: {
                 publishCurrentUiContext: () => undefined,
                 executeAction: async ({ action, input }) => await harness.executeAction({ action, input }),
+                // Selection is route-owned. This harness is testing Pin/Unpin,
+                // so acknowledge the canonical location rather than exercising
+                // the separate host-refusal recovery path.
+                replacePageLocation: ({ subPath }) => subPath,
             },
         });
     });

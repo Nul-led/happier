@@ -1,7 +1,9 @@
 import type { JsonValue } from '@happier-dev/plugin-sdk';
 
-import type { TriageStartEntrySessionResultV1 } from '../../actions/entrySessionProtocol.js';
-import { TRIAGE_LINK_ENTRY_TO_SESSION_ACTION_LOCAL_ID_V1 } from '../../actions/sessionLinksProtocol.js';
+import type {
+    TriageStartEntrySessionInputV1,
+    TriageStartEntrySessionResultV1,
+} from '../../actions/entrySessionProtocol.js';
 import { openLinkedSession } from '../../sessions/entrySessionOpen.js';
 import type { TriageActionV1 } from '../../settings/actions.js';
 import { projectTriageNewSessionDestinationV1 } from '../header/newSessionDestination.js';
@@ -30,12 +32,83 @@ type TriageBulkStartedSessionOutcomeV1 = Readonly<{
     entries: readonly TriageBulkEntryOutcomeV1[];
 }>;
 
+type TriageBulkStartedSessionResultV1 = TriageBulkSessionUnitResultV1<
+    TriageBulkStartedSessionOutcomeV1,
+    TriageBulkSelectedEntryV1
+>;
+
+/**
+ * Projects an already-answered start onto the incumbent phase-resume arm.
+ *
+ * This is custody, not a second retry owner: the Action result names the phase,
+ * while the canonical start Action and orchestrator decide how that phase is
+ * retried. Structured input is admitted only after the durable link. An
+ * ambiguous admission therefore resumes from the existing Session with the
+ * same public delivery identity; it never re-enters creation merely because a
+ * later phase answered imprecisely.
+ */
+function readTriageBulkStartResumeV1(
+    previous: TriageBulkStartedSessionResultV1 | undefined,
+): TriageStartEntrySessionInputV1['resume'] {
+    if (previous?.status !== 'settled') return undefined;
+    const result = previous.outcome.start;
+    if (result.type === 'creationPending') {
+        return {
+            phase: 'creationPending',
+            ...(result.preparedReviewWorkspace === undefined
+                ? {}
+                : { preparedReviewWorkspace: result.preparedReviewWorkspace }),
+        };
+    }
+    if (result.type === 'linkPending' || result.type === 'openPending') {
+        return {
+            phase: result.type,
+            sessionId: result.sessionId,
+            disposition: result.disposition,
+            // An unknown answer is intentionally omitted. The canonical phase
+            // resume invokes the idempotent sender again; a settled answer is
+            // carried so an open retry cannot send twice.
+            ...(result.delivery === undefined || result.delivery === 'outcomeUnknown'
+                ? {}
+                : { delivery: result.delivery }),
+            ...(result.preparedReviewWorkspace === undefined
+                ? {}
+                : { preparedReviewWorkspace: result.preparedReviewWorkspace }),
+        };
+    }
+    if (result.type === 'opened' && result.delivery === 'outcomeUnknown') {
+        return {
+            phase: 'openPending',
+            sessionId: result.sessionId,
+            disposition: result.disposition,
+            ...(result.preparedReviewWorkspace === undefined
+                ? {}
+                : { preparedReviewWorkspace: result.preparedReviewWorkspace }),
+        };
+    }
+    if (result.type === 'linked' && result.delivery === 'outcomeUnknown') {
+        // A suppressed per-entry start has no delivery-only wire arm. Reusing
+        // the incumbent link resume is truthful and idempotent: it rejoins the
+        // durable relationship, re-asks admission, and still respects the
+        // batch-owned final-open policy instead of respawning the Session.
+        return {
+            phase: 'linkPending',
+            sessionId: result.sessionId,
+            disposition: result.disposition,
+            ...(result.preparedReviewWorkspace === undefined
+                ? {}
+                : { preparedReviewWorkspace: result.preparedReviewWorkspace }),
+        };
+    }
+    return undefined;
+}
+
 /**
  * Runs already-resolved bulk Session units in order.
  *
- * Creation, primary link, delivery and generic open remain below the Triage
- * start Action. This sequence only joins those owner-owned phases with the
- * remaining links that a mounted bulk press still owns.
+ * Creation, the complete attachment-derived link set, delivery and generic
+ * open remain below the Triage start Action. This sequence supplies one unit
+ * and retains only the batch's final-navigation policy.
  */
 export async function runTriageBulkEntrySessionStartsV1(input: Readonly<{
     host: TriageBulkSessionExecutionHostV1;
@@ -45,22 +118,21 @@ export async function runTriageBulkEntrySessionStartsV1(input: Readonly<{
     destination: TriageBulkSessionDestinationV1;
     promptText: string | null;
     settlement: unknown;
+    /** Per-unit settled host choice for the independent-placement destination. */
+    settlementForUnit?: (unit: TriageBulkSessionUnitV1<TriageBulkSelectedEntryV1>) => unknown;
     signal: AbortSignal;
     onStarted?: () => void;
-}>): Promise<readonly TriageBulkSessionUnitResultV1<
-    TriageBulkStartedSessionOutcomeV1,
-    TriageBulkSelectedEntryV1
->[]> {
+    /** Prior same-key answers; used only to project the canonical resume arm. */
+    previousResults?: readonly TriageBulkStartedSessionResultV1[];
+}>): Promise<readonly TriageBulkStartedSessionResultV1[]> {
     // The seed destination never reaches this sequence: it is consumed by the
     // host New Session surface before a Triage Session exists.
     if (input.destination === 'attachAllToNewSession') {
         throw new Error('triage:bulk:seedDestinationCannotRun');
     }
-    if (input.action.target.kind === 'agent' && input.action.target.delivery === 'compose') {
-        // A compose action must be authored before spawn. This executor owns
-        // direct Session starts and cannot create one canonical draft per unit,
-        // so it must never fall back to spawn-then-patch-composer.
-        throw new Error('triage:bulk:composeRequiresNewSessionAuthoring');
+    const promptText = input.promptText;
+    if (promptText === null || promptText.trim().length === 0) {
+        throw new Error('triage:bulk:instructionRequired');
     }
     const finalOpen = input.destination === 'oneSessionForAllEntries'
         ? 'deferred' as const
@@ -71,13 +143,20 @@ export async function runTriageBulkEntrySessionStartsV1(input: Readonly<{
         start: async (unit) => {
             const first = unit.entries[0];
             if (first === undefined) throw new Error('triage:bulk:emptyUnit');
+            const settlement = input.settlementForUnit === undefined
+                ? input.settlement
+                : input.settlementForUnit(unit);
             const destination = projectTriageNewSessionDestinationV1({
                 workspaceMode: input.action.workspaceMode,
                 creationKey: unit.creationKey,
-                settlement: input.settlement,
+                settlement,
                 ...(input.action.profileId === null ? {} : { profileId: input.action.profileId }),
             });
             if (destination.status === 'refused') throw new Error('triage:bulk:destinationRefused');
+            const previous = input.previousResults?.find(
+                (candidate) => candidate.unit.creationKey === unit.creationKey,
+            );
+            const resume = readTriageBulkStartResumeV1(previous);
             const result = await submitTriageEntrySessionStart(input.host, {
                 v: 1,
                 workspaceMode: input.action.workspaceMode,
@@ -85,13 +164,16 @@ export async function runTriageBulkEntrySessionStartsV1(input: Readonly<{
                 display: first.display,
                 destination: destination.destination,
                 finalOpen,
-                ...(input.action.target.kind === 'agent' && input.action.target.delivery === 'send'
+                // The direct bulk destination is the reader's explicit choice.
+                // It overrides a single-entry compose default and therefore
+                // uses the one canonical structured Session-input delivery;
+                // Attach all to New Session remains the explicit author-first
+                // destination and never enters this executor.
+                ...(input.action.target.kind === 'agent'
                     ? {
                         delivery: {
                             kind: 'send' as const,
-                            ...(input.promptText === null || input.promptText.trim().length === 0
-                                ? {}
-                                : { text: input.promptText }),
+                            text: promptText,
                             attachments: unit.entries.map((entry) => ({
                                 entryRef: entry.entryRef,
                                 display: entry.display,
@@ -102,93 +184,51 @@ export async function runTriageBulkEntrySessionStartsV1(input: Readonly<{
                         },
                     }
                     : {}),
+                ...(resume === undefined ? {} : { resume }),
             }, { signal: input.signal });
             input.onStarted?.();
-            const sessionId = result.type === 'opened' || result.type === 'openPending' || result.type === 'linked'
-                ? result.sessionId
-                : null;
-            if (sessionId !== null) {
-                const secondaryLinks = await linkRemainingEntries(
-                    input.host,
-                    sessionId,
-                    unit.entries.slice(1),
-                    input.signal,
-                );
-                let completed: TriageStartEntrySessionResultV1 = result;
-                if (result.type === 'linked' && result.finalOpen === 'deferred') {
-                    const opened = await openLinkedSession({
-                        execute: async (actionId, actionInput, options) => await input.host.executeAction(
-                            actionId,
-                            actionInput as unknown as JsonValue,
-                            options,
-                        ),
-                        sessionId,
-                        signal: input.signal,
-                    });
-                    completed = opened.status === 'opened'
-                        ? {
-                            v: 1,
-                            type: 'opened',
-                            sessionId,
-                            disposition: result.disposition,
-                            delivery: result.delivery,
-                        }
-                        : {
-                            v: 1,
-                            type: 'openPending',
-                            sessionId,
-                            disposition: result.disposition,
-                            delivery: result.delivery,
-                        };
-                }
-                return {
-                    start: completed,
-                    entries: projectTriageBulkEntryOutcomesV1({
-                        entries: unit.entries,
-                        start: completed,
-                        secondaryLinks,
-                        compose: 'notRequested',
-                    }),
-                };
+            const secondaryLinks: readonly TriageBulkLinkOutcomeV1[] =
+                result.type === 'opened' || result.type === 'openPending' || result.type === 'linked'
+                    ? unit.entries.slice(1).map(() => 'created' as const)
+                    : result.type === 'linkPending'
+                        ? unit.entries.slice(1).map(() => 'conflictedOrUnavailable' as const)
+                        : [];
+            let completed: TriageStartEntrySessionResultV1 = result;
+            if (result.type === 'linked' && result.finalOpen === 'deferred') {
+                const opened = await openLinkedSession({
+                    execute: async (actionId, actionInput, options) => await input.host.executeAction(
+                        actionId,
+                        actionInput as unknown as JsonValue,
+                        options,
+                    ),
+                    sessionId: result.sessionId,
+                    signal: input.signal,
+                });
+                completed = opened.status === 'opened'
+                    ? {
+                        v: 1,
+                        type: 'opened',
+                        sessionId: result.sessionId,
+                        disposition: result.disposition,
+                        delivery: result.delivery,
+                    }
+                    : {
+                        v: 1,
+                        type: 'openPending',
+                        sessionId: result.sessionId,
+                        disposition: result.disposition,
+                        delivery: result.delivery,
+                    };
             }
             return {
-                start: result,
+                start: completed,
                 entries: projectTriageBulkEntryOutcomesV1({
                     entries: unit.entries,
-                    start: result,
-                    secondaryLinks: [],
+                    start: completed,
+                    secondaryLinks,
                     compose: 'notRequested',
                 }),
             };
         },
     });
-}
-
-async function linkRemainingEntries(
-    host: TriageSessionStartHostV1,
-    sessionId: string,
-    entries: readonly TriageBulkSelectedEntryV1[],
-    signal: AbortSignal,
-): Promise<readonly TriageBulkLinkOutcomeV1[]> {
-    const outcomes: TriageBulkLinkOutcomeV1[] = [];
-    for (const entry of entries) {
-        try {
-            const result = await host.executeAction(TRIAGE_LINK_ENTRY_TO_SESSION_ACTION_LOCAL_ID_V1, {
-                v: 1,
-                sessionId,
-                entryRef: entry.entryRef,
-                display: entry.display,
-            } as never, { signal });
-            outcomes.push(isRecord(result) && result.status === 'linked'
-                ? 'created'
-                : 'conflictedOrUnavailable');
-        } catch {
-            outcomes.push('conflictedOrUnavailable');
-        }
-    }
-    return outcomes;
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

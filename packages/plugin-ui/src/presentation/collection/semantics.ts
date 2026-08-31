@@ -1,5 +1,20 @@
 import type { HappierFocusable } from '../portableTypes.js';
 
+/**
+ * SectionList appends reserved header/footer suffixes to this value. Encode the
+ * opaque author key so its synthetic cells cannot alias another section. The
+ * admitted position is deliberately absent: filtering or reordering a section
+ * must not change the identity of its retained cells.
+ */
+export function encodeHappierSectionCellKey(authorKey: string): string {
+  return `section:${authorKey.length}:${authorKey}`;
+}
+
+/** Keep an opaque row key outside SectionList's reserved synthetic domains. */
+export function encodeHappierSectionRowCellKey(authorKey: string): string {
+  return `row:${authorKey.length}:${authorKey}`;
+}
+
 export type HappierSelectableRole = 'radio' | 'option' | 'button' | undefined;
 
 /**

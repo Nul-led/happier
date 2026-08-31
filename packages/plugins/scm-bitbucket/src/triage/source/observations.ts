@@ -268,8 +268,8 @@ function buildLocator(entry: BitbucketPullRequestEntry): TriageEntryLocatorV1 {
 /**
  * Compares the one source-owned opaque route semantic that survives a
  * provider reread. Presentation fields may change independently, while the
- * immutable entry route remains admitted through `collisionScope`; neither
- * path is reconstructed from the other.
+ * collision scope remains only the immutable identity check; neither value is
+ * reconstructed from the other.
  */
 export function matchesBitbucketEntryLocator(
   entry: BitbucketPullRequestEntry,

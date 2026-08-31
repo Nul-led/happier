@@ -31,8 +31,8 @@ const BUNDLED_PLUGIN_UI_APP_ASSET_16 = require("@happier-dev/plugins-posthog/hap
 const BUNDLED_PLUGIN_UI_APP_ASSET_17 = require("@happier-dev/plugins-posthog/happier-plugin-ui/react-native/posthog-issue-detail-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_18 = require("@happier-dev/plugins-posthog/happier-plugin-ui/react-native/posthog-issue-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_19 = require("@happier-dev/plugins-posthog/happier-plugin-ui/react-native/posthog-issue-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map");
-const BUNDLED_PLUGIN_UI_APP_ASSET_20 = require("@happier-dev/plugins-posthog/happier-plugin-ui/react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-c26200.chunk.bundle");
-const BUNDLED_PLUGIN_UI_APP_ASSET_21 = require("@happier-dev/plugins-posthog/happier-plugin-ui/react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-c26200.chunk.bundle.map");
+const BUNDLED_PLUGIN_UI_APP_ASSET_20 = require("@happier-dev/plugins-posthog/happier-plugin-ui/react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle");
+const BUNDLED_PLUGIN_UI_APP_ASSET_21 = require("@happier-dev/plugins-posthog/happier-plugin-ui/react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_22 = require("@happier-dev/plugins-posthog/happier-plugin-ui/react-native/posthog-triage-sources-native/android/android.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_23 = require("@happier-dev/plugins-posthog/happier-plugin-ui/react-native/posthog-triage-sources-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_24 = require("@happier-dev/plugins-posthog/happier-plugin-ui/react-native/posthog-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle");
@@ -43,8 +43,8 @@ const BUNDLED_PLUGIN_UI_APP_ASSET_28 = require("@happier-dev/plugins-scm-azure-d
 const BUNDLED_PLUGIN_UI_APP_ASSET_29 = require("@happier-dev/plugins-scm-azure-devops/happier-plugin-ui/react-native/azure-devops-detail-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_30 = require("@happier-dev/plugins-scm-azure-devops/happier-plugin-ui/react-native/azure-devops-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_31 = require("@happier-dev/plugins-scm-azure-devops/happier-plugin-ui/react-native/azure-devops-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map");
-const BUNDLED_PLUGIN_UI_APP_ASSET_32 = require("@happier-dev/plugins-scm-azure-devops/happier-plugin-ui/react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-c4525f.chunk.bundle");
-const BUNDLED_PLUGIN_UI_APP_ASSET_33 = require("@happier-dev/plugins-scm-azure-devops/happier-plugin-ui/react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-c4525f.chunk.bundle.map");
+const BUNDLED_PLUGIN_UI_APP_ASSET_32 = require("@happier-dev/plugins-scm-azure-devops/happier-plugin-ui/react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-8581ab.chunk.bundle");
+const BUNDLED_PLUGIN_UI_APP_ASSET_33 = require("@happier-dev/plugins-scm-azure-devops/happier-plugin-ui/react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-8581ab.chunk.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_34 = require("@happier-dev/plugins-scm-azure-devops/happier-plugin-ui/react-native/azure-devops-triage-sources-native/android/android.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_35 = require("@happier-dev/plugins-scm-azure-devops/happier-plugin-ui/react-native/azure-devops-triage-sources-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_36 = require("@happier-dev/plugins-scm-azure-devops/happier-plugin-ui/react-native/azure-devops-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle");
@@ -55,20 +55,20 @@ const BUNDLED_PLUGIN_UI_APP_ASSET_40 = require("@happier-dev/plugins-scm-bitbuck
 const BUNDLED_PLUGIN_UI_APP_ASSET_41 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-detail-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_42 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_43 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map");
-const BUNDLED_PLUGIN_UI_APP_ASSET_44 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-a01c0c.chunk.bundle");
-const BUNDLED_PLUGIN_UI_APP_ASSET_45 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-a01c0c.chunk.bundle.map");
+const BUNDLED_PLUGIN_UI_APP_ASSET_44 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-acaf57.chunk.bundle");
+const BUNDLED_PLUGIN_UI_APP_ASSET_45 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-acaf57.chunk.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_46 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/android.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_47 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_48 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_49 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle.map");
-const BUNDLED_PLUGIN_UI_APP_ASSET_50 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle");
-const BUNDLED_PLUGIN_UI_APP_ASSET_51 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle.map");
+const BUNDLED_PLUGIN_UI_APP_ASSET_50 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle");
+const BUNDLED_PLUGIN_UI_APP_ASSET_51 = require("@happier-dev/plugins-scm-bitbucket/happier-plugin-ui/react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_52 = require("@happier-dev/plugins-scm-github/happier-plugin-ui/react-native/github-detail-native/android/android.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_53 = require("@happier-dev/plugins-scm-github/happier-plugin-ui/react-native/github-detail-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_54 = require("@happier-dev/plugins-scm-github/happier-plugin-ui/react-native/github-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_55 = require("@happier-dev/plugins-scm-github/happier-plugin-ui/react-native/github-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map");
-const BUNDLED_PLUGIN_UI_APP_ASSET_56 = require("@happier-dev/plugins-scm-github/happier-plugin-ui/react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-909f0a.chunk.bundle");
-const BUNDLED_PLUGIN_UI_APP_ASSET_57 = require("@happier-dev/plugins-scm-github/happier-plugin-ui/react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-909f0a.chunk.bundle.map");
+const BUNDLED_PLUGIN_UI_APP_ASSET_56 = require("@happier-dev/plugins-scm-github/happier-plugin-ui/react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-c41190.chunk.bundle");
+const BUNDLED_PLUGIN_UI_APP_ASSET_57 = require("@happier-dev/plugins-scm-github/happier-plugin-ui/react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-c41190.chunk.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_58 = require("@happier-dev/plugins-scm-github/happier-plugin-ui/react-native/github-triage-sources-native/android/android.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_59 = require("@happier-dev/plugins-scm-github/happier-plugin-ui/react-native/github-triage-sources-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_60 = require("@happier-dev/plugins-scm-github/happier-plugin-ui/react-native/github-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle");
@@ -79,8 +79,8 @@ const BUNDLED_PLUGIN_UI_APP_ASSET_64 = require("@happier-dev/plugins-scm-gitlab/
 const BUNDLED_PLUGIN_UI_APP_ASSET_65 = require("@happier-dev/plugins-scm-gitlab/happier-plugin-ui/react-native/gitlab-detail-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_66 = require("@happier-dev/plugins-scm-gitlab/happier-plugin-ui/react-native/gitlab-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_67 = require("@happier-dev/plugins-scm-gitlab/happier-plugin-ui/react-native/gitlab-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map");
-const BUNDLED_PLUGIN_UI_APP_ASSET_68 = require("@happier-dev/plugins-scm-gitlab/happier-plugin-ui/react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-91c43c.chunk.bundle");
-const BUNDLED_PLUGIN_UI_APP_ASSET_69 = require("@happier-dev/plugins-scm-gitlab/happier-plugin-ui/react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-91c43c.chunk.bundle.map");
+const BUNDLED_PLUGIN_UI_APP_ASSET_68 = require("@happier-dev/plugins-scm-gitlab/happier-plugin-ui/react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-b311d0.chunk.bundle");
+const BUNDLED_PLUGIN_UI_APP_ASSET_69 = require("@happier-dev/plugins-scm-gitlab/happier-plugin-ui/react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-b311d0.chunk.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_70 = require("@happier-dev/plugins-scm-gitlab/happier-plugin-ui/react-native/gitlab-triage-sources-native/android/android.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_71 = require("@happier-dev/plugins-scm-gitlab/happier-plugin-ui/react-native/gitlab-triage-sources-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_72 = require("@happier-dev/plugins-scm-gitlab/happier-plugin-ui/react-native/gitlab-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle");
@@ -91,8 +91,8 @@ const BUNDLED_PLUGIN_UI_APP_ASSET_76 = require("@happier-dev/plugins-sentry/happ
 const BUNDLED_PLUGIN_UI_APP_ASSET_77 = require("@happier-dev/plugins-sentry/happier-plugin-ui/react-native/sentry-detail-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_78 = require("@happier-dev/plugins-sentry/happier-plugin-ui/react-native/sentry-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_79 = require("@happier-dev/plugins-sentry/happier-plugin-ui/react-native/sentry-detail-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map");
-const BUNDLED_PLUGIN_UI_APP_ASSET_80 = require("@happier-dev/plugins-sentry/happier-plugin-ui/react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-3b4254.chunk.bundle");
-const BUNDLED_PLUGIN_UI_APP_ASSET_81 = require("@happier-dev/plugins-sentry/happier-plugin-ui/react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-3b4254.chunk.bundle.map");
+const BUNDLED_PLUGIN_UI_APP_ASSET_80 = require("@happier-dev/plugins-sentry/happier-plugin-ui/react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle");
+const BUNDLED_PLUGIN_UI_APP_ASSET_81 = require("@happier-dev/plugins-sentry/happier-plugin-ui/react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_82 = require("@happier-dev/plugins-sentry/happier-plugin-ui/react-native/sentry-triage-sources-native/android/android.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_83 = require("@happier-dev/plugins-sentry/happier-plugin-ui/react-native/sentry-triage-sources-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_84 = require("@happier-dev/plugins-sentry/happier-plugin-ui/react-native/sentry-triage-sources-native/android/src_ui_settings_renderSettingsSurface_tsx-webpack_sharing_consume_default_react-native-webpac-17da18.chunk.bundle");
@@ -109,14 +109,14 @@ const BUNDLED_PLUGIN_UI_APP_ASSET_94 = require("@happier-dev/plugins-triage/happ
 const BUNDLED_PLUGIN_UI_APP_ASSET_95 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-entry-picker-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_96 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-entry-picker-native/android/src_composer_entryPicker_tsx-webpack_sharing_consume_default_react-native.chunk.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_97 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-entry-picker-native/android/src_composer_entryPicker_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map");
-const BUNDLED_PLUGIN_UI_APP_ASSET_98 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-f58295.chunk.bundle");
-const BUNDLED_PLUGIN_UI_APP_ASSET_99 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-f58295.chunk.bundle.map");
+const BUNDLED_PLUGIN_UI_APP_ASSET_98 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle");
+const BUNDLED_PLUGIN_UI_APP_ASSET_99 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_100 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-list-page-native/android/android.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_101 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-list-page-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_102 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-list-page-native/android/src_ui_surface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_103 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-list-page-native/android/src_ui_surface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map");
-const BUNDLED_PLUGIN_UI_APP_ASSET_104 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-74aec3.chunk.bundle");
-const BUNDLED_PLUGIN_UI_APP_ASSET_105 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-74aec3.chunk.bundle.map");
+const BUNDLED_PLUGIN_UI_APP_ASSET_104 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-fed23e.chunk.bundle");
+const BUNDLED_PLUGIN_UI_APP_ASSET_105 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-fed23e.chunk.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_106 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-session-entries-native/android/android.bundle");
 const BUNDLED_PLUGIN_UI_APP_ASSET_107 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-session-entries-native/android/android.bundle.map");
 const BUNDLED_PLUGIN_UI_APP_ASSET_108 = require("@happier-dev/plugins-triage/happier-plugin-ui/react-native/triage-session-entries-native/android/src_sessions_cockpit_sessionLinkedEntriesSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle");
@@ -130,7 +130,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "channels-app-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:5ca199b4a260b69503261d1854a31b5455498e74882db3bfe774e5b19adcdefe",
+    digest: "sha256:6afe9b2cd0a80922063a0197e664e0790ec1ad6883fe01eb2b3b5701f6a6d479",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -180,7 +180,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "inspector-app-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:54f0f4479be5e1e0dc8aa91792d93f990925ffa048ed0b8d5e1eff6c48661bd9",
+    digest: "sha256:ea2efad2cde062c8d4b5c589ee7efd0eb481c3ec8f6c5ad4efbdc1ba14f99e6f",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -214,7 +214,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "posthog-issue-detail-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:60009dcae26f707319c566d68f26ebdfe59b2740c62acf41652bf9747f253d09",
+    digest: "sha256:555ee2aba68ba7af5518bd57bf59e30687d42292b0a8ff381e898b23e2cd6edf",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -234,11 +234,11 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_19,
       }),
       Object.freeze({
-        relativePath: "react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-c26200.chunk.bundle",
+        relativePath: "react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_20,
       }),
       Object.freeze({
-        relativePath: "react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-c26200.chunk.bundle.map",
+        relativePath: "react-native/posthog-issue-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle.map",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_21,
       }),
     ]),
@@ -248,7 +248,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "posthog-triage-sources-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:10976209774763114cb0976cc4dee959c4e27659efd2f50929b8039a844b191e",
+    digest: "sha256:a365cc04451a2970a2f722d73b95ecd889325ce1e9a5fbb9e59f2849c0b680ac",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -282,7 +282,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "azure-devops-detail-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:6e7d397c4fe7ce57ba46b40a612a5f7c224fb6077caeb7e2d75c6faaa34c1802",
+    digest: "sha256:676c1da3ada1f950b0dba219e00109190122b454adacf6c172ce8e182dff93bd",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -302,11 +302,11 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_31,
       }),
       Object.freeze({
-        relativePath: "react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-c4525f.chunk.bundle",
+        relativePath: "react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-8581ab.chunk.bundle",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_32,
       }),
       Object.freeze({
-        relativePath: "react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-c4525f.chunk.bundle.map",
+        relativePath: "react-native/azure-devops-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-8581ab.chunk.bundle.map",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_33,
       }),
     ]),
@@ -316,7 +316,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "azure-devops-triage-sources-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:1028cc3a5aa1b2f1a2398e1e446c6fe0e6ece31ff76090a01bf3511a0d28c163",
+    digest: "sha256:fbda211abba76ddac084b2817f7c151ee2bb38a9f3636bdb27603c1b16b30e12",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -350,7 +350,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "bitbucket-detail-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:eab3b5b53d08893ceb2aef2f8107c40cf2cf7ff6e7dc94f8e8df5cd2caee8e33",
+    digest: "sha256:fad9e4dc86bd12e6484f9f0ab674b3a932406cde6c885574012da5b7a5ac3bda",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -370,11 +370,11 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_43,
       }),
       Object.freeze({
-        relativePath: "react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-a01c0c.chunk.bundle",
+        relativePath: "react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-acaf57.chunk.bundle",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_44,
       }),
       Object.freeze({
-        relativePath: "react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-a01c0c.chunk.bundle.map",
+        relativePath: "react-native/bitbucket-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-acaf57.chunk.bundle.map",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_45,
       }),
     ]),
@@ -384,7 +384,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "bitbucket-triage-sources-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:e275672cae84d41ecc9e8d05102f36972ed4586898ed912c02c324a51cafb77e",
+    digest: "sha256:40f59e66bb1a92e337a9a27eac364bf40224033bffc4a4202a12e44d89568d6f",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -404,11 +404,11 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_49,
       }),
       Object.freeze({
-        relativePath: "react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle",
+        relativePath: "react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_50,
       }),
       Object.freeze({
-        relativePath: "react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_scm_index_js-node_modules_happier-dev_triage-67e361.chunk.bundle.map",
+        relativePath: "react-native/bitbucket-triage-sources-native/android/vendors-node_modules_happier-dev_triage-sources_dist_index_js.chunk.bundle.map",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_51,
       }),
     ]),
@@ -418,7 +418,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "github-detail-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:168edb4064441b24a3f73571517fc95ce2ef0180fbf48de3f9b1d9016e45a631",
+    digest: "sha256:a954c91cd5167cc2800e6c61264f5b9be2896468c55b264fed773b82a43d0bd0",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -438,11 +438,11 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_55,
       }),
       Object.freeze({
-        relativePath: "react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-909f0a.chunk.bundle",
+        relativePath: "react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-c41190.chunk.bundle",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_56,
       }),
       Object.freeze({
-        relativePath: "react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-909f0a.chunk.bundle.map",
+        relativePath: "react-native/github-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-c41190.chunk.bundle.map",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_57,
       }),
     ]),
@@ -452,7 +452,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "github-triage-sources-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:fd90f1f824eda12baefbff2b9f51a893bcb85ecf92e935d914aac1b78905621c",
+    digest: "sha256:bfb46a23b00ca40936eee648347b2b4b34d5587453b4a988e747aa35afab2f7f",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -486,7 +486,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "gitlab-detail-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:e3c73161751e873fbad18760f7c07dd33fa9510f3f2b70b1d3bbeaf381148c8b",
+    digest: "sha256:1bc86cf1f48e46071d5b2612651bb4fc0a89db01fdce8c55e6cb218beabf0d74",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -506,11 +506,11 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_67,
       }),
       Object.freeze({
-        relativePath: "react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-91c43c.chunk.bundle",
+        relativePath: "react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-b311d0.chunk.bundle",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_68,
       }),
       Object.freeze({
-        relativePath: "react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-91c43c.chunk.bundle.map",
+        relativePath: "react-native/gitlab-detail-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_reviews_index_js-node_modules_happier-dev_pl-b311d0.chunk.bundle.map",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_69,
       }),
     ]),
@@ -520,7 +520,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "gitlab-triage-sources-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:2d61fc6d20a98ebc9865cc910f49c320b996ebaf391aa9c190221714ac11ecbf",
+    digest: "sha256:ee0f26121ff22b0170d27bb372a22869bf1a9eae953de89222fe3ee5243ee23b",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -554,7 +554,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "sentry-detail-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:3eee2f0802d6559a60da9f0f965f780410703b7ddd3be44e6c1c8ae2faf8673f",
+    digest: "sha256:6d96b2fcfcf7e17a168ac643fa84d4afdcf361bc27e6413200145a1346529451",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -574,11 +574,11 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_79,
       }),
       Object.freeze({
-        relativePath: "react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-3b4254.chunk.bundle",
+        relativePath: "react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_80,
       }),
       Object.freeze({
-        relativePath: "react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-3b4254.chunk.bundle.map",
+        relativePath: "react-native/sentry-detail-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-sour-b80085.chunk.bundle.map",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_81,
       }),
     ]),
@@ -588,7 +588,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "sentry-triage-sources-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:8d19a79d98bd6275bca0983efc57318f5ca3e0a50194fd9925c91423ab4cbff8",
+    digest: "sha256:e3f9d3c21c6993ebdea16622e06178f7c645abb4391d1d3aa7e851217deda4cc",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -622,7 +622,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "triage-entries-compact-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:2851ed5f5e1f7d90bc5b709ef478c9f3caebc9cf428ea43a671dc4ae8f0f0a51",
+    digest: "sha256:c51098d0ab73a8729fbb9111eeb54e1a96a43f6800341cf61fce6b2aa2237969",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -656,7 +656,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "triage-entry-picker-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:293d7f053888edeb7041e8716848645331dec0f06080adcc82f469c68a301be5",
+    digest: "sha256:e3c24cdaf6bb56fc88f6fb63953d9e62fd1429e043c26bf1bc587d9ae34c96a7",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -676,11 +676,11 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_97,
       }),
       Object.freeze({
-        relativePath: "react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-f58295.chunk.bundle",
+        relativePath: "react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_98,
       }),
       Object.freeze({
-        relativePath: "react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-f58295.chunk.bundle.map",
+        relativePath: "react-native/triage-entry-picker-native/android/vendors-node_modules_happier-dev_plugin-ui_dist_index_js-node_modules_happier-dev_triage-prot-1b396a.chunk.bundle.map",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_99,
       }),
     ]),
@@ -690,7 +690,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "triage-list-page-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:f2404ec12d2a9c7f1cdcabad9aa045c2fb474d966cff5721ae361c569224308c",
+    digest: "sha256:ea98c8f3d50e029257ba1874d47611bdcfdfe8be7d62dafc1cda47e3b946c7fc",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({
@@ -710,11 +710,11 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_103,
       }),
       Object.freeze({
-        relativePath: "react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-74aec3.chunk.bundle",
+        relativePath: "react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-fed23e.chunk.bundle",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_104,
       }),
       Object.freeze({
-        relativePath: "react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_async_index_js-node_modules_happier-dev_plug-74aec3.chunk.bundle.map",
+        relativePath: "react-native/triage-list-page-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_collections_index_js-node_modules_happier-de-fed23e.chunk.bundle.map",
         asset: BUNDLED_PLUGIN_UI_APP_ASSET_105,
       }),
     ]),
@@ -724,7 +724,7 @@ export const BUNDLED_PLUGIN_UI_APP_ARTIFACTS = Object.freeze([
     contributionId: "triage-session-entries-native",
     tier: "reactNative",
     platform: "android",
-    digest: "sha256:8ad68794e40a7f6f0e4bdbff410db2d0b7dcadd2277cd28dea2db22fb3e5b100",
+    digest: "sha256:15268ac2cb28c8518bc010bdb62f2050cdcfc56a6372e239e980ecbe254ff492",
     releaseVersion: "0.0.0",
     files: Object.freeze([
       Object.freeze({

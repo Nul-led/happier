@@ -12,7 +12,11 @@ vi.mock('react-native', () => ({
 }));
 
 import { PluginUiPresentationHostProviderInternal } from '../presentationHost/context.js';
-import { HappierBrandMark, resolveHappierBrandFallback } from '../presentation/content/Image.js';
+import {
+  HappierBrandMark,
+  resolveHappierBrandFallback,
+  resolveHappierImageFallback,
+} from '../presentation/content/Image.js';
 import { createAdmittedBrandPngFixture, createHostApiStub, createSurfaceContext } from '../surfaceFixture.testSupport.js';
 import { BrandMark, Image as ResourceImage } from './Image.js';
 import { PluginUiProvider } from './PluginUiProvider.js';
@@ -116,7 +120,13 @@ describe('native BrandMark presentation', () => {
     expect(resolveHappierBrandFallback('   ')).toBe('?');
   });
 
-  it('preserves the fallback when the runtime does not provide Intl.Segmenter', async () => {
+  it('preserves complete grapheme clusters in a generic image fallback', () => {
+    expect(resolveHappierImageFallback('🇨🇭A')).toBe('🇨🇭A');
+    expect(resolveHappierImageFallback('👩🏽‍💻Z')).toBe('👩🏽‍💻Z');
+    expect(resolveHappierImageFallback('e\u0301xtra')).toBe('e\u0301x');
+  });
+
+  it('uses a bounded neutral fallback when the runtime cannot segment graphemes exactly', async () => {
     const segmenterDescriptor = Object.getOwnPropertyDescriptor(Intl, 'Segmenter');
     Object.defineProperty(Intl, 'Segmenter', {
       configurable: true,
@@ -126,11 +136,19 @@ describe('native BrandMark presentation', () => {
     vi.resetModules();
 
     try {
-      const { resolveHappierBrandFallback: resolveWithoutSegmenter } = await import('../presentation/content/Image.js');
-      expect(resolveWithoutSegmenter('🤖 Tools')).toBe('🤖');
-      expect(resolveWithoutSegmenter('e\u0301clair')).toBe('E\u0301');
-      expect(resolveWithoutSegmenter('👩🏽‍💻 Tools')).toBe('👩🏽‍💻');
-      expect(resolveWithoutSegmenter('🇨🇭 Tools')).toBe('🇨🇭');
+      const {
+        resolveHappierBrandFallback: resolveWithoutSegmenter,
+        resolveHappierImageFallback: resolveImageWithoutSegmenter,
+      } = await import('../presentation/content/Image.js');
+      expect(resolveWithoutSegmenter('🤖 Tools')).toBe('?');
+      expect(resolveWithoutSegmenter('e\u0301clair')).toBe('?');
+      expect(resolveWithoutSegmenter('👩🏽‍💻 Tools')).toBe('?');
+      expect(resolveWithoutSegmenter('🇨🇭 Tools')).toBe('?');
+      expect(resolveImageWithoutSegmenter('🇨🇭A')).toBe('?');
+      expect(resolveImageWithoutSegmenter('👩🏽‍💻Z')).toBe('?');
+      expect(resolveImageWithoutSegmenter('क्‍षA')).toBe('?');
+      expect(resolveImageWithoutSegmenter('\r\nA')).toBe('?');
+      expect(resolveImageWithoutSegmenter('??')).toBe('?');
     } finally {
       if (segmenterDescriptor) {
         Object.defineProperty(Intl, 'Segmenter', segmenterDescriptor);

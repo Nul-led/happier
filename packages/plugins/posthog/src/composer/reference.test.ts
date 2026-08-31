@@ -76,7 +76,10 @@ function selectedEvent(uuid = EVENT_ID): PosthogProjectedIssueEvent {
     };
 }
 
-function sourceContext(response: unknown) {
+function sourceContext(
+    response: unknown,
+    currentInstance = configuredInstance(),
+) {
     const materializeListedAccount = vi.fn(async () => ({
         kind: 'httpHeaders' as const,
         headers: { authorization: 'Bearer secret' },
@@ -87,14 +90,22 @@ function sourceContext(response: unknown) {
         headers: { 'content-type': 'application/json' },
         body: new TextEncoder().encode(JSON.stringify(response)),
     }));
+    const executeAction = vi.fn(async () => ({
+        kind: 'read' as const,
+        instances: [{ v: 1 as const, lifecycle: 'active' as const, configured: currentInstance }],
+        status: 'complete' as const,
+    }));
     return {
         value: {
             signal: new AbortController().signal,
             services: {
+                actions: { execute: executeAction },
                 connectedAccounts: { materializeListedAccount },
                 http: { request },
             },
         } as unknown as PluginInvocationContext,
+        executeAction,
+        materializeListedAccount,
         request,
     };
 }
@@ -131,7 +142,7 @@ function disclosedCandidate(options: Readonly<{
 }
 
 describe('the PostHog selected-evidence Composer reference', () => {
-    it('retains the entire frozen issue-events query, including its explicit privacy filters', () => {
+    it('retains selection identity and the frozen query without persisting account, origin, or route authority', () => {
         const exactFrozenQuery = {
             v: 1,
             issueId: ENTRY_ID,
@@ -156,11 +167,19 @@ describe('the PostHog selected-evidence Composer reference', () => {
         });
 
         expect(candidate).not.toBeNull();
-        expect(decodePosthogEvidenceCandidate(candidate?.candidate.id ?? '')).toMatchObject({
+        const decoded = decodePosthogEvidenceCandidate(candidate?.candidate.id ?? '');
+        expect(decoded).toMatchObject({
+            sourceInstanceId: configuredInstance().instance.sourceInstanceId,
+            teamUuid: '00000000-0000-4000-8000-0000000000d1',
             filterTestAccounts: false,
             onlyAppFrames: false,
             include: ['exception', 'stacktrace', 'navigation', 'correlation'],
         });
+        expect(decoded).not.toHaveProperty('accountId');
+        expect(decoded).not.toHaveProperty('origin');
+        expect(decoded).not.toHaveProperty('teamPathId');
+        expect(candidate?.candidate.id).not.toContain('account-1');
+        expect(candidate?.candidate.id).not.toContain('https://eu.posthog.com');
 
         const alteredFilter = {
             ...exactFrozenQuery,
@@ -177,6 +196,35 @@ describe('the PostHog selected-evidence Composer reference', () => {
             frozenRequest: alteredFilter,
             selectedAbsoluteOffset: 0,
         })).toBeNull();
+    });
+
+    it.each([
+        ['account binding', {
+            ...configuredInstance(),
+            binding: {
+                purpose: POSTHOG_CONNECTED_ACCOUNT_PURPOSE,
+                account: { ...ACCOUNT, accountId: 'account-2' },
+            },
+        }],
+        ['deployment origin', {
+            ...configuredInstance(),
+            localInstanceKey: 'posthog-org:https://us.posthog.com:00000000-0000-4000-8000-0000000000a1',
+        }],
+    ] as const)('refuses a candidate after its configured %s changes before materializing credentials', async (_label, currentInstance) => {
+        const candidate = disclosedCandidate();
+        const host = sourceContext({
+            ...queryIssueEventsPage,
+            results: [queryIssueEventsPage.results[0]],
+            hasMore: false,
+            limit: 1,
+            offset: 0,
+        }, currentInstance);
+
+        await expect(resolvePosthogEvidenceReference(candidate.candidate.id, host.value))
+            .rejects.toMatchObject({ code: 'posthog/evidence-unavailable' });
+        expect(host.executeAction).toHaveBeenCalledTimes(1);
+        expect(host.materializeListedAccount).not.toHaveBeenCalled();
+        expect(host.request).not.toHaveBeenCalled();
     });
 
     it('re-reads one exact selected occurrence through the configured account before publishing bounded evidence', async () => {

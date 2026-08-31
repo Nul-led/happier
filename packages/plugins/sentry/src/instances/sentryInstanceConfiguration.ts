@@ -40,6 +40,12 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function hasExactKeys(value: Readonly<Record<string, unknown>>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length
+    && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
 export function encodeSentryInstanceConfiguration(
   configuration: SentryInstanceConfigurationV1,
 ): string {
@@ -79,11 +85,17 @@ export function decodeSentryInstanceConfiguration(
   } catch {
     return REJECTED;
   }
-  if (!isRecord(parsed) || parsed.v !== 1) return REJECTED;
+  if (!isRecord(parsed)
+    || !hasExactKeys(parsed, ['v', 'organizationId', 'projectScope', 'environmentScope'])
+    || parsed.v !== 1) return REJECTED;
   const { organizationId, projectScope, environmentScope } = parsed;
   if (typeof organizationId !== 'string' || !isSentryNumericId(organizationId)) return REJECTED;
-  if (!isRecord(projectScope) || projectScope.kind !== 'allAccessible') return REJECTED;
-  if (!isRecord(environmentScope) || environmentScope.kind !== 'all') return REJECTED;
+  if (!isRecord(projectScope)
+    || !hasExactKeys(projectScope, ['kind'])
+    || projectScope.kind !== 'allAccessible') return REJECTED;
+  if (!isRecord(environmentScope)
+    || !hasExactKeys(environmentScope, ['kind'])
+    || environmentScope.kind !== 'all') return REJECTED;
   return Object.freeze({
     ok: true as const,
     configuration: Object.freeze({

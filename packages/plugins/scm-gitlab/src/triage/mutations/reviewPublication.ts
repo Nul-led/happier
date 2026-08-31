@@ -1,6 +1,7 @@
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import { createHash } from 'node:crypto';
 import {
+  createReviewCommentPublicationSettlementRequestV1,
   parseReviewCommentPublicationPlanV1,
   formatReviewCommentPublicationMarkerV1,
   matchReviewCommentPublicationMarkerV1,
@@ -170,7 +171,7 @@ async function readRawCollection(
       response.response.headers,
       preflight.dependencies.invocation.origin.normalized,
     );
-    if (next.kind === 'refused') {
+    if (next.kind === 'refused' || next.kind === 'malformed') {
       return {
         ok: false,
         failure: { class: 'unsupportedContract', code: 'gitlab-publication-pagination-refused' },
@@ -344,6 +345,20 @@ async function claimPublication(
   }
 }
 
+async function reportPublication(
+  plan: ReviewCommentPublicationPlanV1,
+  claim: ReviewCommentClaimPublicationDispatchResponseV1,
+  result: ReviewCommentPublicationResultV1,
+  context: PluginInvocationContext,
+  signal: AbortSignal,
+): Promise<void> {
+  await context.services.actions.execute(
+    'reviews.comments.claimPublicationDispatch',
+    createReviewCommentPublicationSettlementRequestV1(plan, claim, result),
+    { signal },
+  );
+}
+
 function resultForStoppedCreate(
   plan: ReviewCommentPublicationPlanV1,
   claim: ReviewCommentClaimPublicationDispatchResponseV1,
@@ -354,6 +369,11 @@ function resultForStoppedCreate(
   return validateReviewCommentPublicationResultAgainstPlanV1(plan, claim, {
     publicationPlanId: claim.publicationPlanId,
     entries: plan.entries.map((entry, index) => {
+      const instruction = claim.instructions.entries[index];
+      const prior = claim.priorResult?.entries[index];
+      if ((instruction === 'confirmed' || instruction === 'held') && prior !== undefined) {
+        return prior;
+      }
       const sequenceIndex = orderedPlanIndexes.indexOf(index);
       return {
       happierCommentId: entry.happierCommentId,
@@ -381,6 +401,7 @@ async function settleWithObservation<TRow extends PublicationObservedRow>(
   failure?: TriageSourceFailureV1,
 ): Promise<GitlabReviewPublicationResultV1> {
   const confirmed = await confirmGitlabItemMutation({
+    localRef: preflight.localRef,
     route: preflight.route,
     dependencies: preflight.dependencies,
     subject: preflight.subject,
@@ -417,6 +438,7 @@ export async function publishGitlabMergeRequestReview(
   const current = await preflightGitlabItemMutation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     subject: GITLAB_MERGE_REQUEST_MUTATION_SUBJECT_V1,
     expectedRevision: plan.headRevision ?? undefined,
   }, context);
@@ -462,6 +484,14 @@ export async function publishGitlabMergeRequestReview(
 
   const claim = await claimPublication(plan, context, current.dependencies.signal);
   if (claim === null) return rejected('dispatch_claim_failed', { observed: current.row });
+  const settlePublication = async (
+    publication: ReviewCommentPublicationResultV1,
+    failure?: TriageSourceFailureV1,
+  ): Promise<GitlabReviewPublicationResultV1> => {
+    await reportPublication(plan, claim, publication, context, current.dependencies.signal)
+      .catch(() => undefined);
+    return await settleWithObservation(current, publication, preexistingDrafts.length, failure);
+  };
   const projectedEntries = plan.entries.map((entry, index) => projectEntry(
     entry,
     plan,
@@ -481,22 +511,36 @@ export async function publishGitlabMergeRequestReview(
   if (!publishedBefore.ok) {
     const uncertain = validateReviewCommentPublicationResultAgainstPlanV1(plan, claim, {
       publicationPlanId: claim.publicationPlanId,
-      entries: plan.entries.map((entry, index) => ({
-        happierCommentId: entry.happierCommentId,
-        publicationCorrelationId: claim.entries[index]!.publicationCorrelationId,
-        outcome: { kind: 'uncertain' },
-      })),
+      entries: plan.entries.map((entry, index) => {
+        const instruction = claim.instructions.entries[index];
+        const prior = claim.priorResult?.entries[index];
+        return (instruction === 'confirmed' || instruction === 'held') && prior !== undefined
+          ? prior
+          : {
+            happierCommentId: entry.happierCommentId,
+            publicationCorrelationId: claim.entries[index]!.publicationCorrelationId,
+            outcome: { kind: 'uncertain' as const },
+          };
+      }),
       verdict: plan.verdict === null || claim.verdict === null
         ? { kind: 'notRequested' }
-        : { publicationCorrelationId: claim.verdict.publicationCorrelationId, outcome: { kind: 'uncertain' } },
+        : (claim.instructions.verdict === 'confirmed' || claim.instructions.verdict === 'held')
+          && claim.priorResult !== null && !('kind' in claim.priorResult.verdict)
+          ? claim.priorResult.verdict
+          : { publicationCorrelationId: claim.verdict.publicationCorrelationId, outcome: { kind: 'uncertain' } },
     });
-    return await settleWithObservation(current, uncertain, preexistingDrafts.length, publishedBefore.failure);
+    return await settlePublication(uncertain, publishedBefore.failure);
   }
 
   if (claim.disposition === 'reconcile') {
     const publication = validateReviewCommentPublicationResultAgainstPlanV1(plan, claim, {
       publicationPlanId: claim.publicationPlanId,
       entries: specs.map((spec, index) => {
+        const instruction = claim.instructions.entries[index];
+        const prior = claim.priorResult?.entries[index];
+        if ((instruction === 'confirmed' || instruction === 'held') && prior !== undefined) {
+          return prior;
+        }
         const published = matchRawCollectionMarker(publishedBefore.rows, spec.marker);
         return {
           happierCommentId: plan.entries[index]!.happierCommentId,
@@ -509,6 +553,10 @@ export async function publishGitlabMergeRequestReview(
       verdict: plan.verdict === null || claim.verdict === null
         ? { kind: 'notRequested' }
         : (() => {
+          if ((claim.instructions.verdict === 'confirmed' || claim.instructions.verdict === 'held')
+            && claim.priorResult !== null && !('kind' in claim.priorResult.verdict)) {
+            return claim.priorResult.verdict;
+          }
           const summary = matchRawCollectionMarker(
             publishedBefore.rows,
             formatReviewCommentPublicationMarkerV1('verdict', claim.verdict!.publicationCorrelationId),
@@ -525,13 +573,15 @@ export async function publishGitlabMergeRequestReview(
           };
         })(),
     });
-    return await settleWithObservation(current, publication, preexistingDrafts.length);
+    return await settlePublication(publication);
   }
 
   const inlineSpecs = specs.flatMap((spec, planIndex) => spec.kind === 'entry'
+    && claim.instructions.entries[planIndex] === 'dispatch'
     ? [{ spec, planIndex }]
     : []);
   const summarySpecs = specs.flatMap((spec, planIndex) => spec.kind === 'summaryEntry'
+    && claim.instructions.entries[planIndex] === 'dispatch'
     ? [{ spec, planIndex }]
     : []);
   const draftIds: string[] = [];
@@ -543,8 +593,7 @@ export async function publishGitlabMergeRequestReview(
       continue;
     }
     if (existing.kind === 'duplicate') {
-      return await settleWithObservation(
-        current,
+      return await settlePublication(
         resultForStoppedCreate(
           plan,
           claim,
@@ -552,7 +601,6 @@ export async function publishGitlabMergeRequestReview(
           index,
           { kind: 'uncertain' },
         ),
-        preexistingDrafts.length,
         { class: 'unsupportedContract', code: 'gitlab-publication-marker-duplicate' },
       );
     }
@@ -571,8 +619,7 @@ export async function publishGitlabMergeRequestReview(
           continue;
         }
       }
-      return await settleWithObservation(
-        current,
+      return await settlePublication(
         resultForStoppedCreate(
           plan,
           claim,
@@ -580,7 +627,6 @@ export async function publishGitlabMergeRequestReview(
           index,
           failed.outcome,
         ),
-        preexistingDrafts.length,
         failed.failure,
       );
     }
@@ -592,8 +638,7 @@ export async function publishGitlabMergeRequestReview(
         draftIds.push(found.externalRef);
         continue;
       }
-      return await settleWithObservation(
-        current,
+      return await settlePublication(
         resultForStoppedCreate(
           plan,
           claim,
@@ -601,14 +646,18 @@ export async function publishGitlabMergeRequestReview(
           index,
           { kind: 'uncertain' },
         ),
-        preexistingDrafts.length,
         { class: 'unsupportedContract', code: 'gitlab-draft-create-response-undecodable' },
       );
     }
     draftIds.push(id);
   }
 
-  const entryOutcomes: Array<RecordValue | undefined> = Array(plan.entries.length).fill(undefined);
+  const entryOutcomes: Array<RecordValue | undefined> = plan.entries.map((_entry, index) => {
+    const instruction = claim.instructions.entries[index];
+    return instruction === 'confirmed' || instruction === 'held'
+      ? claim.priorResult?.entries[index]?.outcome
+      : undefined;
+  });
   let terminalFailure: TriageSourceFailureV1 | undefined;
   for (let index = 0; index < inlineSpecs.length; index += 1) {
     const { spec, planIndex } = inlineSpecs[index]!;
@@ -646,8 +695,16 @@ export async function publishGitlabMergeRequestReview(
     entryOutcomes[planIndex] = { kind: 'published', externalRef: confirmed.externalRef };
   }
 
-  let verdictOutcome: RecordValue = { kind: 'notRequested' };
-  if (plan.verdict !== null && claim.verdict !== null) {
+  let verdictOutcome: RecordValue = plan.verdict === null || claim.verdict === null
+    ? { kind: 'notRequested' }
+    : (claim.instructions.verdict === 'confirmed' || claim.instructions.verdict === 'held')
+      && claim.priorResult !== null && !('kind' in claim.priorResult.verdict)
+      ? claim.priorResult.verdict
+      : {
+        publicationCorrelationId: claim.verdict.publicationCorrelationId,
+        outcome: { kind: 'skippedPriorFailure' },
+      };
+  if (plan.verdict !== null && claim.verdict !== null && claim.instructions.verdict === 'dispatch') {
     if (terminalFailure !== undefined) {
       for (const { planIndex } of summarySpecs) {
         entryOutcomes[planIndex] = { kind: 'skippedPriorFailure' };
@@ -760,17 +817,13 @@ export async function publishGitlabMergeRequestReview(
     })),
     verdict: verdictOutcome,
   });
-  return await settleWithObservation(current, publication, preexistingDrafts.length, terminalFailure);
+  return await settlePublication(publication, terminalFailure);
 }
 
 function singleEntryPublication(
   plan: ReviewCommentPublicationPlanV1,
   claim: ReviewCommentClaimPublicationDispatchResponseV1,
-  outcome: Readonly<
-    | { kind: 'published'; externalRef: string }
-    | { kind: 'failed'; code: string; message?: string }
-    | { kind: 'uncertain' }
-  >,
+  outcome: ReviewCommentPublicationResultV1['entries'][number]['outcome'],
 ): ReviewCommentPublicationResultV1 {
   return validateReviewCommentPublicationResultAgainstPlanV1(plan, claim, {
     publicationPlanId: claim.publicationPlanId,
@@ -810,18 +863,35 @@ async function publishSingleComment<TRow extends PublicationObservedRow>(options
     options.preflight.dependencies.signal,
   );
   if (claim === null) return rejected('dispatch_claim_failed', { observed: options.preflight.row });
+  const settlePublication = async (
+    publication: ReviewCommentPublicationResultV1,
+    failure?: TriageSourceFailureV1,
+  ): Promise<GitlabReviewPublicationResultV1> => {
+    await reportPublication(
+      options.plan,
+      claim,
+      publication,
+      options.context,
+      options.preflight.dependencies.signal,
+    ).catch(() => undefined);
+    return await settleWithObservation(options.preflight, publication, 0, failure);
+  };
   const correlationId = claim.entries[0]!.publicationCorrelationId;
   const marker = formatReviewCommentPublicationMarkerV1('entry', correlationId);
   const existing = matchRawCollectionMarker(before.rows, marker);
   if (claim.disposition === 'reconcile' || existing.kind !== 'absent') {
+    const instruction = claim.instructions.entries[0];
+    const prior = claim.priorResult?.entries[0]?.outcome;
     const publication = singleEntryPublication(
       options.plan,
       claim,
-      existing.kind !== 'unique'
+      (instruction === 'confirmed' || instruction === 'held') && prior !== undefined
+        ? prior
+        : existing.kind !== 'unique'
         ? { kind: 'uncertain' }
         : { kind: 'published', externalRef: existing.externalRef },
     );
-    return await settleWithObservation(options.preflight, publication, 0);
+    return await settlePublication(publication);
   }
 
   const write = options.buildWrite(bodyWithMarker(options.plan.entries[0]!.body, marker), correlationId);
@@ -829,10 +899,8 @@ async function publishSingleComment<TRow extends PublicationObservedRow>(options
   const sent = await sendJson(options.preflight, { url: write.url, method: 'POST', body: write.body });
   if (sent.kind === 'failed' && !gitlabWriteAnswerLost(sent)) {
     const failed = outcomeFailure(sent);
-    return await settleWithObservation(
-      options.preflight,
+    return await settlePublication(
       singleEntryPublication(options.plan, claim, failed.outcome),
-      0,
       failed.failure,
     );
   }
@@ -843,8 +911,7 @@ async function publishSingleComment<TRow extends PublicationObservedRow>(options
     : after.ok
       ? { class: 'unsupportedContract' as const, code: 'gitlab-publication-write-unconfirmed' }
       : after.failure;
-  return await settleWithObservation(
-    options.preflight,
+  return await settlePublication(
     singleEntryPublication(
       options.plan,
       claim,
@@ -852,7 +919,6 @@ async function publishSingleComment<TRow extends PublicationObservedRow>(options
         ? { kind: 'uncertain' }
         : { kind: 'published', externalRef: found.externalRef },
     ),
-    0,
     found?.kind !== 'unique' ? failure : undefined,
   );
 }
@@ -884,6 +950,7 @@ export async function publishGitlabMergeRequestReviewComment(
   const current = await preflightGitlabItemMutation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     subject: GITLAB_MERGE_REQUEST_MUTATION_SUBJECT_V1,
     expectedRevision: plan.headRevision ?? undefined,
   }, context);
@@ -932,6 +999,7 @@ export async function publishGitlabMergeRequestThreadReply(
   const current = await preflightGitlabItemMutation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     subject: GITLAB_MERGE_REQUEST_MUTATION_SUBJECT_V1,
   }, context);
   if (!current.ok) {
@@ -968,6 +1036,7 @@ export async function publishGitlabIssueComment(
   const current = await preflightGitlabItemMutation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     subject: GITLAB_ISSUE_MUTATION_SUBJECT_V1,
   }, context);
   if (!current.ok) {

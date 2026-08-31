@@ -5,7 +5,7 @@ import {
     CORPUS_SOURCE_INSTANCES_INDEX_ID,
     CORPUS_SOURCE_INSTANCE_LIFECYCLE,
 } from '../collections/ids.js';
-import { fromCorpusStoredRow } from '../collections/rowCodec.js';
+import { fromCorpusStoredRow, type CorpusRowV1 } from '../collections/rowCodec.js';
 import type { CorpusSourceInstanceRowV1 } from '../collections/rows.js';
 import { advanceConfiguredSourceCollectionCursor } from './administerConfiguredSourceInstance.js';
 
@@ -22,6 +22,8 @@ export async function readActiveConfiguredSourceRowPage(
     options?: PluginCancellationOptions,
 ): Promise<Readonly<{
     rows: readonly CorpusSourceInstanceRowV1[];
+    /** The same rows with their server-authoritative configuration revisions. */
+    records: readonly CorpusRowV1<CorpusSourceInstanceRowV1>[];
     status: 'complete' | 'truncated';
     nextCursor?: string;
 }>> {
@@ -32,10 +34,12 @@ export async function readActiveConfiguredSourceRowPage(
         limit: input.limit,
         ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
     }, options);
+    const records = Object.freeze(page.rows.map(
+        (row) => fromCorpusStoredRow<CorpusSourceInstanceRowV1>(row),
+    ));
     return Object.freeze({
-        rows: Object.freeze(page.rows.map(
-            (row) => fromCorpusStoredRow<CorpusSourceInstanceRowV1>(row).value,
-        )),
+        rows: Object.freeze(records.map((record) => record.value)),
+        records,
         status: page.nextCursor === undefined ? 'complete' : 'truncated',
         ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
     });
@@ -47,9 +51,11 @@ export async function readActiveConfiguredSourceRows(
     options?: PluginCancellationOptions,
 ): Promise<Readonly<{
     rows: readonly CorpusSourceInstanceRowV1[];
+    /** The same rows with their server-authoritative configuration revisions. */
+    records: readonly CorpusRowV1<CorpusSourceInstanceRowV1>[];
     status: 'complete';
 }>> {
-    const rows: CorpusSourceInstanceRowV1[] = [];
+    const records: CorpusRowV1<CorpusSourceInstanceRowV1>[] = [];
     const seenCursors = new Set<string>();
     let cursor: string | undefined;
     do {
@@ -59,11 +65,15 @@ export async function readActiveConfiguredSourceRows(
             order: 'asc',
             ...(cursor === undefined ? {} : { cursor }),
         }, options);
-        rows.push(...page.rows.map(
-            (row) => fromCorpusStoredRow<CorpusSourceInstanceRowV1>(row).value,
+        records.push(...page.rows.map(
+            (row) => fromCorpusStoredRow<CorpusSourceInstanceRowV1>(row),
         ));
         cursor = advanceConfiguredSourceCollectionCursor(seenCursors, page.nextCursor);
     } while (cursor !== undefined);
 
-    return Object.freeze({ rows: Object.freeze(rows), status: 'complete' });
+    return Object.freeze({
+        rows: Object.freeze(records.map((record) => record.value)),
+        records: Object.freeze(records),
+        status: 'complete',
+    });
 }

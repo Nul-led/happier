@@ -20,7 +20,7 @@ describe('codex app-server RPC timeout policy', () => {
         expect(readCodexAppServerRpcTimeoutMs({ HAPPIER_CODEX_APP_SERVER_RPC_TIMEOUT_MS: '9999999' })).toBe(60_000);
     });
 
-    it('keeps provider resume requests alive while preserving bounded initialize and thread/start requests', () => {
+    it('keeps provider side-effecting turn admission and resume requests alive', () => {
         const env = {
             HAPPIER_CODEX_APP_SERVER_RPC_TIMEOUT_MS: '1200',
             HAPPIER_CODEX_APP_SERVER_STARTUP_RPC_TIMEOUT_MS: '20000',
@@ -29,6 +29,8 @@ describe('codex app-server RPC timeout policy', () => {
         expect(readCodexAppServerRequestTimeoutMs('initialize', env)).toBe(20_000);
         expect(readCodexAppServerRequestTimeoutMs('thread/start', env)).toBe(20_000);
         expect(readCodexAppServerRequestTimeoutMs('thread/resume', env)).toBeNull();
+        expect(readCodexAppServerRequestTimeoutMs('turn/start', env)).toBeNull();
+        expect(readCodexAppServerRequestTimeoutMs('turn/steer', env)).toBeNull();
         expect(readCodexAppServerRequestTimeoutMs('model/list', env)).toBe(1200);
     });
 

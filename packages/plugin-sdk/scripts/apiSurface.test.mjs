@@ -496,6 +496,7 @@ test('projects symbols without posture metadata while preserving structured depr
           HOST_REGISTRATION_EXECUTION_RUN_SYMBOL,
           HOST_REGISTRATION_ACTION_HANDLER_NOT_STARTED_ERROR_SYMBOL,
           HOST_REGISTRATION_ACTION_INPUT_PARSER_SYMBOL,
+          HOST_REGISTRATION_ACTION_RESULT_PARSER_SYMBOL,
           {
             exportName: 'createPluginRegistrationScope',
             kind: 'value',
@@ -586,6 +587,11 @@ test('projects symbols without posture metadata while preserving structured depr
       removalCondition: undefined,
     },
     {
+      exportName: 'readPluginActionResultParser',
+      replacement: undefined,
+      removalCondition: undefined,
+    },
+    {
       exportName: 'PluginUiHostApiDecodeResult',
       replacement: undefined,
       removalCondition: undefined,
@@ -596,7 +602,17 @@ test('projects symbols without posture metadata while preserving structured depr
       removalCondition: undefined,
     },
     {
+      exportName: 'decodePluginUiConfirmResult',
+      replacement: undefined,
+      removalCondition: undefined,
+    },
+    {
       exportName: 'decodePluginUiResourceContent',
+      replacement: undefined,
+      removalCondition: undefined,
+    },
+    {
+      exportName: 'encodePluginUiDiagnostic',
       replacement: undefined,
       removalCondition: undefined,
     },
@@ -797,9 +813,9 @@ test('host inventory requires the exact complete approved symbol and kind set pe
       )),
     })),
     (error) => error instanceof ApiSurfaceValidationError
-      && error.diagnostics.includes(
-        'symbols[8] host export ./host/fs/json-owner-file-lock:reclaimJsonOwnerFileLockSnapshot must have value kind',
-      ),
+      && error.diagnostics.some((diagnostic) => diagnostic.endsWith(
+        'host export ./host/fs/json-owner-file-lock:reclaimJsonOwnerFileLockSnapshot must have value kind',
+      )),
   );
 });
 

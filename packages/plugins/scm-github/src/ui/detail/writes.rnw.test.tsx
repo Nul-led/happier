@@ -119,6 +119,28 @@ let nextCapabilities: JsonValue = {
     .map((key) => [key, { kind: 'available' }])),
   mergeMethods: { merge: { kind: 'available' }, squash: { kind: 'available' }, rebase: { kind: 'available' } },
 };
+let nextOverview: JsonValue = {
+  kind: 'overview',
+  kindId: 'pull-request',
+  observedAtMs: 1_760_000_800_000,
+  title: 'Consolidate the duplicated normalizer',
+  state: 'open',
+  draft: false,
+  merged: false,
+  author: 'octocat',
+  body: 'Keeps one normalization owner.',
+  webUrl: 'https://github.com/octo-org/example-app/pull/1284',
+  labels: [],
+  assignees: [],
+  milestone: null,
+  headBranch: 'normalizer',
+  baseBranch: 'main',
+  requestedReviewers: [],
+  headRevision: OBSERVED_HEAD,
+  additions: 8,
+  deletions: 3,
+  branchUpdateEligibility: 'behind',
+};
 
 async function mountDetail(
   state: Readonly<{ presentation: string; nativeLabel: string }>,
@@ -153,6 +175,11 @@ async function mountDetail(
             return nextCapabilities;
           }
           recorded.push({ action, input });
+          if (typeof action === 'object' && action !== null
+            && 'localId' in action
+            && action.localId === GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.readOverview) {
+            return nextOverview;
+          }
           if (nextActionError !== null) throw nextActionError;
           if (action === 'reviews.comments.list') {
             return {
@@ -247,6 +274,28 @@ afterEach(async () => {
     mergeMethods: { merge: { kind: 'available' }, squash: { kind: 'available' }, rebase: { kind: 'available' } },
   };
   nextResult = { kind: 'applied', effect: 'changed', observation: APPLIED_OBSERVATION };
+  nextOverview = {
+    kind: 'overview',
+    kindId: 'pull-request',
+    observedAtMs: 1_760_000_800_000,
+    title: 'Consolidate the duplicated normalizer',
+    state: 'open',
+    draft: false,
+    merged: false,
+    author: 'octocat',
+    body: 'Keeps one normalization owner.',
+    webUrl: 'https://github.com/octo-org/example-app/pull/1284',
+    labels: [],
+    assignees: [],
+    milestone: null,
+    headBranch: 'normalizer',
+    baseBranch: 'main',
+    requestedReviewers: [],
+    headRevision: OBSERVED_HEAD,
+    additions: 8,
+    deletions: 3,
+    branchUpdateEligibility: 'behind',
+  };
   nextActionGate = null;
   nextActionError = null;
   for (const fixture of mounted.splice(0)) await fixture.dispose();
@@ -266,6 +315,43 @@ afterEach(async () => {
  * active here.
  */
 describe('the mounted GitHub write controls', () => {
+  it('reads no exact overview on mount and offers Update Branch only after GitHub reports behind', async () => {
+    const detail = await mountDetail({ presentation: 'active', nativeLabel: 'Open' });
+
+    expect(recorded.filter(({ action }) => typeof action === 'object' && action !== null
+      && 'localId' in action
+      && action.localId === GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.readOverview)).toHaveLength(0);
+    expect(await detail.queryByRole('button', { name: 'Update branch' })).toBeUndefined();
+
+    await act(async () => {
+      await detail.press(await detail.getByRole('button', {
+        name: 'Re-read this overview from GitHub',
+      }));
+    });
+
+    expect(recorded.filter(({ action }) => typeof action === 'object' && action !== null
+      && 'localId' in action
+      && action.localId === GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.readOverview)).toHaveLength(1);
+    await expect(detail.getByRole('button', { name: 'Update branch' }))
+      .resolves.toMatchObject({ role: 'button' });
+  });
+
+  it('does not offer Update Branch when the exact provider overview reports not-behind', async () => {
+    nextOverview = {
+      ...(nextOverview as Readonly<Record<string, JsonValue>>),
+      branchUpdateEligibility: 'not-behind',
+    } as JsonValue;
+    const detail = await mountDetail({ presentation: 'active', nativeLabel: 'Open' });
+
+    await act(async () => {
+      await detail.press(await detail.getByRole('button', {
+        name: 'Re-read this overview from GitHub',
+      }));
+    });
+
+    expect(await detail.queryByRole('button', { name: 'Update branch' })).toBeUndefined();
+  });
+
   it('disables only operations and merge methods GitHub explicitly rules out', async () => {
     nextCapabilities = {
       kind: 'capabilities',
@@ -490,6 +576,11 @@ describe('the mounted GitHub write controls', () => {
       [{ sessionId: 'session-review-1', displayTitle: 'Review this pull request' }],
     );
     await waitForPublicationProposalRead(detail);
+    await act(async () => {
+      await detail.press(await detail.getByRole('button', {
+        name: 'Re-read this overview from GitHub',
+      }));
+    });
 
     for (const name of [
       'Merge pull request',

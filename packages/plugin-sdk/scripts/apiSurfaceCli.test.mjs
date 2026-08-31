@@ -333,16 +333,16 @@ const INVENTORY = Object.freeze({
       realm: 'daemon',
     }),
     ...[
-      ['decodePluginUiClipboardReadResult', 'value'],
-      ['decodePluginUiConfirmResult', 'value'],
-      ['encodePluginUiDiagnostic', 'value'],
-      ['decodePluginUiResourceContent', 'value'],
-      ['PluginUiHostApiDecodeResult', 'type'],
-    ].map(([exportName, kind]) => Object.freeze({
+      ['decodePluginUiClipboardReadResult', 'value', 'src/host/ui/hostApiCodecs.ts'],
+      ['decodePluginUiConfirmResult', 'value', 'src/host/ui/hostApiCodecs.ts'],
+      ['encodePluginUiDiagnostic', 'value', 'src/host/ui/hostApiCodecs.ts'],
+      ['decodePluginUiResourceContent', 'value', 'src/host/ui/hostApiCodecs.ts'],
+      ['PluginUiHostApiDecodeResult', 'type', 'src/host/ui/hostApiCodecs.ts'],
+    ].map(([exportName, kind, sourceModule]) => Object.freeze({
       specifier: './host/ui',
       exportName,
       kind,
-      sourceModule: 'src/host/ui/hostApiCodecs.ts',
+      sourceModule,
       sourceExport: exportName,
       realm: 'any',
     })),
@@ -4110,7 +4110,7 @@ test('current Actions canonical source does not reach its generated entrypoint b
     // The fixture declares four entrypoints and publication specs are the
     // topology owner, so ./host/ui needs its own spec after the sweep above.
     await writeFixtureFile(root, 'src/host/ui/index.public.ts', [
-      "export { decodePluginUiClipboardReadResult, decodePluginUiResourceContent } from './hostApiCodecs.js';",
+      "export { decodePluginUiClipboardReadResult, decodePluginUiConfirmResult, decodePluginUiResourceContent, encodePluginUiDiagnostic } from './hostApiCodecs.js';",
       "export type { PluginUiHostApiDecodeResult } from './hostApiCodecs.js';",
       '',
     ].join('\n'));

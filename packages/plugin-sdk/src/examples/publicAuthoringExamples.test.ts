@@ -942,12 +942,29 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         });
 
         try {
-            await expect(target.invokeAction('list-document-reviewers', {})).resolves.toEqual({
+            const parsedTarget = parsePluginManifest(targetModule.manifest);
+            if (!parsedTarget.ok) throw new Error('copyable_target_manifest_invalid');
+            const point = parsedTarget.manifest.contributes.pluginContributionPoints
+                .find((candidate) => candidate.id === 'document-reviewers');
+            const protocol = point?.protocols.find((candidate) => (
+                candidate.id === 'happier.triage/sources' && candidate.version === 1
+            ));
+            if (!point || !protocol) throw new Error('copyable_target_point_missing');
+            const snapshot = target.readTargetedContributionFixture({
+                targetPluginId: parsedTarget.manifest.id,
+                id: point.id,
+                protocol: { id: protocol.id, version: protocol.version },
+            });
+            expect(snapshot).toEqual({
                 generation: expect.any(String),
-                contributors: [{
-                    pluginId: 'examples.action-contract-consumer',
-                    contributionId: 'local-document-reviewer',
-                    displayName: 'local-document-reviewer',
+                contributions: [{
+                    protocol: expect.any(Object),
+                    contributor: {
+                        pluginId: 'examples.action-contract-consumer',
+                        contributionId: 'local-document-reviewer',
+                        immutableGenerationId: expect.any(String),
+                    },
+                    operations: expect.any(Object),
                 }],
             });
         } finally {
@@ -965,6 +982,7 @@ describe('public SDK authoring examples', { timeout: 60_000 }, () => {
         );
         const source = readFileSync(sourcePath, 'utf8');
         const module = await import(pathToFileURL(sourcePath).href) as Pick<DefinedPlugin, 'manifest' | 'activate'>;
+        expect(module.manifest.entrypoints).toEqual({ daemon: './dist/index.js' });
         const testkit = await createPluginTestkit({
             manifest: module.manifest,
             module,

@@ -944,6 +944,7 @@ describe('Channels mounted provider setup recovery', () => {
     // A fresh Account, or a machine with no conversation integration enabled,
     // reaches this state. Rendering nothing left the person with no way to
     // learn why the page is empty or what to do about it.
+    let selectionLifetimeSignal: AbortSignal | undefined;
     const fixture = await createPluginUiTestkit({
       identity: {
         pluginId: 'happier.channels',
@@ -1353,7 +1354,10 @@ describe('Channels mounted provider setup recovery', () => {
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
       handlers: {
-        selectActionInput: async () => submittedProviderSetup,
+        selectActionInput: async ({ signal }) => {
+          selectionLifetimeSignal = signal;
+          return submittedProviderSetup;
+        },
         executeAction,
         readResource: bindingResourceReader(),
         openExternalLink: async ({ url }) => { openedLinks.push(url); },
@@ -1592,19 +1596,20 @@ describe('Channels mounted provider setup recovery', () => {
       // retryable failure depending on the mounted Action adapter; in both
       // cases the exact continuation remains available for the next press.
 
-      // Only the first outer relay consumes the host retention; the
-      // continuation is a plain dispatch of the same management Action.
+      // Durable setup is one selected-input lifetime. Every create/rejoin
+      // relay carries the exact host selection, and the surface retires that
+      // selection only after the connection definitely succeeds.
       const createCalls = executeAction.mock.calls
         .map(([request]) => request)
         .filter((request) => request.action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate);
       expect(createCalls).toHaveLength(3);
       expect((createCalls[0] as unknown as Readonly<{ consumeSelectedActionInput?: unknown }>)
-        .consumeSelectedActionInput).toBe(true);
-      expect((createCalls[1] as unknown as Readonly<{ consumeSelectedActionInput?: unknown }>)
         .consumeSelectedActionInput).toBeUndefined();
-      expect(createCalls[1]?.selectedActionInput).toBeUndefined();
+      expect(createCalls[0]?.selectedActionInput).toEqual(selectedActionInput);
+      expect(createCalls[1]?.selectedActionInput).toEqual(selectedActionInput);
       expect(createCalls[2]?.input).toEqual(createCalls[1]?.input);
-      expect(createCalls[2]?.selectedActionInput).toBeUndefined();
+      expect(createCalls[2]?.selectedActionInput).toEqual(selectedActionInput);
+      expect(selectionLifetimeSignal?.aborted).toBe(true);
       const ensureCalls = executeAction.mock.calls
         .map(([request]) => request)
         .filter((request) => request.action === 'plugin.webhook.endpoint.ensure');
@@ -2630,6 +2635,18 @@ describe('Channels mounted binding creation', () => {
         name: 'All allowed messages',
         state: { checked: true },
       })).resolves.toBeDefined();
+      await fixture.press(await fixture.getByRole('switch', {
+        name: 'Approvals',
+        state: { checked: false },
+      }));
+      await fixture.press(await fixture.getByRole('radio', {
+        name: 'Selected admitted principals',
+        state: { checked: false },
+      }));
+      await expect(fixture.getByRole('switch', {
+        name: 'principal-ada',
+        state: { checked: true },
+      })).resolves.toBeDefined();
       await fixture.press(await fixture.getByRole('button', { name: 'Review binding' }));
 
       const summary = document.querySelector<HTMLElement>('[data-testid="channels-binding-create-summary"]');
@@ -2643,6 +2660,7 @@ describe('Channels mounted binding creation', () => {
       // create paths in this file keep proving the opposite default.
       expect(summary?.textContent).toContain('Mirror Session');
       expect(summary?.textContent).toContain('Read only');
+      expect(summary?.textContent).toContain('Selected admitted principals: principal-ada');
       expect(summary?.textContent).toContain('Do not create a new Session');
       expect(summary?.textContent).toContain('Durable push');
       expect(summary?.textContent).toContain('Uses this connection’s host-verified webhook endpoint.');
@@ -2663,7 +2681,11 @@ describe('Channels mounted binding creation', () => {
               policy: {
                 deliveryMode: 'mirrorSession',
                 permissionCeiling: 'read-only',
-                approvals: { kind: 'off' },
+                approvals: {
+                  kind: 'enabled',
+                  maximumScope: 'request',
+                  principalIds: ['principal-ada'],
+                },
                 newSession: { kind: 'off' },
               },
             },
@@ -4690,6 +4712,7 @@ describe('Channels mounted binding editor', () => {
       }));
       await fixture.press(await fixture.getByRole('radio', { name: 'This Session' }));
       await fixture.press(await fixture.getByRole('button', { name: 'Review changes' }));
+      await expect(fixture.getByText('All admitted principals')).resolves.toBeDefined();
       await fixture.press(await fixture.getByRole('button', { name: 'Save binding' }));
 
       await vi.waitFor(() => {
@@ -5866,6 +5889,64 @@ describe('Channels connection lifecycle actions', () => {
     }
   });
 
+  it('offers a durable-push connection transfer that preserves its transport', async () => {
+    const submittedProviderSetup = {
+      kind: 'submitted' as const,
+      action: providerSetupOperation.action,
+      input: { repository: 'happier-dev/happier' },
+      selection: {
+        target: {
+          pluginId: 'happier.channels',
+          immutableGenerationId: 'channels-target-generation-a',
+        },
+        point: providerSetupOperation.point,
+        contributor: providerSetupOperation.contributor,
+      },
+      connectedAccount: { kind: 'none' as const },
+    };
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-connection-transfer-durable-push',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(),
+      handlers: {
+        selectActionInput: async () => submittedProviderSetup,
+        executeAction: async () => {
+          throw new Error('Cancelled provider selection must not invoke a transfer Action.');
+        },
+        readResource: async ({ resource }) => {
+          const localId = typeof resource === 'string' ? resource : resource.localId;
+          if (localId === BINDINGS_RESOURCE.localId) return bindingsResource;
+          if (localId === CONNECTIONS_RESOURCE.localId) return connectionsResourceForTransport('durablePush');
+          throw new Error(`Unexpected Resource: ${localId}`);
+        },
+      },
+    });
+
+    try {
+      await pressButtonWithAccessibleLabelFragment('Example conversation');
+      await expect(fixture.getByRole('button', { name: 'Transfer connection' })).resolves.toBeDefined();
+      await fixture.press(await fixture.getByRole('button', { name: 'Transfer connection' }));
+      await fixture.press(await fixture.getByRole('button', { name: 'Transfer with Integration provider' }));
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="channels-connection-transfer-transport"]'))
+          .not.toBeNull();
+      });
+      await expect(fixture.getByRole('radio', {
+        name: 'Durable push',
+        state: { checked: true },
+      })).resolves.toBeDefined();
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
   it('deletes a current connection through the canonical mounted Action', async () => {
     const executeAction = vi.fn(async ({ action }: PluginUiTestkitExecuteActionInput) => {
       if (action === CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionDelete) {
@@ -6576,6 +6657,81 @@ describe('Channels offline Account-local binding policy', () => {
         // A target-only edit carries the rest of the retained policy forward.
         inputMode: 'allAllowedMessages',
         inboundDebounceMs: 750,
+      });
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it('preserves named approval principals when approvals are disabled and re-enabled', async () => {
+    const account = createOfflineChannelStateFixture();
+    const retained = offlineBindingRow();
+    account.collection.rows.set(retained.rowId, {
+      ...retained,
+      value: {
+        ...retained.value,
+        payload: {
+          ...retained.value.payload,
+          target: {
+            ...retained.value.payload.target,
+            policy: {
+              ...retained.value.payload.target.policy,
+              approvals: {
+                kind: 'enabled',
+                maximumScope: 'request',
+                principalIds: ['person-1'],
+              },
+            },
+          },
+        },
+      },
+    });
+    const fixture = await createPluginUiTestkit({
+      identity: {
+        pluginId: 'happier.channels',
+        pluginVersion: '0.0.0',
+        viewId: 'channels-account',
+        generation: 'channels-offline-binding-approval-principals',
+        sessionId: 'session-1',
+      },
+      surface: renderSurface,
+      surfaceContext: createChannelsSurfaceContext(),
+      adapter: createChannelsSemanticAdapter(account.dataClient),
+      handlers: {
+        selectActionInput: async () => ({ kind: 'cancelled' as const }),
+      },
+    });
+
+    try {
+      await fixture.press(await fixture.getByRole('button', { name: 'Edit binding' }));
+      await fixture.press(await fixture.getByRole('switch', {
+        name: 'Approvals',
+        state: { checked: true },
+      }));
+      await fixture.press(await fixture.getByRole('switch', {
+        name: 'Approvals',
+        state: { checked: false },
+      }));
+      await expect(fixture.getByRole('switch', {
+        name: 'Approvals',
+        state: { checked: true },
+      })).resolves.toBeDefined();
+      await fixture.press(await fixture.getByRole('button', { name: 'Save binding' }));
+
+      // The final policy is byte-for-byte the retained policy. The canonical
+      // Account transition suppresses the no-op rather than writing merely
+      // because the editor temporarily visited the disabled state.
+      expect(account.collection.batches).toHaveLength(0);
+      expect(account.collection.rows.get('binding-1')?.value.payload).toMatchObject({
+        target: {
+          policy: {
+            approvals: {
+              kind: 'enabled',
+              maximumScope: 'request',
+              principalIds: ['person-1'],
+            },
+          },
+        },
       });
     } finally {
       await fixture.dispose();

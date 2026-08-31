@@ -168,6 +168,34 @@ describe('the GitHub feedback projection', () => {
     });
   });
 
+  it('keeps each reviewer at their newest state when older pages are appended later', () => {
+    const view = projectGithubFeedback({
+      observedAtMs: OBSERVED_AT_MS,
+      facts: [],
+      comments: [],
+      historicalReviews: [
+        {
+          id: 'PRR_new', author: 'octocat', body: 'Ready now.', state: 'APPROVED',
+          submittedAtMs: 300, url: null,
+        },
+        // GraphQL's `last/before` walk loads this older page after the newest
+        // page. Arrival order therefore cannot be the reviewer-state authority.
+        {
+          id: 'PRR_old', author: 'octocat', body: 'Please revise.', state: 'CHANGES_REQUESTED',
+          submittedAtMs: 100, url: null,
+        },
+      ],
+      threads: [],
+      reviewDecision: 'approved',
+      requests: [],
+      checks: null,
+    });
+
+    expect(view.people.reviewed).toEqual([
+      { login: 'octocat', state: 'APPROVED', submittedAtMs: 300 },
+    ]);
+  });
+
   it('orders comments and current adverse state findings by time', () => {
     const view = projectGithubFeedback({
       observedAtMs: 500,

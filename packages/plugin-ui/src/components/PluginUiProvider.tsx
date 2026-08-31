@@ -31,6 +31,7 @@ import {
   PluginUiPresentationHostProviderInternal,
   type PluginUiPresentationHost,
 } from '../presentationHost/context.js';
+import { PLUGIN_UI_PRIVATE_SURFACE_ENTRY_PROVIDER_KEY } from '../privateCarrierKeys.js';
 
 /**
  * The plugin adapter for the shared presentation environment (§3.9, §3.10.1).
@@ -230,7 +231,7 @@ export function PluginUiProviderInternal({
  */
 Object.defineProperty(
   PluginUiProviderInternal,
-  Symbol.for('happier.pluginUi.privateSurfaceEntryProvider.v1'),
+  PLUGIN_UI_PRIVATE_SURFACE_ENTRY_PROVIDER_KEY,
   {
     value: true,
     enumerable: false,

@@ -10896,6 +10896,9 @@
                 },
                 {
                   "const": "socket"
+                },
+                {
+                  "const": "durablePush"
                 }
               ]
             }
@@ -24683,15 +24686,15 @@
             "plugins.channels.surface.bindingCreatePairingUnknownTitle": "Could not confirm the pairing change",
             "plugins.channels.surface.bindingCreatePermissionCeiling": "Permission ceiling",
             "plugins.channels.surface.bindingCreatePermissionDefault": "Default",
-            "plugins.channels.surface.bindingCreatePermissionPlan": "Planungsmodus",
+            "plugins.channels.surface.bindingCreatePermissionPlan": "Plan mode",
             "plugins.channels.surface.bindingCreatePermissionReadOnly": "Read only",
             "plugins.channels.surface.bindingCreatePermissionSafeYolo": "Safe yolo",
-            "plugins.channels.surface.bindingCreatePermissionYolo": "Risikomodus",
+            "plugins.channels.surface.bindingCreatePermissionYolo": "Yolo mode",
             "plugins.channels.surface.bindingCreatePolicies": "Binding policy",
             "plugins.channels.surface.bindingCreatePolicySummary": "Binding policy",
             "plugins.channels.surface.bindingCreatePrincipal": "Choose allowed senders",
             "plugins.channels.surface.bindingCreatePrincipalCandidates": "Allowed sender candidates",
-            "plugins.channels.surface.bindingCreatePrincipalFallback": "Nutzer/in",
+            "plugins.channels.surface.bindingCreatePrincipalFallback": "Person",
             "plugins.channels.surface.bindingCreatePrincipalQuery": "Principal search",
             "plugins.channels.surface.bindingCreatePrincipalSearch": "Search allowed principals",
             "plugins.channels.surface.bindingCreatePrivacyE2ee": "Storage and privacy: in persisted Happier Account data, private fields remain inside canonical encrypted envelopes and only the bounded routing/index projection is server-readable.",
@@ -25201,10 +25204,10 @@
             "plugins.channels.surface.bindingCreatePairingUnknownTitle": "Die Kopplungsänderung konnte nicht bestätigt werden",
             "plugins.channels.surface.bindingCreatePermissionCeiling": "Berechtigungsobergrenze",
             "plugins.channels.surface.bindingCreatePermissionDefault": "Standard",
-            "plugins.channels.surface.bindingCreatePermissionPlan": "Plan",
+            "plugins.channels.surface.bindingCreatePermissionPlan": "Planungsmodus",
             "plugins.channels.surface.bindingCreatePermissionReadOnly": "Nur Lesen",
             "plugins.channels.surface.bindingCreatePermissionSafeYolo": "Sicheres Yolo",
-            "plugins.channels.surface.bindingCreatePermissionYolo": "Yolo",
+            "plugins.channels.surface.bindingCreatePermissionYolo": "Risikomodus",
             "plugins.channels.surface.bindingCreatePolicies": "Verknüpfungsrichtlinie",
             "plugins.channels.surface.bindingCreatePolicySummary": "Verknüpfungsrichtlinie",
             "plugins.channels.surface.bindingCreatePrincipal": "Zulässige Absender auswählen",

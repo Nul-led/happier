@@ -90,7 +90,6 @@ import type { GitlabKindId } from '../triage/types.js';
 
 import {
   projectGitlabDetailBody,
-  type GitlabDetailBodyV1,
   type GitlabDetailFieldV1,
 } from './detail/model.js';
 import {
@@ -99,6 +98,7 @@ import {
   useGitlabChanges,
   useGitlabDiscussions,
   useGitlabNotes,
+  useGitlabOverview,
   useGitlabPipelines,
   useGitlabRawDiff,
   type GitlabApprovalsViewV1,
@@ -252,12 +252,10 @@ function PagedFooter({
 /* --------------------------------------------------------------------- Overview */
 
 function OverviewPanel({
-  body,
   input,
   locale,
   nowMs,
 }: Readonly<{
-  body: GitlabDetailBodyV1;
   /**
    * The mounted input, carried alongside the projected body for one reason: the
    * write controls dispatch against the exact observation the user is reading —
@@ -269,6 +267,30 @@ function OverviewPanel({
   nowMs: number;
 }>): React.ReactElement {
   const text = usePluginTranslation();
+  const controller = useGitlabOverview(input);
+  const fresh = controller.value?.observation.kind === 'present'
+    ? controller.value.observation
+    : null;
+  const {
+    nativeRevision: _launchNativeRevision,
+    sourceUpdatedAtMs: _launchSourceUpdatedAtMs,
+    ...stableLaunchObservation
+  } = input.observation;
+  const effectiveInput = fresh === null || controller.value === null ? input : {
+    ...input,
+    observation: {
+      ...stableLaunchObservation,
+      locator: fresh.locator,
+      snapshot: fresh.snapshot,
+      viewer: fresh.viewer,
+      observedAtMs: controller.value.observedAtMs,
+      ...(fresh.nativeRevision === undefined ? {} : { nativeRevision: fresh.nativeRevision }),
+      ...(fresh.sourceUpdatedAtMs === undefined
+        ? {}
+        : { sourceUpdatedAtMs: fresh.sourceUpdatedAtMs }),
+    },
+  };
+  const body = projectGitlabDetailBody(effectiveInput);
   const statusFields = body.fields.filter(
     (field): field is Extract<GitlabDetailFieldV1, { kind: 'status' }> => field.kind === 'status',
   );
@@ -285,6 +307,21 @@ function OverviewPanel({
   return (
     <ScrollArea>
       <Stack gap="large">
+        {controller.failure === null ? null : (
+          <Banner
+            tone="warning"
+            title={controller.value === null
+              ? 'Showing the launch observation'
+              : 'Showing the last overview read'}
+            titleKey={controller.value === null
+              ? 'plugins.gitlab.ui.overview.showingLaunchObservation'
+              : 'plugins.gitlab.ui.overview.showingLastRead'}
+            description={failureDescription(
+              controller.failure,
+              text('plugins.gitlab.ui.readFailed', 'GitLab could not complete this read.'),
+            )}
+          />
+        )}
         {statusFields.length === 0 ? null : (
           <Row gap="small">
             {statusFields.map((field) => (
@@ -308,7 +345,33 @@ function OverviewPanel({
             </Row>
           </Stack>
         )}
-        <GitlabMutationControls input={input} />
+        {controller.value?.description === undefined
+          || controller.value.description === '' ? null : (
+            <Stack gap="small">
+              <Text
+                variant="caption"
+                tone="neutral"
+                valueKey="plugins.gitlab.ui.overview.description"
+                fallback="Description"
+              />
+              <Text value={controller.value.description} />
+              {!controller.value.descriptionTruncated ? null : (
+                <Text
+                  variant="caption"
+                  tone="neutral"
+                  valueKey="plugins.gitlab.ui.overview.descriptionShortened"
+                  fallback="The GitLab description was shortened to fit the Action response."
+                />
+              )}
+            </Stack>
+          )}
+        <GitlabMutationControls input={effectiveInput} />
+        <RefreshRow
+          onRefresh={() => { void controller.refresh(); }}
+          pending={controller.refreshing}
+          accessibilityLabel="Re-read this overview from GitLab"
+          accessibilityLabelKey="plugins.gitlab.ui.overview.reread"
+        />
       </Stack>
     </ScrollArea>
   );
@@ -1108,7 +1171,7 @@ function GitlabDetailBody({
   const tab = gitlabResolveSelectedTab(selected, visible);
 
   const panels: Readonly<Record<GitlabDetailTabIdV1, React.ReactNode>> = {
-    overview: <OverviewPanel body={body} input={input} locale={locale} nowMs={nowMs} />,
+    overview: <OverviewPanel input={input} locale={locale} nowMs={nowMs} />,
     activity: kindId === 'merge-request'
       ? <MergeRequestActivityPanel input={input} locale={locale} nowMs={nowMs} />
       : <IssueActivityPanel input={input} locale={locale} nowMs={nowMs} />,

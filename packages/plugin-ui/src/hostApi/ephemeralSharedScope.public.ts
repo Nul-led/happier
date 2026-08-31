@@ -24,6 +24,16 @@ export type PluginUiEphemeralSharedValueLease<T> = Readonly<{
 export type PluginUiEphemeralSharedScope = Readonly<{
   acquire<T>(
     localKey: string,
-    create: () => Readonly<{ value: T; dispose(): void }>,
+    create: () => Readonly<{
+      value: T;
+      dispose(): void;
+      /**
+       * The active transport lease moved to a different host-stamped execution
+       * origin while this value remained live. Opaque origin-bound state such
+       * as provider continuations must be reset before the replacement is used.
+       * Same-origin client replacement does not invoke this notification.
+       */
+      onExecutionOriginChange?(): void;
+    }>,
   ): PluginUiEphemeralSharedValueLease<T> | null;
 }>;

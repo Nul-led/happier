@@ -3,6 +3,8 @@ import { usePluginHostApi, usePluginTranslation } from '@happier-dev/plugin-ui';
 
 import type { TriageAdministerActionInputV1 } from '../../actions/actionsCatalogProtocol.js';
 import type { TriageActionV1, TriageActionsReadV1 } from '../../settings/actions.js';
+import { planTriageOfferedActionsV1 } from '../../settings/actions.js';
+import type { TriageSourceWorkflowSubjectV1 } from '@happier-dev/triage-protocol/v1';
 import { useTriageDurableAccount } from '../durable/accountDurableState.js';
 import {
   TRIAGE_UNREAD_ACTIONS_V1,
@@ -22,9 +24,9 @@ import {
  * settled and the authoritative projection has come back, and not one render
  * before.
  *
- * `read` is the shipped seed until the first read answers, which is a claim the
- * owner already makes about absence — not an empty list, which would render a
- * detail pane with no controls and read as "you configured none".
+ * `read` is an empty unreadable projection until the first read answers. The
+ * shipped seed becomes executable only when the Account owner authoritatively
+ * answers `absent`; a read failure exposes no stale controls and offers Retry.
  *
  * A conflict is a settled answer rather than a failure: another writer won, so
  * this mount keeps what it is showing, says nothing here changed, and re-reads
@@ -37,7 +39,7 @@ export type TriageActionsNoticeV1 = Readonly<{
 }>;
 
 export type TriageMountedActionsV1 = Readonly<{
-  /** The authoritative catalog, or the seed while the first read is in flight. */
+  /** The authoritative catalog, or an empty unreadable projection until it answers. */
   read: TriageActionsReadV1;
   /**
    * The revision the catalog on screen was read at, or `null` before the first
@@ -60,6 +62,19 @@ export type TriageMountedActionsV1 = Readonly<{
   notice: TriageActionsNoticeV1 | null;
   /** Why actions cannot be changed right now, in words, or `null` when they can. */
   unavailableReason: string | null;
+  /** Retry the authoritative Account-KV read after a transient failure. */
+  retry(): void;
+  /**
+   * Revalidate one visible action at the authoritative catalog immediately
+   * before execution. A stale or deleted row never becomes a start request.
+   */
+  resolveForExecution(
+    actionId: string,
+    workflowSubjects: readonly TriageSourceWorkflowSubjectV1[],
+  ): Promise<
+    | Readonly<{ status: 'resolved'; action: TriageActionV1 }>
+    | Readonly<{ status: 'missing' | 'unavailable' }>
+  >;
   /**
    * Run one explicit create/update/delete/reorder.
    *
@@ -107,8 +122,11 @@ export function useTriageActions(): TriageMountedActionsV1 {
       setUnavailableReason(null);
     } catch {
       if (signal.aborted || current !== generation.current) return;
-      // The retained catalog stays on screen: blanking it would take every
-      // control off a detail pane because one read did not answer.
+      // A stale catalog is not executable authority. Blanking it is how a
+      // deleted remote action cannot remain pressable during an outage.
+      setRead(TRIAGE_UNREAD_ACTIONS_V1);
+      setRevision(null);
+      setLoaded(false);
       setUnavailableReason(text('plugins.triage.surface.actions.unavailable', UNAVAILABLE_REASON));
     }
   }, [text, transport]);
@@ -118,6 +136,58 @@ export function useTriageActions(): TriageMountedActionsV1 {
     void load(controller.signal);
     return () => { controller.abort(); };
   }, [load]);
+
+  const retry = useCallback(() => {
+    const controller = new AbortController();
+    setUnavailableReason(null);
+    void load(controller.signal);
+  }, [load]);
+
+  const resolveForExecution = useCallback(async (
+    actionId: string,
+    workflowSubjects: readonly TriageSourceWorkflowSubjectV1[],
+  ): Promise<
+    | Readonly<{ status: 'resolved'; action: TriageActionV1 }>
+    | Readonly<{ status: 'missing' | 'unavailable' }>
+  > => {
+    const controller = new AbortController();
+    try {
+      const projection = await transport.read({ signal: controller.signal });
+      const authoritative = readTriageActionsProjectionV1(projection);
+      setRead(authoritative);
+      setRevision(projection.revision);
+      setLoaded(true);
+      if (authoritative.kind === 'unreadable') {
+        setUnavailableReason(text('plugins.triage.surface.actions.unavailable', UNAVAILABLE_REASON));
+        return { status: 'unavailable' };
+      }
+      setUnavailableReason(null);
+      const action = (workflowSubjects.length === 0
+        ? authoritative.value.actions
+        : workflowSubjects.flatMap((workflowSubject) => planTriageOfferedActionsV1(
+          authoritative.value.actions,
+          workflowSubject,
+        )))
+        .find((candidate) => candidate.actionId === actionId);
+      if (action === undefined) {
+        setNotice({
+          tone: 'warning',
+          message: text(
+            'plugins.triage.surface.actions.noLongerAvailable',
+            'That action is no longer available for this entry.',
+          ),
+        });
+        return { status: 'missing' };
+      }
+      return { status: 'resolved', action };
+    } catch {
+      setRead(TRIAGE_UNREAD_ACTIONS_V1);
+      setRevision(null);
+      setLoaded(false);
+      setUnavailableReason(text('plugins.triage.surface.actions.unavailable', UNAVAILABLE_REASON));
+      return { status: 'unavailable' };
+    }
+  }, [text, transport]);
 
   const administer = useCallback(async (
     input: TriageAdministerActionInputV1,
@@ -155,6 +225,9 @@ export function useTriageActions(): TriageMountedActionsV1 {
       return null;
     } catch {
       setUnavailableReason(text('plugins.triage.surface.actions.unavailable', UNAVAILABLE_REASON));
+      setRead(TRIAGE_UNREAD_ACTIONS_V1);
+      setRevision(null);
+      setLoaded(false);
       return null;
     } finally {
       setBusy(false);
@@ -169,8 +242,20 @@ export function useTriageActions(): TriageMountedActionsV1 {
     busy,
     notice,
     unavailableReason,
+    retry,
+    resolveForExecution,
     administer,
-  }), [administer, busy, loaded, notice, read, revision, unavailableReason]);
+  }), [
+    administer,
+    busy,
+    loaded,
+    notice,
+    read,
+    resolveForExecution,
+    retry,
+    revision,
+    unavailableReason,
+  ]);
 }
 
 /**

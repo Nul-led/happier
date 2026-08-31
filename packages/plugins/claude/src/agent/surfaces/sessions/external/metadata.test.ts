@@ -1,10 +1,13 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { readClaudeJsonlSessionTitle } from './metadata.js';
+import {
+    readClaudeJsonlSessionTitle,
+    readClaudeJsonlSessionTitleWithIndex,
+} from './metadata.js';
 
 function jsonlLine(value: unknown): string {
     return `${JSON.stringify(value)}\n`;
@@ -81,7 +84,7 @@ describe('Claude external-session metadata', () => {
         await expect(readClaudeJsonlSessionTitle(filePath)).resolves.toBeNull();
     });
 
-    it('uses the first immutable user message rather than mutable history, AI, or summary titles', async () => {
+    it('matches Claude title precedence and ignores title records for another session', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-claude-title-history-'));
         const projectDir = join(root, 'projects', 'proj-one');
         await mkdir(projectDir, { recursive: true });
@@ -91,24 +94,18 @@ describe('Claude external-session metadata', () => {
             filePath,
             [
                 jsonlLine({ type: 'user', uuid: 'first-user', message: { content: 'old first user title' } }),
-                jsonlLine({ type: 'ai-title', title: 'AI generated title' }),
+                jsonlLine({ type: 'ai-title', sessionId: 'session-one', aiTitle: 'AI generated title' }),
+                jsonlLine({ type: 'custom-title', sessionId: 'other-session', customTitle: 'Wrong session title' }),
+                jsonlLine({ type: 'custom-title', sessionId: 'session-one', customTitle: 'Renamed Claude session' }),
                 jsonlLine({ type: 'summary', summary: 'Mutable summary title' }),
             ].join(''),
             'utf8',
         );
-        await writeFile(
-            join(root, 'history.jsonl'),
-            [
-                jsonlLine({ type: 'custom-title', sessionId: 'other-session', title: 'Wrong session title' }),
-                jsonlLine({ type: 'custom-title', sessionId: 'session-one', title: 'Renamed Claude session' }),
-            ].join(''),
-            'utf8',
-        );
 
-        await expect(readClaudeJsonlSessionTitle(filePath)).resolves.toBe('old first user title');
+        await expect(readClaudeJsonlSessionTitle(filePath)).resolves.toBe('Renamed Claude session');
     });
 
-    it('stays identifier-only when the first meaningful user message is beyond the bounded title head', async () => {
+    it('finds the fallback title beyond the former bounded head', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-claude-title-head-budget-'));
         const projectDir = join(root, 'projects', 'proj-one');
         await mkdir(projectDir, { recursive: true });
@@ -126,6 +123,100 @@ describe('Claude external-session metadata', () => {
             'utf8',
         );
 
-        await expect(readClaudeJsonlSessionTitle(filePath)).resolves.toBeNull();
+        await expect(readClaudeJsonlSessionTitle(filePath)).resolves.toBe('must not scan this far');
+    });
+
+    it('resumes from persisted scan state and applies later custom-title clearing', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-claude-title-index-'));
+        const projectDir = join(root, 'projects', 'proj-one');
+        await mkdir(projectDir, { recursive: true });
+        const filePath = join(projectDir, 'session-one.jsonl');
+        await writeFile(
+            filePath,
+            jsonlLine({
+                type: 'user',
+                uuid: 'first-user',
+                message: { content: 'First meaningful user text' },
+            }),
+            'utf8',
+        );
+
+        const first = await readClaudeJsonlSessionTitleWithIndex({
+            filePath,
+            remoteSessionId: 'session-one',
+        });
+        expect(first.title).toBe('First meaningful user text');
+        expect(first.indexState.verifiedThroughBytes).toBeGreaterThan(0);
+
+        await appendFile(
+            filePath,
+            jsonlLine({ type: 'ai-title', sessionId: 'session-one', aiTitle: 'Latest AI title' }),
+            'utf8',
+        );
+        const withAi = await readClaudeJsonlSessionTitleWithIndex({
+            filePath,
+            remoteSessionId: 'session-one',
+            previousState: first.indexState,
+        });
+        expect(withAi.title).toBe('Latest AI title');
+        expect(withAi.indexState.verifiedThroughBytes).toBeGreaterThan(
+            first.indexState.verifiedThroughBytes,
+        );
+
+        await appendFile(
+            filePath,
+            [
+                jsonlLine({ type: 'custom-title', sessionId: 'session-one', customTitle: 'Manual title' }),
+                jsonlLine({ type: 'custom-title', sessionId: 'session-one', customTitle: '   ' }),
+            ].join(''),
+            'utf8',
+        );
+        await expect(readClaudeJsonlSessionTitleWithIndex({
+            filePath,
+            remoteSessionId: 'session-one',
+            previousState: withAi.indexState,
+        })).resolves.toMatchObject({
+            title: 'Latest AI title',
+            indexState: {
+                customTitle: null,
+                aiTitle: 'Latest AI title',
+                fallbackTitle: 'First meaningful user text',
+            },
+        });
+    });
+
+    it('does not checkpoint past an incomplete final title record', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-claude-title-partial-tail-'));
+        const projectDir = join(root, 'projects', 'proj-one');
+        await mkdir(projectDir, { recursive: true });
+        const filePath = join(projectDir, 'session-one.jsonl');
+        await writeFile(
+            filePath,
+            [
+                jsonlLine({
+                    type: 'user',
+                    uuid: 'first-user',
+                    message: { content: 'Fallback title' },
+                }),
+                '{"type":"custom-title","sessionId":"session-one","customTitle":"Part',
+            ].join(''),
+            'utf8',
+        );
+
+        const partial = await readClaudeJsonlSessionTitleWithIndex({
+            filePath,
+            remoteSessionId: 'session-one',
+        });
+        expect(partial.title).toBe('Fallback title');
+        expect(partial.indexState.verifiedThroughBytes).toBeLessThan(
+            (await stat(filePath)).size,
+        );
+
+        await appendFile(filePath, 'ial"}\n', 'utf8');
+        await expect(readClaudeJsonlSessionTitleWithIndex({
+            filePath,
+            remoteSessionId: 'session-one',
+            previousState: partial.indexState,
+        })).resolves.toMatchObject({ title: 'Partial' });
     });
 });

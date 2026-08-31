@@ -40,6 +40,7 @@ export type CorpusEffectiveViewV1 = Readonly<{
      * is reported rather than shown as an empty set the user could overwrite.
      */
     availability: 'saved' | 'unsavedDefault' | 'unavailable';
+    query: string;
     filters: SurfaceFilterSelectionV1;
     order: TriageListOrderV1;
     smartPolicy: CorpusSmartPolicyV1;
@@ -73,6 +74,7 @@ function collectUnavailableSources(
 const UNSAVED_DEFAULT = Object.freeze({
     viewId: null,
     label: null,
+    query: '',
     filters: TRIAGE_LIST_NO_FILTERS_V1,
     order: 'newest' as const,
     smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
@@ -98,6 +100,7 @@ export function resolveTriageEffectiveView(input: Readonly<{
         viewId: selected.viewId,
         label: selected.label,
         availability: 'saved',
+        query: selected.query,
         filters: selected.filters,
         order: selected.order,
         smartPolicy: selected.smartPolicy,

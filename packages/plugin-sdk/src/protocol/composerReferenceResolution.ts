@@ -1,7 +1,7 @@
 import {
     ComposerReferenceResolutionV1Schema as canonicalComposerReferenceResolutionV1Schema,
+    type ComposerReferenceResolutionV1,
 } from '@happier-dev/protocol/plugins/contributions/composer-reference-providers';
-import type { ComposerReferenceResolutionV1 } from '@happier-dev/protocol';
 
 /**
  * The executable canonical parser for a complete Composer reference

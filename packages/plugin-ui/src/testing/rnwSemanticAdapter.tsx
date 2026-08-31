@@ -22,6 +22,7 @@ import {
   type PluginUiPresentationHost,
   type PluginUiTargetedSurfacePresentation,
 } from '../presentationHost/context.js';
+import { PLUGIN_UI_PRIVATE_SURFACE_ENTRY_PROVIDER_KEY } from '../privateCarrierKeys.js';
 
 /** Optional strict targeted-Surface support for the public RNW semantic adapter. */
 export type PluginUiRnwSemanticSurfaceAdapterOptions = Readonly<{
@@ -84,7 +85,7 @@ function renderSemanticSurface(input: Readonly<{
   const rendered = input.ephemeralSharedScope !== undefined
     && isValidElement(raw)
     && (typeof rawType === 'function' || (typeof rawType === 'object' && rawType !== null))
-    && Reflect.get(rawType, Symbol.for('happier.pluginUi.privateSurfaceEntryProvider.v1')) === true
+    && Reflect.get(rawType, PLUGIN_UI_PRIVATE_SURFACE_ENTRY_PROVIDER_KEY) === true
       ? cloneElement(
           raw as ReactElement<Record<string, unknown>>,
           { ephemeralSharedScope: input.ephemeralSharedScope },

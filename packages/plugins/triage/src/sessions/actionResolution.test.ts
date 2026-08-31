@@ -7,9 +7,11 @@ import {
     TRIAGE_SPAWN_PROFILES_LIST_ACTION_ID_V1,
     readTriageLaunchProfilesV1,
     readTriagePromptInvocationsV1,
+    resolveTriageActionInstructionV1,
     resolveTriageActionReferencesV1,
     type TriageActionResolutionHostV1,
 } from './actionResolution.js';
+import type { TriageActionV1 } from '../settings/actions.js';
 
 /**
  * A host that answers the three catalog Actions and records what was asked.
@@ -62,6 +64,31 @@ const PROFILES = {
 };
 
 describe('resolveTriageActionReferencesV1', () => {
+    it('passes stored static arguments to the Prompt Library invocation owner', async () => {
+        const { host, requests } = createHost({
+            [TRIAGE_PROMPT_INVOCATION_RESOLVE_ACTION_ID_V1]: {
+                status: 'resolved',
+                text: 'Review the authentication changes.',
+            },
+        });
+
+        await resolveTriageActionReferencesV1(host, {
+            actionId: 'review-auth',
+            profileId: null,
+            target: {
+                kind: 'agent',
+                promptInvocationId: 'invocation-1',
+                promptArgsText: 'authentication',
+                delivery: 'compose',
+            },
+        });
+
+        expect(requests).toEqual([{
+            action: TRIAGE_PROMPT_INVOCATION_RESOLVE_ACTION_ID_V1,
+            input: { invocationId: 'invocation-1', argsText: 'authentication' },
+        }]);
+    });
+
     it('resolves both references before anything can be created', async () => {
         const { host, asked } = createHost({
             [TRIAGE_SPAWN_PROFILES_LIST_ACTION_ID_V1]: PROFILES,
@@ -169,6 +196,44 @@ describe('resolveTriageActionReferencesV1', () => {
             reference: 'prompt',
             id: 'invocation-empty',
         });
+    });
+});
+
+describe('the action instruction', () => {
+    it('does not infer instructions from shipped ids or labels', () => {
+        expect(resolveTriageActionInstructionV1({
+            target: { kind: 'agent', promptInvocationId: null, delivery: 'compose' },
+        }, null)).toBeNull();
+        expect(resolveTriageActionInstructionV1({
+            target: { kind: 'agent', promptInvocationId: null, delivery: 'compose' },
+        }, null)).toBeNull();
+        expect(resolveTriageActionInstructionV1({
+            target: { kind: 'agent', promptInvocationId: null, delivery: 'compose' },
+        }, null)).toBeNull();
+    });
+
+    it('uses the configured fallback independent of action identity', () => {
+        const configured = {
+            target: {
+                kind: 'agent',
+                promptInvocationId: null,
+                seededFallbackInstruction: 'Fix this entry.',
+                delivery: 'compose',
+            },
+        } satisfies Pick<TriageActionV1, 'target'>;
+
+        expect(resolveTriageActionInstructionV1(configured, null)).toBe('Fix this entry.');
+    });
+
+    it('keeps the Prompt Library body byte-for-byte when one resolved', () => {
+        expect(resolveTriageActionInstructionV1({
+            target: {
+                kind: 'agent',
+                promptInvocationId: 'prompt-1',
+                seededFallbackInstruction: 'This must not win.',
+                delivery: 'compose',
+            },
+        }, '  Explain this exact failure.\n')).toBe('  Explain this exact failure.\n');
     });
 });
 
@@ -288,7 +353,7 @@ describe('readTriagePromptInvocationsV1', () => {
     it('carries complete inventory coverage to the editor', async () => {
         const { host } = createHost({
             [TRIAGE_PROMPT_INVOCATIONS_LIST_ACTION_ID_V1]: {
-                items: [{ id: 'prompt-1', token: '/review', title: 'Review' }],
+                items: [{ id: 'prompt-1', token: '/review', title: 'Review', allowArgs: true }],
                 coverage: 'complete',
             },
         });
@@ -296,7 +361,7 @@ describe('readTriagePromptInvocationsV1', () => {
         expect(await readTriagePromptInvocationsV1(host)).toEqual({
             status: 'read',
             coverage: 'complete',
-            invocations: [{ id: 'prompt-1', token: '/review', title: 'Review' }],
+            invocations: [{ id: 'prompt-1', token: '/review', title: 'Review', allowArgs: true }],
         });
     });
 

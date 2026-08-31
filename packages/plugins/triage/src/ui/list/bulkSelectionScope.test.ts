@@ -35,10 +35,6 @@ describe('what counts as the same list for a bulk selection', () => {
             TRIAGE_SURFACE_INITIAL_STATE_V1,
             { kind: 'orderChanged', order: 'oldest' },
         );
-        const regrouped = reduceTriageSurfaceV1(
-            TRIAGE_SURFACE_INITIAL_STATE_V1,
-            { kind: 'groupingChanged', grouping: 'scope' },
-        );
         const filtered = reduceTriageSurfaceV1(
             TRIAGE_SURFACE_INITIAL_STATE_V1,
             { kind: 'filterValueToggled', facet: 'states', value: 'open' },
@@ -53,7 +49,6 @@ describe('what counts as the same list for a bulk selection', () => {
 
         for (const [label, state] of [
             ['order', reordered],
-            ['grouping', regrouped],
             ['facet', filtered],
             ['smart policy', reranked],
         ] as const) {

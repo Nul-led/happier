@@ -8,6 +8,7 @@
  */
 
 import { ComposerReferenceCandidateIdV1Schema } from '@happier-dev/plugin-sdk';
+import { deriveTriageConfiguredSourceInstanceDigestV1 } from '@happier-dev/triage-sources/runtime';
 import type {
     TriageConfiguredSourceInstanceV1,
     TriageSourceEntryLocalRefV1,
@@ -19,7 +20,6 @@ import {
     POSTHOG_ISSUE_EVENTS_INCLUDE,
     POSTHOG_ISSUE_EVENTS_MAX_LIMIT,
 } from '../api/types/events.js';
-import { normalizePosthogApiOrigin } from '../connect/origin.js';
 import {
     POSTHOG_CONNECTED_ACCOUNT_PURPOSE,
     POSTHOG_EVIDENCE_REFERENCE_ID,
@@ -32,10 +32,11 @@ import type { PosthogProjectedIssueEvent } from '../ui/detail/issueEventProjecti
 
 const UUID_PATTERN
     = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
-const CANDIDATE_PREFIX = 'ph1';
+const CANDIDATE_PREFIX = 'ph2';
 const CANDIDATE_SEPARATOR = '|';
 /** Compact name for the fixed filters the canonical issue-events builder applies. */
 const FROZEN_QUERY_PROFILE = 'q1';
+const CANONICAL_DIGEST_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 
 export const POSTHOG_EVIDENCE_REFERENCE = Object.freeze({
     pluginId: POSTHOG_PLUGIN_ID,
@@ -44,9 +45,7 @@ export const POSTHOG_EVIDENCE_REFERENCE = Object.freeze({
 
 export type DecodedPosthogEvidenceCandidate = Readonly<{
     sourceInstanceId: string;
-    accountId: string;
-    origin: string;
-    teamPathId: number;
+    instanceDigest: string;
     teamUuid: string;
     entryId: string;
     from: string;
@@ -124,9 +123,7 @@ function encodeCandidate(value: DecodedPosthogEvidenceCandidate): string | null 
     const id = [
         CANDIDATE_PREFIX,
         value.sourceInstanceId,
-        value.accountId,
-        value.origin,
-        String(value.teamPathId),
+        value.instanceDigest,
         value.teamUuid,
         value.entryId,
         value.from,
@@ -150,13 +147,11 @@ export function decodePosthogEvidenceCandidate(
         if (part === null) return null;
         parts.push(part);
     }
-    if (parts.length !== 14) return null;
+    if (parts.length !== 12) return null;
     const [
         prefix = '',
         sourceInstanceId = '',
-        accountId = '',
-        originRaw = '',
-        teamPathIdRaw = '',
+        instanceDigest = '',
         teamUuid = '',
         entryId = '',
         from = '',
@@ -168,17 +163,12 @@ export function decodePosthogEvidenceCandidate(
         selectedUuid = '',
     ] = parts;
     if (prefix !== CANDIDATE_PREFIX) return null;
-    const teamPathId = Number(teamPathIdRaw);
     const originalLimit = Number(originalLimitRaw);
     const frozenOffset = Number(frozenOffsetRaw);
     const selectedOffset = Number(selectedOffsetRaw);
-    const origin = normalizePosthogApiOrigin(originRaw);
     if (
         !isUuid(sourceInstanceId)
-        || accountId.length === 0
-        || !origin.ok
-        || origin.origin !== originRaw
-        || !isPositiveInteger(teamPathId)
+        || !CANONICAL_DIGEST_PATTERN.test(instanceDigest)
         || !isUuid(teamUuid)
         || !isUuid(entryId)
         || from.length === 0
@@ -193,9 +183,7 @@ export function decodePosthogEvidenceCandidate(
     ) return null;
     return Object.freeze({
         sourceInstanceId,
-        accountId,
-        origin: origin.origin,
-        teamPathId,
+        instanceDigest,
         teamUuid,
         entryId,
         from,
@@ -250,9 +238,7 @@ export function createPosthogEvidenceCandidate(
 
     const id = encodeCandidate({
         sourceInstanceId: input.instance.instance.sourceInstanceId,
-        accountId: input.instance.binding.account.accountId,
-        origin: scope.origin as string,
-        teamPathId: environment.teamPathId,
+        instanceDigest: deriveTriageConfiguredSourceInstanceDigestV1(input.instance),
         teamUuid: environment.teamUuid,
         entryId: input.localRef.entryId,
         from: input.frozenRequest.from,

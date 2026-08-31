@@ -2,11 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 
+import { manifest } from '../src/index.ts';
+
 test('binds public Channels roles without declaring a target, descriptor, or renderer', async () => {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const source = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
 
   assert.equal(packageJson.dependencies['@happier-dev/channels-protocol'], '0.0.0');
+  assert.deepEqual(manifest.entrypoints, { daemon: './dist/index.js' });
   assert.match(source, /from '@happier-dev\/channels-protocol\/v1'/u);
   assert.match(source, /ConversationProvidersContributionProtocolV1\.contribute\(\{/u);
   for (const role of ['setup', 'connectionTest', 'messageDeliver', 'connectionStop']) {

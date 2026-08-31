@@ -44,6 +44,7 @@ import {
   defineReviewCommentRevisionedSingleEntryPublicationPlanV1ProtocolSchema,
 } from '@happier-dev/plugin-sdk/reviews';
 import {
+  MAX_TRIAGE_ROUTING_TOKEN_UTF8_BYTES_V1,
   TriageConfiguredSourceInstanceV1Schema,
   TriageSourceEntryLocalRefV1Schema,
   TriageSourceFailureV1Schema,
@@ -67,6 +68,10 @@ const LocationSchema = defineProtocolUtf8String({
 });
 const TimestampSchema = defineProtocolNumber({ integer: true });
 const ProjectIdSchema = defineProtocolNumber({ integer: true, minimum: 1 });
+const RoutingTokenSchema = defineProtocolUtf8String({
+  maxUtf8Bytes: MAX_TRIAGE_ROUTING_TOKEN_UTF8_BYTES_V1,
+  minLength: 1,
+});
 
 /**
  * The commit the user acted on.
@@ -110,6 +115,7 @@ const GitlabPublicationTargetFieldsV1 = {
   v: defineProtocolLiteral(1),
   instance: TriageConfiguredSourceInstanceV1Schema,
   localRef: TriageSourceEntryLocalRefV1Schema,
+  routingToken: RoutingTokenSchema,
 } as const;
 
 /** A frozen, revision-pinned GitLab merge-request review publication. */
@@ -375,6 +381,7 @@ export const GitlabMergeRequestMergeInputV1Schema = defineProtocolObject({
   v: defineProtocolLiteral(1),
   instance: TriageConfiguredSourceInstanceV1Schema,
   localRef: TriageSourceEntryLocalRefV1Schema,
+  routingToken: RoutingTokenSchema,
   observedHeadSha: GitlabObservedHeadShaV1Schema,
 }, { policy: 'closed' });
 export type GitlabMergeRequestMergeInputV1 =
@@ -417,6 +424,7 @@ export const GitlabMergeRequestMarkReadyInputV1Schema = defineProtocolObject({
   v: defineProtocolLiteral(1),
   instance: TriageConfiguredSourceInstanceV1Schema,
   localRef: TriageSourceEntryLocalRefV1Schema,
+  routingToken: RoutingTokenSchema,
   observedHeadSha: GitlabObservedHeadShaV1Schema,
 }, { policy: 'closed' });
 export type GitlabMergeRequestMarkReadyInputV1 =
@@ -452,6 +460,7 @@ export const GitlabMergeRequestCloseInputV1Schema = defineProtocolObject({
   v: defineProtocolLiteral(1),
   instance: TriageConfiguredSourceInstanceV1Schema,
   localRef: TriageSourceEntryLocalRefV1Schema,
+  routingToken: RoutingTokenSchema,
 }, { policy: 'closed' });
 export type GitlabMergeRequestCloseInputV1 =
   ReturnType<typeof GitlabMergeRequestCloseInputV1Schema.parse>;
@@ -486,6 +495,7 @@ export const GitlabMergeRequestReopenInputV1Schema = defineProtocolObject({
   v: defineProtocolLiteral(1),
   instance: TriageConfiguredSourceInstanceV1Schema,
   localRef: TriageSourceEntryLocalRefV1Schema,
+  routingToken: RoutingTokenSchema,
 }, { policy: 'closed' });
 export type GitlabMergeRequestReopenInputV1 =
   ReturnType<typeof GitlabMergeRequestReopenInputV1Schema.parse>;
@@ -521,6 +531,7 @@ const GitlabIssueMutationInputFields = {
   v: defineProtocolLiteral(1),
   instance: TriageConfiguredSourceInstanceV1Schema,
   localRef: TriageSourceEntryLocalRefV1Schema,
+  routingToken: RoutingTokenSchema,
   observedRevision: GitlabObservedIssueRevisionV1Schema,
 } as const;
 
@@ -579,6 +590,7 @@ export const GitlabMergeRequestReviewerChangeInputV1Schema = defineProtocolObjec
   v: defineProtocolLiteral(1),
   instance: TriageConfiguredSourceInstanceV1Schema,
   localRef: TriageSourceEntryLocalRefV1Schema,
+  routingToken: RoutingTokenSchema,
   observedHeadSha: GitlabObservedHeadShaV1Schema,
   operation: GitlabDeltaOperationV1Schema,
   reviewerUsernames: NonEmptyUniqueNamesSchema,
@@ -639,6 +651,7 @@ export const GitlabMergeRequestDiscussionResolutionInputV1Schema = defineProtoco
   v: defineProtocolLiteral(1),
   instance: TriageConfiguredSourceInstanceV1Schema,
   localRef: TriageSourceEntryLocalRefV1Schema,
+  routingToken: RoutingTokenSchema,
   observedHeadSha: GitlabObservedHeadShaV1Schema,
   discussionId: IdentifierSchema,
   resolved: GitlabBooleanSchema,

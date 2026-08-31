@@ -44,7 +44,7 @@ const VIEWER_UUID = '{9f8e7d6c-5b4a-4938-8271-6059f8e7d6c5}';
 // The braces in a Bitbucket UUID are path-encoded by the one URL owner, so the fixture addresses
 // exactly the URL the source builds rather than a readable approximation of it.
 const PULL_REQUEST_URL = 'https://api.bitbucket.org/2.0/repositories'
-  + `/${encodeURIComponent(WORKSPACE_UUID)}/${encodeURIComponent(REPOSITORY_UUID)}`
+  + `/${encodeURIComponent(WORKSPACE_UUID)}/repository`
   + `/pullrequests/${ENTRY_ID}`;
 const MERGE_URL = `${PULL_REQUEST_URL}/merge`;
 const DECLINE_URL = `${PULL_REQUEST_URL}/decline`;
@@ -72,12 +72,14 @@ const LOCAL_REF = Object.freeze({
   collisionScope: COLLISION_SCOPE,
   entryId: ENTRY_ID,
 });
+const LAST_KNOWN_LOCATOR = Object.freeze({ v: 1 as const, routingToken: 'example/repository' });
 
 function mergeInput(overrides: Readonly<Record<string, unknown>> = {}) {
   return {
     v: 1,
     instance: configuredInstance(),
     localRef: LOCAL_REF,
+    lastKnownLocator: LAST_KNOWN_LOCATOR,
     observedHeadCommit: OBSERVED_HEAD,
     closeSourceBranch: false,
     mergeStrategy: 'squash',
@@ -86,7 +88,12 @@ function mergeInput(overrides: Readonly<Record<string, unknown>> = {}) {
 }
 
 function declineInput() {
-  return { v: 1, instance: configuredInstance(), localRef: LOCAL_REF };
+  return {
+    v: 1,
+    instance: configuredInstance(),
+    localRef: LOCAL_REF,
+    lastKnownLocator: LAST_KNOWN_LOCATOR,
+  };
 }
 
 /** One Bitbucket pull-request body, at whichever state and head the case needs. */
@@ -501,6 +508,7 @@ function commentInput(overrides: Readonly<Record<string, unknown>> = {}) {
     v: 1,
     instance: configuredInstance(),
     localRef: LOCAL_REF,
+    lastKnownLocator: LAST_KNOWN_LOCATOR,
     commentId: COMMENT_ID,
     ...overrides,
   };

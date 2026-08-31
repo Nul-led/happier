@@ -944,6 +944,78 @@ describe('GitHub Automation Event checkpointed-pull observer', () => {
     }));
   });
 
+  it('does not dispatch a stale adopted catalog to source observation after currentness is lost', async () => {
+    const source = definition({ automationId: 'automation-a', sourceSelectorId: sourceSelectorA });
+    const checkpoints = createCheckpointCollection([]);
+    const statuses: AutomationEventSourceStatusReport[] = [];
+    let now = 2_000;
+    let sourceListCalls = 0;
+    const http = {
+      request: vi.fn(async () => ({
+        status: 200,
+        headers: { etag: 'initial' },
+        body: new TextEncoder().encode(JSON.stringify([])),
+      })),
+    };
+    const actions = {
+      execute: vi.fn(async (actionId: string, input: unknown) => {
+        if (actionId === 'automation.event.sources.list') {
+          sourceListCalls += 1;
+          if (sourceListCalls === 1) {
+            expect(input).toEqual({ transport: { kind: 'checkpointedPull' } });
+            return {
+              kind: 'page', revision: '7', definitions: [source], nextCursor: null,
+            } satisfies PluginActionResultById['automation.event.sources.list'];
+          }
+          expect(input).toEqual({ transport: { kind: 'checkpointedPull' }, knownRevision: '7' });
+          return {
+            kind: 'cursorStale', currentRevision: '8',
+          } satisfies PluginActionResultById['automation.event.sources.list'];
+        }
+        if (actionId === 'automation.event.source.status.report') {
+          statuses.push(input as AutomationEventSourceStatusReport);
+          return {} satisfies PluginActionResultById['automation.event.source.status.report'];
+        }
+        if (actionId === 'automation.event.admit') {
+          throw new Error('a baseline must not admit an occurrence');
+        }
+        throw new Error(`unexpected Action ${actionId}`);
+      }),
+    };
+    const observer = createGithubAutomationEventCheckpointedPullObserver({ now: () => now });
+    const context = observerBackgroundContext({ actions, collection: checkpoints.collection, http });
+
+    await observer.runCycle(sourceAttemptContext(observer, context));
+    expect(http.request).toHaveBeenCalledOnce();
+
+    // Advance beyond the source's next eligible time so this would perform an
+    // ordinary 304 poll through the retained snapshot without the guard.
+    now = 63_000;
+    http.request.mockClear();
+    statuses.length = 0;
+    actions.execute.mockClear();
+
+    await observer.runCycle(sourceAttemptContext(observer, context));
+
+    expect(http.request).not.toHaveBeenCalled();
+    expect(actions.execute).not.toHaveBeenCalledWith(
+      'automation.event.admit',
+      expect.anything(),
+      expect.anything(),
+    );
+    // The stale scan truthfully reports only catalog reconciliation. The
+    // previously adopted revision remains useful reconciliation evidence, but
+    // source health from the no-longer-current snapshot must not be published.
+    expect(statuses).toEqual([
+      expect.objectContaining({
+        kind: 'catalogReconciliation',
+        observedRevision: '8',
+        adoptedRevision: '7',
+        state: 'reconciling',
+      }),
+    ]);
+  });
+
   it('persists the first baseline of a fresh trigger at Protocol trigger revision zero', async () => {
     // Canonical trigger create writers mint revision 0; the observer's first
     // baseline must persist at exactly the revision the admitted definition

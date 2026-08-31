@@ -356,6 +356,7 @@ describe('durable Account state with no daemon reachable', () => {
             views: [{
                 viewId: '11111111-2222-4333-8444-555555555555',
                 label: 'Needs me',
+                query: '',
                 filters: { sources: [], types: [], scopes: [], states: ['open'], attention: ['required'] },
                 order: 'smart',
                 smartPolicy: { v: 1, precedence: ['attention', 'activity'] },

@@ -13,6 +13,7 @@ import {
 import { TriageAccountKvRevisionV1Schema } from '../settings/actions.js';
 import {
     TriageListFilterSelectionV1Schema,
+    TriageListSettledQueryV1Schema,
     TriageSmartPolicyV1Schema,
 } from './listEntriesProtocol.js';
 
@@ -50,6 +51,7 @@ const TriageSavedViewOrderV1Schema = defineProtocolUnion([
 const TriageSavedViewV1Schema = defineProtocolObject({
     viewId: triageViewId,
     label: triageViewLabel,
+    query: TriageListSettledQueryV1Schema,
     filters: TriageListFilterSelectionV1Schema,
     order: TriageSavedViewOrderV1Schema,
     smartPolicy: TriageSmartPolicyV1Schema,
@@ -83,6 +85,7 @@ export type TriageReadSavedViewsResultV1 = ReturnType<typeof TriageReadSavedView
 
 const TriageSavedViewDraftV1Schema = {
     label: triageViewLabel,
+    query: TriageListSettledQueryV1Schema,
     filters: TriageListFilterSelectionV1Schema,
     order: TriageSavedViewOrderV1Schema,
     smartPolicy: TriageSmartPolicyV1Schema,
@@ -144,6 +147,7 @@ export const TriageAdministerSavedViewResultV1Schema = defineProtocolObject({
     ]),
     reason: defineProtocolUnion([
         defineProtocolLiteral('label'),
+        defineProtocolLiteral('query'),
         defineProtocolLiteral('duplicateFacetValue'),
         defineProtocolLiteral('filterValue'),
         defineProtocolLiteral('order'),
@@ -152,6 +156,8 @@ export const TriageAdministerSavedViewResultV1Schema = defineProtocolObject({
     ]).optional(),
     /** The authoritative set after an applied write; omitted otherwise. */
     views: defineProtocolArray(TriageSavedViewV1Schema).optional(),
+    /** The view the applied command acted on; `null` only for selecting no view. */
+    viewId: defineProtocolUnion([triageViewId, defineProtocolLiteral(null)]).optional(),
     selectedViewId: defineProtocolUnion([triageViewId, defineProtocolLiteral(null)]).optional(),
     revision: TriageAccountKvRevisionV1Schema.optional(),
 }, { policy: 'closed' });

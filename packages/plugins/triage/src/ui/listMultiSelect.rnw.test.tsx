@@ -12,6 +12,7 @@ import {
     TRIAGE_SOURCES_TARGET_PLUGIN_ID_V1,
     TriageConfiguredSourceInstanceV1Schema,
     type TriageConfiguredSourceInstanceV1,
+    type TriageEntryRepositoryRefV1,
     type TriageScanResultV1,
 } from '@happier-dev/triage-protocol/v1';
 import type { JsonValue } from '@happier-dev/plugin-sdk';
@@ -160,6 +161,10 @@ function createHarness(options: Readonly<{
     newSessionSeedResult?: unknown;
     /** One-based spawn invocation whose transport answer is lost once. */
     failSpawnAttempt?: number;
+    /** Optional exact repository identity projected by each observation. */
+    repositories?: Readonly<Record<string, TriageEntryRepositoryRefV1>>;
+    /** Holds the project registry at its boundary until the mounted request is cancelled. */
+    deferProjectsRead?: boolean;
 }> = {}) {
     const kindId = options.kindId ?? 'pull-request';
     const { collections, control } = createTestkitCorpusCollections({ accountEncryptionMode: 'e2ee' });
@@ -176,6 +181,7 @@ function createHarness(options: Readonly<{
     let nextSessionNumber = 1;
     let spawnAttempt = 0;
     let retired = false;
+    let projectsSignal: AbortSignal | undefined;
     let retireMounted: (() => Promise<void>) | null = null;
     control.sourceInstances.seed(toCorpusStoredValue(instanceRow()));
     const collectionsById = new Map<string, unknown>([
@@ -291,6 +297,9 @@ function createHarness(options: Readonly<{
             observations: [{
                 kind: 'present',
                 localRef: { kindId, collisionScope: 'example/repository', entryId: '17' },
+                ...(options.repositories?.['17'] === undefined
+                    ? {}
+                    : { repository: options.repositories['17'] }),
                 locator: testkitLocator(),
                 snapshot: {
                     ...testkitSnapshot({ title: 'Replace the duplicated normalizer' }),
@@ -301,6 +310,9 @@ function createHarness(options: Readonly<{
             }, {
                 kind: 'present',
                 localRef: { kindId, collisionScope: 'example/repository', entryId: '18' },
+                ...(options.repositories?.['18'] === undefined
+                    ? {}
+                    : { repository: options.repositories['18'] }),
                 locator: testkitLocator(),
                 snapshot: {
                     ...testkitSnapshot({ title: 'Extract the selection reducer' }),
@@ -311,6 +323,9 @@ function createHarness(options: Readonly<{
             }, {
                 kind: 'present',
                 localRef: { kindId, collisionScope: 'example/repository', entryId: '19' },
+                ...(options.repositories?.['19'] === undefined
+                    ? {}
+                    : { repository: options.repositories['19'] }),
                 locator: testkitLocator(),
                 snapshot: {
                     ...testkitSnapshot({ title: 'Migrate the sessions list' }),
@@ -322,7 +337,11 @@ function createHarness(options: Readonly<{
             evidence: { kind: 'walkFinished' },
         } satisfies TriageScanResultV1));
 
-    async function executeAction(request: Readonly<{ action: unknown; input: unknown }>) {
+    async function executeAction(request: Readonly<{
+        action: unknown;
+        input: unknown;
+        signal?: AbortSignal;
+    }>) {
         const action = String(request.action);
         if (retired) throw new Error('triage:test:surfaceRetired');
         if (action === TRIAGE_READ_ACTIONS_ACTION_LOCAL_ID_V1) {
@@ -364,7 +383,17 @@ function createHarness(options: Readonly<{
         if (action === 'session.spawn_new' || action === 'session.message.send' || action === 'session.open') {
             return await executeSessionAction(action, request.input as never);
         }
-        if (action === 'projects.list') return { items: [], truncated: false };
+        if (action === 'projects.list') {
+            projectsSignal = request.signal;
+            if (options.deferProjectsRead === true) {
+                await new Promise<never>((_resolve, reject) => request.signal?.addEventListener(
+                    'abort',
+                    () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+                    { once: true },
+                ));
+            }
+            return { items: [], truncated: false };
+        }
         if (action === 'sessions.spawn.profiles.list') {
             referenceReads.push('sessions.spawn.profiles.list');
             return { items: options.profiles ?? [], truncated: false };
@@ -397,8 +426,14 @@ function createHarness(options: Readonly<{
         spawnInputs,
         sentInputs,
         newSessionSeedResult: options.newSessionSeedResult,
+        replaceActions: (actions: JsonValue) => {
+            accountKv.seed(TRIAGE_ACTIONS_ACCOUNT_KV_KEY_V1, actions);
+        },
         get wasRetired() {
             return retired;
+        },
+        get projectsSignal() {
+            return projectsSignal;
         },
         setMountRetirement: (retire: () => Promise<void>) => {
             retireMounted = retire;
@@ -441,7 +476,7 @@ async function mountShell(
             adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope }),
             handlers: {
                 publishCurrentUiContext: () => undefined,
-                executeAction: async ({ action, input }) => await harness.executeAction({ action, input }),
+                executeAction: async ({ action, input, signal }) => await harness.executeAction({ action, input, signal }),
                 openNewSession: async ({ request, preparedReviewWorkspace }) => {
                     harness.newSessionSeeds.push(request);
                     if (preparedReviewWorkspace !== undefined) {
@@ -576,6 +611,13 @@ async function settle(): Promise<void> {
     }
 }
 
+async function chooseBulkAction(shell: PluginUiTestkit, label: string): Promise<void> {
+    await act(async () => {
+        await shell.press(await shell.getByRole('radio', { name: label }));
+    });
+    await settle();
+}
+
 describe('selecting several PRs & Issues rows', () => {
     it('enters the same selection mode from touch without opening a detail', async () => {
         const { locations } = await mountShell(createHarness());
@@ -633,12 +675,20 @@ describe('selecting several PRs & Issues rows', () => {
         expect(locations.slice(before)).toEqual([]);
     });
 
-    it('mounts the bulk action bar with all three destinations as soon as a set exists', async () => {
+    it('offers direct destinations only after selecting an action with an instruction', async () => {
         // Anti-dormancy: the bar, the action catalog it reads and the bulk
         // executor behind it are reachable from the mounted list, not just
         // present in the tree. Before this they were built and consumed by
         // nothing.
-        const { locations } = await mountShell(createHarness());
+        const { shell, locations } = await mountShell(createHarness({
+            repositories: {
+                '17': {
+                    kind: 'github',
+                    deployment: 'https://example.test',
+                    repository: 'example/repository',
+                },
+            },
+        }));
         const before = locations.length;
 
         expect(document.querySelector('[data-testid="triage-bulk-action-bar"]')).toBeNull();
@@ -646,6 +696,16 @@ describe('selecting several PRs & Issues rows', () => {
         await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
 
         expect(document.querySelector('[data-testid="triage-bulk-action-bar"]')).not.toBeNull();
+        // Ask deliberately opens an editable Composer without inventing a task
+        // instruction. It can attach the selection, but it cannot direct-send
+        // an empty task into one or several Sessions.
+        expect(document.querySelector('[data-testid="triage-bulk-oneSessionForAllEntries"]')).toBeNull();
+        expect(document.querySelector('[data-testid="triage-bulk-oneSessionPerEntry"]')).toBeNull();
+        expect(document.querySelector('[data-testid="triage-bulk-attachAllToNewSession"]')).not.toBeNull();
+
+        // Fix owns a shipped fallback instruction, so choosing it makes both
+        // direct destinations real as well.
+        await chooseBulkAction(shell, 'Fix');
         for (const destination of [
             'oneSessionForAllEntries',
             'oneSessionPerEntry',
@@ -659,6 +719,43 @@ describe('selecting several PRs & Issues rows', () => {
         // Building a set never opened a detail, so the bar cannot have arrived
         // by replacing the list.
         expect(locations.slice(before)).toEqual([]);
+    });
+
+    it('omits a shared Session control when the selected repositories cannot share its placement', async () => {
+        const harness = createHarness({
+            actions: {
+                v: 1,
+                actions: [{
+                    actionId: 'fix-repository',
+                    label: 'Fix repository',
+                    enabled: true,
+                    appliesTo: ['pullRequest'],
+                    profileId: null,
+                    workspaceMode: 'repository',
+                    target: {
+                        kind: 'agent',
+                        promptInvocationId: null,
+                        seededFallbackInstruction: 'Start this entry.',
+                        delivery: 'send',
+                    },
+                }],
+            },
+            repositories: {
+                '17': { kind: 'github', deployment: 'https://example.test', repository: 'example/one' },
+                '18': { kind: 'github', deployment: 'https://example.test', repository: 'example/two' },
+            },
+        });
+        await mountShell(harness);
+
+        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        await pressRow('Extract the selection reducer', { ctrlKey: true });
+
+        expect(document.querySelector('[data-testid="triage-bulk-oneSessionForAllEntries"]')).toBeNull();
+        expect(document.querySelector('[data-testid="triage-bulk-oneSessionPerEntry"]')).not.toBeNull();
+        expect(document.querySelector('[data-testid="triage-bulk-attachAllToNewSession"]')).not.toBeNull();
+        expect(document.body.textContent).toContain(
+            'These entries do not share one compatible repository placement.',
+        );
     });
 
     it('offers only the configured actions the selected subjects are offered', async () => {
@@ -684,6 +781,29 @@ describe('selecting several PRs & Issues rows', () => {
 
         const offered = offeredBulkActionLabels();
         expect(offered).toEqual(['Ask', 'Fix', 'Review']);
+    });
+
+    it('does not run a bulk action deleted from the authoritative catalog before the press', async () => {
+        const harness = createHarness();
+        const { shell } = await mountShell(harness);
+        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        expect(offeredBulkActionLabels()).toContain('Fix');
+        await chooseBulkAction(shell, 'Fix');
+
+        // Another device replaces the catalog after this mount rendered the
+        // seeded action. The press must re-read Account KV before any profile,
+        // prompt, project, Session or Composer work begins.
+        harness.replaceActions({ v: 1, actions: [] });
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'A session each' }));
+        });
+        await settle();
+
+        expect(harness.referenceReads).toEqual([]);
+        expect(harness.lifecycle).toEqual([]);
+        expect(harness.spawnInputs).toEqual([]);
+        expect(harness.composerTransactions).toEqual([]);
+        expect(offeredBulkActionLabels()).toEqual([]);
     });
 
     it('keeps the count and the clear control when nothing configured applies', async () => {
@@ -715,6 +835,29 @@ describe('selecting several PRs & Issues rows', () => {
         expect(document.body.textContent).toContain('None of your configured actions');
     });
 
+    it('makes Clear cancel live work without hiding the selection or its progress owner', async () => {
+        const harness = createHarness({ deferProjectsRead: true });
+        const { shell } = await mountShell(harness);
+        await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
+        await chooseBulkAction(shell, 'Fix');
+
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'A session each' }));
+        });
+        await settle();
+        expect(harness.projectsSignal).toBeDefined();
+        expect(harness.projectsSignal?.aborted).toBe(false);
+
+        await act(async () => {
+            await shell.press(await shell.getByRole('button', { name: 'Clear selection' }));
+        });
+        await settle();
+
+        expect(harness.projectsSignal?.aborted).toBe(true);
+        expect(selectedLabels()).toHaveLength(1);
+        expect(document.querySelector('[data-testid="triage-bulk-action-bar"]')).not.toBeNull();
+    });
+
     it('settles applicability before it spends a host read on the action\u2019s references', async () => {
         // The reachable ordering case: the rows were retained from a source
         // contribution the host no longer admits, so no selected entry resolves
@@ -732,7 +875,7 @@ describe('selecting several PRs & Issues rows', () => {
                     appliesTo: ['issue', 'pullRequest', 'errorIssue', 'other'],
                     profileId: 'profile-that-is-gone',
                     workspaceMode: 'reference_only',
-                    target: { kind: 'agent', promptInvocationId: null, delivery: 'compose' },
+                    target: { kind: 'agent', promptInvocationId: 'prompt-1', delivery: 'send' },
                 }],
             },
         });
@@ -892,12 +1035,11 @@ describe('selecting several PRs & Issues rows', () => {
         expect(harness.lifecycle).toEqual([]);
     });
 
-    it('refuses a direct compose destination before a Session starts', async () => {
-        // A compose action is authoring: its prompt and attachments must be in
-        // the canonical New Session draft before spawn. The host currently
-        // owns one such draft, not one draft per bulk unit, so this destination
-        // must fail closed instead of spawning an empty Session and patching
-        // its composer after the runtime may already have started.
+    it('honours a direct bulk destination even when the action defaults to compose', async () => {
+        // The destination is an explicit reader choice. It overrides the
+        // single-entry compose default and reaches the canonical structured
+        // Session-input path; the default must not make two of three shipped
+        // bulk destinations dead controls.
         const harness = createHarness({
             actions: {
                 v: 1,
@@ -925,19 +1067,24 @@ describe('selecting several PRs & Issues rows', () => {
         });
         await settle();
 
-        expect(harness.lifecycle).toEqual([]);
-        expect(harness.spawnInputs).toEqual([]);
+        expect(harness.lifecycle.filter((step) => step === 'session.spawn_new')).toHaveLength(1);
+        expect(harness.lifecycle.filter((step) => step === 'session.message.send')).toHaveLength(1);
+        expect(harness.lifecycle.at(-1)).toBe('session.open');
+        expect(harness.spawnInputs).toHaveLength(1);
+        expect(harness.sentInputs).toMatchObject([
+            {
+                message: 'Investigate the selected entries.',
+                attachments: [
+                    { value: { value: { entryRef: { entryId: '17' } } } },
+                    { value: { value: { entryRef: { entryId: '18' } } } },
+                ],
+            },
+        ]);
         expect(harness.composerTransactions).toEqual([]);
-        expect(harness.wasRetired).toBe(false);
-        expect(document.body.textContent).toContain(
-            'Use Attach to New Session so its prompt and entries are ready before anything starts.',
-        );
-        await expect(shell.getByRole('status', {
-            name: 'This action needs review before sending. Use Attach to New Session so its prompt and entries are ready before anything starts.',
-        })).resolves.toBeDefined();
+        expect(harness.wasRetired).toBe(true);
     });
 
-    it('refuses a direct formal-review destination as an announced status before any review or Session starts', async () => {
+    it('omits incompatible formal-review bulk destinations with an announced reason', async () => {
         // A formal review has one selected-PR scope and one prepared workspace.
         // A multi-entry bulk destination cannot truthfully choose either fact,
         // so V1 reports the refusal and leaves Attach to New Session available
@@ -952,7 +1099,11 @@ describe('selecting several PRs & Issues rows', () => {
                     appliesTo: ['pullRequest'],
                     profileId: null,
                     workspaceMode: 'pull_request',
-                    target: { kind: 'reviewStart', promptInvocationId: null },
+                    target: {
+                        kind: 'reviewStart',
+                        promptInvocationId: null,
+                        seededFallbackInstruction: 'Review this change.',
+                    },
                 }],
             },
         });
@@ -960,10 +1111,10 @@ describe('selecting several PRs & Issues rows', () => {
 
         await pressRow('Replace the duplicated normalizer', { ctrlKey: true });
         await pressRow('Extract the selection reducer', { ctrlKey: true });
-        await act(async () => {
-            await shell.press(await shell.getByRole('button', { name: 'One session for all' }));
-        });
-        await settle();
+
+        await expect(shell.getByRole('button', { name: 'One session for all' })).rejects.toThrow();
+        await expect(shell.getByRole('button', { name: 'A session each' })).rejects.toThrow();
+        await expect(shell.getByRole('button', { name: 'Attach to New Session' })).rejects.toThrow();
 
         expect(harness.referenceReads).toEqual([]);
         expect(harness.lifecycle).toEqual([]);
@@ -977,13 +1128,13 @@ describe('selecting several PRs & Issues rows', () => {
         })).resolves.toBeDefined();
     });
 
-    it('admits every per-entry structured input before its Session can run', async () => {
+    it('delivers every per-entry structured input through the canonical start owner', async () => {
         // The per-entry destination has no honest final destination to open:
         // guessing a first or last Session both retires the batch's owner and
         // drops the other units. Each unit therefore starts independently,
-        // with its prompt and attachment atomically admitted on spawn. A
-        // follow-up send here would recreate the race where the runtime starts
-        // empty before Triage context arrives.
+        // with its prompt and attachment admitted by the canonical start owner
+        // after that owner's durable link. Bulk does not invent a second send
+        // path and does not pick one unit as a navigation winner.
         const harness = createHarness({
             actions: {
                 v: 1,
@@ -1011,28 +1162,19 @@ describe('selecting several PRs & Issues rows', () => {
         });
         await settle();
 
-        expect(harness.lifecycle).toEqual([
-            'session.spawn_new',
-            'link',
-            'session.spawn_new',
-            'link',
-        ]);
+        expect(harness.lifecycle.filter((step) => step === 'session.spawn_new')).toHaveLength(2);
+        expect(harness.lifecycle.filter((step) => step === 'session.message.send')).toHaveLength(2);
         expect(harness.spawnInputs).toHaveLength(2);
-        expect(harness.spawnInputs).toMatchObject([
+        expect(harness.sentInputs).toMatchObject([
             {
-                initialInput: {
-                    text: 'Investigate the selected entries.',
-                    attachments: [{ value: { value: { entryRef: expect.objectContaining({ entryId: '17' }) } } }],
-                },
+                message: 'Investigate the selected entries.',
+                attachments: [{ value: { value: { entryRef: expect.objectContaining({ entryId: '17' }) } } }],
             },
             {
-                initialInput: {
-                    text: 'Investigate the selected entries.',
-                    attachments: [{ value: { value: { entryRef: expect.objectContaining({ entryId: '18' }) } } }],
-                },
+                message: 'Investigate the selected entries.',
+                attachments: [{ value: { value: { entryRef: expect.objectContaining({ entryId: '18' }) } } }],
             },
         ]);
-        expect(harness.sentInputs).toEqual([]);
         expect(harness.wasRetired).toBe(false);
         expect(document.body.textContent).toContain('2 started, 0 unconfirmed, 0 not started, 0 could not be used');
     });

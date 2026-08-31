@@ -2,6 +2,7 @@ import {
   TriageGetResultV1Schema,
   TriageScanResultV1Schema,
   type TriageConfiguredSourceInstanceV1,
+  type TriageEntryLocatorV1,
   type TriageGetResultV1,
   type TriageScanInputV1,
   type TriageSourceEntryLocalRefV1,
@@ -28,6 +29,8 @@ const OTHER_ACCOUNT = Object.freeze({ service: SERVICE, accountId: 'account-2' }
 const VIEWER = { id: 41, username: 'example-user' };
 /** `gitlab:base64url('https://gitlab.com'):3` — the fixture's project. */
 const PROJECT_SCOPE = `gitlab:${Buffer.from('https://gitlab.com', 'utf8').toString('base64url')}:3`;
+const REPOSITORY_KEY = 'example-group/example-subgroup/example-project';
+const ENCODED_REPOSITORY_KEY = encodeURIComponent(REPOSITORY_KEY);
 
 function configuredInstance(overrides: Partial<TriageConfiguredSourceInstanceV1> = {}) {
   return {
@@ -50,7 +53,19 @@ type RouteResponse = Readonly<{ status?: number; body?: unknown; headers?: Reado
  * lane builder, frontier, identity builder and result projection below it runs
  * for real.
  */
-function harness(routes: Readonly<Record<string, RouteResponse>>) {
+const SELF_MANAGED_BASE = 'https://gitlab.example.test/Corp/GitLab';
+const PUBLISHED_BASES = [
+  'https://gitlab.com',
+  SELF_MANAGED_BASE,
+] as const;
+
+function harness(
+  routes: Readonly<Record<string, RouteResponse>>,
+  options: Readonly<{
+    publishedBases?: readonly string[] | (() => readonly string[]);
+    onMaterialize?: () => void;
+  }> = {},
+) {
   const requested: string[] = [];
   const fetcher = vi.fn(async (url: string): Promise<GitlabHttpResponse> => {
     requested.push(url);
@@ -75,11 +90,25 @@ function harness(routes: Readonly<Record<string, RouteResponse>>) {
     purpose: string;
     account: Readonly<{ service: Readonly<{ pluginId: string; localId: string }>; accountId: string }>;
     materialization: Readonly<{ kind: string; origin?: string; headerNames?: readonly string[] }>;
-  }>) => ({
-    kind: 'httpHeaders' as const,
-    headers: { Authorization: 'Bearer test-only-not-a-real-token' },
+  }>) => {
+    options.onMaterialize?.();
+    return {
+      kind: 'httpHeaders' as const,
+      headers: { Authorization: 'Bearer test-only-not-a-real-token' },
+    };
+  });
+  const listAccounts = vi.fn(async () => ({
+    status: 'complete' as const,
+    accounts: [ACCOUNT, OTHER_ACCOUNT].map((account) => ({
+      account,
+      displayName: `@${account.accountId}`,
+      state: 'connected' as const,
+      connectedAccountOrigins: ['https://gitlab.com', 'https://gitlab.example.test'],
+      connectedAccountBases: typeof options.publishedBases === 'function'
+        ? options.publishedBases()
+        : options.publishedBases ?? PUBLISHED_BASES,
+    })),
   }));
-  const listAccounts = vi.fn(async () => ({ status: 'complete' as const, accounts: [] }));
   return {
     fetcher,
     requested,
@@ -340,6 +369,58 @@ describe('GitLab scan', () => {
     ))).toBe(true);
   });
 
+  it('refuses a configured path the credential-bearing account does not publish', async () => {
+    const seam = harness({}, {
+      publishedBases: ['https://gitlab.example.test/Other/GitLab'],
+    });
+    const result = await scanGitlabTriageSource({
+      scan: {
+        v: 1,
+        instance: configuredInstance({ localInstanceKey: SELF_MANAGED_BASE }),
+        page: { kind: 'initial', limit: 32 },
+      },
+      connectedAccounts: seam.connectedAccounts,
+      fetcher: seam.fetcher,
+      signal: new AbortController().signal,
+      nowMs: NOW_MS,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'failed',
+      failure: { class: 'unsupportedContract', code: 'configured-base-stale' },
+    });
+    expect(seam.materializeListedAccount).not.toHaveBeenCalled();
+    expect(seam.fetcher).not.toHaveBeenCalled();
+  });
+
+  it('reconfirms the exact configured path after credential materialization', async () => {
+    let publishedBases: readonly string[] = [SELF_MANAGED_BASE];
+    const seam = harness({}, {
+      publishedBases: () => publishedBases,
+      onMaterialize: () => {
+        publishedBases = ['https://gitlab.example.test/Other/GitLab'];
+      },
+    });
+    const result = await scanGitlabTriageSource({
+      scan: {
+        v: 1,
+        instance: configuredInstance({ localInstanceKey: SELF_MANAGED_BASE }),
+        page: { kind: 'initial', limit: 32 },
+      },
+      connectedAccounts: seam.connectedAccounts,
+      fetcher: seam.fetcher,
+      signal: new AbortController().signal,
+      nowMs: NOW_MS,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'failed',
+      failure: { class: 'unsupportedContract', code: 'configured-base-stale' },
+    });
+    expect(seam.materializeListedAccount).toHaveBeenCalledTimes(1);
+    expect(seam.fetcher).not.toHaveBeenCalled();
+  });
+
   it('walks GitLab merge-request and issue lanes to exhaustion across continuation pages', async () => {
     const seam = harness({
       '/api/v4/user': { body: VIEWER },
@@ -474,6 +555,48 @@ describe('GitLab scan', () => {
     expect(resumed.requested.some((url) => !url.endsWith('/api/v4/user'))).toBe(true);
   });
 
+  it('refuses a continuation replayed through another configured source instance', async () => {
+    const routes = {
+      '/api/v4/user': { body: VIEWER },
+      '/api/v4/merge_requests': { body: mergeRequestList },
+      '/api/v4/issues': { body: issueList },
+    } as const;
+    const first = harness(routes);
+    const firstResult = await scanGitlabTriageSource({
+      scan: { v: 1, instance: configuredInstance(), page: { kind: 'initial', limit: 2 } },
+      connectedAccounts: first.connectedAccounts,
+      fetcher: first.fetcher,
+      signal: new AbortController().signal,
+      nowMs: NOW_MS,
+    });
+    if (firstResult.kind !== 'page') throw new Error('expected a continuation page');
+
+    const replay = harness(routes);
+    const result = await scanGitlabTriageSource({
+      scan: {
+        v: 1,
+        instance: configuredInstance({
+          instance: {
+            source: { pluginId: 'happier.scm.forge.gitlab', localId: 'gitlab-forge' },
+            sourceInstanceId: '50ee54a4-b4a9-40a7-9490-b95afdd6981d',
+          },
+        }),
+        page: { kind: 'continuation', continuation: firstResult.continuation },
+      },
+      connectedAccounts: replay.connectedAccounts,
+      fetcher: replay.fetcher,
+      signal: new AbortController().signal,
+      nowMs: NOW_MS,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'failed',
+      failure: { class: 'unsupportedContract', code: 'unknown-continuation' },
+    });
+    expect(replay.fetcher).not.toHaveBeenCalled();
+    expect(replay.materializeListedAccount).not.toHaveBeenCalled();
+  });
+
   it('keeps observations plus omitted rows inside the caller’s one-page limit', async () => {
     const malformed = [{ iid: 7, project_id: 3 }, ...mergeRequestList, { nope: true }];
     const seam = harness({
@@ -498,6 +621,38 @@ describe('GitLab scan', () => {
     expect(result.observations.length + omitted).toBeLessThanOrEqual(4);
     expect(omitted).toBeGreaterThan(0);
   });
+
+  it('refuses provider overdelivery before publishing an over-limit atomic envelope', async () => {
+    const seam = harness({
+      '/api/v4/user': { body: VIEWER },
+      '/api/v4/merge_requests': {
+        body: Array.from({ length: 5 }, (_unused, index) => ({
+          ...mergeRequestList[0],
+          id: index + 1,
+          iid: index + 1,
+          references: {
+            short: `!${index + 1}`,
+            relative: `!${index + 1}`,
+            full: `${REPOSITORY_KEY}!${index + 1}`,
+          },
+        })),
+      },
+    });
+
+    const result = await scanGitlabTriageSource({
+      scan: { v: 1, instance: configuredInstance(), page: { kind: 'initial', limit: 4 } },
+      connectedAccounts: seam.connectedAccounts,
+      fetcher: seam.fetcher,
+      signal: new AbortController().signal,
+      nowMs: NOW_MS,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'failed',
+      failure: { class: 'unsupportedContract', code: 'provider-overdelivery' },
+    });
+    expect(seam.requested.some((url) => url.includes('/api/v4/issues'))).toBe(false);
+  });
 });
 
 describe('GitLab get', () => {
@@ -506,6 +661,7 @@ describe('GitLab get', () => {
   async function get(routes: Parameters<typeof harness>[0], overrides: Readonly<{
     instance?: TriageConfiguredSourceInstanceV1;
     localRef?: TriageSourceEntryLocalRefV1;
+    lastKnownLocator?: TriageEntryLocatorV1 | null;
   }> = {}) {
     const seam = harness(routes);
     const result = await getGitlabTriageEntry({
@@ -513,6 +669,9 @@ describe('GitLab get', () => {
         v: 1,
         instance: overrides.instance ?? configuredInstance(),
         localRef: overrides.localRef ?? localRef,
+        ...(overrides.lastKnownLocator === null ? {} : {
+          lastKnownLocator: overrides.lastKnownLocator ?? { v: 1, routingToken: REPOSITORY_KEY },
+        }),
       },
       connectedAccounts: seam.connectedAccounts,
       fetcher: seam.fetcher,
@@ -524,7 +683,9 @@ describe('GitLab get', () => {
 
   it('returns the addressed entry with involvement derived from the item itself', async () => {
     const { result } = await get({
-      '/api/v4/projects/3/merge_requests/7': { body: mergeRequestList[0] },
+      [`/api/v4/projects/${ENCODED_REPOSITORY_KEY}/merge_requests/7`]: {
+        body: mergeRequestList[0],
+      },
       '/api/v4/user': { body: VIEWER },
     });
 
@@ -583,7 +744,7 @@ describe('GitLab get', () => {
 
   it('treats a differently identified answer as invalid rather than as a redirect', async () => {
     const { result } = await get({
-      '/api/v4/projects/3/merge_requests/7': {
+      [`/api/v4/projects/${ENCODED_REPOSITORY_KEY}/merge_requests/7`]: {
         body: { ...mergeRequestList[0], iid: 9 },
       },
       '/api/v4/user': { body: VIEWER },
@@ -597,7 +758,7 @@ describe('GitLab get', () => {
 
   it('dispatches on kind before a route, so an issue never reads a merge-request path', async () => {
     const { result, seam } = await get({
-      '/api/v4/projects/3/issues/7': { body: issueList[0] },
+      [`/api/v4/projects/${ENCODED_REPOSITORY_KEY}/issues/7`]: { body: issueList[0] },
       '/api/v4/user': { body: VIEWER },
     }, {
       localRef: { kindId: 'issue', collisionScope: PROJECT_SCOPE, entryId: '7' },
@@ -609,6 +770,36 @@ describe('GitLab get', () => {
     // Issues carry no merge-request-only content, whatever the two kinds share.
     expect(JSON.stringify(result.snapshot)).not.toContain('detailed_merge_status');
     expect(result.snapshot.facts.some((fact) => fact.id === 'gitlab/merge-status')).toBe(false);
+  });
+
+  it('requires the newest locator and never reconstructs a route from collision scope', async () => {
+    const { result, seam } = await get({}, { lastKnownLocator: null });
+
+    expect(result).toMatchObject({
+      kind: 'unresolved',
+      failure: { class: 'unsupportedContract', code: 'locator-routing-token-invalid' },
+    });
+    expect(seam.fetcher).not.toHaveBeenCalled();
+  });
+
+  it('routes from the locator but refuses a fresh row whose repository key moved', async () => {
+    const renamed = {
+      ...mergeRequestList[0],
+      web_url: 'https://gitlab.com/renamed/group/project/-/merge_requests/7',
+      references: { short: '!7', relative: '!7', full: 'renamed/group/project!7' },
+    };
+    const { result, seam } = await get({
+      [`/api/v4/projects/${ENCODED_REPOSITORY_KEY}/merge_requests/7`]: { body: renamed },
+    });
+
+    expect(result).toMatchObject({
+      kind: 'unresolved',
+      failure: { class: 'unsupportedContract', code: 'locator-mismatch' },
+    });
+    expect(seam.requested).toContain(
+      `https://gitlab.com/api/v4/projects/${ENCODED_REPOSITORY_KEY}/merge_requests/7`,
+    );
+    expect(seam.requested.some((url) => url.includes('/projects/3/'))).toBe(false);
   });
 
   it('refuses a kind this source never declared', async () => {

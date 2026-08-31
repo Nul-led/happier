@@ -74,6 +74,24 @@ describe('the source settings discovery model', () => {
     });
   });
 
+  it('frames row identity so valid tuple components cannot collide', () => {
+    const first = draft('part › tail');
+    const second = {
+      ...draft('tail'),
+      binding: {
+        ...BINDING,
+        account: { ...BINDING.account, accountId: 'account-1 › part' },
+      },
+    };
+    const state = readTriageSourceDiscovery({
+      status: 'success',
+      result: { kind: 'complete', candidates: [first, second], failures: [] },
+    });
+
+    if (state.kind !== 'listed') throw new Error('expected a listed discovery state');
+    expect(state.candidates[0]?.key).not.toBe(state.candidates[1]?.key);
+  });
+
   it('keeps an incomplete listing distinguishable from a complete one', () => {
     const state = readTriageSourceDiscovery({
       status: 'success',
@@ -763,19 +781,12 @@ describe('the source failure sentence', () => {
     ));
   });
 
-  it('carries every declared sentence in every locale the sources declare', () => {
-    // A key with no bundle entry renders its English fallback on that locale and
-    // nothing fails, which is exactly how six hard-coded sentences survived.
-    // Every key this page can resolve is derived from the describers themselves,
-    // so a sentence added to one and forgotten in the bundle fails here.
-    const keys = [
-      ...CLASSES.map((failureClass) => describeTriageSourceFailure(
-        { class: failureClass, code: 'x' },
-        (key) => key,
-      )),
-      ...Object.values(TRIAGE_SOURCE_REMOVAL_CONFIRMATION_TRANSLATION_KEYS_V1),
-    ].sort();
+  it('carries one complete translated catalogue with matching placeholders in every source locale', () => {
+    const keys = Object.keys(TRIAGE_SOURCE_SETTINGS_ENGLISH_V1).sort();
     const locales = Object.keys(TRIAGE_SOURCE_SETTINGS_TRANSLATIONS_V1);
+    const placeholders = (message: string) => [...message.matchAll(/\{([A-Za-z][A-Za-z0-9]*)\}/gu)]
+      .map((match) => match[1])
+      .sort();
 
     expect(locales).toEqual([
       'en', 'ru', 'pl', 'es', 'fr', 'it', 'pt', 'ca', 'zh-Hans', 'zh-Hant', 'ja', 'de',
@@ -784,8 +795,16 @@ describe('the source failure sentence', () => {
       const bundle = TRIAGE_SOURCE_SETTINGS_TRANSLATIONS_V1[
         locale as keyof typeof TRIAGE_SOURCE_SETTINGS_TRANSLATIONS_V1
       ];
-      expect(Object.keys(bundle)).toEqual(expect.arrayContaining(keys));
+      expect(Object.keys(bundle).sort()).toEqual(keys);
       expect(Object.values(bundle).every((sentence) => sentence.trim().length > 0)).toBe(true);
+      for (const key of keys) {
+        const source = TRIAGE_SOURCE_SETTINGS_ENGLISH_V1[
+          key as keyof typeof TRIAGE_SOURCE_SETTINGS_ENGLISH_V1
+        ];
+        const translated = bundle[key as keyof typeof bundle];
+        expect(placeholders(translated)).toEqual(placeholders(source));
+        if (locale !== 'en') expect(translated).not.toBe(source);
+      }
     }
   });
 

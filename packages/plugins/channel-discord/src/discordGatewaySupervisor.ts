@@ -481,7 +481,7 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
             admissionOptions,
           );
         },
-        reportReadiness: async () => {
+        reportConnectionStatus: async (status) => {
           // The worker never writes status. It can only queue a fact through
           // the current supervisor entry; the core transport-fact Action is
           // still the single persistence and projection owner.
@@ -490,9 +490,11 @@ export function createDiscordGatewaySupervisor(options: DiscordGatewaySupervisor
             || entry.controller.signal.aborted
             || context.signal.aborted
           ) return;
-          blockedUntilByFingerprint.delete(entry.fingerprint);
-          addFact(snapshot, { kind: 'providerReadiness', status: 'ready' });
-          await projectDiscordAutomationSourceConnectionStatus(snapshot, 'ready', context);
+          if (status === 'ready') {
+            blockedUntilByFingerprint.delete(entry.fingerprint);
+            addFact(snapshot, { kind: 'providerReadiness', status: 'ready' });
+          }
+          await projectDiscordAutomationSourceConnectionStatus(snapshot, status, context);
         },
         signal: context.signal,
         identifyConcurrency,

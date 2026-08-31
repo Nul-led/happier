@@ -32,9 +32,10 @@ import {
 } from '../testkit/gitlabTriage.test-support.js';
 import { closeGitlabIssue, reopenGitlabIssue } from './operations.js';
 
-const ISSUE_URL = 'https://gitlab.com/api/v4/projects/3/issues/42';
+const ROUTING_TOKEN = 'group/project';
+const ISSUE_URL = `https://gitlab.com/api/v4/projects/${encodeURIComponent(ROUTING_TOKEN)}/issues/42`;
 /** The merge request that shares this project and this IID. It is never touched. */
-const MERGE_REQUEST_URL = 'https://gitlab.com/api/v4/projects/3/merge_requests/42';
+const MERGE_REQUEST_URL = `https://gitlab.com/api/v4/projects/${encodeURIComponent(ROUTING_TOKEN)}/merge_requests/42`;
 
 const OBSERVED_REVISION = '2026-08-12T09:00:00.000Z';
 const LATER_REVISION = '2026-08-12T11:30:00.000Z';
@@ -93,6 +94,7 @@ function issueInput(overrides: Readonly<Record<string, unknown>> = {}): unknown 
     v: 1,
     instance: gitlabTestConfiguredInstance(),
     localRef: LOCAL_REF,
+    routingToken: ROUTING_TOKEN,
     observedRevision: OBSERVED_REVISION,
     ...overrides,
   };
@@ -259,7 +261,12 @@ describe('gitlab/issue/close', () => {
     const transport = scriptedTransport({ [`GET ${ISSUE_URL}`]: [{ status: 200, body: issueBody() }] });
 
     const result = await closeGitlabIssue(
-      { v: 1, instance: gitlabTestConfiguredInstance(), localRef: LOCAL_REF },
+      {
+        v: 1,
+        instance: gitlabTestConfiguredInstance(),
+        localRef: LOCAL_REF,
+        routingToken: ROUTING_TOKEN,
+      },
       transport.context,
     );
 

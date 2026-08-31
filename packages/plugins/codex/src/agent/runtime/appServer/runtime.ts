@@ -325,7 +325,6 @@ export type CodexAppServerRuntimeHost = Readonly<{
   >;
   setTitle?(title: string): Promise<void>;
   refreshRuntimeAuth?: SessionAuthService['services']['refreshRuntimeAuth'];
-  reportCapacityFailure?(classification: Readonly<Record<string, JsonValue>>): Promise<void>;
   publishGeneratedMedia?(candidate: CodexGeneratedMediaCandidate): Promise<void>;
   dispose?(): Promise<void>;
 }>;
@@ -342,6 +341,14 @@ const CODEX_APP_SERVER_PROVIDER_TURN_ID_WAIT_TIMEOUT_MS = 1_000;
 const CODEX_APP_SERVER_PROVIDER_TURN_ID_WAIT_POLL_MS = 20;
 const CODEX_APP_SERVER_CANCEL_STARTUP_RETRY_WINDOW_MS = 1_000;
 const CODEX_APP_SERVER_CANCEL_STARTUP_RETRY_INTERVAL_MS = 50;
+const CODEX_APP_SERVER_STATE_RUNTIME_RETRY_INITIAL_DELAY_MS = 250;
+const CODEX_APP_SERVER_STATE_RUNTIME_RETRY_MAX_DELAY_MS = 10_000;
+
+function isCodexAppServerStateRuntimeInitializationFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message.includes('Codex app-server exited before completing the request')
+    && error.message.includes('failed to initialize sqlite state runtime');
+}
 
 function readRecord(value: unknown): Readonly<Record<string, unknown>> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -1077,7 +1084,11 @@ export function createCodexAppServerRuntime(
 
   const readLiveProviderAccount = async (): Promise<CodexActiveProviderAccount | null> => {
     try {
-      return readCodexActiveProviderAccount(await (await ensureClient()).request('account/read'));
+      return readCodexActiveProviderAccount(await (await ensureClient()).request(
+        'account/read',
+        undefined,
+        { timeoutMs: null },
+      ));
     } catch (error) {
       params.host.logger.debug('Codex app-server live account read failed for provider-account usage snapshot (ignored)', {
         errorName: error instanceof Error ? error.name : typeof error,
@@ -1720,6 +1731,9 @@ export function createCodexAppServerRuntime(
       ?? readTurnId(notificationParams);
     if (!agentTurnId) return activeTurn;
     if (terminatedProviderTurnIds.has(agentTurnId)) return null;
+    // Older Codex versions can return a thread id before materializing resumable state.
+    // Provider turn activity is the first durable boundary for a freshly started thread.
+    publishThreadIdentity(notificationThreadId);
 
     if (activeTurn) {
       if (!activeTurn.agentTurnId) {
@@ -1840,14 +1854,26 @@ export function createCodexAppServerRuntime(
     }, settleMs);
   };
 
-  const reportProviderCapacityFailureForRecovery = (error: Error): void => {
+  const reportProviderRuntimeAuthFailureForRecovery = async (
+    error: Error,
+    quotaEvidence: Promise<void>,
+  ): Promise<void> => {
     const classification = readJsonRecord(
       (error as { runtimeAuthClassification?: unknown }).runtimeAuthClassification,
     );
-    if (!classification || trimStringValue(classification.kind) !== 'capacity') return;
-    if (!params.host.reportCapacityFailure) return;
-    void params.host.reportCapacityFailure(classification).catch((reportError: unknown) => {
-      params.host.logger.debug('Codex app-server capacity recovery report failed', {
+    const kind = trimStringValue(classification?.kind);
+    if (!classification || (kind !== 'capacity' && kind !== 'usage_limit')) return;
+    if (!params.host.refreshRuntimeAuth) return;
+    await quotaEvidence;
+    await params.host.refreshRuntimeAuth({
+      serviceId: 'openai-codex',
+      targetId: params.happierSessionId,
+      classification,
+      reason: kind === 'usage_limit'
+        ? 'provider_session_usage_limit_failure'
+        : 'provider_session_capacity_failure',
+    }).catch((reportError: unknown) => {
+      params.host.logger.debug('Codex app-server runtime-auth recovery report failed', {
         errorName: reportError instanceof Error ? reportError.name : typeof reportError,
       });
     });
@@ -1875,12 +1901,11 @@ export function createCodexAppServerRuntime(
     clearPendingProviderPrompt(activeTurn.providerPrompt);
     rejectPendingProviderAcceptancesForHostTurn(activeTurn.sessionTurnId, error);
     setActive(false);
-    void publishImmediateProviderAccountUsageSnapshotForQuotaFailure(error);
+    const quotaEvidence = publishImmediateProviderAccountUsageSnapshotForQuotaFailure(error);
     if (options.deferBackendError !== true) {
       deferredTemporaryRecoverableFailure = null;
       providerPromptForDeferredTemporaryRecoverableRetry = null;
       terminalPendingTurnFailure = resolveTerminalPendingTurnFailure(error);
-      reportProviderCapacityFailureForRecovery(terminalPendingTurnFailure);
       const agentTurnId = activeTurn.agentTurnId;
       publishRuntimeEvent({
         kind: 'turn-failed',
@@ -1895,6 +1920,10 @@ export function createCodexAppServerRuntime(
           message: CODEX_APP_SERVER_TURN_FAILURE_PREVIEW,
         },
       });
+      void reportProviderRuntimeAuthFailureForRecovery(
+        terminalPendingTurnFailure,
+        quotaEvidence,
+      );
     } else {
       deferredTemporaryRecoverableFailure = error;
       providerPromptForDeferredTemporaryRecoverableRetry =
@@ -2129,7 +2158,7 @@ export function createCodexAppServerRuntime(
     }
   };
 
-  const openSession = async (options?: Readonly<Record<string, unknown>>): Promise<string> => {
+  const openSessionOnce = async (options?: Readonly<Record<string, unknown>>): Promise<string> => {
     const authTokens = await readHostOwnedAuthTokens();
     activeChatGptAccessTokenFingerprint = computeCodexAccessTokenFingerprint(
       authTokens.accessToken ?? authTokens.idToken,
@@ -2276,8 +2305,31 @@ export function createCodexAppServerRuntime(
     startedEmptyThreadPolicyKey = requestedThreadId ? null : policyKey;
     currentModelId = readModelId(response) ?? currentModelId;
     currentServiceTier = readServiceTier(response) ?? (hasServiceTierOverride ? currentServiceTier : null);
-    publishThreadIdentity(nextThreadId);
+    if (requestedThreadId) {
+      publishThreadIdentity(nextThreadId);
+    }
     return nextThreadId;
+  };
+
+  const openSession = async (options?: Readonly<Record<string, unknown>>): Promise<string> => {
+    let retryDelayMs = CODEX_APP_SERVER_STATE_RUNTIME_RETRY_INITIAL_DELAY_MS;
+    while (true) {
+      try {
+        return await openSessionOnce(options);
+      } catch (error) {
+        if (disposed || !isCodexAppServerStateRuntimeInitializationFailure(error)) {
+          throw error;
+        }
+        params.host.logger.debug('Retrying Codex app-server session startup after shared state runtime initialization failed', {
+          retryDelayMs,
+        });
+        await delay(retryDelayMs);
+        retryDelayMs = Math.min(
+          retryDelayMs * 2,
+          CODEX_APP_SERVER_STATE_RUNTIME_RETRY_MAX_DELAY_MS,
+        );
+      }
+    }
   };
 
   const ensureThreadId = async (requestedSessionId?: string | null): Promise<string> => {
@@ -2289,6 +2341,7 @@ export function createCodexAppServerRuntime(
   const realtimeConversation = createCodexAppServerRealtimeConversation({
     getClient: ensureClient,
     getThreadId: () => threadId,
+    onThreadAccepted: publishThreadIdentity,
     isDisposed: () => disposed,
     isRuntimeExited: () => unexpectedExitPublished,
     settlementTimeoutMs: readCodexAppServerRealtimeStartTimeoutMs(readRuntimeProcessEnv()),
@@ -2377,6 +2430,7 @@ export function createCodexAppServerRuntime(
         });
       });
       const agentTurnId = readTurnId(response);
+      publishThreadIdentity(activeTurn.threadId);
       activeTurn.providerStartAcknowledged = true;
       if (activeTurn.interruptWhenProviderTurnIdArrives) {
         if (agentTurnId) {
@@ -3018,7 +3072,7 @@ export function createCodexAppServerRuntime(
     realtimeConversation,
     identity: {
       read() {
-        return { providerSessionId: threadId };
+        return { providerSessionId: publishedThreadId };
       },
     },
     events: {

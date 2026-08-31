@@ -91,6 +91,25 @@ describe('the GitLab surface catalog', () => {
     expect(unkeyedLiteralProps()).toEqual([]);
   });
 
+  it('localizes the live Overview read and recovery chrome', () => {
+    const overviewKeys = [
+      'plugins.gitlab.ui.overview.showingLaunchObservation',
+      'plugins.gitlab.ui.overview.showingLastRead',
+      'plugins.gitlab.ui.overview.description',
+      'plugins.gitlab.ui.overview.descriptionShortened',
+      'plugins.gitlab.ui.overview.reread',
+    ] as const;
+    for (const key of overviewKeys) {
+      expect(ENGLISH[key], `en/${key}`).toEqual(expect.any(String));
+      for (const locale of LOCALES.filter((candidate) => candidate !== 'en')) {
+        expect(messages(locale)[key], `${locale}/${key}`).toEqual(expect.any(String));
+        if (key !== 'plugins.gitlab.ui.overview.description') {
+          expect(messages(locale)[key], `${locale}/${key}`).not.toBe(ENGLISH[key]);
+        }
+      }
+    }
+  });
+
   it('translates every manifest confirmation instead of copying the English fallback', () => {
     const keys = confirmationKeys();
     expect(keys.length).toBeGreaterThan(0);

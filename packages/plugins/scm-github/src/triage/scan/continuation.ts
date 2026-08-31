@@ -148,7 +148,10 @@ export function decodeGithubScanContinuation(
       laneQuery: expected.buildLaneQuery(laneId),
       perPage: nativePageSize,
     });
-    if (validated === null) return null;
+    // One consumed page advances the frontier past page 1. A token that points
+    // at that page again (or any earlier page) cannot make progress and would
+    // otherwise replay rows until the provider ceiling fired.
+    if (validated === null || validated.page <= pagesConsumed) return null;
     lanes.push({
       frontier: { kind: 'next', nextUrl: validated.url },
       pagesConsumed,

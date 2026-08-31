@@ -300,6 +300,33 @@ function isUnattemptedPermissionWait(record: ConversationOutwardDeliveryRecord):
   return record.custody.state === 'ready' && record.custody.attemptCount === 0;
 }
 
+/**
+ * A forgotten custody identity may be created again only by the pending
+ * permission producer. Retention therefore needs the same complete current
+ * pending projection that mediation already reads during this wake before it
+ * can remove a terminal permission notification.
+ *
+ * A binding that is no longer current cannot recreate its former custody. A
+ * current binding whose mediation read was unavailable or incomplete remains
+ * fail-closed: absence from that partial view is not absence from the source.
+ */
+function canRetirePermissionWaitCustody(input: Readonly<{
+  record: ConversationOutwardDeliveryRecord;
+  currentBindingIds: ReadonlySet<string>;
+  mediationsByBindingId: ReadonlyMap<string, PermissionWaitMediationSnapshot>;
+}>): boolean {
+  if (input.record.obligation.source.kind !== 'permissionWait') return true;
+  const bindingId = input.record.obligation.bindingId;
+  if (bindingId === undefined) return false;
+  if (!input.currentBindingIds.has(bindingId)) return true;
+  const mediation = input.mediationsByBindingId.get(bindingId);
+  if (mediation === undefined || !matchesPermissionWaitMediationSource(input.record, mediation.source)) {
+    return false;
+  }
+  return !mediation.truncated
+    && !mediation.pendingRequestKeys.has(permissionWaitRequestIdentityKey(input.record.obligation.source));
+}
+
 async function readCurrentBindingIds(context: BackgroundServiceContext): Promise<readonly string[]> {
   const collection = requireChannelsAccountStorage(context).collection(CHANNEL_STATE_COLLECTION);
   const bindingIds: string[] = [];
@@ -525,6 +552,7 @@ export async function runConversationOutwardDeliveryCycle(
     });
   }
 
+  const currentBindingIds = new Set(bindingIds);
   for (const record of retainedPermissionWaits) {
     if (context.signal.aborted) break;
     const bindingId = record.obligation.bindingId;
@@ -648,20 +676,24 @@ export async function runConversationOutwardDeliveryCycle(
         input.retentionSweep?.earliestRetainedAt,
         scanned.earliestRetainedUpdatedAt,
       );
-      for (const record of scanned.records) {
-        if (context.signal.aborted) {
-          nextRetentionSweep = advanceRetentionSweep({ scanned, earliestRetainedAt, retentionAt });
-          return cycleResult();
-        }
-        const retired = await deliveryStore.retire({
-          custodyId: record.custodyId,
-          expectedRevision: record.revision,
+      if (context.signal.aborted) {
+        nextRetentionSweep = advanceRetentionSweep({ scanned, earliestRetainedAt, retentionAt });
+        return cycleResult();
+      }
+      const retirementRecords = scanned.records.filter((record) => canRetirePermissionWaitCustody({
+        record,
+        currentBindingIds,
+        mediationsByBindingId: permissionMediationsByBindingId,
+      }));
+      if (retirementRecords.length > 0) {
+        const retired = await deliveryStore.retireSelected({
+          records: retirementRecords.map((record) => ({
+            custodyId: record.custodyId,
+            expectedRevision: record.revision,
+          })),
         });
         if (retired.kind === 'unavailable' && retired.reason !== 'cancelled') {
-          logOutwardDeliverySupervisorWorkFailure(context, 'delivery-retention', {
-            connectionId: record.obligation.connectionId,
-            ...(record.obligation.bindingId === undefined ? {} : { bindingId: record.obligation.bindingId }),
-          });
+          logOutwardDeliverySupervisorWorkFailure(context, 'delivery-retention');
         }
         if (retired.kind !== 'retired') {
           // A row this pass selected but did not retire — lost CAS or refused

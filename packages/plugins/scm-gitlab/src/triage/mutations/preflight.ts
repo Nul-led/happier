@@ -2,9 +2,9 @@
  * The fresh currentness read every GitLab mutation performs before it writes.
  *
  * `sources/SCM.md` §2.8: cached corpus bytes never authorize a mutation. Every
- * exact SCM Action reauthorizes the selected configured account, reconstructs
- * routing only from the source-owned reference, and rereads the current provider
- * entity and revision before any effect.
+ * exact SCM Action reauthorizes the selected configured account, admits the
+ * source-minted repository locator, and rereads the current provider entity and
+ * revision before any effect.
  *
  * It is a currentness and permission preflight, **not** a claim that a
  * client-side read serializes the later write. Where GitLab exposes a native
@@ -33,6 +33,7 @@ import { buildGitlabItemUrl } from '../detail/routes.js';
 import type { GitlabDetailReadDependenciesV1 } from '../detail/reads.js';
 import type { GitlabDetailRouteInputV1 } from '../detail/routes.js';
 import { requestGitlabJson, type GitlabRequestResult } from '../http/gitlabClient.js';
+import { buildGitlabEntryIdentity } from '../identity.js';
 import { projectGitlabSourceFailure } from '../sourceFailure.js';
 import type { GitlabKindId } from '../types.js';
 
@@ -66,11 +67,10 @@ const ITEM_UNREADABLE_FAILURE: TriageSourceFailureV1 = Object.freeze({
 /** The minimum every re-observed row carries: the identity the write addressed. */
 type GitlabIdentifiedRow = Readonly<{ projectId: number; iid: string }>;
 
-export function gitlabMutationRowMatchesRouteV1(
-  row: GitlabIdentifiedRow,
-  route: Readonly<{ projectId: number; iid: string }>,
-): boolean {
-  return row.projectId === route.projectId && row.iid === route.iid;
+function readRecord(value: unknown): Readonly<Record<string, unknown>> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : null;
 }
 
 /**
@@ -97,12 +97,13 @@ export type GitlabMutationPreflightRefusal<TRow extends GitlabIdentifiedRow> =
 export type GitlabMutationPreflight<TRow extends GitlabIdentifiedRow> =
   | Readonly<{
     ok: true;
+    localRef: Readonly<{ kindId: string; entryId: string; collisionScope: string }>;
     route: GitlabDetailRouteInputV1;
     dependencies: GitlabDetailReadDependenciesV1;
     subject: GitlabMutationSubjectV1<TRow>;
     /** The current item, as this invocation just observed it. */
     row: TRow;
-    /** The raw body, for the one fact no projected row carries: the project path. */
+    /** The raw body, for mutation-specific provider facts such as diff revisions. */
     body: unknown;
   }>
   | Readonly<{ ok: false; refusal: GitlabMutationPreflightRefusal<TRow> }>;
@@ -114,6 +115,30 @@ function unavailable<TRow extends GitlabIdentifiedRow>(
     ok: false as const,
     refusal: Object.freeze({ kind: 'unavailable' as const, failure }),
   });
+}
+
+/**
+ * Proves a fresh provider body still describes the exact identity and locator
+ * admitted before the request. The collision scope is compared as identity
+ * evidence only; every request route continues to come from `repositoryKey`.
+ */
+function gitlabMutationResponseMatchesExpectation(
+  body: unknown,
+  route: GitlabDetailRouteInputV1,
+  localRef: Readonly<{ kindId: string; entryId: string; collisionScope: string }>,
+): boolean {
+  const rawRow = readRecord(body);
+  if (rawRow === null) return false;
+  const observed = buildGitlabEntryIdentity({
+    kindId: route.kindId,
+    origin: route.origin,
+    row: rawRow,
+  });
+  return observed.kind === 'built'
+    && observed.identity.kindId === localRef.kindId
+    && observed.identity.collisionScope === localRef.collisionScope
+    && observed.identity.entryId === localRef.entryId
+    && observed.locator.routingToken === route.repositoryKey;
 }
 
 /**
@@ -132,6 +157,7 @@ export async function preflightGitlabItemMutation<TRow extends GitlabIdentifiedR
   input: Readonly<{
     instance: Parameters<typeof admitGitlabItemInvocation>[0]['instance'];
     localRef: Readonly<{ kindId: string; entryId: string; collisionScope: string }>;
+    routingToken: string;
     subject: GitlabMutationSubjectV1<TRow>;
     expectedRevision?: string;
   }>,
@@ -140,6 +166,7 @@ export async function preflightGitlabItemMutation<TRow extends GitlabIdentifiedR
   const admitted = await admitGitlabItemInvocation({
     instance: input.instance,
     localRef: input.localRef,
+    routingToken: input.routingToken,
     // This Action transitions one kind. A reference of the other kind is refused
     // here rather than routed into the wrong endpoints — a GitLab issue and a
     // GitLab merge request can share a project and an IID, so the wrong route
@@ -163,7 +190,11 @@ export async function preflightGitlabItemMutation<TRow extends GitlabIdentifiedR
 
   const decoded = input.subject.decode(read.response.body);
   if (!decoded.ok) return unavailable(UNDECODABLE_ITEM_FAILURE);
-  if (!gitlabMutationRowMatchesRouteV1(decoded.row, admitted.route)) {
+  if (!gitlabMutationResponseMatchesExpectation(
+    read.response.body,
+    admitted.route,
+    input.localRef,
+  )) {
     return unavailable(IDENTITY_MISMATCH_FAILURE);
   }
 
@@ -189,6 +220,7 @@ export async function preflightGitlabItemMutation<TRow extends GitlabIdentifiedR
 
   return Object.freeze({
     ok: true as const,
+    localRef: input.localRef,
     route: admitted.route,
     dependencies: admitted.dependencies,
     subject: input.subject,
@@ -252,6 +284,7 @@ export function gitlabWriteAnswerLost(
  */
 export async function confirmGitlabItemMutation<TRow extends GitlabIdentifiedRow>(
   input: Readonly<{
+    localRef: Readonly<{ kindId: string; entryId: string; collisionScope: string }>;
     route: GitlabDetailRouteInputV1;
     dependencies: GitlabDetailReadDependenciesV1;
     subject: GitlabMutationSubjectV1<TRow>;
@@ -277,7 +310,7 @@ export async function confirmGitlabItemMutation<TRow extends GitlabIdentifiedRow
   if (!decoded.ok) {
     return Object.freeze({ ok: false as const, failure: UNDECODABLE_ITEM_FAILURE });
   }
-  if (!gitlabMutationRowMatchesRouteV1(decoded.row, input.route)) {
+  if (!gitlabMutationResponseMatchesExpectation(read.response.body, input.route, input.localRef)) {
     return Object.freeze({ ok: false as const, failure: IDENTITY_MISMATCH_FAILURE });
   }
   return Object.freeze({ ok: true as const, row: decoded.row });

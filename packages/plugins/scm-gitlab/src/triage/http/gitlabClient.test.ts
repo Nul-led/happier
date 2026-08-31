@@ -141,13 +141,18 @@ describe('buildGitlabApiUrl', () => {
 
   it('keeps exact get, detail and mutation routes under a configured base path', () => {
     const origin = originOf('https://forge.example/Corp/GitLab');
-    const route = { origin, projectId: 3, iid: '7', kindId: 'merge-request' as const };
+    const route = {
+      origin,
+      repositoryKey: 'group/subgroup/project',
+      iid: '7',
+      kindId: 'merge-request' as const,
+    };
     expect(buildGitlabItemUrl(route))
-      .toBe('https://forge.example/Corp/GitLab/api/v4/projects/3/merge_requests/7');
+      .toBe('https://forge.example/Corp/GitLab/api/v4/projects/group%2Fsubgroup%2Fproject/merge_requests/7');
     expect(buildGitlabNotesUrl(route, 20))
-      .toBe('https://forge.example/Corp/GitLab/api/v4/projects/3/merge_requests/7/notes?order_by=created_at&sort=desc&per_page=20');
+      .toBe('https://forge.example/Corp/GitLab/api/v4/projects/group%2Fsubgroup%2Fproject/merge_requests/7/notes?order_by=created_at&sort=desc&per_page=20');
     expect(buildGitlabMergeRequestMergeUrl(route))
-      .toBe('https://forge.example/Corp/GitLab/api/v4/projects/3/merge_requests/7/merge');
+      .toBe('https://forge.example/Corp/GitLab/api/v4/projects/group%2Fsubgroup%2Fproject/merge_requests/7/merge');
     expect(buildGitlabGraphqlUrl(origin))
       .toBe('https://forge.example/Corp/GitLab/api/graphql');
   });

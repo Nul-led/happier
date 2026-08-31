@@ -723,13 +723,17 @@ describe('Discord Gateway supervisor', () => {
     expect(second.worker.stop).toHaveBeenCalledTimes(1);
   });
 
-  it('projects an idle Gateway READY and a history gap through exact current socket sources', async () => {
+  it('projects Gateway backoff and recovery through exact current socket sources', async () => {
     const current = snapshot();
     const reports: unknown[] = [];
-    const workerFactory = vi.fn((input: Readonly<{ reportReadiness?: () => void | Promise<void> }>) => ({
+    const workerFactory = vi.fn((input: Readonly<{
+      reportConnectionStatus?: (status: 'ready' | 'reconnecting') => void | Promise<void>;
+    }>) => ({
       result: (async () => {
-        await input.reportReadiness?.();
-        return { kind: 'historyGap' as const, reason: 'applicationAdmissionLost' as const };
+        await input.reportConnectionStatus?.('ready');
+        await input.reportConnectionStatus?.('reconnecting');
+        await input.reportConnectionStatus?.('ready');
+        return { kind: 'stopped' as const };
       })(),
       stop: vi.fn(),
     }));
@@ -812,12 +816,14 @@ describe('Discord Gateway supervisor', () => {
     });
 
     await supervisor.reconcile(background);
-    await vi.waitFor(() => expect(reports).toHaveLength(4));
+    await vi.waitFor(() => expect(reports).toHaveLength(6));
     expect(reports).toEqual([
       expect.objectContaining({ kind: 'catalogReconciliation', scope: { kind: 'socket' }, observedRevision: '23' }),
       expect.objectContaining({ kind: 'source', triggerId: 'discord-current', state: 'observing', code: 'none' }),
       expect.objectContaining({ kind: 'catalogReconciliation', scope: { kind: 'socket' }, observedRevision: '23' }),
-      expect.objectContaining({ kind: 'source', triggerId: 'discord-current', state: 'attention', code: 'historyGap' }),
+      expect.objectContaining({ kind: 'source', triggerId: 'discord-current', state: 'backingOff', code: 'admissionUnavailable' }),
+      expect.objectContaining({ kind: 'catalogReconciliation', scope: { kind: 'socket' }, observedRevision: '23' }),
+      expect.objectContaining({ kind: 'source', triggerId: 'discord-current', state: 'observing', code: 'none' }),
     ]);
     await supervisor.dispose();
   });
@@ -939,7 +945,9 @@ describe('Discord Gateway supervisor', () => {
         return { result: Promise.resolve(gateway4014), stop: vi.fn() };
       }
       if (!portalRepairCompleted) throw new Error('The retry must follow the simulated remote Portal repair.');
-      (input as Readonly<{ reportReadiness?: () => void }>).reportReadiness?.();
+      (input as Readonly<{
+        reportConnectionStatus?: (status: 'ready' | 'reconnecting') => void;
+      }>).reportConnectionStatus?.('ready');
       return repairedWorker;
     });
     const supervisor = createDiscordGatewaySupervisor({

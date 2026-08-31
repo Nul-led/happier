@@ -54,6 +54,19 @@ export type AgentExternalSessionLinkData = Readonly<{
     readonly [key: string]: AgentExternalSessionLinkDataValue;
 }>;
 
+/**
+ * Opaque Agent-owned enrichment checkpoint persisted only by the host's
+ * canonical candidate index. It is never link identity or recipient output.
+ */
+export type AgentExternalSessionCandidateIndexState = AgentExternalSessionLinkData;
+
+export type AgentExternalSessionCandidateIndexLookup = (
+    candidate: Readonly<{
+        remoteSessionId: string;
+        linkData?: AgentExternalSessionLinkData;
+    }>,
+) => AgentExternalSessionCandidateIndexState | undefined;
+
 /** Source provenance admitted only for eligible user transcript rows. */
 export type AgentExternalSessionUserProjection =
     | 'source_fact'
@@ -191,6 +204,8 @@ export type AgentExternalSessionCandidate = Readonly<{
     createdAtMs?: number;
     archived?: boolean;
     linkData?: AgentExternalSessionLinkData;
+    /** Private resumable enrichment state; the host strips it before publication. */
+    candidateIndexState?: AgentExternalSessionCandidateIndexState;
 }>;
 
 /**
@@ -238,6 +253,8 @@ export type AgentExternalSessionsListCandidatesRequest = AgentExternalSessionsIn
     maxItems: number;
     searchTerm?: string;
     searchMode?: 'fast' | 'full';
+    /** Read-only lookup into the same host index receiving this result. */
+    readCandidateIndexState?: AgentExternalSessionCandidateIndexLookup;
 }>;
 export type AgentExternalSessionsCandidatePreparation = Readonly<{
     kind: 'building_candidate_index';

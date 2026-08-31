@@ -66,6 +66,10 @@ function projectVerificationAdmissionFailure(
   return { kind: 'unavailable', reason: 'account' };
 }
 
+function pullRequestRouteMoved(failure: Readonly<{ code: string }>): boolean {
+  return failure.code === 'route-not-found' || failure.code === 'route-body-mismatch';
+}
+
 function throwIfRuntimeAborted(runtime: BitbucketSourceRuntime): void {
   runtime.signal?.throwIfAborted();
 }
@@ -155,18 +159,21 @@ export async function prepareBitbucketReviewWorkspace(
       collisionScope: input.entryRef.collisionScope,
       entryId: input.entryRef.entryId,
     },
+    lastKnownLocator: input.lastKnownLocator,
   }, runtime);
   if (!admitted.ok) return projectAdmissionFailure(admitted.failure);
 
   const reread = await getBitbucketPullRequest({
     client: admitted.client,
     workspaceUuid: admitted.route.workspaceUuid,
-    repositoryUuid: admitted.route.repositoryUuid,
+    repositorySlug: admitted.route.repositorySlug,
+    expectedRepositoryUuid: admitted.route.expectedRepositoryUuid,
+    expectedRepositoryKey: admitted.route.repositoryKey,
     entryId: admitted.route.entryId,
     ...(runtime.signal === undefined ? {} : { signal: runtime.signal }),
   });
   if (reread.kind === 'unresolved') {
-    return reread.failure.code === 'route-not-found'
+    return pullRequestRouteMoved(reread.failure)
       ? { kind: 'refused', reason: 'pullRequestMoved' }
       : { kind: 'unavailable', reason: 'account' };
   }
@@ -237,6 +244,7 @@ export async function verifyBitbucketReviewWorkspace(
       collisionScope: input.entryRef.collisionScope,
       entryId: input.entryRef.entryId,
     },
+    lastKnownLocator: input.lastKnownLocator,
   }, runtime);
   throwIfRuntimeAborted(runtime);
   if (!admitted.ok) return projectVerificationAdmissionFailure(admitted.failure);
@@ -244,13 +252,15 @@ export async function verifyBitbucketReviewWorkspace(
   const reread = await getBitbucketPullRequest({
     client: admitted.client,
     workspaceUuid: admitted.route.workspaceUuid,
-    repositoryUuid: admitted.route.repositoryUuid,
+    repositorySlug: admitted.route.repositorySlug,
+    expectedRepositoryUuid: admitted.route.expectedRepositoryUuid,
+    expectedRepositoryKey: admitted.route.repositoryKey,
     entryId: admitted.route.entryId,
     ...(runtime.signal === undefined ? {} : { signal: runtime.signal }),
   });
   throwIfRuntimeAborted(runtime);
   if (reread.kind === 'unresolved') {
-    return reread.failure.code === 'route-not-found'
+    return pullRequestRouteMoved(reread.failure)
       ? { kind: 'refused', reason: 'pullRequestMoved' }
       : { kind: 'unavailable', reason: 'account' };
   }

@@ -244,26 +244,25 @@ export function createDiscordGatewaySession(input: Readonly<{
     }];
   }
 
-  function recordDispatch(frame: JsonRecord): boolean {
+  function recordDispatch(frame: JsonRecord): void {
     const sequence = readNonNegativeInteger(frame.s);
-    if (sequence === null) return false;
+    if (sequence === null) return;
     lastDispatchSequence = sequence;
 
     if (resume) {
       resume = { ...resume, lastDispatchSequence: sequence };
     }
 
-    if (frame.t !== 'READY' || !isRecord(frame.d)) return false;
+    if (frame.t !== 'READY' || !isRecord(frame.d)) return;
     const sessionId = typeof frame.d.session_id === 'string' && frame.d.session_id.trim()
       ? frame.d.session_id.trim()
       : null;
     const resumeGatewayUrl = normalizeDiscordGatewayUrl(frame.d.resume_gateway_url);
     if (!sessionId || !resumeGatewayUrl) {
       discardResumeState();
-      return true;
+      return;
     }
     resume = { sessionId, resumeGatewayUrl, lastDispatchSequence: sequence };
-    return false;
   }
 
   function discardResumeState(): void {
@@ -278,10 +277,7 @@ export function createDiscordGatewaySession(input: Readonly<{
       if (opcode === null) throw new Error('Discord Gateway frame is invalid.');
 
       if (opcode === 0 && isRecord(frame)) {
-        const invalidReadyResume = recordDispatch(frame);
-        if (invalidReadyResume) {
-          return [{ kind: 'historyGap', reason: 'providerHistoryUnavailable' }];
-        }
+        recordDispatch(frame);
         const sequence = readNonNegativeInteger(frame.s);
         const event = typeof frame.t === 'string' && frame.t.trim() ? frame.t : null;
         return sequence === null || event === null
@@ -316,11 +312,17 @@ export function createDiscordGatewaySession(input: Readonly<{
         ];
       }
       if (opcode === 9 && isRecord(frame)) {
+        // An initial IDENTIFY can be rejected before a session or Dispatch
+        // exists (including Identify-concurrency rejection). That is a
+        // reconnect/re-identify condition, not evidence of a lost interval.
+        const hadPriorDispatchOrResumeProgress = resume !== null || lastDispatchSequence !== null;
         const canResume = frame.d === true && resume !== null;
         if (!canResume) discardResumeState();
         awaitingHeartbeatAck = false;
         return [
-          ...(canResume ? [] : [{ kind: 'historyGap', reason: 'providerHistoryUnavailable' } satisfies DiscordGatewayEffect]),
+          ...(!canResume && hadPriorDispatchOrResumeProgress
+            ? [{ kind: 'historyGap', reason: 'providerHistoryUnavailable' } satisfies DiscordGatewayEffect]
+            : []),
           { kind: 'disconnect', reason: 'invalidSession' },
           {
             kind: 'reconnect',

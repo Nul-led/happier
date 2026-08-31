@@ -224,10 +224,15 @@ export interface ConversationOutwardDeliveryStore {
     | Readonly<{ kind: 'invalid'; reason: 'invalidRow' | 'rowTooLarge' }>
     | Readonly<{ kind: 'unavailable'; reason: 'cancelled' | 'storageUnavailable' }>
   >;
-  /** Logically retires one exact terminal custody row under its live revision. */
-  retire(input: Readonly<{
-    custodyId: string;
-    expectedRevision: number;
+  /**
+   * Retires already-selected terminal rows in bounded Collection batches, then
+   * forgets each exact tombstone revision returned by that mutation owner.
+   */
+  retireSelected(input: Readonly<{
+    records: readonly Readonly<{
+      custodyId: string;
+      expectedRevision: number;
+    }>[];
   }>): Promise<
     | Readonly<{ kind: 'retired' }>
     | Readonly<{ kind: 'conflict' }>
@@ -380,7 +385,7 @@ type ChannelStateCollection = Pick<
 >;
 type ChannelDeliveriesCollection = Pick<
   PluginAccountCollectionForDefinition<ConversationCollectionsModule['CHANNEL_DELIVERIES_COLLECTION']>,
-  'delete' | 'forget' | 'get' | 'put' | 'query'
+  'batch' | 'forget' | 'get' | 'limits' | 'put' | 'query'
 >;
 
 /**
@@ -1361,20 +1366,47 @@ export function createConversationOutwardDeliveryCollectionStore(
           : { kind: 'conflict' };
       }
     },
-    async retire(retireInput) {
+    async retireSelected(retireInput) {
       if (input.signal.aborted) return { kind: 'unavailable', reason: 'cancelled' };
       try {
-        const deleted = await input.deliveriesCollection.delete(retireInput.custodyId, {
-          expectedRevision: retireInput.expectedRevision,
-          signal: input.signal,
-        });
-        // The supervisor reaches this path only from its admitted terminal
-        // retention scan; that scan owns the existing outward horizon. Physical
-        // forgetting is a distinct exact-revision step, never Collection GC.
-        await input.deliveriesCollection.forget(deleted.rowId, {
-          expectedRevision: deleted.revision,
-          signal: input.signal,
-        });
+        const { maxBatchRows } = await input.deliveriesCollection.limits({ signal: input.signal });
+        if (!Number.isSafeInteger(maxBatchRows) || maxBatchRows < 1) {
+          return { kind: 'unavailable', reason: 'storageUnavailable' };
+        }
+        for (let offset = 0; offset < retireInput.records.length; offset += maxBatchRows) {
+          const selected = retireInput.records.slice(offset, offset + maxBatchRows);
+          const deleted = await input.deliveriesCollection.batch(selected.map((record) => ({
+            kind: 'delete' as const,
+            rowId: record.custodyId,
+            expectedRevision: record.expectedRevision,
+          })), { signal: input.signal });
+          if (deleted.status === 'conflict') return { kind: 'conflict' };
+          if (deleted.results.length !== selected.length) {
+            return { kind: 'unavailable', reason: 'storageUnavailable' };
+          }
+
+          // Retain the exact tombstone revisions until the matching physical
+          // forget completes. This is local to one already-selected batch; it
+          // does not introduce a retention scan, ledger, or durable cursor.
+          const tombstones = deleted.results.map((entry, index) => {
+            const selectedRecord = selected[index];
+            if (selectedRecord === undefined
+              || !entry.deleted
+              || entry.rowId !== selectedRecord.custodyId
+              || entry.revision !== selectedRecord.expectedRevision + 1) return undefined;
+            return { rowId: entry.rowId, revision: entry.revision };
+          });
+          if (tombstones.some((entry) => entry === undefined)) {
+            return { kind: 'unavailable', reason: 'storageUnavailable' };
+          }
+          for (const tombstone of tombstones) {
+            if (tombstone === undefined) return { kind: 'unavailable', reason: 'storageUnavailable' };
+            await input.deliveriesCollection.forget(tombstone.rowId, {
+              expectedRevision: tombstone.revision,
+              signal: input.signal,
+            });
+          }
+        }
         return { kind: 'retired' };
       } catch (error) {
         if (input.signal.aborted) return { kind: 'unavailable', reason: 'cancelled' };

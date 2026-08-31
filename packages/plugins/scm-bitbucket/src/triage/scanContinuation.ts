@@ -1,11 +1,16 @@
 import {
-  decodeTriagePagingTokenV1,
-  encodeTriagePagingTokenV1,
+  type TriageConfiguredSourceInstanceV1,
   type TriageScanContinuationV1,
 } from '@happier-dev/triage-protocol/v1';
 
 import { readBitbucketApiUrl } from './apiUrl.js';
+import {
+  buildBitbucketContinuationBindingScope,
+  decodeBitbucketContinuationPayload,
+  encodeBitbucketContinuationPayload,
+} from './continuationIntegrity.js';
 import { readBitbucketBracedUuid } from './identity.js';
+import { resolveBitbucketPageGeometry } from './pagination.js';
 import {
   readCursorCycleProbeV1,
   type CursorCycleProbeV1,
@@ -14,14 +19,13 @@ import {
 /**
  * The strict versioned codec for this source's own scan continuation bytes.
  *
- * The token is source-private: it exists only inside one in-memory scan invocation, and the target
- * copies it back without parsing it or granting it authority. Cancellation, a deadline, a `failed`
- * result, currentness loss, process death, or any other interruption discards it and the next
- * attempt starts again at `page: 'initial'`. It is never persisted, never handed to another
- * machine, account or configured instance, and never promoted into a checkpoint, watermark, epoch,
- * lease or scheduled resume point.
+ * The token is source-private and mount-scoped: the target copies it back without parsing it or
+ * granting it authority. Its process-local signature binds it to one configured source/account
+ * route. Process death or mount loss discards it and the next attempt starts again at
+ * `page: 'initial'`; it is never persisted, handed to another machine/account/configured instance,
+ * or promoted into a checkpoint, watermark, epoch, lease, or scheduled resume point.
  *
- * What it carries is the invocation-local frontier and nothing else: fixed page geometry, the
+ * What it carries is the walk frontier and nothing else: fixed page geometry, the
  * rotation position, the walk's sticky health, the workspace-wide `authored` lane, the repository
  * enumeration cursor, and the lanes of the one repository currently being walked. It carries no
  * credential, no account ref, no viewer identity, no origin, no delivered-id history, no
@@ -31,6 +35,18 @@ import {
  * field check on the way back in stay here.
  */
 const CONTINUATION_VERSION = 1;
+
+/** The exact configured source route a scan continuation may resume through. */
+export function buildBitbucketScanContinuationScope(
+  instance: TriageConfiguredSourceInstanceV1,
+  workspaceUuid: string,
+): string {
+  return JSON.stringify([
+    'bitbucket-scan-v1',
+    buildBitbucketContinuationBindingScope(instance),
+    workspaceUuid,
+  ]);
+}
 
 /**
  * The walk-level facts that outlive one call.
@@ -131,8 +147,9 @@ const BITBUCKET_WALK_PLANE_COUNT = 2;
 
 export function encodeBitbucketScanContinuation(
   frontier: BitbucketScanFrontierRecord,
+  scope: string,
 ): TriageScanContinuationV1 | null {
-  const token = encodeTriagePagingTokenV1({
+  const token = encodeBitbucketContinuationPayload({
     v: CONTINUATION_VERSION,
     l: frontier.scanLimit,
     n: frontier.nativePageSize,
@@ -150,7 +167,7 @@ export function encodeBitbucketScanContinuation(
           [REPOSITORY_LANE_CODE, lane.nextUrl, lane.ended, lane.cycleProbe]
         )),
       ],
-  });
+  }, scope);
   return token === null ? null : { v: 1, token };
 }
 
@@ -166,13 +183,16 @@ export function encodeBitbucketScanContinuation(
  */
 export function decodeBitbucketScanContinuation(
   continuation: TriageScanContinuationV1,
+  scope: string,
 ): BitbucketScanFrontierRecord | null {
-  const record = decodeTriagePagingTokenV1(continuation.token);
+  const record = decodeBitbucketContinuationPayload(continuation.token, scope);
   if (record === null || record.v !== CONTINUATION_VERSION) return null;
 
   const scanLimit = readCount(record.l, 1);
   const nativePageSize = readCount(record.n, 1);
-  if (scanLimit === null || nativePageSize === null || nativePageSize > scanLimit) return null;
+  if (scanLimit === null || nativePageSize === null) return null;
+  const geometry = resolveBitbucketPageGeometry(scanLimit);
+  if (!geometry.ok || geometry.geometry.nativePageSize !== nativePageSize) return null;
 
   const walkHealth = readWalkHealth(record.h);
   if (walkHealth === null) return null;

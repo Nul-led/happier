@@ -192,13 +192,17 @@ function assertDeclaredCollectionIndex(index: string | undefined): void {
 class MemoryCollection {
   readonly rows = new Map<string, StoredRow>();
   private conflictNextDelete: boolean;
+  private conflictNextBatch: boolean;
 
   constructor(private readonly options: Readonly<{
     /** Mirrors the host Collection request invariant for this boundary test. */
     enforceUniqueBatchRows?: boolean;
     conflictNextDelete?: boolean;
+    conflictNextBatch?: boolean;
+    maxBatchRows?: number;
   }> = {}) {
     this.conflictNextDelete = options.conflictNextDelete === true;
+    this.conflictNextBatch = options.conflictNextBatch === true;
   }
 
   async get(rowId: string): Promise<StoredRow | null> {
@@ -256,7 +260,30 @@ class MemoryCollection {
     return { rowId, forgotten: true as const };
   }
 
+  async limits() {
+    return {
+      maxRowEncodedBytes: 1_000_000,
+      maxBatchBytes: 1_000_000,
+      maxBatchRows: this.options.maxBatchRows ?? 100,
+      maxAccountRows: 10_000,
+      maxAccountBytes: 10_000_000,
+      basis: 'deployment' as const,
+    };
+  }
+
   async batch(operations: readonly Readonly<Record<string, unknown>>[]) {
+    if (this.conflictNextBatch) {
+      this.conflictNextBatch = false;
+      const first = operations[0];
+      return {
+        status: 'conflict' as const,
+        conflicts: [{
+          rowId: typeof first?.rowId === 'string' ? first.rowId : 'invalid-row',
+          revision: null,
+          deleted: false,
+        }],
+      };
+    }
     if (this.options.enforceUniqueBatchRows === true) {
       const rowIds = operations.map((operation) => (
         operation.kind === 'put' && operation.value !== null && typeof operation.value === 'object'
@@ -931,11 +958,12 @@ describe('Channels outward-delivery supervisor', () => {
       if (action === 'session.transcript.get') throw new Error('No binding should be projected.');
       throw new Error(`Unexpected Action ${action}`);
     });
+    const executeAdmittedTargetedOperationWithExecutionOrigin = vi.fn();
     const context = backgroundContext({
       state,
       deliveries,
       execute,
-      executeAdmittedTargetedOperationWithExecutionOrigin: vi.fn(),
+      executeAdmittedTargetedOperationWithExecutionOrigin,
     });
 
     await runConversationOutwardDeliveryCycle({
@@ -969,6 +997,128 @@ describe('Channels outward-delivery supervisor', () => {
     expect([...deliveries.rows.values()].filter((row) => row.deleted !== true).map((row) => (
       (row.value.payload as Readonly<Record<string, unknown>>).state
     ))).toEqual(expect.arrayContaining(['partial', 'outcomeUnknown']));
+  });
+
+  it('batches already-selected outward retention deletes before forgetting their exact tombstone revisions', async () => {
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
+    let persistedAt = 100;
+    const state = new MemoryCollection();
+    const deliveries = new MemoryCollection({ maxBatchRows: 2 });
+    await state.put(connectionRow(), { expectedRevision: 'absent' });
+    const store = createConversationOutwardDeliveryCollectionStore({
+      stateCollection: state as never,
+      deliveriesCollection: deliveries as never,
+      signal: new AbortController().signal,
+      now: () => persistedAt,
+    });
+    const records = await Promise.all(['batch-1', 'batch-2', 'batch-3'].map(async (controlId) => {
+      const created = await store.ensure({
+        ...outwardObligation(),
+        source: { kind: 'controlResponse', controlId, controlKind: 'recovery' },
+        deliveryKey: `retention:${controlId}`,
+      });
+      if (created.kind !== 'created') throw new Error('Expected retained custody fixture.');
+      const settled = await store.compareAndSwap({
+        custodyId: created.record.custodyId,
+        expectedRevision: created.record.revision,
+        custody: { state: 'delivered', attemptCount: 1, providerMessageIds: ['provider-1'] },
+      });
+      if (settled.kind !== 'updated') throw new Error('Expected terminal custody fixture.');
+      return settled.record;
+    }));
+    const batch = deliveries.batch.bind(deliveries);
+    const batches: Array<readonly Readonly<Record<string, unknown>>[]> = [];
+    deliveries.batch = (async (operations: readonly Readonly<Record<string, unknown>>[]) => {
+      batches.push(operations);
+      return await batch(operations);
+    }) as typeof deliveries.batch;
+
+    persistedAt += THIRTY_DAYS_MS;
+    await runConversationOutwardDeliveryCycle({
+      context: backgroundContext({
+        state,
+        deliveries,
+        execute: vi.fn(async () => { throw new Error('Unexpected Action.'); }),
+        executeAdmittedTargetedOperationWithExecutionOrigin: vi.fn(),
+      }),
+      now: () => persistedAt,
+    });
+
+    expect(batches.map((batch) => batch.length)).toEqual([2, 1]);
+    expect(batches.flat()).toEqual(expect.arrayContaining(records.map((record) => expect.objectContaining({
+      kind: 'delete',
+      rowId: record.custodyId,
+      expectedRevision: record.revision,
+    }))));
+    expect(records.every((record) => !deliveries.rows.has(record.custodyId))).toBe(true);
+  });
+
+  it('does not physically forget a terminal permission wait while its exact request is still pending', async () => {
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
+    let persistedAt = 0;
+    const state = new MemoryCollection();
+    const deliveries = new MemoryCollection();
+    await state.put(connectionRow(), { expectedRevision: 'absent' });
+    await state.put(approvalBindingRow(), { expectedRevision: 'absent' });
+    const execute = vi.fn(async (action: string) => {
+      if (action === 'session.permission.remote.pending.list') {
+        return {
+          requests: [pendingPermissionRequest({
+            requestId: 'permission-request-1',
+            turnId: 'turn-1',
+            createdAtMs: 100,
+            allowedScopes: ['request'],
+          })],
+          truncated: false,
+          nextCursor: null,
+        };
+      }
+      if (action === 'session.transcript.get') {
+        return {
+          ok: true,
+          projection: 'externalShareableV1',
+          sessionId: 'session-1',
+          scannedThroughSeq: 0,
+          hasMore: false,
+          items: [],
+        };
+      }
+      throw new Error(`Unexpected Action ${action}`);
+    });
+    const executeAdmittedTargetedOperationWithExecutionOrigin = vi.fn();
+    const context = backgroundContext({
+      state,
+      deliveries,
+      execute,
+      executeAdmittedTargetedOperationWithExecutionOrigin,
+    });
+    const store = createConversationOutwardDeliveryCollectionStore({
+      stateCollection: state as never,
+      deliveriesCollection: deliveries as never,
+      signal: context.signal,
+      now: () => persistedAt,
+    });
+    const admitted = await store.ensure(permissionWaitOutwardObligation());
+    if (admitted.kind !== 'created') throw new Error('Expected permission-wait custody fixture.');
+    const terminal = await store.compareAndSwap({
+      custodyId: admitted.record.custodyId,
+      expectedRevision: admitted.record.revision,
+      custody: { state: 'delivered', attemptCount: 1, providerMessageIds: ['provider-1'] },
+    });
+    if (terminal.kind !== 'updated') throw new Error('Expected terminal permission-wait custody.');
+
+    persistedAt = THIRTY_DAYS_MS;
+    await runConversationOutwardDeliveryCycle({ context, now: () => persistedAt });
+
+    // A complete positive pending projection means the next wake would ensure
+    // this deterministic custody again if retention had forgotten it.
+    expect(await deliveries.get(terminal.record.custodyId)).not.toBeNull();
+
+    // A second/third wake distinguishes retained terminal custody from a
+    // delete→fresh-ensure recreation: the latter would reach provider I/O.
+    await runConversationOutwardDeliveryCycle({ context, now: () => persistedAt + 1 });
+    await runConversationOutwardDeliveryCycle({ context, now: () => persistedAt + 2 });
+    expect(executeAdmittedTargetedOperationWithExecutionOrigin).not.toHaveBeenCalled();
   });
 
   it('does not restart an exhausted retention sweep before the earliest retained row can age out', async () => {
@@ -1048,7 +1198,7 @@ describe('Channels outward-delivery supervisor', () => {
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
     let persistedAt = 0;
     const state = new MemoryCollection();
-    const deliveries = new MemoryCollection({ conflictNextDelete: true });
+    const deliveries = new MemoryCollection({ conflictNextBatch: true });
     await state.put(connectionRow(), { expectedRevision: 'absent' });
     const context = backgroundContext({
       state,
@@ -2615,11 +2765,27 @@ describe('Channels outward-delivery supervisor', () => {
         row.value['record-kind'] === 'ingress-obligation'
       ));
       expect(retainedObligations).toHaveLength(FINALIZING_INGRESS_RELATION_COUNT);
-      expect(retainedObligations.every((row) => row.deleted !== true)).toBe(true);
-      expect(state.rows.get(finalObligationId)).toMatchObject({
-        deleted: false,
-        value: { terminal: false, payload: { lifecycle: { phase } } },
-      });
+      if (phase === 'blocked') {
+        // A blocked row has no effect in flight and no due-time owner. The
+        // deletion owner must make it terminal so cleanup cannot wedge.
+        expect(state.rows.get(finalObligationId)).toMatchObject({
+          deleted: false,
+          value: {
+            terminal: true,
+            payload: {
+              lifecycle: { phase: 'terminal' },
+              disposition: 'connectionDeleted',
+            },
+          },
+        });
+      } else {
+        // An attempting row may already have crossed provider I/O and remains
+        // with its incumbent reconciliation owner.
+        expect(state.rows.get(finalObligationId)).toMatchObject({
+          deleted: false,
+          value: { terminal: false, payload: { lifecycle: { phase: 'attempting' } } },
+        });
+      }
       expect(execute).not.toHaveBeenCalled();
       expect(executeAdmittedTargetedOperationWithExecutionOrigin).not.toHaveBeenCalled();
     },

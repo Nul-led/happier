@@ -16,48 +16,21 @@ const IMAGE_SIZE: Readonly<Record<HappierImageSize, number>> = Object.freeze({
   large: 72,
 });
 
-function isBrandFallbackGraphemeExtension(codePoint: number): boolean {
-  return (
-    (codePoint >= 0x0300 && codePoint <= 0x036f) ||
-    (codePoint >= 0x1ab0 && codePoint <= 0x1aff) ||
-    (codePoint >= 0x1dc0 && codePoint <= 0x1dff) ||
-    (codePoint >= 0x20d0 && codePoint <= 0x20ff) ||
-    (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
-    (codePoint >= 0xfe20 && codePoint <= 0xfe2f) ||
-    (codePoint >= 0x1f3fb && codePoint <= 0x1f3ff) ||
-    (codePoint >= 0xe0100 && codePoint <= 0xe01ef)
-  );
-}
-
-function isRegionalIndicator(codePoint: number): boolean {
-  return codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff;
-}
-
-function resolveBrandFallbackGrapheme(value: string): string {
-  const codePoints = Array.from(value);
-  const first = codePoints[0];
-  if (!first) return '?';
-
-  let end = 1;
-  const firstCodePoint = first.codePointAt(0)!;
-  if (isRegionalIndicator(firstCodePoint) && isRegionalIndicator(codePoints[1]?.codePointAt(0) ?? 0)) {
-    end = 2;
-  }
-
-  while (end < codePoints.length) {
-    const codePoint = codePoints[end]!.codePointAt(0)!;
-    if (isBrandFallbackGraphemeExtension(codePoint)) {
-      end += 1;
-      continue;
+function takeLeadingGraphemes(value: string, maximum: number): string {
+  const Segmenter = typeof Intl === 'undefined' ? undefined : Intl.Segmenter;
+  if (typeof Segmenter === 'function') {
+    const segments: string[] = [];
+    for (const { segment } of new Segmenter('und', { granularity: 'grapheme' }).segment(value)) {
+      segments.push(segment);
+      if (segments.length === maximum) break;
     }
-    if (codePoint === 0x200d && codePoints[end + 1]) {
-      end += 2;
-      continue;
-    }
-    break;
+    return segments.join('');
   }
-
-  return codePoints.slice(0, end).join('');
+  // Without a Unicode grapheme segmenter there is no small, correct
+  // approximation of UAX #29 (Indic conjuncts, Hangul, emoji tags and CRLF all
+  // have distinct rules). A bounded neutral marker preserves the compact image
+  // fallback contract without corrupting or partially rendering a grapheme.
+  return '?';
 }
 
 /** One size projection shared by the package Resource adapter and core chrome. */
@@ -68,14 +41,12 @@ export function resolveHappierImagePixels(size: HappierImageSize | undefined): n
 /** One neutral textual fallback; manifest projection remains the brand owner. */
 export function resolveHappierBrandFallback(displayName: string): string {
   const value = displayName.trim();
-  const Segmenter = typeof Intl === 'undefined' ? undefined : Intl.Segmenter;
-  if (typeof Segmenter === 'function') {
-    const segmenter = new Segmenter('und', { granularity: 'grapheme' });
-    for (const { segment } of segmenter.segment(value)) {
-      return segment.toLocaleUpperCase();
-    }
-  }
-  return resolveBrandFallbackGrapheme(value).toLocaleUpperCase();
+  return (takeLeadingGraphemes(value, 1) || '?').toLocaleUpperCase();
+}
+
+/** Preserve two visible graphemes when the runtime can segment them exactly. */
+export function resolveHappierImageFallback(fallback: string): string {
+  return takeLeadingGraphemes(fallback, 2);
 }
 
 /**
@@ -174,7 +145,7 @@ export function HappierImage(props: Readonly<{
         ? { style: { color: props.backing.foregroundColor } }
         : { tone: 'secondary' })}
       >
-        {props.fallback.slice(0, 2)}
+        {resolveHappierImageFallback(props.fallback)}
       </HappierText>
     </View>
   );

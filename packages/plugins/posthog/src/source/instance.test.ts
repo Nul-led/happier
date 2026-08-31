@@ -44,6 +44,20 @@ describe('PostHog configured-instance codec', () => {
         expect(decodePosthogConfiguration({ v: 1, token: '{"v":2}' })).toBeNull();
     });
 
+    it('rejects unknown fields at every declared exact configuration boundary', () => {
+        expect(decodePosthogConfiguration({
+            v: 1,
+            token: JSON.stringify({ ...CONFIGURATION, unexpected: true }),
+        })).toBeNull();
+        expect(decodePosthogConfiguration({
+            v: 1,
+            token: JSON.stringify({
+                ...CONFIGURATION,
+                environments: [{ ...CONFIGURATION.environments[0], unexpected: true }],
+            }),
+        })).toBeNull();
+    });
+
     it('freezes a relative policy to one exact provider window', () => {
         expect(resolvePosthogWindowPolicy(
             { kind: 'relative', durationMs: 86_400_000 },

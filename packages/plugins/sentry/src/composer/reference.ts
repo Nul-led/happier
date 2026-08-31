@@ -6,12 +6,10 @@ import {
   type ComposerReferenceResolutionV1,
   type PluginInvocationContext,
 } from '@happier-dev/plugin-sdk';
-import { fitComposerReferenceResolutionPrefixV1 } from '@happier-dev/triage-sources/runtime';
 import {
-  TRIAGE_SOURCES_READ_CONFIGURED_ACTION_REF_V1,
-  TriageReadConfiguredSourceInstancesResultV1Schema,
-  type TriageConfiguredSourceInstanceV1,
-} from '@happier-dev/triage-protocol/v1';
+  fitComposerReferenceResolutionPrefixV1,
+  readCurrentTriageConfiguredSourceInstanceV1,
+} from '@happier-dev/triage-sources/runtime';
 
 import { decodeSentryLocalInstanceKey } from '../instances/sentryInstanceConfiguration.js';
 import { deriveSentryCollisionScope } from '../instances/sentryCollisionScope.js';
@@ -234,22 +232,16 @@ export async function resolveSentryEvidenceReference(
   const candidate = decodeSentryEvidenceCandidate(candidateId);
   if (candidate === null) throw unavailableEvidence('candidate-invalid');
 
-  const currentRaw = await context.services.actions.execute(
-    TRIAGE_SOURCES_READ_CONFIGURED_ACTION_REF_V1,
-    { v: 1 },
-    { signal: context.signal },
-  );
-  const current = TriageReadConfiguredSourceInstancesResultV1Schema.safeParse(currentRaw);
-  if (!current.success || current.data.kind !== 'read' || current.data.status !== 'complete') {
+  const current = await readCurrentTriageConfiguredSourceInstanceV1({
+    context,
+    sourceInstanceId: candidate.sourceInstanceId,
+    instanceDigest: candidate.instanceDigest,
+  });
+  if (current.kind === 'unavailable') {
     throw unavailableEvidence('configured-source-unavailable');
   }
-  const matches = current.data.instances.filter((record) => (
-    record.lifecycle === 'active'
-    && record.configured.instance.sourceInstanceId === candidate.sourceInstanceId
-    && deriveSentryEvidenceInstanceDigest(record.configured) === candidate.instanceDigest
-  ));
-  if (matches.length !== 1) throw unavailableEvidence('configured-source-changed');
-  const instance: TriageConfiguredSourceInstanceV1 = matches[0]!.configured;
+  if (current.kind === 'changed') throw unavailableEvidence('configured-source-changed');
+  const instance = current.instance;
   const invoked = decodeSentryLocalInstanceKey(instance.localInstanceKey);
   if (!invoked.ok) throw unavailableEvidence('configured-source-invalid');
   const result = await readSentryEvent({

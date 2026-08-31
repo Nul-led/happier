@@ -7,17 +7,24 @@ import {
 
 import { createBitbucketFailure, type BitbucketTriageFailure } from '../failures.js';
 import { decodeBitbucketConfiguration } from '../instance.js';
-import { resolveBitbucketPageGeometry, type BitbucketPageGeometry } from '../pagination.js';
+import {
+  BITBUCKET_MAX_PAGE_LENGTH,
+  resolveBitbucketPageGeometry,
+  type BitbucketPageGeometry,
+  withBitbucketPageLength,
+} from '../pagination.js';
 import {
   BITBUCKET_TRIAGE_LANE_IDS,
   buildBitbucketAuthoredLaneUrl,
   buildBitbucketRepositoryReviewLaneUrl,
+  buildBitbucketWorkspaceRepositoriesUrl,
   readBitbucketLaneAvailability,
   scanBitbucketPullRequests,
 } from '../pullRequests.js';
 import { createBitbucketRepositoryEnumerator } from '../repositoryFrontier.js';
 import {
   BITBUCKET_REPOSITORY_ROUTE_ID,
+  buildBitbucketScanContinuationScope,
   decodeBitbucketScanContinuation,
   encodeBitbucketScanContinuation,
   type BitbucketScanFrontierRecord,
@@ -46,8 +53,52 @@ type ScanStart = Readonly<{
   currentRepository: BitbucketScanFrontierRecord['currentRepository'];
 }>;
 
+function matchesIssuedCollectionRoute(candidate: string, seed: string): boolean {
+  const expected = new URL(seed);
+  const actual = new URL(candidate);
+  if (actual.pathname !== expected.pathname) return false;
+  for (const [key, value] of expected.searchParams) {
+    const actualValues = actual.searchParams.getAll(key);
+    if (actualValues.length !== 1 || actualValues[0] !== value) return false;
+  }
+  return true;
+}
+
+function scanFrontierMatchesRoute(input: Readonly<{
+  frontier: Pick<ScanStart, 'geometry' | 'authored' | 'repositoryListNextUrl'
+    | 'repositoryListCycleProbe' | 'currentRepository'>;
+  workspaceUuid: string;
+  accountUuid: string;
+}>): boolean {
+  const authoredSeed = withBitbucketPageLength(buildBitbucketAuthoredLaneUrl({
+    workspaceUuid: input.workspaceUuid,
+    accountUuid: input.accountUuid,
+  }), input.frontier.geometry.nativePageSize);
+  const repositoryListSeed = withBitbucketPageLength(buildBitbucketWorkspaceRepositoriesUrl({
+    workspaceUuid: input.workspaceUuid,
+  }), BITBUCKET_MAX_PAGE_LENGTH);
+  const matches = (candidate: string | null, seed: string): boolean => (
+    candidate === null || matchesIssuedCollectionRoute(candidate, seed)
+  );
+  if (!matches(input.frontier.authored.nextUrl, authoredSeed)) return false;
+  if (!matches(input.frontier.authored.cycleProbe?.cursor ?? null, authoredSeed)) return false;
+  if (!matches(input.frontier.repositoryListNextUrl, repositoryListSeed)) return false;
+  if (!matches(input.frontier.repositoryListCycleProbe?.cursor ?? null, repositoryListSeed)) return false;
+  const current = input.frontier.currentRepository;
+  if (current === null) return true;
+  const reviewSeed = withBitbucketPageLength(buildBitbucketRepositoryReviewLaneUrl({
+    workspaceUuid: input.workspaceUuid,
+    repositoryUuid: current.repositoryUuid,
+  }), input.frontier.geometry.nativePageSize);
+  return current.lanes.every((lane) => (
+    matches(lane.nextUrl, reviewSeed)
+    && matches(lane.cycleProbe?.cursor ?? null, reviewSeed)
+  ));
+}
+
 function readScanStart(
   input: TriageScanInputV1,
+  continuationScope: string,
 ): Readonly<{ ok: true; start: ScanStart }> | Readonly<{ ok: false; failure: BitbucketTriageFailure }> {
   if (input.page.kind === 'initial') {
     const geometry = resolveBitbucketPageGeometry(input.page.limit);
@@ -69,7 +120,7 @@ function readScanStart(
   // A continuation this source did not mint in this process — another version, an unrecognized
   // health reason, a URL that is not a Bitbucket API URL — is refused rather than guessed at, so
   // the next attempt restarts at `page: 'initial'`.
-  const decoded = decodeBitbucketScanContinuation(input.page.continuation);
+  const decoded = decodeBitbucketScanContinuation(input.page.continuation, continuationScope);
   if (decoded === null) {
     return { ok: false, failure: createBitbucketFailure('unsupportedContract', 'continuation-not-issued') };
   }
@@ -116,7 +167,11 @@ export async function scanBitbucketSource(
     return failed(createBitbucketFailure('unsupportedContract', 'configuration-instance-mismatch'));
   }
 
-  const started = readScanStart(input);
+  const continuationScope = buildBitbucketScanContinuationScope(
+    input.instance,
+    configuration.workspaceUuid,
+  );
+  const started = readScanStart(input, continuationScope);
   if (!started.ok) return failed(started.failure);
   const start = started.start;
 
@@ -137,6 +192,13 @@ export async function scanBitbucketSource(
 
   const workspaceUuid = configuration.workspaceUuid;
   const accountUuid = viewer.viewer.accountUuid;
+  if (input.page.kind === 'continuation' && !scanFrontierMatchesRoute({
+    frontier: start,
+    workspaceUuid,
+    accountUuid,
+  })) {
+    return failed(createBitbucketFailure('unsupportedContract', 'continuation-not-issued'));
+  }
 
   const unavailableLanes = BITBUCKET_TRIAGE_LANE_IDS.flatMap((laneId) => {
     const availability = readBitbucketLaneAvailability(laneId);
@@ -208,8 +270,8 @@ export async function scanBitbucketSource(
     },
   );
 
-  const continuation = outcome.walkOpen
-    ? encodeBitbucketScanContinuation({
+  const continuationFrontier = outcome.walkOpen
+    ? {
       scanLimit: start.geometry.scanLimit,
       nativePageSize: start.geometry.nativePageSize,
       nextLaneIndex: outcome.frontier.nextLaneIndex,
@@ -230,7 +292,20 @@ export async function scanBitbucketSource(
             cycleProbe: outcome.frontier.currentRepository.lane.cycleProbe ?? null,
           }],
         },
-    } satisfies BitbucketScanFrontierRecord)
+    } satisfies BitbucketScanFrontierRecord
+    : null;
+  const continuation = continuationFrontier !== null && scanFrontierMatchesRoute({
+    frontier: {
+      geometry: start.geometry,
+      authored: continuationFrontier.authored,
+      repositoryListNextUrl: continuationFrontier.repositoryListNextUrl,
+      repositoryListCycleProbe: continuationFrontier.repositoryListCycleProbe,
+      currentRepository: continuationFrontier.currentRepository,
+    },
+    workspaceUuid,
+    accountUuid,
+  })
+    ? encodeBitbucketScanContinuation(continuationFrontier, continuationScope)
     : null;
 
   const evidence = resolveScanEvidence({

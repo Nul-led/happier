@@ -25,7 +25,8 @@ import {
   reopenGitlabMergeRequest,
 } from './operations.js';
 
-const ITEM_URL = 'https://gitlab.com/api/v4/projects/3/merge_requests/7';
+const ROUTING_TOKEN = 'group/project';
+const ITEM_URL = `https://gitlab.com/api/v4/projects/${encodeURIComponent(ROUTING_TOKEN)}/merge_requests/7`;
 const MERGE_URL = `${ITEM_URL}/merge`;
 const GRAPHQL_URL = 'https://gitlab.com/api/graphql';
 
@@ -107,6 +108,7 @@ function mergeInput(overrides: Readonly<Record<string, unknown>> = {}): unknown 
     v: 1,
     instance: gitlabTestConfiguredInstance(),
     localRef: LOCAL_REF,
+    routingToken: ROUTING_TOKEN,
     observedHeadSha: OBSERVED_HEAD,
     ...overrides,
   };
@@ -122,6 +124,7 @@ function closeInput(overrides: Readonly<Record<string, unknown>> = {}): unknown 
     v: 1,
     instance: gitlabTestConfiguredInstance(),
     localRef: LOCAL_REF,
+    routingToken: ROUTING_TOKEN,
     ...overrides,
   };
 }
@@ -425,7 +428,10 @@ describe('gitlab/merge-request/mark-ready', () => {
   it('uses the GraphQL draft transition and never a REST draft update', async () => {
     const transport = scriptedTransport({
       [`GET ${ITEM_URL}`]: [
-        { status: 200, body: mergeRequestBody({ draft: true }) },
+        { status: 200, body: mergeRequestBody({
+          draft: true,
+          references: { full: 'Group/Project!7' },
+        }) },
         { status: 200, body: mergeRequestBody({ draft: false }) },
       ],
       [`POST ${GRAPHQL_URL}`]: [{

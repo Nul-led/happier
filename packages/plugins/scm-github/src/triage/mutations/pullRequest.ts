@@ -52,6 +52,7 @@ import {
   readGithubReviewThreadReplyPublicationRecords,
   sendGithubReviewThreadReply,
 } from './reviewThread.js';
+import { preflightGithubPublicationCapability } from './publicationCapability.js';
 
 /**
  * The head-pinned and state-transition GitHub pull-request writes, each
@@ -363,6 +364,10 @@ export async function publishGithubPullRequestReview(
     route: GithubRepositoryRouteV1;
     publicationPlan: ReviewCommentPublicationPlanV1;
     claimPublicationDispatch: () => Promise<ReviewCommentClaimPublicationDispatchResponseV1>;
+    settlePublicationDispatch?: (
+      claim: ReviewCommentClaimPublicationDispatchResponseV1,
+      result: ReviewCommentPublicationResultV1,
+    ) => Promise<void>;
   }>,
   dependencies: GithubMutationDependenciesV1,
 ): Promise<GithubPullRequestReviewPublicationOutcomeV1> {
@@ -417,6 +422,20 @@ export async function publishGithubPullRequestReview(
     });
   }
 
+  const capability = await preflightGithubPublicationCapability({
+    localRef: input.localRef,
+    route: input.route,
+    operation: 'pullRequestSubmitReview',
+  }, dependencies);
+  if (!capability.ok) {
+    return Object.freeze({
+      kind: 'rejected' as const,
+      reason: 'admission_failed' as const,
+      observation: current.observation,
+      failure: capability.failure,
+    });
+  }
+
   let claim: Awaited<ReturnType<typeof input.claimPublicationDispatch>>;
   try {
     claim = await input.claimPublicationDispatch();
@@ -448,7 +467,7 @@ export async function publishGithubPullRequestReview(
     });
   }
   const projectedComments = input.publicationPlan.entries.map((entry, index) => (
-    verdictSummaryEntryIndexes.has(index)
+    verdictSummaryEntryIndexes.has(index) || claim.instructions.entries[index] !== 'dispatch'
       ? undefined
       : githubReviewComment(entry, orderedCorrelations[index] as string)
   ));
@@ -462,6 +481,9 @@ export async function publishGithubPullRequestReview(
   const summaryEntries = publicationRouting.verdictSummaryEntryIndexes.map(
     (index) => input.publicationPlan.entries[index]!,
   );
+  const dispatchSummaryEntries = publicationRouting.verdictSummaryEntryIndexes
+    .filter((index) => claim.instructions.entries[index] === 'dispatch')
+    .map((index) => input.publicationPlan.entries[index]!);
   const comments = projectedComments.filter(
     (comment): comment is Readonly<Record<string, unknown>> => comment !== null && comment !== undefined,
   );
@@ -488,6 +510,11 @@ export async function publishGithubPullRequestReview(
         publicationPlanId: claim.publicationPlanId,
         entries: input.publicationPlan.entries.map((entry, index) => {
           const correlation = claim.entries[index]!;
+          const instruction = claim.instructions.entries[index]!;
+          const prior = claim.priorResult?.entries[index];
+          if ((instruction === 'confirmed' || instruction === 'held') && prior !== undefined) {
+            return prior;
+          }
           const marker = entryMarkers[index]!.marker;
           const comment = confirmedComments.failure === null && !confirmedComments.incomplete
             ? matchReviewCommentPublicationMarkerV1(
@@ -524,6 +551,13 @@ export async function publishGithubPullRequestReview(
         verdict: input.publicationPlan.verdict === null || claim.verdict === null
           ? Object.freeze({ kind: 'notRequested' as const })
           : (() => {
+            const instruction = claim.instructions.verdict;
+            const prior = claim.priorResult !== null && !('kind' in claim.priorResult.verdict)
+              ? claim.priorResult.verdict
+              : null;
+            if ((instruction === 'confirmed' || instruction === 'held') && prior !== null) {
+              return prior;
+            }
             const review = reviewRead.failure === null && !reviewRead.incomplete
               ? matchReviewCommentPublicationMarkerV1(
                 reviewRead.reviews.map((candidate) => ({
@@ -542,6 +576,7 @@ export async function publishGithubPullRequestReview(
           })(),
       },
     );
+    await input.settlePublicationDispatch?.(claim, publication).catch(() => undefined);
     const confirmedPullRequest = await confirm(
       input.localRef,
       input.route,
@@ -576,19 +611,19 @@ export async function publishGithubPullRequestReview(
     method: 'POST',
     body: {
       commit_id: input.publicationPlan.headRevision,
-      event: GITHUB_REVIEW_EVENT_BY_VERDICT[input.publicationPlan.verdict?.kind ?? 'comment'],
-      ...(input.publicationPlan.verdict === null || verdictMarker === null
-        ? {}
-        : {
-          body: [
-            input.publicationPlan.verdict.body,
-            ...summaryEntries.map((entry) => {
-              const correlation = correlationByCommentId.get(entry.happierCommentId)!;
-              return `${entry.body}\n\n${formatReviewCommentPublicationMarkerV1('entry', correlation)}`;
-            }),
-            verdictMarker,
-          ].join('\n\n'),
+      event: claim.instructions.verdict === 'dispatch'
+        ? GITHUB_REVIEW_EVENT_BY_VERDICT[input.publicationPlan.verdict?.kind ?? 'comment']
+        : GITHUB_REVIEW_EVENT_BY_VERDICT.comment,
+      body: [
+        ...(claim.instructions.verdict === 'dispatch' && input.publicationPlan.verdict !== null
+          ? [input.publicationPlan.verdict.body]
+          : []),
+        ...dispatchSummaryEntries.map((entry) => {
+          const correlation = correlationByCommentId.get(entry.happierCommentId)!;
+          return `${entry.body}\n\n${formatReviewCommentPublicationMarkerV1('entry', correlation)}`;
         }),
+        ...(claim.instructions.verdict === 'dispatch' && verdictMarker !== null ? [verdictMarker] : []),
+      ].join('\n\n') || 'Review comments',
       comments,
     },
   });
@@ -615,6 +650,10 @@ export async function publishGithubPullRequestComment(
     mode: 'create' | 'reply';
     threadId?: string;
     claimPublicationDispatch: () => Promise<ReviewCommentClaimPublicationDispatchResponseV1>;
+    settlePublicationDispatch?: (
+      claim: ReviewCommentClaimPublicationDispatchResponseV1,
+      result: ReviewCommentPublicationResultV1,
+    ) => Promise<void>;
   }>,
   dependencies: GithubMutationDependenciesV1,
 ): Promise<GithubPullRequestReviewPublicationOutcomeV1> {
@@ -682,6 +721,22 @@ export async function publishGithubPullRequestComment(
     }
   }
 
+  const capability = await preflightGithubPublicationCapability({
+    localRef: input.localRef,
+    route: input.route,
+    operation: input.mode === 'create'
+      ? 'pullRequestReviewCommentCreate'
+      : 'pullRequestThreadReply',
+  }, dependencies);
+  if (!capability.ok) {
+    return Object.freeze({
+      kind: 'rejected' as const,
+      reason: 'admission_failed' as const,
+      observation: current.observation,
+      failure: capability.failure,
+    });
+  }
+
   let claim: ReviewCommentClaimPublicationDispatchResponseV1;
   try {
     claim = await input.claimPublicationDispatch();
@@ -731,6 +786,11 @@ export async function publishGithubPullRequestComment(
         marker,
       )
       : { kind: 'absent' as const };
+    const prior = claim.priorResult?.entries[0];
+    const preservedOutcome = (claim.instructions.entries[0] === 'confirmed'
+      || claim.instructions.entries[0] === 'held')
+      ? prior?.outcome
+      : undefined;
     const publication = validateReviewCommentPublicationResultAgainstPlanV1(
       input.publicationPlan,
       claim,
@@ -739,13 +799,14 @@ export async function publishGithubPullRequestComment(
         entries: [{
           happierCommentId: entry.happierCommentId,
           publicationCorrelationId: correlation.publicationCorrelationId,
-          outcome: matched.kind !== 'unique'
+          outcome: preservedOutcome ?? (matched.kind !== 'unique'
             ? { kind: 'uncertain' }
-            : { kind: 'published', externalRef: matched.externalRef },
+            : { kind: 'published', externalRef: matched.externalRef }),
         }],
         verdict: { kind: 'notRequested' },
       },
     );
+    await input.settlePublicationDispatch?.(claim, publication).catch(() => undefined);
     const confirmed = await confirm(input.localRef, input.route, repositories, dependencies);
     return Object.freeze({
       kind: 'settled' as const,
@@ -777,6 +838,7 @@ export async function publishGithubPullRequestComment(
         verdict: { kind: 'notRequested' },
       },
     );
+    await input.settlePublicationDispatch?.(claim, publication).catch(() => undefined);
     const confirmed = await confirm(input.localRef, input.route, repositories, dependencies);
     return Object.freeze({
       kind: 'settled' as const,
@@ -1034,12 +1096,10 @@ export async function markGithubPullRequestReady(
  * that still observes the pinned head settles as `pending`. There is no source
  * timer, no poll, and no second PUT.
  *
- * There is deliberately NO local "is it behind?" refusal. GitHub derives
- * mergeability asynchronously and publishes `mergeable_state: 'unknown'` while it
- * does, so a refusal read out of that field would block a legitimate update
- * whenever the answer had not been computed yet — the same mistake as reading an
- * unstated repository merge setting as a prohibition. GitHub's own `422` is the
- * authority on a branch that cannot be updated.
+ * GitHub's provider-computed `mergeable_state: 'behind'` is the positive
+ * eligibility fact for this operation. `unknown`, omitted, and every other state
+ * are not silently promoted to eligible: the control can be offered again after
+ * an explicit refresh once GitHub has a decisive answer.
  */
 export async function updateGithubPullRequestBranch(
   input: Readonly<{
@@ -1069,6 +1129,13 @@ export async function updateGithubPullRequestBranch(
     return Object.freeze({
       kind: 'refused' as const,
       reason: 'head_advanced' as const,
+      observation: current.observation,
+    });
+  }
+  if (current.facts.mergeableState !== 'behind') {
+    return Object.freeze({
+      kind: 'refused' as const,
+      reason: 'state_changed' as const,
       observation: current.observation,
     });
   }

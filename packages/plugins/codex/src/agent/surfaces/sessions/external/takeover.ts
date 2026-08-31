@@ -109,7 +109,6 @@ export function resolveCodexExternalSessionTakeoverPlan(
   const backendMode = runtimeDescriptor?.backendMode ?? linkMode;
 
   return Object.freeze({
-    ...(backendMode ? { backendModeHint: backendMode } : {}),
     ...(backendMode
       ? {
           runtimeDescriptorV1: buildCodexAgentRuntimeDescriptorV1({

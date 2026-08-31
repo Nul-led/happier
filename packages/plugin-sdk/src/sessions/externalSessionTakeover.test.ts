@@ -35,7 +35,6 @@ const request = {
 } as const satisfies AgentExternalSessionTakeoverResolveLaunchRequest;
 
 const plan = {
-    backendModeHint: 'resume',
     environmentVariables: {
         AGENT_PROFILE: 'profile-1',
     },
@@ -201,6 +200,12 @@ describe('External Session takeover public contract', () => {
         // cannot declare a launch cwd and the field must not reappear.
         expect(validateAgentExternalSessionTakeoverLaunchPlan(plan)).toEqual(plan);
         expect(validateAgentExternalSessionTakeoverLaunchPlan({})).toEqual({});
+        // The bounded runtime descriptor is the one Agent-owned takeover
+        // selection carrier. The unpublished predecessor hint must not remain
+        // as a second generic-host interpretation path.
+        rejects(() => validateAgentExternalSessionTakeoverLaunchPlan({
+            backendModeHint: 'resume',
+        }));
         rejects(() => validateAgentExternalSessionTakeoverLaunchPlan({
             directory: '/work/project',
         }));
@@ -254,9 +259,6 @@ describe('External Session takeover public contract', () => {
             }));
         }
         expect(validateAgentExternalSessionTakeoverLaunchPlan({
-            backendModeHint: 'm'.repeat(
-                AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS.maxBackendModeHintCodeUnits,
-            ),
             environmentVariables: Object.fromEntries(
                 Array.from(
                     {
@@ -289,12 +291,6 @@ describe('External Session takeover public contract', () => {
         };
         for (const invalidPlan of [
             { directory: '/work/project' },
-            { backendModeHint: '' },
-            {
-                backendModeHint: 'm'.repeat(
-                    AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS.maxBackendModeHintCodeUnits + 1,
-                ),
-            },
             {
                 environmentVariables: Object.fromEntries(
                     Array.from(

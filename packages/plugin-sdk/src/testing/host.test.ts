@@ -175,14 +175,6 @@ const testkitTargetedTargetDefinition = definePlugin({
     providers: testkitTargetedOperationProtocol.point({ maxContributionsPerContributor: 1 }),
   },
   actions: {
-    capture: {
-      title: 'Capture provider',
-      execution: { target: 'daemon' },
-      scopes: ['global'],
-      surfaces: ['cli'],
-      dangerLevel: 'safe',
-      run: async () => null,
-    },
     send: {
       title: 'Send provider request',
       execution: { target: 'daemon' },
@@ -201,28 +193,11 @@ type ColdManifestTargetedContribution = Readonly<{
     publish: TestkitTargetedOperationHandle;
   }>;
 }>;
-type TestkitTargetedObservationRef = {
-  current: TargetedContributionObservation<unknown> | undefined;
-};
-
 function createTargetedOperationTargetModule(
   operation: TestkitTargetedOperationRef,
 ) {
   return {
     activate(api: PluginApi) {
-      api.actions.register('capture', async (_input, context) => {
-        const observation = context.services.targetedContributions.observeForSelf(
-          testkitTargetedTargetDefinition.contributionPoints.providers,
-          { onInvalidated: () => {} },
-        );
-        try {
-          const snapshot = await observation.readCurrent({ signal: context.signal });
-          operation.current = snapshot.contributions[0]?.operations.publish;
-          return { count: snapshot.contributions.length, generation: snapshot.generation };
-        } finally {
-          observation.dispose();
-        }
-      });
       api.actions.register('send', async (_input, context) => {
         if (operation.current === undefined) {
           throw new Error('No current testkit targeted operation was captured.');
@@ -232,26 +207,6 @@ function createTargetedOperationTargetModule(
           { title: 'Ready' },
         )).result;
       });
-    },
-  };
-}
-
-function createTargetedObservationTargetModule(
-  observation: TestkitTargetedObservationRef,
-  onInvalidated: () => void,
-) {
-  return {
-    activate(api: PluginApi) {
-      api.actions.register('capture', async (_input, context) => {
-        const current = context.services.targetedContributions.observeForSelf(
-          testkitTargetedTargetDefinition.contributionPoints.providers,
-          { onInvalidated },
-        );
-        observation.current = current;
-        const snapshot = await current.readCurrent({ signal: context.signal });
-        return { count: snapshot.contributions.length };
-      });
-      api.actions.register('send', () => null);
     },
   };
 }
@@ -308,6 +263,18 @@ const voiceManifest = {
           schema: { type: 'string', minLength: 1, maxLength: 256 },
           default: 'voice-a',
           presentation: { control: 'text' },
+        }, {
+          id: 'format',
+          title: 'Audio format',
+          schema: { type: 'string', enum: ['mp3', 'wav'] },
+          default: 'wav',
+          presentation: {
+            control: 'select',
+            options: [
+              { title: 'MP3', value: 'mp3' },
+              { title: 'WAV', value: 'wav' },
+            ],
+          },
         }],
       },
     }],
@@ -861,6 +828,10 @@ describe('createPluginTestkit', () => {
         },
         protocol: { id: 'acme.testkit/providers', version: 1 },
       });
+      expect(fixtureG.contributions[0]).not.toHaveProperty('descriptor');
+      expect(fixtureG.contributions[0]).not.toHaveProperty('surfaces');
+      expectTypeOf(fixtureG.contributions[0]).not.toHaveProperty('descriptor');
+      expectTypeOf(fixtureG.contributions[0]).not.toHaveProperty('surfaces');
       const issuedG = alphaG.issueAdmittedTargetedOperation({
         point: testkitTargetedTargetDefinition.contributionPoints.providers,
         contributor: {
@@ -884,10 +855,8 @@ describe('createPluginTestkit', () => {
         role: 'publish',
       });
 
-      await expect(alphaG.invokeAction('capture', null)).resolves.toMatchObject({ count: 1 });
-      const original = operationG.current;
-      expect(original).toBeDefined();
-      operationG.current = issuedG;
+      const original = issuedG;
+      operationG.current = original;
       await expect(alphaG.invokeAction('send', null)).resolves.toEqual({ accepted: true });
       expect(handlerG).toHaveBeenCalledOnce();
 
@@ -940,11 +909,13 @@ describe('createPluginTestkit', () => {
         module: createTargetedOperationTargetModule(operationH),
       });
       try {
-        await expect(alphaH.invokeAction('capture', null)).resolves.toMatchObject({ count: 1 });
-        const freshH = operationH.current;
-        expect(freshH).toBeDefined();
-        expect(freshH!.identity.contributor.immutableGenerationId)
-          .not.toBe(original!.identity.contributor.immutableGenerationId);
+        const freshH = alphaH.issueAdmittedTargetedOperation({
+          point: testkitTargetedTargetDefinition.contributionPoints.providers,
+          contributor: { testkit: betaH, contributionId: 'primary' },
+          role: 'publish',
+        });
+        expect(freshH.identity.contributor.immutableGenerationId)
+          .not.toBe(original.identity.contributor.immutableGenerationId);
 
         operationH.current = original;
         await expect(alphaH.invokeAction('send', null)).rejects.toMatchObject({
@@ -962,6 +933,68 @@ describe('createPluginTestkit', () => {
     } finally {
       await alphaG.dispose();
       await betaG.dispose();
+    }
+  });
+
+  it('retains known targeted-operation roles while omitting an additive future role', async () => {
+    const contributorDefinition = defineTargetedOperationContributor(
+      'acme.testkit.additive-contributor',
+      'publish-provider',
+    );
+    const declaredActions = contributorDefinition.manifest.contributes.actions ?? [];
+    const declaredContribution = contributorDefinition.manifest.contributes.targetedPluginContributions?.[0];
+    if (!declaredContribution) throw new Error('Expected one targeted contribution fixture.');
+    const contributorManifest: PluginManifest = {
+      ...contributorDefinition.manifest,
+      contributes: {
+        ...contributorDefinition.manifest.contributes,
+        actions: [
+          ...declaredActions,
+          {
+            id: 'publish-future-provider',
+            title: 'Publish future provider',
+            execution: { target: 'daemon' },
+            scopes: ['global'],
+            surfaces: ['plugin'],
+            inputSchema: testkitTargetedOperationInputSchema.jsonSchema,
+            resultSchema: testkitTargetedOperationResultSchema.jsonSchema,
+            dangerLevel: 'safe',
+          },
+        ],
+        targetedPluginContributions: [{
+          ...declaredContribution,
+          operations: {
+            ...(declaredContribution.operations ?? {}),
+            futurePublish: 'publish-future-provider',
+          },
+        }],
+      },
+    };
+    const contributor = await createPluginTestkit({
+      manifest: contributorManifest,
+      module: {
+        activate(api) {
+          api.actions.register('publish-provider', async () => ({ accepted: true }));
+          api.actions.register('publish-future-provider', async () => ({ accepted: true }));
+        },
+      },
+    });
+    const operation: TestkitTargetedOperationRef = { current: undefined };
+    const target = await createPluginTestkit({
+      manifest: testkitTargetedTargetDefinition.manifest,
+      targetedContributionContributors: [contributor],
+      module: createTargetedOperationTargetModule(operation),
+    });
+
+    try {
+      const snapshot = target.readTargetedContributionFixture(
+        testkitTargetedTargetDefinition.contributionPoints.providers,
+      );
+      expect(snapshot.contributions).toHaveLength(1);
+      expect(Object.keys(snapshot.contributions[0]!.operations)).toEqual(['publish']);
+    } finally {
+      await target.dispose();
+      await contributor.dispose();
     }
   });
 
@@ -988,11 +1021,11 @@ describe('createPluginTestkit', () => {
 
     let original: TestkitTargetedOperationHandle | undefined;
     try {
-      await expect(targetG.invokeAction('capture', null)).resolves.toMatchObject({ count: 1 });
-      if (operationG.current === undefined) {
-        throw new Error('Expected target generation G to capture its admitted operation.');
-      }
-      original = operationG.current;
+      original = targetG.issueAdmittedTargetedOperation({
+        point: testkitTargetedTargetDefinition.contributionPoints.providers,
+        contributor: { testkit: contributor, contributionId: 'primary' },
+        role: 'publish',
+      });
     } finally {
       await targetG.dispose();
     }
@@ -1008,11 +1041,11 @@ describe('createPluginTestkit', () => {
     });
 
     try {
-      await expect(targetH.invokeAction('capture', null)).resolves.toMatchObject({ count: 1 });
-      const fresh = operationH.current;
-      if (fresh === undefined) {
-        throw new Error('Expected target generation H to capture its admitted operation.');
-      }
+      const fresh = targetH.issueAdmittedTargetedOperation({
+        point: testkitTargetedTargetDefinition.contributionPoints.providers,
+        contributor: { testkit: contributor, contributionId: 'primary' },
+        role: 'publish',
+      });
 
       operationH.current = original;
       await expect(targetH.invokeAction('send', null)).rejects.toMatchObject({
@@ -1025,42 +1058,6 @@ describe('createPluginTestkit', () => {
       expect(targetHandler).toHaveBeenCalledOnce();
     } finally {
       await targetH.dispose();
-      await contributor.dispose();
-    }
-  });
-
-  it('invalidates a fixture observation when its configured contributor retires', async () => {
-    const contributorDefinition = defineTargetedOperationContributor(
-      'acme.testkit.fixture-observer',
-      'publish-provider',
-    );
-    const contributor = await createPluginTestkit({
-      manifest: contributorDefinition.manifest,
-      module: {
-        activate(api) {
-          api.actions.register('publish-provider', async () => ({ accepted: true }));
-        },
-      },
-    });
-    const observation: TestkitTargetedObservationRef = { current: undefined };
-    const onInvalidated = vi.fn();
-    const target = await createPluginTestkit({
-      manifest: testkitTargetedTargetDefinition.manifest,
-      targetedContributionContributors: [contributor],
-      module: createTargetedObservationTargetModule(observation, onInvalidated),
-    });
-
-    try {
-      await expect(target.invokeAction('capture', null)).resolves.toEqual({ count: 1 });
-      expect(observation.current).toBeDefined();
-
-      await contributor.dispose();
-
-      await vi.waitFor(() => expect(onInvalidated).toHaveBeenCalledOnce());
-      await expect(observation.current!.readCurrent()).resolves.toMatchObject({ contributions: [] });
-    } finally {
-      observation.current?.dispose();
-      await target.dispose();
       await contributor.dispose();
     }
   });
@@ -1114,19 +1111,6 @@ describe('createPluginTestkit', () => {
       targetedContributionContributors: [contributor],
       module: {
         activate(api: PluginApi) {
-          api.actions.register('capture', async (_input, context) => {
-            const observation = context.services.targetedContributions.observeForSelf(
-              testkitTargetedTargetDefinition.contributionPoints.providers,
-              { onInvalidated: () => {} },
-            );
-            try {
-              const snapshot = await observation.readCurrent({ signal: context.signal });
-              operation.current = snapshot.contributions[0]?.operations.publish;
-              return { count: snapshot.contributions.length };
-            } finally {
-              observation.dispose();
-            }
-          });
           api.actions.register('send', async (input, context): Promise<JsonValue> => {
             if (operation.current === undefined) throw new Error('No captured operation.');
             try {
@@ -1151,7 +1135,11 @@ describe('createPluginTestkit', () => {
     });
 
     try {
-      await expect(target.invokeAction('capture', null)).resolves.toMatchObject({ count: 1 });
+      operation.current = target.issueAdmittedTargetedOperation({
+        point: testkitTargetedTargetDefinition.contributionPoints.providers,
+        contributor: { testkit: contributor, contributionId: 'primary' },
+        role: 'publish',
+      });
 
       await expect(target.invokeAction('send', { title: 'Ready' })).resolves.toEqual({
         ok: true,
@@ -1204,14 +1192,6 @@ describe('createPluginTestkit', () => {
         providers: protocol.point({ maxContributionsPerContributor: 1 }),
       },
       actions: {
-        capture: {
-          title: 'Capture provider',
-          execution: { target: 'daemon' },
-          scopes: ['global'],
-          surfaces: ['cli'],
-          dangerLevel: 'safe',
-          run: async () => null,
-        },
         send: {
           title: 'Send provider request',
           execution: { target: 'daemon' },
@@ -1266,19 +1246,6 @@ describe('createPluginTestkit', () => {
       targetedContributionContributors: [contributor],
       module: {
         activate(api) {
-          api.actions.register('capture', async (_input, context) => {
-            const observation = context.services.targetedContributions.observeForSelf(
-              coldPoint,
-              { onInvalidated: () => {} },
-            );
-            try {
-              const snapshot = await observation.readCurrent({ signal: context.signal });
-              operation.current = snapshot.contributions[0]?.operations.publish;
-              return { count: snapshot.contributions.length };
-            } finally {
-              observation.dispose();
-            }
-          });
           api.actions.register('send', async (_input, context) => {
             if (!operation.current) throw new Error('No captured operation.');
             return context.services.actions.executeAdmittedTargetedOperation(operation.current, null);
@@ -1288,7 +1255,11 @@ describe('createPluginTestkit', () => {
     });
 
     try {
-      await expect(target.invokeAction('capture', null)).resolves.toEqual({ count: 1 });
+      operation.current = target.issueAdmittedTargetedOperation({
+        point: coldPoint,
+        contributor: { testkit: contributor, contributionId: 'primary' },
+        role: 'publish',
+      });
       await expect(target.invokeAction('send', null)).resolves.toEqual({ accepted: true });
     } finally {
       await target.dispose();

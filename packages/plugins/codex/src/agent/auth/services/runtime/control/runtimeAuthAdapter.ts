@@ -101,7 +101,7 @@ export function createCodexConnectedServiceRuntimeAuthAdapter(): CodexConnectedS
       });
     },
     async materializeActiveProfile() {
-      return { supported: true };
+      return { supported: true, supportsInTurnApply: true };
     },
     canHotApply(input: RuntimeAuthHotApplyInput) {
       return input.applySelectedAuthGeneration && input.materializeNativeAuth

@@ -47,6 +47,7 @@ import {
   listGitlabPipelines,
   readGitlabRawDiff,
   readGitlabApprovals,
+  readGitlabOverview,
 } from './triage/detailOperations.js';
 import {
   getGitlabSourceEntryAction,
@@ -217,7 +218,7 @@ export const GITLAB_PLUGIN = definePlugin({
                 id: GITLAB_ORIGIN_CONFIGURATION_FIELD,
                 title: 'Self-managed GitLab URL',
                 description: 'The exact HTTPS base URL of your GitLab deployment, including any path prefix.',
-                semantic: 'connectedAccountOrigin',
+                semantic: 'connectedAccountBase',
                 schema: { type: 'string', minLength: 1 },
                 secret: false,
                 required: true,
@@ -253,6 +254,10 @@ export const GITLAB_PLUGIN = definePlugin({
     [GITLAB_TRIAGE_DETAIL_ACTION_IDS.listNotes]: {
       ...readGitlabActionDeclaration(GITLAB_TRIAGE_DETAIL_ACTION_IDS.listNotes),
       run: listGitlabNotes,
+    },
+    [GITLAB_TRIAGE_DETAIL_ACTION_IDS.readOverview]: {
+      ...readGitlabActionDeclaration(GITLAB_TRIAGE_DETAIL_ACTION_IDS.readOverview),
+      run: readGitlabOverview,
     },
     [GITLAB_TRIAGE_DETAIL_ACTION_IDS.listActivityEvents]: {
       ...readGitlabActionDeclaration(GITLAB_TRIAGE_DETAIL_ACTION_IDS.listActivityEvents),

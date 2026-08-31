@@ -92,11 +92,26 @@ function emptyListResult(): TriageListEntriesResultV1 {
     });
 }
 
-async function executeAction(action: string): Promise<JsonValue> {
+async function executeAction(action: string, exposeDurableState: boolean): Promise<JsonValue> {
     if (action === TRIAGE_LIST_ENTRIES_ACTION_LOCAL_ID_V1) {
         return emptyListResult() as unknown as JsonValue;
     }
-    if (action === TRIAGE_LIST_PINNED_ENTRIES_ACTION_LOCAL_ID_V1) return { v: 1, pins: [] };
+    if (action === TRIAGE_LIST_PINNED_ENTRIES_ACTION_LOCAL_ID_V1) return {
+        v: 1,
+        pins: exposeDurableState ? [{
+            entryRef: {
+                source: { pluginId: SOURCE_PLUGIN_ID, localId: 'example-forge' },
+                kindId: 'pull-request',
+                collisionScope: 'example/repository',
+                entryId: '17',
+            },
+            markedAtMs: 2_000,
+            displayAtMark: {
+                title: 'Pinned after the final source was removed',
+                scopeLabel: 'example/repository',
+            },
+        }] : [],
+    };
     if (action === TRIAGE_READ_SAVED_VIEWS_ACTION_LOCAL_ID_V1) {
         return { v: 1, availability: 'absent', views: [], selectedViewId: null, revision: 'revision-1' };
     }
@@ -111,6 +126,7 @@ async function mountShell(options: Readonly<{
     /** Omitted entirely to model a mount the host did not negotiate it for. */
     canOpenSurface?: boolean;
     openRefuses?: boolean;
+    exposeDurableState?: boolean;
 }> = {}): Promise<PluginUiTestkit> {
     opened = [];
     const ephemeralSharedScope = createTriageEphemeralSharedScopeFixture();
@@ -137,7 +153,10 @@ async function mountShell(options: Readonly<{
             adapter: createPluginUiRnwSemanticSurfaceAdapter({ ephemeralSharedScope }),
             handlers: {
                 publishCurrentUiContext: () => undefined,
-                executeAction: async ({ action }) => await executeAction(action),
+                executeAction: async ({ action }) => await executeAction(
+                    action,
+                    options.exposeDurableState === true,
+                ),
                 replacePageLocation: ({ subPath }) => subPath,
                 ...(options.canOpenSurface === false ? {} : {
                     openSurface: (input: PluginUiTestkitOpenSurfaceInput) => {
@@ -160,6 +179,22 @@ afterEach(async () => {
 });
 
 describe('the unconfigured PRs & Issues screen', () => {
+    it('keeps pins, saved views and setup reachable after the final source is removed', async () => {
+        const shell = await mountShell({
+            settingsPageId: 'triage-sources',
+            exposeDurableState: true,
+        });
+
+        await expect(shell.getByText('Pinned after the final source was removed'))
+            .resolves.toBeDefined();
+        await expect(shell.getByRole('button', { name: 'Save as new view' }))
+            .resolves.toBeDefined();
+        await expect(shell.getByRole('button', { name: 'Configure Example Forge' }))
+            .resolves.toBeDefined();
+        await expect(shell.getByRole('button', { name: 'Manage sources' }))
+            .resolves.toBeDefined();
+    });
+
     it('takes the reader to the page the source named', async () => {
         const shell = await mountShell({ settingsPageId: 'triage-sources' });
 

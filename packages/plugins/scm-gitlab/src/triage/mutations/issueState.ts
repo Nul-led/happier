@@ -62,6 +62,7 @@ export async function closeGitlabIssue(
   const outcome = await runGitlabStateTransition({
     instance: parsed.data.instance,
     localRef: parsed.data.localRef,
+    routingToken: parsed.data.routingToken,
     subject: GITLAB_ISSUE_MUTATION_SUBJECT_V1,
     expectedRevision: parsed.data.observedRevision,
     transition: CLOSE_TRANSITION,
@@ -82,6 +83,7 @@ export async function reopenGitlabIssue(
   const outcome = await runGitlabStateTransition({
     instance: parsed.data.instance,
     localRef: parsed.data.localRef,
+    routingToken: parsed.data.routingToken,
     subject: GITLAB_ISSUE_MUTATION_SUBJECT_V1,
     expectedRevision: parsed.data.observedRevision,
     transition: REOPEN_TRANSITION,

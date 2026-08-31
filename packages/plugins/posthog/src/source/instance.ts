@@ -104,6 +104,12 @@ function isValidWindowPolicy(value: unknown): value is PosthogWindowPolicy {
     return false;
 }
 
+function hasExactKeys(value: Readonly<Record<string, unknown>>, keys: readonly string[]): boolean {
+    const actual = Object.keys(value);
+    return actual.length === keys.length
+        && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
 function readEnvironment(value: unknown): PosthogConfiguredEnvironment | null {
     if (typeof value !== 'object' || value === null) {
         return null;
@@ -113,8 +119,12 @@ function readEnvironment(value: unknown): PosthogConfiguredEnvironment | null {
     const teamUuid = raw['teamUuid'];
     const displayName = raw['displayName'];
     const parentProjectId = raw['parentProjectId'];
+    const expectedKeys = parentProjectId === undefined
+        ? ['teamPathId', 'teamUuid', 'displayName']
+        : ['teamPathId', 'teamUuid', 'parentProjectId', 'displayName'];
     if (
-        typeof teamPathId !== 'number'
+        !hasExactKeys(raw, expectedKeys)
+        || typeof teamPathId !== 'number'
         || !Number.isSafeInteger(teamPathId)
         || teamPathId <= 0
         || !isUuid(teamUuid)
@@ -226,7 +236,13 @@ export function decodePosthogConfiguration(
         return null;
     }
     const raw = decoded as Readonly<Record<string, unknown>>;
-    if (raw['v'] !== 1 || !isUuid(raw['organizationUuid'])) {
+    if (!hasExactKeys(raw, [
+        'v',
+        'organizationUuid',
+        'environments',
+        'scanWindowPolicy',
+        'detailWindowPolicy',
+    ]) || raw['v'] !== 1 || !isUuid(raw['organizationUuid'])) {
         return null;
     }
     const rawEnvironments = raw['environments'];

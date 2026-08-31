@@ -10,6 +10,7 @@ export type { PluginTestkitInvokeActionOptions } from './types.js';
 export type { PluginTestkitOptions } from './types.js';
 export type { PluginTestkitRegistration } from './types.js';
 export type { PluginTestkitRegistrationByFamily } from './types.js';
+export type { PluginTestkitTargetedContributionFixtureEntry } from './types.js';
 export type { PluginUiHostApiWireIdentityV1 } from './uiHost.js';
 export type { PluginUiSemanticAdapterNode } from './uiHost.js';
 export type { PluginUiSemanticAdapterSnapshot } from './uiHost.js';

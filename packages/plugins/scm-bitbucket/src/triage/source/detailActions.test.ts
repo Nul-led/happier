@@ -69,7 +69,7 @@ function planeInput(overrides: Readonly<Record<string, unknown>> = {}) {
     v: 1,
     instance: configuredInstance(),
     localRef: { kindId: 'pull-request', collisionScope: COLLISION_SCOPE, entryId: ENTRY_ID },
-    routingToken: 'example/repository',
+    lastKnownLocator: { v: 1, routingToken: 'example/repository' },
     ...overrides,
   };
 }
@@ -159,7 +159,9 @@ describe('Bitbucket builds plane', () => {
       url.includes('/pullrequests/42/statuses')
         ? envelope(
           [{ ...STATUS, state: 'SUCCESSFUL' }],
-          'https://api.bitbucket.org/2.0/repositories/x/y/pullrequests/42/statuses?page=2',
+          'https://api.bitbucket.org/2.0/repositories'
+            + `/${encodeURIComponent(WORKSPACE_UUID)}/repository`
+            + '/pullrequests/42/statuses?page=2&pagelen=100',
         )
         : undefined
     ));
@@ -237,7 +239,9 @@ describe('Bitbucket comments plane', () => {
   });
 
   it('requests the declared 30-record window and follows only the opaque next link', async () => {
-    const nextUrl = 'https://api.bitbucket.org/2.0/repositories/x/y/pullrequests/42/comments?page=2';
+    const nextUrl = 'https://api.bitbucket.org/2.0/repositories'
+      + `/${encodeURIComponent(WORKSPACE_UUID)}/repository`
+      + '/pullrequests/42/comments?page=2&pagelen=30';
     const seam = harness((url) => (
       url.includes('/pullrequests/42/comments')
         ? (url === nextUrl
@@ -263,6 +267,24 @@ describe('Bitbucket comments plane', () => {
     expect(second.continuation).toBeUndefined();
   });
 
+  it('does not mint a continuation when the provider next contradicts the declared geometry', async () => {
+    const nextUrl = 'https://api.bitbucket.org/2.0/repositories'
+      + `/${encodeURIComponent(WORKSPACE_UUID)}/repository`
+      + '/pullrequests/42/comments?page=2&pagelen=10';
+    const seam = harness((url) => (
+      url.includes('/pullrequests/42/comments')
+        ? envelope([{ id: 1, content: { raw: 'first page' } }], nextUrl)
+        : undefined
+    ));
+
+    const settled = BitbucketCommentsResultV1Schema.parse(
+      await listBitbucketComments(planeInput(), seam.context),
+    );
+    if (settled.kind !== 'comments') throw new Error('the comments page must settle');
+    expect(settled.continuation).toBeUndefined();
+    expect(settled.incomplete).toBe('continuationUnavailable');
+  });
+
   it('drops a next link outside the Cloud API base instead of following it', async () => {
     const seam = harness((url) => (
       url.includes('/pullrequests/42/comments')
@@ -286,6 +308,21 @@ describe('Bitbucket comments plane', () => {
 });
 
 describe('Bitbucket detail continuation custody', () => {
+  it('refuses a forged same-origin continuation for another pull request and page geometry', async () => {
+    const seam = harness(() => undefined);
+    const forged = JSON.stringify({
+      v: 1,
+      nextUrl: 'https://api.bitbucket.org/2.0/repositories/other/repository/pullrequests/99/comments?page=7&pagelen=10',
+    });
+    const settled = BitbucketCommentsResultV1Schema.parse(
+      await listBitbucketComments(planeInput({ continuation: forged }), seam.context),
+    );
+    expect(settled.kind).toBe('unavailable');
+    if (settled.kind !== 'unavailable') throw new Error('unreachable');
+    expect(settled.failure.code).toBe('detail-continuation-unreadable');
+    expect(seam.requests).toHaveLength(0);
+  });
+
   it('refuses a supplied continuation naming a host outside the Cloud API base', async () => {
     const seam = harness(() => undefined);
     // A continuation is caller-supplied input on the way IN: without this gate a
@@ -310,6 +347,32 @@ describe('Bitbucket detail continuation custody', () => {
     );
     expect(settled.kind).toBe('unavailable');
     expect(seam.requests).toHaveLength(0);
+  });
+
+  it('refuses replay of a minted comments continuation through another detail plane', async () => {
+    const nextUrl = 'https://api.bitbucket.org/2.0/repositories'
+      + `/${encodeURIComponent(WORKSPACE_UUID)}/repository`
+      + '/pullrequests/42/comments?page=2&pagelen=30';
+    const issuer = harness((url) => (
+      url.includes('/pullrequests/42/comments')
+        ? envelope([{ id: 1, content: { raw: 'first page' } }], nextUrl)
+        : undefined
+    ));
+    const first = BitbucketCommentsResultV1Schema.parse(
+      await listBitbucketComments(planeInput(), issuer.context),
+    );
+    if (first.kind !== 'comments' || first.continuation === undefined) {
+      throw new Error('the comments continuation must be minted');
+    }
+
+    const replay = harness(() => undefined);
+    const settled = BitbucketActivityResultV1Schema.parse(
+      await listBitbucketActivity(planeInput({ continuation: first.continuation }), replay.context),
+    );
+    expect(settled.kind).toBe('unavailable');
+    if (settled.kind !== 'unavailable') throw new Error('unreachable');
+    expect(settled.failure.code).toBe('detail-continuation-unreadable');
+    expect(replay.requests).toHaveLength(0);
   });
 });
 
@@ -413,8 +476,9 @@ describe('Bitbucket activity plane', () => {
   });
 
   it('keeps rows and reports an opaque next page too large for the Action envelope', async () => {
-    const nextUrl = 'https://api.bitbucket.org/2.0/repositories/x/y/pullrequests/42/activity'
-      + `?cursor=${'c'.repeat(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES)}`;
+    const nextUrl = 'https://api.bitbucket.org/2.0/repositories'
+      + `/${encodeURIComponent(WORKSPACE_UUID)}/repository/pullrequests/42/activity`
+      + `?pagelen=100&cursor=${'c'.repeat(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES)}`;
     const seam = harness((url) => (
       url.includes('/pullrequests/42/activity')
         ? envelope([{ approval: { date: '2026-08-01T00:00:00Z' } }], nextUrl)
@@ -432,7 +496,9 @@ describe('Bitbucket activity plane', () => {
   });
 
   it('keeps an ordinary opaque next page without reporting the walk incomplete', async () => {
-    const nextUrl = 'https://api.bitbucket.org/2.0/repositories/x/y/pullrequests/42/activity?page=2';
+    const nextUrl = 'https://api.bitbucket.org/2.0/repositories'
+      + `/${encodeURIComponent(WORKSPACE_UUID)}/repository`
+      + '/pullrequests/42/activity?page=2&pagelen=100';
     const seam = harness((url) => (
       url.includes('/pullrequests/42/activity')
         ? envelope([{ approval: { date: '2026-08-01T00:00:00Z' } }], nextUrl)
@@ -477,7 +543,10 @@ describe('Bitbucket detail admission', () => {
 
 describe('Bitbucket authoritative Overview and Diff planes', () => {
   it('re-reads Overview from Bitbucket instead of replaying only the launch observation', async () => {
-    const fresh = { ...pullRequestSelf, title: 'Fresh provider title' };
+    const fresh = structuredClone(pullRequestSelf);
+    fresh.title = 'Fresh provider title';
+    fresh.destination.repository.name = 'repository';
+    fresh.destination.repository.full_name = 'example/repository';
     const seam = harness((url) => {
       if (url.endsWith('/2.0/user')) return { body: currentUser };
       if (url.includes('/pullrequests/42')) return { body: fresh };
@@ -495,7 +564,7 @@ describe('Bitbucket authoritative Overview and Diff planes', () => {
     expect(seam.requests.map((request) => request.url)).toEqual([
       'https://api.bitbucket.org/2.0/user',
       `https://api.bitbucket.org/2.0/repositories/${encodeURIComponent(WORKSPACE_UUID)}`
-        + `/${encodeURIComponent(REPOSITORY_UUID)}/pullrequests/42`,
+        + '/repository/pullrequests/42',
     ]);
   });
 

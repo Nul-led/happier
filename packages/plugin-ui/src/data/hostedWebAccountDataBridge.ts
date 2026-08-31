@@ -1,4 +1,5 @@
 import { PluginError, projectPluginAccountCollectionDeclaration, type JsonValue } from '@happier-dev/plugin-sdk';
+import { mergeAbortSignals } from '@happier-dev/plugin-sdk/async';
 import type { PluginAccountCollectionDefinition } from '@happier-dev/plugin-sdk/collections';
 import type { AccountKvEntry } from '@happier-dev/plugin-sdk/storage';
 import {
@@ -92,6 +93,19 @@ function optionsWithoutSignal<TOptions extends Readonly<Record<string, unknown>>
   if (!options) return Object.freeze({});
   const { signal: _signal, ...rest } = options;
   return Object.freeze(rest as Record<string, JsonValue>);
+}
+
+async function requestTransactionMethod<TValue>(
+  request: (options?: Readonly<{ signal?: AbortSignal }>) => Promise<TValue>,
+  outer: Readonly<{ signal?: AbortSignal }> | undefined,
+  inner: Readonly<{ signal?: AbortSignal }> | undefined,
+): Promise<TValue> {
+  const merged = mergeAbortSignals([outer?.signal, inner?.signal]);
+  try {
+    return await request(merged.signal ? { signal: merged.signal } : undefined);
+  } finally {
+    merged.dispose();
+  }
 }
 
 /**
@@ -210,22 +224,43 @@ export function createHostedWebPluginUiDataClient(input: Readonly<{
         options,
       );
       const transaction = Object.freeze({
-        get: async <TValue extends JsonValue = JsonValue>(key: string): Promise<AccountKvEntry<TValue> | null> => (
-          await requestData<AccountKvEntry<TValue> | null>(
-            'accountKv.transaction.get',
-            [transactionId, key],
+        get: async <TValue extends JsonValue = JsonValue>(
+          key: string,
+          getOptions?: Readonly<{ signal?: AbortSignal }>,
+        ): Promise<AccountKvEntry<TValue> | null> => (
+          await requestTransactionMethod(
+            async (requestOptions) => await requestData<AccountKvEntry<TValue> | null>(
+              'accountKv.transaction.get',
+              [transactionId, key],
+              requestOptions,
+            ),
             options,
+            getOptions,
           )
         ),
-        set: async (key: string, value: JsonValue, setOptions: Readonly<{ expectedVersion: number | 'absent' }>) => await requestData(
-          'accountKv.transaction.set',
-          [transactionId, key, { value, expectedVersion: setOptions.expectedVersion }],
+        set: async (key: string, value: JsonValue, setOptions: Readonly<{
+          expectedVersion: number | 'absent';
+          signal?: AbortSignal;
+        }>) => await requestTransactionMethod(
+          async (requestOptions) => await requestData(
+            'accountKv.transaction.set',
+            [transactionId, key, { value, expectedVersion: setOptions.expectedVersion }],
+            requestOptions,
+          ),
           options,
+          setOptions,
         ) as Awaited<ReturnType<PluginUiDataClient['accountKv']['set']>>,
-        delete: async (key: string, deleteOptions: Readonly<{ expectedVersion: number }>) => await requestData(
-          'accountKv.transaction.delete',
-          [transactionId, key, { expectedVersion: deleteOptions.expectedVersion }],
+        delete: async (key: string, deleteOptions: Readonly<{
+          expectedVersion: number;
+          signal?: AbortSignal;
+        }>) => await requestTransactionMethod(
+          async (requestOptions) => await requestData(
+            'accountKv.transaction.delete',
+            [transactionId, key, { expectedVersion: deleteOptions.expectedVersion }],
+            requestOptions,
+          ),
           options,
+          deleteOptions,
         ) as Awaited<ReturnType<PluginUiDataClient['accountKv']['delete']>>,
       });
       try {

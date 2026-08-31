@@ -34,14 +34,15 @@ import type { TriageCatalogStoreV1 } from './accountKvCatalogStore.js';
  *  - `appliesTo` — which subjects it is offered on;
  *  - `profileId` — which Launch Profile supplies the Session defaults;
  *  - `promptInvocationId` — which Prompt Library invocation supplies the task
- *    instruction, by its STABLE id;
+ *    instruction, by its STABLE id (with a shipped seed fallback only for the
+ *    built-in defaults that need useful text before the library is configured);
  *  - `workspaceMode` — what the start needs materialized;
  *  - `delivery` — whether the resolved prompt is composed or sent.
  *
  * There are no condition graphs, steps, retries, variables, branching, hooks or
- * post-action pipelines, and there is no place to add one: every member above is
- * a reference or a closed vocabulary, so an action can only ever name an owner,
- * never encode behaviour of its own.
+ * post-action pipelines. The only concrete task text in this owner is the small
+ * shipped fallback on Fix and Review; custom/free-form instructions remain
+ * Prompt Library entries, so the record does not become another prompt system.
  *
  * **Ask, Fix and Review are configuration, not protocol literals.** They ship as
  * `TRIAGE_DEFAULT_ACTIONS_V1`, which is what an *absent* value reads as — the
@@ -113,9 +114,12 @@ export type TriageActionDeliveryV1 = (typeof TRIAGE_ACTION_DELIVERIES_V1)[number
  * renaming `/explain` to `/discuss` silently breaks every configured action
  * that referenced it, with no upstream owner to recover the reference from.
  *
- * It is stored as a reference, never as a copied body: Triage holds no prompt
- * text, so editing the prompt in the Library changes what every action using it
- * sends.
+ * A configured invocation is always a reference, never a copied body: editing
+ * the prompt in the Library changes what every action using it sends. The
+ * optional `seededFallbackInstruction` is narrower: it is concrete text owned
+ * by a shipped default, used only while that action names no invocation. It is
+ * preserved by the catalog writer but is never exposed as editable prompt
+ * text, so this record does not become a second free-form prompt editor.
  *
  * **The Library owns WHICH content resolves; the action owns WHETHER it is
  * composed or sent.** `PromptInvocationEntryV1.behavior`
@@ -124,14 +128,19 @@ export type TriageActionDeliveryV1 = (typeof TRIAGE_ACTION_DELIVERIES_V1)[number
  * `delivery`: a person who configured an action to send did not also ask the
  * Library to decide that for them.
  *
- * `delivery` is meaningful with or without a prompt. With one it says whether
- * the body is composed or sent; without one it says whether the Session opens
- * with the entry attached and waiting, or sends that attachment straight away.
+ * `delivery` is meaningful with or without an instruction for `compose`: an
+ * attachment-only compose opens useful editable input. `send` requires an
+ * actual resolved or seeded instruction; an attachment supplies facts, not the
+ * task the agent should perform.
  */
 export type TriageActionTargetV1 =
     | Readonly<{
         kind: 'agent';
         promptInvocationId: string | null;
+        /** Static arguments expanded by the Prompt Library's canonical resolver. */
+        promptArgsText?: string;
+        /** Shipped default used only while no Prompt Library invocation is selected. */
+        seededFallbackInstruction?: string;
         delivery: TriageActionDeliveryV1;
     }>
     /**
@@ -144,7 +153,34 @@ export type TriageActionTargetV1 =
      * configures what they want looked at; leaving it unanswerable would have
      * made this arm depend on prose Triage invented.
      */
-    | Readonly<{ kind: 'reviewStart'; promptInvocationId: string | null }>;
+    | Readonly<{
+        kind: 'reviewStart';
+        promptInvocationId: string | null;
+        /** Static arguments expanded by the Prompt Library's canonical resolver. */
+        promptArgsText?: string;
+        /** Shipped default used only while no Prompt Library invocation is selected. */
+        seededFallbackInstruction?: string;
+    }>;
+
+/**
+ * The caller-editable part of a target.
+ *
+ * Seed fallback text is deliberately absent. It is host-seeded record state,
+ * preserved by the canonical writer when a built-in action is edited; custom
+ * task text belongs to Prompt Library and cannot enter through create/update.
+ */
+export type TriageActionMutableTargetV1 =
+    | Readonly<{
+        kind: 'agent';
+        promptInvocationId: string | null;
+        promptArgsText?: string;
+        delivery: TriageActionDeliveryV1;
+    }>
+    | Readonly<{
+        kind: 'reviewStart';
+        promptInvocationId: string | null;
+        promptArgsText?: string;
+    }>;
 
 export type TriageActionV1 = Readonly<{
     /** Stable within the Account; the three seeded actions carry literal ids. */
@@ -215,10 +251,11 @@ const triageActionProfileIdSchema = defineProtocolString({
  *
  * It is `PromptInvocationEntryV1.id`, never the renameable `token`: a slash
  * command a person renames must not silently break every action configured
- * against it. Triage stores no prompt body and no boundary here carries one —
- * editing the invocation in the Library changes what every action naming it
- * sends — and an id that names no invocation is a resolution failure the press
- * reports, not a stored-value failure a schema could have caught.
+ * against it. Triage never copies the referenced prompt body: editing the
+ * invocation in the Library changes what every action naming it sends. The
+ * separate shipped fallback remains on its own explicit member, and an id that
+ * names no invocation is a resolution failure the press reports rather than a
+ * stored-value failure a schema could have caught.
  */
 const triagePromptInvocationIdSchema = defineProtocolString({
     minLength: 1,
@@ -230,6 +267,23 @@ const triageNullablePromptInvocationIdSchema = defineProtocolUnion([
     triagePromptInvocationIdSchema,
     defineProtocolLiteral(null),
 ]);
+
+/**
+ * Optional static invocation arguments.
+ *
+ * Prompt Library owns their syntax and expansion. Triage therefore preserves
+ * the bytes verbatim and imposes no nearby per-field limit; the complete
+ * Account-KV value ceiling remains the one storage bound.
+ */
+const triagePromptArgsTextSchema = defineProtocolString();
+
+/**
+ * Concrete text carried only by shipped defaults.
+ *
+ * It has no invented per-field bound; the complete Account-KV value is already
+ * admitted against the storage owner's real encoded-byte ceiling.
+ */
+const triageSeededFallbackInstructionSchema = defineProtocolString({ minLength: 1 });
 
 export const TriageActionWorkspaceModeV1Schema = defineProtocolUnion([
     defineProtocolLiteral('reference_only'),
@@ -255,11 +309,30 @@ export const TriageActionTargetV1Schema = defineProtocolUnion([
     defineProtocolObject({
         kind: defineProtocolLiteral('agent'),
         promptInvocationId: triageNullablePromptInvocationIdSchema,
+        promptArgsText: triagePromptArgsTextSchema.optional(),
+        seededFallbackInstruction: triageSeededFallbackInstructionSchema.optional(),
         delivery: TriageActionDeliveryV1Schema,
     }, { policy: 'closed' }),
     defineProtocolObject({
         kind: defineProtocolLiteral('reviewStart'),
         promptInvocationId: triageNullablePromptInvocationIdSchema,
+        promptArgsText: triagePromptArgsTextSchema.optional(),
+        seededFallbackInstruction: triageSeededFallbackInstructionSchema.optional(),
+    }, { policy: 'closed' }),
+]);
+
+/** The mutation/editor projection, which cannot author shipped fallback text. */
+export const TriageActionMutableTargetV1Schema = defineProtocolUnion([
+    defineProtocolObject({
+        kind: defineProtocolLiteral('agent'),
+        promptInvocationId: triageNullablePromptInvocationIdSchema,
+        promptArgsText: triagePromptArgsTextSchema.optional(),
+        delivery: TriageActionDeliveryV1Schema,
+    }, { policy: 'closed' }),
+    defineProtocolObject({
+        kind: defineProtocolLiteral('reviewStart'),
+        promptInvocationId: triageNullablePromptInvocationIdSchema,
+        promptArgsText: triagePromptArgsTextSchema.optional(),
     }, { policy: 'closed' }),
 ]);
 
@@ -280,7 +353,7 @@ export const TRIAGE_ACTION_DRAFT_MEMBERS_V1 = {
     appliesTo: TriageActionAppliesToV1Schema,
     profileId: defineProtocolUnion([triageActionProfileIdSchema, defineProtocolLiteral(null)]),
     workspaceMode: TriageActionWorkspaceModeV1Schema,
-    target: TriageActionTargetV1Schema,
+    target: TriageActionMutableTargetV1Schema,
 } as const;
 
 export const TriageActionIdV1Schema = triageActionIdSchema;
@@ -294,6 +367,9 @@ export const TriageAccountKvRevisionV1Schema = defineProtocolString({
 export const TriageActionRecordV1Schema = defineProtocolObject({
     actionId: triageActionIdSchema,
     ...TRIAGE_ACTION_DRAFT_MEMBERS_V1,
+    // Stored/read records retain this host-seeded member. The mutation
+    // projection above deliberately replaces it with the editable target.
+    target: TriageActionTargetV1Schema,
 }, { policy: 'closed' });
 
 export const TriageActionRecordsV1Schema = defineProtocolArray(TriageActionRecordV1Schema);
@@ -336,7 +412,12 @@ export const TRIAGE_DEFAULT_ACTIONS_V1: readonly TriageActionV1[] = Object.freez
         appliesTo: ALL_SUBJECTS,
         profileId: null,
         workspaceMode: 'repository',
-        target: Object.freeze({ kind: 'agent', promptInvocationId: null, delivery: 'compose' }),
+        target: Object.freeze({
+            kind: 'agent',
+            promptInvocationId: null,
+            seededFallbackInstruction: 'Fix this entry.',
+            delivery: 'compose',
+        }),
     }),
     Object.freeze({
         actionId: 'review',
@@ -345,7 +426,12 @@ export const TRIAGE_DEFAULT_ACTIONS_V1: readonly TriageActionV1[] = Object.freez
         appliesTo: Object.freeze(['pullRequest'] as const),
         profileId: null,
         workspaceMode: 'pull_request',
-        target: Object.freeze({ kind: 'agent', promptInvocationId: null, delivery: 'compose' }),
+        target: Object.freeze({
+            kind: 'agent',
+            promptInvocationId: null,
+            seededFallbackInstruction: 'Review this change.',
+            delivery: 'compose',
+        }),
     }),
 ] as readonly TriageActionV1[]);
 
@@ -362,10 +448,29 @@ export function isTriageActionTargetOfferableV1(
     return kind === 'agent' || kind === 'reviewStart';
 }
 
+/** Whether this action has task intent rather than entry facts alone. */
+export function hasTriageActionInstructionSourceV1(
+    target: TriageActionTargetV1,
+): boolean {
+    return target.promptInvocationId !== null
+        || (target.seededFallbackInstruction?.trim().length ?? 0) > 0;
+}
+
+/** Starts that cannot pause for authoring require explicit task intent. */
+export function requiresTriageActionInstructionV1(
+    target: TriageActionTargetV1,
+): boolean {
+    return target.kind === 'reviewStart' || target.delivery === 'send';
+}
+
 /** The one valid target/materialization/subject rule shared by storage and mounts. */
 export function isTriageActionConfigurationCoherentV1(
     action: Pick<TriageActionV1, 'target' | 'workspaceMode' | 'appliesTo'>,
 ): boolean {
+    if (requiresTriageActionInstructionV1(action.target)
+        && !hasTriageActionInstructionSourceV1(action.target)) {
+        return false;
+    }
     return action.target.kind === 'agent'
         || (action.workspaceMode === 'pull_request'
             && action.appliesTo.length === 1
@@ -461,6 +566,8 @@ export type TriageActionsRejectionV1 =
     | 'workspaceMode'
     | 'target'
     | 'promptInvocationId'
+    | 'promptArgsText'
+    | 'instruction'
     | 'delivery'
     | 'reorder'
     | 'valueTooLarge';
@@ -490,7 +597,7 @@ export type TriageActionDraftV1 = Readonly<{
     appliesTo: readonly TriageSourceWorkflowSubjectV1[];
     profileId: string | null;
     workspaceMode: TriageActionWorkspaceModeV1;
-    target: TriageActionTargetV1;
+    target: TriageActionMutableTargetV1;
 }>;
 
 /**
@@ -595,28 +702,106 @@ function readPromptInvocationId(raw: unknown): Outcome<string | null> {
         : { ok: true, value };
 }
 
-function readTarget(raw: unknown): Outcome<TriageActionTargetV1> {
+function readPromptArgsText(raw: unknown): Outcome<string | undefined> {
+    if (raw === undefined) return { ok: true, value: undefined };
+    return typeof raw === 'string'
+        ? { ok: true, value: raw }
+        : { ok: false, reason: 'promptArgsText' };
+}
+
+function readSeededFallbackInstruction(raw: unknown): Outcome<string | undefined> {
+    if (raw === undefined) return { ok: true, value: undefined };
+    return typeof raw === 'string' && raw.trim().length > 0
+        ? { ok: true, value: raw }
+        : { ok: false, reason: 'instruction' };
+}
+
+function readTargetShape(
+    raw: unknown,
+    required: readonly string[],
+    allowSeededFallbackInstruction: boolean,
+): Readonly<Record<string, unknown>> | null {
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const candidate = raw as Readonly<Record<string, unknown>>;
+    const allowed = [
+        ...required,
+        'promptArgsText',
+        ...(allowSeededFallbackInstruction ? ['seededFallbackInstruction'] : []),
+    ];
+    if (!required.every((key) => Object.prototype.hasOwnProperty.call(candidate, key))) return null;
+    return Object.keys(candidate).every((key) => allowed.includes(key)) ? candidate : null;
+}
+
+function readTarget(
+    raw: unknown,
+    options?: Readonly<{
+        allowSeededFallbackInstruction?: boolean;
+        seededFallbackInstruction?: string;
+    }>,
+): Outcome<TriageActionTargetV1> {
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
         return { ok: false, reason: 'target' };
     }
     const kind = (raw as Readonly<Record<string, unknown>>).kind;
+    const allowSeededFallbackInstruction = options?.allowSeededFallbackInstruction === true;
     if (kind === 'reviewStart') {
-        const reviewCandidate = readExactKeys(raw, ['kind', 'promptInvocationId']);
+        const reviewCandidate = readTargetShape(
+            raw,
+            ['kind', 'promptInvocationId'],
+            allowSeededFallbackInstruction,
+        );
         if (reviewCandidate === null) return { ok: false, reason: 'target' };
         const reviewPrompt = readPromptInvocationId(reviewCandidate.promptInvocationId);
         if (!reviewPrompt.ok) return reviewPrompt;
-        return { ok: true, value: { kind: 'reviewStart', promptInvocationId: reviewPrompt.value } };
+        const promptArgsText = readPromptArgsText(reviewCandidate.promptArgsText);
+        if (!promptArgsText.ok) return promptArgsText;
+        const seededFallbackInstruction = readSeededFallbackInstruction(allowSeededFallbackInstruction
+            ? reviewCandidate.seededFallbackInstruction
+            : options?.seededFallbackInstruction);
+        if (!seededFallbackInstruction.ok) return seededFallbackInstruction;
+        return {
+            ok: true,
+            value: {
+                kind: 'reviewStart',
+                promptInvocationId: reviewPrompt.value,
+                ...(promptArgsText.value === undefined ? {} : { promptArgsText: promptArgsText.value }),
+                ...(seededFallbackInstruction.value === undefined
+                    ? {}
+                    : { seededFallbackInstruction: seededFallbackInstruction.value }),
+            },
+        };
     }
     if (kind !== 'agent') return { ok: false, reason: 'target' };
-    const candidate = readExactKeys(raw, ['kind', 'promptInvocationId', 'delivery']);
+    const candidate = readTargetShape(
+        raw,
+        ['kind', 'promptInvocationId', 'delivery'],
+        allowSeededFallbackInstruction,
+    );
     if (candidate === null) return { ok: false, reason: 'target' };
 
     const prompt = readPromptInvocationId(candidate.promptInvocationId);
     if (!prompt.ok) return prompt;
     const promptInvocationId = prompt.value;
+    const promptArgsText = readPromptArgsText(candidate.promptArgsText);
+    if (!promptArgsText.ok) return promptArgsText;
+    const seededFallbackInstruction = readSeededFallbackInstruction(allowSeededFallbackInstruction
+        ? candidate.seededFallbackInstruction
+        : options?.seededFallbackInstruction);
+    if (!seededFallbackInstruction.ok) return seededFallbackInstruction;
     const delivery = readDelivery(candidate.delivery);
     if (delivery === null) return { ok: false, reason: 'delivery' };
-    return { ok: true, value: { kind: 'agent', promptInvocationId, delivery } };
+    return {
+        ok: true,
+        value: {
+            kind: 'agent',
+            promptInvocationId,
+            ...(promptArgsText.value === undefined ? {} : { promptArgsText: promptArgsText.value }),
+            ...(seededFallbackInstruction.value === undefined
+                ? {}
+                : { seededFallbackInstruction: seededFallbackInstruction.value }),
+            delivery,
+        },
+    };
 }
 
 /**
@@ -630,6 +815,9 @@ function readAction(actionId: string, draft: Readonly<{
     profileId: unknown;
     workspaceMode: unknown;
     target: unknown;
+}>, options?: Readonly<{
+    allowSeededFallbackInstruction?: boolean;
+    seededFallbackInstruction?: string;
 }>): Outcome<TriageActionV1> {
     // The enclosing Account KV value owns the real byte boundary. A
     // second per-label ceiling would reject otherwise valid user configuration.
@@ -644,14 +832,21 @@ function readAction(actionId: string, draft: Readonly<{
     if (profileId === null && draft.profileId !== null) return { ok: false, reason: 'profileId' };
     const workspaceMode = readWorkspaceMode(draft.workspaceMode);
     if (workspaceMode === null) return { ok: false, reason: 'workspaceMode' };
-    const target = readTarget(draft.target);
+    const target = readTarget(draft.target, options);
     if (!target.ok) return target;
-    if (!isTriageActionConfigurationCoherentV1({
+    const candidate = {
         workspaceMode,
         target: target.value,
         appliesTo: appliesTo.value,
-    })) {
-        return { ok: false, reason: 'workspaceMode' };
+    };
+    if (!isTriageActionConfigurationCoherentV1(candidate)) {
+        return {
+            ok: false,
+            reason: requiresTriageActionInstructionV1(target.value)
+                && !hasTriageActionInstructionSourceV1(target.value)
+                ? 'instruction'
+                : 'workspaceMode',
+        };
     }
     return {
         ok: true,
@@ -714,7 +909,7 @@ export function parseTriageActions(raw: unknown): TriageActionsReadV1 {
             profileId: stored.profileId,
             workspaceMode: stored.workspaceMode,
             target: stored.target,
-        });
+        }, { allowSeededFallbackInstruction: true });
         if (!parsed.ok) return unreadable;
         actions.push(parsed.value);
     }
@@ -738,10 +933,25 @@ function toStoredValue(value: TriageActionsCatalogV1): JsonValue {
             profileId: action.profileId,
             workspaceMode: action.workspaceMode,
             target: action.target.kind === 'reviewStart'
-                ? { kind: 'reviewStart', promptInvocationId: action.target.promptInvocationId }
+                ? {
+                    kind: 'reviewStart',
+                    promptInvocationId: action.target.promptInvocationId,
+                    ...(action.target.promptArgsText === undefined
+                        ? {}
+                        : { promptArgsText: action.target.promptArgsText }),
+                    ...(action.target.seededFallbackInstruction === undefined
+                        ? {}
+                        : { seededFallbackInstruction: action.target.seededFallbackInstruction }),
+                }
                 : {
                     kind: 'agent',
                     promptInvocationId: action.target.promptInvocationId,
+                    ...(action.target.promptArgsText === undefined
+                        ? {}
+                        : { promptArgsText: action.target.promptArgsText }),
+                    ...(action.target.seededFallbackInstruction === undefined
+                        ? {}
+                        : { seededFallbackInstruction: action.target.seededFallbackInstruction }),
                     delivery: action.target.delivery,
                 },
         })),
@@ -810,7 +1020,11 @@ function applyCommand(
     if (command.kind === 'update') {
         const index = current.actions.findIndex((action) => action.actionId === command.actionId);
         if (index < 0) return { status: 'unknownAction' };
-        const parsed = readAction(command.actionId, command);
+        const existing = current.actions[index];
+        const seededFallbackInstruction = existing?.target.seededFallbackInstruction;
+        const parsed = readAction(command.actionId, command, seededFallbackInstruction === undefined
+            ? undefined
+            : { seededFallbackInstruction });
         if (!parsed.ok) return { status: 'rejected', reason: parsed.reason };
         const actions = [...current.actions];
         actions[index] = parsed.value;

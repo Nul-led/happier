@@ -15,8 +15,9 @@ import {
 } from './operations.js';
 
 const GRAPHQL_URL = 'https://gitlab.com/api/graphql';
-const MR_URL = 'https://gitlab.com/api/v4/projects/3/merge_requests/7';
-const ISSUE_URL = 'https://gitlab.com/api/v4/projects/3/issues/42';
+const ROUTING_TOKEN = 'group/project';
+const MR_URL = `https://gitlab.com/api/v4/projects/${encodeURIComponent(ROUTING_TOKEN)}/merge_requests/7`;
+const ISSUE_URL = `https://gitlab.com/api/v4/projects/${encodeURIComponent(ROUTING_TOKEN)}/issues/42`;
 const DISCUSSION_URL = `${MR_URL}/discussions/thread-1`;
 const HEAD = 'a'.repeat(40);
 const ISSUE_REVISION = '2026-08-12T09:00:00.000Z';
@@ -77,7 +78,7 @@ describe('GitLab provider-native member deltas', () => {
   it('adds reviewers through GraphQL APPEND and preserves an unrelated reviewer', async () => {
     const stub = transport({
       [`GET ${MR_URL}`]: [
-        { status: 200, body: mrBody() },
+        { status: 200, body: mrBody({ references: { full: 'Group/Project!7' } }) },
         { status: 200, body: mrBody({ reviewers: [
           { username: 'alice' }, { username: 'bob' }, { username: 'carol' },
         ] }) },
@@ -89,6 +90,7 @@ describe('GitLab provider-native member deltas', () => {
       v: 1,
       instance: gitlabTestConfiguredInstance(),
       localRef: MR_REF,
+      routingToken: ROUTING_TOKEN,
       observedHeadSha: HEAD,
       operation: 'add',
       reviewerUsernames: ['bob'],
@@ -112,7 +114,7 @@ describe('GitLab provider-native member deltas', () => {
     });
 
     await changeGitlabMergeRequestReviewers({
-      v: 1, instance: gitlabTestConfiguredInstance(), localRef: MR_REF,
+      v: 1, instance: gitlabTestConfiguredInstance(), localRef: MR_REF, routingToken: ROUTING_TOKEN,
       observedHeadSha: HEAD, operation: 'remove', reviewerUsernames: ['alice'],
     }, stub.context);
 
@@ -123,7 +125,7 @@ describe('GitLab provider-native member deltas', () => {
   it('removes issue assignees through GraphQL REMOVE without REST assignee_ids', async () => {
     const stub = transport({
       [`GET ${ISSUE_URL}`]: [
-        { status: 200, body: issueBody() },
+        { status: 200, body: issueBody({ references: { full: 'Group/Project#42' } }) },
         { status: 200, body: issueBody({ assignees: [{ username: 'carol' }] }) },
       ],
       [`POST ${GRAPHQL_URL}`]: [{ status: 200, body: { data: { issueSetAssignees: { errors: [] } } } }],
@@ -133,6 +135,7 @@ describe('GitLab provider-native member deltas', () => {
       v: 1,
       instance: gitlabTestConfiguredInstance(),
       localRef: ISSUE_REF,
+      routingToken: ROUTING_TOKEN,
       observedRevision: ISSUE_REVISION,
       operation: 'remove',
       assigneeUsernames: ['alice'],
@@ -158,7 +161,7 @@ describe('GitLab provider-native member deltas', () => {
     });
 
     await assignGitlabIssue({
-      v: 1, instance: gitlabTestConfiguredInstance(), localRef: ISSUE_REF,
+      v: 1, instance: gitlabTestConfiguredInstance(), localRef: ISSUE_REF, routingToken: ROUTING_TOKEN,
       observedRevision: ISSUE_REVISION, operation: 'add', assigneeUsernames: ['bob'],
     }, stub.context);
 
@@ -179,6 +182,7 @@ describe('GitLab provider-native member deltas', () => {
       v: 1,
       instance: gitlabTestConfiguredInstance(),
       localRef: ISSUE_REF,
+      routingToken: ROUTING_TOKEN,
       observedRevision: ISSUE_REVISION,
       operation: 'add',
       labelNames: ['release'],
@@ -199,7 +203,7 @@ describe('GitLab provider-native member deltas', () => {
     });
 
     await changeGitlabIssueLabels({
-      v: 1, instance: gitlabTestConfiguredInstance(), localRef: ISSUE_REF,
+      v: 1, instance: gitlabTestConfiguredInstance(), localRef: ISSUE_REF, routingToken: ROUTING_TOKEN,
       observedRevision: ISSUE_REVISION, operation: 'remove', labelNames: ['bug'],
     }, stub.context);
 
@@ -217,7 +221,7 @@ describe('GitLab provider-native member deltas', () => {
     });
 
     const result = await assignGitlabIssue({
-      v: 1, instance: gitlabTestConfiguredInstance(), localRef: ISSUE_REF,
+      v: 1, instance: gitlabTestConfiguredInstance(), localRef: ISSUE_REF, routingToken: ROUTING_TOKEN,
       observedRevision: ISSUE_REVISION, operation: 'add', assigneeUsernames: ['bob'],
     }, stub.context);
 
@@ -240,6 +244,7 @@ describe('gitlab/merge-request/discussion-resolution', () => {
       v: 1,
       instance: gitlabTestConfiguredInstance(),
       localRef: MR_REF,
+      routingToken: ROUTING_TOKEN,
       observedHeadSha: HEAD,
       discussionId: 'thread-1',
       resolved: true,

@@ -20,6 +20,7 @@ import type {
   ScmPullRequestState,
   ScmPullRequestSummary,
 } from '@happier-dev/plugin-sdk/scm';
+import { isRecord, readTrimmedString as readString } from '@happier-dev/plugin-sdk';
 
 import { bitbucketHostingProviderAdapter } from '../adapter.js';
 import {
@@ -27,6 +28,8 @@ import {
   parseBitbucketPullRequestNumberFromUrl,
   readBitbucketRepositoryCoordinates,
 } from '../parsing/bitbucketCoordinates.js';
+import { readBitbucketApiUrl } from '../triage/apiUrl.js';
+import { BITBUCKET_MAX_PULL_REQUEST_PAGE_LENGTH } from '../triage/pagination.js';
 import {
   type BitbucketBasicAuthMaterialization,
   type BitbucketRestFetcher,
@@ -101,7 +104,31 @@ function pullRequestsUrl(input: ScmHostingProviderPullRequestListInput): string 
     ...(input.base ? [`destination.branch.name = "${input.base}"`] : []),
   ];
   params.set('q', filters.join(' AND '));
+  params.set('pagelen', String(BITBUCKET_MAX_PULL_REQUEST_PAGE_LENGTH));
   return `${bitbucketRepositoryApiUrl({ coordinates })}/pullrequests?${params.toString()}`;
+}
+
+type BitbucketListNext =
+  | Readonly<{ kind: 'end' }>
+  | Readonly<{ kind: 'next'; url: string }>
+  | Readonly<{ kind: 'invalid' }>;
+
+function readPullRequestListNext(raw: unknown, seedUrl: string): BitbucketListNext {
+  if (!isRecord(raw) || raw.next === undefined || raw.next === null) return { kind: 'end' };
+  const candidate = readString(raw.next);
+  const admitted = candidate === null ? null : readBitbucketApiUrl(candidate);
+  if (admitted === null) return { kind: 'invalid' };
+  const seed = new URL(seedUrl);
+  const next = new URL(admitted);
+  if (next.pathname !== seed.pathname) return { kind: 'invalid' };
+  for (const key of ['state', 'q', 'pagelen'] as const) {
+    const expected = seed.searchParams.getAll(key);
+    const actual = next.searchParams.getAll(key);
+    if (expected.length !== 1 || actual.length !== 1 || actual[0] !== expected[0]) {
+      return { kind: 'invalid' };
+    }
+  }
+  return { kind: 'next', url: admitted };
 }
 
 function pullRequestUrl(input: Readonly<{
@@ -186,15 +213,31 @@ export function createBitbucketApiAdapter(params?: Readonly<{
     input: ScmHostingProviderPullRequestListInput,
   ): Promise<readonly ScmPullRequestSummary[]> {
     const auth = await withAuth(input);
-    const raw = await requestBitbucketJson({
-      provider: input.provider,
-      fetcher,
-      auth,
-      url: pullRequestsUrl(input),
-      init: { method: 'GET' },
-      signal: input.signal,
-    });
-    return decodeBitbucketPullRequestList(input.provider, raw).pullRequests;
+    const seedUrl = pullRequestsUrl(input);
+    const seen = new Set<string>();
+    const pullRequests: ScmPullRequestSummary[] = [];
+    let nextUrl: string | null = seedUrl;
+    while (nextUrl !== null) {
+      if (seen.has(nextUrl)) {
+        throw createBitbucketInvalidRequestError('Bitbucket pull-request pagination did not progress');
+      }
+      seen.add(nextUrl);
+      const raw = await requestBitbucketJson({
+        provider: input.provider,
+        fetcher,
+        auth,
+        url: nextUrl,
+        init: { method: 'GET' },
+        signal: input.signal,
+      });
+      pullRequests.push(...decodeBitbucketPullRequestList(input.provider, raw).pullRequests);
+      const continuation = readPullRequestListNext(raw, seedUrl);
+      if (continuation.kind === 'invalid') {
+        throw createBitbucketInvalidRequestError('Bitbucket returned an invalid pull-request next link');
+      }
+      nextUrl = continuation.kind === 'next' ? continuation.url : null;
+    }
+    return pullRequests;
   }
 
   async function getPullRequest(input: ScmHostingProviderPullRequestGetInput): Promise<ScmPullRequestSummary | null> {

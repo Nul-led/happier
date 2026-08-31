@@ -4,11 +4,24 @@ import { decodeAzureScanContinuation, encodeAzureScanContinuation } from './cont
 import { createAzureScanFrontier, recordAzureWalkHealth } from './paging.js';
 import type { AzureScanFrontier } from './types.js';
 
+const PROVENANCE = {
+  plane: 'scan',
+  sourceInstanceId: '2f1c9c4e-8c1f-4a53-9c2a-4c9a7b1d3e05',
+  configuredBaseUrl: 'https://dev.azure.com/acme',
+} as const;
+
 function frontier(overrides: Partial<AzureScanFrontier> = {}): AzureScanFrontier {
   return Object.assign(
-    createAzureScanFrontier({ scanLimit: 64 }),
+    createAzureScanFrontier({ scanLimit: 64, provenance: PROVENANCE }),
     overrides,
   );
+}
+
+function decode(token: string): AzureScanFrontier | null {
+  return decodeAzureScanContinuation({
+    continuation: { v: 1, token },
+    provenance: PROVENANCE,
+  });
 }
 
 function encoded(source: AzureScanFrontier): string {
@@ -30,7 +43,7 @@ describe('Azure DevOps scan continuation codec', () => {
       ],
     });
 
-    const decoded = decodeAzureScanContinuation({ v: 1, token: encoded(source) });
+    const decoded = decode(encoded(source));
 
     expect(decoded).not.toBeNull();
     expect(decoded?.nextLaneIndex).toBe(1);
@@ -47,7 +60,7 @@ describe('Azure DevOps scan continuation codec', () => {
     recordAzureWalkHealth(source, 'offset-paging');
     recordAzureWalkHealth(source, 'repository-enumeration-incomplete');
 
-    const decoded = decodeAzureScanContinuation({ v: 1, token: encoded(source) });
+    const decoded = decode(encoded(source));
 
     // The set is held in §2.8b's declaration order, because that order *is* the precedence the
     // evidence arm reports with — not the order the walk happened to observe them in.
@@ -60,19 +73,57 @@ describe('Azure DevOps scan continuation codec', () => {
     const token = encoded(frontier()).replace('"walkHealth":[]', '"walkHealth":["ceiling-2"]');
     expect(token).toContain('ceiling-2');
 
-    expect(decodeAzureScanContinuation({ v: 1, token })).toBeNull();
+    expect(decode(token)).toBeNull();
   });
 
   it('refuses a rotation position, scan budget, or lane set it could not have produced', () => {
     const base = encoded(frontier());
 
-    expect(decodeAzureScanContinuation({ v: 1, token: base.replace('"nextLaneIndex":0', '"nextLaneIndex":2') }))
+    expect(decode(base.replace('"nextLaneIndex":0', '"nextLaneIndex":2')))
       .toBeNull();
-    expect(decodeAzureScanContinuation({ v: 1, token: base.replace('"scanLimit":64', '"scanLimit":0') }))
+    expect(decode(base.replace('"scanLimit":64', '"scanLimit":0')))
       .toBeNull();
-    expect(decodeAzureScanContinuation({ v: 1, token: base.replace('"authored"', '"mentioned"') }))
+    expect(decode(base.replace('"nativePageSize":30', '"nativePageSize":29')))
       .toBeNull();
-    expect(decodeAzureScanContinuation({ v: 1, token: '{"v":9}' })).toBeNull();
+    expect(decode(base.replace('"authored"', '"mentioned"')))
+      .toBeNull();
+    expect(decode('{"v":9}')).toBeNull();
+  });
+
+  it('refuses unknown root and lane fields instead of widening its strict frontier', () => {
+    const root = JSON.parse(encoded(frontier())) as Record<string, unknown>;
+    root.futureGeometry = 17;
+    expect(decode(JSON.stringify(root))).toBeNull();
+
+    const lane = JSON.parse(encoded(frontier())) as {
+      lanes: Array<Record<string, unknown>>;
+    };
+    lane.lanes[0]!.futureOffset = 1;
+    expect(decode(JSON.stringify(lane))).toBeNull();
+
+    const provenance = JSON.parse(encoded(frontier())) as {
+      provenance: Record<string, unknown>;
+    };
+    provenance.provenance.futurePlane = 'scan';
+    expect(decode(JSON.stringify(provenance))).toBeNull();
+  });
+
+  it('binds a continuation to its exact source instance, configured base, and scan plane', () => {
+    const token = encoded(frontier());
+    expect(decodeAzureScanContinuation({
+      continuation: { v: 1, token },
+      provenance: { ...PROVENANCE, sourceInstanceId: '5c01b2e2-5b99-4f40-836d-058e140b6411' },
+    })).toBeNull();
+    expect(decodeAzureScanContinuation({
+      continuation: { v: 1, token },
+      provenance: { ...PROVENANCE, configuredBaseUrl: 'https://server.example.test/tfs/CollectionB' },
+    })).toBeNull();
+
+    const foreignPlane = JSON.parse(token) as {
+      provenance: Record<string, unknown>;
+    };
+    foreignPlane.provenance.plane = 'detail';
+    expect(decode(JSON.stringify(foreignPlane))).toBeNull();
   });
 
   it('carries only the invocation frontier', () => {

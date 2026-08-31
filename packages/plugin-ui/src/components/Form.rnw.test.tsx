@@ -306,6 +306,38 @@ describe('canonical Action Form presentation', () => {
     mount.unmount();
   });
 
+  it('associates field descriptions with text, selection, and toggle controls', () => {
+    const mount = mountForm(
+      <>
+        <Form.Field label="Name" description="Shown to collaborators.">
+          <Form.TextField label="Name" value="" onChange={() => undefined} />
+        </Form.Field>
+        <Form.Field label="Mode" description="Controls refresh behavior.">
+          <Form.Select
+            label="Mode"
+            options={[{ value: 'poll', label: 'Polling' }]}
+            value="poll"
+            onChange={() => undefined}
+          />
+        </Form.Field>
+        <Form.Field label="Enabled" description="Allows background refresh.">
+          <Form.Toggle label="Enabled" value onChange={() => undefined} />
+        </Form.Field>
+      </>,
+    );
+
+    for (const control of [
+      mount.container.querySelector<HTMLElement>('input[aria-label="Name"]'),
+      mount.container.querySelector<HTMLElement>('[role="radiogroup"]'),
+      mount.container.querySelector<HTMLElement>('[role="switch"]'),
+    ]) {
+      const descriptionId = control?.getAttribute('aria-describedby');
+      expect(descriptionId).toBeTruthy();
+      expect(mount.container.ownerDocument.getElementById(descriptionId!)?.textContent).not.toBe('');
+    }
+    mount.unmount();
+  });
+
   it('draws visible focus chrome around a Toggle', async () => {
     const mount = mountForm(
       <Form.Toggle label="Enable sync" value={false} onChange={() => undefined} />,

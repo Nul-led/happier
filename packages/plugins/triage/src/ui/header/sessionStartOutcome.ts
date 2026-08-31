@@ -231,6 +231,12 @@ export function describeTriageEntrySessionPhaseV1(
             'plugins.triage.surface.session.promptInvalid',
             'This action\u2019s prompt resolved to no content, so nothing was started. Edit the prompt before trying again.',
           );
+        case 'instructionMissing':
+          return notice(
+            'warning',
+            'plugins.triage.surface.session.instructionMissing',
+            'This action needs an instruction before it can start work. Choose a Prompt Library entry in Configure actions.',
+          );
         case 'promptUnavailable':
           return notice(
             'warning',

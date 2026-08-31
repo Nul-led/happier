@@ -12,6 +12,7 @@ function view(overrides: Partial<CorpusSavedViewV1> = {}): CorpusSavedViewV1 {
     return {
         viewId: '00000001-0000-4000-8000-000000000000',
         label: 'Needs my review',
+        query: 'authentication',
         filters: { ...TRIAGE_LIST_NO_FILTERS_V1, sources: [{ source: GITHUB }], states: ['open'] },
         order: 'smart',
         smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
@@ -30,6 +31,7 @@ describe('resolveTriageEffectiveView', () => {
             viewId: null,
             label: null,
             availability: 'unsavedDefault',
+            query: '',
             filters: TRIAGE_LIST_NO_FILTERS_V1,
             order: 'newest',
             smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
@@ -47,6 +49,7 @@ describe('resolveTriageEffectiveView', () => {
         expect(resolved.viewId).toBe(selected.viewId);
         expect(resolved.label).toBe('Needs my review');
         expect(resolved.availability).toBe('saved');
+        expect(resolved.query).toBe('authentication');
         expect(resolved.filters).toEqual(selected.filters);
         expect(resolved.order).toBe('smart');
         expect(resolved.smartPolicy).toEqual(CORPUS_DEFAULT_SMART_POLICY_V1);

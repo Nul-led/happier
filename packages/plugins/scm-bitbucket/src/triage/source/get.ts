@@ -25,7 +25,11 @@ export async function getBitbucketSourceEntry(
   // provider as a malformed route. `invocationAdmission.ts` says exactly this in
   // its own docstring: two copies would be two answers, and the copy that
   // drifted would be the one guarding a write.
-  const admitted = await admitBitbucketEntryInvocation(input, runtime);
+  const admitted = await admitBitbucketEntryInvocation({
+    instance: input.instance,
+    localRef: input.localRef,
+    lastKnownLocator: input.lastKnownLocator,
+  }, runtime);
   if (!admitted.ok) {
     return { kind: 'unresolved', localRef: input.localRef, failure: admitted.failure };
   }

@@ -100,7 +100,7 @@ describe('GitLab plugin manifest', () => {
     })]);
     expect(modes[1]?.configuration?.fields).toEqual([expect.objectContaining({
       id: 'baseUrl',
-      semantic: 'connectedAccountOrigin',
+      semantic: 'connectedAccountBase',
     })]);
   });
 

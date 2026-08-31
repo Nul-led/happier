@@ -1,6 +1,8 @@
 export { AGENT_EXTERNAL_SESSION_HOOK_LIMITS } from '../../externalSessionHooks.js';
 export { AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS } from '../externalSessionTakeover.js';
 export type { AgentExternalSessionCandidate } from '../../externalSessions.js';
+export type { AgentExternalSessionCandidateIndexLookup } from '../../externalSessions.js';
+export type { AgentExternalSessionCandidateIndexState } from '../../externalSessions.js';
 export type { AgentExternalSessionHookCustodiedEntryProjection } from '../../externalSessionHooks.js';
 export type { AgentExternalSessionHookInstallationVariant } from '../../externalSessionHooks.js';
 export type { AgentExternalSessionHookMapEventRequest } from '../../externalSessionHooks.js';

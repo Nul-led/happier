@@ -13,6 +13,15 @@ export const BITBUCKET_CONNECTED_ACCOUNT_SERVICE_ID = 'bitbucket-account';
 /** The one source-local entry kind. */
 export const BITBUCKET_PULL_REQUEST_KIND_ID = 'pull-request';
 
+/** The plugin-local Action ids carrying this source's operation roles. */
+export const BITBUCKET_TRIAGE_ACTION_IDS = Object.freeze({
+  listInstances: 'triage-list-instances',
+  scan: 'triage-scan',
+  get: 'triage-get',
+  prepareReviewWorkspace: 'triage-prepare-review-workspace',
+  verifyReviewWorkspace: 'triage-verify-review-workspace',
+});
+
 /**
  * The same-plugin renderer bound to the required source-owned detail role, and the UI artifact it
  * mounts. The role is required, so this identity must not move once the source is admitted, and

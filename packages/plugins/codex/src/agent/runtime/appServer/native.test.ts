@@ -742,8 +742,12 @@ describe('createCodexNativeAppServerSessionRuntime', () => {
       serviceId: 'openai-codex',
       reason: 'credential_expired',
     })).resolves.toEqual({ status: 'refreshed' });
-    await expect(host.reportCapacityFailure?.({ kind: 'capacity_exhausted' }))
-      .resolves.toBeUndefined();
+    await expect(host.refreshRuntimeAuth?.({
+      serviceId: 'openai-codex',
+      targetId: 'session-1',
+      classification: { kind: 'capacity_exhausted' },
+      reason: 'provider_session_capacity_failure',
+    })).resolves.toEqual({ status: 'refreshed' });
 
     expect(refreshRuntimeAuth).toHaveBeenNthCalledWith(1, {
       serviceId: 'openai-codex',

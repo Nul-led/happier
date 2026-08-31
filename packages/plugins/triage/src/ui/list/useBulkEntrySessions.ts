@@ -13,6 +13,7 @@ import {
     resolveTriageActionPlacementV1,
 } from '../../sessions/actionLaunch.js';
 import {
+    resolveTriageActionInstructionV1,
     resolveTriageActionReferencesV1,
     type TriageActionReferencesV1,
     type TriageActionResolutionHostV1,
@@ -21,7 +22,11 @@ import {
     readTriageProjectRegistryV1,
     type TriageProjectRegistryHostV1,
 } from '../../sessions/projectCandidates.js';
-import type { TriageActionV1 } from '../../settings/actions.js';
+import {
+    hasTriageActionInstructionSourceV1,
+    requiresTriageActionInstructionV1,
+    type TriageActionV1,
+} from '../../settings/actions.js';
 import {
     projectTriageSessionPlacementCandidateV1,
     projectTriagePreparedWorkspaceSelectionInputV1,
@@ -70,20 +75,22 @@ import {
  * chooses a directory or re-decides a materialization.
  *
  * **The action's profile and prompt are resolved ONCE, for the press**
- * (`PLAN.md` §0a A6), and so is the reader's Agent/target choice: the host's
- * New Session surface opens once and its settlement is spent by every unit,
- * each under its OWN creation key. One press is one question to the reader,
- * whether it asks for one Session or twelve.
+ * (`PLAN.md` §0a A6). Placement is resolved at the Session boundary instead:
+ * a shared destination settles once, while one-per-entry settles each unit
+ * against that entry's own candidates before any Session starts. Those are
+ * transient host-owned choices, not a Triage draft store, and each unit still
+ * carries its OWN creation key.
  *
  * A press that arrives while one is in flight is ignored rather than queued,
  * for the same reason a single-entry press is: two presses of one action are
- * one request, and admitting the second would open a second New Session surface
- * and mint a second set of creation keys for Sessions the first is creating.
+ * one request, and admitting the second would mint a second set of creation
+ * keys for Sessions the first is creating.
  *
- * A `send` action travels on the start as one idempotent structured input. Its
- * attachment array contains every entry in the unit, so "one Session for all"
- * gives the model every selected entry as initial context without provider
- * prose in the prompt or a follow-up send that navigation could retire.
+ * A direct destination travels on the start as one idempotent structured input
+ * when Prompt Library or a shipped fallback supplied an actual instruction,
+ * even when the selected action's single-entry default was `compose`. Its
+ * attachment array contains every entry in the unit; delivery remains inside
+ * the canonical start/link/send owner, before bulk-owned final navigation.
  */
 
 export type TriageBulkSessionOutcomeV1 = TriageBulkSessionUnitResultV1<
@@ -135,11 +142,12 @@ export type TriageBulkUnavailableReasonV1 =
     | 'newSessionUnsupported'
     | 'newSessionUnavailable'
     | 'checkoutRequiresNewSessionAuthoring'
-    | 'composeRequiresNewSessionAuthoring'
+    | 'sharedPlacementIncompatible'
     /** The action names a profile or prompt the catalog no longer holds. */
     | 'profileMissing'
     | 'promptMissing'
     | 'promptInvalid'
+    | 'instructionMissing'
     /** The catalog did not answer; the reference may well still be good. */
     | 'profileUnavailable'
     | 'promptUnavailable'
@@ -215,8 +223,172 @@ export function mergeTriageBulkRetryResultsV1(
     previous: readonly TriageBulkSessionOutcomeV1[],
     retried: readonly TriageBulkSessionOutcomeV1[],
 ): readonly TriageBulkSessionOutcomeV1[] {
-    const replacementByUnit = new Map(retried.map((result) => [result.unit, result] as const));
-    return Object.freeze(previous.map((result) => replacementByUnit.get(result.unit) ?? result));
+    const replacementByKey = new Map(
+        retried.map((result) => [result.unit.creationKey, result] as const),
+    );
+    return Object.freeze(previous.map((result) => {
+        const replacement = replacementByKey.get(result.unit.creationKey);
+        if (replacement === undefined) return result;
+        // Cancellation and response loss add no information. In particular,
+        // they must never erase a Session id or a successfully linked/delivered
+        // entry the previous answer already established.
+        if (result.status === 'settled' && replacement.status !== 'settled') return result;
+        if (result.status === 'unknownOutcome' && replacement.status === 'notStarted') return result;
+        if (result.status !== 'settled' || replacement.status !== 'settled') return replacement;
+        return Object.freeze({
+            ...replacement,
+            outcome: Object.freeze({
+                start: preferTriageBulkStartResultV1(
+                    result.outcome.start,
+                    replacement.outcome.start,
+                ),
+                entries: mergeTriageBulkEntryOutcomesV1(
+                    result.outcome.entries,
+                    replacement.outcome.entries,
+                ),
+            }),
+        });
+    }));
+}
+
+function startKnowledgeRank(result: TriageStartEntrySessionResultV1): number {
+    if (result.type === 'opened') return 5;
+    if (result.type === 'linked') return 4;
+    if (result.type === 'openPending') return 3;
+    if (result.type === 'linkPending') return 2;
+    if (result.type === 'creationPending') return 1;
+    return 0;
+}
+
+function readStartDelivery(
+    result: TriageStartEntrySessionResultV1,
+): 'accepted' | 'alreadyAccepted' | 'outcomeUnknown' | 'rejected' | 'none' | 'notRequested' | undefined {
+    return result.type === 'opened' || result.type === 'linked' || result.type === 'openPending'
+        ? result.delivery
+        : result.type === 'linkPending'
+            ? result.delivery
+            : undefined;
+}
+
+function deliveryKnowledgeRank(
+    delivery: ReturnType<typeof readStartDelivery>,
+): number {
+    if (delivery === 'accepted' || delivery === 'alreadyAccepted') return 3;
+    if (delivery === 'outcomeUnknown') return 2;
+    if (delivery === 'rejected' || delivery === 'none' || delivery === 'notRequested') return 1;
+    return 0;
+}
+
+function hasKnownTriageBulkSessionV1(
+    result: TriageStartEntrySessionResultV1,
+): result is Extract<
+    TriageStartEntrySessionResultV1,
+    Readonly<{ type: 'opened' | 'linked' | 'linkPending' | 'openPending' }>
+> {
+    return result.type === 'opened'
+        || result.type === 'linked'
+        || result.type === 'linkPending'
+        || result.type === 'openPending';
+}
+
+function preferTriageBulkStartResultV1(
+    previous: TriageStartEntrySessionResultV1,
+    retried: TriageStartEntrySessionResultV1,
+): TriageStartEntrySessionResultV1 {
+    const previousHasSession = hasKnownTriageBulkSessionV1(previous);
+    const retriedHasSession = hasKnownTriageBulkSessionV1(retried);
+    if (previousHasSession !== retriedHasSession) {
+        // A retry can never erase a known Session id, but a conclusive answer
+        // must replace creationPending because that arm established no Session
+        // success at all. Otherwise a terminal same-key creation failure would
+        // remain visibly retryable forever.
+        return retriedHasSession ? retried : previous;
+    }
+    if (!previousHasSession && !retriedHasSession) return retried;
+    const previousRank = startKnowledgeRank(previous);
+    const retriedRank = startKnowledgeRank(retried);
+    const preferred = retriedRank !== previousRank
+        ? retriedRank > previousRank ? retried : previous
+        : deliveryKnowledgeRank(readStartDelivery(retried))
+            >= deliveryKnowledgeRank(readStartDelivery(previous))
+            ? retried
+            : previous;
+    const previousDelivery = readStartDelivery(previous);
+    const retriedDelivery = readStartDelivery(retried);
+    const delivery = deliveryKnowledgeRank(retriedDelivery)
+        >= deliveryKnowledgeRank(previousDelivery)
+        ? retriedDelivery
+        : previousDelivery;
+    if (delivery === undefined
+        || (preferred.type !== 'opened'
+            && preferred.type !== 'linked'
+            && preferred.type !== 'linkPending'
+            && preferred.type !== 'openPending')) return preferred;
+    // Phase progress and admission progress are independent facts. A retry may
+    // prove that navigation opened while its transport answer is less precise;
+    // keep the later phase without erasing an already accepted structured send.
+    return Object.freeze({ ...preferred, delivery });
+}
+
+function sameTriageBulkEntryRefV1(
+    left: TriageBulkEntryOutcomeV1['entryRef'],
+    right: TriageBulkEntryOutcomeV1['entryRef'],
+): boolean {
+    return left.source.pluginId === right.source.pluginId
+        && left.source.localId === right.source.localId
+        && left.kindId === right.kindId
+        && left.collisionScope === right.collisionScope
+        && left.entryId === right.entryId;
+}
+
+function preferKnownValue<T extends string>(
+    previous: T,
+    retried: T,
+    rank: Readonly<Record<T, number>>,
+): T {
+    return rank[retried] >= rank[previous] ? retried : previous;
+}
+
+function mergeTriageBulkEntryOutcomesV1(
+    previous: readonly TriageBulkEntryOutcomeV1[],
+    retried: readonly TriageBulkEntryOutcomeV1[],
+): readonly TriageBulkEntryOutcomeV1[] {
+    return Object.freeze(retried.map((candidate) => {
+        const known = previous.find((entry) => sameTriageBulkEntryRefV1(entry.entryRef, candidate.entryRef));
+        if (known === undefined) return candidate;
+        return Object.freeze({
+            ...candidate,
+            session: preferKnownValue(known.session, candidate.session, {
+                notCreated: 0,
+                uncertain: 1,
+                existing: 2,
+                rejoined: 2,
+                created: 2,
+            }),
+            attachment: preferKnownValue(known.attachment, candidate.attachment, {
+                notRequested: 0,
+                refused: 1,
+                uncertain: 2,
+                carried: 3,
+            }),
+            link: preferKnownValue(known.link, candidate.link, {
+                notAttempted: 0,
+                conflictedOrUnavailable: 1,
+                created: 2,
+            }),
+            newSessionSeed: preferKnownValue(known.newSessionSeed, candidate.newSessionSeed, {
+                notRequested: 0,
+                refused: 1,
+                applied: 2,
+            }),
+            directSend: preferKnownValue(known.directSend, candidate.directSend, {
+                notRequested: 0,
+                refused: 1,
+                uncertain: 2,
+                applied: 3,
+            }),
+        });
+    }));
 }
 
 export type TriageBulkStartRouteV1 =
@@ -228,15 +400,13 @@ export type TriageBulkStartRouteV1 =
 export function resolveTriageBulkStartRouteV1(
     destination: TriageBulkSessionDestinationV1,
     checkoutIntent: ReturnType<typeof resolveTriageActionCheckoutV1>,
-    target: TriageActionV1['target'],
+    instruction: string | null,
 ): TriageBulkStartRouteV1 {
     if (destination === 'attachAllToNewSession') return 'seedNewSession';
-    // Compose is authoring, so its text and attachments must exist in the
-    // canonical New Session draft before spawn. The two direct destinations
-    // cannot express N independent drafts; spawning first and patching each
-    // composer afterwards starts empty Sessions and races the runtime. Fail
-    // closed here and leave Attach all to New Session available instead.
-    if (target.kind === 'agent' && target.delivery === 'compose') return 'refusedCompose';
+    // A direct destination may override the single-entry compose default, but
+    // it cannot invent the task. Entry attachments supply facts, not intent;
+    // promptless Ask remains on the authoring destination.
+    if (instruction === null || instruction.trim().length === 0) return 'refusedCompose';
     return checkoutIntent === 'none' || checkoutIntent === 'reuseWorkspace'
         ? 'direct'
         : 'refusedCheckout';
@@ -392,8 +562,51 @@ type TriageBulkRetryContextV1 = Readonly<{
     action: TriageActionV1;
     destination: Exclude<TriageBulkSessionDestinationV1, 'attachAllToNewSession'>;
     promptText: string | null;
-    settlement: unknown;
+    settlements: readonly Readonly<{ creationKey: string; settlement: unknown }>[];
 }>;
+
+function sameTriageBulkRepositoryV1(
+    left: NonNullable<TriageBulkSelectedEntryV1['repository']>,
+    right: NonNullable<TriageBulkSelectedEntryV1['repository']>,
+): boolean {
+    return left.kind === right.kind
+        && left.deployment === right.deployment
+        && left.repository === right.repository;
+}
+
+/** Whether one workspace can truthfully represent every entry in a shared unit. */
+export function isTriageBulkSharedPlacementCompatibleV1(input: Readonly<{
+    workspaceMode: TriageActionV1['workspaceMode'];
+    entries: readonly Pick<TriageBulkSelectedEntryV1, 'repository'>[];
+}>): boolean {
+    if (input.workspaceMode === 'reference_only') return true;
+    if (input.workspaceMode === 'pull_request') return input.entries.length === 1;
+    const first = input.entries[0]?.repository;
+    return first !== undefined
+        && input.entries.every((entry) => entry.repository !== undefined
+            && sameTriageBulkRepositoryV1(first, entry.repository));
+}
+
+/**
+ * The destination compatibility answer shared by the mounted controls and the
+ * press owner. Keeping it here means an omitted control and a programmatic
+ * press fail closed for the same reason instead of becoming two policy paths.
+ */
+export function readTriageBulkDestinationUnavailableReasonV1(input: Readonly<{
+    action: TriageActionV1;
+    destination: TriageBulkSessionDestinationV1;
+    entries: readonly Pick<TriageBulkSelectedEntryV1, 'repository'>[];
+}>): TriageBulkUnavailableReasonV1 | null {
+    if (input.action.target.kind === 'reviewStart') return 'reviewStartUnsupported';
+    if (input.destination !== 'attachAllToNewSession'
+        && !hasTriageActionInstructionSourceV1(input.action.target)) return 'instructionMissing';
+    if (input.destination === 'oneSessionForAllEntries'
+        && !isTriageBulkSharedPlacementCompatibleV1({
+            workspaceMode: input.action.workspaceMode,
+            entries: input.entries,
+        })) return 'sharedPlacementIncompatible';
+    return null;
+}
 
 export function useTriageBulkEntrySessions(
     options?: TriageBulkSessionsOptionsV1,
@@ -416,41 +629,32 @@ export function useTriageBulkEntrySessions(
         };
     }, []);
 
-    /** Reads the one project registry, then delegates agreement to its pure owner. */
-    const resolveSeedPlacement = React.useCallback(async (
-        request: TriageBulkSessionsRequestV1,
-        preferences: Parameters<typeof resolveTriageActionPlacementV1>[0]['profile'],
-    ): Promise<TriageBulkSeedPlacementV1> => {
-        const registry = await readTriageProjectRegistryV1(host);
-        return resolveTriageBulkSeedPlacementV1({
-            workspaceMode: request.action.workspaceMode,
-            ...(preferences === undefined ? {} : { preferences }),
-            entries: request.entries,
-            projects: registry.status === 'read' ? registry.projects : [],
-            // One reachable match in a PAGE of the registry is not one in the
-            // registry, and a bulk press multiplies whatever that mistake costs
-            // by the size of the selection.
-            registryComplete: registry.status === 'read' && registry.complete,
-        });
-    }, [host]);
-
     const run = React.useCallback((request: TriageBulkSessionsRequestV1) => {
         if (inFlight.current) return;
         retryContext.current = null;
         const action = request.action;
-        // Refused before anything opens, exactly as the single press refuses
-        // them: spending the reader's Agent and directory choice on a start the
-        // wire cannot carry is worse than telling them first.
-        if (action.target.kind === 'reviewStart') {
-            setPhase(unavailable('reviewStartUnsupported'));
-            return;
-        }
-        if (triageNewSessionWireMaterializationV1(action.workspaceMode) === null) {
-            setPhase(unavailable('preparedWorkspaceUnsupported'));
+        if (requiresTriageActionInstructionV1(action.target)
+            && !hasTriageActionInstructionSourceV1(action.target)) {
+            setPhase(unavailable('instructionMissing'));
             return;
         }
         if (request.entries.length === 0) {
             setPhase(unavailable('noEntriesAvailable'));
+            return;
+        }
+        const destinationUnavailable = readTriageBulkDestinationUnavailableReasonV1({
+            action,
+            destination: request.destination,
+            entries: request.entries,
+        });
+        // Refused before anything opens, through the same compatibility answer
+        // that omits the mounted dead control when all facts are already known.
+        if (destinationUnavailable !== null) {
+            setPhase(unavailable(destinationUnavailable));
+            return;
+        }
+        if (triageNewSessionWireMaterializationV1(action.workspaceMode) === null) {
+            setPhase(unavailable('preparedWorkspaceUnsupported'));
             return;
         }
         // The fan-out, planned before ANY host read and before the reader is
@@ -498,37 +702,67 @@ export function useTriageBulkEntrySessions(
                 //    honoured refuses here — never after Sessions exist, and
                 //    never by quietly degrading to the default the person
                 //    configured away from.
-                const references = await resolveTriageActionReferencesV1(host, action);
+                const references = await resolveTriageActionReferencesV1(
+                    host,
+                    action,
+                    { signal: controller.signal },
+                );
                 if (retired.current) return;
+                if (controller.signal.aborted) {
+                    setPhase(IDLE);
+                    return;
+                }
                 if (references.status !== 'resolved') {
                     setPhase(unavailable(referenceRefusal(references)));
                     return;
                 }
                 const preferences = references.profile?.preferences;
-                const promptText = references.prompt?.text ?? null;
+                const promptText = resolveTriageActionInstructionV1(
+                    action,
+                    references.prompt?.text ?? null,
+                );
 
-                const applicableEntries = plan.status === 'seedNewSession'
-                    ? plan.entries
-                    : plan.units.flatMap((unit) => unit.entries);
-                const placement = await resolveSeedPlacement(
-                    { ...request, entries: applicableEntries },
-                    preferences,
+                // One registry read for the whole press. The placement owner is
+                // then applied to the entries of each resulting Session: once
+                // for a shared/seed destination, independently for each unit
+                // of the per-entry destination.
+                const registry = await readTriageProjectRegistryV1(
+                    host,
+                    { signal: controller.signal },
                 );
                 if (retired.current) return;
+                if (controller.signal.aborted) {
+                    setPhase(IDLE);
+                    return;
+                }
+                const placementFor = (
+                    entries: readonly Pick<TriageBulkSelectedEntryV1, 'repository'>[],
+                ): TriageBulkSeedPlacementV1 => resolveTriageBulkSeedPlacementV1({
+                    workspaceMode: action.workspaceMode,
+                    ...(preferences === undefined ? {} : { preferences }),
+                    entries,
+                    projects: registry.status === 'read' ? registry.projects : [],
+                    // An apparent exact match in part of the registry remains
+                    // ambiguous; every unit consumes the same completeness fact.
+                    registryComplete: registry.status === 'read' && registry.complete,
+                });
                 const checkoutIntent = resolveTriageActionCheckoutV1(action.workspaceMode, preferences);
                 const startRoute = resolveTriageBulkStartRouteV1(
                     request.destination,
                     checkoutIntent,
-                    action.target,
+                    promptText,
                 );
-                if (startRoute === 'refusedCheckout' || startRoute === 'refusedCompose') {
-                    setPhase(unavailable(startRoute === 'refusedCompose'
-                        ? 'composeRequiresNewSessionAuthoring'
-                        : 'checkoutRequiresNewSessionAuthoring'));
+                if (startRoute === 'refusedCompose') {
+                    setPhase(unavailable('instructionMissing'));
+                    return;
+                }
+                if (startRoute === 'refusedCheckout') {
+                    setPhase(unavailable('checkoutRequiresNewSessionAuthoring'));
                     return;
                 }
 
                 if (plan.status === 'seedNewSession') {
+                    const placement = placementFor(plan.entries);
                     const seeded = await seedNewSession({
                         host,
                         entries: plan.entries,
@@ -554,55 +788,64 @@ export function useTriageBulkEntrySessions(
                     return;
                 }
 
-                // 4. One question to the reader for the whole press.
-                setPhase(CHOOSING);
-                const draft = await requestTriageNewSessionDraft(
-                    host,
-                    triageNewSessionDraftSeedV1(
-                        {},
-                        placement.kind === 'exact' ? placement.placement : undefined,
-                        {
-                            ...(action.profileId === null ? {} : { profileId: action.profileId }),
-                            checkoutIntent,
-                            ...(placement.kind !== 'candidates' ? {} : {
-                                candidates: placement.candidates.map(projectTriageSessionPlacementCandidateV1),
-                            }),
-                        },
-                    ),
-                    { signal: controller.signal },
-                );
-                if (retired.current) return;
-                if (draft.status === 'cancelled') {
-                    setPhase(IDLE);
-                    return;
-                }
-                if (draft.status !== 'settled') {
-                    setPhase(unavailable(draft.status === 'unsupported'
-                        ? 'newSessionUnsupported'
-                        : 'newSessionUnavailable'));
-                    return;
-                }
-
-                // Whether this settlement can build a destination at all depends
-                // only on the action's mode and what the reader settled — not on
-                // which unit is being started. Answering it ONCE, before
-                // anything runs, is what keeps a refusal an honest "nothing was
-                // started" instead of N units each reported as "attempted,
-                // outcome not observed" when nothing was ever attempted.
-                const firstUnit = plan.units[0];
-                if (firstUnit === undefined) {
+                if (plan.units.length === 0) {
                     setPhase(unavailable('noEntriesAvailable'));
                     return;
                 }
-                if (projectTriageNewSessionDestinationV1({
-                    workspaceMode: action.workspaceMode,
-                    creationKey: firstUnit.creationKey,
-                    settlement: draft.settlement,
-                    ...(action.profileId === null ? {} : { profileId: action.profileId }),
-                }).status === 'refused') {
-                    setPhase(unavailable('newSessionUnavailable'));
-                    return;
+
+                // A shared destination asks once. A per-entry destination asks
+                // once per resulting Session so a checkout for repository A is
+                // never silently reused for repository B. All choices settle
+                // before the first side effect; cancellation therefore still
+                // has an honest "nothing started" outcome.
+                const settlements: Array<Readonly<{ creationKey: string; settlement: unknown }>> = [];
+                for (const unit of plan.units) {
+                    const placement = placementFor(unit.entries);
+                    setPhase(CHOOSING);
+                    const draft = await requestTriageNewSessionDraft(
+                        host,
+                        triageNewSessionDraftSeedV1(
+                            {},
+                            placement.kind === 'exact' ? placement.placement : undefined,
+                            {
+                                ...(action.profileId === null ? {} : { profileId: action.profileId }),
+                                checkoutIntent,
+                                ...(placement.kind !== 'candidates' ? {} : {
+                                    candidates: placement.candidates.map(projectTriageSessionPlacementCandidateV1),
+                                }),
+                            },
+                        ),
+                        { signal: controller.signal },
+                    );
+                    if (retired.current) return;
+                    if (draft.status === 'cancelled' || controller.signal.aborted) {
+                        setPhase(IDLE);
+                        return;
+                    }
+                    if (draft.status !== 'settled') {
+                        setPhase(unavailable(draft.status === 'unsupported'
+                            ? 'newSessionUnsupported'
+                            : 'newSessionUnavailable'));
+                        return;
+                    }
+                    if (projectTriageNewSessionDestinationV1({
+                        workspaceMode: action.workspaceMode,
+                        creationKey: unit.creationKey,
+                        settlement: draft.settlement,
+                        ...(action.profileId === null ? {} : { profileId: action.profileId }),
+                    }).status === 'refused') {
+                        setPhase(unavailable('newSessionUnavailable'));
+                        return;
+                    }
+                    settlements.push(Object.freeze({
+                        creationKey: unit.creationKey,
+                        settlement: draft.settlement,
+                    }));
                 }
+
+                const settlementForUnit = (unit: Readonly<{ creationKey: string }>): unknown => (
+                    settlements.find((candidate) => candidate.creationKey === unit.creationKey)?.settlement
+                );
 
                 const total = plan.units.length;
                 let started = 0;
@@ -613,7 +856,7 @@ export function useTriageBulkEntrySessions(
                         'attachAllToNewSession'
                     >,
                     promptText,
-                    settlement: draft.settlement,
+                    settlements: Object.freeze(settlements),
                 });
                 setPhase(Object.freeze({ kind: 'starting', started, total }));
                 const results = await runTriageBulkEntrySessionStartsV1({
@@ -622,7 +865,8 @@ export function useTriageBulkEntrySessions(
                     action,
                     destination: request.destination,
                     promptText,
-                    settlement: draft.settlement,
+                    settlement: settlements[0]?.settlement,
+                    settlementForUnit,
                     signal: controller.signal,
                     onStarted: () => {
                         started += 1;
@@ -643,12 +887,15 @@ export function useTriageBulkEntrySessions(
                     refusals: plan.refusals,
                 }));
             } catch {
-                if (!retired.current) setPhase(unavailable('dispatch'));
+                if (!retired.current) {
+                    setPhase(controller.signal.aborted ? IDLE : unavailable('dispatch'));
+                }
             } finally {
                 inFlight.current = false;
+                if (abort.current === controller) abort.current = null;
             }
         })();
-    }, [host, mintCreationKey, resolveSeedPlacement]);
+    }, [host, mintCreationKey]);
 
     const retryable = phase.kind === 'settled'
         && phase.results.some(isTriageBulkSessionOutcomeRetryableV1);
@@ -674,8 +921,12 @@ export function useTriageBulkEntrySessions(
                     action: context.action,
                     destination: context.destination,
                     promptText: context.promptText,
-                    settlement: context.settlement,
+                    settlement: context.settlements[0]?.settlement,
+                    settlementForUnit: (unit) => context.settlements.find(
+                        (candidate) => candidate.creationKey === unit.creationKey,
+                    )?.settlement,
                     signal: controller.signal,
+                    previousResults: prior.results,
                     onStarted: () => {
                         started += 1;
                         if (!retired.current) {
@@ -692,12 +943,17 @@ export function useTriageBulkEntrySessions(
                 if (!retired.current) setPhase(prior);
             } finally {
                 inFlight.current = false;
+                if (abort.current === controller) abort.current = null;
             }
         })();
     }, [host, phase]);
 
     const cancel = React.useCallback(() => { abort.current?.abort(); }, []);
     const reset = React.useCallback(() => {
+        if (inFlight.current) {
+            abort.current?.abort();
+            return;
+        }
         retryContext.current = null;
         setPhase(IDLE);
     }, []);

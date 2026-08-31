@@ -3,8 +3,6 @@ import type { JsonValue } from '@happier-dev/plugin-sdk';
 import type { PluginContributionIdentity } from '@happier-dev/plugin-sdk/manifest';
 import { PLUGIN_ACCOUNT_STORAGE_LIMITS_V1 } from '@happier-dev/plugin-sdk/storage';
 import {
-    MAX_TRIAGE_COLLISION_SCOPE_UTF8_BYTES_V1,
-    MAX_TRIAGE_IDENTIFIER_UTF8_BYTES_V1,
     normalizeTriageSingleLineV1,
 } from '@happier-dev/triage-protocol/v1';
 
@@ -14,14 +12,13 @@ import {
     type CorpusSmartPolicyV1,
 } from '../corpus/query/smartPolicy.js';
 import type {
-    CorpusAttentionFilterValueV1,
-    CorpusScopeFilterValueV1,
-    CorpusSourceFilterValueV1,
-    CorpusStateFilterValueV1,
-    CorpusTypeFilterValueV1,
     SurfaceFilterSelectionV1,
     TriageListOrderV1,
 } from '../projection/listWindow.js';
+import {
+    TriageListFilterSelectionV1Schema,
+    TriageListSettledQueryV1Schema,
+} from '../actions/listEntriesProtocol.js';
 
 import { readExactKeys } from './storedValue.js';
 import type { TriageCatalogStoreV1 } from './accountKvCatalogStore.js';
@@ -72,6 +69,8 @@ export type CorpusSavedViewV1 = Readonly<{
     /** Target-minted opaque id; neither an entry/source identity nor a storage tag. */
     viewId: string;
     label: string;
+    /** The settled list query; an empty string means no search constraint. */
+    query: string;
     filters: SurfaceFilterSelectionV1;
     order: TriageListOrderV1;
     /** Retained across a non-Smart order switch, consumed only when `order === 'smart'`. */
@@ -107,6 +106,7 @@ export type CorpusSavedViewsReadV1 = Readonly<{
 
 export type CorpusSavedViewsRejectionV1 =
     | 'label'
+    | 'query'
     | 'duplicateFacetValue'
     | 'filterValue'
     | 'order'
@@ -132,6 +132,7 @@ type CorpusSavedViewsAppliedPlanV1 =
 
 export type CorpusSavedViewDraftV1 = Readonly<{
     label: string;
+    query: string;
     filters: SurfaceFilterSelectionV1;
     order: TriageListOrderV1;
     smartPolicy: CorpusSmartPolicyV1;
@@ -160,57 +161,10 @@ function utf8ByteLength(value: string): number {
 }
 
 const ORDERS: readonly TriageListOrderV1[] = Object.freeze(['newest', 'oldest', 'smart']);
-const STATES: readonly CorpusStateFilterValueV1[] = Object.freeze(['open', 'done', 'absent', 'unresolved']);
-const ATTENTION: readonly CorpusAttentionFilterValueV1[] = Object.freeze(['required', 'suggested', 'none']);
-
-function readBoundedString(value: unknown, maxUtf8Bytes: number): string | null {
-    if (typeof value !== 'string') return null;
-    // The canonical single-line rule, so a saved label cannot carry a control
-    // character that costs one byte here and six once JSON escapes it.
-    const normalized = normalizeTriageSingleLineV1(value);
-    if (normalized.length === 0) return null;
-    return utf8ByteLength(normalized) > maxUtf8Bytes ? null : normalized;
-}
-
 function readSingleLineString(value: unknown): string | null {
     if (typeof value !== 'string') return null;
     const normalized = normalizeTriageSingleLineV1(value);
     return normalized.length === 0 ? null : normalized;
-}
-
-function readSource(value: unknown): PluginContributionIdentity | null {
-    const candidate = readExactKeys(value, ['pluginId', 'localId']);
-    if (!candidate) return null;
-    const pluginId = readBoundedString(candidate.pluginId, MAX_TRIAGE_IDENTIFIER_UTF8_BYTES_V1);
-    const localId = readBoundedString(candidate.localId, MAX_TRIAGE_IDENTIFIER_UTF8_BYTES_V1);
-    return pluginId === null || localId === null ? null : { pluginId, localId };
-}
-
-function readSourceValue(value: unknown): CorpusSourceFilterValueV1 | null {
-    const candidate = readExactKeys(value, ['source']);
-    if (!candidate) return null;
-    const source = readSource(candidate.source);
-    return source === null ? null : { source };
-}
-
-function readTypeValue(value: unknown): CorpusTypeFilterValueV1 | null {
-    const candidate = readExactKeys(value, ['source', 'kindId']);
-    if (!candidate) return null;
-    const source = readSource(candidate.source);
-    const kindId = readBoundedString(candidate.kindId, MAX_TRIAGE_IDENTIFIER_UTF8_BYTES_V1);
-    return source === null || kindId === null ? null : { source, kindId };
-}
-
-function readScopeValue(value: unknown): CorpusScopeFilterValueV1 | null {
-    const candidate = readExactKeys(value, ['source', 'collisionScope']);
-    if (!candidate) return null;
-    const source = readSource(candidate.source);
-    const collisionScope = typeof candidate.collisionScope === 'string'
-        && candidate.collisionScope.length > 0
-        && utf8ByteLength(candidate.collisionScope) <= MAX_TRIAGE_COLLISION_SCOPE_UTF8_BYTES_V1
-        ? candidate.collisionScope
-        : null;
-    return source === null || collisionScope === null ? null : { source, collisionScope };
 }
 
 /**
@@ -232,26 +186,14 @@ function facetIdentity(value: unknown): string {
     ]);
 }
 
-type FacetOutcome<TValue> =
-    | Readonly<{ ok: true; values: readonly TValue[] }>
-    | Readonly<{ ok: false; reason: CorpusSavedViewsRejectionV1 }>;
-
-function readFacet<TValue>(
-    raw: unknown,
-    read: (value: unknown) => TValue | null,
-): FacetOutcome<TValue> {
-    if (!Array.isArray(raw)) return { ok: false, reason: 'filterValue' };
-    const values: TValue[] = [];
+function hasDuplicateFacetValue(values: readonly unknown[]): boolean {
     const seen = new Set<string>();
-    for (const member of raw) {
-        const parsed = read(member);
-        if (parsed === null) return { ok: false, reason: 'filterValue' };
-        const identity = facetIdentity(parsed);
-        if (seen.has(identity)) return { ok: false, reason: 'duplicateFacetValue' };
+    for (const value of values) {
+        const identity = facetIdentity(value);
+        if (seen.has(identity)) return true;
         seen.add(identity);
-        values.push(parsed);
     }
-    return { ok: true, values };
+    return false;
 }
 
 function readClosedValue<TValue extends string>(
@@ -267,28 +209,17 @@ type FiltersOutcome =
     | Readonly<{ ok: false; reason: CorpusSavedViewsRejectionV1 }>;
 
 function readFilters(raw: unknown): FiltersOutcome {
-    const candidate = readExactKeys(raw, ['sources', 'types', 'scopes', 'states', 'attention']);
-    if (!candidate) return { ok: false, reason: 'filterValue' };
-    const sources = readFacet(candidate.sources, readSourceValue);
-    if (!sources.ok) return sources;
-    const types = readFacet(candidate.types, readTypeValue);
-    if (!types.ok) return types;
-    const scopes = readFacet(candidate.scopes, readScopeValue);
-    if (!scopes.ok) return scopes;
-    const states = readFacet(candidate.states, readClosedValue(STATES));
-    if (!states.ok) return states;
-    const attention = readFacet(candidate.attention, readClosedValue(ATTENTION));
-    if (!attention.ok) return attention;
-    return {
-        ok: true,
-        filters: {
-            sources: sources.values,
-            types: types.values,
-            scopes: scopes.values,
-            states: states.values,
-            attention: attention.values,
-        },
-    };
+    const parsed = TriageListFilterSelectionV1Schema.safeParse(raw);
+    if (!parsed.success) return { ok: false, reason: 'filterValue' };
+    const filters = parsed.data;
+    if (hasDuplicateFacetValue(filters.sources)
+        || hasDuplicateFacetValue(filters.types)
+        || hasDuplicateFacetValue(filters.scopes)
+        || hasDuplicateFacetValue(filters.states)
+        || hasDuplicateFacetValue(filters.attention)) {
+        return { ok: false, reason: 'duplicateFacetValue' };
+    }
+    return { ok: true, filters };
 }
 
 type ViewOutcome =
@@ -301,6 +232,7 @@ type ViewOutcome =
  */
 function readView(viewId: string, draft: Readonly<{
     label: unknown;
+    query: unknown;
     filters: unknown;
     order: unknown;
     smartPolicy: unknown;
@@ -309,13 +241,18 @@ function readView(viewId: string, draft: Readonly<{
     // Labels have no independent provider, transport, or product ceiling.
     const label = readSingleLineString(draft.label);
     if (label === null) return { ok: false, reason: 'label' };
+    const query = TriageListSettledQueryV1Schema.safeParse(draft.query);
+    if (!query.success) return { ok: false, reason: 'query' };
     const order = readClosedValue(ORDERS)(draft.order);
     if (order === null) return { ok: false, reason: 'order' };
     const smartPolicy = parseCorpusSmartPolicy(draft.smartPolicy);
     if (smartPolicy === null) return { ok: false, reason: 'smartPolicy' };
     const filters = readFilters(draft.filters);
     if (!filters.ok) return filters;
-    return { ok: true, view: { viewId, label, filters: filters.filters, order, smartPolicy } };
+    return {
+        ok: true,
+        view: { viewId, label, query: query.data, filters: filters.filters, order, smartPolicy },
+    };
 }
 
 /** A minted view id must look like one: it is opaque, but it is not free-form. */
@@ -346,12 +283,13 @@ export function parseTriageSavedViews(raw: unknown): CorpusSavedViewsReadV1 {
     const views: CorpusSavedViewV1[] = [];
     const ids = new Set<string>();
     for (const member of candidate.views) {
-        const view = readExactKeys(member, ['viewId', 'label', 'filters', 'order', 'smartPolicy']);
+        const view = readExactKeys(member, ['viewId', 'label', 'query', 'filters', 'order', 'smartPolicy']);
         if (!view || typeof view.viewId !== 'string' || !VIEW_ID_PATTERN.test(view.viewId)) return unreadable;
         if (ids.has(view.viewId)) return unreadable;
         ids.add(view.viewId);
         const parsed = readView(view.viewId, {
             label: view.label,
+            query: view.query,
             filters: view.filters,
             order: view.order,
             smartPolicy: view.smartPolicy,
@@ -379,6 +317,7 @@ function toStoredValue(value: CorpusSavedViewsCatalogV1): JsonValue {
         views: value.views.map((view) => ({
             viewId: view.viewId,
             label: view.label,
+            query: view.query,
             filters: {
                 sources: view.filters.sources.map((entry) => ({ source: { ...entry.source } })),
                 types: view.filters.types.map((entry) => ({

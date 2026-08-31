@@ -296,15 +296,87 @@ const GITLAB_PUBLICATION_CONFIRMATION_TRANSLATIONS = Object.freeze({
   ]),
 });
 
-function withPublicationConfirmationMessages<
+const GITLAB_OVERVIEW_KEYS = Object.freeze([
+  'plugins.gitlab.ui.overview.showingLaunchObservation',
+  'plugins.gitlab.ui.overview.showingLastRead',
+  'plugins.gitlab.ui.overview.description',
+  'plugins.gitlab.ui.overview.descriptionShortened',
+  'plugins.gitlab.ui.overview.reread',
+] as const);
+
+function gitlabOverviewMessages(values: readonly string[]): Readonly<Record<string, string>> {
+  if (values.length !== GITLAB_OVERVIEW_KEYS.length) {
+    throw new Error('GitLab Overview translation count does not match its canonical key set');
+  }
+  return Object.freeze(Object.fromEntries(
+    GITLAB_OVERVIEW_KEYS.map((key, index) => [key, values[index] ?? '']),
+  ));
+}
+
+const GITLAB_OVERVIEW_TRANSLATIONS = Object.freeze({
+  en: gitlabOverviewMessages([
+    'Showing the launch observation', 'Showing the last overview read', 'Description',
+    'The GitLab description was shortened to fit the Action response.', 'Re-read this overview from GitLab',
+  ]),
+  de: gitlabOverviewMessages([
+    'Die Startbeobachtung wird angezeigt', 'Die zuletzt gelesene Übersicht wird angezeigt', 'Beschreibung',
+    'Die GitLab-Beschreibung wurde gekürzt, damit sie in die Action-Antwort passt.', 'Diese Übersicht erneut aus GitLab lesen',
+  ]),
+  ru: gitlabOverviewMessages([
+    'Показано исходное наблюдение', 'Показан последний прочитанный обзор', 'Описание',
+    'Описание GitLab сокращено, чтобы поместиться в ответ Action.', 'Повторно прочитать этот обзор из GitLab',
+  ]),
+  pl: gitlabOverviewMessages([
+    'Wyświetlono obserwację początkową', 'Wyświetlono ostatnio odczytany przegląd', 'Opis',
+    'Opis z GitLab został skrócony, aby zmieścić się w odpowiedzi akcji.', 'Odczytaj ponownie ten przegląd z GitLab',
+  ]),
+  es: gitlabOverviewMessages([
+    'Se muestra la observación inicial', 'Se muestra la última lectura del resumen', 'Descripción',
+    'La descripción de GitLab se ha acortado para ajustarse a la respuesta de la acción.', 'Volver a leer este resumen desde GitLab',
+  ]),
+  fr: gitlabOverviewMessages([
+    'Affichage de l’observation initiale', 'Affichage de la dernière vue d’ensemble lue', 'Description',
+    'La description GitLab a été raccourcie pour tenir dans la réponse de l’action.', 'Relire cette vue d’ensemble depuis GitLab',
+  ]),
+  it: gitlabOverviewMessages([
+    'Visualizzazione dell’osservazione iniziale', 'Visualizzazione dell’ultima panoramica letta', 'Descrizione',
+    'La descrizione GitLab è stata accorciata per rientrare nella risposta dell’azione.', 'Rileggi questa panoramica da GitLab',
+  ]),
+  pt: gitlabOverviewMessages([
+    'A mostrar a observação inicial', 'A mostrar a última leitura da visão geral', 'Descrição',
+    'A descrição do GitLab foi abreviada para caber na resposta da ação.', 'Voltar a ler esta visão geral no GitLab',
+  ]),
+  ca: gitlabOverviewMessages([
+    'Es mostra l’observació inicial', 'Es mostra la darrera lectura del resum', 'Descripció',
+    'La descripció de GitLab s’ha escurçat per cabre a la resposta de l’acció.', 'Torna a llegir aquest resum de GitLab',
+  ]),
+  'zh-Hans': gitlabOverviewMessages([
+    '正在显示初始观察结果', '正在显示上次读取的概览', '描述',
+    'GitLab 描述已缩短，以适应操作响应。', '从 GitLab 重新读取此概览',
+  ]),
+  'zh-Hant': gitlabOverviewMessages([
+    '正在顯示初始觀察結果', '正在顯示上次讀取的概覽', '描述',
+    'GitLab 描述已縮短，以符合操作回應的大小限制。', '從 GitLab 重新讀取此概覽',
+  ]),
+  ja: gitlabOverviewMessages([
+    '起動時の観測結果を表示しています', '最後に読み込んだ概要を表示しています', '説明',
+    'GitLab の説明はアクション応答に収まるよう短縮されました。', 'GitLab からこの概要を再読み込み',
+  ]),
+});
+
+function withAdditionalLocaleMessages<
   TLocale extends keyof typeof GITLAB_PUBLICATION_CONFIRMATION_TRANSLATIONS,
   TMessages extends Readonly<Record<string, string>>,
 >(locale: TLocale, messages: TMessages) {
-  return Object.freeze({ ...messages, ...GITLAB_PUBLICATION_CONFIRMATION_TRANSLATIONS[locale] });
+  return Object.freeze({
+    ...messages,
+    ...GITLAB_PUBLICATION_CONFIRMATION_TRANSLATIONS[locale],
+    ...GITLAB_OVERVIEW_TRANSLATIONS[locale],
+  });
 }
 
 export const GITLAB_ADDITIONAL_UI_TRANSLATIONS = Object.freeze({
-  "en": withPublicationConfirmationMessages('en', {
+  "en": withAdditionalLocaleMessages('en', {
     ...gitlabSurfaceChromeMessages(['Someone', 'activity', 'edited', 'Show earlier notes', 'Re-read these notes from GitLab', 'Re-read activity from GitLab', 'Show more files', 'Re-read the changed files from GitLab', 'Show older pipelines', 'Re-read the pipelines from GitLab', 'Show more discussions', 'Re-read the discussions from GitLab']),
     ...gitlabProjectedLabelMessages(['Number', 'Author', 'Comments', 'Labels', 'Merge status', 'Approvals', 'State changes', 'Label changes', 'Milestone changes', 'Show more {event}']),
     ...gitlabRecoveryMessages([
@@ -427,7 +499,7 @@ export const GITLAB_ADDITIONAL_UI_TRANSLATIONS = Object.freeze({
     "plugins.gitlab.ui.rawDiffShortened": "The raw diff was shortened",
     "plugins.gitlab.ui.rawDiffShortened.description": "The returned prefix fits Happier’s Action-result boundary.",
   }),
-  "de": withPublicationConfirmationMessages('de', {
+  "de": withAdditionalLocaleMessages('de', {
     ...gitlabSurfaceChromeMessages(['Jemand', 'Aktivität', 'bearbeitet', 'Frühere Notizen anzeigen', 'Diese Notizen erneut aus GitLab lesen', 'Aktivität erneut aus GitLab lesen', 'Weitere Dateien anzeigen', 'Geänderte Dateien erneut aus GitLab lesen', 'Ältere Pipelines anzeigen', 'Pipelines erneut aus GitLab lesen', 'Weitere Diskussionen anzeigen', 'Diskussionen erneut aus GitLab lesen']),
     ...gitlabProjectedLabelMessages(['Nummer', 'Autor', 'Kommentare', 'Labels', 'Merge-Status', 'Freigaben', 'Statusänderungen', 'Label-Änderungen', 'Meilenstein-Änderungen', 'Weitere {event} anzeigen']),
     ...gitlabRecoveryMessages([
@@ -550,7 +622,7 @@ export const GITLAB_ADDITIONAL_UI_TRANSLATIONS = Object.freeze({
     "plugins.gitlab.ui.rawDiffShortened": "Der Roh-Diff wurde gekürzt",
     "plugins.gitlab.ui.rawDiffShortened.description": "Das zurückgegebene Präfix passt in die Ergebnisgrenze der Happier-Action.",
   }),
-  "ru": withPublicationConfirmationMessages('ru', {
+  "ru": withAdditionalLocaleMessages('ru', {
     ...gitlabSurfaceChromeMessages(['Кто-то', 'активность', 'изменено', 'Показать более ранние заметки', 'Повторно прочитать заметки из GitLab', 'Повторно прочитать активность из GitLab', 'Показать ещё файлы', 'Повторно прочитать изменённые файлы из GitLab', 'Показать более старые конвейеры', 'Повторно прочитать конвейеры из GitLab', 'Показать ещё обсуждения', 'Повторно прочитать обсуждения из GitLab']),
     ...gitlabProjectedLabelMessages(['Номер', 'Автор', 'Комментарии', 'Метки', 'Состояние слияния', 'Одобрения', 'Изменения состояния', 'Изменения меток', 'Изменения этапа', 'Показать ещё: {event}']),
     ...gitlabRecoveryMessages([
@@ -673,7 +745,7 @@ export const GITLAB_ADDITIONAL_UI_TRANSLATIONS = Object.freeze({
     "plugins.gitlab.ui.rawDiffShortened": "Исходный diff сокращён",
     "plugins.gitlab.ui.rawDiffShortened.description": "Показанный префикс помещается в границы результата Action Happier.",
   }),
-  "pl": withPublicationConfirmationMessages('pl', {
+  "pl": withAdditionalLocaleMessages('pl', {
     ...gitlabSurfaceChromeMessages(['Ktoś', 'aktywność', 'edytowano', 'Pokaż wcześniejsze notatki', 'Odczytaj ponownie notatki z GitLab', 'Odczytaj ponownie aktywność z GitLab', 'Pokaż więcej plików', 'Odczytaj ponownie zmienione pliki z GitLab', 'Pokaż starsze potoki', 'Odczytaj ponownie potoki z GitLab', 'Pokaż więcej dyskusji', 'Odczytaj ponownie dyskusje z GitLab']),
     ...gitlabProjectedLabelMessages(['Numer', 'Autor', 'Komentarze', 'Etykiety', 'Stan scalenia', 'Zatwierdzenia', 'Zmiany stanu', 'Zmiany etykiet', 'Zmiany kamienia milowego', 'Pokaż więcej: {event}']),
     ...gitlabRecoveryMessages([
@@ -796,7 +868,7 @@ export const GITLAB_ADDITIONAL_UI_TRANSLATIONS = Object.freeze({
     "plugins.gitlab.ui.rawDiffShortened": "Surowy diff został skrócony",
     "plugins.gitlab.ui.rawDiffShortened.description": "Zwrócony początek mieści się w granicy wyniku Action Happier.",
   }),
-  "es": withPublicationConfirmationMessages('es', {
+  "es": withAdditionalLocaleMessages('es', {
     ...gitlabSurfaceChromeMessages(['Alguien', 'actividad', 'editado', 'Mostrar notas anteriores', 'Volver a leer las notas desde GitLab', 'Volver a leer la actividad desde GitLab', 'Mostrar más archivos', 'Volver a leer los archivos modificados desde GitLab', 'Mostrar pipelines anteriores', 'Volver a leer los pipelines desde GitLab', 'Mostrar más discusiones', 'Volver a leer las discusiones desde GitLab']),
     ...gitlabProjectedLabelMessages(['Número', 'Autor', 'Comentarios', 'Etiquetas', 'Estado de fusión', 'Aprobaciones', 'Cambios de estado', 'Cambios de etiquetas', 'Cambios de hito', 'Mostrar más: {event}']),
     ...gitlabRecoveryMessages([
@@ -919,7 +991,7 @@ export const GITLAB_ADDITIONAL_UI_TRANSLATIONS = Object.freeze({
     "plugins.gitlab.ui.rawDiffShortened": "El diff sin procesar se ha acortado",
     "plugins.gitlab.ui.rawDiffShortened.description": "El prefijo devuelto cabe en el límite de resultados de Action de Happier.",
   }),
-  "fr": withPublicationConfirmationMessages('fr', {
+  "fr": withAdditionalLocaleMessages('fr', {
     ...gitlabSurfaceChromeMessages(['Quelqu’un', 'activité', 'modifié', 'Afficher les notes précédentes', 'Relire les notes depuis GitLab', 'Relire l’activité depuis GitLab', 'Afficher plus de fichiers', 'Relire les fichiers modifiés depuis GitLab', 'Afficher les pipelines précédents', 'Relire les pipelines depuis GitLab', 'Afficher plus de discussions', 'Relire les discussions depuis GitLab']),
     ...gitlabProjectedLabelMessages(['Numéro', 'Auteur', 'Commentaires', 'Étiquettes', 'État de fusion', 'Approbations', 'Changements d’état', 'Changements d’étiquette', 'Changements de jalon', 'Afficher plus de changements : {event}']),
     ...gitlabRecoveryMessages([
@@ -1042,7 +1114,7 @@ export const GITLAB_ADDITIONAL_UI_TRANSLATIONS = Object.freeze({
     "plugins.gitlab.ui.rawDiffShortened": "Le diff brut a été raccourci",
     "plugins.gitlab.ui.rawDiffShortened.description": "Le préfixe renvoyé tient dans la limite de résultat Action de Happier.",
   }),
-  "it": withPublicationConfirmationMessages('it', {
+  "it": withAdditionalLocaleMessages('it', {
     ...gitlabSurfaceChromeMessages(['Qualcuno', 'attività', 'modificato', 'Mostra le note precedenti', 'Rileggi le note da GitLab', 'Rileggi l’attività da GitLab', 'Mostra altri file', 'Rileggi i file modificati da GitLab', 'Mostra pipeline precedenti', 'Rileggi le pipeline da GitLab', 'Mostra altre discussioni', 'Rileggi le discussioni da GitLab']),
     ...gitlabProjectedLabelMessages(['Numero', 'Autore', 'Commenti', 'Etichette', 'Stato di merge', 'Approvazioni', 'Modifiche dello stato', 'Modifiche delle etichette', 'Modifiche della milestone', 'Mostra altro: {event}']),
     ...gitlabRecoveryMessages([
@@ -1165,7 +1237,7 @@ export const GITLAB_ADDITIONAL_UI_TRANSLATIONS = Object.freeze({
     "plugins.gitlab.ui.rawDiffShortened": "Il diff grezzo è stato abbreviato",
     "plugins.gitlab.ui.rawDiffShortened.description": "Il prefisso restituito rientra nel limite dei risultati Action di Happier.",
   }),
-  "pt": withPublicationConfirmationMessages('pt', {
+  "pt": withAdditionalLocaleMessages('pt', {
     ...gitlabSurfaceChromeMessages(['Alguém', 'atividade', 'editado', 'Mostrar notas anteriores', 'Voltar a ler as notas no GitLab', 'Voltar a ler a atividade no GitLab', 'Mostrar mais ficheiros', 'Voltar a ler os ficheiros alterados no GitLab', 'Mostrar pipelines anteriores', 'Voltar a ler os pipelines no GitLab', 'Mostrar mais discussões', 'Voltar a ler as discussões no GitLab']),
     ...gitlabProjectedLabelMessages(['Número', 'Autor', 'Comentários', 'Etiquetas', 'Estado do merge', 'Aprovações', 'Alterações de estado', 'Alterações de etiquetas', 'Alterações de marco', 'Mostrar mais: {event}']),
     ...gitlabRecoveryMessages([
@@ -1288,7 +1360,7 @@ export const GITLAB_ADDITIONAL_UI_TRANSLATIONS = Object.freeze({
     "plugins.gitlab.ui.rawDiffShortened": "O diff bruto foi encurtado",
     "plugins.gitlab.ui.rawDiffShortened.description": "O prefixo devolvido cabe no limite de resultados Action do Happier.",
   }),
-  "ca": withPublicationConfirmationMessages('ca', {
+  "ca": withAdditionalLocaleMessages('ca', {
     ...gitlabSurfaceChromeMessages(['Algú', 'activitat', 'editat', 'Mostra les notes anteriors', 'Torna a llegir les notes de GitLab', 'Torna a llegir l’activitat de GitLab', 'Mostra més fitxers', 'Torna a llegir els fitxers modificats de GitLab', 'Mostra pipelines anteriors', 'Torna a llegir els pipelines de GitLab', 'Mostra més discussions', 'Torna a llegir les discussions de GitLab']),
     ...gitlabProjectedLabelMessages(['Número', 'Autor', 'Comentaris', 'Etiquetes', 'Estat de la fusió', 'Aprovacions', 'Canvis d’estat', 'Canvis d’etiquetes', 'Canvis de fita', 'Mostra’n més: {event}']),
     ...gitlabRecoveryMessages([
@@ -1411,7 +1483,7 @@ export const GITLAB_ADDITIONAL_UI_TRANSLATIONS = Object.freeze({
     "plugins.gitlab.ui.rawDiffShortened": "El diff en brut s’ha escurçat",
     "plugins.gitlab.ui.rawDiffShortened.description": "El prefix retornat cap dins del límit de resultats Action de Happier.",
   }),
-  "zh-Hans": withPublicationConfirmationMessages('zh-Hans', {
+  "zh-Hans": withAdditionalLocaleMessages('zh-Hans', {
     ...gitlabSurfaceChromeMessages(['某人', '活动', '已编辑', '显示更早的备注', '从 GitLab 重新读取备注', '从 GitLab 重新读取活动', '显示更多文件', '从 GitLab 重新读取已更改文件', '显示更早的流水线', '从 GitLab 重新读取流水线', '显示更多讨论', '从 GitLab 重新读取讨论']),
     ...gitlabProjectedLabelMessages(['编号', '作者', '评论', '标签', '合并状态', '批准', '状态更改', '标签更改', '里程碑更改', '显示更多{event}']),
     ...gitlabRecoveryMessages([
@@ -1534,7 +1606,7 @@ export const GITLAB_ADDITIONAL_UI_TRANSLATIONS = Object.freeze({
     "plugins.gitlab.ui.rawDiffShortened": "原始差异已缩短",
     "plugins.gitlab.ui.rawDiffShortened.description": "返回的前缀符合 Happier Action 结果边界。",
   }),
-  "zh-Hant": withPublicationConfirmationMessages('zh-Hant', {
+  "zh-Hant": withAdditionalLocaleMessages('zh-Hant', {
     ...gitlabSurfaceChromeMessages(['某人', '活動', '已編輯', '顯示較早的備註', '從 GitLab 重新讀取備註', '從 GitLab 重新讀取活動', '顯示更多檔案', '從 GitLab 重新讀取已變更檔案', '顯示較早的管線', '從 GitLab 重新讀取管線', '顯示更多討論', '從 GitLab 重新讀取討論']),
     ...gitlabProjectedLabelMessages(['編號', '作者', '留言', '標籤', '合併狀態', '核准', '狀態變更', '標籤變更', '里程碑變更', '顯示更多{event}']),
     ...gitlabRecoveryMessages([
@@ -1657,7 +1729,7 @@ export const GITLAB_ADDITIONAL_UI_TRANSLATIONS = Object.freeze({
     "plugins.gitlab.ui.rawDiffShortened": "原始差異已縮短",
     "plugins.gitlab.ui.rawDiffShortened.description": "傳回的前綴符合 Happier Action 結果邊界。",
   }),
-  "ja": withPublicationConfirmationMessages('ja', {
+  "ja": withAdditionalLocaleMessages('ja', {
     ...gitlabSurfaceChromeMessages(['誰か', 'アクティビティ', '編集済み', '以前のノートを表示', 'GitLab からノートを再読み込み', 'GitLab からアクティビティを再読み込み', 'ファイルをさらに表示', 'GitLab から変更されたファイルを再読み込み', '以前のパイプラインを表示', 'GitLab からパイプラインを再読み込み', 'ディスカッションをさらに表示', 'GitLab からディスカッションを再読み込み']),
     ...gitlabProjectedLabelMessages(['番号', '作成者', 'コメント', 'ラベル', 'マージ状態', '承認', '状態の変更', 'ラベルの変更', 'マイルストーンの変更', '{event}をさらに表示']),
     ...gitlabRecoveryMessages([

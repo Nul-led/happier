@@ -488,15 +488,6 @@ function createRuntime(overrides: Readonly<{
         reason: 'provider_update',
       }),
       refreshRuntimeAuth: async (request) => await ctx.refreshRuntimeAuth(request),
-      reportCapacityFailure: async (classification) => {
-        await ctx.refreshRuntimeAuth({
-          agentId: 'codex',
-          serviceId: 'openai-codex',
-          targetId: overrides.happierSessionId ?? 'session-1',
-          classification,
-          reason: 'provider_session_capacity_failure',
-        });
-      },
       ...(overrides.publishGeneratedMedia ? { publishGeneratedMedia: overrides.publishGeneratedMedia } : {}),
     },
     directory: '/workspace',
@@ -728,6 +719,32 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     ]);
   });
 
+  it('keeps an explicitly opened fresh thread provisional until the first provider turn is accepted', async () => {
+    const appServerRuntime = createRuntime();
+    const runtimeEvents: CodexAppServerEvent[] = [];
+    appServerRuntime.events.subscribe((event) => runtimeEvents.push(event));
+
+    await startCodexAppServerRuntime(appServerRuntime);
+
+    expect(appServerRuntime.identity.read()).toEqual({ providerSessionId: null });
+    expect(runtimeEvents.filter((event) => event.kind === 'session-id-publish')).toEqual([]);
+
+    const runtime = createCodexNativeAppServerSessionRuntime(appServerRuntime, 'session-1');
+    await expect(runtime.send({
+      inputIds: ['input-first'],
+      input: { text: 'first prompt' },
+      delivery: { kind: 'newTurn', turnId: 'turn-first' },
+    })).resolves.toEqual({ status: 'admitted' });
+
+    expect(appServerRuntime.identity.read()).toEqual({ providerSessionId: 'thread-1' });
+    expect(runtimeEvents.filter((event) => event.kind === 'session-id-publish')).toEqual([
+      expect.objectContaining({
+        kind: 'session-id-publish',
+        publishedSessionId: 'thread-1',
+      }),
+    ]);
+  });
+
   it('publishes the effective Codex home in its runtime descriptor with the provider session id', async () => {
     const appServerRuntime = createRuntime({
       processEnv: { CODEX_HOME: '/runtime/codex-home' },
@@ -811,6 +828,27 @@ describe('Codex app-server temporary recoverable turn failures', () => {
       .toMatchObject({
         params: expect.objectContaining({ cwd: '/workspace' }),
       });
+  });
+
+  it('retries native resume when Codex transiently cannot initialize its shared SQLite state runtime', async () => {
+    vi.mocked(createCodexAppServerClient).mockRejectedValueOnce(new Error([
+      'Codex app-server exited before completing the request',
+      'failed to initialize sqlite state runtime under /home/test/.codex',
+    ].join(': ')));
+    const runtime = createRuntime();
+
+    await expect(startCodexAppServerRuntime(runtime, {
+      resumeId: 'thread-existing',
+      preserveRequestedThreadId: true,
+    })).resolves.toBe('thread-existing');
+
+    expect(clientState.requests.filter((request) => request.method === 'thread/resume'))
+      .toEqual([
+        expect.objectContaining({
+          params: expect.objectContaining({ threadId: 'thread-existing' }),
+        }),
+      ]);
+    expect(runtime.identity.read()).toEqual({ providerSessionId: 'thread-existing' });
   });
 
   it('keeps thread/resume unbounded while bounding oversized-response recovery reads', async () => {
@@ -1181,6 +1219,109 @@ describe('Codex app-server temporary recoverable turn failures', () => {
     expect(JSON.stringify(logger.debug.mock.calls)).not.toContain(hostilePlanTypeSentinel);
     expect(JSON.stringify(failure.runtimeAuthClassification)).not.toContain(hostileRateLimitsSentinel);
     expect(JSON.stringify(logger.debug.mock.calls)).not.toContain(hostileRateLimitsSentinel);
+  });
+
+  it('reports one group-bound late usage-limit failure after terminal and quota evidence settlement', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'happier-codex-plugin-usage-limit-recovery-'));
+    const settlementOrder: string[] = [];
+    const evidenceRecords: unknown[] = [];
+    const recoveryRequests: unknown[] = [];
+    try {
+      await mkdir(codexHome, { recursive: true });
+      await writeFile(
+        join(codexHome, 'auth.json'),
+        JSON.stringify({
+          tokens: {
+            id_token: buildJwt({ email: 'team@example.test', exp: 4_102_444_800 }),
+            access_token: 'team-access-token',
+            account_id: 'acct_team',
+          },
+        }),
+        'utf8',
+      );
+      clientState.setAccountReadResult({
+        account: {
+          id: 'acct_team',
+          email: 'team@example.test',
+        },
+      });
+      const runtime = createRuntime({
+        processEnv: {
+          CODEX_HOME: codexHome,
+          HAPPIER_CONNECTED_SERVICE_SELECTIONS_JSON: JSON.stringify([{
+            kind: 'group',
+            serviceId: 'openai-codex',
+            groupId: 'team',
+            activeProfileId: 'primary',
+            fallbackProfileId: 'backup',
+            generation: 12,
+          }]),
+        },
+        ctx: {
+          auth: {
+            services: {
+              refreshRuntimeAuth: async (request: unknown) => {
+                settlementOrder.push('recovery');
+                recoveryRequests.push(request);
+                return {
+                  status: 'unavailable' as const,
+                  reason: 'runtime_auth_selection_unavailable',
+                };
+              },
+            },
+          },
+        },
+        accountUsage: createAccountUsageService({
+          resolveSourceContext: async () => ({
+            serviceId: 'openai-codex',
+            profileId: 'primary',
+            bindingKind: 'group_member',
+            groupId: 'team',
+          }),
+          recordSnapshot: async (input: unknown) => {
+            if ((input as { policyDisposition?: unknown }).policyDisposition === 'evidence_only') {
+              settlementOrder.push('evidence');
+              evidenceRecords.push(input);
+            }
+            return { status: 'recorded' };
+          },
+        }),
+      });
+      runtime.events.subscribe((event) => {
+        if (event.kind === 'turn-failed') settlementOrder.push('terminal');
+      });
+
+      await runtime.send({ v: 1, text: 'late usage-limit prompt' }, { turnId: 'host-turn-1' });
+      emitNotification('turn/completed', failedUsageLimitTurn('turn-1'));
+      await expect(waitForCodexAppServerRuntimeTurnCompletion(runtime))
+        .rejects.toThrow('Codex app-server turn failed.');
+      await waitForUsageRecordMatching(
+        evidenceRecords,
+        (record) => (record as { policyDisposition?: unknown }).policyDisposition === 'evidence_only',
+      );
+      for (let attempt = 0; attempt < 20 && recoveryRequests.length === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(recoveryRequests).toEqual([{
+        serviceId: 'openai-codex',
+        targetId: 'session-1',
+        classification: expect.objectContaining({
+          kind: 'usage_limit',
+          limitCategory: 'usage_limit',
+          serviceId: 'openai-codex',
+          profileId: 'primary',
+          groupId: 'team',
+          groupGeneration: 12,
+          sourceProviderAccountId: 'acct_team',
+          connectedServiceRecovery: 'available',
+        }),
+        reason: 'provider_session_usage_limit_failure',
+      }]);
+      expect(settlementOrder).toEqual(['terminal', 'evidence', 'recovery']);
+    } finally {
+      await rm(codexHome, { recursive: true, force: true });
+    }
   });
 
   it('retires a failed provider turn id so late activity cannot re-adopt it', async () => {
@@ -2110,8 +2251,10 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         limitCategory: 'capacity',
         quotaScope: 'provider',
       });
+    for (let attempt = 0; attempt < 20 && refreshRuntimeAuth.mock.calls.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     expect(refreshRuntimeAuth).toHaveBeenCalledWith(expect.objectContaining({
-      agentId: 'codex',
       serviceId: 'openai-codex',
       targetId: 'session-1',
       reason: 'provider_session_capacity_failure',
@@ -3596,7 +3739,11 @@ describe('Codex app-server temporary recoverable turn failures', () => {
         errorCode: 'runtime_identity_probe_unavailable',
         error: 'runtime_identity_probe_unavailable',
       });
-      expect(clientState.requests).toContainEqual({ method: 'account/read', params: undefined });
+      expect(clientState.requests).toContainEqual({
+        method: 'account/read',
+        params: undefined,
+        options: { timeoutMs: null },
+      });
     } finally {
       await rm(codexHome, { recursive: true, force: true });
     }

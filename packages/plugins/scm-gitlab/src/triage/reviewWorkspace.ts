@@ -177,6 +177,7 @@ async function authorizeGitlabReviewWorkspace(
   const admitted = await admitGitlabItemInvocation({
     instance: input.instance,
     localRef: input.entryRef,
+    routingToken: input.lastKnownLocator.routingToken,
     admissibleKinds: ['merge-request'],
   }, context);
   context.signal.throwIfAborted();

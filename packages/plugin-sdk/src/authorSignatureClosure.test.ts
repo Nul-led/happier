@@ -56,6 +56,7 @@ describe('author signature closure source contract', () => {
         ]);
 
         expect(connectedAccountsPublicSource).toContain('ConnectedAccountServiceKey');
+        expect(reviewsPublicSource).toContain('ReviewCommentClaimPublicationDispatchRequestV1');
         expect(reviewsPublicSource).toContain('ReviewCommentPublicationMarkerMatchV1');
         expect(reviewsPublicSource).toContain('ReviewCommentPublicationTargetExpectationV1');
     });

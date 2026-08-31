@@ -5,6 +5,7 @@ import {
     MAX_TRIAGE_ACTIONS_SERIALIZED_UTF8_BYTES_V1,
     TRIAGE_ACTIONS_ACCOUNT_KV_KEY_V1,
     TRIAGE_DEFAULT_ACTIONS_V1,
+    isTriageActionConfigurationCoherentV1,
     mutateTriageAction,
     parseTriageActions,
     readTriageActions,
@@ -26,10 +27,25 @@ function storedFrom(actions: readonly TriageActionV1[]): unknown {
             profileId: action.profileId,
             workspaceMode: action.workspaceMode,
             target: action.target.kind === 'reviewStart'
-                ? { kind: 'reviewStart', promptInvocationId: action.target.promptInvocationId }
+                ? {
+                    kind: 'reviewStart',
+                    promptInvocationId: action.target.promptInvocationId,
+                    ...(action.target.promptArgsText === undefined
+                        ? {}
+                        : { promptArgsText: action.target.promptArgsText }),
+                    ...(action.target.seededFallbackInstruction === undefined
+                        ? {}
+                        : { seededFallbackInstruction: action.target.seededFallbackInstruction }),
+                }
                 : {
                     kind: 'agent',
                     promptInvocationId: action.target.promptInvocationId,
+                    ...(action.target.promptArgsText === undefined
+                        ? {}
+                        : { promptArgsText: action.target.promptArgsText }),
+                    ...(action.target.seededFallbackInstruction === undefined
+                        ? {}
+                        : { seededFallbackInstruction: action.target.seededFallbackInstruction }),
                     delivery: action.target.delivery,
                 },
         })),
@@ -62,9 +78,14 @@ describe('the Triage action record', () => {
 
         // Neither Review is inferred from its label: the arm is a member, and
         // the two arms are two different user actions that ship side by side.
-        expect(REVIEW.target)
-            .toEqual({ kind: 'agent', promptInvocationId: null, delivery: 'compose' });
+        expect(REVIEW.target).toMatchObject({
+            kind: 'agent',
+            promptInvocationId: null,
+            seededFallbackInstruction: 'Review this change.',
+            delivery: 'compose',
+        });
         expect(ASK.target).toEqual({ kind: 'agent', promptInvocationId: null, delivery: 'compose' });
+        expect(FIX.target).toMatchObject({ seededFallbackInstruction: 'Fix this entry.' });
 
         // Only a pull request reaches either review action.
         expect(REVIEW.appliesTo).toEqual(['pullRequest']);
@@ -80,6 +101,30 @@ describe('the Triage action record', () => {
             'target',
             'workspaceMode',
         ]);
+    });
+
+    it('fails closed when a start-only action has no configured instruction source', () => {
+        expect(isTriageActionConfigurationCoherentV1({
+            appliesTo: ['issue'],
+            workspaceMode: 'repository',
+            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+        })).toBe(false);
+        expect(isTriageActionConfigurationCoherentV1({
+            appliesTo: ['pullRequest'],
+            workspaceMode: 'pull_request',
+            target: { kind: 'reviewStart', promptInvocationId: null },
+        })).toBe(false);
+
+        expect(isTriageActionConfigurationCoherentV1({
+            appliesTo: ['issue'],
+            workspaceMode: 'repository',
+            target: {
+                kind: 'agent',
+                promptInvocationId: null,
+                seededFallbackInstruction: 'Repair the issue.',
+                delivery: 'send',
+            },
+        })).toBe(true);
     });
 
     it('refuses a stored value this build cannot read instead of reporting it absent', () => {
@@ -147,6 +192,36 @@ describe('the Triage action record', () => {
             target: { kind: 'reviewStart', promptInvocationId: '/review' },
         });
         expect(wrongReviewSubject).toEqual({ status: 'rejected', reason: 'workspaceMode' });
+
+        const instructionlessSend = await mutateTriageAction({
+            catalog: testkit.catalog(TRIAGE_ACTIONS_ACCOUNT_KV_KEY_V1),
+            mintActionId: () => 'instructionless-send',
+        }, {
+            kind: 'create',
+            expectedRevision: testkit.revision(TRIAGE_ACTIONS_ACCOUNT_KV_KEY_V1),
+            label: 'Start now',
+            enabled: true,
+            appliesTo: ['issue'],
+            profileId: null,
+            workspaceMode: 'repository',
+            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+        });
+        expect(instructionlessSend).toEqual({ status: 'rejected', reason: 'instruction' });
+
+        const instructionlessReview = await mutateTriageAction({
+            catalog: testkit.catalog(TRIAGE_ACTIONS_ACCOUNT_KV_KEY_V1),
+            mintActionId: () => 'instructionless-review',
+        }, {
+            kind: 'create',
+            expectedRevision: testkit.revision(TRIAGE_ACTIONS_ACCOUNT_KV_KEY_V1),
+            label: 'Formal review',
+            enabled: true,
+            appliesTo: ['pullRequest'],
+            profileId: null,
+            workspaceMode: 'pull_request',
+            target: { kind: 'reviewStart', promptInvocationId: null },
+        });
+        expect(instructionlessReview).toEqual({ status: 'rejected', reason: 'instruction' });
     });
 
     it('creates against the seed so the first user action does not delete Ask, Fix and Review', async () => {
@@ -248,6 +323,34 @@ describe('the Triage action record', () => {
             REVIEW.actionId,
             ASK.actionId,
         ]);
+    });
+
+    it('preserves a shipped fallback internally when a caller updates the seeded action', async () => {
+        const testkit = createTestkitAccountKv();
+        const result = await mutateTriageAction({
+            catalog: testkit.catalog(TRIAGE_ACTIONS_ACCOUNT_KV_KEY_V1),
+            mintActionId: () => 'unused',
+        }, {
+            kind: 'update',
+            expectedRevision: testkit.revision(TRIAGE_ACTIONS_ACCOUNT_KV_KEY_V1),
+            actionId: FIX.actionId,
+            label: 'Repair',
+            enabled: true,
+            appliesTo: [...FIX.appliesTo],
+            profileId: null,
+            workspaceMode: 'repository',
+            target: { kind: 'agent', promptInvocationId: null, delivery: 'send' },
+        });
+
+        expect(result).toMatchObject({ status: 'applied' });
+        if (result.status !== 'applied') return;
+        expect(result.value.actions.find((action) => action.actionId === FIX.actionId)?.target)
+            .toEqual({
+                kind: 'agent',
+                promptInvocationId: null,
+                seededFallbackInstruction: 'Fix this entry.',
+                delivery: 'send',
+            });
     });
 
     it('refuses a reorder that is not an exact permutation of the stored set', async () => {
@@ -371,7 +474,12 @@ describe('the Triage action record', () => {
             appliesTo: ['pullRequest'],
             profileId: 'profile-3',
             workspaceMode: 'pull_request',
-            target: { kind: 'agent', promptInvocationId: '/review', delivery: 'compose' },
+            target: {
+                kind: 'agent',
+                promptInvocationId: '/review',
+                promptArgsText: 'security and authentication',
+                delivery: 'compose',
+            },
         });
         expect(written.status).toBe('applied');
 
@@ -384,7 +492,12 @@ describe('the Triage action record', () => {
             appliesTo: ['pullRequest'],
             profileId: 'profile-3',
             workspaceMode: 'pull_request',
-            target: { kind: 'agent', promptInvocationId: '/review', delivery: 'compose' },
+            target: {
+                kind: 'agent',
+                promptInvocationId: '/review',
+                promptArgsText: 'security and authentication',
+                delivery: 'compose',
+            },
         });
     });
 });

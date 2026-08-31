@@ -536,6 +536,13 @@ export type AzureScanStickyReason = (typeof AZURE_SCAN_STICKY_REASONS)[number];
  */
 export type AzureScanFrontier = {
   readonly scanLimit: number;
+  /** The provider-native `$top` selected once on the initial call and never shrunk. */
+  readonly nativePageSize: number;
+  /**
+   * Refresh-local routing provenance. It carries no account or credential, but prevents a
+   * structurally valid scan token from being replayed against another configured deployment.
+   */
+  readonly provenance: AzureScanContinuationProvenance;
   projectId: string | null;
   projectNextToken: string | null;
   lastCompletedRepositoryId: string | null;
@@ -547,3 +554,9 @@ export type AzureScanFrontier = {
   walkHealth: readonly AzureScanStickyReason[];
   observed: number;
 };
+
+export type AzureScanContinuationProvenance = Readonly<{
+  plane: 'scan';
+  sourceInstanceId: string;
+  configuredBaseUrl: string;
+}>;

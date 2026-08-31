@@ -59,10 +59,9 @@ export type TriageVisibleRowV1 = Readonly<{
 
 /**
  * The keyboard cursor. `entryRef: null` is the section header itself, which is
- * where focus rests when the focused row's whole section disappears or the user
- * collapses it (`core/SURFACE.md` §3.1, "nearest surviving row, else section
- * header"). A section header is a real focus stop because it is the collapse
- * control.
+ * where focus rests when the focused row's whole section disappears
+ * (`core/SURFACE.md` §3.1, "nearest surviving row, else section header"). A
+ * section header remains a real focus stop in the shared list traversal.
  */
 export type TriageFocusV1 = Readonly<{
   sectionId: string;
@@ -118,7 +117,6 @@ export type TriageFilterFacetValueV1 =
 export type TriageSurfaceStateV1 = Readonly<{
   focus: TriageFocusV1 | null;
   selection: TriageSurfaceSelectionV1 | null;
-  grouping: 'lane' | 'scope' | 'kind';
   /**
    * The exported closed order vocabulary, not a second inline spelling of it.
    * `settings/savedViews.ts` and `settings/effectiveView.ts` already read the
@@ -142,11 +140,15 @@ export type TriageSurfaceStateV1 = Readonly<{
    */
   selectedViewId: string | null;
   search: TriageSearchStateV1;
-  /** Collapsed ids persist so a section the user has never seen defaults open. */
-  collapsedSectionIds: readonly string[];
 }>;
 
 export type TriageSurfaceActionV1 =
+  /**
+   * The host has settled (or refused) the page location and the route owner is
+   * applying that authoritative surface state. This is the only whole-state
+   * arm: ordinary inputs still travel through the focused actions below.
+   */
+  | Readonly<{ kind: 'settledRouteApplied'; state: TriageSurfaceStateV1 }>
   /**
    * Where the reader's logical focus now is, as reported by the shared `List`
    * — arrow/`j`/`k`/Home/End/Page movement and pointer/touch alike. Selection is
@@ -183,13 +185,6 @@ export type TriageSurfaceActionV1 =
       previousOrder: readonly TriageVisibleRowV1[];
       visibleOrder: readonly TriageVisibleRowV1[];
     }>
-  | Readonly<{
-      kind: 'sectionCollapseToggled';
-      sectionId: string;
-      previousOrder: readonly TriageVisibleRowV1[];
-      visibleOrder: readonly TriageVisibleRowV1[];
-    }>
-  | Readonly<{ kind: 'groupingChanged'; grouping: TriageSurfaceStateV1['grouping'] }>
   | Readonly<{ kind: 'orderChanged'; order: TriageSurfaceStateV1['order'] }>
   /** One facet value in or out; every other facet is untouched. */
   | Readonly<{ kind: 'filterValueToggled' } & TriageFilterFacetValueV1>
@@ -208,6 +203,7 @@ export type TriageSurfaceActionV1 =
   | Readonly<{
       kind: 'savedViewApplied';
       viewId: string | null;
+      query: string;
       filters: SurfaceFilterSelectionV1;
       order: TriageListOrderV1;
       smartPolicy: CorpusSmartPolicyV1;
@@ -223,13 +219,11 @@ const EMPTY_SEARCH: TriageSearchStateV1 = Object.freeze({ query: '', composing: 
 export const TRIAGE_SURFACE_INITIAL_STATE_V1: TriageSurfaceStateV1 = Object.freeze({
   focus: null,
   selection: null,
-  grouping: 'lane',
   order: 'newest',
   smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
   filters: TRIAGE_LIST_NO_FILTERS_V1,
   selectedViewId: null,
   search: EMPTY_SEARCH,
-  collapsedSectionIds: Object.freeze([]),
 });
 
 /**
@@ -312,6 +306,9 @@ export function reduceTriageSurfaceV1(
   action: TriageSurfaceActionV1,
 ): TriageSurfaceStateV1 {
   switch (action.kind) {
+    case 'settledRouteApplied':
+      return action.state;
+
     case 'rowFocused':
       return withFocus(state, { sectionId: action.sectionId, entryRef: action.entryRef });
 
@@ -366,20 +363,6 @@ export function reduceTriageSurfaceV1(
       // can render truthful cached/unavailable content instead of blanking.
       return repairFocus(state, action.previousOrder, action.visibleOrder);
 
-    case 'sectionCollapseToggled': {
-      const collapsed = state.collapsedSectionIds.includes(action.sectionId)
-        ? state.collapsedSectionIds.filter((id) => id !== action.sectionId)
-        : [...state.collapsedSectionIds, action.sectionId];
-      return repairFocus(
-        { ...state, collapsedSectionIds: collapsed },
-        action.previousOrder,
-        action.visibleOrder,
-      );
-    }
-
-    case 'groupingChanged':
-      return action.grouping === state.grouping ? state : { ...state, grouping: action.grouping };
-
     case 'orderChanged':
       return action.order === state.order ? state : { ...state, order: action.order };
 
@@ -405,6 +388,7 @@ export function reduceTriageSurfaceV1(
       return {
         ...state,
         selectedViewId: action.viewId,
+        search: { query: action.query, composing: null },
         filters: action.filters,
         order: action.order,
         smartPolicy: action.smartPolicy,

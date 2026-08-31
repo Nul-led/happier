@@ -15,8 +15,6 @@
  */
 
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
-import type { TriageSourceFailureV1 } from '@happier-dev/triage-protocol/v1';
-
 import { buildGitlabGraphqlUrl, requestGitlabJson } from '../http/gitlabClient.js';
 import { projectGitlabSourceFailure } from '../sourceFailure.js';
 import {
@@ -26,22 +24,13 @@ import {
 import {
   readGitlabGraphqlMutationErrors,
 } from './graphqlDelta.js';
-import {
-  GITLAB_MERGE_REQUEST_MUTATION_SUBJECT_V1,
-  readGitlabProjectPath,
-} from './mergeRequestRow.js';
+import { GITLAB_MERGE_REQUEST_MUTATION_SUBJECT_V1 } from './mergeRequestRow.js';
 import {
   confirmGitlabItemMutation,
   gitlabWriteAnswerLost,
   preflightGitlabItemMutation,
   GITLAB_MUTATION_INPUT_INVALID_FAILURE,
 } from './preflight.js';
-
-const PROJECT_PATH_UNAVAILABLE_FAILURE: TriageSourceFailureV1 = Object.freeze({
-  class: 'unsupportedContract',
-  code: 'gitlab-project-path-unavailable',
-  detail: 'GitLab did not name the project path the GraphQL draft transition addresses.',
-});
 
 /**
  * The exact document. Variables rather than interpolation, so a project path or
@@ -67,6 +56,7 @@ export async function markGitlabMergeRequestReady(
   const preflight = await preflightGitlabItemMutation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     subject: GITLAB_MERGE_REQUEST_MUTATION_SUBJECT_V1,
     expectedRevision: request.observedHeadSha,
   }, context);
@@ -84,18 +74,17 @@ export async function markGitlabMergeRequestReady(
     };
   }
 
-  const projectPath = readGitlabProjectPath(preflight.body);
-  if (projectPath === null) {
-    return { kind: 'unavailable', failure: PROJECT_PATH_UNAVAILABLE_FAILURE };
-  }
-
   const write = await requestGitlabJson({
     invocation: preflight.dependencies.invocation,
     url: buildGitlabGraphqlUrl(preflight.route.origin),
     method: 'POST',
     body: {
       query: SET_DRAFT_DOCUMENT,
-      variables: { projectPath, iid: preflight.route.iid, draft: false },
+      variables: {
+        projectPath: preflight.route.repositoryKey,
+        iid: preflight.route.iid,
+        draft: false,
+      },
     },
     fetcher: preflight.dependencies.fetcher,
     signal: preflight.dependencies.signal,

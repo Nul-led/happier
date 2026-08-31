@@ -88,6 +88,8 @@ import {
   GithubChecksResultV1Schema,
   GithubFeedbackInputV1Schema,
   GithubFeedbackResultV1Schema,
+  GithubOverviewInputV1Schema,
+  GithubOverviewResultV1Schema,
   GithubReviewsInputV1Schema,
   GithubReviewsResultV1Schema,
   GithubTimelineInputV1Schema,
@@ -95,6 +97,7 @@ import {
 } from './triage/detail/contracts.js';
 import {
   readGithubCapabilities,
+  readGithubOverview,
   listGithubChangedFiles,
   listGithubTimeline,
   readGithubFeedback,
@@ -586,7 +589,7 @@ function createGithubPlugin() {
       connectedAccountPurposeBindings: TRIAGE_INSTANCE_ACCOUNT_BINDINGS,
       run: verifyGithubTriageReviewWorkspace,
     },
-    // The six source-native detail planes. Only this source's own mounted
+    // The seven source-native detail planes. Only this source's own mounted
     // detail body invokes them, through the mounted Plugin UI host — present
     // user authority — so they declare `ui` and nothing else, and the explicit
     // empty placement list keeps global discovery from offering them a
@@ -604,6 +607,20 @@ function createGithubPlugin() {
       hostAccess: TRIAGE_READ_HOST_ACCESS,
       connectedAccountPurposeBindings: TRIAGE_INSTANCE_ACCOUNT_BINDINGS,
       run: readGithubCapabilities,
+    },
+    [GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.readOverview]: {
+      title: 'Refresh the GitHub overview',
+      description: 'Reads the current body, people, milestone, and branch facts for one pull request or issue.',
+      scopes: ['global'],
+      surfaces: ['ui'],
+      placementBindings: [],
+      dangerLevel: 'safe',
+      execution: { target: 'daemon' },
+      inputSchema: GithubOverviewInputV1Schema.jsonSchema,
+      resultSchema: GithubOverviewResultV1Schema.jsonSchema,
+      hostAccess: TRIAGE_READ_HOST_ACCESS,
+      connectedAccountPurposeBindings: TRIAGE_INSTANCE_ACCOUNT_BINDINGS,
+      run: readGithubOverview,
     },
     [GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.listTimeline]: {
       title: 'Read a GitHub timeline page',

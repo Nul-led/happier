@@ -57,6 +57,9 @@ describe('bundled Plugin output ownership', () => {
     writeFileSync(path, 'old\n', 'utf8');
 
     expect(() => assertGeneratedOutputMatches(path, 'new\n')).toThrow(/differs/u);
+    expect(readFileSync(path, 'utf8')).toBe('old\n');
+    expect(() => assertGeneratedOutputMatches(path, 'old\n')).not.toThrow();
+    expect(readFileSync(path, 'utf8')).toBe('old\n');
     expect(() => removeRetiredGeneratedOutput(path, 'check')).toThrow(/retired/u);
     removeRetiredGeneratedOutput(path, 'write');
     expect(() => assertGeneratedOutputMatches(path, 'old\n')).toThrow(/missing/u);

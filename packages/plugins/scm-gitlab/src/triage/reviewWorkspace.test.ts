@@ -21,6 +21,8 @@ const OBSERVED_BASE = '1'.repeat(40);
 const OBSERVED_HEAD = '2'.repeat(40);
 const ADVANCED_HEAD = '3'.repeat(40);
 const NATIVE_REVISION = '4'.repeat(40);
+const REVIEW_ITEM_URL_SUFFIX = '/api/v4/projects/maintainer%2Frepository/merge_requests/7';
+const REVIEW_ITEM_URL = `https://gitlab.com${REVIEW_ITEM_URL_SUFFIX}`;
 
 function prepareInput(
   overrides: Partial<TriagePrepareReviewWorkspaceInputV1> = {},
@@ -88,7 +90,7 @@ function withMaterializer(
 describe('GitLab prepared review workspace', () => {
   it('refuses a moved source head before local materialization', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -124,13 +126,13 @@ describe('GitLab prepared review workspace', () => {
     // Action. A stale source revision may never reach a local materializer.
     expect(transport.materializeCount()).toBe(1);
     expect(transport.requests.map((request) => request.url))
-      .toEqual(['https://gitlab.com/api/v4/projects/3/merge_requests/7']);
+      .toEqual([REVIEW_ITEM_URL]);
     expect(execute).not.toHaveBeenCalled();
   });
 
   it('materializes only the reread source project at the exact selected root', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -197,7 +199,7 @@ describe('GitLab prepared review workspace', () => {
 
   it('uses GitLab’s source head, not its separate native revision, for the local fetch', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -262,7 +264,7 @@ describe('GitLab prepared review workspace', () => {
 
   it('refuses a changed base before local materialization', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -293,7 +295,7 @@ describe('GitLab prepared review workspace', () => {
 
   it('refuses an unavailable source project rather than substituting the target project', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -325,7 +327,9 @@ describe('GitLab prepared review workspace', () => {
 
   it('refuses a stale observed locator before local materialization', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(
+        '/api/v4/projects/different%2Frepository/merge_requests/7',
+      )
         ? {
           status: 200,
           body: {
@@ -357,6 +361,7 @@ describe('GitLab prepared review workspace', () => {
       withMaterializer(transport.context, execute),
     )).resolves.toEqual({ kind: 'refused', reason: 'pullRequestMoved' });
 
+    expect(transport.requests[0]?.url).toContain('/projects/different%2Frepository/');
     expect(execute).not.toHaveBeenCalled();
   });
 
@@ -367,7 +372,7 @@ describe('GitLab prepared review workspace', () => {
     ['COMMAND_FAILED', { kind: 'unavailable', reason: 'scmResolver' }],
   ] as const)('projects generic SCM failure %s through the source result', async (errorCode, expected) => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -400,7 +405,7 @@ describe('GitLab prepared review workspace', () => {
 
   it('rejects a verification-shaped SCM success during initial preparation', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -436,7 +441,7 @@ describe('GitLab prepared review workspace', () => {
   it('preserves generic SCM Action cancellation', async () => {
     const cancellation = Object.assign(new Error('cancelled'), { name: 'AbortError' });
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -465,7 +470,7 @@ describe('GitLab prepared review workspace', () => {
 
   it('projects a rejected generic SCM Action as SCM unavailability', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -496,7 +501,7 @@ describe('GitLab prepared review workspace', () => {
 describe('GitLab final review-workspace verification', () => {
   it('verifies only after the provider reread and canonical local HEAD agree', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -554,7 +559,7 @@ describe('GitLab final review-workspace verification', () => {
 
   it('refuses when the prepared pull-request reference does not match the reread item', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -589,7 +594,7 @@ describe('GitLab final review-workspace verification', () => {
 
   it('refuses a local checkout whose canonical HEAD no longer matches the reread head', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -624,7 +629,7 @@ describe('GitLab final review-workspace verification', () => {
 
   it('authoritatively rereads GitLab and refuses a moved source head before local verification', async () => {
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {
@@ -652,14 +657,14 @@ describe('GitLab final review-workspace verification', () => {
 
     expect(transport.materializeCount()).toBe(1);
     expect(transport.requests.map((request) => request.url))
-      .toEqual(['https://gitlab.com/api/v4/projects/3/merge_requests/7']);
+      .toEqual([REVIEW_ITEM_URL]);
     expect(execute).not.toHaveBeenCalled();
   });
 
   it('preserves cancellation from canonical local-HEAD verification', async () => {
     const cancellation = Object.assign(new Error('cancelled'), { name: 'AbortError' });
     const transport = createStubGitlabTransport({
-      respond: (request) => request.url.endsWith('/api/v4/projects/3/merge_requests/7')
+      respond: (request) => request.url.endsWith(REVIEW_ITEM_URL_SUFFIX)
         ? {
           status: 200,
           body: {

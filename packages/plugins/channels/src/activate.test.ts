@@ -45,6 +45,7 @@ import {
 } from './manifest.js';
 import { createConversationOutwardDeliveryCollectionStore } from './outwardDelivery.js';
 import { declaredResourceMaxBytes, resourceText } from './testkit/resourceContract.js';
+import { channelsTargetedContributionServices } from './testkit/operationOnlyTargetedContributionsFixture.js';
 import { isChannelStateJsonRecord } from './accountLocalBindingPolicy.js';
 
 /**
@@ -829,6 +830,7 @@ describe('Channels core activation', () => {
       const created = ConversationConnectionCreateResultV1Schema.parse(await core.invokeAction(
         CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate,
         createInput,
+        { services: channelsTargetedContributionServices(core) },
       ));
       expect(created.kind).toBe('created');
       if (created.kind !== 'created') throw new Error('Expected the first registered create to persist.');
@@ -863,6 +865,7 @@ describe('Channels core activation', () => {
       const rejoined = ConversationConnectionCreateResultV1Schema.parse(await core.invokeAction(
         CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionCreate,
         createInput,
+        { services: channelsTargetedContributionServices(core) },
       ));
       expect(rejoined).toEqual({ kind: 'rejoined', connectionId: created.connectionId });
       expect(setupInputs).toEqual([providerSetupInput, providerSetupInput]);
@@ -984,6 +987,7 @@ describe('Channels core activation', () => {
           selectedTransport: 'socket',
           maximumObservationAgeMs: 60_000,
         },
+        { services: channelsTargetedContributionServices(core) },
       )).rejects.toMatchObject({
         code: 'channels_connection_create_conflict',
         retryable: true,
@@ -1604,6 +1608,8 @@ describe('Channels core activation', () => {
       await expect(core.invokeAction(CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionDelete, {
         connectionId: mismatchConnectionId,
         expectedRevision: 4,
+      }, {
+        services: channelsTargetedContributionServices(core),
       })).rejects.toMatchObject({ code: 'plugin_action_execution_origin_mismatch' });
       expect(stopInputs).toEqual([]);
       expect(collection.rows.get(mismatchConnectionId)).toMatchObject({
@@ -1624,6 +1630,8 @@ describe('Channels core activation', () => {
       await expect(core.invokeAction(CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionDelete, {
         connectionId: exactConnectionId,
         expectedRevision: 4,
+      }, {
+        services: channelsTargetedContributionServices(core),
       })).resolves.toEqual({
         kind: 'deleteFinalizing',
         connectionId: exactConnectionId,
@@ -1898,6 +1906,8 @@ describe('Channels core activation', () => {
       await expect(core.invokeAction(CONVERSATION_MANAGEMENT_ACTION_IDS_V1.connectionDelete, {
         connectionId,
         expectedRevision: 4,
+      }, {
+        services: channelsTargetedContributionServices(core),
       })).rejects.toMatchObject({ code: 'provider_stop_response_lost' });
       expect(stopCalls).toBe(1);
       expect(collection.rows.get(connectionId)).toMatchObject({

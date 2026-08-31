@@ -47,10 +47,25 @@ function projectActions(
         profileId: action.profileId,
         workspaceMode: action.workspaceMode,
         target: action.target.kind === 'reviewStart'
-            ? { kind: 'reviewStart' as const, promptInvocationId: action.target.promptInvocationId }
+            ? {
+                kind: 'reviewStart' as const,
+                promptInvocationId: action.target.promptInvocationId,
+                ...(action.target.promptArgsText === undefined
+                    ? {}
+                    : { promptArgsText: action.target.promptArgsText }),
+                ...(action.target.seededFallbackInstruction === undefined
+                    ? {}
+                    : { seededFallbackInstruction: action.target.seededFallbackInstruction }),
+            }
             : {
                 kind: 'agent' as const,
                 promptInvocationId: action.target.promptInvocationId,
+                ...(action.target.promptArgsText === undefined
+                    ? {}
+                    : { promptArgsText: action.target.promptArgsText }),
+                ...(action.target.seededFallbackInstruction === undefined
+                    ? {}
+                    : { seededFallbackInstruction: action.target.seededFallbackInstruction }),
                 delivery: action.target.delivery,
             },
     }));
@@ -93,10 +108,19 @@ function commandFrom(input: TriageAdministerActionInputV1): TriageActionCommandV
         profileId: input.profileId,
         workspaceMode: input.workspaceMode,
         target: input.target.kind === 'reviewStart'
-            ? { kind: 'reviewStart' as const, promptInvocationId: input.target.promptInvocationId }
+            ? {
+                kind: 'reviewStart' as const,
+                promptInvocationId: input.target.promptInvocationId,
+                ...(input.target.promptArgsText === undefined
+                    ? {}
+                    : { promptArgsText: input.target.promptArgsText }),
+            }
             : {
                 kind: 'agent' as const,
                 promptInvocationId: input.target.promptInvocationId,
+                ...(input.target.promptArgsText === undefined
+                    ? {}
+                    : { promptArgsText: input.target.promptArgsText }),
                 delivery: input.target.delivery,
             },
     };

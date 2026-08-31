@@ -99,4 +99,22 @@ describe('GitHub scan continuation envelope', () => {
       buildLaneQuery: shortLaneQuery,
     })?.scanLimit).toBe(scanLimit);
   });
+
+  it('rejects a continuation whose next page does not advance its consumed frontier', () => {
+    const token = JSON.stringify({
+      v: 1,
+      scanLimit: SCAN_LIMIT,
+      nativePageSize: SCAN_LIMIT,
+      nextLaneIndex: 0,
+      walkHealth: [],
+      lanes: GITHUB_SCAN_LANE_ORDER_V1.map((laneId) => ({
+        laneId,
+        nextUrl: laneNextUrl(shortLaneQuery(laneId), 1),
+        pagesConsumed: 1,
+        ended: false,
+      })),
+    });
+
+    expect(decodeGithubScanContinuation(token, { buildLaneQuery: shortLaneQuery })).toBeNull();
+  });
 });

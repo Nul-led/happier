@@ -723,10 +723,6 @@ function isBindingDeliveryMode(value: unknown): value is BindingDeliveryMode {
     || value === 'none';
 }
 
-function isBindingSessionDeliveryMode(value: unknown): value is BindingSessionDeliveryMode {
-  return value === 'repliesOnly' || value === 'mirrorSession';
-}
-
 function isBindingDeletionState(value: unknown): value is BindingDeletionState {
   return value === 'none' || value === 'finalizingDelete';
 }
@@ -2423,6 +2419,7 @@ function BindingRow(props: Readonly<{
           testID={`channels-provider-brand-binding-${binding.bindingId}`}
         />
       )}
+      accessoryWraps
       accessoryOutsidePressable
       accessory={(
         <Stack gap="small">
@@ -2700,6 +2697,12 @@ type BindingEditorTarget = BindingEditorSessionTarget | BindingEditorAutomationT
 type BindingEditorDraft = Readonly<{
   target: BindingEditorTarget;
   targetChanged: boolean;
+  /**
+   * Turning approvals off is a temporary editor choice, not an instruction to
+   * replace a named approval audience with every admitted principal when the
+   * owner enables it again.
+   */
+  retainedApprovalPrincipalIds?: readonly string[];
   audienceSelection?: BindingEditorAudienceSelection;
   endpointLabel: string;
   allowedPrincipalIds: readonly string[];
@@ -2808,13 +2811,19 @@ function useBindingNewSessionRecipeSelection(input: Readonly<{
  */
 function BindingSessionTargetPolicyControls(props: Readonly<{
   target: BindingEditorSessionTarget;
+  admittedPrincipalIds: readonly string[];
+  retainedApprovalPrincipalIds?: readonly string[];
   disabled: boolean;
   /** Whether the host can currently run its own new-Session selection. */
   configureNewSessionAvailable: boolean;
   onChange: (transform: (target: BindingEditorSessionTarget) => BindingEditorSessionTarget) => void;
+  onRetainApprovalPrincipalIds: (principalIds: readonly string[] | undefined) => void;
   onConfigureNewSession: () => void;
   t: Translate;
 }>): React.ReactElement {
+  const approvalPrincipalIds = props.target.policy.approvals.kind === 'enabled'
+    ? props.target.policy.approvals.principalIds
+    : undefined;
   return (
     <Stack gap="small">
       <Heading level={3} value={props.t('plugins.channels.surface.bindingEditTargetPolicy', 'Session target policy')} />
@@ -2854,47 +2863,151 @@ function BindingSessionTargetPolicyControls(props: Readonly<{
         testID="channels-binding-target-approvals"
         label={props.t('plugins.channels.surface.bindingCreateApprovals', 'Approvals')}
         value={props.target.policy.approvals.kind === 'enabled'}
-        disabled={props.disabled}
+        // Creating through the pairing fallback has no resolver-authenticated
+        // admitted principal yet. Do not manufacture an "all" approval
+        // audience from that absence.
+        disabled={props.disabled || props.admittedPrincipalIds.length === 0}
         onChange={(enabled) => {
+          const retainedPrincipalIds = props.target.policy.approvals.kind === 'enabled'
+            ? props.target.policy.approvals.principalIds
+            : props.retainedApprovalPrincipalIds;
+          if (!enabled) props.onRetainApprovalPrincipalIds(retainedPrincipalIds);
           props.onChange((target) => ({
             ...target,
             policy: {
               ...target.policy,
               // Turning approvals on defaults to the narrower request scope;
-              // Session scope stays an explicit second choice below.
-              approvals: enabled ? { kind: 'enabled', maximumScope: 'request' } : { kind: 'off' },
+              // Session scope stays an explicit second choice below. A named
+              // audience remains named until its owner explicitly chooses all.
+              approvals: enabled
+                ? {
+                  kind: 'enabled',
+                  maximumScope: 'request',
+                  ...(retainedPrincipalIds === undefined ? {} : { principalIds: retainedPrincipalIds }),
+                }
+                : { kind: 'off' },
             },
           }));
         }}
       />
       {props.target.policy.approvals.kind === 'enabled'
         ? (
-          <Form.Select
-            testID="channels-binding-target-approvals-scope"
-            label={props.t('plugins.channels.surface.bindingCreateApprovalsScope', 'Maximum approval scope')}
-            options={[
-              {
-                value: 'request',
-                label: props.t('plugins.channels.surface.bindingCreateApprovalsScopeRequest', 'This request'),
-              },
-              {
-                value: 'session',
-                label: props.t('plugins.channels.surface.bindingCreateApprovalsScopeSession', 'This Session'),
-              },
-            ]}
-            value={props.target.policy.approvals.maximumScope}
-            disabled={props.disabled}
-            onChange={(maximumScope) => {
-              if (maximumScope !== 'request' && maximumScope !== 'session') return;
-              props.onChange((target) => ({
-                ...target,
-                policy: {
-                  ...target.policy,
-                  approvals: { ...target.policy.approvals, kind: 'enabled', maximumScope },
+          <>
+            <Form.Select
+              testID="channels-binding-target-approvals-scope"
+              label={props.t('plugins.channels.surface.bindingCreateApprovalsScope', 'Maximum approval scope')}
+              options={[
+                {
+                  value: 'request',
+                  label: props.t('plugins.channels.surface.bindingCreateApprovalsScopeRequest', 'This request'),
                 },
-              }));
-            }}
-          />
+                {
+                  value: 'session',
+                  label: props.t('plugins.channels.surface.bindingCreateApprovalsScopeSession', 'This Session'),
+                },
+              ]}
+              value={props.target.policy.approvals.maximumScope}
+              disabled={props.disabled}
+              onChange={(maximumScope) => {
+                if (maximumScope !== 'request' && maximumScope !== 'session') return;
+                props.onChange((target) => ({
+                  ...target,
+                  policy: {
+                    ...target.policy,
+                    approvals: { ...target.policy.approvals, kind: 'enabled', maximumScope },
+                  },
+                }));
+              }}
+            />
+            <Form.Select
+              testID="channels-binding-target-approvals-audience"
+              label={props.t('plugins.channels.surface.bindingCreateApprovalsAudience', 'Approval audience')}
+              options={[
+                {
+                  value: 'all',
+                  label: props.t('plugins.channels.surface.bindingCreateApprovalsAudienceAll', 'All admitted principals'),
+                },
+                {
+                  value: 'selected',
+                  label: props.t('plugins.channels.surface.bindingCreateApprovalsAudienceSelected', 'Selected admitted principals'),
+                },
+              ]}
+              value={props.target.policy.approvals.principalIds === undefined ? 'all' : 'selected'}
+              disabled={props.disabled || props.admittedPrincipalIds.length === 0}
+              onChange={(audience) => {
+                if (audience === 'all') {
+                  props.onRetainApprovalPrincipalIds(undefined);
+                  props.onChange((target) => ({
+                    ...target,
+                    policy: {
+                      ...target.policy,
+                      approvals: {
+                        kind: 'enabled',
+                        maximumScope: target.policy.approvals.kind === 'enabled'
+                          ? target.policy.approvals.maximumScope
+                          : 'request',
+                      },
+                    },
+                  }));
+                  return;
+                }
+                if (audience !== 'selected') return;
+                props.onChange((target) => ({
+                  ...target,
+                  policy: {
+                    ...target.policy,
+                    approvals: {
+                      kind: 'enabled',
+                      maximumScope: target.policy.approvals.kind === 'enabled'
+                        ? target.policy.approvals.maximumScope
+                        : 'request',
+                      // The only available candidates are already admitted
+                      // by this binding's authoritative audience.
+                      principalIds: target.policy.approvals.kind === 'enabled'
+                        && target.policy.approvals.principalIds !== undefined
+                        ? target.policy.approvals.principalIds
+                        : props.admittedPrincipalIds,
+                    },
+                  },
+                }));
+              }}
+            />
+            {approvalPrincipalIds === undefined ? null : (
+              <Stack gap="small">
+                {props.admittedPrincipalIds.map((principalId) => {
+                  const selected = approvalPrincipalIds.includes(principalId);
+                  const selectedCount = approvalPrincipalIds.length;
+                  return (
+                    <Form.Toggle
+                      key={principalId}
+                      testID={`channels-binding-target-approvals-principal:${principalId}`}
+                      label={principalId}
+                      value={selected}
+                      disabled={props.disabled || (selected && selectedCount <= 1)}
+                      onChange={(nextSelected) => {
+                        props.onChange((target) => {
+                          if (target.policy.approvals.kind !== 'enabled'
+                            || target.policy.approvals.principalIds === undefined) return target;
+                          const principalIds = nextSelected
+                            ? target.policy.approvals.principalIds.includes(principalId)
+                              ? target.policy.approvals.principalIds
+                              : [...target.policy.approvals.principalIds, principalId]
+                            : target.policy.approvals.principalIds.filter((id) => id !== principalId);
+                          return {
+                            ...target,
+                            policy: {
+                              ...target.policy,
+                              approvals: { ...target.policy.approvals, principalIds },
+                            },
+                          };
+                        });
+                      }}
+                    />
+                  );
+                })}
+              </Stack>
+            )}
+          </>
         )
         : null}
       <Form.Toggle
@@ -2924,9 +3037,14 @@ function BindingSessionTargetPolicyControls(props: Readonly<{
 
 /** The one draft projection of an exact retained binding, online or offline. */
 function bindingEditorDraftFromBinding(binding: ConversationBindingV1): BindingEditorDraft {
+  const retainedApprovalPrincipalIds = binding.target.kind === 'session'
+    && binding.target.policy.approvals.kind === 'enabled'
+    ? binding.target.policy.approvals.principalIds
+    : undefined;
   return {
     target: bindingEditorTargetFromBinding(binding),
     targetChanged: false,
+    ...(retainedApprovalPrincipalIds === undefined ? {} : { retainedApprovalPrincipalIds }),
     endpointLabel: binding.endpoint.label ?? binding.endpoint.id,
     allowedPrincipalIds: binding.allowedPrincipalIds,
     allowBotSenders: binding.allowBotSenders,
@@ -2951,6 +3069,20 @@ function bindingEditorTargetLabel(target: BindingEditorTarget, t: Translate): st
   return target.kind === 'session'
     ? `${bindingTargetKindLabel(target.kind, t)}: ${target.sessionId}`
     : `${bindingTargetKindLabel(target.kind, t)}: ${target.automationId}`;
+}
+
+function bindingApprovalAudienceLabel(target: BindingEditorTarget, t: Translate): string {
+  if (target.kind !== 'session' || target.policy.approvals.kind === 'off') {
+    return t('plugins.channels.surface.bindingCreateApprovalsOff', 'Off');
+  }
+  if (target.policy.approvals.principalIds === undefined) {
+    return t('plugins.channels.surface.bindingCreateApprovalsAudienceAll', 'All admitted principals');
+  }
+  return t(
+    'plugins.channels.surface.bindingCreateApprovalsAudienceSelectedSummary',
+    'Selected admitted principals: {principals}',
+    { principals: target.policy.approvals.principalIds.join(', ') },
+  );
 }
 
 function bindingEditorDebounceMs(value: string): number | undefined {
@@ -3767,6 +3899,8 @@ function BindingCreateJourney(props: Readonly<{
   const [deliveryModeOverride, setDeliveryModeOverride] = React.useState<BindingSessionDeliveryMode | undefined>();
   const [automationResultDelivery, setAutomationResultDelivery] = React.useState<'finalResult' | 'none'>('none');
   const [permissionCeiling, setPermissionCeiling] = React.useState<AgentPermissionIntentV1>('read-only');
+  const [approvals, setApprovals] = React.useState<BindingEditorSessionTarget['policy']['approvals']>({ kind: 'off' });
+  const [retainedApprovalPrincipalIds, setRetainedApprovalPrincipalIds] = React.useState<readonly string[] | undefined>();
   const [linkPreviewPolicy, setLinkPreviewPolicy] = React.useState('suppress');
   const [senderFeedback, setSenderFeedback] = React.useState('off');
   const [feedback, setFeedback] = React.useState<BindingCreateFeedback | undefined>();
@@ -3809,6 +3943,7 @@ function BindingCreateJourney(props: Readonly<{
         ? `${principalLabel} (${principal.id})`
         : principal.id
     )).join(', ');
+  const admittedPrincipalIds = principalSelection?.selected.map((principal) => principal.id) ?? [];
   const bindingCreateOutcomeUnknown = createAction.execution.status === 'outcomeUnknown';
   const pairingCreateOutcomeUnknown = pairingAction.execution.status === 'outcomeUnknown';
   const newSessionRecipeSelection = useBindingNewSessionRecipeSelection({
@@ -3877,6 +4012,8 @@ function BindingCreateJourney(props: Readonly<{
     setInputModeOverride(undefined);
     setDeliveryModeOverride(undefined);
     setPermissionCeiling('read-only');
+    setApprovals({ kind: 'off' });
+    setRetainedApprovalPrincipalIds(undefined);
     setLinkPreviewPolicy('suppress');
     setSenderFeedback('off');
     setFeedback(undefined);
@@ -4121,6 +4258,34 @@ function BindingCreateJourney(props: Readonly<{
 
   const selectNewSessionRecipe = newSessionRecipeSelection.select;
 
+  const createSessionTarget = React.useMemo<BindingEditorSessionTarget | undefined>(() => {
+    if (target?.kind !== 'session') return undefined;
+    return {
+      kind: 'session',
+      sessionId: target.sessionId,
+      policy: {
+        deliveryMode,
+        permissionCeiling,
+        approvals,
+        newSession: newSessionDraft === undefined
+          ? { kind: 'off' }
+          : { kind: 'enabled', recipe: newSessionDraft },
+      },
+    };
+  }, [approvals, deliveryMode, newSessionDraft, permissionCeiling, target]);
+  const createApprovalAudienceValid = createSessionTarget?.policy.approvals.kind !== 'enabled'
+    || createSessionTarget.policy.approvals.principalIds === undefined
+    || createSessionTarget.policy.approvals.principalIds.every((principalId) => admittedPrincipalIds.includes(principalId));
+  const updateCreateSessionTarget = React.useCallback((
+    transform: (target: BindingEditorSessionTarget) => BindingEditorSessionTarget,
+  ) => {
+    if (createSessionTarget === undefined) return;
+    const next = transform(createSessionTarget);
+    setDeliveryModeOverride(next.policy.deliveryMode === defaultDeliveryMode ? undefined : next.policy.deliveryMode);
+    setPermissionCeiling(next.policy.permissionCeiling);
+    setApprovals(next.policy.approvals);
+    setNewSessionDraft(next.policy.newSession.kind === 'enabled' ? next.policy.newSession.recipe : undefined);
+  }, [createSessionTarget, defaultDeliveryMode]);
   const createTarget = React.useMemo(() => {
     if (target === undefined) return undefined;
     if (target.kind === 'automation') {
@@ -4130,25 +4295,15 @@ function BindingCreateJourney(props: Readonly<{
         policy: { resultDelivery: automationResultDelivery },
       };
     }
-    return {
-      kind: 'session',
-      sessionId: target.sessionId,
-      policy: {
-        deliveryMode,
-        permissionCeiling,
-        approvals: { kind: 'off' },
-        newSession: newSessionDraft === undefined
-          ? { kind: 'off' }
-          : { kind: 'enabled', recipe: newSessionDraft },
-      },
-    };
-  }, [automationResultDelivery, deliveryMode, newSessionDraft, permissionCeiling, target]);
+    return createSessionTarget;
+  }, [automationResultDelivery, createSessionTarget, target]);
 
   const createBinding = React.useCallback(async () => {
     if (currentConnection === undefined
       || endpointSelection === undefined
       || principalSelection === undefined
       || createTarget === undefined
+      || !createApprovalAudienceValid
       || actionLocked
       || props.signal.aborted) {
       return;
@@ -4191,6 +4346,7 @@ function BindingCreateJourney(props: Readonly<{
   }, [
     actionLocked,
     allowBotSenders,
+    createApprovalAudienceValid,
     createAction,
     createTarget,
     currentConnection,
@@ -4616,50 +4772,19 @@ function BindingCreateJourney(props: Readonly<{
                 }}
               />
               {target.kind === 'session' ? (
-                <>
-                  <Form.Select
-                    testID="channels-binding-create-delivery-mode"
-                    label={props.t('plugins.channels.surface.bindingCreateDeliveryMode', 'Session delivery')}
-                    options={[
-                      { value: 'repliesOnly', label: props.t('plugins.channels.surface.bindingCreateRepliesOnly', 'Replies only') },
-                      { value: 'mirrorSession', label: props.t('plugins.channels.surface.bindingCreateMirrorSession', 'Mirror Session') },
-                    ]}
-                    value={deliveryMode}
+                createSessionTarget === undefined ? null : (
+                  <BindingSessionTargetPolicyControls
+                    target={createSessionTarget}
+                    admittedPrincipalIds={admittedPrincipalIds}
+                    retainedApprovalPrincipalIds={retainedApprovalPrincipalIds}
                     disabled={actionLocked}
-                    onChange={(next) => {
-                      if (!isBindingSessionDeliveryMode(next)) return;
-                      setDeliveryModeOverride(next === defaultDeliveryMode ? undefined : next);
-                    }}
+                    configureNewSessionAvailable={newSessionRecipeSelection.available}
+                    onChange={updateCreateSessionTarget}
+                    onRetainApprovalPrincipalIds={setRetainedApprovalPrincipalIds}
+                    onConfigureNewSession={selectNewSessionRecipe}
+                    t={props.t}
                   />
-                  <Form.Select
-                    testID="channels-binding-create-permission-ceiling"
-                    label={props.t('plugins.channels.surface.bindingCreatePermissionCeiling', 'Permission ceiling')}
-                    options={bindingPermissionIntentOptions(props.t)}
-                    value={permissionCeiling}
-                    disabled={actionLocked}
-                    onChange={(next) => {
-                      const parsed = parseBindingPermissionIntent(next);
-                      if (parsed !== null) setPermissionCeiling(parsed);
-                    }}
-                  />
-                  <Form.Toggle
-                    testID="channels-binding-create-new-session"
-                    label={props.t('plugins.channels.surface.bindingCreateConfigureNewSession', 'Configure a new Session')}
-                    value={newSessionDraft !== undefined}
-                    // Clearing a chosen recipe needs nothing from the host; only
-                    // choosing one waits on the host's own new-Session selection
-                    // being factually installed.
-                    disabled={actionLocked
-                      || (!newSessionRecipeSelection.available && newSessionDraft === undefined)}
-                    onChange={(enabled) => {
-                      if (!enabled) {
-                        setNewSessionDraft(undefined);
-                        return;
-                      }
-                      void selectNewSessionRecipe();
-                    }}
-                  />
-                </>
+                )
               ) : null}
               {target.kind === 'automation' ? (
                 <Form.Select
@@ -4708,7 +4833,7 @@ function BindingCreateJourney(props: Readonly<{
               />
               <Button
                 title={props.t('plugins.channels.surface.bindingCreateReview', 'Review binding')}
-                disabled={actionLocked}
+                disabled={actionLocked || !createApprovalAudienceValid}
                 onPress={() => setStage('review')}
               />
               <BindingCreateStepActions
@@ -4821,7 +4946,9 @@ function BindingCreateJourney(props: Readonly<{
                       },
                       {
                         label: props.t('plugins.channels.surface.bindingCreateApprovals', 'Approvals'),
-                        value: props.t('plugins.channels.surface.bindingCreateApprovalsOff', 'Off'),
+                        value: createSessionTarget === undefined
+                          ? props.t('plugins.channels.surface.bindingCreateApprovalsOff', 'Off')
+                          : bindingApprovalAudienceLabel(createSessionTarget, props.t),
                       },
                       {
                         label: props.t('plugins.channels.surface.bindingCreateConfigureNewSession', 'Configure a new Session'),
@@ -5827,9 +5954,16 @@ function BindingEditJourney(props: Readonly<{
           {draft.target.kind === 'session' ? (
             <BindingSessionTargetPolicyControls
               target={draft.target}
+              admittedPrincipalIds={draft.allowedPrincipalIds}
+              retainedApprovalPrincipalIds={draft.retainedApprovalPrincipalIds}
               disabled={actionLocked || finalizingDelete}
               configureNewSessionAvailable={newSessionRecipeSelection.available}
               onChange={updateSessionTarget}
+              onRetainApprovalPrincipalIds={(principalIds) => {
+                setDraft((current) => current === undefined
+                  ? current
+                  : { ...current, retainedApprovalPrincipalIds: principalIds });
+              }}
               onConfigureNewSession={selectNewSessionRecipe}
               t={props.t}
             />
@@ -6063,6 +6197,7 @@ function BindingEditJourney(props: Readonly<{
               { label: props.t('plugins.channels.surface.bindingCreateConversation', 'Conversation'), value: draft.endpointLabel },
               { label: props.t('plugins.channels.surface.bindingCreateAllowedSender', 'Allowed senders'), value: draft.allowedPrincipalIds.join(', ') },
               { label: props.t('plugins.channels.surface.bindingCreateTarget', 'Target'), value: bindingEditorTargetLabel(draft.target, props.t) },
+              { label: props.t('plugins.channels.surface.bindingCreateApprovals', 'Approvals'), value: bindingApprovalAudienceLabel(draft.target, props.t) },
               { label: props.t('plugins.channels.surface.bindingCreateInputMode', 'Incoming messages'), value: bindingInputModeLabel(draft.inputMode, props.t) },
               { label: props.t('plugins.channels.surface.bindingEditDebounce', 'Inbound debounce (ms)'), value: draft.inboundDebounceMs },
               { label: props.t('plugins.channels.surface.bindingCreateLinkPreview', 'Link previews'), value: bindingCreateLinkPreviewPolicyLabel(draft.linkPreviewPolicy, props.t) },
@@ -7025,9 +7160,16 @@ function AccountLocalBindingPolicyEditor(props: Readonly<{
       {draft.target.kind === 'session' ? (
         <BindingSessionTargetPolicyControls
           target={draft.target}
+          admittedPrincipalIds={draft.allowedPrincipalIds}
+          retainedApprovalPrincipalIds={draft.retainedApprovalPrincipalIds}
           disabled={actionLocked || finalizingDelete}
           configureNewSessionAvailable={newSessionRecipeSelection.available}
           onChange={updateSessionTarget}
+          onRetainApprovalPrincipalIds={(principalIds) => {
+            setDraft((current) => current === undefined
+              ? current
+              : { ...current, retainedApprovalPrincipalIds: principalIds });
+          }}
           onConfigureNewSession={newSessionRecipeSelection.select}
           t={props.t}
         />
@@ -7472,7 +7614,9 @@ function ConnectionRow(props: Readonly<{
             onSave={save}
             t={props.t}
           />
-          {providerDependentOperationsAvailable && props.targetPluginId !== undefined ? (
+          {providerDependentOperationsAvailable
+            && props.targetPluginId !== undefined
+            && isConversationConnectionSelectableTransportV1(props.connection.selectedTransport) ? (
             <ConnectionTransferControls
               connection={props.connection}
               signal={props.signal}
@@ -8228,6 +8372,14 @@ function ConnectionTransferControls(props: Readonly<{
   const defaultTransport = isConversationConnectionSelectableTransportV1(props.connection.selectedTransport)
     ? props.connection.selectedTransport
     : 'checkpointedPull';
+  // Durable push can only preserve and retarget its existing generic endpoint
+  // in this transfer Action. The other transports remain selectable only for
+  // non-durable rows, so this surface never silently converts transport.
+  const transferTransports = props.connection.selectedTransport === 'durablePush'
+    ? ['durablePush'] as const
+    : CONVERSATION_CONNECTION_SELECTABLE_TRANSPORTS_V1.filter(
+      (transport) => transport !== 'durablePush',
+    );
 
   const openTransfer = React.useCallback(() => {
     if (actionUnavailable) return;
@@ -8485,7 +8637,7 @@ function ConnectionTransferControls(props: Readonly<{
               <Form.Select
                 testID="channels-connection-transfer-transport"
                 label={props.t('plugins.channels.surface.transport', 'Transport')}
-                options={CONVERSATION_CONNECTION_SELECTABLE_TRANSPORTS_V1.map((transport) => ({
+                options={transferTransports.map((transport) => ({
                   value: transport,
                   label: transportLabel(transport, props.t),
                 }))}

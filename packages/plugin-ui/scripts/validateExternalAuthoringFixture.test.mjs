@@ -990,7 +990,7 @@ test('installed target packages must be real out-of-workspace tarball extraction
   }
 });
 
-test('packed Form declarations keep curated author props independent from SDK Action schemas', async () => {
+test('packed Form declarations may reuse public SDK Action types but reject private contract owners', async () => {
   assert.equal(typeof fixtureHarness.assertPublicFormPropsAreCurated, 'function');
 
   const root = await mkdtemp(join(tmpdir(), 'plugin-ui-curated-form-declaration-'));
@@ -1026,10 +1026,16 @@ test('packed Form declarations keep curated author props independent from SDK Ac
       'export type SelectProps = { value?: ActionInputOptionValue };',
       '',
     ].join('\n'));
-    await assert.rejects(
-      () => fixtureHarness.assertPublicFormPropsAreCurated(consumerRoot),
-      /leaks @happier-dev\/plugin-sdk/u,
-    );
+    await assert.doesNotReject(() => fixtureHarness.assertPublicFormPropsAreCurated(consumerRoot));
+
+    await writeFile(formDeclarationPath, [
+      "import type { PluginActionInputHintsV2 } from '@happier-dev/protocol';",
+      'export type FormProps = { hints?: PluginActionInputHintsV2 };',
+      '',
+    ].join('\n'));
+    await assert.rejects(() => fixtureHarness.assertPublicFormPropsAreCurated(consumerRoot), {
+      message: /leaks @happier-dev\/protocol/u,
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

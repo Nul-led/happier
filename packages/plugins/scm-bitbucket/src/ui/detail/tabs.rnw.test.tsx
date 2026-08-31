@@ -8,7 +8,7 @@ import { createTriageSourceV1Fixture } from '@happier-dev/triage-protocol/testin
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { BITBUCKET_PLUGIN_ID } from '../../bitbucketContracts.js';
-import { BITBUCKET_TRIAGE_DETAIL_ACTION_IDS } from '../../triage/source/detailActions.js';
+import { BITBUCKET_TRIAGE_DETAIL_ACTION_IDS } from '../../triage/source/detailContracts.js';
 
 import { renderSurface } from '../renderSurface.js';
 

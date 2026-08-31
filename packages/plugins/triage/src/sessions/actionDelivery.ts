@@ -45,14 +45,14 @@ import type { TriageActionDeliveryV1 } from '../settings/actions.js';
 
 export type TriageActionDeliveryPlanV1 =
     /**
-     * There is nothing to deliver: the action references no prompt AND the entry
-     * cannot be attached. Deliberately distinct from an attachment-only send,
-     * which carries real content, and from a blank message with nothing on it.
+     * There is nothing to deliver. For `send`, an instruction is mandatory:
+     * the attachment supplies context but does not say what the agent should do.
+     * For `compose`, an attachment alone remains useful editable input.
      */
     | Readonly<{ kind: 'none' }>
     | Readonly<{
         kind: 'send';
-        /** Empty only when the attachment is the whole input. */
+        /** Always non-empty after whitespace admission. */
         text: string;
         attachments: readonly TriageEntryAttachmentDraftV1[];
     }>
@@ -110,13 +110,15 @@ export function planTriageActionDeliveryV1(input: Readonly<{
     const resolvedText = input.promptText ?? '';
     const text = resolvedText.trim().length === 0 ? '' : resolvedText;
 
-    // The one canonical emptiness rule, shared with the Session-input seam that
-    // admits the send (`protocol#hasSessionInputContentV1`): an input carrying
-    // neither text nor an attachment has nothing to say, and everything else
-    // does. Both arms answer it the same way, so a promptless action delivers
-    // its entry either way — which is what `settings/actions.ts` promises:
-    // without a prompt, `delivery` decides whether the Session opens with the
-    // entry attached and waiting, or sends that attachment straight away.
+    // Direct send requires intent, not only context. The generic Session input
+    // seam permits attachment-only sends because other products can own that
+    // meaning; Triage's action contract is narrower and refuses to invent the
+    // missing task for an agent.
+    if (input.delivery === 'send' && text.length === 0) return { kind: 'none' };
+
+    // Compose still uses the canonical Session-input emptiness rule: an entry
+    // attachment is useful editable input even when Ask deliberately supplies
+    // no initial prose.
     if (!hasSessionInputContentV1({ text, attachmentCount: attachments.length })) {
         return { kind: 'none' };
     }

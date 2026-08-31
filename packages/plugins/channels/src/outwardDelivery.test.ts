@@ -232,12 +232,16 @@ class MemoryDeliveryStore implements ConversationOutwardDeliveryStore {
     return { kind: 'updated' as const, record };
   }
 
-  async retire(input: Readonly<{ custodyId: string; expectedRevision: number }>) {
-    const current = this.rows.get(input.custodyId);
-    if (current === undefined || current.revision !== input.expectedRevision) {
-      return { kind: 'conflict' as const };
+  async retireSelected(input: Readonly<{
+    records: readonly Readonly<{ custodyId: string; expectedRevision: number }>[];
+  }>) {
+    for (const record of input.records) {
+      const current = this.rows.get(record.custodyId);
+      if (current === undefined || current.revision !== record.expectedRevision) {
+        return { kind: 'conflict' as const };
+      }
     }
-    this.rows.delete(input.custodyId);
+    for (const record of input.records) this.rows.delete(record.custodyId);
     return { kind: 'retired' as const };
   }
 }

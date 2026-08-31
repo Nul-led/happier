@@ -9,6 +9,7 @@ import type {
     ReviewCommentLinkedIssueIdentityV1,
     ReviewCommentSnapshotV1,
     ReviewCommentV1,
+    ReviewCommentClaimPublicationDispatchRequestV1,
     ReviewCommentClaimPublicationDispatchResponseV1,
     ReviewCommentPublicationCorrelationV1,
     ReviewCommentPublicationEntryV1,
@@ -24,6 +25,7 @@ import type {
 } from '@happier-dev/protocol';
 import {
     createReviewCommentLinkedIssueIdV1,
+    createReviewCommentPublicationSettlementRequestV1,
     formatReviewCommentPublicationMarkerV1,
     matchReviewCommentPublicationMarkerV1,
     parseReviewCommentPublicationPlanV1,
@@ -503,6 +505,7 @@ export type {
     ReviewCommentLinkedIssueIdentityV1,
     ReviewCommentSnapshotV1,
     ReviewCommentV1,
+    ReviewCommentClaimPublicationDispatchRequestV1,
     ReviewCommentClaimPublicationDispatchResponseV1,
     ReviewCommentPublicationCorrelationV1,
     ReviewCommentPublicationEntryV1,
@@ -522,6 +525,7 @@ export type ReviewCommentSensitiveTextRedactionOptionsV1 = ReviewCommentSensitiv
 
 export { createReviewCommentFingerprintV1 as createReviewCommentFingerprint };
 export { createReviewCommentLinkedIssueIdV1 };
+export { createReviewCommentPublicationSettlementRequestV1 };
 export { validateReviewCommentPublicationClaimAgainstPlanV1 };
 export { validateReviewCommentPublicationResultAgainstPlanV1 };
 export { parseReviewCommentPublicationPlanV1 };

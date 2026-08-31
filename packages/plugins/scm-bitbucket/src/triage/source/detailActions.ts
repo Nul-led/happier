@@ -19,6 +19,16 @@ import {
   type BitbucketDetailReadDependenciesV1,
   type BitbucketWalkPositionV1,
 } from '../detail/reads.js';
+import {
+  BITBUCKET_ACTIVITY_PAGE_LENGTH_V1,
+  BITBUCKET_COMMENTS_PAGE_LENGTH_V1,
+  BITBUCKET_DIFFSTAT_PAGE_LENGTH_V1,
+  BITBUCKET_STATUSES_PAGE_LENGTH_V1,
+  buildBitbucketActivityUrl,
+  buildBitbucketCommentsUrl,
+  buildBitbucketDiffstatUrl,
+  buildBitbucketStatusesUrl,
+} from '../detail/routes.js';
 import { createBitbucketFailure } from '../failures.js';
 import {
   admitBitbucketEntryInvocation,
@@ -28,6 +38,7 @@ import {
 import {
   decodeBitbucketDetailContinuation,
   encodeBitbucketDetailContinuation,
+  type BitbucketDetailContinuationContextV1,
 } from './detailContinuation.js';
 import {
   BitbucketActivityInputV1Schema,
@@ -45,12 +56,14 @@ import {
 import { observeBitbucketEntry } from './observeEntry.js';
 import { toTriageSourceFailure } from './failures.js';
 
+export { BITBUCKET_TRIAGE_DETAIL_ACTION_IDS } from './detailContracts.js';
+
 /**
  * The five bound source-native Bitbucket Cloud detail operations.
  *
  * Each is the whole vertical for one Action invocation: it validates the
  * published input, admits the configured workspace through the SAME rule `scan`
- * and `get` use, resolves the repository from the collision scope this source
+ * and `get` use, resolves the repository from the last known locator this source
  * minted, materializes that exact account inside one request closure, and shapes
  * the result into the published contract. It owns no registry, no cache, and no
  * second route authority, and it writes no configured state.
@@ -59,15 +72,6 @@ import { toTriageSourceFailure } from './failures.js';
  * or sees a raw provider body. What crosses back is only what the boundary
  * projector copied.
  */
-
-/** The Action ids the mounted detail body invokes, and nothing else does. */
-export const BITBUCKET_TRIAGE_DETAIL_ACTION_IDS = Object.freeze({
-  readOverview: 'triage-read-overview',
-  listActivity: 'triage-list-activity',
-  readDiff: 'triage-read-diff',
-  listBuilds: 'triage-list-builds',
-  listComments: 'triage-list-comments',
-});
 
 /** One user-visible mounted detail operation, including account materialization and all reads. */
 const INVALID_INPUT = createBitbucketFailure('unsupportedContract', 'detail-input-invalid');
@@ -103,6 +107,7 @@ async function admitBitbucketDetailInvocation(
   input: Readonly<{
     instance: TriageConfiguredSourceInstanceV1;
     localRef: Readonly<{ kindId: string; entryId: string; collisionScope: string }>;
+    lastKnownLocator: Parameters<typeof admitBitbucketEntryInvocation>[0]['lastKnownLocator'];
   }>,
   context: PluginInvocationContext,
 ): Promise<AdmittedInvocation> {
@@ -146,11 +151,12 @@ async function admitBitbucketDetailInvocation(
  */
 function resolvePosition(
   continuation: string | undefined,
+  context: BitbucketDetailContinuationContextV1,
 ): Readonly<{ ok: true; position: BitbucketDetailPagePositionV1 }> | Readonly<{ ok: false }> {
   if (continuation === undefined) {
     return { ok: true, position: Object.freeze({ kind: 'first' as const }) };
   }
-  const frontier = decodeBitbucketDetailContinuation(continuation);
+  const frontier = decodeBitbucketDetailContinuation(continuation, context);
   if (frontier === null) return { ok: false };
   return {
     ok: true,
@@ -159,10 +165,13 @@ function resolvePosition(
 }
 
 /** Mints the provider position once so the canonical Action-envelope fitter can admit it. */
-function mintWalkContinuation(page: BitbucketWalkPositionV1): string | undefined {
+function mintWalkContinuation(
+  page: BitbucketWalkPositionV1,
+  context: BitbucketDetailContinuationContextV1,
+): string | undefined {
   return page.nextUrl === null
     ? undefined
-    : encodeBitbucketDetailContinuation(page.nextUrl) ?? undefined;
+    : encodeBitbucketDetailContinuation(page.nextUrl, context) ?? undefined;
 }
 
 /** Shapes one settled walk position into the members every paged plane shares. */
@@ -191,6 +200,7 @@ export async function readBitbucketOverview(
   const admitted = await admitBitbucketDetailInvocation({
     instance: request.instance,
     localRef: request.localRef,
+    lastKnownLocator: request.lastKnownLocator,
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
   try {
@@ -234,10 +244,18 @@ export async function readBitbucketDiff(
   const admitted = await admitBitbucketDetailInvocation({
     instance: request.instance,
     localRef: request.localRef,
+    lastKnownLocator: request.lastKnownLocator,
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
   try {
-  const position = resolvePosition(request.continuation);
+  const continuationContext = Object.freeze({
+    instance: request.instance,
+    route: admitted.route,
+    plane: 'diffstat' as const,
+    firstUrl: buildBitbucketDiffstatUrl(admitted.route),
+    nativePageSize: BITBUCKET_DIFFSTAT_PAGE_LENGTH_V1,
+  });
+  const position = resolvePosition(request.continuation, continuationContext);
   if (!position.ok) return unavailable(toTriageSourceFailure(CONTINUATION_UNREADABLE));
 
   const diffstatPromise = readBitbucketDiffstatPage(
@@ -253,7 +271,7 @@ export async function readBitbucketDiff(
 
   const rawValue = raw === null ? null : raw.value;
 
-  const continuation = mintWalkContinuation(diffstat.value);
+  const continuation = mintWalkContinuation(diffstat.value, continuationContext);
   const base = fitActionResultPageV1(
     diffstat.value.rows,
     continuation,
@@ -303,11 +321,19 @@ export async function listBitbucketActivity(
   const admitted = await admitBitbucketDetailInvocation({
     instance: request.instance,
     localRef: request.localRef,
+    lastKnownLocator: request.lastKnownLocator,
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
   try {
 
-  const position = resolvePosition(request.continuation);
+  const continuationContext = Object.freeze({
+    instance: request.instance,
+    route: admitted.route,
+    plane: 'activity' as const,
+    firstUrl: buildBitbucketActivityUrl(admitted.route),
+    nativePageSize: BITBUCKET_ACTIVITY_PAGE_LENGTH_V1,
+  });
+  const position = resolvePosition(request.continuation, continuationContext);
   if (!position.ok) return unavailable(toTriageSourceFailure(CONTINUATION_UNREADABLE));
 
   const page = await readBitbucketActivityPage(
@@ -316,7 +342,7 @@ export async function listBitbucketActivity(
   );
   if (!page.ok) return unavailable(toTriageSourceFailure(page.failure));
 
-  const continuation = mintWalkContinuation(page.value);
+  const continuation = mintWalkContinuation(page.value, continuationContext);
   return fitActionResultPageV1(page.value.rows, continuation, (
     rows,
     omittedByEnvelope,
@@ -355,11 +381,19 @@ export async function listBitbucketBuilds(
   const admitted = await admitBitbucketDetailInvocation({
     instance: request.instance,
     localRef: request.localRef,
+    lastKnownLocator: request.lastKnownLocator,
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
   try {
 
-  const position = resolvePosition(request.continuation);
+  const continuationContext = Object.freeze({
+    instance: request.instance,
+    route: admitted.route,
+    plane: 'builds' as const,
+    firstUrl: buildBitbucketStatusesUrl(admitted.route),
+    nativePageSize: BITBUCKET_STATUSES_PAGE_LENGTH_V1,
+  });
+  const position = resolvePosition(request.continuation, continuationContext);
   if (!position.ok) return unavailable(toTriageSourceFailure(CONTINUATION_UNREADABLE));
 
   const page = await readBitbucketBuildsPage(
@@ -369,7 +403,7 @@ export async function listBitbucketBuilds(
   if (!page.ok) return unavailable(toTriageSourceFailure(page.failure));
 
   const { rollup } = page.value;
-  const continuation = mintWalkContinuation(page.value);
+  const continuation = mintWalkContinuation(page.value, continuationContext);
   return fitActionResultPageV1(page.value.rows, continuation, (
     rows,
     omittedByEnvelope,
@@ -408,11 +442,19 @@ export async function listBitbucketComments(
   const admitted = await admitBitbucketDetailInvocation({
     instance: request.instance,
     localRef: request.localRef,
+    lastKnownLocator: request.lastKnownLocator,
   }, context);
   if (!admitted.ok) return unavailable(admitted.failure);
   try {
 
-  const position = resolvePosition(request.continuation);
+  const continuationContext = Object.freeze({
+    instance: request.instance,
+    route: admitted.route,
+    plane: 'comments' as const,
+    firstUrl: buildBitbucketCommentsUrl(admitted.route),
+    nativePageSize: BITBUCKET_COMMENTS_PAGE_LENGTH_V1,
+  });
+  const position = resolvePosition(request.continuation, continuationContext);
   if (!position.ok) return unavailable(toTriageSourceFailure(CONTINUATION_UNREADABLE));
 
   const page = await readBitbucketCommentsPage(
@@ -421,7 +463,7 @@ export async function listBitbucketComments(
   );
   if (!page.ok) return unavailable(toTriageSourceFailure(page.failure));
 
-  const continuation = mintWalkContinuation(page.value);
+  const continuation = mintWalkContinuation(page.value, continuationContext);
   return fitActionResultPageV1(page.value.rows, continuation, (
     rows,
     omittedByEnvelope,

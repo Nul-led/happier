@@ -233,6 +233,7 @@ function mapCandidate(candidate: Readonly<{
     createdAtMs?: number;
     archived?: boolean;
     details?: unknown;
+    candidateIndexState?: AgentExternalSessionCandidate['candidateIndexState'];
 }>): AgentExternalSessionCandidate {
     const details = isPlainObject(candidate.details) ? candidate.details : null;
     const projectId = typeof details?.projectId === 'string' ? details.projectId : null;
@@ -243,6 +244,9 @@ function mapCandidate(candidate: Readonly<{
         ...(candidate.createdAtMs !== undefined ? { createdAtMs: candidate.createdAtMs } : {}),
         ...(candidate.archived !== undefined ? { archived: candidate.archived } : {}),
         ...(projectId ? { linkData: { projectId } } : {}),
+        ...(candidate.candidateIndexState === undefined
+            ? {}
+            : { candidateIndexState: candidate.candidateIndexState }),
     };
 }
 
@@ -286,6 +290,16 @@ export function createClaudeExternalSessionsContribution(params: Readonly<{
                     searchTerm: request.searchTerm,
                     searchMode: request.searchMode,
                     signal: request.signal,
+                    ...(request.readCandidateIndexState
+                        ? {
+                            readCandidateIndexState: (candidate) => (
+                                request.readCandidateIndexState?.({
+                                    remoteSessionId: candidate.remoteSessionId,
+                                    linkData: { projectId: candidate.projectId },
+                                })
+                            ),
+                        }
+                        : {}),
                     resultBudget: {
                         fits(candidates, nextCursor, searchIncomplete, preparation) {
                             return serializedByteLength(ok({

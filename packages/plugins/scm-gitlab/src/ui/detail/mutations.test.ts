@@ -55,9 +55,18 @@ const CONFIGURED_INSTANCE = Object.freeze({
 describe('the remaining registered write inputs', () => {
   it('builds each MR input from the mounted entry and its observed head', () => {
     const input = detailInput();
-    expect(buildGitlabMergeRequestReopenInputV1(input)).toMatchObject({ localRef: { kindId: 'merge-request' } });
-    expect(buildGitlabReviewerChangeInputV1(input, 'add', ['alice'])).toMatchObject({ operation: 'add', reviewerUsernames: ['alice'], observedHeadSha: OBSERVED_HEAD });
-    expect(buildGitlabDiscussionResolutionInputV1(input, 'discussion-1', true)).toMatchObject({ discussionId: 'discussion-1', resolved: true, observedHeadSha: OBSERVED_HEAD });
+    expect(buildGitlabMergeRequestReopenInputV1(input)).toMatchObject({
+      localRef: { kindId: 'merge-request' },
+      routingToken: 'group/project',
+    });
+    expect(buildGitlabReviewerChangeInputV1(input, 'add', ['alice'])).toMatchObject({
+      operation: 'add', reviewerUsernames: ['alice'], observedHeadSha: OBSERVED_HEAD,
+      routingToken: 'group/project',
+    });
+    expect(buildGitlabDiscussionResolutionInputV1(input, 'discussion-1', true)).toMatchObject({
+      discussionId: 'discussion-1', resolved: true, observedHeadSha: OBSERVED_HEAD,
+      routingToken: 'group/project',
+    });
   });
 
   it('builds each issue input without replacing the user-entered member names', () => {
@@ -182,7 +191,7 @@ describe('buildGitlabMergeRequestCloseInputV1', () => {
     // this case instead of shipping as an invisible default.
     const built = buildGitlabMergeRequestCloseInputV1(detailInput());
 
-    expect(Object.keys(built ?? {}).sort()).toEqual(['instance', 'localRef', 'v']);
+    expect(Object.keys(built ?? {}).sort()).toEqual(['instance', 'localRef', 'routingToken', 'v']);
   });
 
   it('still builds when the observation carries no revision', () => {
@@ -227,7 +236,7 @@ describe('buildGitlabMergeRequestMergeInputV1', () => {
     const built = buildGitlabMergeRequestMergeInputV1(detailInput());
 
     expect(Object.keys(built ?? {}).sort())
-      .toEqual(['instance', 'localRef', 'observedHeadSha', 'v']);
+      .toEqual(['instance', 'localRef', 'observedHeadSha', 'routingToken', 'v']);
   });
 });
 

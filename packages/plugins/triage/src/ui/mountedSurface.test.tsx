@@ -333,6 +333,10 @@ async function mountSurface(
                 executeAction: async ({ action, input }) => (
                     await harness.executeAction({ action, input })
                 ),
+                // Lens edits are route-owned. These cases exercise list/window
+                // projection, so let the host settle their canonical location;
+                // rejection/rollback is covered at the mounted route boundary.
+                replacePageLocation: ({ subPath }) => subPath,
             },
         });
     });

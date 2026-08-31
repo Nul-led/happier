@@ -5,7 +5,7 @@ import {
 } from '@happier-dev/plugin-sdk/actions';
 import type { TriageConfiguredSourceInstanceV1 } from '@happier-dev/triage-protocol/v1';
 import { createTriageSourceV1Fixture } from '@happier-dev/triage-protocol/testing/v1';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   GITHUB_CONNECTED_ACCOUNT_PURPOSE,
@@ -15,6 +15,7 @@ import {
 import {
   GITHUB_FIXTURE_OWNER,
   GITHUB_FIXTURE_REPOSITORY,
+  GITHUB_ISSUE_RESPONSE,
   GITHUB_PULL_REQUEST_RESPONSE,
   GITHUB_REQUESTED_REVIEWERS_RESPONSE,
   githubChangedFile,
@@ -32,12 +33,14 @@ import {
   GithubChangedFilesResultV1Schema,
   GithubChecksResultV1Schema,
   GithubFeedbackResultV1Schema,
+  GithubOverviewResultV1Schema,
   GithubReviewsResultV1Schema,
   GithubTimelineResultV1Schema,
 } from './detail/contracts.js';
 import { encodeGithubDetailContinuation } from './detail/continuation.js';
 import {
   readGithubCapabilities,
+  readGithubOverview,
   listGithubChangedFiles,
   readGithubFeedback,
   listGithubTimeline,
@@ -153,6 +156,126 @@ describe('GitHub capability plane', () => {
     expect(stub.requests.filter((request) =>
       new URL(request.url).pathname === `/repos/${GITHUB_FIXTURE_OWNER}/${GITHUB_FIXTURE_REPOSITORY}`))
       .toHaveLength(1);
+  });
+});
+
+/* --------------------------------------------------------------------- overview */
+
+describe('GitHub overview plane', () => {
+  it('refreshes one exact pull request into its current Markdown and branch facts', async () => {
+    const observedAtMs = Date.parse('2026-08-31T10:11:12Z');
+    const now = vi.spyOn(Date, 'now').mockReturnValue(observedAtMs);
+    const pullRequest = {
+      ...GITHUB_PULL_REQUEST_RESPONSE,
+      mergeable_state: 'behind',
+      assignees: [{ login: 'hubot' }],
+      requested_reviewers: [{ login: 'monalisa' }],
+      requested_teams: [{ slug: 'client-platform' }],
+      milestone: { title: 'August' },
+    };
+    const stub = createStubGithubTransport({
+      respond: (request) => new URL(request.url).pathname.endsWith('/pulls/1284')
+        ? jsonResponse(pullRequest)
+        : undefined,
+    });
+
+    try {
+      const result = GithubOverviewResultV1Schema.parse(await readGithubOverview({
+        v: 1,
+        instance: configuredInstance(),
+        localRef: PULL_REQUEST_REF,
+        routingToken: REPOSITORY_KEY,
+      }, stub.context));
+
+      expect(result).toEqual({
+        kind: 'overview',
+        kindId: 'pull-request',
+        observedAtMs,
+        title: 'Stream terminal frames without a full re-render',
+        state: 'open',
+        draft: false,
+        merged: false,
+        author: 'octocat',
+        createdAtMs: Date.parse('2026-08-01T09:14:22Z'),
+        updatedAtMs: Date.parse('2026-08-12T18:03:40Z'),
+        body: 'Reworks the frame pump.',
+        webUrl: `https://github.com/${GITHUB_FIXTURE_OWNER}/${GITHUB_FIXTURE_REPOSITORY}/pull/1284`,
+        labels: ['performance'],
+        assignees: ['hubot'],
+        milestone: 'August',
+        headBranch: 'frame-pump',
+        baseBranch: 'main',
+        requestedReviewers: [
+          { kind: 'user', subject: 'monalisa' },
+          { kind: 'team', subject: 'client-platform' },
+        ],
+        headRevision: HEAD_SHA,
+        additions: 214,
+        deletions: 88,
+        branchUpdateEligibility: 'behind',
+      });
+      expect(stub.requests.filter((request) => new URL(request.url).pathname.endsWith('/pulls/1284')))
+        .toHaveLength(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('states an independent provider permission denial instead of rendering an empty overview', async () => {
+    const stub = createStubGithubTransport({
+      respond: (request) => new URL(request.url).pathname.endsWith('/pulls/1284')
+        ? { status: 403, body: { message: 'Resource not accessible' } }
+        : undefined,
+    });
+
+    expect(await readGithubOverview({
+      v: 1,
+      instance: configuredInstance(),
+      localRef: PULL_REQUEST_REF,
+      routingToken: REPOSITORY_KEY,
+    }, stub.context)).toEqual({
+      kind: 'unavailable',
+      failure: { class: 'permission', code: 'github_forbidden' },
+    });
+  });
+
+  it('refreshes an issue without manufacturing pull-request-only fields', async () => {
+    const issue = {
+      ...GITHUB_ISSUE_RESPONSE,
+      number: 1284,
+      repository_url: `https://api.github.com/repos/${GITHUB_FIXTURE_OWNER}/${GITHUB_FIXTURE_REPOSITORY}`,
+      html_url: `https://github.com/${GITHUB_FIXTURE_OWNER}/${GITHUB_FIXTURE_REPOSITORY}/issues/1284`,
+      labels: [{ name: 'bug' }],
+      assignees: [{ login: 'hubot' }],
+      milestone: { title: 'August' },
+    };
+    const stub = createStubGithubTransport({
+      respond: (request) => new URL(request.url).pathname.endsWith('/issues/1284')
+        ? jsonResponse(issue)
+        : undefined,
+    });
+
+    const result = GithubOverviewResultV1Schema.parse(await readGithubOverview({
+      v: 1,
+      instance: configuredInstance(),
+      localRef: ISSUE_REF,
+      routingToken: REPOSITORY_KEY,
+    }, stub.context));
+
+    expect(result).toMatchObject({
+      kind: 'overview',
+      kindId: 'issue',
+      title: 'Reconnect loop after a laptop resume',
+      state: 'open',
+      author: 'monalisa',
+      body: 'The client reconnects in a loop after resume.',
+      labels: ['bug'],
+      assignees: ['hubot'],
+      milestone: 'August',
+    });
+    expect(result).not.toHaveProperty('headBranch');
+    expect(result).not.toHaveProperty('headRevision');
+    expect(result).not.toHaveProperty('branchUpdateEligibility');
   });
 });
 

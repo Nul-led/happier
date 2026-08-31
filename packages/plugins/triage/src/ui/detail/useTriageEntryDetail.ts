@@ -64,6 +64,11 @@ export type TriageEntryDetailStateV1 =
    */
   | Readonly<{ kind: 'refused'; reason: 'entryMismatch' | 'instanceMismatch' | 'invalidContractValue' }>;
 
+/** The mounted form adds the reader's one recovery action to Account failure. */
+export type TriageMountedEntryDetailStateV1 =
+  | Exclude<TriageEntryDetailStateV1, Readonly<{ kind: 'unreachable' }>>
+  | Readonly<{ kind: 'unreachable'; retry(): void }>;
+
 const READING: TriageEntryDetailStateV1 = Object.freeze({ kind: 'reading' });
 const UNAVAILABLE: TriageEntryDetailStateV1 = Object.freeze({ kind: 'unavailable' });
 const UNREACHABLE: TriageEntryDetailStateV1 = Object.freeze({ kind: 'unreachable' });
@@ -198,7 +203,7 @@ async function readTriageEntryDetailStateThrough(
  */
 export function useTriageEntryDetail(
   source: TriageEntryDetailInputSourceV1 | null,
-): TriageEntryDetailStateV1 | null {
+): TriageMountedEntryDetailStateV1 | null {
   const hostApi = usePluginHostApi();
   const durable = useTriageDurableAccount();
   const transport = useMemo<TriageEntryDetailTransportV1>(
@@ -215,6 +220,7 @@ export function useTriageEntryDetail(
   const linkedSessionsController = useRef<AbortController | null>(null);
   /** Cursors already spent by this selection's mount-local linked-session walk. */
   const spentLinkedSessionCursors = useRef(new Set<string>());
+  const [retryGeneration, setRetryGeneration] = useState(0);
 
   const entryRef = source?.selection.entryRef;
   const sourceInstanceId = source?.selection.sourceInstanceId;
@@ -223,6 +229,9 @@ export function useTriageEntryDetail(
   const publish = useCallback((next: TriageEntryDetailStateV1 | null): void => {
     stateRef.current = next;
     setState(next);
+  }, []);
+  const retry = useCallback((): void => {
+    setRetryGeneration((generation) => generation + 1);
   }, []);
 
   const loadMoreLinkedSessions = useCallback((): void => {
@@ -353,11 +362,13 @@ export function useTriageEntryDetail(
       controller.abort();
       linkedSessionsController.current?.abort();
     };
-  }, [entryRef, observation, publish, sourceInstanceId, transport]);
+  }, [entryRef, observation, publish, retryGeneration, sourceInstanceId, transport]);
 
   return useMemo(() => (
     state?.kind === 'ready'
       ? Object.freeze({ ...state, loadMoreLinkedSessions })
-      : state
-  ), [loadMoreLinkedSessions, state]);
+      : state?.kind === 'unreachable'
+        ? Object.freeze({ ...state, retry })
+        : state
+  ), [loadMoreLinkedSessions, retry, state]);
 }

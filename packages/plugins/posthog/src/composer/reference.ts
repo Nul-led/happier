@@ -12,16 +12,15 @@ import {
     type ComposerReferenceResolutionV1,
     type PluginInvocationContext,
 } from '@happier-dev/plugin-sdk';
-import { fitComposerReferenceResolutionPrefixV1 } from '@happier-dev/triage-sources/runtime';
-
-import { createPosthogInvocationClient } from '../api/invocationClient.js';
-import { normalizePosthogApiOrigin } from '../connect/origin.js';
 import {
-    POSTHOG_CONNECTED_ACCOUNT_PURPOSE,
-    POSTHOG_PLUGIN_ID,
-} from '../posthogContracts.js';
-import { readPosthogSampledIssueEvents } from '../source/detail/issueEvents.js';
-import { runPosthogBoundedInvocation } from '../source/invocationDeadline.js';
+    fitComposerReferenceResolutionPrefixV1,
+    readCurrentTriageConfiguredSourceInstanceV1,
+} from '@happier-dev/triage-sources/runtime';
+
+import { encodePosthogSampledEventsContinuation } from '../source/detail/issueEventsContract.js';
+import { buildPosthogCollisionScope } from '../source/identity.js';
+import { resolvePosthogInvocationScope } from '../source/invocationScope.js';
+import { readPosthogSampledEvents } from '../source/operations.js';
 import type { PosthogProjectedIssueEvent } from '../ui/detail/issueEventProjection.js';
 
 import {
@@ -153,28 +152,45 @@ export async function resolvePosthogEvidenceReference(
     const candidate = decodePosthogEvidenceCandidate(candidateId);
     if (candidate === null) throw unavailableEvidence('candidate-invalid');
 
-    const origin = normalizePosthogApiOrigin(candidate.origin);
-    if (!origin.ok) throw unavailableEvidence('origin-invalid');
-    const client = createPosthogInvocationClient(context, {
-        service: { pluginId: POSTHOG_PLUGIN_ID, localId: POSTHOG_CONNECTED_ACCOUNT_PURPOSE },
-        accountId: candidate.accountId,
-    }, origin.origin);
-    const read = await runPosthogBoundedInvocation(
+    const current = await readCurrentTriageConfiguredSourceInstanceV1({
         context,
-        undefined,
-        async (signal) => await readPosthogSampledIssueEvents(client, {
-            teamRouteId: candidate.teamPathId,
-            issueId: candidate.entryId,
-            detailWindow: { from: candidate.from, to: candidate.to },
-            limit: 1,
-            offset: candidate.selectedOffset,
-        }, { signal }),
-    );
-    if (!read.ok) throw unavailableEvidence(read.failure.kind);
-    if (read.value.omittedRowCount !== 0 || read.value.events.length !== 1) {
+        sourceInstanceId: candidate.sourceInstanceId,
+        instanceDigest: candidate.instanceDigest,
+    });
+    if (current.kind === 'unavailable') throw unavailableEvidence('configured-source-unavailable');
+    if (current.kind === 'changed') throw unavailableEvidence('configured-source-changed');
+    const scope = resolvePosthogInvocationScope(current.instance);
+    if (!scope.ok) throw unavailableEvidence('configured-source-invalid');
+    const environment = scope.configuration.environments.find((entry) => (
+        entry.teamUuid === candidate.teamUuid
+    ));
+    if (environment === undefined) throw unavailableEvidence('configured-source-invalid');
+    const collisionScope = buildPosthogCollisionScope(scope.origin, environment.teamUuid);
+    if (!collisionScope.ok) throw unavailableEvidence('configured-source-invalid');
+    const continuation = encodePosthogSampledEventsContinuation({
+        v: 1,
+        from: candidate.from,
+        to: candidate.to,
+        offset: candidate.selectedOffset,
+        limit: 1,
+    });
+    if (continuation === null) throw unavailableEvidence('evidence-contract-exceeded');
+    const read = await readPosthogSampledEvents({
+        v: 1,
+        instance: current.instance,
+        localRef: {
+            kindId: 'error-issue',
+            collisionScope: collisionScope.value,
+            entryId: candidate.entryId,
+        },
+        limit: 1,
+        continuation,
+    }, context);
+    if (read.kind !== 'sampled') throw unavailableEvidence(read.failure.code);
+    if (read.omittedRowCount !== 0 || read.events.length !== 1) {
         throw unavailableEvidence('event-count-mismatch');
     }
-    const event = read.value.events[0];
+    const event = read.events[0];
     if (event === undefined || event.uuid !== candidate.selectedUuid) {
         throw unavailableEvidence('event-changed');
     }

@@ -318,8 +318,20 @@ export async function runAzureTriageScan(input: Readonly<{
   const frontier = request.page.kind === 'initial'
     ? createAzureScanFrontier({
       scanLimit: request.page.limit,
+      provenance: {
+        plane: 'scan',
+        sourceInstanceId: request.instance.instance.sourceInstanceId,
+        configuredBaseUrl: origin.baseUrl,
+      },
     })
-    : decodeAzureScanContinuation(request.page.continuation);
+    : decodeAzureScanContinuation({
+      continuation: request.page.continuation,
+      provenance: {
+        plane: 'scan',
+        sourceInstanceId: request.instance.instance.sourceInstanceId,
+        configuredBaseUrl: origin.baseUrl,
+      },
+    });
   if (frontier === null) {
     return {
       kind: 'failed',
@@ -463,11 +475,18 @@ async function walkAzureScan(input: Readonly<{
       repositoryId: repository.id,
       lane: lane.laneId,
       viewerId,
-      top: frontier.scanLimit - frontier.observed,
+      top: frontier.nativePageSize,
       skip: lane.skip,
       signal,
     });
     if (!lanePage.ok) return settle(state, frontier, 'failed', projectAzureSourceFailure(lanePage.failure));
+    if (lanePage.rawCardinality > frontier.nativePageSize) {
+      return settle(state, frontier, 'failed', createAzureSourceFailure({
+        class: 'unsupportedContract',
+        code: 'azure-devops/provider-overdelivery',
+        detail: 'Azure DevOps returned more pull requests than the fixed native page requested.',
+      }));
+    }
     // `$top`/`$skip` over a mutating list skips and duplicates by construction, so any lane that
     // needed a second page can only claim `moving` — and it stays true for the rest of the walk,
     // including the call that settles it from an entirely different repository.

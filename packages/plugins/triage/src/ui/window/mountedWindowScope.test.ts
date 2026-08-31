@@ -2,7 +2,11 @@ import type { JsonValue, PluginCancellationOptions } from '@happier-dev/plugin-s
 import type { PluginUiEphemeralSharedScope } from '@happier-dev/plugin-ui';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { TriageListEntriesResultV1 } from '../../actions/listEntriesProtocol.js';
+import {
+  TriageListEntriesInputV1Schema,
+  type TriageListEntriesInputV1,
+  type TriageListEntriesResultV1,
+} from '../../actions/listEntriesProtocol.js';
 import { TRIAGE_LIST_DEFAULT_LENS_V1 } from '../../projection/listWindow.js';
 import {
   acquireTriageListWindow,
@@ -13,7 +17,10 @@ import {
   type TriageListWindowHostV1,
   type TriageListWindowLeaseV1,
 } from './mountedWindow.js';
-import { createTriageEphemeralSharedScopeFixture } from './ephemeralSharedScope.test-support.js';
+import {
+  createTriageEphemeralSharedScopeFixture,
+  createTriageEphemeralSharedScopeOriginFixture,
+} from './ephemeralSharedScope.test-support.js';
 
 /**
  * The scope of the mounted PRs & Issues window.
@@ -34,9 +41,14 @@ const INSTANCE_B = '22222222-2222-4222-8222-222222222222';
  * distinct configured source instance, which is what makes "whose rows are
  * these?" observable in the published snapshot.
  */
-function createHostStub(sourceInstanceId: string, options: Readonly<{ paged?: boolean }> = {}) {
+function createHostStub(
+  sourceInstanceId: string,
+  options: Readonly<{ paged?: boolean; configuredPaged?: boolean }> = {},
+) {
   const calls: string[] = [];
+  const inputs: TriageListEntriesInputV1[] = [];
   let gate: Promise<void> | null = null;
+  let gateKind: 'all' | 'providerContinuation' | 'configuredContinuation' = 'all';
   let openGate: (() => void) | null = null;
   let rejectGate: ((error: Error) => void) | null = null;
   const result = (continued: boolean): TriageListEntriesResultV1 => ({
@@ -52,12 +64,16 @@ function createHostStub(sourceInstanceId: string, options: Readonly<{ paged?: bo
       lanes: [{
         sourceInstanceId,
         source: SOURCE,
-        health: { kind: 'unavailable' },
+        health: options.paged === true
+          ? continued
+            ? { kind: 'walkFinished' }
+            : { kind: 'partial', reason: 'test-page' }
+          : { kind: 'unavailable' },
         exhausted: options.paged === true && continued,
       }],
       coverage: 'partial',
       ...(options.paged === true && !continued
-        ? { continuations: [{ sourceInstanceId, continuation: { v: 1, token: 'page-2' } }] }
+        ? { continuations: [{ sourceInstanceId, pageLimit: 56, continuation: { v: 1, token: 'page-2' } }] }
         : {}),
       assembledAtMs: 1,
     },
@@ -69,20 +85,53 @@ function createHostStub(sourceInstanceId: string, options: Readonly<{ paged?: bo
       _options?: PluginCancellationOptions,
     ): Promise<unknown> {
       calls.push(action);
-      if (gate) await gate;
-      const continued = typeof input === 'object'
-        && input !== null
-        && !Array.isArray(input)
-        && Array.isArray((input as { resume?: unknown }).resume)
-        && ((input as { resume: unknown[] }).resume.length > 0);
-      return result(continued) as unknown as JsonValue;
+      const parsedInput = TriageListEntriesInputV1Schema.parse(input);
+      inputs.push(parsedInput);
+      const continued = (parsedInput.resume?.length ?? 0) > 0;
+      const configuredContinuation = parsedInput.sources.kind === 'allConfigured'
+        && parsedInput.sources.cursor !== undefined;
+      if (gate && (
+        gateKind === 'all'
+        || (gateKind === 'providerContinuation' && continued)
+        || (gateKind === 'configuredContinuation' && configuredContinuation)
+      )) await gate;
+      const response = result(continued);
+      return (
+        options.configuredPaged === true
+        && parsedInput.sources.kind === 'allConfigured'
+        && parsedInput.sources.cursor === undefined
+          ? {
+              ...response,
+              configuredSourcesStatus: 'truncated',
+              configuredSourcesNextCursor: 'configured-page-2',
+            }
+          : response
+      ) as unknown as JsonValue;
     },
   });
   return {
     host,
     calls,
+    inputs,
     /** Hold this stub's next passes open so a retirement can overtake them. */
     hold(): void {
+      gateKind = 'all';
+      gate = new Promise<void>((resolve, reject) => {
+        openGate = resolve;
+        rejectGate = reject;
+      });
+    },
+    /** Hold only the next continuation-bearing provider read, not enumeration. */
+    holdContinuation(): void {
+      gateKind = 'providerContinuation';
+      gate = new Promise<void>((resolve, reject) => {
+        openGate = resolve;
+        rejectGate = reject;
+      });
+    },
+    /** Hold only a continued configured-source enumeration page. */
+    holdConfiguredContinuation(): void {
+      gateKind = 'configuredContinuation';
       gate = new Promise<void>((resolve, reject) => {
         openGate = resolve;
         rejectGate = reject;
@@ -91,12 +140,14 @@ function createHostStub(sourceInstanceId: string, options: Readonly<{ paged?: bo
     release(): void {
       openGate?.();
       gate = null;
+      gateKind = 'all';
       openGate = null;
       rejectGate = null;
     },
     fail(): void {
       rejectGate?.(new Error('mounted client retired'));
       gate = null;
+      gateKind = 'all';
       openGate = null;
       rejectGate = null;
     },
@@ -247,6 +298,81 @@ describe('the mounted PRs & Issues window is scoped by its host-owned lifetime',
       configuredSources: [],
     });
   }, 60_000);
+
+  it('shares one window across execution origins and restarts paging after its active origin retires', async () => {
+    const shellRealm = {
+      acquireTriageListWindow,
+      loadMoreTriageListWindow,
+      readTriageListWindowSnapshot,
+      refreshTriageListWindow,
+    };
+    vi.resetModules();
+    const pickerRealm = await import('./mountedWindow.js');
+    const originScopes = createTriageEphemeralSharedScopeOriginFixture();
+    const shellScope = originScopes.forExecutionOrigin('daemon-a');
+    const pickerScope = originScopes.forExecutionOrigin('daemon-b');
+    const shell = createHostStub(INSTANCE_A, { paged: true });
+    const picker = createHostStub(INSTANCE_A, { paged: true });
+    const shellLease = shellRealm.acquireTriageListWindow(shell.host, shellScope);
+    const pickerLease = pickerRealm.acquireTriageListWindow(picker.host, pickerScope);
+
+    await shellRealm.refreshTriageListWindow('view', shell.host, shellScope);
+
+    const sharedSnapshot = shellRealm.readTriageListWindowSnapshot(shell.host, shellScope);
+    expect(sharedSnapshot.loadMore).toEqual({ kind: 'available' });
+    expect(pickerRealm.readTriageListWindowSnapshot(picker.host, pickerScope)).toBe(sharedSnapshot);
+    expect(picker.inputs).toEqual([]);
+
+    shell.holdContinuation();
+    const interruptedAppend = shellRealm.loadMoreTriageListWindow(shell.host, shellScope);
+    await vi.waitFor(() => {
+      expect(shell.inputs.some((input) => (input.resume?.length ?? 0) > 0)).toBe(true);
+    }, { timeout: 5_000, interval: 10 });
+    shellLease.release();
+    shell.fail();
+    await settles(interruptedAppend);
+
+    const replacementScans = picker.inputs.filter((input) => input.limit > 0);
+    expect(replacementScans.length).toBeGreaterThan(0);
+    expect(replacementScans.every((input) => input.resume === undefined)).toBe(true);
+    expect(pickerRealm.readTriageListWindowSnapshot(picker.host, pickerScope).loadMore).toEqual({
+      kind: 'available',
+    });
+
+    await pickerRealm.loadMoreTriageListWindow(picker.host, pickerScope);
+    const resumed = picker.inputs.filter((input) => input.limit > 0).at(-1);
+    expect(resumed?.resume).toHaveLength(1);
+    pickerLease.release();
+  }, 60_000);
+
+  it('does not send a configured-source cursor through a replacement execution origin', async () => {
+    const originScopes = createTriageEphemeralSharedScopeOriginFixture();
+    const originAScope = originScopes.forExecutionOrigin('daemon-a');
+    const originBScope = originScopes.forExecutionOrigin('daemon-b');
+    const originA = createHostStub(INSTANCE_A, { configuredPaged: true });
+    const originB = createHostStub(INSTANCE_A);
+    originA.holdConfiguredContinuation();
+    const originALease = acquire(originA.host, originAScope);
+    acquire(originB.host, originBScope);
+
+    const interruptedEnumeration = refreshTriageListWindow('view', originA.host, originAScope);
+    await vi.waitFor(() => {
+      expect(originA.inputs.some((input) => (
+        input.sources.kind === 'allConfigured' && input.sources.cursor !== undefined
+      ))).toBe(true);
+    }, { timeout: 5_000, interval: 10 });
+    originALease.release();
+    originA.fail();
+    await settles(interruptedEnumeration);
+
+    const replacementEnumeration = originB.inputs.filter(
+      (input) => input.sources.kind === 'allConfigured',
+    );
+    expect(replacementEnumeration.length).toBeGreaterThan(0);
+    expect(replacementEnumeration.every((input) => (
+      input.sources.kind === 'allConfigured' && input.sources.cursor === undefined
+    ))).toBe(true);
+  });
 
   it('does not manufacture an artifact-local store when the renderer lacks the host scope', async () => {
     const host = createHostStub(INSTANCE_A);

@@ -27,6 +27,16 @@ function buildCodexCredential() {
 }
 
 describe('Codex runtime auth adapter', () => {
+  it('declares that materialized Codex auth can be applied during an active turn', async () => {
+    await expect(createCodexConnectedServiceRuntimeAuthAdapter().materializeActiveProfile({
+      target: { agentId: 'codex' },
+      selection: {},
+    })).resolves.toEqual({
+      supported: true,
+      supportsInTurnApply: true,
+    });
+  });
+
   it('attributes runtime failures to the canonical qualified Connected Account service', () => {
     expect(createCodexConnectedServiceRuntimeAuthAdapter().classifyRuntimeAuthFailure({
       target: { agentId: 'codex' },

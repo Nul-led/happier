@@ -64,9 +64,9 @@ import {
   TELEGRAM_BOT_CONNECTED_ACCOUNT_ID,
   TELEGRAM_BOT_CREDENTIAL_PURPOSE,
   TELEGRAM_BOT_TOKEN_ENVIRONMENT_KEY,
+  TELEGRAM_CHANNEL_PLUGIN_ID,
 } from './constants.js';
 
-const TELEGRAM_CHANNEL_PLUGIN_ID = 'happier.channel.telegram';
 const TELEGRAM_CONNECTION_KEY_PREFIX = 'telegram-bot:';
 // Telegram documents getUpdates retention as no more than 24 hours. This only
 // records provider evidence in an opaque checkpoint; core owns the resulting
@@ -92,6 +92,10 @@ type ConversationUnsupportedEditIngressV1 = Extract<ConversationNormalizedIngres
   kind: 'routableNonAdmission';
   reason: 'unsupportedEdit';
 }>;
+type TelegramPollingPrerequisite =
+  | Readonly<{ kind: 'ready' }>
+  | Readonly<{ kind: 'requiresRemediation' }>
+  | Readonly<{ kind: 'notReady'; failure: ConversationProviderFailureV1 }>;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -293,6 +297,23 @@ async function readyConnection(
     return invalidConfiguration('The selected Telegram bot no longer matches this Channel connection.');
   }
   return { api, identity };
+}
+
+/**
+ * `getUpdates` and a configured webhook are mutually exclusive at Telegram.
+ * Setup presents the existing remediation Action; saved-connection tests use
+ * this same prerequisite so they cannot clear that blocked-polling truth.
+ */
+async function inspectTelegramPollingPrerequisite(
+  api: TelegramBotApi,
+  signal: AbortSignal,
+): Promise<TelegramPollingPrerequisite> {
+  const webhook = await api.getWebhookInfo({ signal });
+  throwIfAborted(signal);
+  if ('kind' in webhook) return { kind: 'notReady', failure: readFailure(webhook) };
+  return webhook.url.trim().length > 0
+    ? { kind: 'requiresRemediation' }
+    : { kind: 'ready' };
 }
 
 function endpointFromChat(
@@ -502,13 +523,12 @@ export async function setupTelegramChannels(
     const failure = readFailure(identity);
     throw new PluginError({ code: `telegram_bot_${failure.reason}`, message: failure.diagnostic ?? 'Telegram is unavailable.' });
   }
-  const webhook = await api.getWebhookInfo({ signal: context.signal });
-  throwIfAborted(context.signal);
-  if ('kind' in webhook) {
-    const failure = readFailure(webhook);
+  const pollingPrerequisite = await inspectTelegramPollingPrerequisite(api, context.signal);
+  if (pollingPrerequisite.kind === 'notReady') {
+    const failure = pollingPrerequisite.failure;
     throw new PluginError({ code: `telegram_bot_${failure.reason}`, message: failure.diagnostic ?? 'Telegram is unavailable.' });
   }
-  if (webhook.url.trim().length > 0) {
+  if (pollingPrerequisite.kind === 'requiresRemediation') {
     return ConversationProviderSetupOutcomeV1Schema.parse({
       kind: 'requiresRemediation',
     });
@@ -583,6 +603,15 @@ export async function testTelegramConnection(input: unknown, context: PluginInvo
   }
   const ready = await readyConnection(context, connection);
   if ('kind' in ready) return ready;
+  const pollingPrerequisite = await inspectTelegramPollingPrerequisite(ready.api, context.signal);
+  if (pollingPrerequisite.kind === 'notReady') return pollingPrerequisite.failure;
+  if (pollingPrerequisite.kind === 'requiresRemediation') {
+    return ConversationConnectionTestResultV1Schema.parse({
+      kind: 'notReady',
+      reason: 'invalidConfiguration',
+      diagnostic: 'Telegram has an active webhook. Remove it before using checkpointed polling.',
+    });
+  }
   return ConversationConnectionTestResultV1Schema.parse({
     kind: 'ready',
     integrationPrincipal: { id: ready.identity.id, label: ready.identity.displayName },

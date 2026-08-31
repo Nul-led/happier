@@ -132,7 +132,7 @@ describe('Bitbucket triage request construction', () => {
 
     expect(buildBitbucketPullRequestUrl({
       workspaceUuid: WORKSPACE_UUID,
-      repositoryUuid: REPOSITORY_UUID,
+      repositorySlug: REPOSITORY_UUID,
       entryId: '42',
     })).toBe(
       `${BITBUCKET_CLOUD_API_ORIGIN}/2.0/repositories/%7B4b2f0e6c-8a71-4f2e-9d51-6c3b70a19d44%7D`
@@ -820,7 +820,9 @@ describe('Bitbucket bounded pull-request scan', () => {
 describe('Bitbucket authoritative get', () => {
   const target = {
     workspaceUuid: WORKSPACE_UUID,
-    repositoryUuid: REPOSITORY_UUID,
+    repositorySlug: 'deploy-tools',
+    expectedRepositoryUuid: REPOSITORY_UUID,
+    expectedRepositoryKey: 'example-workspace/deploy-tools',
     entryId: '42',
   } as const;
 
@@ -851,7 +853,7 @@ describe('Bitbucket authoritative get', () => {
     const wrongRepository = await getBitbucketPullRequest({
       client: createClient([{ body: pullRequestSelf }]).client,
       ...target,
-      repositoryUuid: '{2b3c4d5e-6f70-4182-93a4-b5c6d7e8f901}',
+      expectedRepositoryUuid: '{2b3c4d5e-6f70-4182-93a4-b5c6d7e8f901}',
     });
     expect(wrongRepository).toMatchObject({
       kind: 'unresolved',

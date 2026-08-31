@@ -1,3 +1,4 @@
+export const TELEGRAM_CHANNEL_PLUGIN_ID = 'happier.channel.telegram';
 export const TELEGRAM_BOT_CONNECTED_ACCOUNT_ID = 'telegram-bot';
 export const TELEGRAM_BOT_CREDENTIAL_PURPOSE = 'telegram-bot-credential';
 export const TELEGRAM_CHANNEL_PROVIDER_CONTRIBUTION_ID = 'telegram-provider';

@@ -76,6 +76,11 @@ function mountedFor(
   return byScope.get(scope);
 }
 
+function hasOpaqueContinuation(input: TriageListEntriesInputV1): boolean {
+  return (input.resume?.length ?? 0) > 0
+    || (input.sources.kind === 'allConfigured' && input.sources.cursor !== undefined);
+}
+
 /**
  * What a consumer reads before its surface has acquired the window. It is a
  * frozen constant rather than a fresh object because an external-store reader
@@ -124,12 +129,18 @@ export function acquireTriageListWindow(
       TRIAGE_LIST_WINDOW_SHARED_KEY_V1,
       () => {
         const clients = new Map<TriageListWindowHostV1, number>();
+        let executionOriginEpoch = 0;
         const store = createTriageListWindowStore({
           readEntries: async (input, options) => {
             const client = clients.keys().next().value as TriageListWindowHostV1 | undefined;
             if (client === undefined) throw new Error('No live Triage list-window client is mounted.');
+            const readExecutionOriginEpoch = executionOriginEpoch;
             try {
-              return await readEntriesThrough(client, input, options);
+              const result = await readEntriesThrough(client, input, options);
+              if (!clients.has(client)) {
+                throw new Error('The Triage list-window client retired before its read settled.');
+              }
+              return result;
             } catch (error) {
               // This is a safe aggregate read, not an outward mutation. If the
               // artifact carrying it retired while the Action was in flight,
@@ -139,6 +150,14 @@ export function acquireTriageListWindow(
               if (clients.has(client) || options?.signal?.aborted === true) throw error;
               const replacement = clients.keys().next().value as TriageListWindowHostV1 | undefined;
               if (replacement === undefined) throw error;
+              // Provider continuations are opaque to Triage and may be bound
+              // to the daemon/materialization that issued them. A same-origin
+              // client can finish the read, but a different origin must run
+              // the replacement cycle from page one.
+              if (
+                executionOriginEpoch !== readExecutionOriginEpoch
+                && hasOpaqueContinuation(input)
+              ) throw error;
               return await readEntriesThrough(replacement, input, options);
             }
           },
@@ -160,6 +179,10 @@ export function acquireTriageListWindow(
         });
         return Object.freeze({
           value,
+          onExecutionOriginChange() {
+            executionOriginEpoch += 1;
+            store.replaceReadTransport();
+          },
           dispose() {
             clients.clear();
             store.dispose();

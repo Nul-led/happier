@@ -529,7 +529,8 @@ describe('browser-safe package exports', () => {
     }, 60_000);
 
     it('keeps the public Event Automation setup-result schema out of Node-only Protocol branches', async () => {
-        const eventsEntry = resolve(import.meta.dirname, './events/index.ts');
+        const packageJson = readPackageJson(new URL('../package.json', import.meta.url));
+        const eventsEntry = resolve(import.meta.dirname, './events/index.browser.ts');
         const protocolRoot = resolve(import.meta.dirname, '../../protocol/src/index.ts');
         const protocolEventSetupResultEntry = resolve(
             import.meta.dirname,
@@ -544,6 +545,11 @@ describe('browser-safe package exports', () => {
             '../../protocol/src/automations/automationEventV1.ts',
         );
         const emittedModules = new Set<string>();
+        expect(packageJson.exports).toHaveProperty('./events', {
+            types: './dist/events/index.d.ts',
+            browser: './dist/events/index.browser.js',
+            default: './dist/events/index.js',
+        });
         const result = await build({
             configFile: false,
             logLevel: 'silent',

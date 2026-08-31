@@ -56,6 +56,9 @@ const boundedText = (maxLength: number): PluginJsonSchema => ({
 });
 
 const IDENTIFIER_SCHEMA = boundedText(MAX_TRIAGE_IDENTIFIER_UTF8_BYTES_V1);
+// Canonical public Plugin and contribution-local ids are each at most 256
+// ASCII bytes; the slash-qualified projection therefore reaches 513 bytes.
+const SOURCE_QUALIFIED_ID_SCHEMA = boundedText(513);
 const TEXT_SCHEMA = boundedText(MAX_TRIAGE_TEXT_UTF8_BYTES_V1);
 
 export const CORPUS_SOURCE_INSTANCES_COLLECTION = defineAccountCollection({
@@ -65,7 +68,7 @@ export const CORPUS_SOURCE_INSTANCES_COLLECTION = defineAccountCollection({
         type: 'object',
         properties: {
             [CORPUS_SOURCE_INSTANCES_FIELD.instanceTag]: IDENTITY_TAG_SCHEMA,
-            [CORPUS_SOURCE_INSTANCES_FIELD.sourceQualifiedId]: IDENTIFIER_SCHEMA,
+            [CORPUS_SOURCE_INSTANCES_FIELD.sourceQualifiedId]: SOURCE_QUALIFIED_ID_SCHEMA,
             [CORPUS_SOURCE_INSTANCES_FIELD.lifecycle]: {
                 type: 'string',
                 enum: [CORPUS_SOURCE_INSTANCE_LIFECYCLE.active, CORPUS_SOURCE_INSTANCE_LIFECYCLE.retired],

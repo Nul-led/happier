@@ -94,6 +94,7 @@ describe('GitLab mounted review publication input builders', () => {
       [PROPOSAL],
       { kind: 'approve', body: 'This is ready.' },
     )).toMatchObject({
+      routingToken: 'group/project',
       publicationPlan: {
         target: {
           providerId: 'gitlab',
@@ -116,12 +117,13 @@ describe('GitLab mounted review publication input builders', () => {
 
   it('uses one revision-pinned entry for the standalone MR comment', () => {
     expect(buildGitlabMergeRequestReviewCommentCreateInputV1(INPUT, PROPOSAL))
-      .toMatchObject({ publicationPlan: { baseRevision: BASE, headRevision: HEAD, entries: [{ happierCommentId: PROPOSAL.id }], verdict: null } });
+      .toMatchObject({ routingToken: 'group/project', publicationPlan: { baseRevision: BASE, headRevision: HEAD, entries: [{ happierCommentId: PROPOSAL.id }], verdict: null } });
   });
 
   it('binds a discussion reply to the canonical review-thread subtarget', () => {
     expect(buildGitlabMergeRequestThreadReplyInputV1(INPUT, PROPOSAL, 'discussion-7'))
       .toMatchObject({
+        routingToken: 'group/project',
         discussionId: 'discussion-7',
         publicationPlan: {
           target: { subtarget: { kindId: 'review-thread', targetId: 'discussion-7' } },
@@ -143,6 +145,7 @@ describe('GitLab mounted review publication input builders', () => {
     } as TriageDetailSurfaceInputV1;
     expect(buildGitlabIssueCommentPublicationInputV1(issueInput, PROPOSAL))
       .toMatchObject({
+        routingToken: 'group/project',
         publicationPlan: {
           target: { subtarget: null, entryRef: { kindId: 'issue' } },
           baseRevision: null,

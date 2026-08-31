@@ -92,11 +92,14 @@ import {
   CONVERSATION_CONNECTION_WEBHOOK_ENDPOINT_ENSURE_SETUP_V1,
   mintConversationConnectionWebhookEndpointAttemptIdentity,
   readCanonicalConversationWebhookEndpointId,
+  retargetConversationConnectionWebhookEndpointForTransfer,
 } from './connectionWebhookEndpoint.js';
 import { requireChannelsAccountStorage } from './requiredAccountStorage.js';
 import {
   abandonConversationConnectionStop,
   confirmConversationConnectionStop,
+  finalizeConversationConnectionDeleteWithoutProviderStop,
+  finalizeConversationConnectionTransferWithoutProviderStop,
   hasAcceptedConversationTransferLoss,
   recordConversationConnectionHistoryGap,
   recordConversationConnectionProviderReadiness,
@@ -934,16 +937,53 @@ function hasSamePersistedProviderContributionSelection(input: Readonly<{
     && input.persisted.immutableGenerationId === input.requested.contributor.immutableGenerationId;
 }
 
-function readTransferTransportKind(current: ConversationConnectionUpdateRow): 'checkpointedPull' | 'socket' {
+function readTransferTransportKind(
+  current: ConversationConnectionUpdateRow,
+): 'checkpointedPull' | 'socket' | 'durablePush' {
   const transport = own(current.payload, 'transport');
   if (!isJsonRecord(transport)
-    || (transport.kind !== 'checkpointedPull' && transport.kind !== 'socket')) {
+    || (transport.kind !== 'checkpointedPull'
+      && transport.kind !== 'socket'
+      && transport.kind !== 'durablePush')) {
     throw pluginError(
       'channels_connection_transfer_transport_unsupported',
-      'Connection transfer supports only the existing checkpointed-pull and socket transports.',
+      'Connection transfer found an unsupported retained transport.',
     );
   }
   return transport.kind;
+}
+
+/** Reads the exact generic endpoint facts retained on a durable-push row. */
+function readDurablePushTransferEndpoint(input: Readonly<{
+  current: ConversationConnectionUpdateRow;
+  connectionId: string;
+}>): ConversationConnectionWebhookEndpoint {
+  const transport = own(input.current.payload, 'transport');
+  if (!isJsonRecord(transport) || transport.kind !== 'durablePush') {
+    throw pluginError(
+      'channels_connection_transfer_transport_unsupported',
+      'Connection transfer expected a retained durable-push transport.',
+    );
+  }
+  const contribution = own(transport, 'webhookContributionRef');
+  const webhookEndpointId = own(transport, 'webhookEndpointId');
+  const webhookSourceInstanceId = own(transport, 'webhookSourceInstanceId');
+  if (!isJsonRecord(contribution)
+    || typeof contribution.pluginId !== 'string'
+    || typeof contribution.localId !== 'string'
+    || typeof webhookEndpointId !== 'string'
+    || typeof webhookSourceInstanceId !== 'string'
+    || webhookSourceInstanceId !== conversationConnectionWebhookSourceInstanceIdV1(input.connectionId)) {
+    throw pluginError(
+      'channels_connection_transfer_corrupt',
+      'The retained durable-push connection is missing its exact endpoint correspondence facts.',
+    );
+  }
+  return {
+    webhookContributionRef: { pluginId: contribution.pluginId, localId: contribution.localId },
+    webhookEndpointId,
+    webhookSourceInstanceId,
+  };
 }
 
 /**
@@ -1010,16 +1050,21 @@ function isImmediateLostTransferCommit(input: Readonly<{
   transferInput: ConversationConnectionTransferInputV1;
 }>): boolean {
   const pending = input.current.lifecycle.pendingOldTransportStop;
+  const transport = own(input.current.payload, 'transport');
   return input.transferInput.expectedRevision < Number.MAX_SAFE_INTEGER
     && input.row.revision === input.transferInput.expectedRevision + 1
     && isRequestedTransferAlreadyCurrent({
       current: input.current,
       transferInput: input.transferInput,
     })
-    && pending !== null
-    && pending.stopRequest.reason === 'transfer'
-    && pending.stopRequest.connectionId === input.transferInput.connectionId
-    && pending.stopRequest.authorityEpoch === input.current.lifecycle.authorityEpoch;
+    && ((pending !== null
+      && pending.stopRequest.reason === 'transfer'
+      && pending.stopRequest.connectionId === input.transferInput.connectionId
+      && pending.stopRequest.authorityEpoch === input.current.lifecycle.authorityEpoch)
+      || (pending === null
+        && isJsonRecord(transport)
+        && transport.kind === 'durablePush'
+        && input.transferInput.selectedTransport === 'durablePush'));
 }
 
 function assertTransferStartAccepted(input: ReturnType<typeof startConversationConnectionTransfer>): Extract<
@@ -3104,6 +3149,48 @@ export async function deleteConversationConnectionForInvocation(
       lifecycle: pending,
     });
   }
+  if (isJsonRecord(transport) && transport.kind === 'durablePush') {
+    // Generic webhook dispatch has no provider-local connection worker. The
+    // delete fence already makes this Channels reference ineligible; finalize
+    // that reference without claiming a provider stop or revoking the generic
+    // endpoint, whose lifecycle remains independently owned.
+    const pendingRow = await collection.get(deleteInput.connectionId, { signal: context.signal });
+    assertNotAborted(context.signal);
+    if (pendingRow === null || pendingRow.revision !== pendingRevision) {
+      throw pluginError(
+        'channels_connection_delete_detach_conflict',
+        'Connection deletion lost its current durable-push detachment custody.',
+        true,
+      );
+    }
+    const pendingCurrent = readConversationConnectionUpdateRow({
+      row: pendingRow,
+      connectionId: deleteInput.connectionId,
+    });
+    const detachment = finalizeConversationConnectionDeleteWithoutProviderStop({
+      current: pendingCurrent.lifecycle,
+    });
+    if (detachment.kind !== 'deleteFinalizing') {
+      throw pluginError(
+        'channels_connection_delete_detach_conflict',
+        'Connection deletion no longer retains durable-push detachment custody.',
+        true,
+      );
+    }
+    const revision = await persistConversationConnectionLifecycle({
+      collection,
+      row: pendingRow,
+      current: pendingCurrent,
+      lifecycle: detachment.connection,
+      operation: 'channels_connection_delete_detach',
+    }, context);
+    return deleteResult({
+      kind: 'deleteFinalizing',
+      connectionId: deleteInput.connectionId,
+      revision,
+      lifecycle: detachment.connection,
+    });
+  }
   const outcome = await runFrozenOldTransportStopForCommittedCustody({
     collection,
     connectionId: deleteInput.connectionId,
@@ -4824,7 +4911,7 @@ function assertTransferImmutableConnectionIdentity(input: Readonly<{
 
 function isCheckpointCompatibleTransfer(input: Readonly<{
   current: ConversationConnectionUpdateRow;
-  oldTransport: 'checkpointedPull' | 'socket';
+  oldTransport: 'checkpointedPull' | 'socket' | 'durablePush';
   transferInput: ConversationConnectionTransferInputV1;
   provider: CurrentProvider;
   setup: ConversationProviderSetupResultV1;
@@ -4851,6 +4938,7 @@ function transferConnectionValue(input: Readonly<{
   transferInput: ConversationConnectionTransferInputV1;
   providerPluginId: string;
   prepared: Extract<ProviderConnectionPreparation, Readonly<{ kind: 'ready' }>>;
+  webhookEndpoint?: ConversationConnectionWebhookEndpoint;
   lifecycle: ConversationConnectionLifecycleStateV1;
   now: number;
 }>): JsonRecord {
@@ -4874,7 +4962,17 @@ function transferConnectionValue(input: Readonly<{
       providerSetupInput: input.transferInput.providerSetupInput,
       credentialRef: input.transferInput.credentialRef,
       transportOrigin: input.prepared.transportOrigin,
-      transport: { kind: input.transferInput.selectedTransport },
+      transport: input.webhookEndpoint === undefined
+        ? { kind: input.transferInput.selectedTransport }
+        : {
+          kind: 'durablePush',
+          webhookContributionRef: {
+            pluginId: input.webhookEndpoint.webhookContributionRef.pluginId,
+            localId: input.webhookEndpoint.webhookContributionRef.localId,
+          },
+          webhookEndpointId: input.webhookEndpoint.webhookEndpointId,
+          webhookSourceInstanceId: input.webhookEndpoint.webhookSourceInstanceId,
+        },
       overlapSafety: input.prepared.setup.overlapSafety,
       replayContinuity: input.prepared.setup.replayContinuity,
       outboundTextLimit: input.prepared.setup.outboundTextLimit,
@@ -4948,6 +5046,29 @@ async function settleTransferOldTransportStop(input: Readonly<{
     : pendingResult;
 }
 
+/** Rejoins a response-lost transfer without replaying setup, test, or endpoint work. */
+async function rejoinCommittedConversationConnectionTransfer(input: Readonly<{
+  collection: ChannelStateCollection;
+  connectionId: string;
+  row: StateRow;
+  current: ConversationConnectionUpdateRow;
+}>, context: PluginInvocationContext): Promise<ConversationConnectionTransferResult> {
+  if (readTransferTransportKind(input.current) === 'durablePush') {
+    return {
+      kind: 'transferred',
+      connectionId: input.connectionId,
+      revision: input.row.revision,
+      authorityEpoch: input.current.lifecycle.authorityEpoch,
+    };
+  }
+  return await settleTransferOldTransportStop({
+    collection: input.collection,
+    connectionId: input.connectionId,
+    pendingRevision: input.row.revision,
+    authorityEpoch: input.current.lifecycle.authorityEpoch,
+  }, context);
+}
+
 /**
  * Replaces one exact retained connection authority without assigning a second
  * owner to provider setup, checkpoint progress, or old-transport stop custody.
@@ -4970,17 +5091,24 @@ export async function transferConversationConnectionForInvocation(
     // idempotent and addressed to the exact retired origin, so its replay is
     // the one settlement this Action still owns for its committed custody.
     if (isImmediateLostTransferCommit({ row, current, transferInput })) {
-      return await settleTransferOldTransportStop({
+      return await rejoinCommittedConversationConnectionTransfer({
         collection,
         connectionId: transferInput.connectionId,
-        pendingRevision: row.revision,
-        authorityEpoch: current.lifecycle.authorityEpoch,
+        row,
+        current,
       }, context);
     }
     throw pluginError(
       'channels_connection_transfer_conflict',
       'Connection transfer requires the current retained row revision.',
       true,
+    );
+  }
+  const oldTransport = readTransferTransportKind(current);
+  if ((oldTransport === 'durablePush') !== (transferInput.selectedTransport === 'durablePush')) {
+    throw pluginError(
+      'channels_connection_transfer_transport_change_unsupported',
+      'Connection transfer cannot change to or from durable push; create a separate connection for that transport change.',
     );
   }
   const initialFrozenOldStopRequest = createTransferStopRequest({
@@ -5049,11 +5177,11 @@ export async function transferConversationConnectionForInvocation(
       current: postSetupCurrent,
       transferInput,
     })) {
-      return await settleTransferOldTransportStop({
+      return await rejoinCommittedConversationConnectionTransfer({
         collection,
         connectionId: transferInput.connectionId,
-        pendingRevision: postSetupRow.revision,
-        authorityEpoch: postSetupCurrent.lifecycle.authorityEpoch,
+        row: postSetupRow,
+        current: postSetupCurrent,
       }, context);
     }
     throw pluginError(
@@ -5095,7 +5223,6 @@ export async function transferConversationConnectionForInvocation(
 
   const incumbentRow = postSetupRow;
   const incumbent = postSetupCurrent;
-  const oldTransport = readTransferTransportKind(incumbent);
   const frozenOldStopRequest = createTransferStopRequest({
     connectionId: transferInput.connectionId,
     payload: incumbent.payload,
@@ -5142,6 +5269,44 @@ export async function transferConversationConnectionForInvocation(
     },
   }));
 
+  const durablePushEndpoint = oldTransport === 'durablePush'
+    ? readDurablePushTransferEndpoint({
+      current: incumbent,
+      connectionId: transferInput.connectionId,
+    })
+    : undefined;
+  if (durablePushEndpoint !== undefined) {
+    await retargetConversationConnectionWebhookEndpointForTransfer({
+      context,
+      connectionId: transferInput.connectionId,
+      expectedConnectionRevision: incumbentRow.revision,
+      webhookEndpointId: readCanonicalConversationWebhookEndpointId(
+        durablePushEndpoint.webhookEndpointId,
+      ),
+      webhookContribution: durablePushEndpoint.webhookContributionRef,
+      sourceInstanceId: durablePushEndpoint.webhookSourceInstanceId,
+      currentTargetMaterialization: incumbent.transportOrigin.materializationRef,
+      nextTargetMaterialization: prepared.transportOrigin.materializationRef,
+    });
+    assertNotAborted(context.signal);
+  }
+
+  const settledLifecycle = durablePushEndpoint === undefined
+    ? lifecycleStart.connection
+    : (() => {
+      const finalized = finalizeConversationConnectionTransferWithoutProviderStop({
+        current: lifecycleStart.connection,
+      });
+      if (finalized.kind !== 'transportStopConfirmed') {
+        throw pluginError(
+          'channels_connection_transfer_lifecycle_stale',
+          'Connection transfer lost its durable-push lifecycle currentness.',
+          true,
+        );
+      }
+      return finalized.connection;
+    })();
+
   // The selected immutable contributor is re-read after every external or
   // storage boundary; only that exact current generation may receive a write.
   const providerForPersistence = await readCurrentSelectedProvider({
@@ -5166,7 +5331,8 @@ export async function transferConversationConnectionForInvocation(
       transferInput,
       providerPluginId: providerForPersistence.pluginId,
       prepared,
-      lifecycle: lifecycleStart.connection,
+      webhookEndpoint: durablePushEndpoint,
+      lifecycle: settledLifecycle,
       now,
     }),
     expectedRevision: incumbentRow.revision,
@@ -5206,6 +5372,14 @@ export async function transferConversationConnectionForInvocation(
       connectionId: transferInput.connectionId,
       revision: persisted.revision,
       authorityEpoch: lifecycleStart.connection.authorityEpoch,
+    };
+  }
+  if (oldTransport === 'durablePush') {
+    return {
+      kind: 'transferred',
+      connectionId: transferInput.connectionId,
+      revision: persisted.revision,
+      authorityEpoch: settledLifecycle.authorityEpoch,
     };
   }
   return await settleTransferOldTransportStop({

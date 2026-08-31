@@ -2,6 +2,8 @@ import type { ScmHostingProviderRef } from '@happier-dev/plugin-sdk/scm/hosting'
 import { readTrimmedString as readString } from '@happier-dev/plugin-sdk';
 
 import { createBitbucketInvalidRequestError } from '../operations/errors.js';
+import { BITBUCKET_CLOUD_API_BASE_URL } from '../triage/apiUrl.js';
+import { BITBUCKET_FORGE_HOST_ID } from '../triage/identity.js';
 
 export type BitbucketRepositoryCoordinates = Readonly<{
   host: string;
@@ -11,8 +13,7 @@ export type BitbucketRepositoryCoordinates = Readonly<{
   nameWithOwner: string;
 }>;
 
-const BITBUCKET_CLOUD_HOST = 'bitbucket.org';
-const BITBUCKET_CLOUD_API_BASE_URL = 'https://api.bitbucket.org/2.0';
+const BITBUCKET_CLOUD_HOST = BITBUCKET_FORGE_HOST_ID;
 
 function normalizeRootHttpsUrl(value: string, fieldName: string): URL {
   let parsed: URL;
@@ -34,19 +35,13 @@ function normalizeRootHttpsUrl(value: string, fieldName: string): URL {
   return parsed;
 }
 
-function readApiBaseUrl(provider: ScmHostingProviderRef, host: string): string {
-  const providerApiBaseUrl = readString((provider as { apiBaseUrl?: unknown }).apiBaseUrl);
-  if (!providerApiBaseUrl) {
-    if (host !== BITBUCKET_CLOUD_HOST) {
-      throw createBitbucketInvalidRequestError('Bitbucket API base URL is unavailable for this host');
-    }
-    return BITBUCKET_CLOUD_API_BASE_URL;
+function readApiBaseUrl(provider: ScmHostingProviderRef): string {
+  const providerApiBaseUrl = (provider as { apiBaseUrl?: unknown }).apiBaseUrl;
+  if (providerApiBaseUrl === undefined) return BITBUCKET_CLOUD_API_BASE_URL;
+  if (providerApiBaseUrl !== BITBUCKET_CLOUD_API_BASE_URL) {
+    throw createBitbucketInvalidRequestError('Bitbucket API base URL must be the Bitbucket Cloud 2.0 API root');
   }
-  const parsed = normalizeRootHttpsUrl(providerApiBaseUrl, 'API base URL');
-  if (parsed.pathname.replace(/\/+$/, '') !== '/2.0') {
-    throw createBitbucketInvalidRequestError('Bitbucket API base URL must point at the 2.0 API root');
-  }
-  return parsed.href.replace(/\/+$/, '');
+  return BITBUCKET_CLOUD_API_BASE_URL;
 }
 
 export function readBitbucketRepositoryCoordinates(
@@ -60,6 +55,9 @@ export function readBitbucketRepositoryCoordinates(
     throw createBitbucketInvalidRequestError('Bitbucket base URL must not include a path');
   }
   const host = parsedBase.hostname.toLowerCase();
+  if (host !== BITBUCKET_CLOUD_HOST || parsedBase.origin !== `https://${BITBUCKET_CLOUD_HOST}`) {
+    throw createBitbucketInvalidRequestError('Bitbucket base URL must be the Bitbucket Cloud origin');
+  }
   const nameWithOwner = readString(provider.nameWithOwner);
   if (!nameWithOwner) {
     throw createBitbucketInvalidRequestError('Bitbucket repository owner/name is unavailable');
@@ -71,7 +69,7 @@ export function readBitbucketRepositoryCoordinates(
   const [workspace, repository] = segments as [string, string];
   return {
     host,
-    apiBaseUrl: readApiBaseUrl(provider, host),
+    apiBaseUrl: readApiBaseUrl(provider),
     workspace,
     repository,
     nameWithOwner: `${workspace}/${repository}`,

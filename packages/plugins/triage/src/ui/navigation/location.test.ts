@@ -13,6 +13,7 @@ import {
   createTriageRouteWriteQueueV1,
   writeTriageRouteLensV1,
   type TriageRouteLensV1,
+  type TriageRouteWriteQueueV1,
 } from './location.js';
 import { TRIAGE_SURFACE_INITIAL_STATE_V1 } from '../state/surface.js';
 import { CORPUS_DEFAULT_SMART_POLICY_V1 } from '../../corpus/query/smartPolicy.js';
@@ -79,22 +80,40 @@ describe('PRs & Issues route owner', () => {
     const queue = createTriageRouteWriteQueueV1(
       hostApiWith({ methods: ['replacePageLocation'], replace }),
     );
+    const settlements: Array<Readonly<{
+      query: string;
+      subPath: string | null;
+      superseded: boolean;
+    }>> = [];
+    const record = (query: string) => (settlement: Parameters<NonNullable<
+      Parameters<TriageRouteWriteQueueV1['write']>[1]
+    >>[0]) => {
+      settlements.push({
+        query,
+        subPath: settlement.result?.kind === 'settled' ? settlement.result.subPath : null,
+        superseded: settlement.superseded,
+      });
+    };
 
-    queue.write(lens({ query: 'first' }));
-    queue.write(lens({ query: 'second' }));
-    queue.write(lens({ query: 'newest' }));
+    queue.write(lens({ query: 'first' }), record('first'));
+    queue.write(lens({ query: 'second' }), record('second'));
+    queue.write(lens({ query: 'newest' }), record('newest'));
     await Promise.resolve();
     expect(replace.mock.calls.map(([subPath]) => subPath)).toEqual(['q,first']);
 
     settleFirst({ subPath: 'q,first' });
     await queue.whenSettled();
     expect(replace.mock.calls.map(([subPath]) => subPath)).toEqual(['q,first', 'q,newest']);
+    expect(settlements).toEqual([
+      { query: 'second', subPath: null, superseded: true },
+      { query: 'first', subPath: 'q,first', superseded: true },
+      { query: 'newest', subPath: 'q,newest', superseded: false },
+    ]);
     queue.dispose();
   });
 
   it('round-trips a complete lens through one canonical location', () => {
     const value = lens({
-      grouping: 'scope',
       order: 'oldest',
       query: 'fix, please/now',
       selection: entryRef({ collisionScope: 'acme,web', entryId: 'a/b' }),
@@ -115,6 +134,12 @@ describe('PRs & Issues route owner', () => {
     expect(parseTriageRouteSubPathV1(undefined)).toEqual(TRIAGE_ROUTE_DEFAULT_LENS_V1);
   });
 
+  it('drops the unreleased grouping segment because no section planner consumes it', () => {
+    const parsed = parseTriageRouteSubPathV1('g,scope/q,keep');
+
+    expect(buildTriageRouteSubPathV1(parsed)).toBe('q,keep');
+  });
+
   it('drops only the unreadable field and keeps every other valid one', () => {
     const parsed = parseTriageRouteSubPathV1([
       'g,scope',
@@ -124,12 +149,25 @@ describe('PRs & Issues route owner', () => {
       'unknown,thing',
     ].join('/'));
 
-    expect(parsed.grouping).toBe('scope');
-    // An unknown order and a truncated selection are dropped…
+    // An unknown order, the retired grouping segment and a truncated selection are dropped…
     expect(parsed.order).toBe('newest');
     expect(parsed.selection).toBeNull();
     // …and the query the user typed survives both.
     expect(parsed.query).toBe('keep me');
+  });
+
+  it('uses the canonical source, kind and scope schemas for routed filters', () => {
+    const parsed = parseTriageRouteSubPathV1([
+      'fs,not-a-plugin,github',
+      `ft,acme.scm,github,${'k'.repeat(129)}`,
+      `fp,acme.scm,github,${encodeURIComponent('scope\nchild')}`,
+      'fst,open',
+    ].join('/'));
+
+    expect(parsed.filters).toEqual({
+      ...TRIAGE_LIST_NO_FILTERS_V1,
+      states: ['open'],
+    });
   });
 
   it('reads the settled query and the selected entry from the one reducer state', () => {
@@ -177,10 +215,10 @@ describe('PRs & Issues route owner', () => {
     await expect(writeTriageRouteLensV1(
       hostApiWith({
         methods: ['replacePageLocation'],
-        replace: async () => ({ subPath: 'g,kind' }),
+        replace: async () => ({ subPath: 'q,canonical' }),
       }),
-      lens({ grouping: 'scope' }),
-    )).resolves.toEqual({ kind: 'settled', subPath: 'g,kind' });
+      lens({ query: 'requested' }),
+    )).resolves.toEqual({ kind: 'settled', subPath: 'q,canonical' });
   });
 
   it('accepts a route at the host bound and refuses one byte over it', () => {
@@ -319,7 +357,7 @@ describe('PRs & Issues route owner', () => {
     const replace = vi.fn<PluginUiHostApi['replacePageLocation']>();
     await expect(writeTriageRouteLensV1(
       hostApiWith({ methods: ['openSurface'], replace }),
-      lens({ grouping: 'scope' }),
+      lens({ query: 'bug' }),
     )).resolves.toEqual({ kind: 'refused', reason: 'unavailable' });
     expect(replace).not.toHaveBeenCalled();
 
@@ -328,7 +366,7 @@ describe('PRs & Issues route owner', () => {
         methods: ['replacePageLocation'],
         replace: async () => { throw new Error('host refused'); },
       }),
-      lens({ grouping: 'scope' }),
+      lens({ query: 'bug' }),
     )).resolves.toEqual({ kind: 'refused', reason: 'rejected' });
   });
 });

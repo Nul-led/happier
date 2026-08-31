@@ -290,4 +290,26 @@ describe('public interactive families use the provider-owned native target polic
       expect(message.props.accessibilityLiveRegion).toBe('polite');
     }
   });
+
+  it('combines punctuated field descriptions and issues without duplicate punctuation', async () => {
+    const context = createSurfaceContext({ platform: 'ios' });
+    await act(async () => {
+      renderer = create(
+        <PluginUiProvider hostApi={createHostApiStub(context)} context={context}>
+          <Form.Field
+            label="Access token"
+            description="Used to connect."
+            issue="Enter a valid token."
+          >
+            <Form.TextField testID="described-invalid-token" label="Access token" value="" onChange={() => undefined} />
+          </Form.Field>
+        </PluginUiProvider>,
+      );
+    });
+
+    const input = renderer!.root.find((node) => (
+      node.type === 'TextInput' && node.props.testID === 'described-invalid-token'
+    ));
+    expect(input.props.accessibilityHint).toBe('Used to connect. Enter a valid token.');
+  });
 });

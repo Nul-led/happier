@@ -218,13 +218,14 @@ export type TriageActionPromptReadV1 =
 export async function readTriageActionPromptV1(
     host: TriageActionResolutionHostV1,
     invocationId: string,
+    argsText?: string,
     options?: PluginCancellationOptions,
 ): Promise<TriageActionPromptReadV1> {
     let result: unknown;
     try {
         result = await host.executeAction(
             TRIAGE_PROMPT_INVOCATION_RESOLVE_ACTION_ID_V1,
-            { invocationId },
+            { invocationId, ...(argsText === undefined ? {} : { argsText }) },
             options,
         );
     } catch {
@@ -246,6 +247,38 @@ export async function readTriageActionPromptV1(
 }
 
 /**
+ * The instruction an action delivers when no Prompt Library invocation is
+ * configured.
+ *
+ * The catalog carries the shipped fallback on the action record itself. Action
+ * ids and labels never participate: renaming a default or minting another
+ * record with the same configured fallback preserves the behavior, while an
+ * action with no instruction stays honestly empty. A configured Prompt Library
+ * body always wins byte-for-byte.
+ */
+export function resolveTriageActionInstructionV1(
+    action: Readonly<{
+        target:
+            | Readonly<{
+                kind: 'agent';
+                promptInvocationId: string | null;
+                seededFallbackInstruction?: string;
+                delivery: 'compose' | 'send';
+            }>
+            | Readonly<{
+                kind: 'reviewStart';
+                promptInvocationId: string | null;
+                seededFallbackInstruction?: string;
+            }>;
+    }>,
+    resolvedPromptText: string | null,
+): string | null {
+    if (resolvedPromptText !== null) return resolvedPromptText;
+    const fallback = action.target.seededFallbackInstruction;
+    return fallback !== undefined && fallback.trim().length > 0 ? fallback : null;
+}
+
+/**
  * One Prompt Library invocation as the editor offers it.
  *
  * The reader picks by the words they know — the slash token and the title — and
@@ -257,6 +290,7 @@ export type TriagePromptInvocationOptionV1 = Readonly<{
     id: string;
     token: string;
     title: string;
+    allowArgs: boolean;
 }>;
 
 export type TriagePromptInvocationsReadV1 =
@@ -288,7 +322,12 @@ export async function readTriagePromptInvocationsV1(
         if (id === null || token === null) continue;
         // A missing title is not a missing invocation: the token is what a
         // person types and it is enough to recognise one by.
-        invocations.push({ id, token, title: readNonEmptyString(item.title) ?? token });
+        invocations.push({
+            id,
+            token,
+            title: readNonEmptyString(item.title) ?? token,
+            allowArgs: item.allowArgs === true,
+        });
     }
     return {
         status: 'read',
@@ -314,8 +353,9 @@ export async function readTriagePromptInvocationsV1(
  * So the resolution is one step with one verdict, and the caller may not create
  * anything until it says `resolved`:
  *
- *  - `null` on either member is not a failure. It is the approved default: the
- *    generic new-Session flow chooses the profile, and no prompt is delivered.
+ *  - `null` on either reference is not a failure. The generic new-Session flow
+ *    chooses the profile, while the action record may still carry its shipped
+ *    fallback instruction.
  *  - A configured id the owning catalog does not hold is `referenceMissing`.
  *    The reference has to be repointed; retrying cannot help.
  *  - A configured id whose owner did not answer is `referenceUnavailable`.
@@ -331,7 +371,7 @@ export type TriageActionReferencesV1 =
         status: 'resolved';
         /** Absent when the action names no profile: the generic flow chooses. */
         profile?: Extract<TriageActionProfileReadV1, Readonly<{ status: 'read' }>>;
-        /** Absent when the action names no prompt: nothing is delivered. */
+        /** Absent when the action names no Prompt Library invocation. */
         prompt?: Extract<TriageActionPromptReadV1, Readonly<{ status: 'resolved' }>>;
     }>
     /** The catalog answered and does not hold this reference. Repoint it. */
@@ -356,7 +396,10 @@ export async function resolveTriageActionReferencesV1(
     host: TriageActionResolutionHostV1,
     action: Readonly<{
         profileId: string | null;
-        target: Readonly<{ promptInvocationId: string | null }>;
+        target: Readonly<{
+            promptInvocationId: string | null;
+            promptArgsText?: string;
+        }>;
     }>,
     options?: PluginCancellationOptions,
 ): Promise<TriageActionReferencesV1> {
@@ -382,7 +425,12 @@ export async function resolveTriageActionReferencesV1(
     const invocationId = action.target.promptInvocationId;
     const prompt = invocationId === null
         ? null
-        : await readTriageActionPromptV1(host, invocationId, options);
+        : await readTriageActionPromptV1(
+            host,
+            invocationId,
+            action.target.promptArgsText,
+            options,
+        );
     if (prompt !== null && prompt.status !== 'resolved') {
         if (prompt.status === 'invalidInvocation') {
             return { status: 'referenceInvalid', reference: 'prompt', id: prompt.invocationId };

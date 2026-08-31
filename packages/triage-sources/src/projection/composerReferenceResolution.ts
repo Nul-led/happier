@@ -9,7 +9,7 @@ type ComposerReferenceResolutionIdentityV1 = Readonly<{
 
 /**
  * Fits a whole-item prefix admitted by the canonical Composer reference-resolution
- * schema, preferring the complete context and otherwise searching prefix cardinality.
+ * schema, preferring the largest admissible prefix.
  *
  * The caller retains ownership of semantic item ordering and omission text.
  * This helper owns only the shared admission search, so providers neither copy
@@ -28,16 +28,15 @@ export function fitComposerReferenceResolutionPrefixV1(input: Readonly<{
     context: input.contextForPrefix(includedItemCount),
   });
 
-  const complete = admit(input.itemCount);
-  if (complete.success) return complete.data;
-
-  let low = 0;
-  let high = input.itemCount;
-  while (low < high) {
-    const candidateCount = Math.ceil((low + high) / 2);
-    if (admit(candidateCount).success) low = candidateCount;
-    else high = candidateCount - 1;
+  // Admission is not monotonic in the prefix count: adding the last item of one
+  // semantic kind can remove that kind's omission disclosure and make the whole
+  // context smaller. Walk the caller's already-materialized item cardinality from
+  // largest to smallest so the first admitted value is the largest truthful prefix.
+  // The two source consumers derive this count from their provider projection; no
+  // second count or byte limit belongs here.
+  for (let includedItemCount = input.itemCount; includedItemCount >= 0; includedItemCount -= 1) {
+    const fitted = admit(includedItemCount);
+    if (fitted.success) return fitted.data;
   }
-  const fitted = admit(low);
-  return fitted.success ? fitted.data : null;
+  return null;
 }

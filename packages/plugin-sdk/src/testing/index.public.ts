@@ -7,6 +7,7 @@ export type { PluginTestkit } from './types.js';
 export type {
     PluginTestkitAdmittedTargetedOperation,
     PluginTestkitAdmittedTargetedOperationRequest,
+    PluginTestkitTargetedContributionFixtureEntry,
 } from './types.js';
 export type { PluginTestkitInvokeActionOptions } from './types.js';
 export type { PluginTestkitOptions } from './types.js';

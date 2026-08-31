@@ -8,9 +8,11 @@ import {
   AZURE_SCAN_STICKY_REASONS,
   type AzureInvolvementLaneId,
   type AzureLaneFrontier,
+  type AzureScanContinuationProvenance,
   type AzureScanFrontier,
   type AzureScanStickyReason,
 } from './types.js';
+import { deriveAzureNativePageSize } from './paging.js';
 
 /**
  * The strict versioned codec for this source's own scan continuation bytes.
@@ -26,6 +28,21 @@ import {
  */
 const CONTINUATION_VERSION = 1;
 const LANE_IDS: readonly AzureInvolvementLaneId[] = ['authored', 'reviewer'];
+const ROOT_KEYS = [
+  'v',
+  'scanLimit',
+  'nativePageSize',
+  'provenance',
+  'projectId',
+  'projectNextToken',
+  'lastCompletedRepositoryId',
+  'currentRepositoryId',
+  'nextLaneIndex',
+  'lanes',
+  'walkHealth',
+] as const;
+const PROVENANCE_KEYS = ['plane', 'sourceInstanceId', 'configuredBaseUrl'] as const;
+const LANE_KEYS = ['laneId', 'skip', 'ended'] as const;
 
 export function encodeAzureScanContinuation(
   frontier: AzureScanFrontier,
@@ -33,6 +50,8 @@ export function encodeAzureScanContinuation(
   const token = encodeTriagePagingTokenV1({
     v: CONTINUATION_VERSION,
     scanLimit: frontier.scanLimit,
+    nativePageSize: frontier.nativePageSize,
+    provenance: frontier.provenance,
     projectId: frontier.projectId,
     projectNextToken: frontier.projectNextToken,
     lastCompletedRepositoryId: frontier.lastCompletedRepositoryId,
@@ -57,13 +76,33 @@ export function encodeAzureScanContinuation(
  * `unsupportedContract` so the next attempt starts again at `page: 'initial'`.
  */
 export function decodeAzureScanContinuation(
-  continuation: TriageScanContinuationV1,
+  input: Readonly<{
+    continuation: TriageScanContinuationV1;
+    provenance: AzureScanContinuationProvenance;
+  }>,
 ): AzureScanFrontier | null {
-  const record = decodeTriagePagingTokenV1(continuation.token);
-  if (record === null || record.v !== CONTINUATION_VERSION) return null;
+  const record = decodeTriagePagingTokenV1(input.continuation.token);
+  if (
+    record === null
+    || record.v !== CONTINUATION_VERSION
+    || !hasExactKeys(record, ROOT_KEYS)
+  ) return null;
 
   const scanLimit = readCount(record.scanLimit, 1);
   if (scanLimit === null) return null;
+  const nativePageSize = readCount(record.nativePageSize, 1);
+  if (
+    nativePageSize === null
+    || nativePageSize !== deriveAzureNativePageSize(scanLimit)
+  ) return null;
+
+  const provenance = readProvenance(record.provenance);
+  if (
+    provenance === null
+    || provenance.plane !== input.provenance.plane
+    || provenance.sourceInstanceId !== input.provenance.sourceInstanceId
+    || provenance.configuredBaseUrl !== input.provenance.configuredBaseUrl
+  ) return null;
 
   const lanes = readLanes(record.lanes);
   if (lanes === null) return null;
@@ -92,6 +131,8 @@ export function decodeAzureScanContinuation(
 
   return {
     scanLimit,
+    nativePageSize,
+    provenance,
     projectId,
     projectNextToken,
     lastCompletedRepositoryId,
@@ -102,6 +143,19 @@ export function decodeAzureScanContinuation(
     // The projection budget belongs to the page being built, never to the resumed token: the
     // target already bounds each page by the limit the continuation carries.
     observed: 0,
+  };
+}
+
+function readProvenance(raw: unknown): AzureScanContinuationProvenance | null {
+  const record = readRecord(raw);
+  if (record === null || !hasExactKeys(record, PROVENANCE_KEYS)) return null;
+  if (record.plane !== 'scan') return null;
+  if (typeof record.sourceInstanceId !== 'string' || record.sourceInstanceId.length === 0) return null;
+  if (typeof record.configuredBaseUrl !== 'string' || record.configuredBaseUrl.length === 0) return null;
+  return {
+    plane: 'scan',
+    sourceInstanceId: record.sourceInstanceId,
+    configuredBaseUrl: record.configuredBaseUrl,
   };
 }
 
@@ -125,13 +179,22 @@ function readLanes(raw: unknown): readonly AzureLaneFrontier[] | null {
   const lanes: AzureLaneFrontier[] = [];
   for (const [index, entry] of raw.entries()) {
     const record = readRecord(entry);
-    if (record === null) return null;
+    if (record === null || !hasExactKeys(record, LANE_KEYS)) return null;
     if (record.laneId !== LANE_IDS[index]) return null;
     const skip = readCount(record.skip, 0);
     if (skip === null || typeof record.ended !== 'boolean') return null;
     lanes.push({ laneId: LANE_IDS[index], skip, ended: record.ended });
   }
   return lanes;
+}
+
+function hasExactKeys(
+  record: Readonly<Record<string, unknown>>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(record);
+  return keys.length === expected.length
+    && expected.every((key) => Object.prototype.hasOwnProperty.call(record, key));
 }
 
 function readRecord(raw: unknown): Readonly<Record<string, unknown>> | null {

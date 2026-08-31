@@ -23,6 +23,32 @@ import { administerTriageAction, readTriageActionsForSurface } from './actionsCa
  */
 
 describe('the configured-action Actions', () => {
+    it('keeps shipped fallback instructions read-only on the catalog mutation wire', () => {
+        const customFallback = {
+            v: 1,
+            kind: 'create',
+            expectedRevision: 'absent',
+            label: 'Repair',
+            enabled: true,
+            appliesTo: ['issue'],
+            profileId: null,
+            workspaceMode: 'repository',
+            target: {
+                kind: 'agent',
+                promptInvocationId: null,
+                seededFallbackInstruction: 'Custom prompt text must live in Prompt Library.',
+                delivery: 'send',
+            },
+        };
+
+        expect(TriageAdministerActionInputV1Schema.safeParse(customFallback).success).toBe(false);
+        expect(TriageAdministerActionInputV1Schema.safeParse({
+            ...customFallback,
+            kind: 'update',
+            actionId: 'fix',
+        }).success).toBe(false);
+    });
+
     it('answers an absent catalog as the shipped seed rather than as an empty set', async () => {
         const testkit = createTestkitAccountKv();
 
@@ -38,7 +64,12 @@ describe('the configured-action Actions', () => {
         // The runnable Review arm is explicit on the wire, so nothing
         // downstream infers it from a label.
         expect(result.actions[2]?.target)
-            .toEqual({ kind: 'agent', promptInvocationId: null, delivery: 'compose' });
+            .toEqual({
+                kind: 'agent',
+                promptInvocationId: null,
+                seededFallbackInstruction: 'Review this change.',
+                delivery: 'compose',
+            });
     });
 
     it('creates against the seed, so a first action does not delete the shipped three', async () => {
@@ -53,7 +84,12 @@ describe('the configured-action Actions', () => {
             appliesTo: ['errorIssue'],
             profileId: 'profile-7',
             workspaceMode: 'reference_only',
-            target: { kind: 'agent', promptInvocationId: '/explain', delivery: 'send' },
+            target: {
+                kind: 'agent',
+                promptInvocationId: '/explain',
+                promptArgsText: '--depth thorough',
+                delivery: 'send',
+            },
         });
         const applied = TriageAdministerActionResultV1Schema.parse(await administerTriageAction(input, {
             catalog: testkit.catalog(TRIAGE_ACTIONS_ACCOUNT_KV_KEY_V1),
@@ -78,7 +114,12 @@ describe('the configured-action Actions', () => {
             appliesTo: ['errorIssue'],
             profileId: 'profile-7',
             workspaceMode: 'reference_only',
-            target: { kind: 'agent', promptInvocationId: '/explain', delivery: 'send' },
+            target: {
+                kind: 'agent',
+                promptInvocationId: '/explain',
+                promptArgsText: '--depth thorough',
+                delivery: 'send',
+            },
         });
     });
 

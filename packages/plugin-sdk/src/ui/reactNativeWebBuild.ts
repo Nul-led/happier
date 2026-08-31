@@ -20,6 +20,10 @@ import {
 import {
     createPluginUiPackageInstanceVitePlugin,
 } from './build/pluginUiPackageIdentity.js';
+import {
+    PLUGIN_UI_REACT_NATIVE_BUNDLES_FEATURE_ID,
+    PLUGIN_UI_REACT_NATIVE_BUNDLES_REQUIRED_FEATURE_IDS,
+} from './reactNativeFeatureIdentity.js';
 
 /**
  * RN-WEB-LOADER item 2 — LEDGER DEC-6: `reactNative` mode is the flagship
@@ -42,9 +46,6 @@ import {
  * authoring contract across native and web, per DEC-6.
  */
 
-const REACT_NATIVE_BUNDLES_FEATURE_ID: 'plugins.ui.reactNativeBundles' = 'plugins.ui.reactNativeBundles';
-const REACT_NATIVE_WEB_REQUIRED_FEATURE_IDS: readonly ['plugins.ui.reactNativeBundles'] =
-    Object.freeze([REACT_NATIVE_BUNDLES_FEATURE_ID] as const);
 const REACT_NATIVE_WEB_ALIAS: readonly [Readonly<{ find: 'react-native'; replacement: 'react-native-web' }>] = Object.freeze([
     Object.freeze({ find: 'react-native', replacement: 'react-native-web' }),
 ] as const);
@@ -158,10 +159,10 @@ export function defineReactNativeWebViteBuildPreset(
             reactVersion: parsed.reactVersion,
             reactNativeVersion: parsed.reactNativeVersion,
         }),
-        requiredFeatureIds: REACT_NATIVE_WEB_REQUIRED_FEATURE_IDS,
+        requiredFeatureIds: PLUGIN_UI_REACT_NATIVE_BUNDLES_REQUIRED_FEATURE_IDS,
         runtime: Object.freeze({
             kind: 'hostGated',
-            requiredFeatureId: REACT_NATIVE_BUNDLES_FEATURE_ID,
+            requiredFeatureId: PLUGIN_UI_REACT_NATIVE_BUNDLES_FEATURE_ID,
         }),
     });
 }

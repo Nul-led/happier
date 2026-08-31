@@ -17,6 +17,7 @@ const plugin = definePlugin({
   id: 'examples.operation-only-channel-provider',
   version: '0.1.0',
   displayName: 'Acme Chat Provider',
+  entrypoints: { daemon: './dist/index.js' },
   actions: {
     [actionIds.setup]: {
       title: 'Connect Acme Chat',

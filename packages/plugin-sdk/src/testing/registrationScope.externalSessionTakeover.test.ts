@@ -55,7 +55,13 @@ function externalSessionsSnapshotShape() {
 const takeover: AgentExternalSessionTakeoverContribution = {
     resolveLaunch: async () => ({
         ok: true,
-        value: { backendModeHint: 'resume' },
+        value: {
+            runtimeDescriptorV1: {
+                v: 1,
+                agentId: 'fixture.agent',
+                agent: { mode: 'resume' },
+            },
+        },
     }),
 };
 
@@ -175,7 +181,13 @@ describe('Agent External Session takeover registration staging', () => {
             resolveLaunchImplementation(_request: AgentExternalSessionTakeoverResolveLaunchRequest) {
                 return Promise.resolve({
                     ok: true as const,
-                    value: { backendModeHint: this.owner },
+                    value: {
+                        runtimeDescriptorV1: {
+                            v: 1 as const,
+                            agentId: 'fixture.agent',
+                            agent: { mode: this.owner },
+                        },
+                    },
                 });
             }
         }
@@ -197,7 +209,11 @@ describe('Agent External Session takeover registration staging', () => {
         expect(Object.isFrozen(snapshot)).toBe(true);
         expect(snapshot).not.toHaveProperty('ignoredByRegistration');
         await expect(Reflect.apply(snapshot.resolveLaunch, { owner: 'foreign' }, [])).resolves.toMatchObject({
-            value: { backendModeHint: 'structural-takeover' },
+            value: {
+                runtimeDescriptorV1: {
+                    agent: { mode: 'structural-takeover' },
+                },
+            },
         });
     });
 

@@ -1,8 +1,6 @@
 import {
     PluginActionDangerLevelV2Schema,
     PluginActionSurfaceV2Schema,
-    type PluginActionDangerLevelV2,
-    type PluginActionSurfaceV2,
 } from '@happier-dev/protocol/plugins/actions/vocabulary';
 import {
     PluginContributionLocalIdSchema,
@@ -11,7 +9,6 @@ import {
 } from '@happier-dev/protocol/plugins/contribution-identity';
 import {
     PluginContributionPointProtocolV1Schema,
-    type PluginTargetedContributionSurfacePresentationV1,
 } from '@happier-dev/protocol/plugins/contributions/targeted';
 import { cloneStrictPluginJsonValue } from '@happier-dev/protocol/plugins/actions/protocol-composable-schema';
 import {
@@ -173,15 +170,25 @@ export type DescriptorFields<TDescriptorSchema> =
  * vocabulary as the manifest/runtime contribution operation contract.
  */
 export type ContributionActionSurface =
-    PluginActionSurfaceV2;
+    | 'cli'
+    | 'mcp'
+    | 'agent'
+    | 'ui'
+    | 'plugin'
+    | 'voice';
 
 /** The side-effect level accepted by one cross-plugin operation role. */
 export type ContributionActionDangerLevel =
-    PluginActionDangerLevelV2;
+    | 'safe'
+    | 'writesLocal'
+    | 'writesRemote'
+    | 'externalSideEffect'
+    | 'destructive';
 
 /** A protocol-owned non-navigable surface presentation. */
 export type ContributionSurfacePresentation =
-    PluginTargetedContributionSurfacePresentationV1;
+    | 'content'
+    | 'fill';
 
 /** Public plain-data wording accepted by the symbolic fallback state. */
 export type ContributionSurfaceLocalizedString = string | Readonly<{

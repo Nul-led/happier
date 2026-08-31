@@ -7,6 +7,8 @@ import {
 import {
   abandonConversationConnectionStop,
   confirmConversationConnectionStop,
+  finalizeConversationConnectionDeleteWithoutProviderStop,
+  finalizeConversationConnectionTransferWithoutProviderStop,
   recordConversationConnectionHistoryGap,
   recordConversationConnectionProviderReadiness,
   startConversationConnectionDelete,
@@ -34,6 +36,104 @@ function connection(
 }
 
 describe('Conversation connection lifecycle', () => {
+  it('finalizes an already-fenced durable-push delete without fabricating provider stop proof', () => {
+    const transportOrigin = {
+      serverIdentityId: 'srv_connection_lifecycle',
+      materializationRef: {
+        pluginId: 'happier.channel.lifecycle',
+        machineId: 'machine-lifecycle',
+        materializationId: 'materialization-lifecycle',
+      },
+    } as const;
+    const deleting = startConversationConnectionDelete({
+      current: connection(),
+      pendingOldTransportStop: {
+        predecessorCheckpointedPollInvocation: {
+          connectionRevision: 1,
+          authorityEpoch: 7,
+          transportOrigin,
+        },
+        transportOrigin,
+        providerContributionSelection: {
+          contributionId: 'durable-push-contribution',
+          immutableGenerationId: 'durable-push-generation',
+        },
+        stopRequest: {
+          v: 1,
+          connectionId: 'connection-durable-push',
+          providerConnectionKey: 'provider:connection-durable-push',
+          providerConfigVersion: 1,
+          providerConfig: {},
+          credentialRef: null,
+          authorityEpoch: 8,
+          reason: 'delete',
+        },
+      },
+    });
+    if (deleting.kind !== 'deletePending') throw new Error('Expected pending delete state.');
+
+    expect(finalizeConversationConnectionDeleteWithoutProviderStop({
+      current: deleting.connection,
+    })).toEqual({
+      kind: 'deleteFinalizing',
+      connection: {
+        ...deleting.connection,
+        deletionState: 'finalizingDelete',
+        pendingOldTransportStop: null,
+        providerReadiness: null,
+        pollFailure: null,
+      },
+    });
+  });
+
+  it('settles durable-push transfer without claiming a provider stop', () => {
+    const transportOrigin = {
+      serverIdentityId: 'srv_connection_lifecycle',
+      materializationRef: {
+        pluginId: 'happier.channel.lifecycle',
+        machineId: 'machine-lifecycle',
+        materializationId: 'materialization-lifecycle',
+      },
+    } as const;
+    const started = startConversationConnectionTransfer({
+      current: connection(),
+      pendingOldTransportStop: {
+        predecessorCheckpointedPollInvocation: {
+          connectionRevision: 1,
+          authorityEpoch: 7,
+          transportOrigin,
+        },
+        transportOrigin,
+        providerContributionSelection: {
+          contributionId: 'durable-push-contribution',
+          immutableGenerationId: 'durable-push-generation',
+        },
+        stopRequest: {
+          v: 1,
+          connectionId: 'connection-durable-push',
+          providerConnectionKey: 'provider:connection-durable-push',
+          providerConfigVersion: 1,
+          providerConfig: {},
+          credentialRef: null,
+          authorityEpoch: 8,
+          reason: 'transfer',
+        },
+      },
+      replacement: { enabled: true, overlapSafety: 'safe', historyGap: null },
+    });
+    if (started.kind !== 'transferPendingOldStop') throw new Error('Expected transfer state.');
+
+    expect(finalizeConversationConnectionTransferWithoutProviderStop({
+      current: started.connection,
+    })).toEqual({
+      kind: 'transportStopConfirmed',
+      connection: {
+        ...started.connection,
+        pendingOldTransportStop: null,
+      },
+    });
+  });
+
   it('commits one frozen old-stop request before delete without orphaning an in-progress baseline fence', () => {
     const transportOrigin = {
       serverIdentityId: 'srv_connection_lifecycle',

@@ -70,7 +70,9 @@ export async function observeBitbucketEntryWithFacts(
   const outcome = await getBitbucketPullRequest({
     client: input.client,
     workspaceUuid: input.route.workspaceUuid,
-    repositoryUuid: input.route.repositoryUuid,
+    repositorySlug: input.route.repositorySlug,
+    expectedRepositoryUuid: input.route.expectedRepositoryUuid,
+    expectedRepositoryKey: input.route.repositoryKey,
     entryId: input.route.entryId,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });

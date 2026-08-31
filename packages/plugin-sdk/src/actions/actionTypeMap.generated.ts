@@ -1033,14 +1033,26 @@ export type PluginActionInputById = {
         targetMachineId?: string | undefined;
         targetPath?: string | undefined;
         targetSessionStorageMode?: 'direct' | 'persisted' | undefined;
-        workspaceTransfer?: {
-            [x: string]: unknown;
-            enabled: boolean;
-            conflictPolicy: 'create_sibling_copy' | 'replace_existing';
-            strategy?: 'transfer_snapshot' | 'sync_changes' | undefined;
-            includeIgnoredMode?: 'exclude' | 'include_selected' | undefined;
-            ignoredIncludeGlobs?: readonly string[] | undefined;
+        workspaceAction?: {
+            kind: 'none';
+        } | {
+            kind: 'copy_once';
+            contentPolicy: {
+                v: 1;
+                selection: 'git_worktree' | 'all_files';
+                extraIgnorePatterns: readonly string[];
+                extraIncludePatterns: readonly string[];
+                includeGitDirectory: boolean;
+                policyDigest: string;
+            };
+        } | {
+            kind: 'relationship';
+            relationshipId: string;
+            flushBeforeCommit: boolean;
         } | undefined;
+        workspaceSyncSourceWorkspaceRefId?: string | undefined;
+        workspaceSyncTargetWorkspaceRefId?: string | undefined;
+        workspaceSyncSettingsVersion?: number | undefined;
     };
     readonly "session.handoff.status.get": {
         [x: string]: unknown;
@@ -2128,6 +2140,47 @@ export type PluginActionInputById = {
             kind: 'comment' | 'approve' | 'requestChanges';
             body: string;
         } | null;
+        settlement?: {
+            dispatchToken: string | null;
+            result: {
+                publicationPlanId: string;
+                entries: {
+                    happierCommentId: string;
+                    publicationCorrelationId: string;
+                    outcome: {
+                        kind: 'published';
+                        externalRef: string;
+                    } | {
+                        kind: 'failed';
+                        code: string;
+                        message?: string | undefined;
+                    } | {
+                        kind: 'uncertain';
+                    } | {
+                        kind: 'skippedPriorFailure';
+                    };
+                }[];
+                verdict: {
+                    kind: 'notRequested';
+                } | {
+                    publicationCorrelationId: string;
+                    outcome: {
+                        kind: 'published';
+                        externalRef?: string | undefined;
+                    } | {
+                        kind: 'failed';
+                        code: string;
+                        message?: string | undefined;
+                        externalRef?: string | undefined;
+                    } | {
+                        kind: 'uncertain';
+                        externalRef?: string | undefined;
+                    } | {
+                        kind: 'skippedPriorFailure';
+                    };
+                };
+            };
+        } | undefined;
     };
     readonly "sessions.subagents.list": {
         [x: string]: unknown;
@@ -10333,6 +10386,7 @@ export type PluginActionResultById = {
     };
     readonly "reviews.comments.claimPublicationDispatch": {
         disposition: 'dispatch' | 'reconcile';
+        dispatchToken: string | null;
         publicationPlanId: string;
         entries: {
             happierCommentId: string;
@@ -10340,6 +10394,48 @@ export type PluginActionResultById = {
         }[];
         verdict: {
             publicationCorrelationId: string;
+        } | null;
+        instructions: {
+            entries: ('confirmed' | 'dispatch' | 'reconcile' | 'held')[];
+            verdict: 'confirmed' | 'dispatch' | 'reconcile' | 'held' | null;
+        };
+        priorResult: {
+            publicationPlanId: string;
+            entries: {
+                happierCommentId: string;
+                publicationCorrelationId: string;
+                outcome: {
+                    kind: 'published';
+                    externalRef: string;
+                } | {
+                    kind: 'failed';
+                    code: string;
+                    message?: string | undefined;
+                } | {
+                    kind: 'uncertain';
+                } | {
+                    kind: 'skippedPriorFailure';
+                };
+            }[];
+            verdict: {
+                kind: 'notRequested';
+            } | {
+                publicationCorrelationId: string;
+                outcome: {
+                    kind: 'published';
+                    externalRef?: string | undefined;
+                } | {
+                    kind: 'failed';
+                    code: string;
+                    message?: string | undefined;
+                    externalRef?: string | undefined;
+                } | {
+                    kind: 'uncertain';
+                    externalRef?: string | undefined;
+                } | {
+                    kind: 'skippedPriorFailure';
+                };
+            };
         } | null;
     };
     readonly "sessions.subagents.list": {
@@ -10529,10 +10625,78 @@ export type PluginActionResultById = {
             ok: true;
             status: 'failed' | 'cancelled' | 'succeeded' | 'timeout';
             result: {
+                [x: string]: unknown;
                 run: {
+                    [x: string]: unknown;
                     runId: string;
-                    status: 'failed' | 'cancelled' | 'succeeded' | 'timeout';
+                    callId: string;
+                    sidechainId: string;
+                    intent: 'scm_diff_summary' | 'plan' | 'review' | 'delegate' | 'task' | 'voice_agent' | 'memory_hints' | 'scm_commit_message';
+                    backendTarget: {
+                        kind: 'builtInAgent';
+                        agentId: string;
+                    } | {
+                        kind: 'configuredAcpBackend';
+                        backendId: string;
+                    };
+                    permissionMode: string;
+                    retentionPolicy: 'ephemeral' | 'resumable';
+                    runClass: 'bounded' | 'long_lived';
+                    ioMode: 'request_response' | 'streaming';
+                    status: 'failed' | 'cancelled' | 'succeeded' | 'running' | 'timeout';
+                    startedAtMs: number;
+                    display?: {
+                        [x: string]: unknown;
+                        title?: string | undefined;
+                        participantLabel?: string | undefined;
+                        groupId?: string | undefined;
+                    } | undefined;
+                    turnInFlight?: boolean | undefined;
+                    availableActionIds?: string[] | undefined;
+                    resumeHandle?: {
+                        [x: string]: unknown;
+                        kind: 'provider_session.v1';
+                        backendTarget: {
+                            kind: 'backend';
+                            backendId: string;
+                            configuredBackendId?: string | undefined;
+                            sourceKind?: 'built_in' | 'configured' | undefined;
+                        };
+                        providerSessionId: string;
+                    } | {
+                        [x: string]: unknown;
+                        kind: 'voice_agent_sessions.v1';
+                        backendTarget: {
+                            kind: 'backend';
+                            backendId: string;
+                            configuredBackendId?: string | undefined;
+                            sourceKind?: 'built_in' | 'configured' | undefined;
+                        };
+                        chatProviderSessionId: string;
+                        commitProviderSessionId: string;
+                    } | undefined;
+                    transcript?: {
+                        [x: string]: unknown;
+                        persistenceMode: 'ephemeral' | 'persistent';
+                        epoch: number;
+                    } | undefined;
+                    finishedAtMs?: number | undefined;
+                    error?: {
+                        [x: string]: unknown;
+                        code: string;
+                        message?: string | undefined;
+                    } | undefined;
                 };
+                latestToolResult?: unknown;
+                structuredMeta?: {
+                    [x: string]: unknown;
+                    kind: string;
+                    payload: unknown;
+                } | undefined;
+                structuredMetaArtifactRef?: {
+                    [x: string]: unknown;
+                    artifactId: string;
+                } | undefined;
             };
         } | {
             ok: false;
@@ -10777,10 +10941,78 @@ export type PluginActionResultById = {
         ok: true;
         status: 'failed' | 'cancelled' | 'succeeded' | 'timeout';
         result: {
+            [x: string]: unknown;
             run: {
+                [x: string]: unknown;
                 runId: string;
-                status: 'failed' | 'cancelled' | 'succeeded' | 'timeout';
+                callId: string;
+                sidechainId: string;
+                intent: 'scm_diff_summary' | 'plan' | 'review' | 'delegate' | 'task' | 'voice_agent' | 'memory_hints' | 'scm_commit_message';
+                backendTarget: {
+                    kind: 'builtInAgent';
+                    agentId: string;
+                } | {
+                    kind: 'configuredAcpBackend';
+                    backendId: string;
+                };
+                permissionMode: string;
+                retentionPolicy: 'ephemeral' | 'resumable';
+                runClass: 'bounded' | 'long_lived';
+                ioMode: 'request_response' | 'streaming';
+                status: 'failed' | 'cancelled' | 'succeeded' | 'running' | 'timeout';
+                startedAtMs: number;
+                display?: {
+                    [x: string]: unknown;
+                    title?: string | undefined;
+                    participantLabel?: string | undefined;
+                    groupId?: string | undefined;
+                } | undefined;
+                turnInFlight?: boolean | undefined;
+                availableActionIds?: string[] | undefined;
+                resumeHandle?: {
+                    [x: string]: unknown;
+                    kind: 'provider_session.v1';
+                    backendTarget: {
+                        kind: 'backend';
+                        backendId: string;
+                        configuredBackendId?: string | undefined;
+                        sourceKind?: 'built_in' | 'configured' | undefined;
+                    };
+                    providerSessionId: string;
+                } | {
+                    [x: string]: unknown;
+                    kind: 'voice_agent_sessions.v1';
+                    backendTarget: {
+                        kind: 'backend';
+                        backendId: string;
+                        configuredBackendId?: string | undefined;
+                        sourceKind?: 'built_in' | 'configured' | undefined;
+                    };
+                    chatProviderSessionId: string;
+                    commitProviderSessionId: string;
+                } | undefined;
+                transcript?: {
+                    [x: string]: unknown;
+                    persistenceMode: 'ephemeral' | 'persistent';
+                    epoch: number;
+                } | undefined;
+                finishedAtMs?: number | undefined;
+                error?: {
+                    [x: string]: unknown;
+                    code: string;
+                    message?: string | undefined;
+                } | undefined;
             };
+            latestToolResult?: unknown;
+            structuredMeta?: {
+                [x: string]: unknown;
+                kind: string;
+                payload: unknown;
+            } | undefined;
+            structuredMetaArtifactRef?: {
+                [x: string]: unknown;
+                artifactId: string;
+            } | undefined;
         };
     } | {
         ok: false;
@@ -23445,7 +23677,7 @@ export type PluginActionResultById = {
                 flow: {
                     flowId: string;
                     flowKind: 'bounded_transfer' | 'tcp_tunnel' | 'voice_media' | 'live_stream' | 'machine_rpc';
-                    routeKind?: 'loopback_direct' | 'lan_direct' | 'tailscale_serve_direct' | 'server_relay' | undefined;
+                    routeKind?: 'loopback_direct' | 'lan_direct' | 'tailscale_serve_direct' | 'server_relay' | 'iroh_peer' | undefined;
                     tunnelId?: string | undefined;
                     substreamId?: string | undefined;
                     streamId?: string | undefined;
@@ -23525,7 +23757,7 @@ export type PluginActionResultById = {
                 flow: {
                     flowId: string;
                     flowKind: 'bounded_transfer' | 'tcp_tunnel' | 'voice_media' | 'live_stream' | 'machine_rpc';
-                    routeKind?: 'loopback_direct' | 'lan_direct' | 'tailscale_serve_direct' | 'server_relay' | undefined;
+                    routeKind?: 'loopback_direct' | 'lan_direct' | 'tailscale_serve_direct' | 'server_relay' | 'iroh_peer' | undefined;
                     tunnelId?: string | undefined;
                     substreamId?: string | undefined;
                     streamId?: string | undefined;

@@ -226,8 +226,10 @@ function harness(input: Readonly<{
         expect(actionId).toBe('reviews.comments.claimPublicationDispatch');
         claimedPlans.push(actionInput);
         const candidate = actionInput as ReviewCommentPublicationPlanV1;
+        const disposition = input.claimDisposition ?? 'dispatch';
         return {
-          disposition: input.claimDisposition ?? 'dispatch',
+          disposition,
+          dispatchToken: disposition === 'dispatch' ? 'dispatch-token-1' : null,
           publicationPlanId: PLAN_ID,
           entries: candidate.entries.map((candidateEntry, index) => ({
             happierCommentId: candidateEntry.happierCommentId,
@@ -236,6 +238,11 @@ function harness(input: Readonly<{
           verdict: candidate.verdict === null
             ? null
             : { publicationCorrelationId: VERDICT_CORRELATION },
+          instructions: {
+            entries: candidate.entries.map(() => disposition),
+            verdict: candidate.verdict === null ? null : disposition,
+          },
+          priorResult: null,
         };
       },
     },
@@ -888,7 +895,7 @@ describe('Azure DevOps Reviews publication', () => {
         kind: 'settled',
         publication: { verdict: { outcome: { kind: 'published', externalRef: '90:91' } } },
       });
-      expect(claimedPlans).toHaveLength(1);
+      expect(claimedPlans).toHaveLength(2);
       expect(providerWrites(requests).map(({ method }) => method)).toEqual(['POST', 'PUT']);
       expect(providerWrites(requests)[0]?.body).toMatchObject({
         comments: [{ content: `Summary\n\n${exactMarker}` }],

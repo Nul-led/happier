@@ -212,6 +212,8 @@ type HappierFieldIssueSemantics = Readonly<{
   invalid: boolean;
   issueId?: string;
   issueHint?: string;
+  descriptionId?: string;
+  descriptionHint?: string;
 }>;
 
 const HappierFieldIssueContext = createContext<HappierFieldIssueSemantics>({ invalid: false });
@@ -220,11 +222,26 @@ function useHappierFieldIssueSemantics(): HappierFieldIssueSemantics {
   return useContext(HappierFieldIssueContext);
 }
 
+function combineAccessibilityHints(...hints: readonly (string | undefined)[]): string | undefined {
+  const present = hints.filter((hint): hint is string => Boolean(hint));
+  if (present.length === 0) return undefined;
+  return present.reduce((combined, hint) => {
+    if (combined === '') return hint;
+    return /[.!?…:;]\s*$/u.test(combined) ? `${combined} ${hint}` : `${combined}. ${hint}`;
+  }, '');
+}
+
 export function HappierField(props: HappierFieldProps) {
   const generatedIssueId = useId();
+  const generatedDescriptionId = useId();
   const issue = props.issue || undefined;
+  const description = props.description || undefined;
   const issueSemantics: HappierFieldIssueSemantics = {
     invalid: issue !== undefined,
+    ...(description === undefined ? {} : {
+      descriptionId: `happier-field-description-${generatedDescriptionId}`,
+      descriptionHint: description,
+    }),
     ...(issue === undefined ? {} : {
       issueId: `happier-field-issue-${generatedIssueId}`,
       issueHint: issue,
@@ -239,14 +256,14 @@ export function HappierField(props: HappierFieldProps) {
         <HappierLabel theme={props.theme}>
           {props.label}{props.required ? ' *' : ''}
         </HappierLabel>
-        {props.description ? (
-          <HappierText style={{
+        {description ? (
+          <HappierText nativeID={issueSemantics.descriptionId} style={{
             fontSize: props.theme.typography.caption.fontSize,
             lineHeight: props.theme.typography.caption.lineHeight,
             fontWeight: props.theme.typography.caption.fontWeight as TextStyle['fontWeight'],
             color: props.theme.colors.secondaryText,
           }}>
-            {props.description}
+            {description}
           </HappierText>
         ) : null}
         {props.children}
@@ -392,12 +409,13 @@ export function HappierTextField(props: HappierTextFieldProps) {
     <ReactNativeTextInput
       ref={setControlRef}
       accessibilityLabel={props.label}
-      accessibilityHint={fieldIssue.issueHint}
+      accessibilityHint={combineAccessibilityHints(fieldIssue.descriptionHint, fieldIssue.issueHint)}
       accessibilityState={props.disabled ? { disabled: true } : undefined}
       aria-required={props.required || undefined}
       aria-disabled={props.disabled || undefined}
       aria-invalid={fieldIssue.invalid || undefined}
       aria-errormessage={fieldIssue.issueId}
+      aria-describedby={fieldIssue.descriptionId}
       value={props.value}
       onChange={handleChange as never}
       selection={props.selection}
@@ -456,7 +474,8 @@ export function HappierToggle(props: Readonly<{
     <HappierPressable
       accessibilityRole="switch"
       accessibilityLabel={props.label}
-      accessibilityHint={fieldIssue.issueHint}
+      accessibilityHint={combineAccessibilityHints(fieldIssue.descriptionHint, fieldIssue.issueHint)}
+      describedById={fieldIssue.descriptionId}
       invalid={fieldIssue.invalid}
       errorMessageId={fieldIssue.issueId}
       checked={props.value}
@@ -540,7 +559,11 @@ function HappierSelectOptionControl<Value>(props: HappierSelectOptionControlProp
     <HappierPressable
       accessibilityRole={props.accessibilityRole}
       accessibilityLabel={accessibilityLabel}
-      accessibilityHint={props.fieldIssue.issueHint}
+      accessibilityHint={combineAccessibilityHints(
+        props.fieldIssue.descriptionHint,
+        props.fieldIssue.issueHint,
+      )}
+      describedById={props.fieldIssue.descriptionId}
       invalid={props.fieldIssue.invalid}
       errorMessageId={props.fieldIssue.issueId}
       checked={props.selected}
@@ -731,9 +754,15 @@ export function HappierSelect<Value = string>(props: Readonly<{
     <View
       role={props.multiple ? 'group' : 'radiogroup'}
       accessibilityLabel={props.label}
-      accessibilityHint={Platform.OS === 'web' || !props.required
+      accessibilityHint={Platform.OS === 'web'
         ? undefined
-        : localization?.translate('happier.plugin-ui.form.required', 'Required') ?? 'Required'}
+        : combineAccessibilityHints(
+            fieldIssue.descriptionHint,
+            props.required
+              ? localization?.translate('happier.plugin-ui.form.required', 'Required') ?? 'Required'
+              : undefined,
+          )}
+      aria-describedby={fieldIssue.descriptionId}
       aria-required={Platform.OS === 'web' && props.required ? true : undefined}
       testID={props.testID}
       style={{ gap: props.theme.spacing.small }}

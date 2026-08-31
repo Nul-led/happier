@@ -28,7 +28,7 @@ import type { SurfaceFilterSelectionV1 } from '../../projection/listWindow.js';
  *   filters and pointed them at a rail with nothing selected — while the
  *   Composer picker, which asks the search owner, called the same query no
  *   query at all. One owner, one answer.
- * - **`order`, `grouping` and `smartPolicy` deliberately do NOT count**, and
+ * - **`order` and `smartPolicy` deliberately do NOT count**, and
  *   this is a stated choice rather than an omission. They rearrange the rows
  *   the window already published and can never remove one, so a reader looking
  *   at a reordered complete list is looking at a complete list. A surface that

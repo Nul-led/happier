@@ -10,6 +10,7 @@ import {
   GitlabChangesResultV1Schema,
   GitlabDiscussionsResultV1Schema,
   GitlabNotesResultV1Schema,
+  GitlabOverviewResultV1Schema,
   GitlabPipelinesResultV1Schema,
   GitlabRawDiffResultV1Schema,
 } from './detail/contracts.js';
@@ -18,6 +19,7 @@ import {
   listGitlabChanges,
   listGitlabDiscussions,
   listGitlabNotes,
+  readGitlabOverview,
   listGitlabPipelines,
   readGitlabRawDiff,
   readGitlabApprovals,
@@ -78,6 +80,47 @@ function ok(body: unknown, headers: Readonly<Record<string, string>> = {}): Stub
 function pathOf(request: RecordedGitlabRequest): string {
   return new URL(request.url).pathname;
 }
+
+/* ------------------------------------------------------------------ overview */
+
+describe('GitLab overview plane', () => {
+  it('rereads the exact routed item and returns its current metadata and description', async () => {
+    const stub = createStubGitlabTransport({
+      respond: (request) => {
+        const path = pathOf(request);
+        if (path.endsWith('/merge_requests/7')) {
+          return ok({
+            id: 700,
+            project_id: 3,
+            iid: 7,
+            references: { full: `${ROUTING_TOKEN}!7` },
+            web_url: `${GITLAB_TEST_ORIGIN}/${ROUTING_TOKEN}/-/merge_requests/7`,
+            title: 'Current provider title',
+            description: 'Current provider description',
+            state: 'opened',
+            draft: false,
+            sha: 'a'.repeat(40),
+            updated_at: '2026-08-01T00:05:00Z',
+            author: { username: 'author' },
+          });
+        }
+        if (path.endsWith('/user')) return ok({ id: 41, username: 'viewer' });
+        return undefined;
+      },
+    });
+
+    const result = GitlabOverviewResultV1Schema.parse(
+      await readGitlabOverview(itemInput(), stub.context),
+    );
+    expect(result).toMatchObject({
+      kind: 'overview',
+      description: 'Current provider description',
+      descriptionTruncated: false,
+      observation: { kind: 'present', snapshot: { title: 'Current provider title' } },
+    });
+    expect(stub.requests[0]?.url).toContain('/projects/group%2Fsubgroup%2Fproject/');
+  });
+});
 
 /* ----------------------------------------------------------------- pipelines */
 
@@ -352,7 +395,8 @@ describe('GitLab changes plane', () => {
 
     expect(result).toEqual({ kind: 'rawDiff', text: rawText, truncated: false });
     expect(stub.requests).toHaveLength(1);
-    expect(pathOf(stub.requests[0]!)).toBe('/api/v4/projects/3/merge_requests/7/raw_diffs');
+    expect(pathOf(stub.requests[0]!))
+      .toBe('/api/v4/projects/group%2Fsubgroup%2Fproject/merge_requests/7/raw_diffs');
     expect(stub.requests[0]?.headers.Accept).toBe('text/plain');
     expect(stub.requests[0]?.redirect).toBe('error');
   });
@@ -574,6 +618,46 @@ describe('GitLab detail paging custody', () => {
     expect(resumed.kind).toBe('unavailable');
   });
 
+  it('binds a continuation to its exact plane and routed item', async () => {
+    const stub = createStubGitlabTransport({
+      respond: (request) => (
+        pathOf(request).endsWith('/notes')
+          ? ok([{ id: 1, body: 'note' }], gitlabNextLinkHeader(NOTES_NEXT))
+          : undefined
+      ),
+    });
+    const first = GitlabNotesResultV1Schema.parse(
+      await listGitlabNotes(planeInput(), stub.context),
+    );
+    if (first.kind !== 'notes' || first.continuation === undefined) {
+      throw new Error('the notes page must carry a continuation');
+    }
+    const requestsBeforeReplay = stub.requests.length;
+
+    const crossPlane = GitlabActivityEventsResultV1Schema.parse(
+      await listGitlabActivityEvents(planeInput({
+        eventSource: 'state',
+        continuation: first.continuation,
+      }), stub.context),
+    );
+    const crossRoute = GitlabNotesResultV1Schema.parse(
+      await listGitlabNotes(planeInput({
+        routingToken: 'other/group/project',
+        continuation: first.continuation,
+      }), stub.context),
+    );
+
+    expect(crossPlane).toMatchObject({
+      kind: 'unavailable',
+      failure: { code: 'gitlab-detail-continuation-unreadable' },
+    });
+    expect(crossRoute).toMatchObject({
+      kind: 'unavailable',
+      failure: { code: 'gitlab-detail-continuation-unreadable' },
+    });
+    expect(stub.requests).toHaveLength(requestsBeforeReplay);
+  });
+
   it('drops a cross-origin next page instead of following it', async () => {
     const stub = createStubGitlabTransport({
       respond: (request) => (
@@ -720,12 +804,18 @@ describe('the GitLab detail lifetime', () => {
 
   it('abandons a mounted detail read when its caller cancels', async () => {
     const caller = new AbortController();
+    let markRequestStarted!: () => void;
+    const requestStarted = new Promise<void>((resolve) => { markRequestStarted = resolve; });
     const transport = createStubGitlabTransport({
-      respond: () => GITLAB_STUB_NEVER_ANSWERS,
+      respond: () => {
+        markRequestStarted();
+        return GITLAB_STUB_NEVER_ANSWERS;
+      },
       signal: caller.signal,
     });
 
     const pending = listGitlabNotes(planeInput(), transport.context);
+    await requestStarted;
     caller.abort(new DOMException('The mounted reader was closed.', 'AbortError'));
     const result = GitlabNotesResultV1Schema.parse(await pending);
 

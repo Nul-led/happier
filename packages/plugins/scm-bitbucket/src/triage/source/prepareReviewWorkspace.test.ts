@@ -185,7 +185,7 @@ describe('Bitbucket selected-PR review workspace preparation', () => {
     expect(seam.materializations).toEqual(['account-1']);
     expect(seam.requests.map((request) => request.url)).toEqual([
       `https://api.bitbucket.org/2.0/repositories/${encodeURIComponent(WORKSPACE_UUID)}`
-        + `/${encodeURIComponent(REPOSITORY_UUID)}/pullrequests/42`,
+        + '/deploy-tools/pullrequests/42',
     ]);
     // The destination repository addresses the reread only. A fork's source
     // repository, branch and clone link are the sole editable checkout facts.
@@ -232,6 +232,25 @@ describe('Bitbucket selected-PR review workspace preparation', () => {
     const source = raw.source as Record<string, unknown>;
     const sourceRepository = source.repository as Record<string, unknown>;
     source.repository = { ...sourceRepository, links: { clone: [] } };
+    const seam = workspaceRuntime({ execute, pullRequest: raw });
+
+    await expect(prepareBitbucketReviewWorkspace(preparationInput(), seam.runtime))
+      .resolves.toEqual({ kind: 'refused', reason: 'pullRequestMoved' });
+
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a provider clone link that redirects checkout identity to another host', async () => {
+    const execute = vi.fn();
+    const raw = pullRequestFromFork();
+    const source = raw.source as Record<string, unknown>;
+    const sourceRepository = source.repository as Record<string, unknown>;
+    source.repository = {
+      ...sourceRepository,
+      links: {
+        clone: [{ name: 'https', href: 'https://attacker.invalid/contributor/fork-tools.git' }],
+      },
+    };
     const seam = workspaceRuntime({ execute, pullRequest: raw });
 
     await expect(prepareBitbucketReviewWorkspace(preparationInput(), seam.runtime))
@@ -382,7 +401,7 @@ describe('Bitbucket final review workspace verification', () => {
     });
     expect(seam.requests.map((request) => request.url)).toEqual([
       `https://api.bitbucket.org/2.0/repositories/${encodeURIComponent(WORKSPACE_UUID)}`
-        + `/${encodeURIComponent(REPOSITORY_UUID)}/pullrequests/42`,
+        + '/deploy-tools/pullrequests/42',
     ]);
     expect(execute).toHaveBeenCalledWith(
       'scm.reviewWorkspace.materializePrepared',

@@ -110,6 +110,8 @@ import type {
   GithubProjectedTimelineRowV1,
 } from '../triage/detail/projection.js';
 import { GITHUB_CHANGED_FILES_CEILING_V1 } from '../triage/detail/routes.js';
+import { projectGithubMarkdownForDisplay } from '../triage/detail/markdown/projectGithubMarkdownForDisplay.js';
+import type { GithubOverviewResultV1 } from '../triage/detail/contracts.js';
 import {
   GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1,
   readGithubTriageKindId,
@@ -151,8 +153,10 @@ import {
   useGithubFeedbackReviews,
   useGithubFeedbackThreads,
   useGithubFeedbackThreadReplies,
+  useGithubOverview,
   useGithubTimeline,
   type GithubChecksViewV1,
+  type GithubOverviewControllerV1,
   type GithubPagedControllerV1,
 } from './detail/panelReaders.js';
 import type { GithubPagedStateV1, GithubReadStateV1 } from './detail/panelState.js';
@@ -261,7 +265,7 @@ function RefreshRow({
   accessibilityLabel,
   accessibilityLabelKey,
 }: Readonly<{
-  onRefresh: () => void;
+  onRefresh: () => unknown;
   /** A walk already in flight; the control stays mounted and inert rather than vanishing. */
   pending: boolean;
   accessibilityLabel: string;
@@ -928,10 +932,12 @@ function PullRequestHeadWrites({
   input,
   onObserved,
   capabilities,
+  branchUpdateEligible,
 }: Readonly<{
   input: TriageDetailSurfaceInputV1;
   onObserved: GithubObservedEntryHandlerV1;
   capabilities: GithubReadStateV1<GithubRepositoryCapabilitiesV1>;
+  branchUpdateEligible: boolean;
 }>): React.ReactElement {
   const markReady = React.useMemo(() => buildGithubPullRequestMarkReadyInputV1(input), [input]);
   const updateBranch = React.useMemo(
@@ -954,16 +960,20 @@ function PullRequestHeadWrites({
           />
         )
         : null}
-      <ExactWrite
-        localId={GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.pullRequestUpdateBranch}
-        payload={updateBranch}
-        title="Update branch"
-        titleKey="plugins.github.mutations.updateBranch.confirmation.confirmLabel"
-        parseResult={parseUpdateBranchResult}
-        onObserved={onObserved}
-        capabilities={capabilities}
-        operation="pullRequestUpdateBranch"
-      />
+      {branchUpdateEligible
+        ? (
+          <ExactWrite
+            localId={GITHUB_TRIAGE_MUTATION_ACTION_IDS_V1.pullRequestUpdateBranch}
+            payload={updateBranch}
+            title="Update branch"
+            titleKey="plugins.github.mutations.updateBranch.confirmation.confirmLabel"
+            parseResult={parseUpdateBranchResult}
+            onObserved={onObserved}
+            capabilities={capabilities}
+            operation="pullRequestUpdateBranch"
+          />
+        )
+        : null}
     </Stack>
   );
 }
@@ -1609,6 +1619,7 @@ function WritesSection({
   onObserved,
   publicationProposals,
   capabilities,
+  overview,
 }: Readonly<{
   input: TriageDetailSurfaceInputV1;
   kindId: GithubTriageKindIdV1;
@@ -1616,6 +1627,7 @@ function WritesSection({
   onObserved: GithubObservedEntryHandlerV1;
   publicationProposals: ReviewCommentProposalReadV1;
   capabilities: GithubReadStateV1<GithubRepositoryCapabilitiesV1>;
+  overview: Extract<GithubOverviewResultV1, { kind: 'overview' }> | null;
 }>): React.ReactElement | null {
   const offered = githubOfferedMutationsV1({
     kindId,
@@ -1679,7 +1691,13 @@ function WritesSection({
             {input.observation.snapshot.state.presentation === 'active'
               ? (
                 <>
-                  <PullRequestHeadWrites input={input} onObserved={onObserved} capabilities={capabilities} />
+                  <PullRequestHeadWrites
+                    input={input}
+                    onObserved={onObserved}
+                    capabilities={capabilities}
+                    branchUpdateEligible={overview?.kindId === 'pull-request'
+                      && overview.branchUpdateEligibility === 'behind'}
+                  />
                   <PullRequestReviewerWrites input={input} onObserved={onObserved} capabilities={capabilities} />
                   <PullRequestReviewPublicationWrite
                     input={input}
@@ -1726,6 +1744,204 @@ function WritesSection({
 
 /* --------------------------------------------------------------------- Overview */
 
+type GithubOverviewValueV1 = Extract<GithubOverviewResultV1, { kind: 'overview' }>;
+
+function githubOverviewStatusLabel(
+  input: TriageDetailSurfaceInputV1,
+  overview: GithubOverviewValueV1 | null,
+): string {
+  if (overview === null) return input.observation.snapshot.state.nativeLabel ?? 'Unavailable';
+  if (overview.kindId === 'pull-request') {
+    if (overview.merged === true) return 'Merged';
+    if (overview.draft === true) return 'Draft';
+  }
+  if (overview.state === 'open') return 'Open';
+  if (overview.state === 'closed') return 'Closed';
+  return overview.state ?? 'Unavailable';
+}
+
+function githubOverviewStatusTone(label: string): 'success' | 'info' | 'warning' | 'neutral' {
+  if (label === 'Merged') return 'success';
+  if (label === 'Open') return 'info';
+  if (label === 'Draft') return 'warning';
+  return 'neutral';
+}
+
+function githubOverviewCollection(
+  values: readonly string[] | undefined,
+  empty: string,
+): string {
+  if (values === undefined) return 'Unavailable';
+  return values.length === 0 ? empty : values.join(', ');
+}
+
+function githubOverviewEntries(
+  input: TriageDetailSurfaceInputV1,
+  overview: GithubOverviewValueV1 | null,
+  locale: string,
+  nowMs: number,
+): readonly MetadataEntry[] {
+  const observedAtMs = overview?.observedAtMs ?? input.observation.observedAtMs;
+  const headRevision = overview?.kindId === 'pull-request'
+    ? overview.headRevision
+    : overview === null
+      ? input.observation.nativeRevision
+      : undefined;
+  const entries: MetadataEntry[] = [
+    {
+      label: 'Author',
+      value: overview === null ? 'Refresh to read' : overview.author ?? 'Unavailable',
+    },
+    {
+      label: 'Created',
+      value: overview === null
+        ? input.observation.snapshot.createdAtMs === undefined
+          ? 'Unavailable'
+          : formatTimestamp(locale, input.observation.snapshot.createdAtMs, 'absolute', nowMs)
+        : overview.createdAtMs === undefined
+          ? 'Unavailable'
+          : formatTimestamp(locale, overview.createdAtMs, 'absolute', nowMs),
+    },
+    {
+      label: 'Updated',
+      value: overview?.updatedAtMs === undefined
+        ? overview === null ? 'Refresh to read' : 'Unavailable'
+        : formatTimestamp(locale, overview.updatedAtMs, 'absolute', nowMs),
+    },
+  ];
+  if (input.observation.entryRef.kindId === 'pull-request') {
+    const pullRequest = overview?.kindId === 'pull-request' ? overview : null;
+    entries.push(
+      {
+        label: 'Branches',
+        value: pullRequest === null
+          ? 'Refresh to read'
+          : `${pullRequest.headBranch ?? 'Unavailable'} → ${pullRequest.baseBranch ?? 'Unavailable'}`,
+      },
+      {
+        label: 'Requested reviewers',
+        value: pullRequest === null
+          ? 'Refresh to read'
+          : pullRequest.requestedReviewers === undefined
+            ? 'Unavailable'
+            : pullRequest.requestedReviewers.length === 0
+              ? 'None'
+              : pullRequest.requestedReviewers
+                .map((reviewer) => reviewer.kind === 'team'
+                  ? `${reviewer.subject} (team)`
+                  : reviewer.subject)
+                .join(', '),
+      },
+      {
+        label: 'Observed head',
+        value: headRevision === undefined
+          ? 'Unavailable'
+          : `${headRevision.slice(0, 12)} · ${formatTimestamp(locale, observedAtMs, 'absolute', nowMs)}`,
+      },
+      {
+        label: 'Changes',
+        value: pullRequest === null
+          ? 'Refresh to read'
+          : pullRequest.additions === undefined || pullRequest.deletions === undefined
+            ? 'Unavailable'
+            : `+${formatNumber(locale, pullRequest.additions, 'plain')} −${formatNumber(locale, pullRequest.deletions, 'plain')}`,
+      },
+    );
+  }
+  entries.push(
+    {
+      label: 'Labels',
+      value: overview === null ? 'Refresh to read' : githubOverviewCollection(overview.labels, 'None'),
+    },
+    {
+      label: 'Assignees',
+      value: overview === null ? 'Refresh to read' : githubOverviewCollection(overview.assignees, 'None'),
+    },
+    {
+      label: 'Milestone',
+      value: overview === null
+        ? 'Refresh to read'
+        : overview.milestone === undefined
+          ? 'Unavailable'
+          : overview.milestone ?? 'None',
+    },
+  );
+  return Object.freeze(entries);
+}
+
+function GithubOverviewMarkdown({ body }: Readonly<{ body: string | null | undefined }>) {
+  const text = usePluginTranslation();
+  // Overview is a retained panel. Keep the parsed display model with its exact
+  // body so parent/tab renders while inactive do no Markdown preprocessing.
+  const segments = React.useMemo(
+    () => typeof body === 'string' && body.length > 0
+      ? projectGithubMarkdownForDisplay(body)
+      : [],
+    [body],
+  );
+  if (body === undefined) {
+    return <Text variant="caption" tone="neutral" value="Description unavailable" />;
+  }
+  if (body === null || body.length === 0) {
+    return <Text variant="caption" tone="neutral" value="No description" />;
+  }
+  return (
+    <Stack gap="small">
+      {segments.map((segment, index) => segment.kind === 'markdown'
+        ? <Markdown key={`markdown:${index}`} value={segment.value} />
+        : (
+          <Stack key={`attachment:${index}:${segment.url}`} gap="xsmall">
+            <Text
+              variant="caption"
+              tone="secondary"
+              value={segment.media === 'video' ? 'Video attachment' : 'Attachment'}
+            />
+            <Action.OpenExternal
+              url={segment.url}
+              title={segment.media === 'video'
+                ? text('plugins.github.ui.overview.openVideo', 'Open video')
+                : text('plugins.github.ui.overview.openAttachment', 'Open attachment')}
+              accessibilityLabel={segment.media === 'video'
+                ? text('plugins.github.ui.overview.openVideoAttachment', 'Open video attachment')
+                : text('plugins.github.ui.overview.openAttachment', 'Open attachment')}
+            />
+          </Stack>
+        ))}
+    </Stack>
+  );
+}
+
+function GithubOverviewReadFailure({
+  controller,
+}: Readonly<{ controller: GithubOverviewControllerV1 }>): React.ReactElement | null {
+  const text = usePluginTranslation();
+  if (controller.failure === null) return null;
+  const description = failureDescription(
+    controller.failure,
+    text('plugins.github.ui.readFailed', 'GitHub could not complete this read.'),
+  );
+  return controller.value === null
+    ? (
+      <ErrorState
+        title={text(
+          'plugins.github.ui.overview.unavailable',
+          'The current overview is unavailable',
+        )}
+        description={description}
+      />
+    )
+    : (
+      <Banner
+        tone="warning"
+        title={text(
+          'plugins.github.ui.overview.retained',
+          'Showing the last overview read',
+        )}
+        description={description}
+      />
+    );
+}
+
 function OverviewPanel({
   body,
   input,
@@ -1748,6 +1964,14 @@ function OverviewPanel({
   capabilities: GithubReadStateV1<GithubRepositoryCapabilitiesV1>;
 }>): React.ReactElement {
   const text = usePluginTranslation();
+  const overview = useGithubOverview(input);
+  const exact = overview.value;
+  const statusLabel = githubOverviewStatusLabel(input, exact);
+  const currentEntries = React.useMemo(
+    () => githubOverviewEntries(input, exact, locale, nowMs),
+    [exact, input, locale, nowMs],
+  );
+  const webUrl = exact?.webUrl ?? input.observation.locator.webUrl;
   const statusFields = body.fields.filter(
     (field): field is Extract<GithubDetailFieldV1, { kind: 'status' }> => field.kind === 'status',
   );
@@ -1765,6 +1989,42 @@ function OverviewPanel({
   return (
     <ScrollArea>
       <Stack gap="large">
+        <RefreshRow
+          onRefresh={overview.refresh}
+          pending={overview.refreshing}
+          accessibilityLabel={text(
+            'plugins.github.ui.overview.reread',
+            'Re-read this overview from GitHub',
+          )}
+        />
+        <GithubOverviewReadFailure controller={overview} />
+        <Text
+          variant="title"
+          value={exact === null ? input.observation.snapshot.title : exact.title ?? 'Unavailable'}
+        />
+        <Status tone={githubOverviewStatusTone(statusLabel)} label={statusLabel} />
+        <Metadata
+          title={text('plugins.github.ui.overview.details', 'Current GitHub details')}
+          entries={currentEntries}
+        />
+        <Stack gap="small">
+          <Text variant="label" value="Description" />
+          {exact === null && overview.failure === null
+            ? <Text variant="caption" tone="neutral" value="Refresh to read the current description." />
+            : <GithubOverviewMarkdown body={exact?.body} />}
+        </Stack>
+        {webUrl === undefined ? null : (
+          <Row gap="small" wrap>
+            <Action.OpenExternal
+              url={webUrl}
+              title={text('plugins.github.ui.overview.openOnGithub', 'Open on GitHub')}
+            />
+            <Action.Copy
+              value={webUrl}
+              title={text('plugins.github.ui.overview.copyGithubUrl', 'Copy GitHub URL')}
+            />
+          </Row>
+        )}
         {statusFields.length === 0 ? null : (
           <Row gap="small">
             {statusFields.map((field) => (
@@ -1815,6 +2075,7 @@ function OverviewPanel({
           onObserved={onObserved}
           publicationProposals={publicationProposals}
           capabilities={capabilities}
+          overview={exact}
         />
       </Stack>
     </ScrollArea>

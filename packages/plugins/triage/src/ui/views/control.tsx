@@ -48,6 +48,8 @@ export type TriageViewsControlPropsV1 = Readonly<{
   busy: boolean;
   /** Why the controls cannot write, in words, or `null` when they can. */
   unavailableReason: string | null;
+  /** Re-read saved views from their authoritative Account owner. */
+  onRetry: () => void;
   /** The stored set belongs to a writer this build cannot read. */
   unreadable: boolean;
   notice: TriageSavedViewsNoticeV1 | null;
@@ -69,6 +71,7 @@ export function TriageViewsControl(props: TriageViewsControlPropsV1): React.Reac
     onCreateView,
     onDeleteView,
     onRenameView,
+    onRetry,
     onSelectView,
     onUpdateView,
     selectedViewId,
@@ -231,7 +234,14 @@ export function TriageViewsControl(props: TriageViewsControlPropsV1): React.Reac
       ) : null}
 
       {unavailableReason === null ? null : (
-        <Status tone="warning" label={unavailableReason} />
+        <Row gap="small" wrap align="center">
+          <Status tone="warning" label={unavailableReason} />
+          <Button
+            title={text('plugins.triage.surface.views.retry', 'Retry')}
+            variant="secondary"
+            onPress={onRetry}
+          />
+        </Row>
       )}
 
       {notice === null ? null : (

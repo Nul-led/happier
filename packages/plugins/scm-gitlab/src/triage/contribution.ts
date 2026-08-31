@@ -59,6 +59,8 @@ import {
   GitlabDiscussionsResultV1Schema,
   GitlabNotesInputV1Schema,
   GitlabNotesResultV1Schema,
+  GitlabOverviewInputV1Schema,
+  GitlabOverviewResultV1Schema,
   GitlabPipelinesInputV1Schema,
   GitlabPipelinesResultV1Schema,
   GitlabRawDiffInputV1Schema,
@@ -99,6 +101,7 @@ export const GITLAB_TRIAGE_ACTION_IDS = Object.freeze({
  * is refused because the declarations omit `plugin`.
  */
 export const GITLAB_TRIAGE_DETAIL_ACTION_IDS = Object.freeze({
+  readOverview: 'triage/read-gitlab-overview',
   listNotes: 'triage/list-gitlab-notes',
   listActivityEvents: 'triage/list-gitlab-activity-events',
   listDiscussions: 'triage/list-gitlab-discussions',
@@ -379,6 +382,13 @@ export const GITLAB_TRIAGE_ACTION_DECLARATIONS: readonly TriageActionDeclaration
  */
 export const GITLAB_TRIAGE_DETAIL_ACTION_DECLARATIONS: readonly TriageActionDeclaration[] =
   Object.freeze([
+    {
+      id: GITLAB_TRIAGE_DETAIL_ACTION_IDS.readOverview,
+      title: 'Refresh a GitLab overview',
+      description: 'Authoritatively rereads one merge request or issue and its description.',
+      inputSchema: GitlabOverviewInputV1Schema.jsonSchema,
+      resultSchema: GitlabOverviewResultV1Schema.jsonSchema,
+    },
     {
       id: GITLAB_TRIAGE_DETAIL_ACTION_IDS.listNotes,
       title: 'Read a GitLab note page',

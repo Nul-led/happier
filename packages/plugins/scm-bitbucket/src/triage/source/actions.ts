@@ -25,18 +25,7 @@ import {
 import { scanBitbucketSource } from './scan.js';
 import type { BitbucketSourceRuntime } from './authorization.js';
 
-/**
- * The Action ids that carry this source's three required V1 roles and its optional selected-PR
- * workspace preparation and final verification roles. They are plugin-local ids; the qualified
- * handle is the host's, and the role binding lives in the manifest contribution.
- */
-export const BITBUCKET_TRIAGE_ACTION_IDS = Object.freeze({
-  listInstances: 'triage-list-instances',
-  scan: 'triage-scan',
-  get: 'triage-get',
-  prepareReviewWorkspace: 'triage-prepare-review-workspace',
-  verifyReviewWorkspace: 'triage-verify-review-workspace',
-});
+export { BITBUCKET_TRIAGE_ACTION_IDS } from './descriptor.js';
 
 function toRuntime(
   context: PluginInvocationContext,

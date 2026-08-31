@@ -4,23 +4,19 @@ import {
   type RenderContext,
   type RenderSurface,
 } from '@happier-dev/plugin-sdk/ui';
-
 import { PluginUiProviderInternal } from './components/PluginUiProvider.js';
 import {
   createHostedWebPluginUiDataClient,
 } from './data/hostedWebAccountDataBridge.js';
 import type { PluginUiDataClient } from './data/types.js';
+import {
+  PLUGIN_UI_PRIVATE_HOSTED_WEB_ACCOUNT_DATA_TRANSPORT_KEY,
+  PLUGIN_UI_PRIVATE_MOUNTED_COMPOSER_REF_KEY,
+} from './privateCarrierKeys.js';
 
 // This symbol is set only by the SDK's hosted bootstrap after the canonical
 // framed lifecycle is ready. It is intentionally not a public RenderContext
 // field, and `createAuthorRenderContext` below strips every private property.
-const PLUGIN_UI_PRIVATE_HOSTED_WEB_COLLECTION_UI_QUERY_TRANSPORT_KEY = Symbol.for(
-  'happier.pluginUi.privateHostedWebAccountDataTransport.v1',
-);
-const PLUGIN_UI_PRIVATE_MOUNTED_COMPOSER_REF_KEY = Symbol.for(
-  'happier.pluginUi.privateMountedComposerRef.v1',
-);
-
 type HostedWebAvailableAccountDataTransportCarrier = Readonly<{
   kind: 'available';
   acquireTransport: Parameters<typeof createHostedWebPluginUiDataClient>[0]['acquireTransport'];
@@ -40,7 +36,7 @@ function isHostedWebAvailableAccountDataTransportCarrier(
 function resolveHostedWebDataClient(context: RenderContext): PluginUiDataClient | undefined {
   const existing = hostedWebDataClients.get(context);
   if (existing) return existing;
-  const carrier = Reflect.get(context, PLUGIN_UI_PRIVATE_HOSTED_WEB_COLLECTION_UI_QUERY_TRANSPORT_KEY);
+  const carrier = Reflect.get(context, PLUGIN_UI_PRIVATE_HOSTED_WEB_ACCOUNT_DATA_TRANSPORT_KEY);
   const dataClient = isHostedWebAvailableAccountDataTransportCarrier(carrier)
     ? createHostedWebPluginUiDataClient({ acquireTransport: carrier.acquireTransport })
     : undefined;

@@ -1,4 +1,5 @@
 import { normalizePluginUiSubPathV1, type PluginUiHostApi } from '@happier-dev/plugin-sdk/ui';
+import { PluginContributionIdentityV1Schema } from '@happier-dev/plugin-sdk/manifest';
 import { TriageEntryRefV1Schema, type TriageEntryRefV1 } from '@happier-dev/triage-protocol/v1';
 
 import {
@@ -13,6 +14,10 @@ import {
   type SurfaceFilterSelectionV1,
 } from '../../projection/listWindow.js';
 import { sameTriageFilterValueV1, type TriageSurfaceStateV1 } from '../state/surface.js';
+import {
+  TriageListCollisionScopeV1Schema,
+  TriageListKindIdV1Schema,
+} from '../../actions/listEntriesProtocol.js';
 
 /**
  * The ONE PRs & Issues route owner (`core/SURFACE.md` §3.2).
@@ -54,14 +59,12 @@ import { sameTriageFilterValueV1, type TriageSurfaceStateV1 } from '../state/sur
  * values, because each value is already one component.
  */
 
-const GROUPINGS = ['lane', 'scope', 'kind'] as const;
 const ORDERS = ['newest', 'oldest', 'smart'] as const;
 const STATES = ['open', 'done', 'absent', 'unresolved'] as const;
 const ATTENTION = ['required', 'suggested', 'none'] as const;
 
 /** The route-carried lens. Pagination and cursor depth are never in it. */
 export type TriageRouteLensV1 = Readonly<{
-  grouping: TriageSurfaceStateV1['grouping'];
   order: TriageSurfaceStateV1['order'];
   /**
    * Carried on every lens, not only a `smart` one, because the reducer retains
@@ -82,7 +85,6 @@ export type TriageRouteLensV1 = Readonly<{
 }>;
 
 export const TRIAGE_ROUTE_DEFAULT_LENS_V1: TriageRouteLensV1 = Object.freeze({
-  grouping: 'lane',
   order: 'newest',
   smartPolicy: CORPUS_DEFAULT_SMART_POLICY_V1,
   filters: TRIAGE_LIST_NO_FILTERS_V1,
@@ -156,8 +158,8 @@ function readSourceIdentity(
   const pluginId = decode(components[0] ?? '');
   const localId = decode(components[1] ?? '');
   if (pluginId === null || localId === null) return null;
-  if (pluginId.length === 0 || localId.length === 0) return null;
-  return { pluginId, localId };
+  const parsed = PluginContributionIdentityV1Schema.safeParse({ pluginId, localId });
+  return parsed.success ? parsed.data : null;
 }
 
 function readClosedTokens<TValue extends string>(
@@ -180,7 +182,6 @@ function readClosedTokens<TValue extends string>(
  * one invalid facet value must not throw away the four facets beside it.
  */
 export function parseTriageRouteSubPathV1(subPath: string | undefined): TriageRouteLensV1 {
-  let grouping = TRIAGE_ROUTE_DEFAULT_LENS_V1.grouping;
   let order = TRIAGE_ROUTE_DEFAULT_LENS_V1.order;
   let smartPolicy = TRIAGE_ROUTE_DEFAULT_LENS_V1.smartPolicy;
   let query = TRIAGE_ROUTE_DEFAULT_LENS_V1.query;
@@ -198,13 +199,6 @@ export function parseTriageRouteSubPathV1(subPath: string | undefined): TriageRo
       // here, because the lens carried beside it is still the reader's.
       const value = decode(components[0] ?? '');
       if (value !== null && value.length > 0) selectedViewId = value;
-      continue;
-    }
-    if (key === 'g' && components.length === 1) {
-      const value = decode(components[0] ?? '');
-      if (value !== null && (GROUPINGS as readonly string[]).includes(value)) {
-        grouping = value as TriageRouteLensV1['grouping'];
-      }
       continue;
     }
     if (key === 'o' && components.length === 1) {
@@ -231,16 +225,18 @@ export function parseTriageRouteSubPathV1(subPath: string | undefined): TriageRo
     if (key === 'ft' && components.length === 3) {
       const source = readSourceIdentity(components);
       const kindId = decode(components[2] ?? '');
-      if (source !== null && kindId !== null && kindId.length > 0) {
-        admitFacetValue(facets, 'types', { source, kindId });
+      const parsedKindId = TriageListKindIdV1Schema.safeParse(kindId);
+      if (source !== null && parsedKindId.success) {
+        admitFacetValue(facets, 'types', { source, kindId: parsedKindId.data });
       }
       continue;
     }
     if (key === 'fp' && components.length === 3) {
       const source = readSourceIdentity(components);
       const collisionScope = decode(components[2] ?? '');
-      if (source !== null && collisionScope !== null && collisionScope.length > 0) {
-        admitFacetValue(facets, 'scopes', { source, collisionScope });
+      const parsedScope = TriageListCollisionScopeV1Schema.safeParse(collisionScope);
+      if (source !== null && parsedScope.success) {
+        admitFacetValue(facets, 'scopes', { source, collisionScope: parsedScope.data });
       }
       continue;
     }
@@ -261,7 +257,6 @@ export function parseTriageRouteSubPathV1(subPath: string | undefined): TriageRo
   }
 
   return Object.freeze({
-    grouping,
     order,
     smartPolicy,
     filters: Object.freeze({
@@ -281,9 +276,6 @@ export function parseTriageRouteSubPathV1(subPath: string | undefined): TriageRo
 export function buildTriageRouteSubPathV1(lens: TriageRouteLensV1): string {
   const segments: string[] = [];
   if (lens.selectedViewId !== null) segments.push(`sv,${encode(lens.selectedViewId)}`);
-  if (lens.grouping !== TRIAGE_ROUTE_DEFAULT_LENS_V1.grouping) {
-    segments.push(`g,${encode(lens.grouping)}`);
-  }
   if (lens.order !== TRIAGE_ROUTE_DEFAULT_LENS_V1.order) {
     segments.push(`o,${encode(lens.order)}`);
   }
@@ -325,7 +317,6 @@ export function buildTriageRouteSubPathV1(lens: TriageRouteLensV1): string {
 /** The route-carried view of the reducer's current state. */
 export function readTriageRouteLensV1(state: TriageSurfaceStateV1): TriageRouteLensV1 {
   return Object.freeze({
-    grouping: state.grouping,
     order: state.order,
     smartPolicy: state.smartPolicy,
     filters: state.filters,
@@ -429,10 +420,26 @@ export async function writeTriageRouteLensV1(
 
 export type TriageRouteWriteQueueV1 = Readonly<{
   /** Replace any not-yet-started intent with this newest complete lens. */
-  write: (lens: TriageRouteLensV1) => void;
+  write: (
+    lens: TriageRouteLensV1,
+    onSettled?: (settlement: TriageRouteQueueSettlementV1) => void,
+  ) => void;
   /** Test/coordination seam: resolves once the in-flight write and latest queued intent settle. */
   whenSettled: () => Promise<void>;
   dispose: () => void;
+}>;
+
+export type TriageRouteQueueSettlementV1 = Readonly<{
+  requested: TriageRouteLensV1;
+  /** `null` means this not-yet-started intent was replaced before a host write. */
+  result: TriageRouteWriteResultV1 | null;
+  /** A newer complete intent owns visible settlement. */
+  superseded: boolean;
+}>;
+
+type PendingTriageRouteWriteV1 = Readonly<{
+  lens: TriageRouteLensV1;
+  onSettled?: (settlement: TriageRouteQueueSettlementV1) => void;
 }>;
 
 /**
@@ -447,7 +454,7 @@ export type TriageRouteWriteQueueV1 = Readonly<{
 export function createTriageRouteWriteQueueV1(
   hostApi: PluginUiHostApi,
 ): TriageRouteWriteQueueV1 {
-  let pending: TriageRouteLensV1 | null = null;
+  let pending: PendingTriageRouteWriteV1 | null = null;
   let running = false;
   let disposed = false;
   let activeController: AbortController | null = null;
@@ -465,12 +472,19 @@ export function createTriageRouteWriteQueueV1(
     running = true;
     try {
       while (!disposed && pending !== null) {
-        const lens = pending;
+        const intent = pending;
         pending = null;
         const controller = new AbortController();
         activeController = controller;
-        await writeTriageRouteLensV1(hostApi, lens, { signal: controller.signal });
+        const result = await writeTriageRouteLensV1(hostApi, intent.lens, { signal: controller.signal });
         if (activeController === controller) activeController = null;
+        if (!disposed) {
+          intent.onSettled?.({
+            requested: intent.lens,
+            result,
+            superseded: pending !== null,
+          });
+        }
       }
     } finally {
       activeController = null;
@@ -480,9 +494,18 @@ export function createTriageRouteWriteQueueV1(
   };
 
   return Object.freeze({
-    write(lens) {
+    write(lens, onSettled) {
       if (disposed) return;
-      pending = lens;
+      const replaced = pending;
+      pending = { lens, ...(onSettled === undefined ? {} : { onSettled }) };
+      // Latest-intent coalescing must still settle the operation it replaces.
+      // Saved-view mutations await this callback before they touch Account KV;
+      // dropping it here would leave that explicit operation pending forever.
+      replaced?.onSettled?.({
+        requested: replaced.lens,
+        result: null,
+        superseded: true,
+      });
       void drain();
     },
     whenSettled() {

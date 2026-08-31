@@ -23,17 +23,18 @@ import type { GitlabResponseHeaders } from './gitlabHeaders.js';
 /**
  * What one response says about the lane's next page.
  *
- * `end` and `refused` are deliberately NOT one answer. GitLab omitting `next` is the
- * lane's own end; GitLab naming a `next` this invocation may not follow is a lane this
- * walk cannot finish. Collapsing them lets a refused continuation settle as a clean
- * exhaustion, which is the one arm that tells the user their inbox is whole when it is
- * not.
+ * `end`, `malformed`, and `refused` are deliberately not one answer. GitLab omitting
+ * `next` is the lane's own end; syntax we could not interpret or a named `next` this
+ * invocation may not follow leaves a lane this walk cannot finish. Collapsing any of
+ * them lets incomplete evidence settle as clean exhaustion.
  */
 export type GitlabNextPageSelection =
   /** GitLab issued a `next` addressing the exact invoked origin; follow it verbatim. */
   | Readonly<{ kind: 'next'; url: string }>
   /** GitLab issued no `next`: this lane has no further page. */
   | Readonly<{ kind: 'end' }>
+  /** GitLab emitted a present `Link` value whose syntax could not be interpreted. */
+  | Readonly<{ kind: 'malformed' }>
   /** GitLab issued a `next` this invocation may not follow, so the lane stops unfinished. */
   | Readonly<{ kind: 'refused' }>;
 
@@ -44,14 +45,17 @@ export type GitlabNextPageSelection =
  * a credential disclosure, and a read answered by another host is a confidently
  * wrong list.
  *
- * The drop is reported as `refused` rather than as absence, because the lane still has
- * a page GitLab named and this walk cannot read it.
+ * An inadmissible URL is `refused`, and uninterpretable header syntax is `malformed`;
+ * neither is absence, because neither proves the lane ended.
  */
 export function selectGitlabNextPageUrl(
   headers: GitlabResponseHeaders,
   invokedOrigin: string,
 ): GitlabNextPageSelection {
-  const next = parseForgeLinkHeader(headers.get('link')).next;
+  const parsed = parseForgeLinkHeader(headers.get('link'));
+  if (parsed.kind === 'malformed') return { kind: 'malformed' };
+  if (parsed.kind === 'absent') return { kind: 'end' };
+  const next = parsed.links.next;
   if (next === undefined) return { kind: 'end' };
   const admitted = admitForgeRequestUrl(next, invokedOrigin);
   return admitted === null ? { kind: 'refused' } : { kind: 'next', url: admitted };

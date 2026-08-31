@@ -278,12 +278,6 @@ export type TriageSourceSettingsRowV1 = Readonly<{
 }>;
 
 /**
- * A presentation-local separator. It is a printable character no component of
- * the tuple can contain, so the key cannot be forged by a provider value.
- */
-const KEY_SEPARATOR = ' › ';
-
-/**
  * The presentation row key, built from the same closed scalar leaves the target
  * uses for its own private identity, in the same order. Building it from a
  * different projection is how two rows for one instance appear.
@@ -297,13 +291,16 @@ function instanceKey(
   binding: TriageSourceAccountBindingV1,
   localInstanceKey: string,
 ): string {
-  return [
+  // Length-framed JSON-array identity is already the repository pattern for
+  // tuples with provider-owned strings. A delimiter cannot be safe here:
+  // accountId and localInstanceKey both admit every printable character.
+  return JSON.stringify([
     binding.purpose,
     binding.account.service.pluginId,
     binding.account.service.localId,
     binding.account.accountId,
     localInstanceKey,
-  ].join(KEY_SEPARATOR);
+  ]);
 }
 
 function projectCandidate(draft: TriageSourceInstanceDraftV1): TriageSourceSettingsCandidateV1 {
@@ -346,7 +343,14 @@ export function readTriageSourceDiscovery(
     complete: result.kind === 'complete',
     candidates: result.candidates.map(projectCandidate),
     failures: result.failures.map((entry, index) => ({
-      key: [String(index), entry.binding.account.accountId, entry.localInstanceKey ?? ''].join(KEY_SEPARATOR),
+      key: JSON.stringify([
+        index,
+        entry.binding.purpose,
+        entry.binding.account.service.pluginId,
+        entry.binding.account.service.localId,
+        entry.binding.account.accountId,
+        entry.localInstanceKey,
+      ]),
       accountId: entry.binding.account.accountId,
       localInstanceKey: entry.localInstanceKey ?? null,
       failure: entry.failure,

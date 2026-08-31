@@ -18,7 +18,10 @@ import reviewPage from '../fixtures/pullRequestsReviewPage.json' with { type: 'j
 import repositoriesPage from '../fixtures/workspaceRepositoriesPage.json' with { type: 'json' };
 import workspacesPage from '../fixtures/userWorkspacesPage.json' with { type: 'json' };
 import { encodeBitbucketConfiguration } from '../instance.js';
-import { decodeBitbucketScanContinuation } from '../scanContinuation.js';
+import {
+  buildBitbucketScanContinuationScope,
+  decodeBitbucketScanContinuation,
+} from '../scanContinuation.js';
 import { scanBitbucketSourceAction } from './actions.js';
 import { projectBitbucketDetailOverview } from './detail.js';
 import { BITBUCKET_CONNECTED_ACCOUNT_PURPOSE } from './descriptor.js';
@@ -73,6 +76,12 @@ function configuredInstance(
   } as TriageConfiguredSourceInstanceV1;
 }
 
+function pageUrl(url: string, page: number): string {
+  const next = new URL(url);
+  next.searchParams.set('page', String(page));
+  return next.toString();
+}
+
 function routeBitbucket(overrides: Readonly<Record<string, StubReply>> = {}) {
   return (url: string): StubReply | undefined => {
     for (const [fragment, reply] of Object.entries(overrides)) {
@@ -85,7 +94,11 @@ function routeBitbucket(overrides: Readonly<Record<string, StubReply>> = {}) {
       return { body: { pagelen: 10, page: 1, values: [] } };
     }
     if (url.includes('/2.0/repositories/')) return { body: repositoriesPage };
-    if (url.includes('/pullrequests/')) return { body: pageOne };
+    if (url.includes('/pullrequests/')) {
+      return url.includes('page=2')
+        ? { body: pageTwo }
+        : { body: { ...pageOne, next: pageUrl(url, 2) } };
+    }
     return undefined;
   };
 }
@@ -336,7 +349,10 @@ describe('Bitbucket scan', () => {
       observation.kind === 'present' ? observation.localRef.entryId : observation.kind
     ))).toEqual(['42', '41']);
     expect(result.evidence).toMatchObject({ kind: 'partial', reason: 'lane-unresolved' });
-    expect(decodeBitbucketScanContinuation(result.continuation)?.authored)
+    expect(decodeBitbucketScanContinuation(
+      result.continuation,
+      buildBitbucketScanContinuationScope(configuredInstance(), WORKSPACE_UUID),
+    )?.authored)
       .toMatchObject({ nextUrl: null, ended: true });
 
     const settled = TriageScanResultV1Schema.parse(await scanBitbucketSource(
@@ -432,7 +448,9 @@ describe('Bitbucket scan', () => {
           : { body: repositoryPage(REPOSITORY_UUID, `${repositoriesUrl}?page=2&pagelen=100`) };
       }
       if (url.includes('/workspaces/')) {
-        return url.includes('page=2') ? { body: pageTwo } : { body: pageOne };
+        return url.includes('page=2')
+          ? { body: pageTwo }
+          : { body: { ...pageOne, next: pageUrl(url, 2) } };
       }
       if (url.includes(encodeURIComponent(REPOSITORY_UUID))) {
         return { body: { pagelen: 10, page: 1, values: [reviewRow(101, REPOSITORY_UUID)] } };
@@ -722,7 +740,7 @@ describe('Bitbucket scan', () => {
             reviewers: [{ type: 'user', uuid: VIEWER_UUID }],
             participants: [],
           }],
-          next: `${repositoriesUrl}/repo/pullrequests?page=2&pagelen=64`,
+          next: pageUrl(url, 2),
         },
       };
     };
@@ -741,7 +759,10 @@ describe('Bitbucket scan', () => {
         }),
       ));
       if (result.kind !== 'page') throw new Error(`expected a page arm, received ${result.kind}`);
-      const frontier = decodeBitbucketScanContinuation(result.continuation);
+      const frontier = decodeBitbucketScanContinuation(
+        result.continuation,
+        buildBitbucketScanContinuationScope(configuredInstance(), WORKSPACE_UUID),
+      );
       if (frontier === null) throw new Error('expected this source to decode its own continuation');
       return frontier;
     };
@@ -768,18 +789,18 @@ describe('Bitbucket scan', () => {
       if (url.includes('/2.0/user')) return { body: currentUser };
       if (url.includes('/workspaces/') && url.includes('/pullrequests/')) {
         return url.includes('page=2')
-          ? { body: { pagelen: 64, page: 2, values: [] } }
+          ? { body: { pagelen: 50, page: 2, values: [] } }
           : {
             body: {
-              pagelen: 64,
+              pagelen: 50,
               page: 1,
               // One row cannot be given a valid identity, so it is dropped tolerantly and charged
               // to the budget: the page still cost its raw provider cardinality.
               values: [
                 { id: 'not-a-number', title: 'Broken', state: 'OPEN' },
-                ...Array.from({ length: 63 }, (_unused, index) => authoredRow(index + 1)),
+                ...Array.from({ length: 49 }, (_unused, index) => authoredRow(index + 1)),
               ],
-              next: `${url.split('?')[0] ?? url}?state=OPEN&pagelen=64&page=2`,
+              next: pageUrl(url, 2),
             },
           };
       }
@@ -810,7 +831,10 @@ describe('Bitbucket scan', () => {
     });
     // The reason travels in the frontier as a name, never as a count: `omittedItemCount` stays a
     // per-call number so the target's `observations + omittedItemCount <= limit` check is exact.
-    expect(decodeBitbucketScanContinuation(first.continuation)?.walkHealth)
+    expect(decodeBitbucketScanContinuation(
+      first.continuation,
+      buildBitbucketScanContinuationScope(configuredInstance(), WORKSPACE_UUID),
+    )?.walkHealth)
       .toContain('undecodable-items');
 
     const settled = TriageScanResultV1Schema.parse(await scanBitbucketSource(
@@ -904,7 +928,7 @@ describe('Bitbucket get', () => {
     const { connectedAccounts } = createConnectedAccountsStub({
       accounts: [{ accountId: 'account-1' }],
     });
-    const { http } = createHttpStub(routeBitbucket());
+    const { http, requests } = createHttpStub(routeBitbucket());
 
     const result = TriageGetResultV1Schema.parse(await getBitbucketSourceEntry(
       createRuntime(connectedAccounts, http),
@@ -915,6 +939,10 @@ describe('Bitbucket get', () => {
           kindId: 'pull-request',
           collisionScope: `bitbucket:${REPOSITORY_UUID}`,
           entryId: '42',
+        },
+        lastKnownLocator: {
+          v: 1,
+          routingToken: 'example-workspace/deploy-tools',
         },
       },
     ));
@@ -935,6 +963,65 @@ describe('Bitbucket get', () => {
     // The routing token is the repository locator, so the entry stays addressable without the
     // caller re-deriving a path from identity.
     expect(result.locator.routingToken).toBe('example-workspace/deploy-tools');
+    expect(requests.some(({ url }) => (
+      url.includes(`/repositories/${encodeURIComponent(WORKSPACE_UUID)}/deploy-tools/pullrequests/42`)
+    ))).toBe(true);
+    expect(requests.some(({ url }) => url.includes(encodeURIComponent(REPOSITORY_UUID)))).toBe(false);
+  });
+
+  it('refuses a read without a source-owned repository locator before authorization', async () => {
+    const { connectedAccounts, materializations } = createConnectedAccountsStub({
+      accounts: [{ accountId: 'account-1' }],
+    });
+    const { http, requests } = createHttpStub(routeBitbucket());
+
+    const result = await getBitbucketSourceEntry(
+      createRuntime(connectedAccounts, http),
+      {
+        v: 1,
+        instance: configuredInstance(),
+        localRef: {
+          kindId: 'pull-request',
+          collisionScope: `bitbucket:${REPOSITORY_UUID}`,
+          entryId: '42',
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      kind: 'unresolved',
+      failure: { class: 'unsupportedContract', code: 'locator-routing-token-invalid' },
+    });
+    expect(materializations).toEqual([]);
+    expect(requests).toEqual([]);
+  });
+
+  it('refuses a locator whose repository segment can change URL path semantics', async () => {
+    const { connectedAccounts, materializations } = createConnectedAccountsStub({
+      accounts: [{ accountId: 'account-1' }],
+    });
+    const { http, requests } = createHttpStub(routeBitbucket());
+
+    const result = await getBitbucketSourceEntry(
+      createRuntime(connectedAccounts, http),
+      {
+        v: 1,
+        instance: configuredInstance(),
+        localRef: {
+          kindId: 'pull-request',
+          collisionScope: `bitbucket:${REPOSITORY_UUID}`,
+          entryId: '42',
+        },
+        lastKnownLocator: { v: 1, routingToken: 'example-workspace/..' },
+      },
+    );
+
+    expect(result).toMatchObject({
+      kind: 'unresolved',
+      failure: { class: 'unsupportedContract', code: 'locator-routing-token-invalid' },
+    });
+    expect(materializations).toEqual([]);
+    expect(requests).toEqual([]);
   });
 
   it('never concludes absence from a 404 under one credential', async () => {
@@ -955,6 +1042,7 @@ describe('Bitbucket get', () => {
           collisionScope: `bitbucket:${REPOSITORY_UUID}`,
           entryId: '42',
         },
+        lastKnownLocator: { v: 1, routingToken: 'example-workspace/deploy-tools' },
       },
     );
 
@@ -984,6 +1072,7 @@ describe('Bitbucket get', () => {
           collisionScope: `bitbucket:${REPOSITORY_UUID}`,
           entryId: '0042',
         },
+        lastKnownLocator: { v: 1, routingToken: 'example-workspace/deploy-tools' },
       },
     );
 
@@ -1009,6 +1098,7 @@ describe('Bitbucket get', () => {
           collisionScope: 'github:owner/name',
           entryId: '42',
         },
+        lastKnownLocator: { v: 1, routingToken: 'example-workspace/deploy-tools' },
       },
     );
 
@@ -1036,6 +1126,7 @@ describe('Bitbucket detail projection', () => {
           collisionScope: `bitbucket:${REPOSITORY_UUID}`,
           entryId: '42',
         },
+        lastKnownLocator: { v: 1, routingToken: 'example-workspace/deploy-tools' },
       },
     );
     expect(observation.kind).toBe('present');

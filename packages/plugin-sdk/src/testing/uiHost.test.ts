@@ -94,7 +94,28 @@ function targetedSurfaceAdmissionFixture(input: Readonly<{
                 renderer: {
                     kind: 'declarative',
                     contributionId: 'review-detail',
-                    model: { visible: true },
+                    model: {
+                        identity: {
+                            pluginId: contributorPluginId,
+                            localId: 'review-detail',
+                            qualifiedId: `${contributorPluginId}/review-detail`,
+                            generation: contributorGeneration,
+                        },
+                        visible: true,
+                        requiredHostMethods: [],
+                        declarativeInventory: {
+                            actions: [],
+                            destinations: [],
+                            settings: [],
+                            uiQueries: [],
+                        },
+                        root: {
+                            kind: 'text',
+                            path: 'root',
+                            order: 0,
+                            text: 'External review detail',
+                        },
+                    },
                 },
                 availability: { state: 'available', reason: 'available', diagnostics: [] },
             },

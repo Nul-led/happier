@@ -120,6 +120,7 @@
       "realm": "any",
       "conditions": {
         "types": "./dist/events/index.d.ts",
+        "browser": "./dist/events/index.browser.js",
         "default": "./dist/events/index.js"
       }
     },
@@ -11153,6 +11154,14 @@
     },
     {
       "specifier": "./reviews",
+      "exportName": "ReviewCommentClaimPublicationDispatchRequestV1",
+      "kind": "type",
+      "sourceModule": "src/reviews/comments.ts",
+      "sourceExport": "ReviewCommentClaimPublicationDispatchRequestV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./reviews",
       "exportName": "ReviewCommentClaimPublicationDispatchResponseV1",
       "kind": "type",
       "sourceModule": "src/reviews/comments.ts",
@@ -11557,6 +11566,14 @@
       "kind": "value",
       "sourceModule": "src/reviews/comments.ts",
       "sourceExport": "createReviewCommentLinkedIssueIdV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./reviews",
+      "exportName": "createReviewCommentPublicationSettlementRequestV1",
+      "kind": "value",
+      "sourceModule": "src/reviews/comments.ts",
+      "sourceExport": "createReviewCommentPublicationSettlementRequestV1",
       "realm": "any"
     },
     {
@@ -14417,6 +14434,22 @@
     },
     {
       "specifier": "./sessions/external",
+      "exportName": "AgentExternalSessionCandidateIndexLookup",
+      "kind": "type",
+      "sourceModule": "src/externalSessions.ts",
+      "sourceExport": "AgentExternalSessionCandidateIndexLookup",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./sessions/external",
+      "exportName": "AgentExternalSessionCandidateIndexState",
+      "kind": "type",
+      "sourceModule": "src/externalSessions.ts",
+      "sourceExport": "AgentExternalSessionCandidateIndexState",
+      "realm": "daemon"
+    },
+    {
+      "specifier": "./sessions/external",
       "exportName": "AgentExternalSessionHookCustodiedEntryProjection",
       "kind": "type",
       "sourceModule": "src/externalSessionHooks.ts",
@@ -16709,6 +16742,14 @@
       "kind": "type",
       "sourceModule": "src/testing/types.ts",
       "sourceExport": "PluginTestkitRegistrationByFamily",
+      "realm": "any"
+    },
+    {
+      "specifier": "./testing",
+      "exportName": "PluginTestkitTargetedContributionFixtureEntry",
+      "kind": "type",
+      "sourceModule": "src/testing/types.ts",
+      "sourceExport": "PluginTestkitTargetedContributionFixtureEntry",
       "realm": "any"
     },
     {

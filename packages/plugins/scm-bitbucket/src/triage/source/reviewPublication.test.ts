@@ -25,7 +25,7 @@ const VIEWER_UUID = '{9f8e7d6c-5b4a-4938-8271-6059f8e7d6c5}';
 const BASE = '1111111111111111111111111111111111111111';
 const HEAD = '2222222222222222222222222222222222222222';
 const PULL_REQUEST_URL = 'https://api.bitbucket.org/2.0/repositories'
-  + `/${encodeURIComponent(WORKSPACE_UUID)}/${encodeURIComponent(REPOSITORY_UUID)}`
+  + `/${encodeURIComponent(WORKSPACE_UUID)}/repository`
   + '/pullrequests/42';
 
 function configuredInstance(): TriageConfiguredSourceInstanceV1 {
@@ -51,6 +51,7 @@ const LOCAL_REF = Object.freeze({
   collisionScope: `bitbucket:${REPOSITORY_UUID}`,
   entryId: '42',
 });
+const LAST_KNOWN_LOCATOR = Object.freeze({ v: 1 as const, routingToken: 'example/repository' });
 
 function pullRequest(participantState: 'approved' | 'changes_requested' | null = null) {
   return {
@@ -140,7 +141,13 @@ function plan(input: Readonly<{
 }
 
 function request(publicationPlan: ReviewCommentPublicationPlanV1) {
-  return { v: 1, instance: configuredInstance(), localRef: LOCAL_REF, publicationPlan };
+  return {
+    v: 1,
+    instance: configuredInstance(),
+    localRef: LOCAL_REF,
+    lastKnownLocator: LAST_KNOWN_LOCATOR,
+    publicationPlan,
+  };
 }
 
 function withClaim(
@@ -157,6 +164,7 @@ function withClaim(
           expect(actionId).toBe('reviews.comments.claimPublicationDispatch');
           return {
             disposition,
+            dispatchToken: disposition === 'dispatch' ? 'dispatch-token-1' : null,
             publicationPlanId: 'P'.repeat(43),
             entries: publicationPlan.entries.map((candidate, index) => ({
               happierCommentId: candidate.happierCommentId,
@@ -165,6 +173,11 @@ function withClaim(
             verdict: publicationPlan.verdict === null
               ? null
               : { publicationCorrelationId: 'V'.repeat(43) },
+            instructions: {
+              entries: publicationPlan.entries.map(() => disposition),
+              verdict: publicationPlan.verdict === null ? null : disposition,
+            },
+            priorResult: null,
           };
         },
       },
@@ -195,9 +208,12 @@ describe('Bitbucket canonical review publication', () => {
             claims += 1;
             return {
               disposition: 'dispatch',
+              dispatchToken: 'dispatch-token-1',
               publicationPlanId: 'P'.repeat(43),
               entries: [{ happierCommentId: 'comment-1', publicationCorrelationId: 'A'.repeat(43) }],
               verdict: { publicationCorrelationId: 'V'.repeat(43) },
+              instructions: { entries: ['dispatch'], verdict: 'dispatch' },
+              priorResult: null,
             };
           },
         },
@@ -212,7 +228,7 @@ describe('Bitbucket canonical review publication', () => {
           verdict: { outcome: { kind: 'skippedPriorFailure' } },
         },
       });
-    expect(claims).toBe(1);
+    expect(claims).toBe(2);
     expect(requests.filter((candidate) => candidate.method !== 'GET')).toHaveLength(0);
   });
 
@@ -319,6 +335,35 @@ describe('Bitbucket canonical review publication', () => {
     expect(commentWrites).toBe(1);
     expect(requests.filter((candidate) => candidate.url === commentsUrl && candidate.method === 'POST'))
       .toHaveLength(1);
+  });
+
+  it('finds an existing publication marker on a later comment page before writing', async () => {
+    const publicationPlan = plan({ entries: [entry('comment-1', 12)], verdict: null });
+    const commentsUrl = `${PULL_REQUEST_URL}/comments`;
+    const pageTwoUrl = `${commentsUrl}?page=2&pagelen=100`;
+    const marker = `<!-- happier-review-comment:v1:${'A'.repeat(43)} -->`;
+    const { http, requests } = createHttpStub((url, requestInfo) => {
+      if (url.endsWith('/2.0/user')) return { body: { uuid: VIEWER_UUID } };
+      if (url === PULL_REQUEST_URL) return { body: pullRequest() };
+      if (url === pageTwoUrl && requestInfo?.method === 'GET') {
+        return { body: { values: [{ id: 991, content: { raw: `landed\n\n${marker}` } }] } };
+      }
+      if (url.startsWith(commentsUrl) && requestInfo?.method === 'GET') {
+        return { body: { values: [], next: pageTwoUrl } };
+      }
+      return undefined;
+    });
+    const { connectedAccounts } = createConnectedAccountsStub({ accounts: [{ accountId: 'account-1' }] });
+    const context = withClaim(createInvocationContext(connectedAccounts, http), publicationPlan);
+
+    await expect(publishBitbucketPullRequestReviewAction(request(publicationPlan), context))
+      .resolves.toMatchObject({
+        kind: 'settled',
+        publication: { entries: [{ outcome: { kind: 'published', externalRef: '991' } }] },
+      });
+    expect(requests.filter((candidate) => candidate.url.startsWith(commentsUrl)))
+      .toHaveLength(2);
+    expect(requests.some((candidate) => candidate.method === 'POST')).toBe(false);
   });
 
   it('keeps duplicate exact markers uncertain and emits no provider write', async () => {

@@ -37,6 +37,7 @@ import {
 import {
   MAX_TRIAGE_ROUTING_TOKEN_UTF8_BYTES_V1,
   TriageConfiguredSourceInstanceV1Schema,
+  TriageGetResultV1Schema,
   TriageSourceEntryLocalRefV1Schema,
   TriageSourceFailureV1Schema,
 } from '@happier-dev/triage-protocol/v1';
@@ -115,6 +116,23 @@ const GitlabDetailUnavailableSchema = defineProtocolObject({
   kind: defineProtocolLiteral('unavailable'),
   failure: TriageSourceFailureV1Schema,
 }, { policy: 'closed' });
+
+/* ------------------------------------------------------------------ overview */
+
+export const GitlabOverviewInputV1Schema = itemPlaneInput;
+export const GitlabOverviewResultV1Schema = defineProtocolUnion([
+  defineProtocolObject({
+    kind: defineProtocolLiteral('overview'),
+    observedAtMs: TimestampSchema,
+    observation: TriageGetResultV1Schema,
+    description: defineProtocolUtf8String({
+      maxUtf8Bytes: EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
+    }).optional(),
+    descriptionTruncated: GitlabBooleanSchema,
+  }, { policy: 'closed' }),
+  GitlabDetailUnavailableSchema,
+]);
+export type GitlabOverviewResultV1 = ReturnType<typeof GitlabOverviewResultV1Schema.parse>;
 
 /* --------------------------------------------------------------------- notes */
 

@@ -664,6 +664,32 @@ describe('GitHub issue-comment Channel polling', () => {
     expect(requests).toHaveLength(1);
   });
 
+  it('reports a history gap when GitHub emits a present malformed Link header', async () => {
+    const client: GithubApiClientV1 = {
+      requestWithoutFollowingRedirects: refuseManualRedirectRead,
+      async request({ url }) {
+        if (new URL(url).pathname !== '/repos/acme/widgets/issues/comments') {
+          throw new Error(`Malformed pagination must stop before issue materialization: ${url}`);
+        }
+        return jsonResponse([], { link: 'not-a-link-value' });
+      },
+    };
+
+    await expect(pollGithubIssueCommentsForChannels(pollInput({
+      client,
+      checkpoint: {
+        v: 1,
+        updatedAtIso: '2026-08-10T12:00:00.000Z',
+        commentIdAtUpdatedAt: '100',
+        etag: null,
+      },
+      limit: 10,
+    }))).resolves.toEqual({
+      kind: 'historyGap',
+      reason: 'providerHistoryUnavailable',
+    });
+  });
+
   it('turns malformed persisted checkpoints into reset attention before any provider request or checkpoint mutation', async () => {
     const requests: string[] = [];
     const client: GithubApiClientV1 = {

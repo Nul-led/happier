@@ -15,7 +15,7 @@ import {
 } from '../../actions/actionsCatalogProtocol.js';
 import { mintTriageOpaqueIdV1 } from '../../opaqueId.js';
 import {
-  TRIAGE_SEEDED_ACTIONS_V1,
+  type TriageActionMutableTargetV1,
   type TriageActionV1,
   type TriageActionsReadV1,
 } from '../../settings/actions.js';
@@ -149,10 +149,25 @@ export function readTriageActionsProjectionV1(
     profileId: action.profileId,
     workspaceMode: action.workspaceMode,
     target: action.target.kind === 'reviewStart'
-      ? { kind: 'reviewStart', promptInvocationId: action.target.promptInvocationId }
+      ? {
+        kind: 'reviewStart',
+        promptInvocationId: action.target.promptInvocationId,
+        ...(action.target.promptArgsText === undefined
+          ? {}
+          : { promptArgsText: action.target.promptArgsText }),
+        ...(action.target.seededFallbackInstruction === undefined
+          ? {}
+          : { seededFallbackInstruction: action.target.seededFallbackInstruction }),
+      }
       : {
         kind: 'agent',
         promptInvocationId: action.target.promptInvocationId,
+        ...(action.target.promptArgsText === undefined
+          ? {}
+          : { promptArgsText: action.target.promptArgsText }),
+        ...(action.target.seededFallbackInstruction === undefined
+          ? {}
+          : { seededFallbackInstruction: action.target.seededFallbackInstruction }),
         delivery: action.target.delivery,
       },
   }));
@@ -166,7 +181,9 @@ export type TriageActionEditorDraftV1 = Readonly<{
   appliesTo: readonly TriageActionV1['appliesTo'][number][];
   profileId: string | null;
   workspaceMode: TriageActionV1['workspaceMode'];
-  target: TriageActionV1['target'];
+  /** Writer-owned seed state; never projected onto the mutation wire. */
+  hasSeededFallbackInstruction: boolean;
+  target: TriageActionMutableTargetV1;
 }>;
 
 function draftWire(draft: TriageActionEditorDraftV1): Omit<
@@ -180,10 +197,19 @@ function draftWire(draft: TriageActionEditorDraftV1): Omit<
     profileId: draft.profileId,
     workspaceMode: draft.workspaceMode,
     target: draft.target.kind === 'reviewStart'
-      ? { kind: 'reviewStart', promptInvocationId: draft.target.promptInvocationId }
+      ? {
+        kind: 'reviewStart',
+        promptInvocationId: draft.target.promptInvocationId,
+        ...(draft.target.promptArgsText === undefined
+          ? {}
+          : { promptArgsText: draft.target.promptArgsText }),
+      }
       : {
         kind: 'agent',
         promptInvocationId: draft.target.promptInvocationId,
+        ...(draft.target.promptArgsText === undefined
+          ? {}
+          : { promptArgsText: draft.target.promptArgsText }),
         delivery: draft.target.delivery,
       },
   };
@@ -263,15 +289,13 @@ export function triageMovedActionOrderV1(
 }
 
 /**
- * What the editor and the entry controls show while the first read is in
- * flight, and after a read the Account could not answer.
+ * What the editor and entry controls hold before Account KV has answered.
  *
- * It is the shipped seed rather than an empty set, for the same reason absence
- * is: an empty list here would render a detail pane with no controls at all and
- * read as "you have no actions", which is a claim about the person's
- * configuration that nothing has established.
+ * The shipped seed is an executable catalog only after an authoritative read
+ * answers `absent`. Until then this empty unreadable projection makes no claim
+ * about the Account and, critically, exposes nothing that can be pressed.
  */
 export const TRIAGE_UNREAD_ACTIONS_V1: TriageActionsReadV1 = Object.freeze({
-  kind: 'absent',
-  value: TRIAGE_SEEDED_ACTIONS_V1,
+  kind: 'unreadable',
+  value: Object.freeze({ v: 1, actions: Object.freeze([]) }),
 });

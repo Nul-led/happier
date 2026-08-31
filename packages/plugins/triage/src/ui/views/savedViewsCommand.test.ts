@@ -13,12 +13,14 @@ const SOURCE = { pluginId: 'happier.example.source', localId: 'example-forge' };
 const STORED: CorpusSavedViewV1 = {
     viewId: '0000000a-0000-4000-8000-00000000000a',
     label: 'Needs my review',
+    query: 'authentication',
     filters: { ...TRIAGE_LIST_NO_FILTERS_V1, states: ['done'] },
     order: 'smart',
     smartPolicy: { v: 1, precedence: ['activity', 'attention'] },
 };
 
 const EDITED_LENS = {
+    query: 'normalizer',
     filters: { ...TRIAGE_LIST_NO_FILTERS_V1, states: ['open'] as const },
     order: 'newest' as const,
     smartPolicy: { v: 1, precedence: ['attention', 'activity'] } as const,
@@ -36,6 +38,7 @@ describe('the surface’s saved-view commands', () => {
             expectedRevision: REVISION,
             viewId: STORED.viewId,
             label: 'Mine to review',
+            query: 'authentication',
             filters: STORED.filters,
             order: 'smart',
             smartPolicy: { v: 1, precedence: ['activity', 'attention'] },
@@ -49,6 +52,7 @@ describe('the surface’s saved-view commands', () => {
             expectedRevision: REVISION,
             viewId: STORED.viewId,
             label: STORED.label,
+            query: 'normalizer',
             filters: EDITED_LENS.filters,
             order: 'newest',
             smartPolicy: { v: 1, precedence: ['attention', 'activity'] },
@@ -61,6 +65,7 @@ describe('the surface’s saved-view commands', () => {
             views: [{
                 viewId: STORED.viewId,
                 label: STORED.label,
+                query: 'authentication',
                 filters: { sources: [{ source: SOURCE }], types: [], scopes: [], states: [], attention: [] },
                 order: 'oldest',
                 smartPolicy: { v: 1, precedence: ['activity', 'attention'] },
@@ -72,6 +77,7 @@ describe('the surface’s saved-view commands', () => {
         expect(read.kind).toBe('parsed');
         expect(read.value.selectedViewId).toBe(STORED.viewId);
         expect(read.value.views[0]?.smartPolicy).toEqual({ v: 1, precedence: ['activity', 'attention'] });
+        expect(read.value.views[0]?.query).toBe('authentication');
         expect(read.value.views[0]?.filters.sources).toEqual([{ source: SOURCE }]);
     });
 
@@ -84,6 +90,7 @@ describe('the surface’s saved-view commands', () => {
             views: [{
                 viewId: STORED.viewId,
                 label: STORED.label,
+                query: 'authentication',
                 filters: TRIAGE_LIST_NO_FILTERS_V1,
                 order: 'newest',
                 smartPolicy: { v: 1, precedence: ['attention', 'attention'] },

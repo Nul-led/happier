@@ -1322,6 +1322,7 @@
 | `./reviews` | `CreateReviewCommentFingerprintInput` | type | any |
 | `./reviews` | `REVIEW_SCM_SCOPE_INPUT_KEY` | value | daemon |
 | `./reviews` | `ReviewCommentAnchorV1` | type | any |
+| `./reviews` | `ReviewCommentClaimPublicationDispatchRequestV1` | type | any |
 | `./reviews` | `ReviewCommentClaimPublicationDispatchResponseV1` | type | any |
 | `./reviews` | `ReviewCommentEvidenceV1` | type | any |
 | `./reviews` | `ReviewCommentFingerprintV1` | type | any |
@@ -1373,6 +1374,7 @@
 | `./reviews` | `ScmPullRequestReviewScopeV1Schema` | value | daemon |
 | `./reviews` | `createReviewCommentFingerprint` | value | any |
 | `./reviews` | `createReviewCommentLinkedIssueIdV1` | value | any |
+| `./reviews` | `createReviewCommentPublicationSettlementRequestV1` | value | any |
 | `./reviews` | `defineReviewCommentRevisionedPublicationPlanV1ProtocolSchema` | value | any |
 | `./reviews` | `defineReviewCommentRevisionedSingleEntryPublicationPlanV1ProtocolSchema` | value | any |
 | `./reviews` | `formatReviewCommentPublicationMarkerV1` | value | any |
@@ -1730,6 +1732,8 @@
 | `./sessions/external` | `AGENT_EXTERNAL_SESSION_HOOK_LIMITS` | value | daemon |
 | `./sessions/external` | `AGENT_EXTERNAL_SESSION_TAKEOVER_LIMITS` | value | daemon |
 | `./sessions/external` | `AgentExternalSessionCandidate` | type | daemon |
+| `./sessions/external` | `AgentExternalSessionCandidateIndexLookup` | type | daemon |
+| `./sessions/external` | `AgentExternalSessionCandidateIndexState` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionHookCustodiedEntryProjection` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionHookInstallationVariant` | type | daemon |
 | `./sessions/external` | `AgentExternalSessionHookMapEventRequest` | type | daemon |
@@ -2017,6 +2021,7 @@
 | `./testing` | `PluginTestkitOptions` | type | any |
 | `./testing` | `PluginTestkitRegistration` | type | any |
 | `./testing` | `PluginTestkitRegistrationByFamily` | type | any |
+| `./testing` | `PluginTestkitTargetedContributionFixtureEntry` | type | any |
 | `./testing` | `PluginUiHostApiWireIdentityV1` | type | daemon |
 | `./testing` | `PluginUiSemanticAdapterNode` | type | daemon |
 | `./testing` | `PluginUiSemanticAdapterSnapshot` | type | daemon |

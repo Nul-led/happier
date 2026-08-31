@@ -142,6 +142,8 @@ export type AgentConnectedAccountRuntimeFailureInputV1 = Readonly<{
  */
 export type AgentConnectedAccountRuntimeAuthAdapterResultV1 = Readonly<{
   supported?: boolean;
+  /** The live runtime can apply a selected credential while a provider turn is active. */
+  supportsInTurnApply?: boolean;
   applied?: boolean;
   status?:
     | 'applied'

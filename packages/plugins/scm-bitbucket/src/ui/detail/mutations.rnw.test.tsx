@@ -10,8 +10,8 @@ import { TriagePostMutationCompletionProvider } from '@happier-dev/triage-source
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { BITBUCKET_PLUGIN_ID } from '../../bitbucketContracts.js';
-import { BITBUCKET_TRIAGE_DETAIL_ACTION_IDS } from '../../triage/source/detailActions.js';
-import { BITBUCKET_TRIAGE_MUTATION_ACTION_IDS } from '../../triage/source/mutationActions.js';
+import { BITBUCKET_TRIAGE_DETAIL_ACTION_IDS } from '../../triage/source/detailContracts.js';
+import { BITBUCKET_TRIAGE_MUTATION_ACTION_IDS } from '../../triage/source/mutationContracts.js';
 
 import { renderSurface } from '../renderSurface.js';
 
@@ -168,6 +168,7 @@ describe('the mounted Bitbucket Cloud pull-request writes', () => {
         localId: BITBUCKET_TRIAGE_MUTATION_ACTION_IDS.createReviewComment,
       },
       input: {
+        lastKnownLocator: FIXTURE.detailInput.observation.locator,
         publicationPlan: {
           target: { providerId: 'bitbucket', subtarget: null },
           entries: [{ happierCommentId: 'review-comment-1', expectedServerRevision: 3 }],
@@ -184,6 +185,7 @@ describe('the mounted Bitbucket Cloud pull-request writes', () => {
         localId: BITBUCKET_TRIAGE_MUTATION_ACTION_IDS.replyToReviewComment,
       },
       input: {
+        lastKnownLocator: FIXTURE.detailInput.observation.locator,
         parentCommentId: '9001',
         publicationPlan: {
           target: { subtarget: { kindId: 'review-comment', targetId: '9001' } },
@@ -262,6 +264,7 @@ describe('the mounted Bitbucket Cloud pull-request writes', () => {
           collisionScope: FIXTURE.detailInput.observation.entryRef.collisionScope,
           entryId: FIXTURE.detailInput.observation.entryRef.entryId,
         },
+        lastKnownLocator: FIXTURE.detailInput.observation.locator,
       },
     }]);
   });
@@ -299,6 +302,7 @@ describe('the mounted Bitbucket Cloud pull-request writes', () => {
           collisionScope: FIXTURE.detailInput.observation.entryRef.collisionScope,
           entryId: FIXTURE.detailInput.observation.entryRef.entryId,
         },
+        lastKnownLocator: FIXTURE.detailInput.observation.locator,
         observedHeadCommit: FIXTURE.detailInput.observation.nativeRevision,
         closeSourceBranch: true,
         mergeStrategy: 'squash',
@@ -491,6 +495,7 @@ describe('the mounted Bitbucket comment-resolution writes', () => {
         v: 1,
         instance: FIXTURE.detailInput.instance,
         localRef: LOCAL_REF,
+        lastKnownLocator: FIXTURE.detailInput.observation.locator,
         commentId: '9001',
       },
     }]);
@@ -516,6 +521,7 @@ describe('the mounted Bitbucket comment-resolution writes', () => {
         v: 1,
         instance: FIXTURE.detailInput.instance,
         localRef: LOCAL_REF,
+        lastKnownLocator: FIXTURE.detailInput.observation.locator,
         commentId: '9002',
       },
     }]);

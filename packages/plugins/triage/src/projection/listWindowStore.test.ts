@@ -197,6 +197,12 @@ function createHarness(options: Readonly<{
          * ordinary shape of a walk that is interrupted part way through.
          */
         sourceASecondPageFails: false,
+        /** Holds source A's next scan open so lens/config changes can cross an in-flight page. */
+        holdSourceA: null as Promise<void> | null,
+        /** The admitted contribution can disappear without retiring its configured row. */
+        sourceAContributionAvailable: true,
+        /** Makes source A's answer visibly depend on the exact configured Account. */
+        sourceAUsesConfigurationIdentity: false,
         /** Holds source B's scan open, standing in for a connection that has not answered yet. */
         holdSourceB: null as Promise<void> | null,
         /**
@@ -205,6 +211,12 @@ function createHarness(options: Readonly<{
          * than the page we asked for, finishing on its second one.
          */
         sourceAOverDelivers: false,
+        /**
+         * Replaces source A's normal two-page walk with one visibly different
+         * generation whose terminal evidence decides whether the mounted lane
+         * may replace its prior scan membership.
+         */
+        sourceAReplacementOutcome: null as 'baseline' | 'walkFinished' | 'failsAfterPage' | null,
         /**
          * Which set of entries the over-delivering walk answers with. Bumping it
          * makes a later pass name entirely different entries while STILL being
@@ -230,6 +242,30 @@ function createHarness(options: Readonly<{
 
     const scanA: ScanFn = async (input) => {
         scanCalls.count += 1;
+        if (state.holdSourceA !== null) await state.holdSourceA;
+        if (state.sourceAUsesConfigurationIdentity) {
+            const accountId = input.instance.binding.account.accountId;
+            return accountId === 'account-1'
+                ? {
+                    kind: 'page',
+                    observations: [presentObservation({
+                        entryId: 'configured-account-1',
+                        title: 'First configured account',
+                        sourceUpdatedAtMs: 3_000,
+                    })],
+                    evidence: { kind: 'partial', reason: 'more-pages' },
+                    continuation: { v: 1, token: 'old-configuration-page-2' },
+                }
+                : {
+                    kind: 'complete',
+                    observations: [presentObservation({
+                        entryId: 'configured-account-2',
+                        title: 'Replacement configured account',
+                        sourceUpdatedAtMs: 4_000,
+                    })],
+                    evidence: { kind: 'walkFinished' },
+                };
+        }
         if (options.sameSourceForB) {
             const isSecondAccount = input.instance.instance.sourceInstanceId === INSTANCE_B;
             return {
@@ -287,6 +323,43 @@ function createHarness(options: Readonly<{
                     continuation: { v: 1, token: 'page-2' },
                 }
                 : { kind: 'complete', observations, evidence: { kind: 'walkFinished' } };
+        }
+        if (state.sourceAReplacementOutcome !== null) {
+            if (state.sourceAReplacementOutcome === 'baseline') {
+                return {
+                    kind: 'complete',
+                    observations: [
+                        presentObservation({
+                            entryId: '1',
+                            title: state.titleOfFirstEntry,
+                            sourceUpdatedAtMs: 3_000,
+                            involvement: ['reviewRequested'],
+                        }),
+                        presentObservation({
+                            entryId: '2',
+                            title: 'Older change',
+                            sourceUpdatedAtMs: 1_000,
+                        }),
+                    ],
+                    evidence: { kind: 'walkFinished' },
+                };
+            }
+            if (input.page.kind === 'continuation') {
+                return { kind: 'failed', failure: { class: 'transient', code: 'replacement-interrupted' } };
+            }
+            const observations = [presentObservation({
+                entryId: 'replacement-only',
+                title: 'Only member of the replacement scan',
+                sourceUpdatedAtMs: 4_000,
+            })];
+            return state.sourceAReplacementOutcome === 'walkFinished'
+                ? { kind: 'complete', observations, evidence: { kind: 'walkFinished' } }
+                : {
+                    kind: 'page',
+                    observations,
+                    evidence: { kind: 'partial', reason: 'more-pages' },
+                    continuation: { v: 1, token: 'replacement-page-2' },
+                };
         }
         if (input.page.kind === 'initial') {
             return {
@@ -383,7 +456,9 @@ function createHarness(options: Readonly<{
     };
     const readAdmittedEntries = async (input: TriageListEntriesInputV1) => await listTriageEntries(input, {
         sourceInstances: collections.sourceInstances,
-        readAdmittedSources: async () => admitted,
+        readAdmittedSources: async () => admitted.filter((source) => (
+            source.contributor.pluginId !== SOURCE_A.pluginId || state.sourceAContributionAvailable
+        )),
         executeScan,
         nowMs: () => clock.nowMs,
     });
@@ -567,7 +642,7 @@ describe('the mounted PRs & Issues window store', () => {
         store.dispose();
     });
 
-    it('publishes the fresh-to-stale transition when its deadline passes', async () => {
+    it('derives fresh-to-stale on read without scheduling a clock-driven wake', async () => {
         const realSetTimeout = globalThis.setTimeout;
         let freshnessWake: (() => void) | null = null;
         const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler, delay, ...args) => {
@@ -587,18 +662,22 @@ describe('the mounted PRs & Issues window store', () => {
             const unsubscribe = store.subscribe(() => {
                 observedFreshness.push(store.getSnapshot().freshness);
             });
+            try {
+                await store.refresh('view');
+                expect(store.getSnapshot().freshness).toBe('fresh');
+                observedFreshness.length = 0;
 
-            await store.refresh('view');
-            expect(store.getSnapshot().freshness).toBe('fresh');
-            observedFreshness.length = 0;
-
-            harness.clock.nowMs += TRIAGE_VIEW_REFRESH_MIN_INTERVAL_MS;
-            expect(freshnessWake).not.toBeNull();
-            freshnessWake?.();
-
-            expect(observedFreshness).toEqual(['stale']);
-            unsubscribe();
-            store.dispose();
+                // Freshness is a derived read fact. Mount/focus/visibility/manual
+                // demand own wakeups; the store must not manufacture a hidden
+                // timer just to age its cached snapshot.
+                expect(freshnessWake).toBeNull();
+                harness.clock.nowMs += TRIAGE_VIEW_REFRESH_MIN_INTERVAL_MS;
+                expect(observedFreshness).toEqual([]);
+                expect(store.getSnapshot().freshness).toBe('stale');
+            } finally {
+                unsubscribe();
+                store.dispose();
+            }
         } finally {
             setTimeoutSpy.mockRestore();
         }
@@ -780,6 +859,51 @@ describe('the mounted PRs & Issues window store', () => {
         store.dispose();
     });
 
+    it.each([
+        {
+            outcome: 'walkFinished' as const,
+            expectedIds: ['replacement-only'],
+            expectedCoverage: 'complete' as const,
+        },
+        {
+            outcome: 'failsAfterPage' as const,
+            expectedIds: ['replacement-only', '1', '2'],
+            expectedCoverage: 'partial' as const,
+        },
+    ])('replaces scan membership only after an authoritative $outcome walk', async ({
+        outcome,
+        expectedIds,
+        expectedCoverage,
+    }) => {
+        const harness = createHarness({ configureSourceB: false, admitSourceB: false });
+        const store = createTriageListWindowStore({
+            readEntries: harness.readEntries,
+            nowMs: () => harness.clock.nowMs,
+        });
+
+        harness.state.sourceAReplacementOutcome = 'baseline';
+        await store.refresh('view');
+        expect(store.getSnapshot().window?.rows.map((row) => row.entryRef.entryId))
+            .toEqual(['1', '2']);
+
+        harness.state.sourceAReplacementOutcome = outcome;
+        harness.clock.nowMs += TRIAGE_VIEW_REFRESH_MIN_INTERVAL_MS + 1;
+        await store.refresh('manual');
+        if (outcome === 'failsAfterPage') await store.loadMore();
+
+        const snapshot = store.getSnapshot();
+        expect(snapshot.window?.rows.map((row) => row.entryRef.entryId)).toEqual(expectedIds);
+        expect(snapshot.window?.coverage).toBe(expectedCoverage);
+
+        // A clean completed walk may replace this mount's current scan
+        // membership, but neither outcome manufactures an entity-level absent
+        // observation or touches durable user state.
+        expect(snapshot.window?.rows.flatMap((row) => row.observations).some(
+            (observation) => observation.outcome.kind === 'absent',
+        )).toBe(false);
+        store.dispose();
+    });
+
     it('does not call a window current when a configured connection was never read', async () => {
         // Every configured connection is unavailable, so the cycle refused no
         // request and reached no provider at all. Stamping it left the surface
@@ -934,7 +1058,7 @@ describe('the mounted PRs & Issues window store', () => {
         store.dispose();
     });
 
-    it('notifies subscribers when the published refresh deadline expires', async () => {
+    it('expires a published refresh deadline on read without a clock-driven wake', async () => {
         vi.useFakeTimers();
         try {
             const harness = createHarness({ admitSourceB: false });
@@ -954,13 +1078,16 @@ describe('the mounted PRs & Issues window store', () => {
             const unsubscribe = store.subscribe(() => {
                 published.push(store.getSnapshot().refreshBlocked);
             });
-            harness.clock.nowMs = deadlineMs;
-            await vi.advanceTimersByTimeAsync(45_000);
+            try {
+                harness.clock.nowMs = deadlineMs;
+                await vi.advanceTimersByTimeAsync(45_000);
 
-            expect(published).toHaveLength(1);
-            expect(published.at(-1)).toBeUndefined();
-            unsubscribe();
-            store.dispose();
+                expect(published).toEqual([]);
+                expect(store.getSnapshot().refreshBlocked).toBeUndefined();
+            } finally {
+                unsubscribe();
+                store.dispose();
+            }
         } finally {
             vi.useRealTimers();
         }
@@ -1051,11 +1178,20 @@ describe('the mounted PRs & Issues window store', () => {
         const readsBeforeLensChange = harness.actionInputs.filter(
             (input) => input.sources.kind === 'selected' && input.sources.sourceInstanceIds.length > 0,
         ).length;
+        const publishedDuringLensChange: Array<ReturnType<typeof store.getSnapshot>['loadMore']> = [];
+        let changingLens = false;
+        const unsubscribe = store.subscribe(() => {
+            if (changingLens) publishedDuringLensChange.push(store.getSnapshot().loadMore);
+        });
 
         // The lens invalidates the old frontier synchronously, while the
         // coordinator is still inside its minimum interval. Load More must
         // wait for the replacement generation rather than reuse that cursor.
+        changingLens = true;
         store.setLens({ ...TRIAGE_LIST_DEFAULT_LENS_V1, query: 'older' });
+        changingLens = false;
+        expect(publishedDuringLensChange).not.toContainEqual({ kind: 'available' });
+        expect(store.getSnapshot().loadMore).not.toEqual({ kind: 'available' });
         await store.loadMore();
 
         const readsAfterAttempt = harness.actionInputs.filter(
@@ -1063,6 +1199,182 @@ describe('the mounted PRs & Issues window store', () => {
         );
         expect(readsAfterAttempt).toHaveLength(readsBeforeLensChange);
         expect(store.getSnapshot().pending).not.toBe('append');
+        unsubscribe();
+        store.dispose();
+    });
+
+    it('never publishes an in-flight append after the mounted lens identity changes', async () => {
+        const harness = createHarness({ configureSourceB: false });
+        harness.state.sourceANeverFinishes = true;
+        const store = createTriageListWindowStore({
+            readEntries: harness.readEntries,
+            nowMs: () => harness.clock.nowMs,
+        });
+        await store.refresh('view');
+
+        let release = (): void => {};
+        harness.state.holdSourceA = new Promise<void>((resolve) => { release = resolve; });
+        const publishedAfterLensChange: string[][] = [];
+        let lensChanged = false;
+        const unsubscribe = store.subscribe(() => {
+            if (!lensChanged) return;
+            publishedAfterLensChange.push(
+                store.getSnapshot().window?.rows.map((row) => row.entryRef.entryId) ?? [],
+            );
+        });
+
+        const append = store.loadMore();
+        await vi.waitFor(() => {
+            const providerReads = harness.actionInputs.filter(
+                (input) => input.sources.kind === 'selected' && input.sources.sourceInstanceIds.length > 0,
+            );
+            expect(providerReads).toHaveLength(2);
+            expect(providerReads.at(-1)?.resume).toHaveLength(1);
+        });
+
+        lensChanged = true;
+        store.setLens({ ...TRIAGE_LIST_DEFAULT_LENS_V1, order: 'oldest' });
+        release();
+        await append;
+        await vi.waitFor(() => expect(store.getSnapshot().pending).toBe('idle'));
+
+        // `p0-*` is produced only by the old continuation that was already in
+        // flight. The replacement lens may keep the retained first page and may
+        // publish its own first-page reacquisition, but the late append must
+        // never become an observable window between those two states.
+        expect(publishedAfterLensChange.some((ids) => ids.some((id) => id.startsWith('p0-'))))
+            .toBe(false);
+        expect(store.getSnapshot().window?.rows.every((row) => row.entryRef.entryId.startsWith('p1-')))
+            .toBe(true);
+
+        unsubscribe();
+        store.dispose();
+    });
+
+    it('never publishes an in-flight append after the mounted read transport is replaced', async () => {
+        const harness = createHarness({ configureSourceB: false });
+        harness.state.sourceANeverFinishes = true;
+        const store = createTriageListWindowStore({
+            readEntries: harness.readEntries,
+            nowMs: () => harness.clock.nowMs,
+        });
+        await store.refresh('view');
+
+        let release = (): void => {};
+        harness.state.holdSourceA = new Promise<void>((resolve) => { release = resolve; });
+        const publishedAfterReplacement: string[][] = [];
+        let replaced = false;
+        const unsubscribe = store.subscribe(() => {
+            if (!replaced) return;
+            publishedAfterReplacement.push(
+                store.getSnapshot().window?.rows.map((row) => row.entryRef.entryId) ?? [],
+            );
+        });
+
+        const append = store.loadMore();
+        await vi.waitFor(() => {
+            const providerReads = harness.actionInputs.filter(
+                (input) => input.sources.kind === 'selected' && input.sources.sourceInstanceIds.length > 0,
+            );
+            expect(providerReads).toHaveLength(2);
+            expect(providerReads.at(-1)?.resume).toHaveLength(1);
+        });
+
+        replaced = true;
+        store.replaceReadTransport();
+        release();
+        await append;
+        await vi.waitFor(() => {
+            expect(store.getSnapshot().pending).toBe('idle');
+            expect(store.getSnapshot().window?.rows.every((row) => row.entryRef.entryId.startsWith('p1-')))
+                .toBe(true);
+        });
+
+        // `p0-*` can only come from the append already submitted through the
+        // retired reader. The replacement page starts at page one and must be
+        // the first newly publishable provider result.
+        expect(publishedAfterReplacement.some((ids) => ids.some((id) => id.startsWith('p0-'))))
+            .toBe(false);
+        const providerReads = harness.actionInputs.filter(
+            (input) => input.sources.kind === 'selected' && input.sources.sourceInstanceIds.length > 0,
+        );
+        expect(providerReads.at(-1)?.resume).toBeUndefined();
+
+        unsubscribe();
+        store.dispose();
+    });
+
+    it('invalidates a same-id configured-row revision before old pacing or frontiers can be reused', async () => {
+        const harness = createHarness({ configureSourceB: false });
+        harness.state.sourceAUsesConfigurationIdentity = true;
+        const store = createTriageListWindowStore({
+            readEntries: harness.readEntries,
+            nowMs: () => harness.clock.nowMs,
+        });
+
+        await store.refresh('view');
+        expect(store.getSnapshot().window?.rows.map((row) => row.entryRef.entryId))
+            .toEqual(['configured-account-1']);
+        const readsBeforeReconfigure = harness.scanCalls.count;
+
+        // Same stable sourceInstanceId and same Collection row address, but a
+        // newer row revision carries a different exact configured Account.
+        harness.control.sourceInstances.seed(toCorpusStoredValue(
+            instanceRow('a', SOURCE_A, INSTANCE_A, 2, 'account-2'),
+        ));
+        await store.refresh('view');
+
+        // The old slot is still inside its minimum interval. A revision-aware
+        // acquisition must retire that slot, start the new configuration at its
+        // first page, and retain no row or frontier from the former Account.
+        expect(harness.scanCalls.count).toBeGreaterThan(readsBeforeReconfigure);
+        const lastProviderInput = harness.actionInputs.filter(
+            (input) => input.sources.kind === 'selected' && input.sources.sourceInstanceIds.length > 0,
+        ).at(-1);
+        expect(lastProviderInput?.resume).toBeUndefined();
+        expect(store.getSnapshot().window?.rows.map((row) => row.entryRef.entryId))
+            .toEqual(['configured-account-2']);
+        expect(store.getSnapshot().loadMore).toEqual({ kind: 'exhausted' });
+
+        store.dispose();
+    });
+
+    it('retains last-known-good rows but clears truth and frontier while a contribution is unavailable', async () => {
+        const harness = createHarness({ configureSourceB: false });
+        harness.state.sourceANeverFinishes = true;
+        const store = createTriageListWindowStore({
+            readEntries: harness.readEntries,
+            nowMs: () => harness.clock.nowMs,
+        });
+
+        await store.refresh('view');
+        const retainedIds = store.getSnapshot().window?.rows.map((row) => row.entryRef.entryId);
+        expect(store.getSnapshot().loadMore).toEqual({ kind: 'available' });
+
+        harness.state.sourceAContributionAvailable = false;
+        await store.refresh('manual');
+
+        const unavailable = store.getSnapshot();
+        expect(unavailable.window?.rows.map((row) => row.entryRef.entryId)).toEqual(retainedIds);
+        expect(unavailable.window?.lanes).toContainEqual({
+            sourceInstanceId: INSTANCE_A,
+            source: SOURCE_A,
+            health: { kind: 'unavailable' },
+            exhausted: false,
+        });
+        expect(unavailable.window?.coverage).toBe('partial');
+        expect(unavailable.freshness).toBe('stale');
+        expect(unavailable.loadMore).toEqual({ kind: 'unresumable' });
+
+        const readsBeforeReadmission = harness.scanCalls.count;
+        harness.state.sourceAContributionAvailable = true;
+        await store.refresh('view');
+        expect(harness.scanCalls.count).toBeGreaterThan(readsBeforeReadmission);
+        const readmittedInput = harness.actionInputs.filter(
+            (input) => input.sources.kind === 'selected' && input.sources.sourceInstanceIds.length > 0,
+        ).at(-1);
+        expect(readmittedInput?.resume).toBeUndefined();
+
         store.dispose();
     });
 

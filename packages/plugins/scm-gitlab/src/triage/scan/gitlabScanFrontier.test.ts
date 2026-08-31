@@ -314,6 +314,44 @@ describe('runGitlabScan', () => {
     expect(hasOpenGitlabLane(frontier)).toBe(false);
   });
 
+  it('settles a malformed Link header as an unresolved lane, never as a finished walk', async () => {
+    const frontier = createGitlabScanFrontier({
+      scanLimit: 100,
+      origin: GITLAB_COM,
+      lanes: [{
+        laneId: 'authored',
+        kindId: 'merge-request',
+        path: '/merge_requests',
+        query: [['scope', 'created_by_me']],
+        involvement: 'author',
+      }],
+    });
+    const [authored] = frontier.lanes.map((lane) => lane.nextUrl);
+    if (!authored) throw new Error('expected one lane');
+
+    const fetcher = vi.fn<GitlabHttpFetcher>(async () => ({
+      status: 200,
+      statusText: '',
+      headers: createGitlabResponseHeaders({ Link: 'not-a-link-value' }),
+      text: async () => JSON.stringify([mergeRequestRow(1)]),
+    }));
+    const result = await runGitlabScan({
+      invocation: AUTHORIZED,
+      frontier,
+      unavailableLanes: [],
+      fetcher,
+      signal: new AbortController().signal,
+      nowMs: NOW_MS,
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      kind: 'settled',
+      health: { kind: 'partial', reason: 'lane-unresolved' },
+    });
+    expect(hasOpenGitlabLane(frontier)).toBe(false);
+  });
+
   it('settles a provider next-link cycle instead of spinning on empty pages', async () => {
     const frontier = createGitlabScanFrontier({
       scanLimit: 100,

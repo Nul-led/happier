@@ -506,7 +506,7 @@ describe('Azure DevOps Triage scan', () => {
     expect(recorder.urls.some((url) => url.includes('_apis/git/repositories?'))).toBe(true);
     expect(recorder.urls.filter((url) => url.includes('searchCriteria.creatorId'))).toHaveLength(1);
     expect(recorder.urls.filter((url) => url.includes('searchCriteria.reviewerId'))).toHaveLength(1);
-    expect(recorder.urls.find((url) => url.includes('searchCriteria.creatorId'))).toContain('$top=32');
+    expect(recorder.urls.find((url) => url.includes('searchCriteria.creatorId'))).toContain('$top=30');
     for (const url of recorder.urls) expect(url).toContain('api-version=');
     // Every request is built beneath the configured organization base, while the credential is
     // materialized for the bare origin HostAccess admits.
@@ -681,12 +681,19 @@ describe('Azure DevOps Triage scan', () => {
       if (request.url.includes('searchCriteria.creatorId')) {
         const skip = Number(new URL(request.url).searchParams.get('$skip') ?? '0');
         return skip === 0
-          ? page(Array.from({ length: 64 }, (_unused, index) => (
+          ? page(Array.from({ length: FULL_PAGE_FIXTURE_SIZE }, (_unused, index) => (
             pullRequest(100 + index)
           )))
-          : skip === 64 ? page([pullRequest(200)]) : page([]);
+          : skip === FULL_PAGE_FIXTURE_SIZE ? page([pullRequest(200)]) : page([]);
       }
-      if (request.url.includes('searchCriteria.reviewerId')) return page([]);
+      if (request.url.includes('searchCriteria.reviewerId')) {
+        const skip = Number(new URL(request.url).searchParams.get('$skip') ?? '0');
+        return skip === 0
+          ? page(Array.from({ length: FULL_PAGE_FIXTURE_SIZE }, (_unused, index) => (
+            pullRequest(500 + index)
+          )))
+          : page([]);
+      }
       throw new Error(`unexpected request: ${request.url}`);
     });
     const first = await runAzureTriageScan({
@@ -707,12 +714,14 @@ describe('Azure DevOps Triage scan', () => {
 
     expect(TriageScanResultV1Schema.parse(result)).toEqual(result);
     if (result.kind === 'failed') throw new Error(`unexpected failure: ${result.failure.code}`);
-    expect(first.observations).toHaveLength(64);
+    expect(first.observations).toHaveLength(60);
     expect(result.observations).toHaveLength(1);
     // $top/$skip over a mutating list skips and duplicates by construction, so a lane that
     // needed a second page can only claim `moving`.
     expect(result.evidence.kind).toBe('moving');
-    const advanced = recorder.urls.filter((url) => url.includes('$skip=64'));
+    const advanced = recorder.urls.filter((url) => (
+      url.includes('searchCriteria.creatorId') && url.includes('$skip=30')
+    ));
     expect(advanced.length).toBe(1);
   });
 
@@ -748,12 +757,20 @@ describe('Azure DevOps Triage scan', () => {
         }
         const skip = Number(new URL(request.url).searchParams.get('$skip') ?? '0');
         return skip === 0
-          ? page(Array.from({ length: 64 }, (_unused, index) => (
+          ? page(Array.from({ length: FULL_PAGE_FIXTURE_SIZE }, (_unused, index) => (
             pullRequest(100 + index)
           )))
-          : skip === 64 ? page([pullRequest(200)]) : page([]);
+          : skip === FULL_PAGE_FIXTURE_SIZE ? page([pullRequest(200)]) : page([]);
       }
-      if (request.url.includes('searchCriteria.reviewerId')) return page([]);
+      if (request.url.includes('searchCriteria.reviewerId')) {
+        if (walkingSecond) return page([]);
+        const skip = Number(new URL(request.url).searchParams.get('$skip') ?? '0');
+        return skip === 0
+          ? page(Array.from({ length: FULL_PAGE_FIXTURE_SIZE }, (_unused, index) => (
+            pullRequest(500 + index)
+          )))
+          : page([]);
+      }
       throw new Error(`unexpected request: ${request.url}`);
     });
 
@@ -780,7 +797,7 @@ describe('Azure DevOps Triage scan', () => {
     expect(result.evidence).toEqual({ kind: 'moving', reason: 'offset-paging' });
   });
 
-  it('gives the next lane only the caller budget remaining after a short provider page', async () => {
+  it('keeps one native page geometry across calls instead of shrinking top to the remainder', async () => {
     // `sources/SCM.md` §2.8b: lane selection is round-robin over the lanes still open — one
     // native page from each open lane before any lane deep-pages again. With a first lane that
     // always has another page, a first-open-lane walk never reaches the reviewer lane at all.
@@ -802,24 +819,123 @@ describe('Azure DevOps Triage scan', () => {
       throw new Error(`unexpected request: ${request.url}`);
     });
 
-    // The authored lane returns a short page. The reviewer lane receives exactly the remainder,
-    // so even a provider that fills `$top` cannot push the contract result beyond its limit.
+    // Two native pages leave a four-row remainder. The source must stop without shrinking
+    // `$top`, then resume the next lane at the same provider-native geometry.
+    const first = await runAzureTriageScan({
+      services: recorder.services,
+      request: { v: 1, instance: configuredInstance(), page: { kind: 'initial', limit: 64 } },
+      signal: new AbortController().signal,
+    });
+
+    expect(TriageScanResultV1Schema.parse(first)).toEqual(first);
+    if (first.kind !== 'page') throw new Error('expected a resumable first page');
+    expect(recorder.urls.filter((url) => url.includes('searchCriteria.creatorId'))).toHaveLength(1);
+    expect(recorder.urls.filter((url) => url.includes('searchCriteria.reviewerId'))).toHaveLength(1);
+    expect(recorder.urls.find((url) => url.includes('searchCriteria.creatorId'))).toContain('$top=30');
+    expect(recorder.urls.find((url) => url.includes('searchCriteria.reviewerId'))).toContain('$top=30');
+    expect(JSON.parse(first.continuation.token)).toMatchObject({
+      scanLimit: 64,
+      nativePageSize: 30,
+    });
+
+    const resumed = createRecorder((request) => {
+      if (request.url.includes('_apis/connectionData')) return { body: CONNECTION_DATA };
+      if (request.url.includes('_apis/git/repositories?')) return page([repository()]);
+      if (request.url.includes('searchCriteria.creatorId')) {
+        const top = Number(new URL(request.url).searchParams.get('$top'));
+        return page(Array.from({ length: top }, (_unused, index) => pullRequest(700 + index)));
+      }
+      throw new Error(`unexpected request: ${request.url}`);
+    });
+    const second = await runAzureTriageScan({
+      services: resumed.services,
+      request: {
+        v: 1,
+        instance: configuredInstance(),
+        page: { kind: 'continuation', continuation: first.continuation },
+      },
+      signal: new AbortController().signal,
+    });
+
+    expect(TriageScanResultV1Schema.parse(second)).toEqual(second);
+    expect(resumed.urls.find((url) => url.includes('searchCriteria.creatorId')))
+      .toContain('$top=30');
+  });
+
+  it('refuses provider overdelivery before advancing the fixed native frontier', async () => {
+    const recorder = createRecorder((request) => {
+      if (request.url.includes('_apis/connectionData')) return { body: CONNECTION_DATA };
+      if (request.url.includes('_apis/projects')) return page([project()]);
+      if (request.url.includes('_apis/git/repositories?')) return page([repository()]);
+      if (request.url.includes('searchCriteria.creatorId')) {
+        return page(Array.from({ length: FULL_PAGE_FIXTURE_SIZE + 1 }, (_unused, index) => (
+          pullRequest(100 + index)
+        )));
+      }
+      throw new Error(`unexpected request: ${request.url}`);
+    });
+
     const result = await runAzureTriageScan({
       services: recorder.services,
       request: { v: 1, instance: configuredInstance(), page: { kind: 'initial', limit: 64 } },
       signal: new AbortController().signal,
     });
 
-    expect(TriageScanResultV1Schema.parse(result)).toEqual(result);
-    if (result.kind === 'failed') throw new Error(`unexpected failure: ${result.failure.code}`);
-    expect(recorder.urls.filter((url) => url.includes('searchCriteria.creatorId'))).toHaveLength(1);
-    expect(recorder.urls.filter((url) => url.includes('searchCriteria.reviewerId'))).toHaveLength(1);
-    expect(recorder.urls.find((url) => url.includes('searchCriteria.reviewerId'))).toContain('$top=34');
-    const entryIds = result.observations.map((observation) => (
-      observation.kind === 'present' ? Number(observation.localRef.entryId) : -1
-    ));
-    expect(entryIds.some((entryId) => entryId >= 100 && entryId < 200)).toBe(true);
-    expect(entryIds.some((entryId) => entryId >= 500 && entryId < 600)).toBe(true);
+    expect(result).toMatchObject({
+      kind: 'failed',
+      failure: {
+        class: 'unsupportedContract',
+        code: 'azure-devops/provider-overdelivery',
+      },
+    });
+    expect(recorder.urls.some((url) => url.includes('searchCriteria.reviewerId'))).toBe(false);
+  });
+
+  it('refuses a continuation replayed against another configured base before provider reads', async () => {
+    const firstRecorder = createRecorder((request) => {
+      if (request.url.includes('_apis/connectionData')) return { body: CONNECTION_DATA };
+      if (request.url.includes('_apis/projects')) return page([project()]);
+      if (request.url.includes('_apis/git/repositories?')) return page([repository()]);
+      if (request.url.includes('searchCriteria.creatorId')) {
+        return page(Array.from({ length: FULL_PAGE_FIXTURE_SIZE }, (_unused, index) => (
+          pullRequest(100 + index)
+        )));
+      }
+      throw new Error(`unexpected request: ${request.url}`);
+    });
+    const first = await runAzureTriageScan({
+      services: firstRecorder.services,
+      request: {
+        v: 1,
+        instance: configuredInstance(),
+        page: { kind: 'initial', limit: FULL_PAGE_FIXTURE_SIZE },
+      },
+      signal: new AbortController().signal,
+    });
+    if (first.kind !== 'page') throw new Error('expected a continuation page');
+
+    const replay = createRecorder(() => {
+      throw new Error('a foreign continuation must be refused before provider reads');
+    });
+    const result = await runAzureTriageScan({
+      services: replay.services,
+      request: {
+        v: 1,
+        instance: configuredInstance({
+          localInstanceKey: SERVER_BASE_URL,
+          configuration: encodeAzureSourceConfiguration(configuredOrigin(SERVER_BASE_URL)),
+        }),
+        page: { kind: 'continuation', continuation: first.continuation },
+      },
+      signal: new AbortController().signal,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'failed',
+      failure: { class: 'unsupportedContract', code: 'azure-devops/continuation-undecodable' },
+    });
+    expect(replay.urls).toEqual([]);
+    expect(replay.materializedAccounts).toEqual([]);
   });
 
   it('resumes the lane rotation the continuation carried instead of restarting at the first lane', async () => {

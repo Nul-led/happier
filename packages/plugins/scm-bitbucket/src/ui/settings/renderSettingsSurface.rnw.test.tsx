@@ -8,7 +8,7 @@ import { TRIAGE_SOURCES_READ_CONFIGURED_ACTION_REF_V1 } from '@happier-dev/triag
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { BITBUCKET_PLUGIN_ID } from '../../bitbucketContracts.js';
-import { BITBUCKET_TRIAGE_ACTION_IDS } from '../../triage/source/actions.js';
+import { BITBUCKET_TRIAGE_ACTION_IDS } from '../../triage/source/descriptor.js';
 import { BITBUCKET_TRIAGE_DESCRIPTOR } from '../../triage/source/descriptor.js';
 
 import { renderSurface } from './renderSettingsSurface.js';

@@ -419,6 +419,56 @@ describe('GitHub triage scan', () => {
     });
   });
 
+  it('reports a present malformed Link as a lane failure instead of clean exhaustion', async () => {
+    const { result } = await runScan({
+      respond: () => ({
+        status: 200,
+        headers: { Link: 'not-a-link-value' },
+        body: githubSearchResponse({ items: [] }),
+      }),
+    });
+
+    expect(result.kind).toBe('complete');
+    if (result.kind !== 'complete') return;
+    expect(result.evidence).toEqual({ kind: 'partial', reason: 'lane-unresolved' });
+    expect(result.laneFailures).toHaveLength(5);
+    expect(result.laneFailures.every((failure) =>
+      failure.class === 'unsupportedContract' && failure.code === 'github_search_link_invalid'))
+      .toBe(true);
+  });
+
+  it.each([
+    ['same', 2],
+    ['regressive', 1],
+  ])('settles a %s search next page as a lane failure instead of making progress', async (_label, nextPage) => {
+    const requestedPages: string[] = [];
+    const { result } = await runScan({
+      respond: (request) => {
+        const currentPage = Number(new URL(request.url).searchParams.get('page') ?? '1');
+        requestedPages.push(String(currentPage));
+        return {
+          status: 200,
+          headers: {
+            link: githubSearchLinkHeader({
+              laneQuery: laneQueryOf(request) ?? '',
+              perPage: 100,
+              nextPage: currentPage === 1 ? 2 : nextPage,
+            }),
+          },
+          body: githubSearchResponse({ items: [] }),
+        };
+      },
+      limit: 1_000,
+    });
+
+    expect(result.kind).toBe('complete');
+    if (result.kind !== 'complete') return;
+    expect(result.evidence).toEqual({ kind: 'partial', reason: 'lane-unresolved' });
+    expect(result.laneFailures.some((failure) => failure.code === 'github_search_link_invalid'))
+      .toBe(true);
+    expect(requestedPages.length).toBeLessThanOrEqual(10);
+  });
+
   it('follows a validated Link unchanged rather than rebuilding the page query', async () => {
     const requestedPages: string[] = [];
     await runScan({

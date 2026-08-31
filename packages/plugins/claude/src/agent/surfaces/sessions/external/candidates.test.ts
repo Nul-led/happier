@@ -509,6 +509,55 @@ describe('Claude external-session candidate listing', () => {
         expect(result.candidates[0]).not.toHaveProperty('title');
     });
 
+    it('emits private title scan state only when the host supplies the index lookup seam', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-claude-plugin-title-index-state-'));
+        roots.push(root);
+        const configDir = join(root, '.claude');
+        await createCandidate({
+            configDir,
+            projectId: 'project-a',
+            remoteSessionId: 'indexed-row',
+            title: 'indexed title',
+        });
+
+        const legacyHost = await listClaudeExternalSessionCandidates({
+            source: { kind: 'claudeConfig', configDir, projectId: null },
+            env: {},
+            limit: 1,
+        });
+        expect(legacyHost.candidates[0]).not.toHaveProperty('candidateIndexState');
+
+        const indexedHost = await listClaudeExternalSessionCandidates({
+            source: { kind: 'claudeConfig', configDir, projectId: null },
+            env: {},
+            limit: 1,
+            readCandidateIndexState: () => undefined,
+        });
+        expect(indexedHost.candidates[0]).toMatchObject({
+            title: 'indexed title',
+            candidateIndexState: {
+                v: 1,
+                kind: 'claude_title_index',
+                fallbackTitle: 'indexed title',
+            },
+        });
+
+        const persistedState = indexedHost.candidates[0]?.candidateIndexState;
+        expect(persistedState).toBeDefined();
+        resetFsObservations();
+        const warm = await listClaudeExternalSessionCandidates({
+            source: { kind: 'claudeConfig', configDir, projectId: null },
+            env: {},
+            limit: 1,
+            readCandidateIndexState: () => persistedState,
+        });
+        expect(warm.candidates[0]).toMatchObject({
+            title: 'indexed title',
+            candidateIndexState: persistedState,
+        });
+        expect(transcriptPaths(fsMockState.openCalls)).toEqual([]);
+    });
+
     it('returns bounded exact scan chunks for host-owned newest-first indexing', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-claude-plugin-newest-first-'));
         roots.push(root);

@@ -286,9 +286,8 @@ describe('the Session-start Action a mounted header can actually press', () => {
     it('sends the configured delivery before the open and reports admission as it answered', async () => {
         const { collections } = createTestkitCorpusCollections();
         const invoker = createTestkitActionInvoker({
-            spawn: [spawnSuccess({
-                initialInput: { status: 'rejected', code: 'session_input_archived' },
-            })],
+            spawn: [spawnSuccess()],
+            send: [{ status: 'rejected', code: 'session_input_archived' }],
         });
         const handler = registeredHandler(TRIAGE_START_ENTRY_SESSION_ACTION_LOCAL_ID_V1);
 
@@ -324,18 +323,22 @@ describe('the Session-start Action a mounted header can actually press', () => {
             delivery: 'rejected',
         });
         expect(invoker.calls.map((call) => call.actionId))
-            .toEqual(['session.spawn_new', 'session.open']);
-        const spawn = invoker.callsFor('session.spawn_new')[0]?.input as Readonly<{
-            initialInput?: Readonly<{
-                text?: string;
-                attachments?: readonly unknown[];
-            }>;
+            .toEqual(['session.spawn_new', 'session.message.send', 'session.open']);
+        expect(invoker.callsFor('session.spawn_new')[0]?.input).not.toHaveProperty('initialInput');
+        const send = invoker.callsFor('session.message.send')[0]?.input as Readonly<{
+            message?: string;
+            idempotencyKey?: string;
+            attachments?: readonly Readonly<{
+                value?: Readonly<{ value?: Readonly<{ entryRef?: unknown }> }>;
+            }>[];
         }>;
-        expect(spawn.initialInput?.text).toBe('Repair the failing parser test.');
-        const send = spawn.initialInput as Readonly<{
-            attachments?: readonly unknown[];
-        }>;
+        expect(send.message).toBe('Repair the failing parser test.');
+        expect(send.idempotencyKey).toBe('delivery-key-a');
         expect(send.attachments).toHaveLength(2);
+        expect(send.attachments?.map((attachment) => attachment.value?.value?.entryRef)).toEqual([
+            START_INPUT_BASE.entryRef,
+            testkitEntryRef({ entryId: '18' }),
+        ]);
     });
 
     it('rejects the retired singular-plus-additional delivery spelling', () => {

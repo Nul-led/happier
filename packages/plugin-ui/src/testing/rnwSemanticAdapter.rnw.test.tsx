@@ -206,7 +206,28 @@ describe('plugin-ui RNW semantic fixture adapter', () => {
         renderer: {
           kind: 'declarative',
           contributionId: rendererId,
-          model: { visible: true },
+          model: {
+            identity: {
+              pluginId: contributorPluginId,
+              localId: rendererId,
+              qualifiedId: `${contributorPluginId}/${rendererId}`,
+              generation: contributorGeneration,
+            },
+            visible: true,
+            requiredHostMethods: [],
+            declarativeInventory: {
+              actions: [],
+              destinations: [],
+              settings: [],
+              uiQueries: [],
+            },
+            root: {
+              kind: 'text',
+              path: 'root',
+              order: 0,
+              text: `External child (${contributorGeneration})`,
+            },
+          },
         },
         availability: { state: 'available', reason: 'available', diagnostics: [] },
       },

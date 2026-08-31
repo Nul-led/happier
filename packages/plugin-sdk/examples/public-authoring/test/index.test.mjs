@@ -58,6 +58,18 @@ test('retains the portable production reference package contract', async () => {
   );
   assert.deepEqual(
     manifest.contributes.ui.views
+      .filter((view) => view.id.startsWith('public-slot-coverage-'))
+      .map(({ container, target }) => ({ container, target })),
+    [
+      { container: 'rightSidebarTab', target: { kind: 'project' } },
+      { container: 'rightPane', target: { kind: 'project' } },
+      { container: 'detailsTab', target: { kind: 'project' } },
+      { container: 'detailsPane', target: { kind: 'session' } },
+      { container: 'detailsPane', target: { kind: 'project' } },
+    ],
+  );
+  assert.deepEqual(
+    manifest.contributes.ui.views
       .filter((view) => view.container === 'sessionSubagentLaunch' || view.container === 'sessionSubagentDetails')
       .map(({ id, container, target }) => ({ id, container, target })),
     [

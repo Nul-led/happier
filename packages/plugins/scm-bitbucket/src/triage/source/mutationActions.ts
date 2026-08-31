@@ -1,8 +1,11 @@
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import {
+  createReviewCommentPublicationSettlementRequestV1,
   parseReviewCommentPublicationPlanV1,
   reviewCommentPublicationTargetMatchesV1,
   validateReviewCommentPublicationClaimAgainstPlanV1,
+  type ReviewCommentClaimPublicationDispatchResponseV1,
+  type ReviewCommentPublicationResultV1,
 } from '@happier-dev/plugin-sdk/reviews';
 import type {
   TriageSourceEntryLocalRefV1,
@@ -79,16 +82,7 @@ import type { BitbucketTriageApiClient } from '../apiClient.js';
  *    which would force the caller into a second read and therefore a second race.
  */
 
-/** The Action ids the detail surface invokes for a Bitbucket pull-request write. */
-export const BITBUCKET_TRIAGE_MUTATION_ACTION_IDS = Object.freeze({
-  merge: 'pull-request-merge',
-  decline: 'pull-request-decline',
-  resolveComment: 'pull-request-comment-resolve',
-  unresolveComment: 'pull-request-comment-unresolve',
-  submitReview: 'pull-request-submit-review',
-  createReviewComment: 'pull-request-review-comment-create',
-  replyToReviewComment: 'pull-request-thread-reply',
-});
+export { BITBUCKET_TRIAGE_MUTATION_ACTION_IDS } from './mutationContracts.js';
 
 /**
  * This source's own bound on one mutation invocation, end to end.
@@ -146,6 +140,7 @@ async function admitMutation(
   input: Readonly<{
     instance: Parameters<typeof admitBitbucketEntryInvocation>[0]['instance'];
     localRef: TriageSourceEntryLocalRefV1;
+    lastKnownLocator: Parameters<typeof admitBitbucketEntryInvocation>[0]['lastKnownLocator'];
   }>,
   context: PluginInvocationContext,
 ): Promise<
@@ -250,7 +245,11 @@ export async function publishBitbucketPullRequestReviewAction(
   }
 
   const admitted = await admitMutation(
-    { instance: request.instance, localRef: request.localRef },
+    {
+      instance: request.instance,
+      localRef: request.localRef,
+      lastKnownLocator: request.lastKnownLocator,
+    },
     context,
   );
   if (!admitted.ok) {
@@ -272,6 +271,16 @@ export async function publishBitbucketPullRequestReviewAction(
         publicationPlan,
         claim,
       )),
+      settle: async (
+        claim: ReviewCommentClaimPublicationDispatchResponseV1,
+        result: ReviewCommentPublicationResultV1,
+      ) => {
+        await context.services.actions.execute(
+          'reviews.comments.claimPublicationDispatch',
+          createReviewCommentPublicationSettlementRequestV1(publicationPlan, claim, result),
+          { signal: mutation.signal },
+        );
+      },
     }, {
       client: mutation.client,
       route: mutation.route,
@@ -305,13 +314,18 @@ async function publishBitbucketSingleReviewComment(
   request: Readonly<{
     instance: Parameters<typeof admitMutation>[0]['instance'];
     localRef: TriageSourceEntryLocalRefV1;
+    lastKnownLocator: Parameters<typeof admitMutation>[0]['lastKnownLocator'];
   }>,
   publicationPlan: ReturnType<typeof parseReviewCommentPublicationPlanV1>,
   mode: Readonly<{ kind: 'create' } | { kind: 'reply'; parentCommentId: string }>,
   context: PluginInvocationContext,
 ): Promise<BitbucketReviewPublicationResultV1> {
   const admitted = await admitMutation(
-    { instance: request.instance, localRef: request.localRef },
+    {
+      instance: request.instance,
+      localRef: request.localRef,
+      lastKnownLocator: request.lastKnownLocator,
+    },
     context,
   );
   if (!admitted.ok) return {
@@ -327,6 +341,16 @@ async function publishBitbucketSingleReviewComment(
       claim: async () => await context.services.actions.execute(
         'reviews.comments.claimPublicationDispatch', publicationPlan, { signal: mutation.signal },
       ).then((claim) => validateReviewCommentPublicationClaimAgainstPlanV1(publicationPlan, claim)),
+      settle: async (
+        claim: ReviewCommentClaimPublicationDispatchResponseV1,
+        result: ReviewCommentPublicationResultV1,
+      ) => {
+        await context.services.actions.execute(
+          'reviews.comments.claimPublicationDispatch',
+          createReviewCommentPublicationSettlementRequestV1(publicationPlan, claim, result),
+          { signal: mutation.signal },
+        );
+      },
     }, {
       client: mutation.client,
       route: mutation.route,
@@ -413,7 +437,11 @@ export async function mergeBitbucketPullRequestAction(
   const request = parsed.data;
 
   const admitted = await admitMutation(
-    { instance: request.instance, localRef: request.localRef },
+    {
+      instance: request.instance,
+      localRef: request.localRef,
+      lastKnownLocator: request.lastKnownLocator,
+    },
     context,
   );
   if (!admitted.ok) return admitted.result;
@@ -559,7 +587,11 @@ export async function declineBitbucketPullRequestAction(
   const request = parsed.data;
 
   const admitted = await admitMutation(
-    { instance: request.instance, localRef: request.localRef },
+    {
+      instance: request.instance,
+      localRef: request.localRef,
+      lastKnownLocator: request.lastKnownLocator,
+    },
     context,
   );
   if (!admitted.ok) return admitted.result;
@@ -674,7 +706,11 @@ async function runBitbucketCommentResolution(
   }
 
   const admitted = await admitMutation(
-    { instance: request.instance, localRef: request.localRef },
+    {
+      instance: request.instance,
+      localRef: request.localRef,
+      lastKnownLocator: request.lastKnownLocator,
+    },
     context,
   );
   if (!admitted.ok) {

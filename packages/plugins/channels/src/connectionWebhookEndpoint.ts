@@ -1,6 +1,7 @@
 import {
   isPluginError,
   PluginError,
+  arePluginMachineMaterializationRefsEqual,
   type PluginInvocationContext,
 } from '@happier-dev/plugin-sdk';
 import type { PluginActionInputById, PluginActionResultById } from '@happier-dev/plugin-sdk/actions';
@@ -194,4 +195,114 @@ export async function assertConversationConnectionWebhookEndpointCorrespondence(
       'The ensured webhook endpoint does not correspond to this connection setup.',
     );
   }
+}
+
+/**
+ * Retargets the already-owned generic Account endpoint for an exact
+ * durable-push connection transfer. The endpoint remains a generic webhook
+ * lifecycle object: Channels only verifies its retained identity, moves its
+ * target, and proves the replacement correspondence before its own CAS.
+ */
+export async function retargetConversationConnectionWebhookEndpointForTransfer(input: Readonly<{
+  context: Pick<PluginInvocationContext, 'services' | 'signal'>;
+  connectionId: string;
+  expectedConnectionRevision: number;
+  webhookEndpointId: PluginWebhookEndpointIdV1;
+  webhookContribution: Readonly<{ pluginId: string; localId: string }>;
+  sourceInstanceId: string;
+  currentTargetMaterialization: Readonly<{
+    pluginId: string;
+    machineId: string;
+    materializationId: string;
+  }>;
+  nextTargetMaterialization: Readonly<{
+    pluginId: string;
+    machineId: string;
+    materializationId: string;
+  }>;
+}>): Promise<void> {
+  let endpoint: PluginActionResultById['plugin.webhook.endpoint.read'];
+  try {
+    endpoint = await input.context.services.actions.execute(
+      'plugin.webhook.endpoint.read',
+      { webhookEndpointId: input.webhookEndpointId } satisfies PluginActionInputById['plugin.webhook.endpoint.read'],
+      { signal: input.context.signal },
+    );
+  } catch (cause) {
+    if (input.context.signal.aborted) throw cause;
+    if (isPluginError(cause)) throw cause;
+    throw webhookEndpointPluginError(
+      'channels_connection_transfer_endpoint_unavailable',
+      'The durable-push endpoint could not be read for connection transfer.',
+      true,
+    );
+  }
+  if (endpoint.webhookEndpointId !== input.webhookEndpointId
+    || endpoint.routing !== 'accountEndpoint'
+    || endpoint.revokedAt !== undefined
+    || endpoint.sourceInstanceId !== input.sourceInstanceId
+    || endpoint.contribution.pluginId !== input.webhookContribution.pluginId
+    || endpoint.contribution.localId !== input.webhookContribution.localId) {
+    throw webhookEndpointPluginError(
+      'channels_connection_transfer_endpoint_mismatch',
+      'The retained durable-push endpoint no longer belongs to this connection.',
+    );
+  }
+
+  if (!arePluginMachineMaterializationRefsEqual(
+    endpoint.targetMaterialization,
+    input.nextTargetMaterialization,
+  )) {
+    if (!arePluginMachineMaterializationRefsEqual(
+      endpoint.targetMaterialization,
+      input.currentTargetMaterialization,
+    )) {
+      throw webhookEndpointPluginError(
+        'channels_connection_transfer_endpoint_target_mismatch',
+        'The durable-push endpoint has already moved to a different target.',
+      );
+    }
+    let retargeted: PluginActionResultById['plugin.webhook.endpoint.retarget'];
+    try {
+      retargeted = await input.context.services.actions.execute(
+        'plugin.webhook.endpoint.retarget',
+        {
+          webhookEndpointId: input.webhookEndpointId,
+          expectedRevision: endpoint.revision,
+          targetMaterialization: { ...input.nextTargetMaterialization },
+          // This exact connection revision identifies one durable transfer
+          // attempt. Generic webhook retarget owns response-loss rejoin.
+          idempotencyKey: `xfer.${input.connectionId}.${input.expectedConnectionRevision}.webhook`,
+        } satisfies PluginActionInputById['plugin.webhook.endpoint.retarget'],
+        { signal: input.context.signal },
+      );
+    } catch (cause) {
+      if (input.context.signal.aborted) throw cause;
+      if (isPluginError(cause)) throw cause;
+      throw webhookEndpointPluginError(
+        'channels_connection_transfer_endpoint_unavailable',
+        'The durable-push endpoint could not be retargeted for connection transfer.',
+        true,
+      );
+    }
+    if ((retargeted.kind !== 'retargeted' && retargeted.kind !== 'alreadyRetargeted')
+      || retargeted.webhookEndpointId !== input.webhookEndpointId
+      || !arePluginMachineMaterializationRefsEqual(
+        retargeted.targetMaterialization,
+        input.nextTargetMaterialization,
+      )) {
+      throw webhookEndpointPluginError(
+        'channels_connection_transfer_endpoint_retarget_rejected',
+        'The durable-push endpoint did not accept the replacement target.',
+        true,
+      );
+    }
+  }
+  await assertConversationConnectionWebhookEndpointCorrespondence({
+    context: input.context,
+    webhookEndpointId: input.webhookEndpointId,
+    webhookContribution: input.webhookContribution,
+    targetMaterialization: input.nextTargetMaterialization,
+    sourceInstanceId: input.sourceInstanceId,
+  });
 }

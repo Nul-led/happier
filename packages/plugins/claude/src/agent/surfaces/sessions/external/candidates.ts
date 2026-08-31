@@ -8,7 +8,10 @@ import {
     type ClaudeJsonlSessionScanPosition,
     type DiscoveredClaudeJsonlSession,
 } from './files.js';
-import { readClaudeJsonlSessionTitle } from './metadata.js';
+import {
+    readClaudeJsonlSessionTitleWithIndex,
+    type ClaudeTitleIndexState,
+} from './metadata.js';
 import type { ClaudeExternalSessionSource } from './source.js';
 
 export type ClaudeExternalSessionCandidate = Readonly<{
@@ -19,6 +22,7 @@ export type ClaudeExternalSessionCandidate = Readonly<{
     activity?: ReturnType<typeof deriveExternalSessionActivity>;
     archived?: boolean;
     details: Readonly<{ projectId: string }>;
+    candidateIndexState?: ClaudeTitleIndexState;
 }>;
 
 type ClaudeCandidateSearchContext = Readonly<{
@@ -180,23 +184,37 @@ async function buildCandidate(params: Readonly<{
     session: DiscoveredClaudeJsonlSession;
     env: NodeJS.ProcessEnv;
     includeTitle: boolean;
+    readCandidateIndexState?: (candidate: Readonly<{
+        remoteSessionId: string;
+        projectId: string;
+    }>) => unknown;
     signal?: AbortSignal;
 }>): Promise<ClaudeExternalSessionCandidate> {
     throwIfAborted(params.signal);
-    const title = params.includeTitle
-        ? await readClaudeJsonlSessionTitle(params.session.filePath).catch(() => null)
+    const indexedTitle = params.includeTitle
+        ? await readClaudeJsonlSessionTitleWithIndex({
+            filePath: params.session.filePath,
+            remoteSessionId: params.session.remoteSessionId,
+            previousState: params.readCandidateIndexState?.({
+                remoteSessionId: params.session.remoteSessionId,
+                projectId: params.session.projectId,
+            }),
+        }).catch(() => null)
         : null;
     throwIfAborted(params.signal);
 
     return {
         remoteSessionId: params.session.remoteSessionId,
-        ...(title ? { title } : {}),
+        ...(indexedTitle?.title ? { title: indexedTitle.title } : {}),
         updatedAtMs: params.session.updatedAtMs,
         activity: deriveExternalSessionActivity({
             updatedAtMs: params.session.updatedAtMs,
             env: params.env,
         }),
         details: { projectId: params.session.projectId },
+        ...(indexedTitle && params.readCandidateIndexState
+            ? { candidateIndexState: indexedTitle.indexState }
+            : {}),
     };
 }
 
@@ -229,6 +247,10 @@ async function buildCandidateForSelectedRow(params: Readonly<{
     searchIncomplete?: boolean;
     preparation?: ClaudeCandidatePreparation;
     resultBudget?: ClaudeCandidateResultBudget;
+    readCandidateIndexState?: (candidate: Readonly<{
+        remoteSessionId: string;
+        projectId: string;
+    }>) => unknown;
     signal?: AbortSignal;
 }>): Promise<Readonly<{
     candidate: ClaudeExternalSessionCandidate;
@@ -250,6 +272,9 @@ async function buildCandidateForSelectedRow(params: Readonly<{
         session: params.session,
         env: params.env,
         includeTitle: true,
+        ...(params.readCandidateIndexState
+            ? { readCandidateIndexState: params.readCandidateIndexState }
+            : {}),
         ...(params.signal ? { signal: params.signal } : {}),
     });
     if (
@@ -275,6 +300,10 @@ export async function listClaudeExternalSessionCandidates(params: Readonly<{
     searchMode?: 'fast' | 'full';
     signal?: AbortSignal;
     resultBudget?: ClaudeCandidateResultBudget;
+    readCandidateIndexState?: (candidate: Readonly<{
+        remoteSessionId: string;
+        projectId: string;
+    }>) => unknown;
 }>): Promise<Readonly<{
     candidates: ClaudeExternalSessionCandidate[];
     nextCursor: string | null;
@@ -360,6 +389,9 @@ export async function listClaudeExternalSessionCandidates(params: Readonly<{
                     page,
                     nextCursor: candidateCursor,
                     ...(params.resultBudget ? { resultBudget: params.resultBudget } : {}),
+                    ...(params.readCandidateIndexState
+                        ? { readCandidateIndexState: params.readCandidateIndexState }
+                        : {}),
                     ...(params.signal ? { signal: params.signal } : {}),
                 });
                 if (selected.fits) {
@@ -471,6 +503,9 @@ export async function listClaudeExternalSessionCandidates(params: Readonly<{
                 session,
                 env: params.env,
                 includeTitle: true,
+                ...(params.readCandidateIndexState
+                    ? { readCandidateIndexState: params.readCandidateIndexState }
+                    : {}),
                 signal: params.signal,
             });
             if (searchTerm) {
@@ -501,6 +536,9 @@ export async function listClaudeExternalSessionCandidates(params: Readonly<{
                 ...(searchIncomplete !== undefined ? { searchIncomplete } : {}),
                 ...(preparation !== undefined ? { preparation } : {}),
                 ...(params.resultBudget ? { resultBudget: params.resultBudget } : {}),
+                ...(params.readCandidateIndexState
+                    ? { readCandidateIndexState: params.readCandidateIndexState }
+                    : {}),
                 ...(params.signal ? { signal: params.signal } : {}),
             });
             if (selected.fits) {

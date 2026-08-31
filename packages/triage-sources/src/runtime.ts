@@ -21,6 +21,11 @@ export {
   type TriageSourceAuthorizationReadOutcomeV1,
   type TriageSourceAuthorizationV1,
 } from './authorization/triageSourceAuthorization.js';
+export {
+  deriveTriageConfiguredSourceInstanceDigestV1,
+  readCurrentTriageConfiguredSourceInstanceV1,
+  type CurrentTriageConfiguredSourceInstanceV1,
+} from './authorization/configuredSourceCurrentness.js';
 export { admitForgeRequestUrl } from './http/forgeRequestUrl.js';
 export {
   createBoundedInvocation,

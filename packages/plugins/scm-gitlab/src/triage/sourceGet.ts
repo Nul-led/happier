@@ -11,8 +11,9 @@
  * keeps the row stale and read-only until the user removes it.
  *
  * GitLab never reaches `merged` either: a merge request cannot change project, and a
- * project moving between groups keeps its id, so the scope survives the move. That is
- * the intended consequence of keying on the project id.
+ * project moving between groups keeps its id, so the identity scope survives the
+ * move. Requests still route from the row's canonical repository locator, and a
+ * response whose fresh locator differs is refused rather than treated as a redirect.
  */
 
 import type {
@@ -29,7 +30,6 @@ import {
 } from './admission.js';
 import { GITLAB_TRIAGE_KIND_IDS } from './contribution.js';
 import {
-  buildGitlabApiUrl,
   requestGitlabJson,
   type GitlabConnectedAccounts,
   type GitlabHttpFetcher,
@@ -39,12 +39,7 @@ import { decodeGitlabRow } from './mapping/gitlabEntry.js';
 import { deriveGitlabItemInvolvement } from './mapping/gitlabInvolvement.js';
 import { projectGitlabSourceFailure } from './sourceFailure.js';
 import { projectGitlabPresentObservation } from './sourceObservation.js';
-import type { GitlabKindId } from './types.js';
-
-const KIND_ITEM_SEGMENT: Readonly<Record<GitlabKindId, string>> = Object.freeze({
-  'merge-request': 'merge_requests',
-  issue: 'issues',
-});
+import { buildGitlabItemUrl } from './detail/routes.js';
 
 export type GitlabGetOperationInput = Readonly<{
   get: TriageGetInputV1;
@@ -61,8 +56,9 @@ function unresolved(
   return { kind: 'unresolved', localRef, failure };
 }
 
-export async function getGitlabTriageEntry(
+async function executeGitlabTriageEntry(
   input: GitlabGetOperationInput,
+  captureDescription?: (description: string | null) => void,
 ): Promise<TriageGetResultV1> {
   const localRef = input.get.localRef;
   const identity = admitGitlabItemIdentity({
@@ -81,16 +77,17 @@ export async function getGitlabTriageEntry(
   }
   const { origin, invocation } = authorized.resolved;
 
-  const routed = resolveGitlabItemRoute(identity.identity, origin);
+  const routed = resolveGitlabItemRoute(
+    identity.identity,
+    origin,
+    input.get.lastKnownLocator?.routingToken,
+  );
   if (!routed.ok) return unresolved(localRef, routed.failure);
-  const { projectId, iid, kindId } = routed.route;
+  const { kindId } = routed.route;
 
   const item = await requestGitlabJson({
     invocation,
-    url: buildGitlabApiUrl(
-      origin,
-      `/projects/${projectId}/${KIND_ITEM_SEGMENT[kindId]}/${iid}`,
-    ),
+    url: buildGitlabItemUrl(routed.route),
     fetcher: input.fetcher,
     signal: input.signal,
     nowMs: input.nowMs,
@@ -127,6 +124,17 @@ export async function getGitlabTriageEntry(
       detail: 'GitLab answered with an entry other than the one addressed.',
     });
   }
+  if (entry.locator.routingToken !== routed.route.repositoryKey) {
+    return unresolved(localRef, {
+      class: 'unsupportedContract',
+      code: 'locator-mismatch',
+      detail: 'GitLab answered from a repository other than the source-minted locator.',
+    });
+  }
+  if (captureDescription !== undefined) {
+    const body = item.response.body as Readonly<Record<string, unknown>>;
+    captureDescription(typeof body.description === 'string' ? body.description : null);
+  }
 
   const viewer = await readGitlabViewerIdentity({
     invocation,
@@ -143,4 +151,19 @@ export async function getGitlabTriageEntry(
   });
 
   return projectGitlabPresentObservation({ ...entry, viewer: { involvement } });
+}
+
+export async function getGitlabTriageEntry(
+  input: GitlabGetOperationInput,
+): Promise<TriageGetResultV1> {
+  return executeGitlabTriageEntry(input);
+}
+
+/** The Overview consumes the same exact current read as `get`, plus GitLab's body. */
+export async function readGitlabTriageEntryForOverview(
+  input: GitlabGetOperationInput,
+): Promise<Readonly<{ result: TriageGetResultV1; description: string | null }>> {
+  let description: string | null = null;
+  const result = await executeGitlabTriageEntry(input, (value) => { description = value; });
+  return Object.freeze({ result, description });
 }

@@ -9,6 +9,15 @@ import { CODEX_AGENT_SETTINGS_CONTRIBUTION } from './agentSettings/definition.js
 import { CODEX_PLUGIN, PLUGIN_MANIFEST } from './manifest.js';
 
 describe('Codex plugin manifest', () => {
+  it('does not impose repository tool-execution policy on Codex sessions', () => {
+    const result = ingestPluginManifestV2(PLUGIN_MANIFEST);
+    if (!result.ok) {
+      throw new Error(`Expected the Codex plugin manifest to ingest: ${JSON.stringify(result.diagnostics)}`);
+    }
+
+    expect(result.manifest.contributes.agents[0]?.catalog?.codingPromptBehavior).toBeUndefined();
+  });
+
   it('is canonical data and preserves declared runtime prerequisites', () => {
     const result = ingestPluginManifestV2(PLUGIN_MANIFEST);
     if (!result.ok) {
@@ -103,18 +112,7 @@ describe('Codex plugin manifest', () => {
     expect(result.manifest.contributes.agents[0]?.capabilities.sessions.startupInstructions).toEqual({
       versions: [1],
     });
-    expect(result.manifest.contributes.agents[0]?.catalog?.codingPromptBehavior).toEqual({
-      blocks: [{
-        id: 'provider.codex.exec_sequencing',
-        text: [
-          'Tool execution ordering:',
-          '- When you need to run multiple `exec_command` calls, run them sequentially.',
-          '- Do not enqueue multiple `exec_command` calls at once.',
-          '- If any command may require user approval (especially writes), wait for the user decision and the command result before issuing the next command.',
-          '- If a dependent read runs before its prerequisite write and fails, rerun the read after the write succeeds.',
-        ].join('\n'),
-      }],
-    });
+    expect(result.manifest.contributes.agents[0]?.catalog?.codingPromptBehavior).toBeUndefined();
     expect(result.manifest.contributes.agents[0]?.catalog?.resumeChecklist).toEqual({
       includeLoginStatus: true,
     });

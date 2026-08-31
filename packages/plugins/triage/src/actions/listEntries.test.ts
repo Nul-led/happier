@@ -136,14 +136,20 @@ describe('the aggregate list Action handler', () => {
             order: 'newest',
         }, context);
 
-        expect(observed).toEqual([TRIAGE_SOURCES_CONTRIBUTION_POINT_REF_V1]);
-        expect(disposedObservations).toBe(1);
+        // Admission is observed once to grant the scan handle and once at the
+        // result boundary to fence an immutable contribution replacement.
+        expect(observed).toEqual([
+            TRIAGE_SOURCES_CONTRIBUTION_POINT_REF_V1,
+            TRIAGE_SOURCES_CONTRIBUTION_POINT_REF_V1,
+        ]);
+        expect(disposedObservations).toBe(2);
         // Only the original host-created handle carries authority, so it is
         // passed through untouched rather than reconstructed.
         expect(dispatched).toEqual([scanHandle]);
         expect(result.configuredSources).toEqual([{
             sourceInstanceId: INSTANCE_ID,
             source: SOURCE,
+            configurationRevision: 1,
             available: true,
         }]);
         expect(result.window.rows.map((row) => row.entryRef.entryId)).toEqual(['17']);
@@ -333,6 +339,63 @@ const finishedWalk: TriageAdmittedOperationExecutorV1 = async () => ({
 });
 
 describe('the aggregate list coverage claim', () => {
+    it('does not publish a provider result after its configured row is removed during the scan', async () => {
+        const { collections, control } = createTestkitCorpusCollections();
+        const seeded = control.sourceInstances.seed(toCorpusStoredValue(configuredRow({
+            instanceTag: paddedInstanceTag('a'),
+            sourceInstanceId: INSTANCE_ID,
+            configuredAtMs: 1,
+        })));
+        let release = (): void => {};
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        let started = false;
+        const resultPromise = listTriageEntries({
+            v: 1,
+            sources: { kind: 'selected', sourceInstanceIds: [INSTANCE_ID] },
+            limit: 10,
+            order: 'newest',
+        }, {
+            sourceInstances: collections.sourceInstances,
+            readAdmittedSources: async () => [ADMITTED_SOURCE],
+            executeScan: async () => {
+                started = true;
+                await held;
+                return {
+                    kind: 'page',
+                    observations: [{
+                        kind: 'present',
+                        localRef: {
+                            kindId: 'pull-request',
+                            collisionScope: 'example/repository',
+                            entryId: 'late-row',
+                        },
+                        locator: testkitLocator(),
+                        snapshot: testkitSnapshot(),
+                        viewer: testkitViewer(),
+                    }],
+                    evidence: { kind: 'partial', reason: 'more-pages' },
+                    continuation: { v: 1, token: 'late-frontier' },
+                };
+            },
+            nowMs: () => 1_760_000_000_000,
+        });
+
+        await vi.waitFor(() => expect(started).toBe(true));
+        control.sourceInstances.tombstone(seeded.rowId);
+        release();
+        const result = await resultPromise;
+
+        expect(result.configuredSources).toEqual([]);
+        expect(result.window.rows).toEqual([]);
+        expect(result.window.lanes).toEqual([]);
+        expect(result.window.continuations).toBeUndefined();
+        // A request whose sole lane retired while it was running has no settled
+        // lane evidence. The empty configured summary is the lifecycle truth;
+        // coverage stays conservative rather than laundering cancellation into
+        // a completed provider walk.
+        expect(result.window.coverage).toBe('partial');
+    });
+
     it('does not invoke a source whose admitted descriptor has duplicate kind ids', async () => {
         const { collections, control } = createTestkitCorpusCollections();
         control.sourceInstances.seed(toCorpusStoredValue(configuredRow({
@@ -539,8 +602,8 @@ describe('the aggregate list continuation set', () => {
         // that carried one of them is a window whose other connection restarts
         // its walk on every press.
         expect(result.window.continuations).toEqual([
-            { sourceInstanceId: first, continuation: { v: 1, token: `next:${first}` } },
-            { sourceInstanceId: second, continuation: { v: 1, token: `next:${second}` } },
+            { sourceInstanceId: first, pageLimit: 5, continuation: { v: 1, token: `next:${first}` } },
+            { sourceInstanceId: second, pageLimit: 5, continuation: { v: 1, token: `next:${second}` } },
         ]);
         expect(result.window.coverage).toBe('partial');
     });
@@ -556,11 +619,11 @@ describe('the aggregate list continuation set', () => {
             limit: 10,
             order: 'newest',
             resume: [
-                { sourceInstanceId: second, continuation: { v: 1, token: 'frontier-of-second' } },
+                { sourceInstanceId: second, pageLimit: 3, continuation: { v: 1, token: 'frontier-of-second' } },
                 // A frontier for a connection this request does not walk. It is
                 // ignored rather than refused: refusing would cost the caller
                 // the whole list over a stale token.
-                { sourceInstanceId: SECOND_INSTANCE_ID, continuation: { v: 1, token: 'stale' } },
+                { sourceInstanceId: SECOND_INSTANCE_ID, pageLimit: 1, continuation: { v: 1, token: 'stale' } },
             ],
         }, {
             sourceInstances: collections.sourceInstances,
@@ -575,6 +638,86 @@ describe('the aggregate list continuation set', () => {
         });
         expect(seen.get(first)).toEqual({ kind: 'initial', limit: 3 });
         expect(seen.get(third)).toEqual({ kind: 'initial', limit: 3 });
+    });
+
+    it('keeps each resumed lane on the page geometry that minted its continuation after peers compact', async () => {
+        const { collections, control } = createTestkitCorpusCollections();
+        const [first, second] = seedInstances(control, 2);
+        const observations = (sourceInstanceId: string, count: number, page: string) => Array.from(
+            { length: count },
+            (_unused, index) => ({
+                kind: 'present' as const,
+                localRef: {
+                    kindId: 'pull-request',
+                    collisionScope: 'example/repository',
+                    entryId: `${sourceInstanceId}-${page}-${index}`,
+                },
+                locator: testkitLocator(),
+                snapshot: testkitSnapshot(),
+                viewer: testkitViewer(),
+            }),
+        );
+        const executeScan: TriageAdmittedOperationExecutorV1 = async (_operation, input) => {
+            const sourceInstanceId = input.instance.instance.sourceInstanceId;
+            if (input.page.kind === 'initial') {
+                return sourceInstanceId === first
+                    ? {
+                        kind: 'complete',
+                        observations: observations(sourceInstanceId, 5, 'initial'),
+                        evidence: { kind: 'walkFinished' },
+                    }
+                    : {
+                        kind: 'page',
+                        observations: observations(sourceInstanceId, 5, 'initial'),
+                        evidence: { kind: 'partial', reason: 'more-pages' },
+                        continuation: { v: 1, token: 'second-page' },
+                    };
+            }
+            // Valid against the compacted request's recomputed share of 10, but
+            // invalid against the source walk's original per-page geometry of 5.
+            return {
+                kind: 'complete',
+                observations: observations(sourceInstanceId, 6, 'continued'),
+                evidence: { kind: 'walkFinished' },
+            };
+        };
+
+        const firstPage = await listTriageEntries({
+            v: 1,
+            sources: { kind: 'allConfigured' },
+            limit: 10,
+            order: 'newest',
+        }, {
+            sourceInstances: collections.sourceInstances,
+            readAdmittedSources: async () => [ADMITTED_SOURCE],
+            executeScan,
+            nowMs: () => 1_760_000_000_000,
+        });
+        expect(firstPage.window.continuations).toEqual([{
+            sourceInstanceId: second,
+            pageLimit: 5,
+            continuation: { v: 1, token: 'second-page' },
+        }]);
+
+        const compacted = await listTriageEntries({
+            v: 1,
+            sources: { kind: 'selected', sourceInstanceIds: [second] },
+            limit: 10,
+            order: 'newest',
+            resume: firstPage.window.continuations,
+        }, {
+            sourceInstances: collections.sourceInstances,
+            readAdmittedSources: async () => [ADMITTED_SOURCE],
+            executeScan,
+            nowMs: () => 1_760_000_000_001,
+        });
+
+        expect(compacted.window.rows).toEqual([]);
+        expect(compacted.window.lanes[0]?.health).toMatchObject({
+            kind: 'failed',
+            failure: { class: 'unsupportedContract', code: 'triage/pageLimitExceeded' },
+        });
+        expect(compacted.window.continuations).toBeUndefined();
     });
 
     /**

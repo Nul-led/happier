@@ -9,8 +9,8 @@ import {
 } from '@happier-dev/plugin-sdk/protocol';
 import { EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES } from '@happier-dev/plugin-sdk/actions';
 import {
-  MAX_TRIAGE_ROUTING_TOKEN_UTF8_BYTES_V1,
   TriageConfiguredSourceInstanceV1Schema,
+  TriageEntryLocatorV1Schema,
   TriageGetResultV1Schema,
   TriageSourceEntryLocalRefV1Schema,
   TriageSourceFailureV1Schema,
@@ -19,6 +19,15 @@ import {
 import {
   BITBUCKET_DETAIL_BOUNDS_V1,
 } from '../detail/projection.js';
+
+/** The Action ids the mounted detail body invokes, owned beside their published contracts. */
+export const BITBUCKET_TRIAGE_DETAIL_ACTION_IDS = Object.freeze({
+  readOverview: 'triage-read-overview',
+  listActivity: 'triage-list-activity',
+  readDiff: 'triage-read-diff',
+  listBuilds: 'triage-list-builds',
+  listComments: 'triage-list-comments',
+});
 
 /**
  * The five source-native Bitbucket Cloud detail Action contracts.
@@ -71,10 +80,6 @@ export type BitbucketDetailIncompleteReasonV1 = ReturnType<
   typeof BitbucketDetailIncompleteReasonV1Schema.parse
 >;
 
-const RoutingTokenSchema = defineProtocolUtf8String({
-  maxUtf8Bytes: MAX_TRIAGE_ROUTING_TOKEN_UTF8_BYTES_V1,
-  minLength: 1,
-});
 const ContinuationSchema = defineProtocolString({
   minLength: 1,
 });
@@ -83,7 +88,7 @@ const pagedPlaneInput = defineProtocolObject({
   v: defineProtocolLiteral(1),
   instance: TriageConfiguredSourceInstanceV1Schema,
   localRef: TriageSourceEntryLocalRefV1Schema,
-  routingToken: RoutingTokenSchema,
+  lastKnownLocator: TriageEntryLocatorV1Schema,
   /** Present only for a following page, and only as this source minted it. */
   continuation: ContinuationSchema.optional(),
 }, { policy: 'closed' });
@@ -92,7 +97,7 @@ const unpagedPlaneInput = defineProtocolObject({
   v: defineProtocolLiteral(1),
   instance: TriageConfiguredSourceInstanceV1Schema,
   localRef: TriageSourceEntryLocalRefV1Schema,
-  routingToken: RoutingTokenSchema,
+  lastKnownLocator: TriageEntryLocatorV1Schema,
 }, { policy: 'closed' });
 
 const BitbucketDetailUnavailableSchema = defineProtocolObject({

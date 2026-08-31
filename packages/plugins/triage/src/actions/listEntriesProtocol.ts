@@ -65,18 +65,26 @@ const triageIdentifier = defineProtocolUtf8String({
     minLength: 1,
     pattern: TRIAGE_SINGLE_LINE_STRING_PATTERN_V1,
 });
+export const TriageListKindIdV1Schema = triageIdentifier;
 
 const triageCollisionScope = defineProtocolUtf8String({
     maxUtf8Bytes: MAX_TRIAGE_COLLISION_SCOPE_UTF8_BYTES_V1,
     minLength: 1,
     pattern: TRIAGE_COMPOSITE_IDENTIFIER_PATTERN_V1,
 });
+export const TriageListCollisionScopeV1Schema = triageCollisionScope;
 
 const triageText = defineProtocolUtf8String({
     maxUtf8Bytes: MAX_TRIAGE_TEXT_UTF8_BYTES_V1,
     minLength: 1,
     pattern: TRIAGE_SINGLE_LINE_STRING_PATTERN_V1,
 });
+
+/** The one settled-query shape shared by live and saved list lenses. */
+export const TriageListSettledQueryV1Schema = defineProtocolUnion([
+    defineProtocolLiteral(''),
+    triageText,
+]);
 
 /**
  * One filter facet on the wire.
@@ -173,6 +181,12 @@ const TriageListSourceSelectionV1Schema = defineProtocolUnion([
  */
 const TriageLaneContinuationV1Schema = defineProtocolObject({
     sourceInstanceId: TriageSourceInstanceIdV1Schema,
+    /** The per-page geometry that minted this source continuation. */
+    pageLimit: defineProtocolNumber({
+        integer: true,
+        minimum: 1,
+        maximum: MAX_TRIAGE_LIST_WINDOW_ROWS_V1,
+    }),
     continuation: TriageScanContinuationV1Schema,
 }, { policy: 'closed' });
 
@@ -242,6 +256,8 @@ export const TriageListEntriesInputV1Schema = defineProtocolObject({
         maxItems: MAX_TRIAGE_LIST_SOURCE_BATCH_V1,
     }).optional(),
     /** The settled search text. */
+    // Empty means no query and stays omitted on this transport. Saved lenses
+    // use the wider settled-value schema above because their field is required.
     query: triageText.optional(),
     filters: TriageListFilterSelectionV1Schema.optional(),
 }, { policy: 'closed' });
@@ -398,6 +414,16 @@ const TriageListLaneV1Schema = defineProtocolObject({
 const TriageConfiguredSourceSummaryV1Schema = defineProtocolObject({
     sourceInstanceId: TriageSourceInstanceIdV1Schema,
     source: PluginContributionIdentityV1Schema,
+    /**
+     * Server-authoritative revision of the exact configured Collection row.
+     *
+     * The mounted acquisition owner compares this with the revision that minted
+     * its rows/frontier. It exposes no configured payload and creates no new
+     * generation: it is the currentness identity the Collection already owns.
+     * Optional only for older in-process fixtures; the canonical Action always
+     * publishes it.
+     */
+    configurationRevision: defineProtocolNumber({ integer: true, minimum: 1 }).optional(),
     displayLabel: triageText.optional(),
     /** Whether an admitted V1 source contribution can currently be invoked for it. */
     available: defineProtocolUnion([

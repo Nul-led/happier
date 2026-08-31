@@ -112,8 +112,8 @@ export type DiscordGatewayWorkerInput = Readonly<{
     input: ConversationProviderObservationIngestInputV1,
     options: Readonly<{ signal: AbortSignal }>,
   ): Promise<void>;
-  /** Supervisor-owned queueing hook; it never persists provider state locally. */
-  reportReadiness?(): void | Promise<void>;
+  /** Supervisor-owned status queueing hook; it never persists provider state locally. */
+  reportConnectionStatus?(status: 'ready' | 'reconnecting'): void | Promise<void>;
   signal: AbortSignal;
   clock?: DiscordGatewayWorkerClock;
   ingressLimits?: Readonly<{
@@ -592,7 +592,7 @@ export function startDiscordGatewayWorker(input: DiscordGatewayWorkerInput): Dis
                   (effect.event === 'READY' || effect.event === 'RESUMED')
                   && (!messageContentIntent.coreDemand || messageContentIntent.gatewayIntentActive)
                 ) {
-                  await input.reportReadiness?.();
+                  await input.reportConnectionStatus?.('ready');
                 }
                 await admitDispatch(effect);
                 break;
@@ -719,6 +719,7 @@ export function startDiscordGatewayWorker(input: DiscordGatewayWorkerInput): Dis
         if (reconnectRequested) {
           const delayMs = calculateDiscordReconnectDelayMs(reconnectAttempt, reconnectDelayBounds);
           reconnectAttempt += 1;
+          await input.reportConnectionStatus?.('reconnecting');
           try {
             await clock.sleep(delayMs, signal);
           } catch {

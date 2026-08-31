@@ -76,6 +76,7 @@ export async function runGitlabStateTransition<TRow extends GitlabIdentifiedRow>
   input: Readonly<{
     instance: Parameters<typeof preflightGitlabItemMutation>[0]['instance'];
     localRef: Readonly<{ kindId: string; entryId: string; collisionScope: string }>;
+    routingToken: string;
     subject: GitlabMutationSubjectV1<TRow>;
     /** Supplied only by the Actions §2.6 gives a pin; omitted where none applies. */
     expectedRevision?: string;
@@ -86,6 +87,7 @@ export async function runGitlabStateTransition<TRow extends GitlabIdentifiedRow>
   const preflight = await preflightGitlabItemMutation({
     instance: input.instance,
     localRef: input.localRef,
+    routingToken: input.routingToken,
     subject: input.subject,
     ...(input.expectedRevision === undefined
       ? {}

@@ -15,6 +15,7 @@ import {
   GitlabChangesResultV1Schema,
   GitlabDiscussionsResultV1Schema,
   GitlabNotesResultV1Schema,
+  GitlabOverviewResultV1Schema,
   GitlabPipelinesResultV1Schema,
   GitlabRawDiffResultV1Schema,
 } from '../../triage/detail/contracts.js';
@@ -106,6 +107,102 @@ export function useGitlabRoutingToken(input: TriageDetailSurfaceInputV1): string
   return input.observation.locator.routingToken ?? null;
 }
 
+/* ------------------------------------------------------------------ overview */
+
+type GitlabOverviewResultV1 = ReturnType<typeof GitlabOverviewResultV1Schema.parse>;
+
+export type GitlabOverviewValueV1 = Extract<GitlabOverviewResultV1, { kind: 'overview' }>;
+
+type GitlabOverviewUnavailableV1 = Extract<GitlabOverviewResultV1, { kind: 'unavailable' }>;
+
+function isGitlabOverviewUnavailable(
+  result: GitlabOverviewResultV1,
+): result is GitlabOverviewUnavailableV1 {
+  return result.kind === 'unavailable';
+}
+
+export type GitlabOverviewControllerV1 = Readonly<{
+  value: GitlabOverviewValueV1 | null;
+  refreshing: boolean;
+  failure: TriageSourceFailureV1 | null;
+  refresh: () => Promise<void>;
+}>;
+
+export function useGitlabOverview(
+  input: TriageDetailSurfaceInputV1,
+): GitlabOverviewControllerV1 {
+  const action = useMemo(() => ({
+    pluginId: GITLAB_PLUGIN_ID,
+    localId: GITLAB_TRIAGE_DETAIL_ACTION_IDS.readOverview,
+  }), []);
+  const { execute } = useExecutePluginAction(action);
+  const localRef = useLocalRef(input);
+  const routingToken = useGitlabRoutingToken(input);
+  const { instance } = input;
+  const { active, activeSignal } = useTabPanelActivity();
+  const [state, setState] = useState<Readonly<{
+    value: GitlabOverviewValueV1 | null;
+    refreshing: boolean;
+    failure: TriageSourceFailureV1 | null;
+  }>>({ value: null, refreshing: false, failure: null });
+
+  useEffect(() => {
+    if (active) return undefined;
+    setState((current) => current.refreshing || current.failure !== null
+      ? Object.freeze({ ...current, refreshing: false, failure: null })
+      : current);
+    return undefined;
+  }, [active]);
+
+  const refresh = useCallback(async (): Promise<void> => {
+    if (!active || state.refreshing) return;
+    if (routingToken === null) {
+      setState((current) => Object.freeze({
+        ...current,
+        refreshing: false,
+        failure: ROUTE_UNAVAILABLE,
+      }));
+      return;
+    }
+    setState((current) => Object.freeze({ ...current, refreshing: true, failure: null }));
+    const execution = await execute(
+      { v: 1, instance, localRef, routingToken },
+      { signal: activeSignal },
+    ) as ExecuteResult;
+    if (activeSignal.aborted) return;
+    if (execution.status !== 'success') {
+      setState((current) => Object.freeze({
+        ...current,
+        refreshing: false,
+        failure: dispatchFailure(
+          execution.status,
+          execution.code ?? 'gitlab-overview-read-failed',
+        ),
+      }));
+      return;
+    }
+    const parsed = GitlabOverviewResultV1Schema.safeParse(execution.result);
+    if (!parsed.success) {
+      setState((current) => Object.freeze({
+        ...current,
+        refreshing: false,
+        failure: UNREADABLE_RESULT,
+      }));
+    } else if (isGitlabOverviewUnavailable(parsed.data)) {
+      const failure = parsed.data.failure;
+      setState((current) => Object.freeze({
+        ...current,
+        refreshing: false,
+        failure,
+      }));
+    } else {
+      setState(Object.freeze({ value: parsed.data, refreshing: false, failure: null }));
+    }
+  }, [active, activeSignal, execute, instance, localRef, routingToken, state.refreshing]);
+
+  return useMemo(() => ({ ...state, refresh }), [refresh, state]);
+}
+
 /* ------------------------------------------------------------- paged planes */
 
 export type GitlabPagedControllerV1<TRow> = Readonly<{
@@ -139,6 +236,7 @@ function useGitlabPagedWalk<TRow>(
   readPage: PageReader<TRow>,
   enabled: boolean,
   disabledFailure: TriageSourceFailureV1,
+  options: Readonly<{ retainOnRefresh?: boolean }> = {},
 ): GitlabPagedControllerV1<TRow> {
   const [state, dispatch] = useReducer(
     gitlabPagedReducer<TRow>,
@@ -161,8 +259,9 @@ function useGitlabPagedWalk<TRow>(
     token: number,
     continuation: string | null,
     pageSignal: AbortSignal,
+    startKind: 'requestStarted' | 'refreshStarted' = 'requestStarted',
   ): Promise<void> => {
-    dispatch({ kind: 'requestStarted', token });
+    dispatch({ kind: startKind, token });
     const outcome = await readPage(continuation, pageSignal);
     if (pageSignal.aborted) return;
     if (outcome.kind === 'failed') {
@@ -172,19 +271,27 @@ function useGitlabPagedWalk<TRow>(
     dispatch({ kind: 'pageSettled', token, page: outcome.page });
   }, [readPage]);
 
-  const startWalk = useCallback((pageSignal: AbortSignal): void => {
+  const startWalk = useCallback((
+    pageSignal: AbortSignal,
+    retainLastKnownGood: boolean,
+  ): void => {
     requested.current = new Set();
-    dispatch({ kind: 'panelLeft' });
+    if (!retainLastKnownGood) dispatch({ kind: 'panelLeft' });
     nextToken.current += 1;
     if (enabled) {
-      void runPage(nextToken.current, null, pageSignal);
+      void runPage(
+        nextToken.current,
+        null,
+        pageSignal,
+        retainLastKnownGood ? 'refreshStarted' : 'requestStarted',
+      );
       return;
     }
     // A plane with nothing to address settles as unavailable NAMING itself,
     // never as an idle or empty panel: the reader is owed the difference between
     // "no rows" and "we had no route to ask".
     const token = nextToken.current;
-    dispatch({ kind: 'requestStarted', token });
+    dispatch({ kind: retainLastKnownGood ? 'refreshStarted' : 'requestStarted', token });
     dispatch({ kind: 'pageFailed', token, failure: disabledFailure });
   }, [disabledFailure, enabled, runPage]);
 
@@ -193,7 +300,7 @@ function useGitlabPagedWalk<TRow>(
     // never on mount of the detail surface.
     if (!active) return undefined;
     interval.current = activeSignal;
-    startWalk(activeSignal);
+    startWalk(activeSignal, false);
     return () => {
       interval.current = null;
       requested.current = new Set();
@@ -214,8 +321,8 @@ function useGitlabPagedWalk<TRow>(
   const refresh = useCallback(() => {
     const pageSignal = interval.current;
     if (pageSignal === null || state.pending) return;
-    startWalk(pageSignal);
-  }, [startWalk, state.pending]);
+    startWalk(pageSignal, options.retainOnRefresh === true);
+  }, [options.retainOnRefresh, startWalk, state.pending]);
 
   return useMemo(() => ({ state, loadMore, refresh }), [loadMore, refresh, state]);
 }
@@ -461,7 +568,12 @@ export function useGitlabChanges(
     return { kind: 'page' as const, page: toPage(page) };
   }, [execute, instance, localRef, routingToken]);
 
-  const controller = useGitlabPagedWalk(readPage, routingToken !== null, ROUTE_UNAVAILABLE);
+  const controller = useGitlabPagedWalk(
+    readPage,
+    routingToken !== null,
+    ROUTE_UNAVAILABLE,
+    { retainOnRefresh: true },
+  );
   return useMemo(() => ({ ...controller, diffLimitStatus }), [controller, diffLimitStatus]);
 }
 

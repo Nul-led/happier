@@ -21,6 +21,7 @@ import type {
 } from '@happier-dev/plugin-sdk/connected-accounts';
 import {
     admitForgeRequestUrl,
+    deriveTriageConfiguredSourceInstanceDigestV1,
     readTriageSourceAccountListingV1,
 } from '@happier-dev/triage-sources/runtime';
 import {
@@ -156,6 +157,17 @@ const PROJECTION_BOUNDS: PosthogProjectionBounds = Object.freeze({
 });
 
 const UNTITLED_ISSUE_LABEL = 'Untitled issue';
+
+function dedupePosthogOrganizations<T extends Readonly<{ organizationUuid: string }>>(
+    rows: readonly T[],
+): readonly T[] {
+    const seen = new Set<string>();
+    return rows.filter((row) => {
+        if (seen.has(row.organizationUuid)) return false;
+        seen.add(row.organizationUuid);
+        return true;
+    });
+}
 
 function sourceFailure(
     failureClass: TriageSourceFailureV1['class'],
@@ -380,7 +392,7 @@ export function createPosthogConfigurationDirectoryReader(
         if (!read.result.ok) return unavailable(toTriageSourceFailure(read.result.failure));
         const page = read.result.value;
         const { next, incomplete } = pageState(page, read.requestedUrl);
-        const projectedRows = page.rows.flatMap((row) => {
+        const projectedRows = dedupePosthogOrganizations(page.rows).flatMap((row) => {
             const key = buildPosthogLocalInstanceKey(origin, row.organizationUuid);
             const displayName = projectTriageDisplayTextV1(row.name, MAX_TRIAGE_TEXT_UTF8_BYTES_V1);
             return !key.ok || displayName.value.length === 0 ? [] : [{
@@ -522,7 +534,7 @@ export async function listPosthogInstances(
             bounded = true;
         }
 
-        for (const organization of organizations.value.rows) {
+        for (const organization of dedupePosthogOrganizations(organizations.value.rows)) {
             const localInstanceKey = buildPosthogLocalInstanceKey(
                 origin,
                 organization.organizationUuid,
@@ -642,7 +654,8 @@ export async function listPosthogInstances(
  */
 type PosthogScanGeometry = Readonly<{
     v: 1;
-    environmentIndex: number;
+    sourceInstanceDigest: string;
+    environmentTeamUuid: string;
     offset: number;
     from: string;
     to: string | null;
@@ -690,26 +703,46 @@ function readScanWalkHealth(raw: unknown): readonly PosthogScanStickyReasonV1[] 
     return Object.freeze(reasons);
 }
 
-function decodeScanGeometry(token: string, environmentCount: number): PosthogScanGeometry | null {
+const CANONICAL_DIGEST_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+
+function decodeScanGeometry(
+    token: string,
+    sourceInstanceDigest: string,
+    environments: readonly PosthogConfiguredEnvironment[],
+): PosthogScanGeometry | null {
     // The bounded JSON envelope has one owner across every source; only the frontier
     // fields below are PostHog's, and they are still validated here.
     const raw = decodeTriagePagingTokenV1(token);
     if (raw === null) {
         return null;
     }
-    const environmentIndex = raw['environmentIndex'];
+    const tokenDigest = raw['sourceInstanceDigest'];
+    const environmentTeamUuid = raw['environmentTeamUuid'];
     const offset = raw['offset'];
     const from = raw['from'];
     const to = raw['to'];
     const nativeLimit = raw['nativeLimit'];
     const walkHealth = readScanWalkHealth(raw['walkHealth']);
+    const keys = Object.keys(raw);
     if (
         walkHealth === null
+        || keys.length !== 8
+        || ![
+            'v',
+            'sourceInstanceDigest',
+            'environmentTeamUuid',
+            'offset',
+            'from',
+            'to',
+            'nativeLimit',
+            'walkHealth',
+        ].every((key) => Object.prototype.hasOwnProperty.call(raw, key))
         || raw['v'] !== 1
-        || typeof environmentIndex !== 'number'
-        || !Number.isSafeInteger(environmentIndex)
-        || environmentIndex < 0
-        || environmentIndex >= environmentCount
+        || typeof tokenDigest !== 'string'
+        || !CANONICAL_DIGEST_PATTERN.test(tokenDigest)
+        || tokenDigest !== sourceInstanceDigest
+        || typeof environmentTeamUuid !== 'string'
+        || !environments.some((environment) => environment.teamUuid === environmentTeamUuid)
         || typeof offset !== 'number'
         || !Number.isSafeInteger(offset)
         || offset < 0
@@ -721,7 +754,16 @@ function decodeScanGeometry(token: string, environmentCount: number): PosthogSca
     ) {
         return null;
     }
-    return { v: 1, environmentIndex, offset, from, to, nativeLimit, walkHealth };
+    return {
+        v: 1,
+        sourceInstanceDigest: tokenDigest,
+        environmentTeamUuid,
+        offset,
+        from,
+        to,
+        nativeLimit,
+        walkHealth,
+    };
 }
 
 function scanWindow(geometry: PosthogScanGeometry): PosthogResolvedWindow {
@@ -742,13 +784,15 @@ export async function scanPosthogSource(
     const routed = resolveInvokedInstance(parsed.instance);
     if (!routed.ok) return failed(routed.failure);
     const { origin, configuration } = routed;
+    const sourceInstanceDigest = deriveTriageConfiguredSourceInstanceDigestV1(parsed.instance);
 
     const geometry = parsed.page.kind === 'initial'
         ? ((): PosthogScanGeometry => {
             const window = resolvePosthogWindowPolicy(configuration.scanWindowPolicy, Date.now());
             return {
                 v: 1,
-                environmentIndex: 0,
+                sourceInstanceDigest,
+                environmentTeamUuid: configuration.environments[0]!.teamUuid,
                 offset: 0,
                 from: window.from,
                 to: window.to,
@@ -756,7 +800,11 @@ export async function scanPosthogSource(
                 walkHealth: [],
             };
         })()
-        : decodeScanGeometry(parsed.page.continuation.token, configuration.environments.length);
+        : decodeScanGeometry(
+            parsed.page.continuation.token,
+            sourceInstanceDigest,
+            configuration.environments,
+        );
     if (geometry === null) {
         return failed(sourceFailure(
             'unsupportedContract',
@@ -764,7 +812,10 @@ export async function scanPosthogSource(
         ));
     }
 
-    const environment = configuration.environments[geometry.environmentIndex];
+    const environmentIndex = configuration.environments.findIndex((candidate) => (
+        candidate.teamUuid === geometry.environmentTeamUuid
+    ));
+    const environment = configuration.environments[environmentIndex];
     if (environment === undefined) {
         return failed(sourceFailure(
             'unsupportedContract',
@@ -823,10 +874,14 @@ export async function scanPosthogSource(
 
     const next: PosthogScanGeometry | null = advances && nextOffset !== null
         ? { ...carried, offset: nextOffset }
-        : geometry.environmentIndex + 1 < configuration.environments.length
+        : environmentIndex + 1 < configuration.environments.length
             // An exhausted or stuck environment moves to the next selected one at
             // offset zero inside the same frozen window.
-            ? { ...carried, environmentIndex: geometry.environmentIndex + 1, offset: 0 }
+            ? {
+                ...carried,
+                environmentTeamUuid: configuration.environments[environmentIndex + 1]!.teamUuid,
+                offset: 0,
+            }
             : null;
 
     // A token wider than the protocol admits is not a token: it is a member of a closed

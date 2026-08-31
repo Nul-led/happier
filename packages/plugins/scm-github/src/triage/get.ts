@@ -21,6 +21,13 @@ import {
   decodeGithubPullRequestBody,
   projectGithubEntry,
 } from './mapping/entry.js';
+import {
+  projectGithubIssueOverview,
+  projectGithubPullRequestOverview,
+  readGithubNamedMembers,
+  type GithubIssueOverviewV1,
+  type GithubPullRequestOverviewV1,
+} from './detail/overview.js';
 import { createGithubRepositoryReader, type GithubRepositoryReaderV1 } from './repositories.js';
 import type {
   GithubTriageEntryLocalRefV1,
@@ -64,7 +71,7 @@ function unresolved(
 
 /** An observation that carries no pull-request facts, because none were read. */
 function observed(observation: GithubTriageObservationV1): GithubPullRequestReadV1 {
-  return Object.freeze({ observation, facts: null });
+  return Object.freeze({ observation, facts: null, overview: null });
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -209,6 +216,8 @@ export type GithubPullRequestFactsV1 = Readonly<{
   state: string | null;
   merged: boolean;
   draft: boolean;
+  /** GitHub's provider-computed `mergeable_state`, when it stated one. */
+  mergeableState: string | null;
   /** The head commit this read observed, or `null` when the response carried none. */
   headRevision: string | null;
   /** The three revisions the public source snapshot can project after this one read. */
@@ -232,6 +241,8 @@ export type GithubPullRequestReadV1 = Readonly<{
   observation: GithubTriageObservationV1;
   /** Present only when the observation is `present`. */
   facts: GithubPullRequestFactsV1 | null;
+  /** Exact display facts copied from the same provider response. */
+  overview: GithubPullRequestOverviewV1 | null;
 }>;
 
 function readGithubPullRequestReviewRevision(
@@ -288,6 +299,7 @@ function readGithubPullRequestFacts(
     // and requiring both would report an already-merged pull request as unmerged.
     merged: raw.merged === true || mergedAt !== '',
     draft: raw.draft === true,
+    mergeableState: readNonEmptyString(raw.mergeable_state),
     headRevision,
     reviewRevision,
     sourceTip: reviewRevision === null ? null : readGithubPullRequestSourceTip(raw, reviewRevision),
@@ -394,6 +406,7 @@ export async function readGithubPullRequest(
       viewer: Object.freeze({ involvement: Object.freeze([]) }),
     }),
     facts,
+    overview: projectGithubPullRequestOverview(record),
   });
 }
 
@@ -419,17 +432,13 @@ export type GithubIssueReadV1 = Readonly<{
   observation: GithubTriageObservationV1;
   /** Present only when the observation is `present`. */
   facts: GithubIssueFactsV1 | null;
+  /** Exact display facts copied from the same provider response. */
+  overview: GithubIssueOverviewV1 | null;
 }>;
 
 /** Reads one string member off each element of a GitHub actor/label collection. */
 function readNamedMembers(value: unknown, member: string): readonly string[] {
-  if (!Array.isArray(value)) return Object.freeze([]);
-  return Object.freeze(value.flatMap((entry) => {
-    if (typeof entry === 'string') return entry.trim() ? [entry.trim()] : [];
-    if (!isRecord(entry)) return [];
-    const name = entry[member];
-    return typeof name === 'string' && name.trim() ? [name.trim()] : [];
-  }));
+  return readGithubNamedMembers(value, member) ?? Object.freeze([]);
 }
 
 function readGithubIssueFacts(raw: Readonly<Record<string, unknown>>): GithubIssueFactsV1 {
@@ -447,7 +456,7 @@ function readGithubIssueFacts(raw: Readonly<Record<string, unknown>>): GithubIss
 }
 
 function observedIssue(observation: GithubTriageObservationV1): GithubIssueReadV1 {
-  return Object.freeze({ observation, facts: null });
+  return Object.freeze({ observation, facts: null, overview: null });
 }
 
 /**
@@ -549,6 +558,7 @@ export async function readGithubIssue(
   if (projection === null) {
     return observedIssue(unresolved(input.localRef, GITHUB_ROUTE_BODY_MISMATCH_FAILURE));
   }
+  const record = isRecord(body) ? body : {};
   return Object.freeze({
     observation: Object.freeze({
       kind: 'present' as const,
@@ -557,7 +567,8 @@ export async function readGithubIssue(
       snapshot: projection.snapshot,
       viewer: Object.freeze({ involvement: Object.freeze([]) }),
     }),
-    facts: readGithubIssueFacts(isRecord(body) ? body : {}),
+    facts: readGithubIssueFacts(record),
+    overview: projectGithubIssueOverview(record),
   });
 }
 

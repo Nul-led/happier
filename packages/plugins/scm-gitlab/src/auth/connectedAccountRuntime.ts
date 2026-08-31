@@ -3,9 +3,9 @@
  *
  * GitLab authenticates a personal access token as a bearer credential against a
  * configured deployment. The deployment is explicit non-secret Connected Account
- * configuration carrying `semantic: 'connectedAccountOrigin'`, so the host — not
- * this plugin — normalizes it, admits it at HostAccess, and republishes it as
- * the account's `connectedAccountOrigins`.
+ * configuration. Self-managed mode declares `semantic: 'connectedAccountBase'`
+ * so the host retains and republishes the exact path-bearing base; HostAccess
+ * separately governs its normalized bare origin through `connectedAccountOrigins`.
  *
  * GitLab.com and self-managed GitLab use distinct declaration modes so the host
  * can keep the public fixed origin out of the private-network-capable grant.

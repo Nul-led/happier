@@ -22,10 +22,11 @@ import {
  * bound and closed vocabulary, decides the conflict verdict, and declines to
  * overwrite a stored value this build cannot read.
  *
- * Every member is a reference or a closed vocabulary, exactly as the record is.
- * There is no place on this wire to express a condition, a step, a retry, a
- * variable, a branch or a hook, which is what keeps a composition record from
- * growing into a workflow engine through its transport.
+ * Read results project the record exactly, including shipped fallback text on
+ * built-in defaults. Create/update deliberately project only editable members:
+ * custom task text belongs to Prompt Library. There is no place to express a condition, a step, a
+ * retry, a variable, a branch or a hook, which is what keeps a composition
+ * record from growing into a workflow engine through its transport.
  */
 
 /**
@@ -145,6 +146,8 @@ export const TriageAdministerActionResultV1Schema = defineProtocolObject({
         defineProtocolLiteral('workspaceMode'),
         defineProtocolLiteral('target'),
         defineProtocolLiteral('promptInvocationId'),
+        defineProtocolLiteral('promptArgsText'),
+        defineProtocolLiteral('instruction'),
         defineProtocolLiteral('delivery'),
         defineProtocolLiteral('reorder'),
         defineProtocolLiteral('valueTooLarge'),

@@ -33,7 +33,11 @@ function formalAction(actionId: string, label: string): TriageActionV1 {
     appliesTo: ['pullRequest'],
     profileId: null,
     workspaceMode: 'pull_request',
-    target: { kind: 'reviewStart', promptInvocationId: null },
+    target: {
+      kind: 'reviewStart',
+      promptInvocationId: null,
+      seededFallbackInstruction: 'Review this change.',
+    },
   });
 }
 

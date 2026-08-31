@@ -41,9 +41,9 @@ export function buildBitbucketCollisionScope(repositoryUuid: unknown): string | 
 }
 
 /**
- * The inverse of {@link buildBitbucketCollisionScope}, for the one caller that receives a scope
- * rather than a provider row: an authoritative `get` addresses its entry by the scope the target
- * hands back. A scope this source did not mint yields `null` rather than a guessed repository.
+ * The inverse of {@link buildBitbucketCollisionScope}. Entry admission uses this immutable UUID
+ * only to verify provider identity; request routing comes from the last known locator. A scope this
+ * source did not mint yields `null` rather than a guessed repository identity.
  */
 export function readBitbucketCollisionScopeRepositoryUuid(scope: unknown): string | null {
   if (typeof scope !== 'string') return null;
@@ -92,10 +92,36 @@ export function isBitbucketCommentId(value: string): boolean {
  * Both halves are mutable, so this is a replaceable locator and never a join key.
  */
 export function buildBitbucketRepositoryKey(fullName: unknown): string | null {
-  if (typeof fullName !== 'string') return null;
-  const segments = fullName.split('/');
+  return readBitbucketRepositoryKey(fullName)?.repositoryKey ?? null;
+}
+
+export type BitbucketRepositoryKey = Readonly<{
+  workspaceSlug: string;
+  repositorySlug: string;
+  repositoryKey: string;
+}>;
+
+/** Reads the mutable repository route shape this source publishes in an entry locator. */
+export function readBitbucketRepositoryKey(value: unknown): BitbucketRepositoryKey | null {
+  if (typeof value !== 'string') return null;
+  const segments = value.split('/');
   if (segments.length !== 2) return null;
   const [workspace, repository] = segments;
-  if (!workspace || !repository) return null;
-  return `${workspace.toLowerCase()}/${repository.toLowerCase()}`;
+  if (
+    !workspace
+    || !repository
+    || workspace === '.'
+    || workspace === '..'
+    || repository === '.'
+    || repository === '..'
+  ) {
+    return null;
+  }
+  const workspaceSlug = workspace.toLowerCase();
+  const repositorySlug = repository.toLowerCase();
+  return {
+    workspaceSlug,
+    repositorySlug,
+    repositoryKey: `${workspaceSlug}/${repositorySlug}`,
+  };
 }

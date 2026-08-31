@@ -12,6 +12,11 @@ import { createGitlabScanFrontier } from './gitlabScanFrontier.js';
 const origin = normalizeGitlabConfiguredBaseUrl('https://gitlab.com');
 if (!origin) throw new Error('unusable fixture origin');
 const GITLAB_COM = origin;
+const PROVENANCE = Object.freeze({
+  plane: 'scan' as const,
+  sourceInstanceId: '9d6f0b2a-3c41-4d7e-9a52-8c1f4b7d2e03',
+  configuredBaseUrl: GITLAB_COM.normalized,
+});
 
 function lanes(): readonly GitlabLaneRequest[] {
   return buildGitlabScanLanes({ kindId: 'merge-request', viewerUserId: 42 }).requests;
@@ -28,10 +33,10 @@ describe('the GitLab scan continuation codec', () => {
     frontier.walkHealth.add('undecodable-items');
     const watchedUrl = frontier.lanes[0]?.nextUrl;
     if (watchedUrl === undefined) throw new Error('expected a lane URL');
-    const continuation = encodeGitlabScanContinuation(frontier);
+    const continuation = encodeGitlabScanContinuation(frontier, PROVENANCE);
     if (continuation === null) throw new Error('expected an encodable frontier');
 
-    const resumed = decodeGitlabScanContinuation({ continuation, origin: GITLAB_COM, lanes: lanes() });
+    const resumed = decodeGitlabScanContinuation({ continuation, origin: GITLAB_COM, lanes: lanes(), provenance: PROVENANCE });
     if (resumed === null) throw new Error('expected the codec to accept its own token');
     expect(resumed.nextLaneIndex).toBe(2);
     expect(resumed.nativePageSize).toBe(frontier.nativePageSize);
@@ -48,19 +53,19 @@ describe('the GitLab scan continuation codec', () => {
   });
 
   it('refuses a token whose lane set is not the one this invocation built', () => {
-    const continuation = encodeGitlabScanContinuation(frontierOf());
+    const continuation = encodeGitlabScanContinuation(frontierOf(), PROVENANCE);
     if (continuation === null) throw new Error('expected an encodable frontier');
 
     // The issue lanes reuse the lane ids the merge-request lanes use, so a key that
     // dropped the kind would silently resume an issue walk against merge-request URLs.
     const issueLanes = buildGitlabScanLanes({ kindId: 'issue', viewerUserId: 42 }).requests;
-    expect(decodeGitlabScanContinuation({ continuation, origin: GITLAB_COM, lanes: issueLanes }))
+    expect(decodeGitlabScanContinuation({ continuation, origin: GITLAB_COM, lanes: issueLanes, provenance: PROVENANCE }))
       .toBeNull();
   });
 
   it('refuses a token whose next URL points at another host', () => {
     const frontier = frontierOf();
-    const tampered = JSON.parse(encodeGitlabScanContinuation(frontier)?.token ?? '{}') as {
+    const tampered = JSON.parse(encodeGitlabScanContinuation(frontier, PROVENANCE)?.token ?? '{}') as {
       lanes: { nextUrl: string }[];
     };
     const first = tampered.lanes[0];
@@ -73,12 +78,13 @@ describe('the GitLab scan continuation codec', () => {
       continuation: { v: 1, token: JSON.stringify(tampered) },
       origin: GITLAB_COM,
       lanes: lanes(),
+      provenance: PROVENANCE,
     })).toBeNull();
   });
 
   it('refuses a token whose geometry this source would never have chosen', () => {
     const frontier = frontierOf();
-    const encoded = encodeGitlabScanContinuation(frontier);
+    const encoded = encodeGitlabScanContinuation(frontier, PROVENANCE);
     if (encoded === null) throw new Error('expected an encodable frontier');
     const decodeTampered = (
       mutate: (record: { scanLimit: number; nativePageSize: number }) => void,
@@ -89,6 +95,7 @@ describe('the GitLab scan continuation codec', () => {
         continuation: { v: 1, token: JSON.stringify(record) },
         origin: GITLAB_COM,
         lanes: lanes(),
+        provenance: PROVENANCE,
       });
     };
 
@@ -97,8 +104,31 @@ describe('the GitLab scan continuation codec', () => {
     expect(decodeTampered((record) => { record.nativePageSize = 1; })).toBeNull();
     // The untampered token still round-trips, so the two checks above refuse forged
     // geometry rather than all geometry.
-    expect(decodeGitlabScanContinuation({ continuation: encoded, origin: GITLAB_COM, lanes: lanes() }))
+    expect(decodeGitlabScanContinuation({ continuation: encoded, origin: GITLAB_COM, lanes: lanes(), provenance: PROVENANCE }))
       .not.toBeNull();
+  });
+
+  it('refuses unknown root and lane fields instead of widening its strict frontier', () => {
+    const encoded = encodeGitlabScanContinuation(frontierOf(), PROVENANCE);
+    if (encoded === null) throw new Error('expected an encodable frontier');
+
+    const root = JSON.parse(encoded.token) as Record<string, unknown>;
+    root.futureGeometry = 17;
+    expect(decodeGitlabScanContinuation({
+      continuation: { v: 1, token: JSON.stringify(root) },
+      origin: GITLAB_COM,
+      lanes: lanes(),
+      provenance: PROVENANCE,
+    })).toBeNull();
+
+    const lane = JSON.parse(encoded.token) as { lanes: Array<Record<string, unknown>> };
+    lane.lanes[0]!.futureCursor = 'other';
+    expect(decodeGitlabScanContinuation({
+      continuation: { v: 1, token: JSON.stringify(lane) },
+      origin: GITLAB_COM,
+      lanes: lanes(),
+      provenance: PROVENANCE,
+    })).toBeNull();
   });
 
   it('refuses a frontier that cannot fit the canonical Action envelope', () => {
@@ -112,12 +142,12 @@ describe('the GitLab scan continuation codec', () => {
 
     // The shared protocol owns the real carrier bound. This source must fail
     // closed rather than truncate an opaque frontier that it could not resume.
-    expect(encodeGitlabScanContinuation(frontierOf(wide))).toBeNull();
+    expect(encodeGitlabScanContinuation(frontierOf(wide), PROVENANCE)).toBeNull();
   });
 
   it('keeps loop evidence constant-size however deep one lane walks', () => {
     const frontier = frontierOf([lanes()[0]!]);
-    const initialLength = encodeGitlabScanContinuation(frontier)?.token.length ?? Infinity;
+    const initialLength = encodeGitlabScanContinuation(frontier, PROVENANCE)?.token.length ?? Infinity;
     const lane = frontier.lanes[0]!;
     for (let page = 1; page <= 5_000; page += 1) {
       const nextUrl = `https://gitlab.com/api/v4/merge_requests?page=${page}`;
@@ -130,7 +160,7 @@ describe('the GitLab scan continuation codec', () => {
       lane.cycleProbe = advanced.walk.probe;
     }
 
-    const deep = encodeGitlabScanContinuation(frontier);
+    const deep = encodeGitlabScanContinuation(frontier, PROVENANCE);
     expect(deep).not.toBeNull();
     expect(deep?.token.length ?? Infinity).toBeLessThan(initialLength + 128);
   });

@@ -189,6 +189,12 @@ export type TriageListWindowStoreV1 = Readonly<{
      * only by this mounted store, and a lost process starts at the first window.
      */
     loadMore(): Promise<void>;
+    /**
+     * The mounted read transport changed authority. Retain the last-known-good
+     * rows, but synchronously invalidate every opaque provider frontier and
+     * reacquire page one through the replacement reader.
+     */
+    replaceReadTransport(): void;
     dispose(): void;
 }>;
 
@@ -207,14 +213,22 @@ type LaneState = {
 
 type LaneContinuation = NonNullable<TriageListEntriesInputV1['resume']>[number];
 
-function sameConfiguredSourceIdentitySet(
+function sameConfiguredSourceAcquisitionSet(
     left: TriageListEntriesResultV1['configuredSources'],
     right: TriageListEntriesResultV1['configuredSources'],
 ): boolean {
-    const leftSourceInstanceIds = new Set(left.map((summary) => summary.sourceInstanceId));
-    const rightSourceInstanceIds = new Set(right.map((summary) => summary.sourceInstanceId));
-    return leftSourceInstanceIds.size === rightSourceInstanceIds.size
-        && [...leftSourceInstanceIds].every((sourceInstanceId) => rightSourceInstanceIds.has(sourceInstanceId));
+    if (left.length !== right.length) return false;
+    const rightBySourceInstanceId = new Map(right.map((summary) => [summary.sourceInstanceId, summary]));
+    return left.every((summary) => {
+        const candidate = rightBySourceInstanceId.get(summary.sourceInstanceId);
+        if (candidate === undefined || !sameTriageSourceIdentity(summary.source, candidate.source)) return false;
+        // The canonical Action always supplies the Collection revision. The
+        // optional fallback keeps older in-process fixtures compatible without
+        // minting a second configuration identity.
+        return summary.configurationRevision === undefined
+            || candidate.configurationRevision === undefined
+            || summary.configurationRevision === candidate.configurationRevision;
+    });
 }
 
 function sameMemberSet<T>(
@@ -320,7 +334,6 @@ export function createTriageListWindowStore(deps: Readonly<{
     /** Whether the last append ended with a connection this mount could not read. */
     let appendFailed = false;
     let disposed = false;
-    let refreshDeadlineWake: ReturnType<typeof setTimeout> | null = null;
     let snapshot: TriageListWindowSnapshotV1 = Object.freeze({
         freshness: 'unknown',
         pending: 'idle',
@@ -427,36 +440,6 @@ export function createTriageListWindowStore(deps: Readonly<{
     }
 
     /**
-     * One wake for every published fact whose next transition is clock-owned.
-     *
-     * Eligibility still belongs entirely to the coordinator and freshness to
-     * this store. This timer decides neither: it only republishes at the earlier
-     * of their existing deadlines so mounted subscribers observe the derived
-     * transition. The callback then schedules the same single wake for whatever
-     * deadline remains; replacement and disposal cancel it.
-     */
-    function scheduleRefreshDeadlineWake(blocked: TriageRefreshPacingBlockV1 | null): void {
-        if (refreshDeadlineWake !== null) {
-            clearTimeout(refreshDeadlineWake);
-            refreshDeadlineWake = null;
-        }
-        if (disposed) return;
-        const freshnessDeadline = lastCycleCompletedAtMs !== null && freshness() === 'fresh'
-            ? lastCycleCompletedAtMs + TRIAGE_VIEW_REFRESH_MIN_INTERVAL_MS
-            : null;
-        const nextDeadline = blocked === null
-            ? freshnessDeadline
-            : freshnessDeadline === null
-                ? blocked.nextEligibleAtMs
-                : Math.min(blocked.nextEligibleAtMs, freshnessDeadline);
-        if (nextDeadline === null) return;
-        refreshDeadlineWake = setTimeout(() => {
-            refreshDeadlineWake = null;
-            if (isCurrent()) publish();
-        }, Math.max(0, nextDeadline - deps.nowMs()));
-    }
-
-    /**
      * What pressing the continuation row would do, in the order the answers
      * override each other, or `null` when there is nothing to append to.
      *
@@ -477,6 +460,11 @@ export function createTriageListWindowStore(deps: Readonly<{
      */
     function loadMore(): TriageListLoadMoreV1 | null {
         if (window === null) return null;
+        // These are the same replacement facts the imperative admission reads.
+        // Publishing `available` while that path refuses the press is a split
+        // answer from one owner, and an old frontier must not remain visible as
+        // actionable while its replacement is pending.
+        if (pagingResetPending || generationReplacementPending) return null;
         if (appending) return Object.freeze({ kind: 'loading' });
         if (appendFailed) return Object.freeze({ kind: 'failed' });
         if (window.coverage === 'complete') return Object.freeze({ kind: 'exhausted' });
@@ -516,7 +504,6 @@ export function createTriageListWindowStore(deps: Readonly<{
     function publish(): void {
         const unreadable = unreadableSources();
         const blocked = refreshBlock();
-        scheduleRefreshDeadlineWake(blocked);
         const appendable = loadMore();
         snapshot = Object.freeze({
             ...(window === null ? {} : { window }),
@@ -760,14 +747,19 @@ export function createTriageListWindowStore(deps: Readonly<{
     function syncConfiguredSources(
         nextConfiguredSources: TriageListEntriesResultV1['configuredSources'],
         nextConfiguredSourcesStatus: TriageListEntriesResultV1['configuredSourcesStatus'],
-    ): boolean {
-        const identitySetChanged = !sameConfiguredSourceIdentitySet(
+    ): Readonly<{ acquisitionChanged: boolean; availabilityChanged: boolean }> {
+        const previousConfiguredSources = configuredSources;
+        const acquisitionChanged = !sameConfiguredSourceAcquisitionSet(
             configuredSources,
             nextConfiguredSources,
+        );
+        const previousBySourceInstanceId = new Map(
+            previousConfiguredSources.map((summary) => [summary.sourceInstanceId, summary]),
         );
         configuredSources = nextConfiguredSources;
         configuredSourcesStatus = nextConfiguredSourcesStatus;
         const known = new Set(nextConfiguredSources.map((summary) => summary.sourceInstanceId));
+        let availabilityChanged = false;
         for (const sourceInstanceId of [...lanes.keys()]) {
             if (known.has(sourceInstanceId)) continue;
             // The row is gone or retired: drop its lane and abort any pass it
@@ -777,7 +769,63 @@ export function createTriageListWindowStore(deps: Readonly<{
             continuations.delete(sourceInstanceId);
             coordinator.retire(sourceInstanceId);
         }
-        return identitySetChanged;
+        for (const summary of nextConfiguredSources) {
+            const previous = previousBySourceInstanceId.get(summary.sourceInstanceId);
+            if (previous === undefined) continue;
+            const revisionChanged = previous.configurationRevision !== undefined
+                && summary.configurationRevision !== undefined
+                && previous.configurationRevision !== summary.configurationRevision;
+            const sourceChanged = !sameTriageSourceIdentity(previous.source, summary.source);
+            if (revisionChanged || sourceChanged) {
+                // Same stable instance id, different canonical configured-row
+                // identity. Rows, frontier, pacing, retry and coverage all
+                // belonged to the old configuration and cannot survive it.
+                lanes.delete(summary.sourceInstanceId);
+                continuations.delete(summary.sourceInstanceId);
+                coordinator.retire(summary.sourceInstanceId);
+                continue;
+            }
+            if (previous.available === summary.available) continue;
+            availabilityChanged = true;
+            // Contribution loss/re-admission is not provider absence. Keep the
+            // last-known-good rows, but clear the active frontier and every
+            // pacing/retry fact before another immutable contribution may run.
+            continuations.delete(summary.sourceInstanceId);
+            coordinator.retire(summary.sourceInstanceId);
+            const retained = lanes.get(summary.sourceInstanceId);
+            if (retained !== undefined) {
+                lanes.set(summary.sourceInstanceId, {
+                    ...retained,
+                    lane: Object.freeze({
+                        sourceInstanceId: summary.sourceInstanceId,
+                        source: summary.source,
+                        health: Object.freeze({ kind: 'unavailable' as const }),
+                        exhausted: false,
+                    }),
+                    error: UNREADABLE_IN_THIS_PASS_V1,
+                });
+            }
+        }
+        return Object.freeze({ acquisitionChanged, availabilityChanged });
+    }
+
+    /** Reconcile one selected Action batch without treating it as the whole configured set. */
+    function syncConfiguredSourceBatch(
+        requestedSourceInstanceIds: readonly string[],
+        nextBatch: TriageListEntriesResultV1['configuredSources'],
+    ): Readonly<{ acquisitionChanged: boolean; availabilityChanged: boolean }> {
+        const requested = new Set(requestedSourceInstanceIds);
+        const nextBySourceInstanceId = new Map(nextBatch.map((summary) => [summary.sourceInstanceId, summary]));
+        const merged = configuredSources.flatMap((summary) => {
+            if (!requested.has(summary.sourceInstanceId)) return [summary];
+            const next = nextBySourceInstanceId.get(summary.sourceInstanceId);
+            return next === undefined ? [] : [next];
+        });
+        for (const summary of nextBatch) {
+            if (merged.some((candidate) => candidate.sourceInstanceId === summary.sourceInstanceId)) continue;
+            merged.push(summary);
+        }
+        return syncConfiguredSources(Object.freeze(merged), configuredSourcesStatus);
     }
 
     /**
@@ -794,6 +842,7 @@ export function createTriageListWindowStore(deps: Readonly<{
         sourceInstanceId: string;
         outcome: TriageRefreshPassOutcomeV1;
     }>[]> {
+        const acquisitionLens = lens;
         const admitted = new Map<string, CorpusQualifiedObservationV1[]>();
         const settled = new Map<string, TriageListLaneV1>();
         const outcomes = new Map<string, TriageRefreshPassOutcomeV1>();
@@ -844,6 +893,45 @@ export function createTriageListWindowStore(deps: Readonly<{
                 continue;
             }
             if (!isCurrent() || input.signal.aborted) {
+                for (const sourceInstanceId of input.sourceInstanceIds) {
+                    if (!outcomes.has(sourceInstanceId)) outcomes.set(sourceInstanceId, { kind: 'interrupted' });
+                }
+                return input.sourceInstanceIds.map((sourceInstanceId) => ({
+                    sourceInstanceId,
+                    outcome: outcomes.get(sourceInstanceId) ?? { kind: 'interrupted' },
+                }));
+            }
+
+            // The Action result belongs to the complete lens identity that
+            // submitted its cursor. A lens change can occur while the provider
+            // page is awaiting; adopting that page would briefly publish the old
+            // frontier under the new lens before the queued replacement runs.
+            if (!sameAcquisitionLens(acquisitionLens, lens)) {
+                for (const sourceInstanceId of input.sourceInstanceIds) {
+                    if (!outcomes.has(sourceInstanceId)) outcomes.set(sourceInstanceId, { kind: 'interrupted' });
+                }
+                return input.sourceInstanceIds.map((sourceInstanceId) => ({
+                    sourceInstanceId,
+                    outcome: outcomes.get(sourceInstanceId) ?? { kind: 'interrupted' },
+                }));
+            }
+
+            const configuredSourceChange = syncConfiguredSourceBatch(
+                sourceInstanceIds,
+                result.configuredSources,
+            );
+            if (configuredSourceChange.acquisitionChanged) {
+                // The result itself already re-read the Collection after its
+                // provider work. Keep none of the old revision, clear its whole
+                // mounted cut, and let this same named demand reacquire the
+                // current configuration through the coalesced follow-up.
+                resetPagingGeneration({ replacesGeneration: true });
+                pendingTrigger = 'manual';
+                scheduler.trigger();
+            }
+            if (configuredSourceChange.acquisitionChanged
+                || configuredSourceChange.availabilityChanged
+                || input.signal.aborted) {
                 for (const sourceInstanceId of input.sourceInstanceIds) {
                     if (!outcomes.has(sourceInstanceId)) outcomes.set(sourceInstanceId, { kind: 'interrupted' });
                 }
@@ -1081,11 +1169,11 @@ export function createTriageListWindowStore(deps: Readonly<{
             // be visibly unsynchronized instead of falsely empty.
             const enumeration = await enumerateConfiguredSources();
             if (!isCurrent()) return;
-            const configuredSourceIdentityChanged = syncConfiguredSources(
+            const configuredSourceChange = syncConfiguredSources(
                 enumeration.configuredSources,
                 enumeration.configuredSourcesStatus,
             );
-            if (configuredSourceIdentityChanged && window !== null) {
+            if (configuredSourceChange.acquisitionChanged && window !== null) {
                 // This check runs before asking the coordinator, so the first
                 // post-change invocation includes every available source with
                 // no predecessor frontier from the old mixed set.
@@ -1177,10 +1265,6 @@ export function createTriageListWindowStore(deps: Readonly<{
     function dispose(): void {
         if (disposed) return;
         disposed = true;
-        if (refreshDeadlineWake !== null) {
-            clearTimeout(refreshDeadlineWake);
-            refreshDeadlineWake = null;
-        }
         scheduler.dispose();
         coordinator.dispose();
         listeners.clear();
@@ -1237,6 +1321,17 @@ export function createTriageListWindowStore(deps: Readonly<{
             publish();
             return scheduler.flush();
         },
+        replaceReadTransport() {
+            if (!isCurrent()) return;
+            resetPagingGeneration({ replacesGeneration: true });
+            // A cycle already in flight may still settle its append bookkeeping
+            // after this synchronous reset. Keep one reset intent queued so the
+            // replacement cycle clears that stale settlement before page one.
+            pagingResetPending = true;
+            pendingTrigger = 'manual';
+            publish();
+            scheduler.trigger();
+        },
         setLens(next) {
             // A continuation belongs to the complete mounted lens generation
             // that produced it. Query/facet changes are projected locally, but
@@ -1247,12 +1342,18 @@ export function createTriageListWindowStore(deps: Readonly<{
             // or cursor state is introduced.
             const acquisitionChanged = !sameAcquisitionLens(lens, next);
             lens = next;
-            if (window !== null) rebuild();
-            publish();
             if (acquisitionChanged) {
+                // Invalidate admission before publishing the newly projected
+                // lens. Subscribers run synchronously inside `publish`; doing
+                // this afterwards briefly offered the predecessor frontier and
+                // the imperative path would have accepted that press too.
                 pagingResetPending = true;
                 generationReplacementPending = true;
                 pendingTrigger = 'manual';
+            }
+            if (window !== null) rebuild();
+            publish();
+            if (acquisitionChanged) {
                 scheduler.trigger();
             }
         },

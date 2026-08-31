@@ -93,7 +93,7 @@ export const GITHUB_DETAIL_TABS_V1: readonly GithubDetailTabDeclarationV1[] = Ob
     title: 'Overview',
     titleKey: 'plugins.github.ui.tab.overview',
     retention: 'retain' as const,
-    retainedState: 'its one reader scroll anchor only; it holds no provider read to keep',
+    retainedState: 'its reader scroll anchor and parsed body-markdown render model only',
     readPlane: 'observation' as const,
     scrollOwner: 'scrollArea' as const,
     kinds: BOTH_KINDS,

@@ -63,6 +63,7 @@ const LOCAL_REF = Object.freeze({
   collisionScope: 'gitlab.com:group/project',
   entryId: '412',
 });
+const ROUTING_TOKEN = 'group/project';
 
 function launchInput(overrides: Readonly<{
   kindId?: string;
@@ -81,7 +82,7 @@ function launchInput(overrides: Readonly<{
         v: 1,
         webUrl: 'https://gitlab.com/group/project/-/merge_requests/412',
         displayPath: 'group/project !412',
-        routingToken: 'group/project',
+        routingToken: ROUTING_TOKEN,
       },
       snapshot: {
         v: 1,
@@ -216,7 +217,13 @@ describe('the mounted GitLab merge-request writes', () => {
     // about the repository's history that the reader never made.
     expect(recorded).toEqual([{
       action: actionRef(GITLAB_TRIAGE_MUTATION_ACTION_IDS.mergeRequestMerge),
-      input: { v: 1, instance: INSTANCE, localRef: LOCAL_REF, observedHeadSha: OBSERVED_HEAD },
+      input: {
+        v: 1,
+        instance: INSTANCE,
+        localRef: LOCAL_REF,
+        routingToken: ROUTING_TOKEN,
+        observedHeadSha: OBSERVED_HEAD,
+      },
     }]);
     await expect(detail.queryByText('Merged. GitLab confirmed this merge request is merged.'))
       .resolves.toBeDefined();
@@ -230,7 +237,13 @@ describe('the mounted GitLab merge-request writes', () => {
 
     expect(recorded).toEqual([{
       action: actionRef(GITLAB_TRIAGE_MUTATION_ACTION_IDS.mergeRequestMarkReady),
-      input: { v: 1, instance: INSTANCE, localRef: LOCAL_REF, observedHeadSha: OBSERVED_HEAD },
+      input: {
+        v: 1,
+        instance: INSTANCE,
+        localRef: LOCAL_REF,
+        routingToken: ROUTING_TOKEN,
+        observedHeadSha: OBSERVED_HEAD,
+      },
     }]);
   });
 
@@ -246,7 +259,7 @@ describe('the mounted GitLab merge-request writes', () => {
 
     expect(recorded).toEqual([{
       action: actionRef(GITLAB_TRIAGE_MUTATION_ACTION_IDS.mergeRequestClose),
-      input: { v: 1, instance: INSTANCE, localRef: LOCAL_REF },
+      input: { v: 1, instance: INSTANCE, localRef: LOCAL_REF, routingToken: ROUTING_TOKEN },
     }]);
   });
 

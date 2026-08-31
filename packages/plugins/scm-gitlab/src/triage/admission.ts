@@ -8,11 +8,10 @@
  * different rule than the read the user acted on could write to a project the
  * reference was never keyed against.
  *
- * The project id is read back out of the collision scope this source itself
- * minted and re-validated per origin, so a reference keyed against another
- * deployment cannot address a project that happens to carry the same number
- * here. The account is rematerialized on every invocation and grants no standing
- * authority.
+ * The collision scope is re-validated only as origin-bound identity evidence;
+ * it is never decoded into a route. Every provider request instead uses the
+ * canonical repository locator the source minted for the row. The account is
+ * rematerialized on every invocation and grants no standing authority.
  *
  * Action entry points carry the host-stamped invocation signal through this
  * admission rule and every later request. This source adds no second timer.
@@ -25,7 +24,10 @@ import { authorizeGitlabConfiguredInstance } from './configuredInstance.js';
 import { readGitlabTriageKindId } from './contribution.js';
 import type { GitlabDetailReadDependenciesV1 } from './detail/reads.js';
 import type { GitlabDetailRouteInputV1 } from './detail/routes.js';
-import { readGitlabScopeProjectId } from './identity.js';
+import {
+  isGitlabIdentityWithinOrigin,
+  readGitlabRepositoryRoutingToken,
+} from './identity.js';
 import { createGitlabHttpFetcher, readGitlabConnectedAccounts } from './invocation.js';
 import { projectGitlabSourceFailure } from './sourceFailure.js';
 import type { GitlabKindId } from './types.js';
@@ -40,6 +42,12 @@ export const GITLAB_ENTRY_ID_UNUSABLE_FAILURE: TriageSourceFailureV1 = Object.fr
   class: 'unsupportedContract',
   code: 'unusable-entry-id',
   detail: 'A GitLab entry id is a positive project-internal id.',
+});
+
+export const GITLAB_ROUTING_TOKEN_INVALID_FAILURE: TriageSourceFailureV1 = Object.freeze({
+  class: 'unsupportedContract',
+  code: 'locator-routing-token-invalid',
+  detail: 'The requested entry carries no usable source-minted repository locator.',
 });
 
 export const GITLAB_KIND_UNSUPPORTED_FAILURE: TriageSourceFailureV1 = Object.freeze({
@@ -87,15 +95,19 @@ export function admitGitlabItemIdentity(input: Readonly<{
 export function resolveGitlabItemRoute(
   identity: GitlabAdmittedItemIdentity,
   origin: GitlabDetailRouteInputV1['origin'],
+  routingToken: unknown,
 ): Readonly<{ ok: true; route: GitlabDetailRouteInputV1 }>
   | Readonly<{ ok: false; failure: TriageSourceFailureV1 }> {
-  const projectId = readGitlabScopeProjectId(identity.collisionScope, origin);
-  if (projectId === null) {
+  if (!isGitlabIdentityWithinOrigin(identity, origin)) {
     return Object.freeze({ ok: false as const, failure: GITLAB_SCOPE_OUTSIDE_BINDING_FAILURE });
+  }
+  const repositoryKey = readGitlabRepositoryRoutingToken(routingToken);
+  if (repositoryKey === null) {
+    return Object.freeze({ ok: false as const, failure: GITLAB_ROUTING_TOKEN_INVALID_FAILURE });
   }
   return Object.freeze({
     ok: true as const,
-    route: Object.freeze({ origin, projectId, iid: identity.iid, kindId: identity.kindId }),
+    route: Object.freeze({ origin, repositoryKey, iid: identity.iid, kindId: identity.kindId }),
   });
 }
 
@@ -130,6 +142,7 @@ export async function admitGitlabItemInvocation(
   input: Readonly<{
     instance: Parameters<typeof authorizeGitlabConfiguredInstance>[0]['instance'];
     localRef: Readonly<{ kindId: string; entryId: string; collisionScope: string }>;
+    routingToken: unknown;
     /** The kinds this caller can answer for at all. */
     admissibleKinds: readonly GitlabKindId[];
   }>,
@@ -151,7 +164,7 @@ export async function admitGitlabItemInvocation(
   }
   const { origin, invocation } = authorized.resolved;
 
-  const routed = resolveGitlabItemRoute(identity.identity, origin);
+  const routed = resolveGitlabItemRoute(identity.identity, origin, input.routingToken);
   if (!routed.ok) return routed;
 
   return Object.freeze({

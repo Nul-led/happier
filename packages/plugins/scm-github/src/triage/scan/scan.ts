@@ -427,7 +427,7 @@ export async function runGithubTriageScan(
       continue;
     }
 
-    const next = readValidatedGithubNextPage(response.headers, {
+    const next = readValidatedGithubNextPage(response.headers, url, {
       laneQuery: lane.laneQuery,
       perPage: frontier.nativePageSize,
     });

@@ -3,6 +3,7 @@ import {
     normalizePluginAccountCollectionContractV1,
 } from '@happier-dev/protocol';
 import { TRIAGE_SOURCES_TARGET_PLUGIN_ID_V1 } from '@happier-dev/triage-protocol/v1';
+import { PluginContributionIdentityV1Schema } from '@happier-dev/plugin-sdk/manifest';
 import { describe, expect, it } from 'vitest';
 
 import { PLUGIN_MANIFEST } from '../../manifest.js';
@@ -128,13 +129,26 @@ describe('durable Collection declarations', () => {
         expect(offenders.sort()).toEqual(['source-instances.token']);
     });
 
-    it('projects only the declared disclosure ledger for every collection', () => {
+  it('projects only the declared disclosure ledger for every collection', () => {
         expect(CORPUS_SOURCE_INSTANCES_COLLECTION.serverReadable)
             .toEqual(['sourceQualifiedId', 'lifecycle', 'configuredAtMs']);
         expect(CORPUS_SESSION_LINKS_COLLECTION.serverReadable)
             .toEqual(['entryTag', 'sessionId', 'linkedAtMs']);
         expect(CORPUS_USER_MARKS_COLLECTION.serverReadable).toEqual(['pinned', 'markedAtMs']);
+  });
+
+  it('admits the complete canonical public source contribution identity', () => {
+    const source = PluginContributionIdentityV1Schema.parse({
+      pluginId: `a.${'b'.repeat(254)}`,
+      localId: 'c'.repeat(256),
     });
+    const sourceQualifiedId = `${source.pluginId}/${source.localId}`;
+    const schema = CORPUS_SOURCE_INSTANCES_COLLECTION.schema as Readonly<{
+      properties: Readonly<Record<string, Readonly<{ maxLength?: number }>>>;
+    }>;
+
+    expect(schema.properties.sourceQualifiedId?.maxLength).toBe(sourceQualifiedId.length);
+  });
 
     it('declares exactly the four indexes the disclosure ledger admits', () => {
         // An index is a disclosure, and index declarations are one-way once rows

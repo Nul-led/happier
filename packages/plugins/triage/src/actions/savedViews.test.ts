@@ -17,6 +17,7 @@ const createInput: TriageAdministerSavedViewInputV1 = {
     kind: 'create',
     expectedRevision: 'absent',
     label: 'Needs my review',
+    query: 'authentication',
     filters: TRIAGE_LIST_NO_FILTERS_V1,
     order: 'smart',
     smartPolicy: { v: 1, precedence: ['attention', 'activity'] },
@@ -105,6 +106,7 @@ describe('the saved-view Actions', () => {
         expect(read.views[0]?.filters.types).toEqual([
             { source: { pluginId: 'happier.github', localId: 'github' }, kindId: 'pull-request' },
         ]);
+        expect(read.views[0]?.query).toBe('authentication');
         expect(read.views[0]?.order).toBe('smart');
         expect(read.views[0]?.smartPolicy).toEqual({ v: 1, precedence: ['attention', 'activity'] });
     });

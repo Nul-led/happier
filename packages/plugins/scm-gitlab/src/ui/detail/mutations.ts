@@ -135,6 +135,10 @@ function localRefOf(input: TriageDetailSurfaceInputV1) {
   };
 }
 
+function routingTokenOf(input: TriageDetailSurfaceInputV1): string | undefined {
+  return input.observation.locator.routingToken;
+}
+
 /**
  * The close input: the configured instance whose account is rematerialized for
  * the invocation, and the canonical entry ref. Nothing else.
@@ -156,6 +160,7 @@ export function buildGitlabMergeRequestCloseInputV1(
     v: 1,
     instance: input.instance,
     localRef: localRefOf(input),
+    routingToken: routingTokenOf(input),
   });
   return parsed.success ? parsed.data : null;
 }
@@ -173,6 +178,7 @@ export function buildGitlabMergeRequestReopenInputV1(input: TriageDetailSurfaceI
     v: 1,
     instance: input.instance,
     localRef: localRefOf(input),
+    routingToken: routingTokenOf(input),
   });
 }
 
@@ -181,6 +187,7 @@ export function buildGitlabIssueCloseInputV1(input: TriageDetailSurfaceInputV1) 
     v: 1,
     instance: input.instance,
     localRef: localRefOf(input),
+    routingToken: routingTokenOf(input),
     observedRevision: input.observation.nativeRevision,
   });
 }
@@ -190,6 +197,7 @@ export function buildGitlabIssueReopenInputV1(input: TriageDetailSurfaceInputV1)
     v: 1,
     instance: input.instance,
     localRef: localRefOf(input),
+    routingToken: routingTokenOf(input),
     observedRevision: input.observation.nativeRevision,
   });
 }
@@ -203,6 +211,7 @@ export function buildGitlabReviewerChangeInputV1(
     v: 1,
     instance: input.instance,
     localRef: localRefOf(input),
+    routingToken: routingTokenOf(input),
     observedHeadSha: input.observation.nativeRevision,
     operation,
     reviewerUsernames,
@@ -218,6 +227,7 @@ export function buildGitlabDiscussionResolutionInputV1(
     v: 1,
     instance: input.instance,
     localRef: localRefOf(input),
+    routingToken: routingTokenOf(input),
     observedHeadSha: input.observation.nativeRevision,
     discussionId,
     resolved,
@@ -233,6 +243,7 @@ export function buildGitlabIssueAssignInputV1(
     v: 1,
     instance: input.instance,
     localRef: localRefOf(input),
+    routingToken: routingTokenOf(input),
     observedRevision: input.observation.nativeRevision,
     operation,
     assigneeUsernames,
@@ -248,6 +259,7 @@ export function buildGitlabIssueLabelInputV1(
     v: 1,
     instance: input.instance,
     localRef: localRefOf(input),
+    routingToken: routingTokenOf(input),
     observedRevision: input.observation.nativeRevision,
     operation,
     labelNames,
@@ -278,6 +290,7 @@ export function buildGitlabMergeRequestMergeInputV1(
     v: 1,
     instance: input.instance,
     localRef: localRefOf(input),
+    routingToken: routingTokenOf(input),
     observedHeadSha: input.observation.nativeRevision,
   });
   return parsed.success ? parsed.data : null;
@@ -296,6 +309,7 @@ export function buildGitlabMergeRequestMarkReadyInputV1(
     v: 1,
     instance: input.instance,
     localRef: localRefOf(input),
+    routingToken: routingTokenOf(input),
     observedHeadSha: input.observation.nativeRevision,
   });
   return parsed.success ? parsed.data : null;

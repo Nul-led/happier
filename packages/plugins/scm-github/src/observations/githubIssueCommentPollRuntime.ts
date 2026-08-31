@@ -118,7 +118,9 @@ function parseGithubPaginationLink(
   headers: Readonly<Record<string, string>>,
   relation: 'next' | 'last',
 ): string | null {
-  return parseForgeLinkHeader(readTriageResponseHeaderV1(headers, 'link'))[relation] ?? null;
+  const parsed = parseForgeLinkHeader(readTriageResponseHeaderV1(headers, 'link'));
+  if (parsed.kind === 'malformed') throw new GithubIssueCommentHistoryGapError();
+  return parsed.kind === 'parsed' ? parsed.links[relation] ?? null : null;
 }
 
 function parseNextLink(headers: Readonly<Record<string, string>>): string | null {

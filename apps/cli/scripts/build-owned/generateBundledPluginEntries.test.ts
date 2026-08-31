@@ -46,6 +46,16 @@ describe('generator workspace lock policy', () => {
       .toBeLessThan(synchronization.indexOf('const hostWorkspaceNames ='));
   });
 
+  it('keeps check-mode generated compiler-input preparation read-only', () => {
+    const synchronization = sourceBetween(
+      'async function synchronizeGeneratorAuthoringRuntimeClosure(',
+      'type PluginAuthorRuntimeModules =',
+    );
+
+    expect(synchronization).toContain('generatedCompilerInputMode: mode,');
+    expect(synchronization).not.toContain("generatedCompilerInputMode: 'write',");
+  });
+
   it('prepares Plugin SDK vendored declarations before API governance materialization', () => {
     const publication = sourceBetween(
       'async function publishPluginSdkApiGovernanceOutputs()',

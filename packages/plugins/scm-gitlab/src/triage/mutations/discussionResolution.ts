@@ -43,6 +43,7 @@ export async function resolveGitlabMergeRequestDiscussion(
   const preflight = await preflightGitlabItemMutation({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     subject: GITLAB_MERGE_REQUEST_MUTATION_SUBJECT_V1,
     expectedRevision: request.observedHeadSha,
   }, context);

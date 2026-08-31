@@ -34,6 +34,7 @@ const compiledConnectedAccountsDeclaration = fileURLToPath(
 const sourceAuthoringDeclarationSources = [
     fileURLToPath(new URL('./protocol/protocolFacade.ts', import.meta.url)),
     fileURLToPath(new URL('./protocol/composerRef.ts', import.meta.url)),
+    fileURLToPath(new URL('./protocol/composerReferenceResolution.ts', import.meta.url)),
     fileURLToPath(new URL('./protocol/collectionCursor.ts', import.meta.url)),
     fileURLToPath(new URL('./protocol/index.ts', import.meta.url)),
     fileURLToPath(new URL('./targetedContributionAuthoring.ts', import.meta.url)),
@@ -348,6 +349,9 @@ describe('public protocol-authoring declaration neutrality', () => {
     it('keeps the public facade declaration closure structural and isolated from source composition internals', async () => {
         const declaration = emittedSourceAuthoringDeclaration('protocol/protocolFacade.d.ts');
         const entrypointDeclaration = emittedSourceAuthoringDeclaration('protocol/index.d.ts');
+        const composerReferenceResolutionDeclaration = emittedSourceAuthoringDeclaration(
+            'protocol/composerReferenceResolution.d.ts',
+        );
         const targetedDeclaration = emittedSourceAuthoringDeclaration('targetedContributionAuthoring.d.ts');
 
         expectTypeOf<ProtocolComposableSchema<{ readonly title: string }>['jsonSchema']>()
@@ -379,6 +383,12 @@ describe('public protocol-authoring declaration neutrality', () => {
         expect(declaration).not.toContain('ProtocolUniqueArrayBounds');
         expect(entrypointDeclaration).toContain("from './protocolFacade.js';");
         expect(entrypointDeclaration).not.toContain("from '../protocolSchema.js';");
+        expect(composerReferenceResolutionDeclaration).toContain(
+            "from '@happier-dev/protocol/plugins/contributions/composer-reference-providers';",
+        );
+        expect(composerReferenceResolutionDeclaration).not.toContain(
+            "from '@happier-dev/protocol';",
+        );
         expect(targetedDeclaration).toContain("from './protocol/protocolFacade.js';");
         expect(targetedDeclaration).toContain('ProtocolJsonValue as JsonValue');
         expect(targetedDeclaration).toContain('ProtocolComposableSchema');
@@ -411,8 +421,15 @@ describe('public protocol-authoring declaration neutrality', () => {
                 .map((reference) => `${declarationPath}: ${reference}`));
 
         expect(leakedReferences).toEqual([]);
-        for (const declaration of closure.values()) {
-            expect(declaration).not.toMatch(/@happier-dev\/protocol(?:\/|['"])/u);
+        for (const [declarationPath, declaration] of closure.entries()) {
+            const protocolImportSpecifiers = [...declaration.matchAll(
+                /from\s+['"](@happier-dev\/protocol[^'"]*)['"]/gu,
+            )].map((match) => match[1]);
+            expect(protocolImportSpecifiers).toEqual(
+                declarationPath.endsWith('/protocol/composerReferenceResolution.d.ts')
+                    ? ['@happier-dev/protocol/plugins/contributions/composer-reference-providers']
+                    : [],
+            );
             expect(declaration).not.toContain(`type ${'Defined'}${'Schema'}<`);
             expect(declaration).not.toContain('ProtocolAuthoringSchema');
             expect(declaration).not.toContain('PublicProtocolSchema');

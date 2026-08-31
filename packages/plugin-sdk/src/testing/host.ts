@@ -52,10 +52,8 @@ import {
 } from '../host/registration/index.js';
 import type { PluginServiceId, PluginServices } from '../services/index.js';
 import type {
-    TargetedContributionObservation,
     TargetedContributionPointRef,
     TargetedContributionSnapshot,
-    TargetedContributionsService,
 } from '../services/targetedContributions.js';
 import type {
     PluginTestServicesFixture,
@@ -66,6 +64,7 @@ import type {
     PluginTestkitOptions,
     PluginTestkitRegistration,
     PluginTestkitRegistrationByFamily,
+    PluginTestkitTargetedContributionFixtureEntry,
 } from './types.js';
 
 type PluginActionCaller = Extract<PluginInvocationCaller, Readonly<{ kind: 'plugin' }>>;
@@ -376,13 +375,10 @@ function readPluginContributionRef(value: unknown): PluginContributionRef | null
 function createPluginServices(
     fixture: PluginTestServicesFixture = {},
     actionService?: ActionsService,
-    targetedContributionsService?: TargetedContributionsService,
 ): PluginServices {
     return Object.freeze({
         availability(serviceId: PluginServiceId) {
             return (serviceId === 'actions' && actionService !== undefined)
-                || (serviceId === 'targetedContributions'
-                    && targetedContributionsService !== undefined)
                 || fixtureHasService(fixture, serviceId)
                 ? Object.freeze({ status: 'available' as const })
                 : Object.freeze({
@@ -406,8 +402,7 @@ function createPluginServices(
         notifications: fixtureService(fixture, 'notifications'),
         connectedAccounts: fixtureService(fixture, 'connectedAccounts'),
         actions: actionService ?? fixtureService(fixture, 'actions'),
-        targetedContributions: targetedContributionsService
-            ?? fixtureService(fixture, 'targetedContributions'),
+        targetedContributions: fixtureService(fixture, 'targetedContributions'),
         interactions: fixtureService(fixture, 'interactions'),
         composerContent: fixtureService(fixture, 'composerContent'),
     });
@@ -785,14 +780,14 @@ export async function createPluginTestkit(
      * of cold candidate admission, diagnostics, descriptor/surface semantics,
      * and catalog ordering.
      */
-    function readTargetedContributionFixture<TContribution>(
-        point: TargetedContributionPointRef<TContribution>,
+    function readTargetedContributionFixture(
+        point: TargetedContributionPointRef<unknown>,
         signal?: AbortSignal,
-    ): TargetedContributionSnapshot<TContribution> {
+    ): TargetedContributionSnapshot<PluginTestkitTargetedContributionFixtureEntry> {
         assertFixtureCurrent(signal);
         const targetPoint = readFixturePoint(point);
         const operationSemantics = readFixtureOperationSemantics(targetPoint.protocol);
-        const contributions: unknown[] = [];
+        const contributions: PluginTestkitTargetedContributionFixtureEntry[] = [];
 
         for (const contributor of fixtureContributorTargets) {
             if (!contributor.isCurrent()) continue;
@@ -809,10 +804,9 @@ export async function createPluginTestkit(
             for (const declaration of declarationsForPoint) {
                 if (!sameFixtureProtocol(declaration.protocol, point.protocol)) continue;
                 const roles = Object.entries(declaration.operations);
-                if (roles.some(([role]) => targetPoint.protocol.operations[role] === undefined)
-                    || Object.entries(targetPoint.protocol.operations).some(([role, operation]) => (
-                        operation.required && declaration.operations[role] === undefined
-                    ))) {
+                if (Object.entries(targetPoint.protocol.operations).some(([role, operation]) => (
+                    operation.required && declaration.operations[role] === undefined
+                ))) {
                     continue;
                 }
 
@@ -824,6 +818,11 @@ export async function createPluginTestkit(
                         actionUnavailable = true;
                         break;
                     }
+                    // Match cold production admission: an additive role from
+                    // a newer contributor must still reference an admitted
+                    // same-contributor Action, but an older target omits that
+                    // role from its projected operation snapshot.
+                    if (targetPoint.protocol.operations[role] === undefined) continue;
                     actionBindings.push([role, actionLocalId]);
                 }
                 if (actionUnavailable) continue;
@@ -861,7 +860,7 @@ export async function createPluginTestkit(
         assertFixtureCurrent(signal);
         return Object.freeze({
             generation: syntheticImmutableGenerationId,
-            contributions: Object.freeze(contributions) as readonly TContribution[],
+            contributions: Object.freeze(contributions),
         });
     }
 
@@ -927,56 +926,6 @@ export async function createPluginTestkit(
         return value as TestkitFixtureAdmittedContribution;
     }
 
-    function createFixtureTargetedContributionsService(): TargetedContributionsService {
-        return Object.freeze({
-            observeForSelf<TContribution>(
-                point: TargetedContributionPointRef<TContribution>,
-                options: Readonly<{ onInvalidated: () => void }>,
-            ): TargetedContributionObservation<TContribution> {
-                readFixturePoint(point);
-                let disposed = false;
-                let invalidationScheduled = false;
-                const unsubscribeCurrentness = fixtureContributorTargets.map((contributor) => (
-                    contributor.subscribeCurrentness(scheduleInvalidation)
-                ));
-
-                function dispose(): void {
-                    if (disposed) return;
-                    disposed = true;
-                    invocationLifetime.signal.removeEventListener('abort', dispose);
-                    for (const unsubscribe of unsubscribeCurrentness) unsubscribe();
-                }
-
-                function scheduleInvalidation(): void {
-                    if (disposed || invalidationScheduled) return;
-                    invalidationScheduled = true;
-                    queueMicrotask(() => {
-                        invalidationScheduled = false;
-                        if (disposed) return;
-                        if (state !== 'active' || invocationLifetime.signal.aborted) {
-                            dispose();
-                            return;
-                        }
-                        try {
-                            options.onInvalidated();
-                        } catch {
-                            // A target callback cannot break testkit retirement.
-                        }
-                    });
-                }
-
-                invocationLifetime.signal.addEventListener('abort', dispose, { once: true });
-                return Object.freeze({
-                    dispose,
-                    async readCurrent(options?: PluginCancellationOptions) {
-                        if (disposed) throw fixtureStaleGeneration();
-                        return readTargetedContributionFixture(point, options?.signal);
-                    },
-                });
-            },
-        });
-    }
-
     function createInvocationServices(
         invocationServices: PluginTestServicesFixture | undefined,
         source: TestkitActionServiceSource,
@@ -987,15 +936,12 @@ export async function createPluginTestkit(
         const actions = actionTargets.size === 0
             ? undefined
             : createTestkitActionsService(fixture, source);
-        const targetedContributions = fixtureContributorTargets.length === 0
-            ? undefined
-            : createFixtureTargetedContributionsService();
-        if (actions === undefined && targetedContributions === undefined) {
+        if (actions === undefined) {
             return invocationServices === undefined && defaultServices !== undefined
                 ? defaultServices
                 : createPluginServices(fixture);
         }
-        return createPluginServices(fixture, actions, targetedContributions);
+        return createPluginServices(fixture, actions);
     }
 
     function createTestkitActionsService(

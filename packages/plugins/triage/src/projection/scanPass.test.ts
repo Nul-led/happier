@@ -846,6 +846,42 @@ describe('one materialization pass', () => {
         expect(pass.stopped).toEqual([]);
     });
 
+    it('settles a same-token zero-observation page even when omissions consumed its row limit', async () => {
+        const pass = await runTriageScanPass({
+            lanes: [positionalLane({
+                sourceInstanceId: INSTANCE_ID,
+                declaredKindIds: ['pull-request'],
+                pageFor: (token) => (token === null
+                    ? {
+                        kind: 'page',
+                        evidence: { kind: 'partial', reason: 'undecodable-items', omittedItemCount: 1 },
+                        observations: [],
+                        continuation: { v: 1, token: 'stuck-with-omission' },
+                    } as unknown as TriageScanResultV1
+                    : {
+                        kind: 'page',
+                        evidence: { kind: 'partial', reason: 'undecodable-items', omittedItemCount: 1 },
+                        observations: [],
+                        continuation: { v: 1, token: 'stuck-with-omission' },
+                    } as unknown as TriageScanResultV1),
+            })],
+            pageLimit: 16,
+            observationBudget: 64,
+            nowMs: () => 1_000,
+            // The wrong implementation eventually exits only by spending this
+            // wall-clock deadline; the continuation comparison must settle it
+            // structurally on the first repeated page.
+            passDeadlineMs: 20,
+        });
+
+        expect(pass.lanes[0]?.health).toMatchObject({
+            kind: 'failed',
+            failure: { class: 'transient', code: 'triage/stalledWalk' },
+        });
+        expect(pass.lanes[0]?.exhausted).toBe(false);
+        expect(pass.stopped).toEqual([]);
+    });
+
     it('reaches a row waiting behind pages that traverse containers and deliver nothing', async () => {
         /*
          * The starvation this guard caused, stated in the terms of the source

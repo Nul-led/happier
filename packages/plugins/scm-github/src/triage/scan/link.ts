@@ -107,8 +107,10 @@ export function readValidatedGithubFollowUpPage(
   requestedUrl: string,
 ): Readonly<{ kind: 'ended' }> | Readonly<{ kind: 'next'; url: string }>
   | Readonly<{ kind: 'invalid' }> {
-  const links = parseForgeLinkHeader(readForgeLinkHeaderValue(headers));
-  const next = links.next;
+  const parsed = parseForgeLinkHeader(readForgeLinkHeaderValue(headers));
+  if (parsed.kind === 'malformed') return Object.freeze({ kind: 'invalid' });
+  if (parsed.kind === 'absent') return Object.freeze({ kind: 'ended' });
+  const next = parsed.links.next;
   if (next === undefined) return Object.freeze({ kind: 'ended' });
   const validated = validateGithubFollowUpPageUrl(next, requestedUrl);
   return validated === null
@@ -119,14 +121,18 @@ export function readValidatedGithubFollowUpPage(
 /** Reads the validated `rel="next"` for this lane, or `null` when the walk has ended. */
 export function readValidatedGithubNextPage(
   headers: Readonly<Record<string, string>>,
+  requestedUrl: string,
   expected: Readonly<{ laneQuery: string; perPage: number }>,
 ): Readonly<{ kind: 'ended' }> | Readonly<{ kind: 'next'; next: GithubValidatedNextPageV1 }>
   | Readonly<{ kind: 'invalid' }> {
-  const links = parseForgeLinkHeader(readForgeLinkHeaderValue(headers));
-  const next = links.next;
+  const parsed = parseForgeLinkHeader(readForgeLinkHeaderValue(headers));
+  if (parsed.kind === 'malformed') return Object.freeze({ kind: 'invalid' });
+  if (parsed.kind === 'absent') return Object.freeze({ kind: 'ended' });
+  const next = parsed.links.next;
   if (next === undefined) return Object.freeze({ kind: 'ended' });
   const validated = validateGithubSearchNextUrl(next, expected);
-  return validated === null
+  const requested = validateGithubSearchNextUrl(requestedUrl, expected);
+  return validated === null || requested === null || validated.page <= requested.page
     ? Object.freeze({ kind: 'invalid' })
     : Object.freeze({ kind: 'next', next: validated });
 }

@@ -140,6 +140,109 @@ describe('Bitbucket API adapter', () => {
     expect(requests[0]?.init?.signal).toBe(controller.signal);
   });
 
+  it('walks every Bitbucket page before returning a legacy pull-request listing', async () => {
+    const mod = await import('./bitbucketApiAdapter.js').catch(() => null);
+    expect(mod).not.toBeNull();
+    if (!mod) return;
+
+    const requests: string[] = [];
+    const adapter = mod.createBitbucketApiAdapter({
+      fetcher: async (url: string) => {
+        requests.push(url);
+        if (url.includes('page=2')) {
+          return jsonResponse({ values: [createBitbucketPullRequest()] });
+        }
+        const next = new URL(url);
+        next.searchParams.set('page', '2');
+        return jsonResponse({
+          values: [createBitbucketPullRequest({ id: 41, title: 'Earlier match' })],
+          next: next.toString(),
+        });
+      },
+    });
+
+    await expect(adapter.listPullRequests({
+      provider,
+      base: 'main',
+      head: 'feature/bitbucket',
+      state: 'open',
+      runtimeServices: createRuntimeServices(),
+    })).resolves.toEqual([
+      expect.objectContaining({ number: 41 }),
+      expect.objectContaining({ number: 42 }),
+    ]);
+    expect(requests).toHaveLength(2);
+  });
+
+  it('refuses a pull-request next link that changes route or credential origin', async () => {
+    const mod = await import('./bitbucketApiAdapter.js').catch(() => null);
+    expect(mod).not.toBeNull();
+    if (!mod) return;
+
+    const requests: string[] = [];
+    const adapter = mod.createBitbucketApiAdapter({
+      fetcher: async (url: string) => {
+        requests.push(url);
+        return jsonResponse({
+          values: [createBitbucketPullRequest()],
+          next: 'https://attacker.invalid/2.0/repositories/example/repository/pullrequests?page=2',
+        });
+      },
+    });
+
+    await expect(adapter.listPullRequests({
+      provider,
+      head: 'feature/bitbucket',
+      state: 'open',
+      runtimeServices: createRuntimeServices(),
+    })).rejects.toMatchObject({
+      errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatch(/^https:\/\/api\.bitbucket\.org\/2\.0\//u);
+  });
+
+  it('reuses a matching pull request found after the first legacy listing page', async () => {
+    const mod = await import('./bitbucketApiAdapter.js').catch(() => null);
+    expect(mod).not.toBeNull();
+    if (!mod) return;
+
+    const requests: Readonly<{ url: string; method: string | undefined }>[] = [];
+    const adapter = mod.createBitbucketApiAdapter({
+      fetcher: async (url: string, init?: RequestInit) => {
+        requests.push({ url, method: init?.method });
+        if (url.includes('page=2')) {
+          return jsonResponse({ values: [createBitbucketPullRequest()] });
+        }
+        const next = new URL(url);
+        next.searchParams.set('page', '2');
+        return jsonResponse({
+          values: [createBitbucketPullRequest({
+            id: 41,
+            source: {
+              branch: { name: 'feature/other' },
+              repository: { full_name: 'happier-dev/happier' },
+            },
+          })],
+          next: next.toString(),
+        });
+      },
+    });
+
+    await expect(adapter.openOrReusePullRequest({
+      provider,
+      base: 'main',
+      head: 'feature/bitbucket',
+      title: 'Reuse the complete search result',
+      runtimeServices: createRuntimeServices(),
+    })).resolves.toMatchObject({
+      reused: true,
+      pullRequest: { number: 42 },
+    });
+    expect(requests).toHaveLength(2);
+    expect(requests.some((request) => request.method === 'POST')).toBe(false);
+  });
+
   it('requires source repository identity when Bitbucket sends a source repository object', async () => {
     const mod = await import('./bitbucketApiAdapter.js').catch(() => null);
     expect(mod).not.toBeNull();
@@ -283,6 +386,44 @@ describe('Bitbucket API adapter', () => {
       })).resolves.toBeNull();
     }
 
+    expect(requests).toEqual([]);
+  });
+
+  it('rejects a hostile Bitbucket API base before materializing credentials or fetching', async () => {
+    const mod = await import('./bitbucketApiAdapter.js').catch(() => null);
+    expect(mod).not.toBeNull();
+    if (!mod) return;
+
+    const materializations: unknown[] = [];
+    const requests: unknown[] = [];
+    const adapter = mod.createBitbucketApiAdapter({
+      fetcher: async (url: string, init?: RequestInit) => {
+        requests.push({ url, init });
+        return jsonResponse({ values: [] });
+      },
+    });
+
+    await expect(adapter.listPullRequests({
+      provider: {
+        ...provider,
+        apiBaseUrl: 'https://attacker.invalid/2.0',
+      } as ScmHostingProviderRef,
+      head: 'feature/unsafe',
+      runtimeServices: {
+        resolveScmHostingBasicAuthMaterialization: async (request) => {
+          materializations.push(request);
+          return {
+            kind: 'available',
+            username: 'secret-user',
+            password: 'secret-app-password',
+          };
+        },
+      },
+    })).rejects.toMatchObject({
+      errorCode: SCM_OPERATION_ERROR_CODES.INVALID_REQUEST,
+    });
+
+    expect(materializations).toEqual([]);
     expect(requests).toEqual([]);
   });
 

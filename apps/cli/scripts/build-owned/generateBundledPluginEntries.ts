@@ -334,12 +334,10 @@ async function synchronizeGeneratorAuthoringRuntimeClosure(
     await syncSharedDepsForSourceDev({
       repoRoot: CANONICAL_GENERATOR_REPO_ROOT,
       workspaceNames,
-      // Preparation is the same canonical materialization operation for write
-      // and check. Passing check mode here produced a distinct rebuilt plugin
-      // closure after publication (different chunks/daemon bytes), so the
-      // checker invalidated the artifacts it was about to compare. Drift is
-      // still read-only at the projection/output boundary below.
-      generatedCompilerInputMode: 'write',
+      // Generated compiler inputs are publisher-owned source. A drift check may
+      // build ignored package/runtime materialization, but it must not repair
+      // those tracked inputs while deciding whether publication is current.
+      generatedCompilerInputMode: mode,
       includeRuntimeDependencies: true,
       publishBundledPluginArtifacts: false,
       preserveBundledPluginArtifacts,

@@ -1,5 +1,7 @@
 import {
+  hasTriageActionInstructionSourceV1,
   isTriageActionTargetOfferableV1,
+  requiresTriageActionInstructionV1,
   type TriageActionV1,
 } from '../../settings/actions.js';
 import { TRIAGE_WORKSPACE_MODES_V1 } from '../../sessions/entrySessionWorkspace.js';
@@ -27,6 +29,14 @@ export const TRIAGE_EDITOR_TARGET_KINDS_V1 = (['agent', 'reviewStart'] as const)
   .filter(isTriageActionTargetOfferableV1);
 export type TriageEditorTargetKindV1 = (typeof TRIAGE_EDITOR_TARGET_KINDS_V1)[number];
 
+/** A whole-record draft may only be saved against the catalog it was opened from. */
+export function isTriageActionDraftRevisionStaleV1(
+  baseRevision: string,
+  currentRevision: string | null,
+): boolean {
+  return currentRevision === null || currentRevision !== baseRevision;
+}
+
 export type TriagePromptInvocationEditorOptionV1 = Readonly<{
   value: string;
   label: string;
@@ -43,7 +53,12 @@ export type TriagePromptInvocationEditorOptionV1 = Readonly<{
  */
 export function triagePromptInvocationEditorOptionsV1(input: Readonly<{
   heldInvocationId: string | null;
-  invocations: readonly Readonly<{ id: string; token: string; title: string }>[];
+  invocations: readonly Readonly<{
+    id: string;
+    token: string;
+    title: string;
+    allowArgs: boolean;
+  }>[];
   coverage: 'complete' | 'truncated' | null;
   noPromptLabel: string;
   missingPromptLabel: string;
@@ -77,6 +92,7 @@ export function newTriageActionDraftV1(): TriageActionEditorDraftV1 {
     appliesTo: TRIAGE_EDITOR_SUBJECTS_V1,
     profileId: null,
     workspaceMode: 'reference_only',
+    hasSeededFallbackInstruction: false,
     target: { kind: 'agent', promptInvocationId: null, delivery: 'compose' },
   };
 }
@@ -89,7 +105,20 @@ export function triageActionDraftV1(action: TriageActionV1): TriageActionEditorD
     appliesTo: action.appliesTo,
     profileId: action.profileId,
     workspaceMode: action.workspaceMode,
-    target: action.target,
+    hasSeededFallbackInstruction:
+      (action.target.seededFallbackInstruction?.trim().length ?? 0) > 0,
+    target: action.target.kind === 'reviewStart'
+      ? {
+        kind: 'reviewStart',
+        promptInvocationId: action.target.promptInvocationId,
+        ...(action.target.promptArgsText === undefined ? {} : { promptArgsText: action.target.promptArgsText }),
+      }
+      : {
+        kind: 'agent',
+        promptInvocationId: action.target.promptInvocationId,
+        ...(action.target.promptArgsText === undefined ? {} : { promptArgsText: action.target.promptArgsText }),
+        delivery: action.target.delivery,
+      },
   };
 }
 
@@ -109,14 +138,24 @@ export function withTriageActionTargetKindV1(
 ): TriageActionEditorDraftV1 {
   if (draft.target.kind === kind) return draft;
   const promptInvocationId = draft.target.promptInvocationId;
+  const promptArgsText = draft.target.promptArgsText;
   return {
     ...draft,
     ...(kind === 'reviewStart'
       ? { workspaceMode: 'pull_request' as const, appliesTo: ['pullRequest'] as const }
       : {}),
     target: kind === 'reviewStart'
-      ? { kind: 'reviewStart', promptInvocationId }
-      : { kind: 'agent', promptInvocationId, delivery: 'compose' },
+      ? {
+        kind: 'reviewStart',
+        promptInvocationId,
+        ...(promptArgsText === undefined ? {} : { promptArgsText }),
+      }
+      : {
+        kind: 'agent',
+        promptInvocationId,
+        ...(promptArgsText === undefined ? {} : { promptArgsText }),
+        delivery: 'compose',
+      },
   };
 }
 
@@ -138,8 +177,44 @@ export function withTriagePromptTokenV1(
   return {
     ...draft,
     target: draft.target.kind === 'reviewStart'
-      ? { kind: 'reviewStart', promptInvocationId }
-      : { kind: 'agent', promptInvocationId, delivery: draft.target.delivery },
+      ? {
+        kind: 'reviewStart',
+        promptInvocationId,
+        ...(promptInvocationId === null || draft.target.promptArgsText === undefined
+          ? {}
+          : { promptArgsText: draft.target.promptArgsText }),
+      }
+      : {
+        kind: 'agent',
+        promptInvocationId,
+        ...(promptInvocationId === null || draft.target.promptArgsText === undefined
+          ? {}
+          : { promptArgsText: draft.target.promptArgsText }),
+        delivery: draft.target.delivery,
+      },
+  };
+}
+
+/** Static arguments remain input to the Prompt Library, never rendered here. */
+export function withTriagePromptArgsTextV1(
+  draft: TriageActionEditorDraftV1,
+  promptArgsText: string,
+): TriageActionEditorDraftV1 {
+  const stored = promptArgsText.length === 0 ? undefined : promptArgsText;
+  return {
+    ...draft,
+    target: draft.target.kind === 'reviewStart'
+      ? {
+        kind: 'reviewStart',
+        promptInvocationId: draft.target.promptInvocationId,
+        ...(stored === undefined ? {} : { promptArgsText: stored }),
+      }
+      : {
+        kind: 'agent',
+        promptInvocationId: draft.target.promptInvocationId,
+        ...(stored === undefined ? {} : { promptArgsText: stored }),
+        delivery: draft.target.delivery,
+      },
   };
 }
 
@@ -153,6 +228,9 @@ export function withTriageDeliveryV1(
     target: {
       kind: 'agent',
       promptInvocationId: draft.target.promptInvocationId,
+      ...(draft.target.promptArgsText === undefined
+        ? {}
+        : { promptArgsText: draft.target.promptArgsText }),
       delivery,
     },
   };
@@ -196,8 +274,11 @@ export function withTriageAppliesToV1(
  */
 export function triageActionDraftBlockerV1(
   draft: TriageActionEditorDraftV1,
-): 'label' | 'appliesTo' | null {
+): 'label' | 'appliesTo' | 'instruction' | null {
   if (draft.label.trim().length === 0) return 'label';
   if (draft.appliesTo.length === 0) return 'appliesTo';
+  if (requiresTriageActionInstructionV1(draft.target)
+    && !draft.hasSeededFallbackInstruction
+    && !hasTriageActionInstructionSourceV1(draft.target)) return 'instruction';
   return null;
 }

@@ -735,9 +735,9 @@ async function assertPublicPresentationContract(consumerRoot) {
  * TypeScript is structural, so the author fixture's negative object literals
  * prove that host metadata cannot be supplied but cannot distinguish a local
  * value vocabulary from an identically shaped imported Action schema. Inspect
- * the packed declaration to retain that owner boundary: Form and Select
- * may normalize into the Action schema internally, but they must not publish
- * an SDK or Protocol type through their curated author props.
+ * the packed declaration to retain the real owner boundary: Form and Select
+ * may reuse the public SDK Action vocabulary, but they must not expose private
+ * Protocol, host, or dynamic-option fields through their curated author props.
  */
 export async function assertPublicFormPropsAreCurated(consumerRoot) {
   const packageRoot = join(consumerRoot, 'node_modules', '@happier-dev', 'plugin-ui');
@@ -764,11 +764,9 @@ export async function assertPublicFormPropsAreCurated(consumerRoot) {
   const declarations = await readFile(formDeclarationFile, 'utf8');
   const declarationCode = declarations.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gmu, '');
   for (const forbiddenReference of [
-    '@happier-dev/plugin-sdk',
     '@happier-dev/protocol',
-    'ActionInputHints',
-    'ActionInputOptionValue',
-    'ActionInputPredicate',
+    '@happier-dev/plugin-sdk/src',
+    '@happier-dev/plugin-sdk/host',
     'optionsSourceId',
     'connectedAccountOptions',
   ]) {

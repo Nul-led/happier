@@ -13,6 +13,7 @@ const flatListCapture = vi.hoisted(() => ({
   role: [] as Array<unknown>,
   contentContainerStyle: [] as unknown[],
   keyboardShouldPersistTaps: [] as Array<unknown>,
+  extraData: [] as unknown[],
   keyExtractor: [] as Array<(item: unknown, index: number) => string>,
   emptyComponent: [] as React.ReactNode[],
   imperativeReveals: [] as Array<Readonly<{ method: string; index?: number; offset?: number }>>,
@@ -45,6 +46,7 @@ vi.mock('react-native', async () => {
       accessibilityLabel?: string;
       contentContainerStyle?: unknown;
       keyboardShouldPersistTaps?: unknown;
+      extraData?: unknown;
       // React 19 passes `ref` as an ordinary prop to a function component, so
       // the virtualizer boundary can expose its real imperative scroll surface
       // without evaluating `forwardRef` while this mock factory is still
@@ -89,6 +91,7 @@ vi.mock('react-native', async () => {
       flatListCapture.role.push(props.role);
       flatListCapture.contentContainerStyle.push(props.contentContainerStyle);
       flatListCapture.keyboardShouldPersistTaps.push(props.keyboardShouldPersistTaps);
+      flatListCapture.extraData.push(props.extraData);
       flatListCapture.keyExtractor.push(props.keyExtractor);
       flatListCapture.emptyComponent.push(props.ListEmptyComponent);
       flatListCapture.renderItem.push(props.renderItem);
@@ -160,6 +163,37 @@ function enterText(input: HTMLInputElement, value: string, isComposing = false):
 }
 
 describe('virtualized List data ownership', () => {
+  it('keeps null and empty selection facts structurally distinct', () => {
+    flatListCapture.extraData.length = 0;
+    const nullMount = mountList(
+      <List
+        accessibilityLabel="Review findings"
+        items={[{ id: '', label: 'Empty key' }]}
+        keyForItem={(item) => item.id}
+        renderItem={(item) => <List.Item title={item.label} />}
+        selection={{ defaultSelectedKey: null }}
+      />,
+    );
+    const nullSelection = flatListCapture.extraData.at(-1);
+    nullMount.unmount();
+
+    const emptyMount = mountList(
+      <List
+        accessibilityLabel="Review findings"
+        items={[{ id: '', label: 'Empty key' }]}
+        keyForItem={(item) => item.id}
+        renderItem={(item) => <List.Item title={item.label} />}
+        selection={{ defaultSelectedKey: '' }}
+      />,
+    );
+    const emptySelection = flatListCapture.extraData.at(-1);
+    emptyMount.unmount();
+
+    expect(nullSelection).toMatchObject({ selectedKey: null });
+    expect(emptySelection).toMatchObject({ selectedKey: '' });
+    expect(emptySelection).not.toEqual(nullSelection);
+  });
+
   it('owns exact search editing, IME settlement, Escape clearing, caret, and slash focus once', async () => {
     const composingValues: Array<string | null> = [];
     const settledValues: string[] = [];
@@ -168,9 +202,11 @@ describe('virtualized List data ownership', () => {
       const [value, setValue] = React.useState('hash-123');
       return (
         <List
+          accessibilityLabel="Search findings"
           items={[{ id: 'one', label: 'hash-123' }]}
           keyForItem={(item) => item.id}
           renderItem={(item) => <List.Item title={item.label} />}
+          selection={{ defaultSelectedKey: 'one' }}
           search={{
             label: 'Search findings',
             value,
@@ -232,8 +268,9 @@ describe('virtualized List data ownership', () => {
     expect(input?.selectionStart).toBe(4);
     expect(input?.selectionEnd).toBe(4);
 
-    input?.blur();
+    const row = mount.container.querySelector<HTMLElement>('[role="option"]');
     await act(async () => {
+      row?.focus();
       document.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
     });
     expect(document.activeElement).toBe(input);
@@ -247,6 +284,43 @@ describe('virtualized List data ownership', () => {
     const emptyEscape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
     await act(async () => { input?.dispatchEvent(emptyEscape); });
     expect(emptyEscape.defaultPrevented).toBe(false);
+    mount.unmount();
+  });
+
+  it('routes the slash shortcut only to the List that currently contains focus', async () => {
+    const mount = mountList(
+      <>
+        <button data-testid="outside-list">Outside</button>
+        {['alpha', 'beta'].map((id) => (
+          <List
+            key={id}
+            accessibilityLabel={`${id} findings`}
+            items={[{ id, label: id }]}
+            keyForItem={(item) => item.id}
+            renderItem={(item) => <List.Item title={item.label} />}
+            search={{ label: `Search ${id}`, testID: `search-${id}`, filter: () => true }}
+            selection={{ defaultSelectedKey: id }}
+          />
+        ))}
+      </>,
+    );
+    const rows = mount.container.querySelectorAll<HTMLElement>('[role="option"]');
+
+    await act(async () => {
+      rows[0]?.focus();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
+    });
+
+    expect(document.activeElement).toBe(
+      mount.container.querySelector<HTMLInputElement>('[data-testid="search-alpha"]'),
+    );
+
+    const outside = mount.container.querySelector<HTMLButtonElement>('[data-testid="outside-list"]');
+    await act(async () => {
+      outside?.focus();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).toBe(outside);
     mount.unmount();
   });
 

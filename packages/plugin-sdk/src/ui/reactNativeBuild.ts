@@ -14,12 +14,14 @@ import {
     readRelativeBuildPath,
     readRequiredString,
 } from './buildPaths.js';
+import {
+    PLUGIN_UI_REACT_NATIVE_BUNDLES_FEATURE_ID,
+    PLUGIN_UI_REACT_NATIVE_BUNDLES_REQUIRED_FEATURE_IDS,
+} from './reactNativeFeatureIdentity.js';
 
 type ReactNativeBundleBuildPlatform = 'ios' | 'android';
 
 const HOST_API_CLIENT_EXTERNAL = '@happier-dev/plugin-sdk/ui/client';
-const REACT_NATIVE_BUNDLES_FEATURE_ID: 'plugins.ui.reactNativeBundles' = 'plugins.ui.reactNativeBundles';
-const REACT_NATIVE_BUNDLE_REQUIRED_FEATURE_IDS = Object.freeze([REACT_NATIVE_BUNDLES_FEATURE_ID] as const);
 /**
  * EU-6: the host-provided singleton closure is owned once, by
  * `PLUGIN_UI_HOST_NATIVE_RUNTIME_EXTERNAL_SPECIFIERS`
@@ -207,10 +209,10 @@ export type ReactNativeRepackBuildPreset = Readonly<{
         expoRuntimeVersion?: string;
         hermesVersion?: string;
     }>;
-    requiredFeatureIds: readonly [typeof REACT_NATIVE_BUNDLES_FEATURE_ID];
+    requiredFeatureIds: typeof PLUGIN_UI_REACT_NATIVE_BUNDLES_REQUIRED_FEATURE_IDS;
     runtime: Readonly<{
         kind: 'hostGated';
-        requiredFeatureId: typeof REACT_NATIVE_BUNDLES_FEATURE_ID;
+        requiredFeatureId: typeof PLUGIN_UI_REACT_NATIVE_BUNDLES_FEATURE_ID;
     }>;
 }>;
 
@@ -350,10 +352,10 @@ export function defineReactNativeRepackBuildPreset(
                 }
                 : {}),
         }),
-        requiredFeatureIds: REACT_NATIVE_BUNDLE_REQUIRED_FEATURE_IDS,
+        requiredFeatureIds: PLUGIN_UI_REACT_NATIVE_BUNDLES_REQUIRED_FEATURE_IDS,
         runtime: Object.freeze({
             kind: 'hostGated',
-            requiredFeatureId: REACT_NATIVE_BUNDLES_FEATURE_ID,
+            requiredFeatureId: PLUGIN_UI_REACT_NATIVE_BUNDLES_FEATURE_ID,
         }),
     });
 }

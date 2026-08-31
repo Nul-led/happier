@@ -147,16 +147,6 @@ export function createCodexNativeAppServerRuntimeHost(params: Readonly<{
         { signal: params.context.signal },
       );
     },
-    reportCapacityFailure: async (classification: Readonly<Record<string, JsonValue>>) => {
-      const refreshRuntimeAuth = params.context.services.sessions.current?.auth.services.refreshRuntimeAuth;
-      if (!refreshRuntimeAuth) throw new Error('Codex Session-handle runtime authentication is unavailable.');
-      await refreshRuntimeAuth({
-        serviceId: 'openai-codex',
-        targetId: params.request.sessionId,
-        classification,
-        reason: 'provider_session_capacity_failure',
-      }, { signal: params.context.signal });
-    },
     ...(currentSession ? { publishGeneratedMedia: async (candidate) => {
       if (mediaDisposed) throw new Error('Codex generated-media publication is disposed.');
       const source = await acquireMediaSourceRoot(currentSession, candidate.source.restrictedRoot);

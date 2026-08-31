@@ -27,8 +27,8 @@ import {
 } from '@happier-dev/triage-sources/ui';
 
 import { BITBUCKET_PLUGIN_ID } from '../../bitbucketContracts.js';
-import { BITBUCKET_TRIAGE_MUTATION_ACTION_IDS } from '../../triage/source/mutationActions.js';
 import {
+  BITBUCKET_TRIAGE_MUTATION_ACTION_IDS,
   BitbucketCommentResolutionResultV1Schema,
   BitbucketMutationResultV1Schema,
   BitbucketReviewPublicationResultV1Schema,
@@ -471,8 +471,8 @@ function BitbucketReviewPublicationControls({
       />
       <Form.TextField label={text('plugins.bitbucket.ui.mutations.review.summary', 'Review summary')} value={summary} onChange={setSummary} />
       <Row gap="small">
-        <Button title={text('plugins.bitbucket.ui.mutations.review.submit', 'Submit review')} disabled={plan === null} busy={submit.execution.status === 'pending'} onPress={() => { if (plan !== null) void submit.execute({ v: 1, instance: input.instance, localRef, publicationPlan: plan }).then(complete); }} />
-        <Button title={text('plugins.bitbucket.ui.mutations.reviewComment.publish', 'Publish comment')} variant="secondary" disabled={single === null} busy={create.execution.status === 'pending'} onPress={() => { if (single !== null) void create.execute({ v: 1, instance: input.instance, localRef, publicationPlan: single }).then(complete); }} />
+        <Button title={text('plugins.bitbucket.ui.mutations.review.submit', 'Submit review')} disabled={plan === null} busy={submit.execution.status === 'pending'} onPress={() => { if (plan !== null) void submit.execute({ v: 1, instance: input.instance, localRef, lastKnownLocator: input.observation.locator, publicationPlan: plan }).then(complete); }} />
+        <Button title={text('plugins.bitbucket.ui.mutations.reviewComment.publish', 'Publish comment')} variant="secondary" disabled={single === null} busy={create.execution.status === 'pending'} onPress={() => { if (single !== null) void create.execute({ v: 1, instance: input.instance, localRef, lastKnownLocator: input.observation.locator, publicationPlan: single }).then(complete); }} />
       </Row>
       <SettledMutationBanner settled={reviewPublicationBanner(submit.execution, text)} />
       <SettledMutationBanner settled={reviewPublicationBanner(create.execution, text)} />
@@ -565,6 +565,7 @@ export function BitbucketReviewCommentReplyControls({
             v: 1,
             instance: input.instance,
             localRef,
+            lastKnownLocator: input.observation.locator,
             parentCommentId,
             publicationPlan: plan,
           }).then((execution) => completeTriagePostMutationIfNeeded(
@@ -612,6 +613,7 @@ export function BitbucketMutationControls({
       v: 1,
       instance: input.instance,
       localRef,
+      lastKnownLocator: input.observation.locator,
       observedHeadCommit,
       closeSourceBranch,
       mergeStrategy: strategy,
@@ -625,6 +627,7 @@ export function BitbucketMutationControls({
     closeSourceBranch,
     completeMutation,
     input.instance,
+    input.observation.locator,
     localRef,
     merge,
     observedHeadCommit,
@@ -633,13 +636,18 @@ export function BitbucketMutationControls({
   ]);
 
   const runDecline = React.useCallback(() => {
-    void decline.execute({ v: 1, instance: input.instance, localRef })
+    void decline.execute({
+      v: 1,
+      instance: input.instance,
+      localRef,
+      lastKnownLocator: input.observation.locator,
+    })
       .then((execution) => completeTriagePostMutationIfNeeded(
         completeMutation,
         execution,
         bitbucketEntryWriteMayHaveChangedProviderStateV1,
       ));
-  }, [completeMutation, decline, input.instance, localRef]);
+  }, [completeMutation, decline, input.instance, input.observation.locator, localRef]);
 
   if (overview.state.presentation !== 'active') return null;
 
@@ -858,22 +866,34 @@ export function BitbucketCommentResolutionControls({
   const reopen = useExecutePluginAction(UNRESOLVE_COMMENT_ACTION);
 
   const runResolve = React.useCallback(() => {
-    void resolve.execute({ v: 1, instance: input.instance, localRef, commentId: comment.id })
+    void resolve.execute({
+      v: 1,
+      instance: input.instance,
+      localRef,
+      lastKnownLocator: input.observation.locator,
+      commentId: comment.id,
+    })
       .then((execution) => completeTriagePostMutationIfNeeded(
         completeMutation,
         execution,
         bitbucketCommentWriteMayHaveChangedProviderStateV1,
       ));
-  }, [comment.id, completeMutation, input.instance, localRef, resolve]);
+  }, [comment.id, completeMutation, input.instance, input.observation.locator, localRef, resolve]);
 
   const runReopen = React.useCallback(() => {
-    void reopen.execute({ v: 1, instance: input.instance, localRef, commentId: comment.id })
+    void reopen.execute({
+      v: 1,
+      instance: input.instance,
+      localRef,
+      lastKnownLocator: input.observation.locator,
+      commentId: comment.id,
+    })
       .then((execution) => completeTriagePostMutationIfNeeded(
         completeMutation,
         execution,
         bitbucketCommentWriteMayHaveChangedProviderStateV1,
       ));
-  }, [comment.id, completeMutation, input.instance, localRef, reopen]);
+  }, [comment.id, completeMutation, input.instance, input.observation.locator, localRef, reopen]);
 
   // A deleted comment has no thread left to resolve, and Bitbucket keeps the row only as a
   // tombstone. Offering a write against it would be offering something that can only fail.

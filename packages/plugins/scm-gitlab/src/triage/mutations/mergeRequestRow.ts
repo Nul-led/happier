@@ -109,21 +109,6 @@ export function decodeGitlabMergeRequestStateRow(body: unknown): GitlabMergeRequ
 }
 
 /**
- * The project path GitLab's GraphQL mutations address a merge request by.
- *
- * It is read from the item's own `references.full` (`group/project!7`) rather
- * than from a second request or from the web URL: the currentness read already
- * carries it, and a path guessed from a URL would send a mutation at whatever
- * that guess produced.
- */
-export function readGitlabProjectPath(body: unknown): string | null {
-  const reference = readNonEmptyString(readRecord(readRecord(body)?.references)?.full);
-  if (reference === null) return null;
-  const path = reference.split('!')[0] ?? '';
-  return path === '' ? null : path;
-}
-
-/**
  * How a merge-request mutation is routed and made current.
  *
  * `observedPin` names `headSha` because §2.6 pins a merge request to a COMMIT

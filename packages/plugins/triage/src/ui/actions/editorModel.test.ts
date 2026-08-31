@@ -13,6 +13,7 @@ import {
 } from './actionsCommand.js';
 import {
     TRIAGE_EDITOR_TARGET_KINDS_V1,
+    isTriageActionDraftRevisionStaleV1,
     newTriageActionDraftV1,
     triageActionDraftBlockerV1,
     triageActionDraftV1,
@@ -21,12 +22,21 @@ import {
     withTriageAppliesToV1,
     withTriageDeliveryV1,
     withTriageProfileIdV1,
+    withTriagePromptArgsTextV1,
     withTriagePromptTokenV1,
 } from './editorModel.js';
 
 const ASK = TRIAGE_DEFAULT_ACTIONS_V1[0]!;
 const FIX = TRIAGE_DEFAULT_ACTIONS_V1[1]!;
 const REVIEW = TRIAGE_DEFAULT_ACTIONS_V1[2]!;
+
+describe('an open action draft revision', () => {
+    it('requires an explicit reapply after the authoritative catalog moves', () => {
+        expect(isTriageActionDraftRevisionStaleV1('4', '4')).toBe(false);
+        expect(isTriageActionDraftRevisionStaleV1('4', '5')).toBe(true);
+        expect(isTriageActionDraftRevisionStaleV1('4', null)).toBe(true);
+    });
+});
 
 describe('which actions an entry is offered', () => {
     it('offers an action on the subjects it declares, in the configured order', () => {
@@ -43,7 +53,7 @@ describe('which actions an entry is offered', () => {
             ...REVIEW,
             actionId: 'configured-review-start',
             workspaceMode: 'pull_request',
-            target: { kind: 'reviewStart', promptInvocationId: null },
+            target: { kind: 'reviewStart', promptInvocationId: 'review-prompt' },
         };
 
         expect(planTriageOfferedActionsV1([ASK, reviewStart, FIX], 'pullRequest')
@@ -102,7 +112,7 @@ describe('the draft a person is editing', () => {
     it('claims a configured prompt was deleted only from a complete inventory', () => {
         const base = {
             heldInvocationId: 'prompt-outside-window',
-            invocations: [{ id: 'prompt-1', token: '/review', title: 'Review' }],
+            invocations: [{ id: 'prompt-1', token: '/review', title: 'Review', allowArgs: false }],
             noPromptLabel: 'No prompt',
             missingPromptLabel: 'Prompt no longer in your library',
         } as const;
@@ -152,6 +162,23 @@ describe('the draft a person is editing', () => {
         expect(triageActionDraftBlockerV1(draft)).toBe('appliesTo');
     });
 
+    it('blocks start-only drafts until the Prompt Library supplies an instruction', () => {
+        const send = withTriageDeliveryV1(
+            { ...newTriageActionDraftV1(), label: 'Start' },
+            'send',
+        );
+        expect(triageActionDraftBlockerV1(send)).toBe('instruction');
+
+        const formal = withTriageActionTargetKindV1(
+            { ...newTriageActionDraftV1(), label: 'Formal review' },
+            'reviewStart',
+        );
+        expect(triageActionDraftBlockerV1(formal)).toBe('instruction');
+        expect(triageActionDraftBlockerV1(
+            withTriagePromptTokenV1(formal, 'review-prompt'),
+        )).toBeNull();
+    });
+
     it('keeps chosen subjects in the vocabulary order and free of repeats', () => {
         const draft = withTriageAppliesToV1(
             newTriageActionDraftV1(),
@@ -193,6 +220,28 @@ describe('the draft a person is editing', () => {
         });
     });
 
+    it('keeps shipped fallback text out of the editable draft', () => {
+        const fixDraft = triageActionDraftV1(FIX);
+        expect(fixDraft.target).not.toHaveProperty('seededFallbackInstruction');
+        // The writer preserves the shipped instruction internally, so editing
+        // Fix must remain saveable without revealing or copying that text onto
+        // the public mutation wire.
+        expect(triageActionDraftBlockerV1(fixDraft)).toBeNull();
+        expect(triageActionDraftBlockerV1(withTriageDeliveryV1(fixDraft, 'send'))).toBeNull();
+
+        const renamed = { ...fixDraft, label: 'Repair' };
+        const review = withTriageActionTargetKindV1(renamed, 'reviewStart');
+        expect(review.target).toEqual({
+            kind: 'reviewStart',
+            promptInvocationId: null,
+        });
+        expect(withTriageActionTargetKindV1(review, 'agent').target).toEqual({
+            kind: 'agent',
+            promptInvocationId: null,
+            delivery: 'compose',
+        });
+    });
+
     it('treats an emptied prompt or profile field as "not set", never as an empty value', () => {
         const withValues = withTriageProfileIdV1(
             withTriagePromptTokenV1(newTriageActionDraftV1(), '  /review  '),
@@ -212,6 +261,17 @@ describe('the draft a person is editing', () => {
             promptInvocationId: null,
             delivery: 'compose',
         });
+    });
+
+    it('preserves optional Prompt Library arguments without expanding them', () => {
+        const prompt = withTriagePromptTokenV1(newTriageActionDraftV1(), 'prompt-1');
+        const configured = withTriagePromptArgsTextV1(prompt, 'security authentication');
+        expect(configured.target).toMatchObject({
+            promptInvocationId: 'prompt-1',
+            promptArgsText: 'security authentication',
+        });
+        expect(withTriagePromptArgsTextV1(configured, '').target)
+            .not.toHaveProperty('promptArgsText');
     });
 
     it('sends a rename, a disable and a reconfigure as one whole update', () => {

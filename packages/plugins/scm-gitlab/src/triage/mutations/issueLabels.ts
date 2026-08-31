@@ -20,6 +20,7 @@ export async function changeGitlabIssueLabels(
   const result = await runGitlabMemberDelta({
     instance: request.instance,
     localRef: request.localRef,
+    routingToken: request.routingToken,
     subject: GITLAB_ISSUE_MUTATION_SUBJECT_V1,
     expectedRevision: request.observedRevision,
     operation: request.operation,

@@ -25,7 +25,10 @@ import type {
   TriageSourceScanObservationV1,
 } from '@happier-dev/triage-protocol/v1';
 
-import { authorizeGitlabConfiguredInstance } from './configuredInstance.js';
+import {
+  authorizeGitlabConfiguredInstance,
+  resolveGitlabConfiguredInstance,
+} from './configuredInstance.js';
 import { GITLAB_TRIAGE_KIND_IDS } from './contribution.js';
 import type { GitlabHttpFetcher } from './http/gitlabClient.js';
 import type { GitlabConnectedAccounts } from './http/gitlabClient.js';
@@ -38,7 +41,9 @@ import {
 import {
   decodeGitlabScanContinuation,
   encodeGitlabScanContinuation,
+  hasExpectedGitlabScanContinuationProvenance,
   readGitlabScanContinuationViewerUserId,
+  type GitlabScanContinuationProvenance,
 } from './scan/gitlabScanContinuation.js';
 import {
   createGitlabScanFrontier,
@@ -77,6 +82,30 @@ function projectScanEvidence(
 export async function scanGitlabTriageSource(
   input: GitlabScanOperationInput,
 ): Promise<TriageScanResultV1> {
+  const configured = resolveGitlabConfiguredInstance(input.scan.instance);
+  if (configured.kind === 'failed') {
+    return { kind: 'failed', failure: projectGitlabSourceFailure(configured.failure) };
+  }
+  const provenance: GitlabScanContinuationProvenance = Object.freeze({
+    plane: 'scan',
+    sourceInstanceId: input.scan.instance.instance.sourceInstanceId,
+    configuredBaseUrl: configured.origin.normalized,
+  });
+  if (input.scan.page.kind === 'continuation'
+    && !hasExpectedGitlabScanContinuationProvenance({
+      continuation: input.scan.page.continuation,
+      provenance,
+    })) {
+    return {
+      kind: 'failed',
+      failure: {
+        class: 'unsupportedContract',
+        code: 'unknown-continuation',
+        detail: 'This source did not mint the continuation it was handed.',
+      },
+    };
+  }
+
   const authorized = await authorizeGitlabConfiguredInstance({
     instance: input.scan.instance,
     connectedAccounts: input.connectedAccounts,
@@ -139,6 +168,7 @@ export async function scanGitlabTriageSource(
       continuation: input.scan.page.continuation,
       origin,
       lanes: requests,
+      provenance,
     });
     if (resumed === null) {
       return {
@@ -185,7 +215,7 @@ export async function scanGitlabTriageSource(
     };
   }
 
-  const continuation = encodeGitlabScanContinuation(frontier);
+  const continuation = encodeGitlabScanContinuation(frontier, provenance);
   if (continuation === null) {
     // The walk cannot be handed back, so it ends here — and says so. A `complete` arm
     // that quietly dropped the remaining lanes would read as a finished walk.

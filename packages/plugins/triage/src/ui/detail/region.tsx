@@ -23,7 +23,10 @@ import {
   type MetadataEntry,
   type PluginUiFocusTarget,
 } from '@happier-dev/plugin-ui';
-import type { TriageLinkedSessionProjectionV1 } from '@happier-dev/triage-protocol/v1';
+import type {
+  TriageLinkedSessionProjectionV1,
+  TriageSourceWorkflowSubjectV1,
+} from '@happier-dev/triage-protocol/v1';
 import {
   TriageEvidenceDisclosureProvider,
   TriagePostMutationCompletionProvider,
@@ -46,7 +49,10 @@ import {
   type TriageEntryActionRequestV1,
 } from '../header/entryActionControls.js';
 import { describeTriageEntrySessionPhaseV1 } from '../header/sessionStartOutcome.js';
-import { useTriageEntrySessionStart } from '../header/useEntrySessionStart.js';
+import {
+  useTriageEntrySessionStart,
+  type TriageEntrySessionStartRequestV1,
+} from '../header/useEntrySessionStart.js';
 import { TriagePullRequestReviewChooser } from '../header/PullRequestReviewChooser.js';
 import type { TriageActionTargetV1 } from '../state/actionTarget.js';
 import { readTriageSelectedObservationV1 } from '../window/selectedObservation.js';
@@ -155,6 +161,8 @@ const PRESENCE_COPY = Object.freeze({
 
 export type TriageDetailHeaderViewProps = Readonly<{
   header: TriageDetailHeaderV1;
+  /** Retires linked-Session press state when the selected entry/connection changes. */
+  instanceKey?: string;
   /** Clears the selection; the stacked composition returns to the list. */
   onClose: () => void;
   /**
@@ -180,6 +188,91 @@ export type TriageDetailPinActionV1 = Readonly<{
   row: TriageListDisplayRowV1;
   handlers: TriageRowPinHandlersV1;
 }>;
+
+/**
+ * The transient action/review controller for exactly one entry and observing
+ * connection.
+ *
+ * Its caller keys this component with the same canonical entry+instance key as
+ * the source body. The common header around it stays mounted as §2.2 requires,
+ * while every in-flight/busy/review state from A is retired before B's controls
+ * render. Keeping the hooks inside this boundary is load-bearing: a keyed JSX
+ * wrapper around hooks owned by the parent would remount no state at all.
+ */
+function TriageEntryScopedActionRegion(props: Readonly<{
+  target: TriageActionTargetV1;
+  actions: TriageMountedActionsV1;
+  workflowSubject: TriageSourceWorkflowSubjectV1;
+  display: TriageEntrySessionStartRequestV1['display'];
+  presentation: TriageEntrySessionStartRequestV1['presentation'];
+  lastKnownLocator?: NonNullable<TriageEntrySessionStartRequestV1['lastKnownLocator']>;
+  repository?: NonNullable<TriageEntrySessionStartRequestV1['repository']>;
+  reviewWorkspace?: NonNullable<TriageEntrySessionStartRequestV1['reviewWorkspace']>;
+}>): React.ReactElement {
+  const controller = useTriageEntrySessionStart();
+  const [reviewActionFocusTarget, setReviewActionFocusTarget] = React.useState<PluginUiFocusTarget | null>(null);
+  const onAction = React.useCallback((request: TriageEntryActionRequestV1) => {
+    // The pressed action travels WHOLE: its mode, its profile, its prompt, its
+    // delivery and its arm are all read by the one controller below. This is
+    // the last place a press could have re-decided any of them, and it does
+    // not — it only adds the facts this screen holds and the record cannot.
+    void (async () => {
+      const executable = await props.actions.resolveForExecution(
+        request.action.actionId,
+        [props.workflowSubject],
+      );
+      if (executable.status !== 'resolved') return;
+      setReviewActionFocusTarget(request.returnFocusTarget ?? null);
+      controller.start({
+        action: executable.action,
+        entryRef: request.entryRef,
+        display: props.display,
+        // The entry attachment's two halves. Identity is the connection this
+        // entry was read through; the presentation is the bounded immutable
+        // fallback the host freezes, built by the one composer-side owner so an
+        // entry a delivery attaches and an entry the picker attaches are the
+        // same record.
+        sourceInstance: { source: request.entryRef.source, sourceInstanceId: request.sourceInstanceId },
+        presentation: props.presentation,
+        ...(props.lastKnownLocator === undefined ? {} : { lastKnownLocator: props.lastKnownLocator }),
+        // The entry's own forge repository, exactly as its source declared it.
+        // It travels from the observation the reader is looking at, so launch
+        // placement joins on the same answer the screen is showing rather than
+        // re-reading the entry.
+        ...(props.repository === undefined ? {} : { repository: props.repository }),
+        ...(props.reviewWorkspace === undefined ? {} : { reviewWorkspace: props.reviewWorkspace }),
+      });
+    })();
+  }, [controller, props]);
+  const retireReviewChooser = React.useCallback(() => {
+    controller.reset();
+    setReviewActionFocusTarget(null);
+  }, [controller]);
+  const notice = describeTriageEntrySessionPhaseV1(controller.phase);
+
+  return (
+    <Stack gap="small">
+      <TriageEntryActionControls
+        target={props.target}
+        actions={props.actions.actions}
+        workflowSubject={props.workflowSubject}
+        preparesReviewWorkspace={props.reviewWorkspace !== undefined}
+        onAction={onAction}
+      />
+      {controller.review === null || reviewActionFocusTarget === null ? null : (
+        <TriagePullRequestReviewChooser
+          pending={controller.review}
+          returnFocusTarget={reviewActionFocusTarget}
+          onDismiss={retireReviewChooser}
+          onFinished={retireReviewChooser}
+        />
+      )}
+      {notice === null ? null : (
+        <Status tone={notice.tone} labelKey={notice.labelKey} label={notice.label} />
+      )}
+    </Stack>
+  );
+}
 
 /**
  * §2.2's common header, rendered once for both the states it has.
@@ -259,6 +352,7 @@ export function TriageDetailHeaderView(props: TriageDetailHeaderViewProps): Reac
       )}
 
       <TriageLinkedSessions
+        key={props.instanceKey}
         sessions={header.linkedSessions}
         hasMore={header.linkedSessionsHasMore}
         pageState={props.linkedSessionsPageState}
@@ -358,8 +452,6 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
    * answers would flash a control set chosen for the wrong subject, and a start
    * needs the display facts the link freezes from that observation.
    */
-  const controller = useTriageEntrySessionStart();
-  const [reviewActionFocusTarget, setReviewActionFocusTarget] = React.useState<PluginUiFocusTarget | null>(null);
   const prepareReviewWorkspaceOperation = readTriageSourcePrepareReviewWorkspaceOperationV1(
     context,
     row.entryRef.source,
@@ -373,6 +465,14 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
   const repository = selected?.repository;
   const snapshot = observation?.snapshot;
   const locator = observation?.locator;
+  const actionPresentation = React.useMemo(() => (
+    snapshot === undefined
+      ? null
+      : buildTriageEntryAttachmentPresentation({
+          title: snapshot.title,
+          scopeLabel: snapshot.scopeLabel,
+        })
+  ), [snapshot]);
   const reviewWorkspace = React.useMemo(() => {
     if (
       prepareReviewWorkspaceOperation === undefined
@@ -394,46 +494,13 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
       },
     };
   }, [detail, locator, observation, prepareReviewWorkspaceOperation, row.entryRef, snapshot]);
-  const onAction = React.useCallback((request: TriageEntryActionRequestV1) => {
-    // The pressed action travels WHOLE: its mode, its profile, its prompt, its
-    // delivery and its arm are all read by the one controller below. This is
-    // the last place a press could have re-decided any of them, and it does
-    // not — it only adds the facts this screen holds and the record cannot.
-    if (display === null || snapshot === undefined) return;
-    setReviewActionFocusTarget(request.returnFocusTarget ?? null);
-    controller.start({
-      action: request.action,
-      entryRef: request.entryRef,
-      display,
-      // The entry attachment's two halves. Identity is the connection this
-      // entry was read through; the presentation is the bounded immutable
-      // fallback the host freezes, built by the one composer-side owner so an
-      // entry a delivery attaches and an entry the picker attaches are the
-      // same record.
-      sourceInstance: { source: request.entryRef.source, sourceInstanceId: request.sourceInstanceId },
-      presentation: buildTriageEntryAttachmentPresentation({
-        title: snapshot.title,
-        scopeLabel: snapshot.scopeLabel,
-      }),
-      ...(locator === undefined ? {} : { lastKnownLocator: locator }),
-      // The entry's own forge repository, exactly as its source declared it.
-      // It travels from the observation the reader is looking at, so launch
-      // placement joins on the same answer the screen is showing rather than
-      // re-reading the entry.
-      ...(repository === undefined ? {} : { repository }),
-      ...(reviewWorkspace === undefined ? {} : { reviewWorkspace }),
-    });
-  }, [controller, display, locator, repository, reviewWorkspace, snapshot]);
-  const retireReviewChooser = React.useCallback(() => {
-    controller.reset();
-    setReviewActionFocusTarget(null);
-  }, [controller]);
-  const notice = describeTriageEntrySessionPhaseV1(controller.phase);
-
   return (
     <Stack gap="small">
       <TriageDetailHeaderView
         header={header}
+        {...(selected === null ? {} : {
+          instanceKey: deriveTriageDetailMountInstanceKey(row.entryRef, selected.sourceInstanceId),
+        })}
         pin={props.pin}
         onClose={props.onClose}
         {...(detail?.kind === 'ready' ? {
@@ -442,28 +509,22 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
         } : {})}
       />
 
-      {workflowSubject === null || display === null ? null : (
-        <Stack gap="small">
-          <TriageEntryActionControls
+      {workflowSubject === null
+        || display === null
+        || actionPresentation === null
+        || selected === null ? null : (
+          <TriageEntryScopedActionRegion
+            key={deriveTriageDetailMountInstanceKey(row.entryRef, selected.sourceInstanceId)}
             target={props.target}
-            actions={props.actions.actions}
+            actions={props.actions}
             workflowSubject={workflowSubject}
-            preparesReviewWorkspace={reviewWorkspace !== undefined}
-            onAction={onAction}
+            display={display}
+            presentation={actionPresentation}
+            {...(locator === undefined ? {} : { lastKnownLocator: locator })}
+            {...(repository === undefined ? {} : { repository })}
+            {...(reviewWorkspace === undefined ? {} : { reviewWorkspace })}
           />
-          {controller.review === null || reviewActionFocusTarget === null ? null : (
-            <TriagePullRequestReviewChooser
-              pending={controller.review}
-              returnFocusTarget={reviewActionFocusTarget}
-              onDismiss={retireReviewChooser}
-              onFinished={retireReviewChooser}
-            />
-          )}
-          {notice === null ? null : (
-            <Status tone={notice.tone} labelKey={notice.labelKey} label={notice.label} />
-          )}
-        </Stack>
-      )}
+        )}
 
       {observation === null ? (
         <EmptyState
@@ -487,6 +548,14 @@ export function TriageDetailRegion(props: TriageDetailRegionProps): React.ReactE
           title="Your account could not be read"
           descriptionKey="plugins.triage.surface.detail.accountError.description"
           description="Happier could not reach your account, so this entry's details are unavailable right now."
+          action={(
+            <Button
+              titleKey="plugins.triage.surface.actions.retry"
+              title="Retry"
+              variant="secondary"
+              onPress={detail.retry}
+            />
+          )}
         />
       ) : detail.kind === 'refused' ? (
         <Banner

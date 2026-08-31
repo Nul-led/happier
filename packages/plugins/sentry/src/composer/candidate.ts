@@ -9,8 +9,8 @@
 
 import {
   ComposerReferenceCandidateIdV1Schema,
-  computeCanonicalDomainSeparatedDigest,
 } from '@happier-dev/plugin-sdk';
+import { deriveTriageConfiguredSourceInstanceDigestV1 } from '@happier-dev/triage-sources/runtime';
 import type {
   TriageConfiguredSourceInstanceV1,
   TriageSourceEntryLocalRefV1,
@@ -59,22 +59,7 @@ const CANONICAL_DIGEST_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 export function deriveSentryEvidenceInstanceDigest(
   instance: TriageConfiguredSourceInstanceV1,
 ): string {
-  return computeCanonicalDomainSeparatedDigest(
-    'happier.sentry.selected-evidence-instance.v1',
-    [
-      String(instance.v),
-      instance.instance.source.pluginId,
-      instance.instance.source.localId,
-      instance.instance.sourceInstanceId,
-      instance.binding.purpose,
-      instance.binding.account.service.pluginId,
-      instance.binding.account.service.localId,
-      instance.binding.account.accountId,
-      instance.localInstanceKey,
-      String(instance.configuration.v),
-      instance.configuration.token,
-    ],
-  );
+  return deriveTriageConfiguredSourceInstanceDigestV1(instance);
 }
 
 function encodePart(value: string): string {

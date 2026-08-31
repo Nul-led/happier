@@ -12,8 +12,10 @@ import {
   GithubChangedFilesResultV1Schema,
   GithubChecksResultV1Schema,
   GithubFeedbackResultV1Schema,
+  GithubOverviewResultV1Schema,
   GithubReviewsResultV1Schema,
   GithubTimelineResultV1Schema,
+  type GithubOverviewResultV1,
 } from '../../triage/detail/contracts.js';
 import type { GithubRepositoryCapabilitiesV1 } from '../../triage/capabilities.js';
 import type {
@@ -156,6 +158,102 @@ export function useGithubCapabilities(
   return state;
 }
 
+/* -------------------------------------------------------------------- overview */
+
+export type GithubOverviewValueV1 = Extract<GithubOverviewResultV1, { kind: 'overview' }>;
+
+export type GithubOverviewControllerV1 = Readonly<{
+  /** `null` means the reader is still showing only its launch observation. */
+  value: GithubOverviewValueV1 | null;
+  refreshing: boolean;
+  /** A warm failure sits beside `value`; it never erases a prior exact read. */
+  failure: TriageSourceFailureV1 | null;
+  refresh: () => Promise<void>;
+}>;
+
+/**
+ * The Overview's one explicit exact entity read.
+ *
+ * No effect invokes it. The launch observation is useful immediately and only
+ * pressing Refresh spends a provider call. A retained Overview keeps the exact
+ * body model, while its active-interval signal owns cancellation and its
+ * transient busy/error state is cleared when the tab becomes inactive.
+ */
+export function useGithubOverview(
+  input: TriageDetailSurfaceInputV1,
+): GithubOverviewControllerV1 {
+  const action = useMemo(() => ({
+    pluginId: GITHUB_PLUGIN_ID,
+    localId: GITHUB_TRIAGE_DETAIL_ACTION_IDS_V1.readOverview,
+  }), []);
+  const { execute } = useExecutePluginAction(action);
+  const localRef = useLocalRef(input);
+  const routingToken = useGithubRoutingToken(input);
+  const { instance } = input;
+  const { active, activeSignal } = useTabPanelActivity();
+  const [state, setState] = useState<Readonly<{
+    value: GithubOverviewValueV1 | null;
+    refreshing: boolean;
+    failure: TriageSourceFailureV1 | null;
+  }>>({ value: null, refreshing: false, failure: null });
+
+  useEffect(() => {
+    if (active) return undefined;
+    setState((current) => current.refreshing || current.failure !== null
+      ? Object.freeze({ ...current, refreshing: false, failure: null })
+      : current);
+    return undefined;
+  }, [active]);
+
+  const refresh = useCallback(async (): Promise<void> => {
+    if (!active || state.refreshing) return;
+    if (routingToken === null) {
+      setState((current) => Object.freeze({
+        ...current,
+        refreshing: false,
+        failure: ROUTE_UNAVAILABLE,
+      }));
+      return;
+    }
+    setState((current) => Object.freeze({ ...current, refreshing: true, failure: null }));
+    const execution: ExecuteResult = await execute(
+      { v: 1, instance, localRef, routingToken },
+      { signal: activeSignal },
+    );
+    if (activeSignal.aborted) return;
+    if (execution.status !== 'success') {
+      setState((current) => Object.freeze({
+        ...current,
+        refreshing: false,
+        failure: dispatchFailure(
+          execution.status,
+          execution.code ?? 'github-overview-read-failed',
+        ),
+      }));
+      return;
+    }
+    const parsed = GithubOverviewResultV1Schema.safeParse(execution.result);
+    if (!parsed.success) {
+      setState((current) => Object.freeze({
+        ...current,
+        refreshing: false,
+        failure: UNREADABLE_RESULT,
+      }));
+    } else if (parsed.data.kind === 'unavailable') {
+      const failure = parsed.data.failure;
+      setState((current) => Object.freeze({
+        ...current,
+        refreshing: false,
+        failure,
+      }));
+    } else {
+      setState(Object.freeze({ value: parsed.data, refreshing: false, failure: null }));
+    }
+  }, [active, activeSignal, execute, instance, localRef, routingToken, state.refreshing]);
+
+  return useMemo(() => ({ ...state, refresh }), [refresh, state]);
+}
+
 /* ------------------------------------------------------------- paged planes */
 
 export type GithubPagedControllerV1<TRow> = Readonly<{
@@ -222,8 +320,9 @@ function useGithubPagedWalk<TRow>(
     token: number,
     continuation: string | null,
     pageSignal: AbortSignal,
+    mode: 'append' | 'refresh' = 'append',
   ): Promise<void> => {
-    dispatch({ kind: 'requestStarted', token });
+    dispatch({ kind: mode === 'refresh' ? 'refreshStarted' : 'requestStarted', token });
     const outcome = await readPage(continuation, pageSignal);
     if (pageSignal.aborted) return;
     if (outcome.kind === 'failed') {
@@ -233,19 +332,27 @@ function useGithubPagedWalk<TRow>(
     dispatch({ kind: 'pageSettled', token, page: outcome.page });
   }, [readPage]);
 
-  const startWalk = useCallback((pageSignal: AbortSignal): void => {
+  const startWalk = useCallback((
+    pageSignal: AbortSignal,
+    mode: 'cold' | 'refresh' = 'cold',
+  ): void => {
     requested.current = new Set();
-    dispatch({ kind: 'panelLeft' });
+    if (mode === 'cold') dispatch({ kind: 'panelLeft' });
     nextToken.current += 1;
     if (enabled) {
-      void runPage(nextToken.current, firstContinuation, pageSignal);
+      void runPage(
+        nextToken.current,
+        firstContinuation,
+        pageSignal,
+        mode === 'refresh' ? 'refresh' : 'append',
+      );
       return;
     }
     // A plane with nothing to address settles as unavailable NAMING itself,
     // never as an idle or empty panel: the reader is owed the difference
     // between "no rows" and "we had no route to ask".
     const token = nextToken.current;
-    dispatch({ kind: 'requestStarted', token });
+    dispatch({ kind: mode === 'refresh' ? 'refreshStarted' : 'requestStarted', token });
     dispatch({ kind: 'pageFailed', token, failure: disabledFailure });
   }, [disabledFailure, enabled, firstContinuation, runPage]);
 
@@ -269,7 +376,15 @@ function useGithubPagedWalk<TRow>(
       startWalk(activeSignal);
     } else if (current.current.pending) {
       nextToken.current += 1;
-      void runPage(nextToken.current, current.current.continuation, activeSignal);
+      void runPage(
+        nextToken.current,
+        // A cancelled warm replacement has not accepted a new first page. Its
+        // retained continuation belongs to the last-known-good walk, so
+        // resuming that continuation would silently turn Refresh into append.
+        current.current.refreshing ? firstContinuation : current.current.continuation,
+        activeSignal,
+        current.current.refreshing ? 'refresh' : 'append',
+      );
     }
     return () => {
       // The interval's requests are aborted with its signal; nothing is thrown
@@ -294,7 +409,7 @@ function useGithubPagedWalk<TRow>(
   const refresh = useCallback(() => {
     const pageSignal = interval.current;
     if (pageSignal === null || state.pending) return;
-    startWalk(pageSignal);
+    startWalk(pageSignal, 'refresh');
   }, [startWalk, state.pending]);
 
   return useMemo(() => ({ state, loadMore, refresh }), [loadMore, refresh, state]);

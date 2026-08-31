@@ -140,6 +140,20 @@ describe('Discord Gateway receive-progress owner', () => {
     expect(session.snapshot().resume).toBeNull();
   });
 
+  it('re-identifies after a fresh non-resumable Invalid Session without inventing history loss', () => {
+    const session = createDiscordGatewaySession({
+      token: 'bot-token',
+      intents: 4_608,
+      sessionStartLimit: gatewayBotLimit(),
+    });
+
+    expect(session.onFrame({ op: 9, d: false }, NOW)).toEqual([
+      { kind: 'disconnect', reason: 'invalidSession' },
+      { kind: 'reconnect', canResume: false, minDelayMs: 1_000, maxDelayMs: 5_000 },
+    ]);
+    expect(session.snapshot()).toMatchObject({ resume: null, lastDispatchSequence: null });
+  });
+
   it('clears expired-session Dispatch progress before a fresh Identify heartbeat', () => {
     const invalidSession = createDiscordGatewaySession({
       token: 'bot-token',

@@ -26,6 +26,7 @@ import {
     type TriageActionPlacementV1,
 } from '../../sessions/actionLaunch.js';
 import {
+    resolveTriageActionInstructionV1,
     resolveTriageActionReferencesV1,
     type TriageActionReferencesV1,
     type TriageActionResolutionHostV1,
@@ -40,7 +41,9 @@ import {
     type TriageProjectRegistryHostV1,
 } from '../../sessions/projectCandidates.js';
 import {
+    hasTriageActionInstructionSourceV1,
     isTriageActionConfigurationCoherentV1,
+    requiresTriageActionInstructionV1,
     type TriageActionV1,
 } from '../../settings/actions.js';
 import {
@@ -169,6 +172,8 @@ export type TriageEntrySessionStartUnavailableReasonV1 =
     | 'profileMissing'
     | 'promptMissing'
     | 'promptInvalid'
+    /** The action has no Prompt Library reference or shipped fallback task. */
+    | 'instructionMissing'
     /**
      * The catalog that owns a configured reference did not answer.
      *
@@ -259,6 +264,10 @@ function unavailable(
 export function triageActionImmediateRefusalV1(
     action: Pick<TriageActionV1, 'target' | 'workspaceMode' | 'appliesTo'>,
 ): TriageEntrySessionStartUnavailableReasonV1 | null {
+    if (requiresTriageActionInstructionV1(action.target)
+        && !hasTriageActionInstructionSourceV1(action.target)) {
+        return 'instructionMissing';
+    }
     return isTriageActionConfigurationCoherentV1(action)
         ? null
         : 'preparedWorkspaceUnsupported';
@@ -436,60 +445,40 @@ export function useTriageEntrySessionStart(
                 ? {
                     actionId: request.action.actionId,
                     input,
-                    pending: result.delivery === 'outcomeUnknown' && input.destination.kind === 'new'
-                        ? {
-                            // The initial input was submitted atomically by
-                            // `session.spawn_new`. Resolve an ambiguous answer
-                            // by repeating that same creation identity, not by
-                            // sending through the distinct later-message key.
-                            phase: 'creationPending',
-                            ...(result.preparedReviewWorkspace === undefined
-                                ? {}
-                                : { preparedReviewWorkspace: result.preparedReviewWorkspace }),
-                        }
-                        : {
-                            phase: result.type,
-                            sessionId: result.sessionId,
-                            disposition: result.disposition,
-                            // `session.spawn_new` admitted the first input before
-                            // link/open. Carry that settled verdict into the phase
-                            // retry so it is not delivered as a second Message.
-                            ...(result.delivery === undefined || result.delivery === 'outcomeUnknown'
-                                ? {}
-                                : { delivery: result.delivery }),
-                            ...(result.preparedReviewWorkspace === undefined
-                                ? {}
-                                : { preparedReviewWorkspace: result.preparedReviewWorkspace }),
-                        },
+                    pending: {
+                        phase: result.type,
+                        sessionId: result.sessionId,
+                        disposition: result.disposition,
+                        // An unknown admission answer is intentionally omitted:
+                        // the phase retry invokes the one canonical sender with
+                        // the retained public idempotency key. A settled answer
+                        // is carried so an open retry cannot send a second time.
+                        ...(result.delivery === undefined || result.delivery === 'outcomeUnknown'
+                            ? {}
+                            : { delivery: result.delivery }),
+                        ...(result.preparedReviewWorkspace === undefined
+                            ? {}
+                            : { preparedReviewWorkspace: result.preparedReviewWorkspace }),
+                    },
                     ...(reviewInstructions === undefined ? {} : { reviewInstructions }),
                 }
-                // The Session opened, but delivery did not settle. Retry under
-                // the identity that submitted it: atomic spawn for a new
-                // Session, ordinary input admission for an existing one.
+                // The Session opened, but delivery did not settle. The link and
+                // stable Session id already exist, so retry only admission and
+                // open under the retained public delivery identity.
                 : result.type === 'opened'
                     && result.delivery === 'outcomeUnknown'
                     && input.delivery !== undefined
                     ? {
                         actionId: request.action.actionId,
                         input,
-                        pending: input.destination.kind === 'new'
-                            ? {
-                                // The opened Session's first-turn admission was
-                                // ambiguous. Rejoin the same atomic spawn so the
-                                // daemon retries the spawn-derived Message id.
-                                phase: 'creationPending',
-                                ...(result.preparedReviewWorkspace === undefined
-                                    ? {}
-                                    : { preparedReviewWorkspace: result.preparedReviewWorkspace }),
-                            }
-                            : {
-                                // Existing-Session delivery already used the
-                                // retained public key, so its ordinary send
-                                // retry remains the correct identity owner.
-                                phase: 'openPending',
-                                sessionId: result.sessionId,
-                                disposition: result.disposition,
-                            },
+                        pending: {
+                            phase: 'openPending',
+                            sessionId: result.sessionId,
+                            disposition: result.disposition,
+                            ...(result.preparedReviewWorkspace === undefined
+                                ? {}
+                                : { preparedReviewWorkspace: result.preparedReviewWorkspace }),
+                        },
                         ...(reviewInstructions === undefined ? {} : { reviewInstructions }),
                     }
                 : null;
@@ -588,15 +577,13 @@ export function useTriageEntrySessionStart(
                     return;
                 }
                 const preferences = references.profile?.preferences;
-                const promptText = references.prompt?.text ?? null;
+                const promptText = resolveTriageActionInstructionV1(
+                    action,
+                    references.prompt?.text ?? null,
+                );
                 if (action.target.kind === 'reviewStart') {
                     if (action.workspaceMode !== 'pull_request' || request.reviewWorkspace === undefined) {
                         setPhase(unavailable('preparedWorkspaceUnsupported'));
-                        return;
-                    }
-                    // Formal review has no Triage-authored fallback prose.
-                    if (promptText === null || promptText.trim().length === 0) {
-                        setPhase(unavailable('promptMissing'));
                         return;
                     }
                 }
@@ -781,7 +768,7 @@ export function useTriageEntrySessionStart(
                     creationKey: mintCreationKey(),
                     settlement,
                     ...(action.profileId === null ? {} : { profileId: action.profileId }),
-                    ...(action.target.kind === 'reviewStart'
+                    ...(action.workspaceMode === 'pull_request'
                         ? { reviewWorkspace: request.reviewWorkspace!.preparation }
                         : {}),
                     ...(placementCandidates === undefined ? {} : { placementCandidates }),
@@ -797,7 +784,7 @@ export function useTriageEntrySessionStart(
                 let prepareReviewWorkspaceSelection:
                     | TriageStartEntrySessionInputV1['prepareReviewWorkspaceSelection']
                     | undefined;
-                if (action.target.kind === 'reviewStart') {
+                if (action.workspaceMode === 'pull_request') {
                     if (destination.destination.kind !== 'new'
                         || destination.destination.materialization.kind !== 'reviewWorkspace') {
                         setPhase(unavailable('preparedWorkspaceUnsupported'));
@@ -832,7 +819,7 @@ export function useTriageEntrySessionStart(
                         },
                         consumeSelectedActionInput: true,
                     } as PluginUiActionExecutionOptions;
-                    reviewInstructions = promptText!;
+                    if (action.target.kind === 'reviewStart') reviewInstructions = promptText!;
                 }
                 setPhase(STARTING);
                 // 3. A send travels with the start so it settles between link

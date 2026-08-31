@@ -191,6 +191,7 @@ describe('the source administration Action handler', () => {
         expect(listed.configuredSources).toEqual([{
             sourceInstanceId: INSTANCE_ID,
             source: SOURCE,
+            configurationRevision: 1,
             displayLabel: 'example/repository',
             available: true,
         }]);

@@ -179,12 +179,12 @@ describe('startEntrySession', () => {
     });
 
     /**
-     * The start owner, not its callers, constructs canonical `initialInput`
-     * from the resolved Prompt Library body and structured entry attachment.
-     * Legacy `initialMessage`, caller-supplied `initialInput`, and provider
-     * prose remain prohibited at the spawn request boundary.
+     * The start owner, not its callers, constructs the canonical structured
+     * input from the resolved Prompt Library body and entry attachment. Spawn
+     * deliberately carries none of it: the durable link must exist before the
+     * one Session-input admission call can run.
      */
-    it('admits the resolved prompt and attachment atomically through initialInput only', async () => {
+    it('admits the resolved prompt and attachment atomically only after the durable link', async () => {
         const fixture = createTestkitCorpusCollections();
         const invoker = createTestkitActionInvoker({ spawn: [spawnSuccess()] });
         await startEntrySession(deps(fixture, invoker), {
@@ -200,13 +200,19 @@ describe('startEntrySession', () => {
             delivery: TESTKIT_DELIVERY_REQUEST,
         });
 
-        expect(invoker.callsFor('session.spawn_new')[0]?.input).toMatchObject({
-            initialInput: {
-                text: 'Repair the failing parser test.',
-                attachments: [expect.objectContaining({ attachmentLocalId: 'entry' })],
-            },
+        expect(invoker.callsFor('session.spawn_new')[0]?.input).not.toHaveProperty('initialInput');
+        expect(invoker.callsFor('session.message.send')[0]?.input).toMatchObject({
+            sessionId: 'session-a',
+            message: 'Repair the failing parser test.',
+            idempotencyKey: TESTKIT_DELIVERY_REQUEST.idempotencyKey,
+            attachments: [expect.objectContaining({ attachmentLocalId: 'entry' })],
         });
-        expect(invoker.callsFor('session.message.send')).toHaveLength(0);
+        const linkTag = await deriveSessionLinkTag(
+            fixture.collections.sessionLinks,
+            testkitEntryRef(),
+            'session-a',
+        );
+        expect(await fixture.collections.sessionLinks.get(linkTag)).not.toBeNull();
     });
 
     it('links and opens an existing Session for a reference-only action without materializing anything', async () => {
@@ -566,16 +572,13 @@ describe('startEntrySession', () => {
         expect(spawnCalls[1]?.input).toEqual(spawnCalls[0]?.input);
     });
 
-    it('retries an uncertain prepared-workspace spawn with the same key and input without preparing or sending again', async () => {
+    it('retries an uncertain prepared-workspace spawn with the same key, then links and sends once', async () => {
         const fixture = createTestkitCorpusCollections();
         const entryRef = testkitEntryRef();
         const invoker = createTestkitActionInvoker({
             spawn: [
                 { type: 'pending', retryWithSameCreationKey: true, outcome: 'unknown' },
-                spawnSuccess({
-                    disposition: 'rejoined',
-                    initialInput: { status: 'alreadyAccepted', localId: 'pending-a' },
-                }),
+                spawnSuccess({ disposition: 'rejoined' }),
             ],
         });
         const source = createTestkitPrepareReviewWorkspace({ results: [PREPARED_RESULT] });
@@ -610,14 +613,14 @@ describe('startEntrySession', () => {
         expect(resumed).toMatchObject({
             type: 'opened',
             disposition: 'rejoined',
-            delivery: 'alreadyAccepted',
+            delivery: 'accepted',
             workspace: PREPARED_FACTS,
         });
         expect(source.calls).toHaveLength(1);
         const spawns = invoker.callsFor('session.spawn_new');
         expect(spawns).toHaveLength(2);
         expect(spawns[1]?.input).toEqual(spawns[0]?.input);
-        expect(invoker.callsFor('session.message.send')).toHaveLength(0);
+        expect(invoker.callsFor('session.message.send')).toHaveLength(1);
     });
 
     it('treats a creation conflict as terminal without fabricating a Session id', async () => {
@@ -657,14 +660,30 @@ describe('startEntrySession', () => {
      *
      * This case fails if the send moves back after the open, or disappears.
      */
-    it('admits structured input with spawn before the runtime can start and never sends it again', async () => {
+    it('spawns, durably links, admits one structured input, and only then opens', async () => {
         const fixture = createTestkitCorpusCollections();
         const entryRef = testkitEntryRef();
-        const invoker = createTestkitActionInvoker({
-            spawn: [spawnSuccess({ initialInput: { status: 'accepted', localId: 'pending-a' } })],
-        });
+        const events: string[] = [];
+        const baseInvoker = createTestkitActionInvoker({ spawn: [spawnSuccess()] });
+        const invoker: TestkitActionInvoker = {
+            ...baseInvoker,
+            execute: (async (...args: Parameters<TestkitActionInvoker['execute']>) => {
+                events.push(args[0]);
+                return await baseInvoker.execute(...args);
+            }) as TestkitActionInvoker['execute'],
+        };
+        const sessionLinks = {
+            ...fixture.collections.sessionLinks,
+            batch: async (...args: Parameters<typeof fixture.collections.sessionLinks.batch>) => {
+                events.push('triage.sessionLink.commit');
+                return await fixture.collections.sessionLinks.batch(...args);
+            },
+        };
 
-        const result = await startEntrySession(deps(fixture, invoker), {
+        const result = await startEntrySession({
+            ...deps(fixture, invoker),
+            collections: { sessionLinks },
+        }, {
             entryRef,
             display: TESTKIT_LINK_DISPLAY,
             workspaceMode: 'reference_only',
@@ -686,36 +705,55 @@ describe('startEntrySession', () => {
         });
         expect(invoker.calls.map((call) => call.actionId)).toEqual([
             'session.spawn_new',
+            'session.message.send',
             'session.open',
         ]);
-        // The link committed before the send: a delivery into a Session this
-        // entry is not linked to would be context for a relationship nothing
-        // records.
+        expect(events).toEqual([
+            'session.spawn_new',
+            'triage.sessionLink.commit',
+            'session.message.send',
+            'session.open',
+        ]);
         const linkTag = await deriveSessionLinkTag(fixture.collections.sessionLinks, entryRef, 'session-a');
         expect(await fixture.collections.sessionLinks.get(linkTag)).not.toBeNull();
 
-        const initialInput = (invoker.callsFor('session.spawn_new')[0]?.input as Readonly<{
-            initialInput?: Readonly<{
-                text: string;
-                attachments?: readonly Readonly<{ attachmentLocalId: string }>[];
-            }>;
-        }>).initialInput;
+        expect(invoker.callsFor('session.spawn_new')[0]?.input).not.toHaveProperty('initialInput');
+        const sent = invoker.callsFor('session.message.send')[0]?.input;
         // The prompt never travels alone. Entry context rides the declared
         // attachment, whose `resolveForDispatch` reads authoritative facts at
         // dispatch rather than any prose this start embedded.
-        expect(initialInput?.text).toBe('Repair the failing parser test.');
-        expect(initialInput?.attachments).toHaveLength(1);
-        expect(initialInput?.attachments?.[0]?.attachmentLocalId).toBe('entry');
-        expect(initialInput?.text).not.toContain('example/repository');
+        expect(sent).toMatchObject({
+            message: 'Repair the failing parser test.',
+            idempotencyKey: TESTKIT_DELIVERY_REQUEST.idempotencyKey,
+            attachments: [expect.objectContaining({ attachmentLocalId: 'entry' })],
+        });
+        expect(sent && 'message' in sent ? sent.message : '').not.toContain('example/repository');
     });
 
     it('delivers every selected entry when one bulk unit asks for one Session', async () => {
         const fixture = createTestkitCorpusCollections();
         const entryRef = testkitEntryRef({ entryId: '17' });
         const secondEntryRef = testkitEntryRef({ entryId: '18' });
-        const invoker = createTestkitActionInvoker({ spawn: [spawnSuccess()] });
-
-        await startEntrySession(deps(fixture, invoker), {
+        const events: string[] = [];
+        const baseInvoker = createTestkitActionInvoker({ spawn: [spawnSuccess()] });
+        const invoker: TestkitActionInvoker = {
+            ...baseInvoker,
+            execute: (async (...args: Parameters<TestkitActionInvoker['execute']>) => {
+                events.push(args[0]);
+                return await baseInvoker.execute(...args);
+            }) as TestkitActionInvoker['execute'],
+        };
+        const sessionLinks = {
+            ...fixture.collections.sessionLinks,
+            batch: async (...args: Parameters<typeof fixture.collections.sessionLinks.batch>) => {
+                events.push('triage.sessionLink.commit');
+                return await fixture.collections.sessionLinks.batch(...args);
+            },
+        };
+        await startEntrySession({
+            ...deps(fixture, invoker),
+            collections: { sessionLinks },
+        }, {
             entryRef,
             display: TESTKIT_LINK_DISPLAY,
             workspaceMode: 'reference_only',
@@ -736,13 +774,25 @@ describe('startEntrySession', () => {
             } as never,
         });
 
-        const send = (invoker.callsFor('session.spawn_new')[0]?.input as Readonly<{
-            initialInput?: Readonly<{
-                attachments?: readonly Readonly<{
-                    value?: Readonly<{ value?: Readonly<{ entryRef?: unknown }> }>;
-                }>[];
-            }>;
-        }>).initialInput!;
+        expect(events).toEqual([
+            'session.spawn_new',
+            'triage.sessionLink.commit',
+            'triage.sessionLink.commit',
+            'session.message.send',
+            'session.open',
+        ]);
+        const secondLinkTag = await deriveSessionLinkTag(
+            fixture.collections.sessionLinks,
+            secondEntryRef,
+            'session-a',
+        );
+        expect(await fixture.collections.sessionLinks.get(secondLinkTag)).not.toBeNull();
+
+        const send = invoker.callsFor('session.message.send')[0]?.input as Readonly<{
+            attachments?: readonly Readonly<{
+                value?: Readonly<{ value?: Readonly<{ entryRef?: unknown }> }>;
+            }>[];
+        }>;
         expect(send.attachments).toHaveLength(2);
         expect(send.attachments?.map((attachment) => attachment.value?.value?.entryRef)).toEqual([
             entryRef,
@@ -759,9 +809,8 @@ describe('startEntrySession', () => {
     it('reports a refused delivery as refused and an unanswered one as unknown', async () => {
         const refusedFixture = createTestkitCorpusCollections();
         const refused = createTestkitActionInvoker({
-            spawn: [spawnSuccess({
-                initialInput: { status: 'rejected', code: 'session_input_archived' },
-            })],
+            spawn: [spawnSuccess()],
+            send: [{ status: 'rejected', code: 'session_input_archived' }],
         });
         const refusedResult = await startEntrySession(deps(refusedFixture, refused), {
             entryRef: testkitEntryRef(),
@@ -781,9 +830,8 @@ describe('startEntrySession', () => {
 
         const unknownFixture = createTestkitCorpusCollections();
         const unanswered = createTestkitActionInvoker({
-            spawn: [spawnSuccess({
-                initialInput: { status: 'outcomeUnknown', localId: 'pending-a', code: 'timeout' },
-            })],
+            spawn: [spawnSuccess()],
+            sendThrows: true,
         });
         const unknownResult = await startEntrySession(deps(unknownFixture, unanswered), {
             entryRef: testkitEntryRef(),
@@ -800,7 +848,7 @@ describe('startEntrySession', () => {
         expect(unknownResult).toMatchObject({ type: 'opened', delivery: 'outcomeUnknown' });
         // A send that never answered still opens the Session it created.
         expect(unanswered.callsFor('session.open')).toHaveLength(1);
-        expect(unanswered.callsFor('session.message.send')).toHaveLength(0);
+        expect(unanswered.callsFor('session.message.send')).toHaveLength(1);
 
         const silentFixture = createTestkitCorpusCollections();
         const silent = createTestkitActionInvoker({ spawn: [spawnSuccess()] });
@@ -870,6 +918,73 @@ describe('startEntrySession', () => {
         expect(invoker.callsFor('session.spawn_new')).toHaveLength(1);
         const linkTag = await deriveSessionLinkTag(fixture.collections.sessionLinks, entryRef, 'session-a');
         expect(await fixture.collections.sessionLinks.get(linkTag)).not.toBeNull();
+    });
+
+    it('retries a failed secondary link before admitting the same atomic delivery', async () => {
+        const fixture = createTestkitCorpusCollections();
+        const entryRef = testkitEntryRef({ entryId: '17' });
+        const secondEntryRef = testkitEntryRef({ entryId: '18' });
+        const invoker = createTestkitActionInvoker({ spawn: [spawnSuccess()] });
+        let linkWriteAttempt = 0;
+        let failSecondLink = true;
+        const sessionLinks = {
+            ...fixture.collections.sessionLinks,
+            batch: async (...args: Parameters<typeof fixture.collections.sessionLinks.batch>) => {
+                linkWriteAttempt += 1;
+                if (failSecondLink && linkWriteAttempt === 2) {
+                    throw new Error('secondary_link_unavailable');
+                }
+                return await fixture.collections.sessionLinks.batch(...args);
+            },
+        };
+        const failingDeps = {
+            ...deps(fixture, invoker),
+            collections: { sessionLinks },
+        };
+        const startRequest: TriageEntrySessionStartRequestV1 = {
+            entryRef,
+            display: TESTKIT_LINK_DISPLAY,
+            workspaceMode: 'reference_only',
+            destination: {
+                kind: 'new',
+                creationKey: 'creation-key-all',
+                spawn: TESTKIT_SPAWN_REQUEST,
+                materialization: { kind: 'referenceOnly', directory: '/projects/example' },
+            },
+            delivery: {
+                ...TESTKIT_DELIVERY_REQUEST,
+                attachments: [...TESTKIT_DELIVERY_REQUEST.attachments, {
+                    entryRef: secondEntryRef,
+                    display: TESTKIT_LINK_DISPLAY,
+                    sourceInstanceId: TESTKIT_DELIVERY_REQUEST.attachments[0]!.sourceInstanceId,
+                    title: 'Extract the selection reducer',
+                }],
+            },
+        };
+
+        const pending = await startEntrySession(failingDeps, startRequest);
+        expect(pending).toMatchObject({ type: 'linkPending', sessionId: 'session-a' });
+        expect(invoker.callsFor('session.message.send')).toHaveLength(0);
+        expect(invoker.callsFor('session.open')).toHaveLength(0);
+
+        failSecondLink = false;
+        if (pending.type !== 'linkPending') throw new Error('expected a pending link');
+        const resumed = await resumeEntrySessionStart(failingDeps, {
+            entryRef,
+            display: TESTKIT_LINK_DISPLAY,
+            pending,
+            delivery: startRequest.delivery!,
+        });
+
+        expect(resumed).toMatchObject({ type: 'opened', delivery: 'accepted' });
+        expect(invoker.callsFor('session.spawn_new')).toHaveLength(1);
+        expect(invoker.callsFor('session.message.send')).toHaveLength(1);
+        const secondLinkTag = await deriveSessionLinkTag(
+            fixture.collections.sessionLinks,
+            secondEntryRef,
+            'session-a',
+        );
+        expect(await fixture.collections.sessionLinks.get(secondLinkTag)).not.toBeNull();
     });
 
     it('reports an open failure as pending and resumes with only session.open', async () => {

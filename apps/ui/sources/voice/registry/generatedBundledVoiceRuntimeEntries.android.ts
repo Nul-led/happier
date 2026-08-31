@@ -121,14 +121,6 @@ const CODEX_BUNDLED_PLUGIN_MANIFEST = Object.freeze(
           "agentCliSystemTool": {
             "toolId": "codex-cli"
           },
-          "codingPromptBehavior": {
-            "blocks": [
-              {
-                "id": "provider.codex.exec_sequencing",
-                "text": "Tool execution ordering:\n- When you need to run multiple `exec_command` calls, run them sequentially.\n- Do not enqueue multiple `exec_command` calls at once.\n- If any command may require user approval (especially writes), wait for the user decision and the command result before issuing the next command.\n- If a dependent read runs before its prerequisite write and fails, rerun the read after the write succeeds."
-              }
-            ]
-          },
           "resumeChecklist": {
             "includeLoginStatus": true
           },

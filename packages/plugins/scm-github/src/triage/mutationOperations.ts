@@ -1,9 +1,12 @@
 import type { PluginInvocationContext } from '@happier-dev/plugin-sdk';
 import {
+  createReviewCommentPublicationSettlementRequestV1,
   parseReviewCommentPublicationPlanV1,
   reviewCommentPublicationTargetMatchesV1,
   validateReviewCommentPublicationClaimAgainstPlanV1,
   type ReviewCommentPublicationPlanV1,
+  type ReviewCommentClaimPublicationDispatchResponseV1,
+  type ReviewCommentPublicationResultV1,
 } from '@happier-dev/plugin-sdk/reviews';
 import type { TriageSourceFailureV1 } from '@happier-dev/triage-protocol/v1';
 import { GITHUB_PLUGIN_ID } from '../observations/githubProviderContracts.js';
@@ -87,6 +90,20 @@ async function claimPublicationPlan(
     { signal },
   );
   return validateReviewCommentPublicationClaimAgainstPlanV1(plan, claim);
+}
+
+async function settlePublicationPlan(
+  plan: ReviewCommentPublicationPlanV1,
+  claim: ReviewCommentClaimPublicationDispatchResponseV1,
+  result: ReviewCommentPublicationResultV1,
+  signal: AbortSignal,
+  context: PluginInvocationContext,
+): Promise<void> {
+  await context.services.actions.execute(
+    'reviews.comments.claimPublicationDispatch',
+    createReviewCommentPublicationSettlementRequestV1(plan, claim, result),
+    { signal },
+  );
 }
 
 /**
@@ -229,6 +246,9 @@ export async function publishGithubPullRequestReviewAction(
     claimPublicationDispatch: async () => await claimPublicationPlan(
       publicationPlan, admitted.signal, context,
     ),
+    settlePublicationDispatch: async (claim, result) => await settlePublicationPlan(
+      publicationPlan, claim, result, admitted.signal, context,
+    ),
   }, { client: admitted.client, now: Date.now, signal: admitted.signal });
 }
 
@@ -265,6 +285,9 @@ export async function createGithubPullRequestReviewCommentAction(
     publicationPlan,
     mode: 'create',
     claimPublicationDispatch: async () => await claimPublicationPlan(publicationPlan, admitted.signal, context),
+    settlePublicationDispatch: async (claim, result) => await settlePublicationPlan(
+      publicationPlan, claim, result, admitted.signal, context,
+    ),
   }, { client: admitted.client, now: Date.now, signal: admitted.signal });
 }
 
@@ -297,6 +320,9 @@ export async function replyToGithubPullRequestThreadAction(
     mode: 'reply',
     threadId: request.threadId,
     claimPublicationDispatch: async () => await claimPublicationPlan(publicationPlan, admitted.signal, context),
+    settlePublicationDispatch: async (claim, result) => await settlePublicationPlan(
+      publicationPlan, claim, result, admitted.signal, context,
+    ),
   }, { client: admitted.client, now: Date.now, signal: admitted.signal });
 }
 
@@ -324,6 +350,9 @@ export async function createGithubIssueCommentAction(
     route: admitted.route,
     publicationPlan,
     claimPublicationDispatch: async () => await claimPublicationPlan(publicationPlan, admitted.signal, context),
+    settlePublicationDispatch: async (claim, result) => await settlePublicationPlan(
+      publicationPlan, claim, result, admitted.signal, context,
+    ),
   }, { client: admitted.client, now: Date.now, signal: admitted.signal });
 }
 

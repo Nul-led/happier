@@ -12,8 +12,8 @@ import type {
   BitbucketProjectedDiffstatRowV1,
   BitbucketProjectedStatusRowV1,
 } from '../../triage/detail/projection.js';
-import { BITBUCKET_TRIAGE_DETAIL_ACTION_IDS } from '../../triage/source/detailActions.js';
 import {
+  BITBUCKET_TRIAGE_DETAIL_ACTION_IDS,
   BitbucketActivityResultV1Schema,
   BitbucketBuildsResultV1Schema,
   BitbucketCommentsResultV1Schema,
@@ -211,7 +211,6 @@ export function useBitbucketActivity(
   const { execute } = useExecutePluginAction(action);
   const localRef = useBitbucketEntryLocalRef(input);
   const { instance } = input;
-  const routingToken = input.observation.locator.routingToken;
 
   const readPage: PageReader<BitbucketProjectedActivityRowV1> = useCallback(async (
     continuation,
@@ -221,7 +220,7 @@ export function useBitbucketActivity(
       v: 1,
       instance,
       localRef,
-      routingToken: routingToken ?? '',
+      lastKnownLocator: input.observation.locator,
       ...(continuation === null ? {} : { continuation }),
     }, { signal }) as ExecuteResult;
     if (execution.status !== 'success') {
@@ -236,7 +235,7 @@ export function useBitbucketActivity(
       return { kind: 'failed' as const, failure: parsed.data.failure };
     }
     return { kind: 'page' as const, page: toPage(parsed.data) };
-  }, [execute, instance, localRef, routingToken]);
+  }, [execute, input.observation.locator, instance, localRef]);
 
   return useBitbucketPagedWalk(readPage);
 }
@@ -274,7 +273,6 @@ export function useBitbucketBuilds(
   const { execute } = useExecutePluginAction(action);
   const localRef = useBitbucketEntryLocalRef(input);
   const { instance } = input;
-  const routingToken = input.observation.locator.routingToken;
   const [rollup, setRollup] = useState<BitbucketBuildRollupViewV1>({});
 
   const readPage: PageReader<BitbucketProjectedStatusRowV1> = useCallback(async (
@@ -285,7 +283,7 @@ export function useBitbucketBuilds(
       v: 1,
       instance,
       localRef,
-      routingToken: routingToken ?? '',
+      lastKnownLocator: input.observation.locator,
       ...(continuation === null ? {} : { continuation }),
     }, { signal }) as ExecuteResult;
     if (execution.status !== 'success') {
@@ -309,7 +307,7 @@ export function useBitbucketBuilds(
       });
     }
     return { kind: 'page' as const, page: toPage(page) };
-  }, [execute, instance, localRef, routingToken]);
+  }, [execute, input.observation.locator, instance, localRef]);
 
   const controller = useBitbucketPagedWalk(readPage);
   return useMemo(() => ({ ...controller, rollup }), [controller, rollup]);
@@ -330,7 +328,6 @@ export function useBitbucketComments(
   const { execute } = useExecutePluginAction(action);
   const localRef = useBitbucketEntryLocalRef(input);
   const { instance } = input;
-  const routingToken = input.observation.locator.routingToken;
 
   const readPage: PageReader<BitbucketProjectedCommentRowV1> = useCallback(async (
     continuation,
@@ -340,7 +337,7 @@ export function useBitbucketComments(
       v: 1,
       instance,
       localRef,
-      routingToken: routingToken ?? '',
+      lastKnownLocator: input.observation.locator,
       ...(continuation === null ? {} : { continuation }),
     }, { signal }) as ExecuteResult;
     if (execution.status !== 'success') {
@@ -355,7 +352,7 @@ export function useBitbucketComments(
       return { kind: 'failed' as const, failure: parsed.data.failure };
     }
     return { kind: 'page' as const, page: toPage(parsed.data) };
-  }, [execute, instance, localRef, routingToken]);
+  }, [execute, input.observation.locator, instance, localRef]);
 
   return useBitbucketPagedWalk(readPage);
 }
@@ -378,7 +375,6 @@ export function useBitbucketOverview(
   const { execute } = useExecutePluginAction(action);
   const localRef = useBitbucketEntryLocalRef(input);
   const { instance } = input;
-  const routingToken = input.observation.locator.routingToken;
   const { active, activeSignal } = useTabPanelActivity();
   const [result, setResult] = useState<ReturnType<typeof BitbucketOverviewResultV1Schema.parse> | null>(null);
   const [pending, setPending] = useState(false);
@@ -392,7 +388,7 @@ export function useBitbucketOverview(
       v: 1,
       instance,
       localRef,
-      routingToken: routingToken ?? '',
+      lastKnownLocator: input.observation.locator,
     }, { signal: activeSignal }).then((execution: ExecuteResult) => {
       if (!current || activeSignal.aborted) return;
       const parsed = execution.status === 'success'
@@ -405,7 +401,7 @@ export function useBitbucketOverview(
       setPending(false);
     });
     return () => { current = false; };
-  }, [active, activeSignal, execute, instance, localRef, refreshKey, routingToken]);
+  }, [active, activeSignal, execute, input.observation.locator, instance, localRef, refreshKey]);
 
   return useMemo(() => ({
     result,
@@ -429,7 +425,6 @@ export function useBitbucketDiff(
   const { execute } = useExecutePluginAction(action);
   const localRef = useBitbucketEntryLocalRef(input);
   const { instance } = input;
-  const routingToken = input.observation.locator.routingToken;
   const [raw, setRaw] = useState<BitbucketDiffControllerV1['raw']>(null);
   const readPage: PageReader<BitbucketProjectedDiffstatRowV1> = useCallback(async (
     continuation,
@@ -439,7 +434,7 @@ export function useBitbucketDiff(
       v: 1,
       instance,
       localRef,
-      routingToken: routingToken ?? '',
+      lastKnownLocator: input.observation.locator,
       ...(continuation === null ? {} : { continuation }),
     }, { signal }) as ExecuteResult;
     if (execution.status !== 'success') {
@@ -461,7 +456,7 @@ export function useBitbucketDiff(
       ...(parsed.data.incomplete === undefined ? {} : { incomplete: parsed.data.incomplete }),
       ...(parsed.data.continuation === undefined ? {} : { continuation: parsed.data.continuation }),
     }) };
-  }, [execute, instance, localRef, routingToken]);
+  }, [execute, input.observation.locator, instance, localRef]);
   const controller = useBitbucketPagedWalk(readPage);
   return useMemo(() => ({ ...controller, raw }), [controller, raw]);
 }

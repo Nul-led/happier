@@ -192,6 +192,7 @@ function mapFeatureInspectionToAvailability(
 export function createCodexAppServerRealtimeConversation(params: Readonly<{
   getClient(): Promise<DisposableCodexAppServerClient>;
   getThreadId(): string | null;
+  onThreadAccepted?(threadId: string): void;
   isDisposed(): boolean;
   isRuntimeExited?(): boolean;
   settlementTimeoutMs?: number;
@@ -684,6 +685,7 @@ export function createCodexAppServerRealtimeConversation(params: Readonly<{
           return;
         }
         target.phase = 'started';
+        params.onThreadAccepted?.(target.threadId);
         maybeSettleStarted(target);
       });
       register('thread/realtime/sdp', (record) => {
@@ -872,6 +874,7 @@ export function createCodexAppServerRealtimeConversation(params: Readonly<{
             return;
           }
           target.requestAccepted = true;
+          params.onThreadAccepted?.(target.threadId);
           maybeSettleStarted(target);
         },
         (error: unknown) => {

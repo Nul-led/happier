@@ -1,6 +1,8 @@
 import { admitForgeRequestUrl } from '@happier-dev/triage-sources/runtime';
 
-export const BITBUCKET_CLOUD_API_ORIGIN = 'https://api.bitbucket.org';
+import { BITBUCKET_FORGE_HOST_ID } from './identity.js';
+
+export const BITBUCKET_CLOUD_API_ORIGIN = `https://api.${BITBUCKET_FORGE_HOST_ID}`;
 export const BITBUCKET_CLOUD_API_BASE_URL = `${BITBUCKET_CLOUD_API_ORIGIN}/2.0`;
 
 /**

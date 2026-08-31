@@ -99,6 +99,7 @@ describe('entry Session final-open ownership', () => {
         });
         expect(boundary.calls).toEqual([
             'session.spawn_new',
+            'session.message.send',
         ]);
     });
 });

@@ -12,10 +12,12 @@ import { isRecord, readTrimmedString as readString } from '@happier-dev/plugin-s
 
 import { readBitbucketRepositoryCoordinates } from '../parsing/bitbucketCoordinates.js';
 import { encodeBitbucketBasicAuthorization } from '../auth/basicCredentials.js';
+import { readBitbucketApiUrl } from '../triage/apiUrl.js';
 import {
   createBitbucketAlreadyExistsError,
   createBitbucketAuthRequiredError,
   createBitbucketCommandFailedError,
+  createBitbucketInvalidRequestError,
   createBitbucketNotFoundError,
 } from './errors.js';
 import { mapBitbucketPullRequest } from './mapping.js';
@@ -133,8 +135,12 @@ export async function requestBitbucketJson(input: Readonly<{
   init?: Omit<RequestInit, 'headers'>;
   signal?: AbortSignal;
 }>): Promise<unknown> {
+  const admittedUrl = readBitbucketApiUrl(input.url);
+  if (admittedUrl === null) {
+    throw createBitbucketInvalidRequestError('Bitbucket API request URL is outside the Bitbucket Cloud API');
+  }
   return requestScmForgeJson({
-    url: input.url,
+    url: admittedUrl,
     init: {
       ...input.init,
       ...(input.signal ? { signal: input.signal } : {}),

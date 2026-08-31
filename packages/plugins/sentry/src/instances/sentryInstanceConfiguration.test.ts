@@ -48,6 +48,27 @@ describe('encodeSentryInstanceConfiguration', () => {
     })).ok).toBe(false);
   });
 
+  it('rejects unknown fields at every declared exact configuration boundary', () => {
+    const configuration = {
+      v: 1,
+      organizationId: '7701',
+      projectScope: { kind: 'allAccessible' },
+      environmentScope: { kind: 'all' },
+    };
+    expect(decodeSentryInstanceConfiguration(JSON.stringify({
+      ...configuration,
+      unexpected: true,
+    })).ok).toBe(false);
+    expect(decodeSentryInstanceConfiguration(JSON.stringify({
+      ...configuration,
+      projectScope: { kind: 'allAccessible', unexpected: true },
+    })).ok).toBe(false);
+    expect(decodeSentryInstanceConfiguration(JSON.stringify({
+      ...configuration,
+      environmentScope: { kind: 'all', unexpected: true },
+    })).ok).toBe(false);
+  });
+
   it('refuses to encode a configuration that would exceed the bounded token size', () => {
     expect(() => encodeSentryInstanceConfiguration({
       v: 1,

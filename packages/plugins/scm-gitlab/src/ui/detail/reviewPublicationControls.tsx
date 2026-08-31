@@ -82,6 +82,7 @@ function mutationTargetOf(input: TriageDetailSurfaceInputV1) {
     v: 1 as const,
     instance: input.instance,
     localRef: localRefOf(input),
+    routingToken: input.observation.locator.routingToken,
   };
 }
 
