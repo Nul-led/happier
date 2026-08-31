@@ -51,6 +51,7 @@ describe('Session creation target preparation V1', () => {
         finalDirectory: 'C:\\Users\\alice\\repo\\.dev\\worktree\\feature',
         baseRef: null,
         branchMode: 'new',
+        created: true,
       },
     })).toEqual({
       ok: true,
@@ -61,8 +62,21 @@ describe('Session creation target preparation V1', () => {
         finalDirectory: 'C:\\Users\\alice\\repo\\.dev\\worktree\\feature',
         baseRef: null,
         branchMode: 'new',
+        created: true,
       },
     });
+
+    expect(SessionCreationTargetPreparationResultV1Schema.parse({
+      ok: true,
+      directory: '/repo/.dev/worktree/reused',
+      directoryCreationRequired: false,
+      checkout: {
+        kind: 'git_worktree',
+        finalDirectory: '/repo/.dev/worktree/reused',
+        baseRef: null,
+        branchMode: 'existing',
+      },
+    }).checkout).not.toHaveProperty('created');
 
     expect(() => SessionCreationTargetPreparationResultV1Schema.parse({
       ok: true,

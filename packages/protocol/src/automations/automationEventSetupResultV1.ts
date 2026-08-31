@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
 
-import { AutomationEventPositiveSafeIntegerV1Schema } from './automationEventDeclarationV1.js';
+import { AutomationEventPositiveSafeIntegerV1Schema } from './automationColumnBoundsV1.js';
 import {
   AutomationEventSourceConfigV1Schema,
   AutomationEventSourceDisplayLabelV1Schema,

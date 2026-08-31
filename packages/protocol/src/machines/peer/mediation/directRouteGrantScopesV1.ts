@@ -9,7 +9,7 @@ export const BoundedTransferSingleGrantScopeV1Schema = z.object({
   mode: z.literal('single'),
   transferId: z.string().min(1),
   maxBytes: PositiveIntSchema,
-});
+}).strict();
 
 export const BoundedTransferScopedGrantScopeV1Schema = z.object({
   kind: z.literal('bounded_transfer'),
@@ -20,7 +20,7 @@ export const BoundedTransferScopedGrantScopeV1Schema = z.object({
   maxBytesPerTransfer: PositiveIntSchema,
   maxTotalBytes: PositiveIntSchema,
   maxIdleMs: PositiveIntSchema,
-});
+}).strict();
 
 export const TcpTunnelGrantScopeV1Schema = z.object({
   kind: z.literal('tcp_tunnel'),
@@ -29,7 +29,7 @@ export const TcpTunnelGrantScopeV1Schema = z.object({
   maxIdleMs: PositiveIntSchema,
   maxDurationMs: PositiveIntSchema,
   maxTotalBytes: PositiveIntSchema.optional(),
-});
+}).strict();
 
 export const VoiceMediaGrantScopeV1Schema = z.object({
   kind: z.literal('voice_media'),
@@ -49,7 +49,7 @@ export const LiveStreamGrantScopeV1Schema = z.object({
   maxBitrateBps: PositiveIntSchema,
   maxDurationMs: PositiveIntSchema,
   maxTotalBytes: PositiveIntSchema.optional(),
-});
+}).strict();
 
 export const MachineRpcGrantScopeV1Schema = z.object({
   kind: z.literal('machine_rpc'),
@@ -59,7 +59,7 @@ export const MachineRpcGrantScopeV1Schema = z.object({
   maxCalls: PositiveIntSchema,
   maxIdleMs: PositiveIntSchema,
   highRiskSingleUseMethods: z.array(z.string().min(1)).optional(),
-});
+}).strict();
 
 export const DirectRouteGrantScopeV1Schema = z.union([
   BoundedTransferSingleGrantScopeV1Schema,

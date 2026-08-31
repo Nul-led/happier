@@ -39,6 +39,8 @@ export type TriagePagedPanelStateV1<TRow, TFailure, TIncomplete = never> = Reado
     projectionTruncated: boolean;
     /** A request is in flight for this panel interval. */
     pending: boolean;
+    /** The in-flight request is replacing the retained walk from its first page. */
+    refreshing: boolean;
     /** The source-minted position of the next page, or `null` when the walk ended. */
     continuation: string | null;
     canLoadMore: boolean;
@@ -64,13 +66,14 @@ export type TriagePagedPanelPageV1<TRow, TIncomplete = never> = Readonly<{
 
 export type TriagePagedPanelEventV1<TRow, TFailure, TIncomplete = never> =
     | Readonly<{ kind: 'requestStarted'; token: number }>
+    | Readonly<{ kind: 'refreshStarted'; token: number }>
     | Readonly<{
         kind: 'pageSettled';
         token: number;
         page: TriagePagedPanelPageV1<TRow, TIncomplete>;
     }>
     | Readonly<{ kind: 'pageFailed'; token: number; failure: TFailure }>
-    /** The panel was left. Every source detail plane discards, so nothing survives. */
+    /** The owning panel interval explicitly chose a cold reset. */
     | Readonly<{ kind: 'panelLeft' }>;
 
 const INITIAL = Object.freeze({
@@ -79,6 +82,7 @@ const INITIAL = Object.freeze({
     omittedRowCount: 0,
     projectionTruncated: false,
     pending: false,
+    refreshing: false,
     continuation: null,
     canLoadMore: false,
     incomplete: null,
@@ -105,8 +109,21 @@ export function triagePagedPanelReducer<TRow, TFailure, TIncomplete = never>(
                 // loading skeleton over them.
                 kind: state.rows.length === 0 ? 'loading' : state.kind,
                 pending: true,
+                refreshing: false,
                 // While a page is in flight the reader cannot ask for another one, but
                 // the affordance stays mounted in its busy state rather than vanishing.
+                canLoadMore: state.canLoadMore,
+                failure: null,
+                token: event.token,
+            };
+        case 'refreshStarted':
+            return {
+                ...state,
+                // Refresh is a warm replacement. Keep the last-known-good walk
+                // visible until the new first page has actually settled.
+                kind: state.rows.length === 0 ? 'loading' : 'ready',
+                pending: true,
+                refreshing: true,
                 canLoadMore: state.canLoadMore,
                 failure: null,
                 token: event.token,
@@ -114,17 +131,25 @@ export function triagePagedPanelReducer<TRow, TFailure, TIncomplete = never>(
         case 'pageSettled': {
             // The result belongs to a request this panel already replaced.
             if (event.token !== state.token) return state;
+            const replacing = state.refreshing;
             return {
                 kind: 'ready',
-                rows: [...state.rows, ...event.page.rows],
-                omittedRowCount: state.omittedRowCount + event.page.omittedRowCount,
-                projectionTruncated: state.projectionTruncated || event.page.projectionTruncated,
+                rows: replacing ? [...event.page.rows] : [...state.rows, ...event.page.rows],
+                omittedRowCount: replacing
+                    ? event.page.omittedRowCount
+                    : state.omittedRowCount + event.page.omittedRowCount,
+                projectionTruncated: replacing
+                    ? event.page.projectionTruncated
+                    : state.projectionTruncated || event.page.projectionTruncated,
                 pending: false,
+                refreshing: false,
                 continuation: event.page.continuation,
                 canLoadMore: event.page.continuation !== null,
                 // A walk that stopped short stays short; a later page cannot retract
                 // that fact, only a fresh walk can.
-                incomplete: event.page.incomplete ?? state.incomplete,
+                incomplete: replacing
+                    ? event.page.incomplete
+                    : event.page.incomplete ?? state.incomplete,
                 failure: null,
                 token: state.token,
             };
@@ -139,6 +164,7 @@ export function triagePagedPanelReducer<TRow, TFailure, TIncomplete = never>(
                 ...state,
                 kind: state.rows.length === 0 ? 'unavailable' : 'ready',
                 pending: false,
+                refreshing: false,
                 canLoadMore: state.continuation !== null,
                 failure: event.failure,
             };

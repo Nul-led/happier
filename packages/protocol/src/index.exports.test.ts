@@ -643,6 +643,9 @@ describe('protocol package root exports', () => {
         expect(typeof (protocol as any).SessionHandoffStartRequestSchema?.safeParse).toBe('function');
         expect(typeof (protocol as any).SessionHandoffPrepareTargetRequestSchema?.safeParse).toBe('function');
         expect(typeof (protocol as any).SessionHandoffStatusSchema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).ReadWorkspaceSyncFileV1Schema?.safeParse).toBe('function');
+        expect(typeof (protocol as any).ReadWorkspaceSyncFileResultV1Schema?.safeParse).toBe('function');
+        expect((protocol as any).WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES).toBe(1024 * 1024);
         expect((protocol as any).SESSION_HANDOFF_PROGRESS_TIMELINES_V1.full).toEqual([
             'plan',
             'transfer_blobs',

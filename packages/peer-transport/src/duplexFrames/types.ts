@@ -107,4 +107,8 @@ export type PeerTcpTunnelBinaryFrameForSessionResult =
     | Readonly<{ ok: true; frame: PeerTcpTunnelFrame; rawPayloadBytes: number }>
     | Readonly<{ ok: false; reasonCode: 'frame_invalid' | 'encoded_frame_too_large' | 'decoded_payload_too_large' }>;
 
+export type PeerTcpTunnelBinarySubstreamFrameResult =
+    | Readonly<{ ok: true; substreamId: string; frame: PeerTcpTunnelFrame; rawPayloadBytes: number }>
+    | Readonly<{ ok: false; reasonCode: 'frame_invalid' | 'encoded_frame_too_large' | 'decoded_payload_too_large' }>;
+
 export type { PeerTcpTunnelDestinationV1, PeerTcpTunnelDirectionV1, PeerTcpTunnelSubstreamCapsV2 };

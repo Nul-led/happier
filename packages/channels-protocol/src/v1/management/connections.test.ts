@@ -106,7 +106,7 @@ describe('Channels V1 connection management contracts', () => {
         }).success).toBe(false);
     });
 
-    it('keeps connection transfer caller-owned, revision-guarded, and limited to the executable non-durable transports', () => {
+    it('keeps connection transfer caller-owned, revision-guarded, and transport-preserving', () => {
         const providerSelection = {
             target: {
                 pluginId: 'happier.channels',
@@ -136,10 +136,10 @@ describe('Channels V1 connection management contracts', () => {
             ...transfer,
             selectedTransport: 'socket',
         })).toEqual({ ...transfer, selectedTransport: 'socket' });
-        expect(ConversationConnectionTransferInputV1Schema.safeParse({
+        expect(ConversationConnectionTransferInputV1Schema.parse({
             ...transfer,
             selectedTransport: 'durablePush',
-        }).success).toBe(false);
+        })).toEqual({ ...transfer, selectedTransport: 'durablePush' });
         expect(ConversationConnectionTransferInputV1Schema.safeParse({
             ...transfer,
             maximumObservationAgeMs: 60_000,

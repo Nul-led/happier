@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { HomeConnectionDescriptorV1Schema, type HomeConnectionDescriptorV1 } from '../../auth/accountDirectory.js';
 import { CapabilitiesSchema, type Capabilities } from './capabilities/capabilitiesSchema.js';
 import { FeatureGatesSchema, type FeatureGates } from './featureGatesSchema.js';
 import { isRecord } from './isRecord.js';
@@ -51,10 +52,15 @@ export const FeaturesResponseSchema = z.preprocess(
   z.object({
     features: FeatureGatesSchema,
     capabilities: CapabilitiesSchema,
+    // Additive optional Home connection descriptor (Home Iroh publication):
+    // old servers omit the field and remain valid; a present field must parse
+    // through the one canonical outer descriptor schema or the response fails.
+    homeConnectionDescriptor: HomeConnectionDescriptorV1Schema.optional(),
   }),
 );
 
 export type FeaturesResponse = Readonly<{
   features: FeatureGates;
   capabilities: Capabilities;
+  homeConnectionDescriptor?: HomeConnectionDescriptorV1;
 }>;

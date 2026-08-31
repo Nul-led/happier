@@ -100,7 +100,7 @@ export function buildBackendTargetKeyV2(target: BackendTargetRefV2 | AgentExecut
   return BackendTargetKeyV2Schema.parse(`backend:${parsedTarget.backendId}${suffix}`);
 }
 
-export function parseBackendTargetKeyV2(key: string): BackendTargetRefV2 {
+export function parseBackendTargetKeyV2(key: string): PersistedBackendTargetRefV2 {
   const parsed = BackendTargetKeyV2Schema.parse(key);
   if (parsed.startsWith('agent:')) {
     const qualifiedIdentity = parsed.slice('agent:'.length);
@@ -109,14 +109,9 @@ export function parseBackendTargetKeyV2(key: string): BackendTargetRefV2 {
       pluginId: qualifiedIdentity.slice(0, separatorIndex),
       localId: qualifiedIdentity.slice(separatorIndex + 1),
     });
-    const agentId = resolveAgentIdFromPersistedContributionIdentityV1(identity);
-    if (!agentId) {
-      throw new Error('Unknown persisted Agent contribution identity');
-    }
-    return BackendTargetRefV2Schema.parse({
-      kind: 'backend',
-      backendId: agentId,
-      sourceKind: 'built_in',
+    return PersistedAgentTargetRefV1Schema.parse({
+      kind: 'agent',
+      identity,
     });
   }
   const configuredMarker = ':configured:';
@@ -166,7 +161,19 @@ export function readBackendTargetRefV2(input: BackendTargetRefV2Input): BackendT
   if (typeof input === 'string') {
     const parsedV2Key = BackendTargetKeyV2Schema.safeParse(input);
     if (parsedV2Key.success) {
-      return parseBackendTargetKeyV2(parsedV2Key.data);
+      const parsedTarget = parseBackendTargetKeyV2(parsedV2Key.data);
+      if (parsedTarget.kind === 'backend') {
+        return parsedTarget;
+      }
+      const agentId = resolveAgentIdFromPersistedContributionIdentityV1(parsedTarget.identity);
+      if (!agentId) {
+        throw new Error('Qualified Agent identity requires host catalog resolution');
+      }
+      return BackendTargetRefV2Schema.parse({
+        kind: 'backend',
+        backendId: agentId,
+        sourceKind: 'built_in',
+      });
     }
     return convertBackendTargetRefV1ToV2(parseBackendTargetKey(input));
   }

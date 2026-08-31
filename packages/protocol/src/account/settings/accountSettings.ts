@@ -753,9 +753,8 @@ export type SessionHandoffDirectTargetMode = 'keep_direct' | 'convert_to_persist
 
 const SESSION_HANDOFF_DEFAULT_KEYS = new Set([
   'v',
-  'workspaceTransferEnabled',
-  'workspaceTransferStrategy',
-  'conflictPolicy',
+  'workspaceSyncMode',
+  'workspaceSyncRelationshipId',
   'includeIgnoredMode',
   'ignoredIncludeGlobs',
   'directTargetMode',
@@ -794,9 +793,12 @@ const SessionHandoffIgnoredIncludeGlobSchema = z
 export const SessionHandoffDefaultsV1Schema = z
   .object({
     v: z.literal(1).default(1),
-    workspaceTransferEnabled: z.boolean().default(false),
-    workspaceTransferStrategy: z.enum(['transfer_snapshot', 'sync_changes']).default('transfer_snapshot'),
-    conflictPolicy: z.enum(['create_sibling_copy', 'replace_existing']).default('create_sibling_copy'),
+    // `none` is the safe handoff default. Persistent modes are selected only
+    // when a stored relationship id is available; copy_once remains ephemeral.
+    workspaceSyncMode: z
+      .enum(['none', 'copy_once', 'keep_synced', 'mirror_exactly', 'keep_both_in_sync'])
+      .default('none'),
+    workspaceSyncRelationshipId: accountBoundedString(256).nullable().optional().default(null),
     includeIgnoredMode: z.enum(['exclude', 'include_selected']).default('exclude'),
     ignoredIncludeGlobs: z.array(SessionHandoffIgnoredIncludeGlobSchema).max(64).superRefine((value, ctx) => {
       if (value.reduce((total, glob) => total + utf8ByteLength(glob), 0) > 16 * 1024) {
@@ -817,15 +819,22 @@ export const SessionHandoffDefaultsV1Schema = z
         });
       }
     }
-  });
+  })
+  .transform((value) => ({
+    v: 1 as const,
+    workspaceSyncMode: value.workspaceSyncMode,
+    workspaceSyncRelationshipId: value.workspaceSyncRelationshipId ?? null,
+    includeIgnoredMode: value.includeIgnoredMode,
+    ignoredIncludeGlobs: value.ignoredIncludeGlobs,
+    directTargetMode: value.directTargetMode,
+  }));
 
 export type SessionHandoffDefaultsV1 = z.infer<typeof SessionHandoffDefaultsV1Schema>;
 
 export const DEFAULT_SESSION_HANDOFF_DEFAULTS_V1: SessionHandoffDefaultsV1 = Object.freeze({
   v: 1,
-  workspaceTransferEnabled: false,
-  workspaceTransferStrategy: 'transfer_snapshot',
-  conflictPolicy: 'create_sibling_copy',
+  workspaceSyncMode: 'none',
+  workspaceSyncRelationshipId: null,
   includeIgnoredMode: 'exclude',
   ignoredIncludeGlobs: [],
   directTargetMode: 'keep_direct',

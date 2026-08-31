@@ -1,3 +1,6 @@
 [workspace]
-members = ["happier-iroh-core"]
+members = ["happier-iroh-core", "happier-iroh-native", "happier-iroh-node"]
 resolver = "2"
+
+[profile.release]
+panic = "abort"

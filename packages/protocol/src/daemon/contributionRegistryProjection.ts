@@ -40,6 +40,7 @@ import {
 import { PluginActionPresentUserAuthorizationFactsSchema } from '../plugins/actions/invocation.js';
 import { PluginDiagnosticRemediationV1Schema } from './pluginContributionIntrospection.js';
 import { PluginUiArtifactDigestV1Schema } from '../plugins/ui/artifactIntegrity.js';
+import { PluginUiExactRuntimeVersionV1Schema } from '../plugins/ui/artifactCompatibility.js';
 import { PluginUiHostMethodV1Schema } from '../plugins/ui/hostApiDefinition.js';
 import { PluginUiResourceSubscriptionEventV1Schema } from '../plugins/ui/subscriptions.js';
 import { PluginUiResolvedSemanticCommandV1Schema } from '../plugins/ui/semanticCommands.js';
@@ -81,6 +82,9 @@ import {
 import { PLUGIN_ACCOUNT_SETTINGS_LIMITS_V1 } from '../plugins/settings/accountSettingsLimits.js';
 import { PluginUiHeaderActionPresentationV1Schema } from '../plugins/contributions/ui/sessionHeaderActions.js';
 import { PluginDeclarativeDocumentSourceV1Schema } from '../plugins/contributions/ui/v2.js';
+import {
+  PluginDeclarativeProjectedModelV1Schema,
+} from '../plugins/contributions/ui/declarativeProjectedModelV1.js';
 import {
   PluginUiContainerV1Schema,
   PluginUiDestinationBindingV1Schema,
@@ -246,11 +250,6 @@ export const DaemonContributionRegistryProjectionV1Schema = z.object({
 export type DaemonContributionRegistryProjectionV1 = z.infer<typeof DaemonContributionRegistryProjectionV1Schema>;
 
 const DaemonReactNativeHostRuntimeIdentityStringV1Schema = z.string().trim().min(1);
-const DaemonReactNativeHostRuntimeIdentityExactVersionV1Schema =
-  DaemonReactNativeHostRuntimeIdentityStringV1Schema.refine(
-    (value) => value !== '*' && !value.includes('x'),
-    { message: 'runtime identity versions must be exact' },
-  );
 
 /**
  * ScriptManager readiness reported by the UI/native host probe (PR-13).
@@ -279,10 +278,10 @@ export const DaemonReactNativeHostRuntimeIdentityV1Schema = z.object({
   nativeApplicationVersion: DaemonReactNativeHostRuntimeIdentityStringV1Schema.optional(),
   nativeBuildVersion: DaemonReactNativeHostRuntimeIdentityStringV1Schema.optional(),
   applicationId: DaemonReactNativeHostRuntimeIdentityStringV1Schema.optional(),
-  reactVersion: DaemonReactNativeHostRuntimeIdentityExactVersionV1Schema.optional(),
-  reactNativeVersion: DaemonReactNativeHostRuntimeIdentityExactVersionV1Schema.optional(),
-  expoRuntimeVersion: DaemonReactNativeHostRuntimeIdentityExactVersionV1Schema.optional(),
-  hermesVersion: DaemonReactNativeHostRuntimeIdentityExactVersionV1Schema.optional(),
+  reactVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
+  reactNativeVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
+  expoRuntimeVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
+  hermesVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
   availableNativeCapabilities: z.array(DaemonReactNativeHostRuntimeIdentityStringV1Schema).default([]),
   scriptManagerRuntime: DaemonReactNativeHostRuntimeScriptManagerReadinessV1Schema.optional(),
 }).strict();
@@ -2393,6 +2392,12 @@ const PluginProjectedUiEntryV2Schema = strictProjectedFamilyEntrySchema([
   viewer: OpenableContentViewerSelectorV1Schema.optional(),
   destination: PluginContributionIdentityV1Schema.optional(),
   reactNativeCrashState: DaemonPluginReactNativeCrashStateV1Schema.optional(),
+  // The canonical normalized renderer reference, reusing the targeted-Surface
+  // renderer schema verbatim (lazy: it is declared later in this module) so the
+  // static projected UI entries and the mounted targeted Surface mounts admit
+  // the declarative model through one strict Protocol-owned contract instead
+  // of opaque records.
+  renderer: z.lazy(() => DaemonPluginUiTargetedSurfaceRendererRefV1Schema).optional(),
   // F7: a projection producer may stamp a per-plugin UI entry with the exact
   // machine materialization which produced it.  Older producers legitimately
   // omit both fields; consumers then fail closed rather than deriving a coarse
@@ -2483,9 +2488,9 @@ const PluginProjectedUiEntryV2Schema = strictProjectedFamilyEntrySchema([
 
 /**
  * A normalized renderer reference already prepared by the canonical plugin-UI
- * projection. Declarative models are intentionally opaque here: the daemon
- * has already normalized and currentness-stamped them, while the physical UI
- * host remains their only consumer.
+ * projection. Declarative models use the strict Protocol-owned projected
+ * schema here and at the physical UI host; relational mount/currentness checks
+ * remain with the consumers that own those lifetimes.
  */
 export const DaemonPluginUiTargetedSurfaceRendererRefV1Schema = z.discriminatedUnion('kind', [
   z.object({
@@ -2504,7 +2509,10 @@ export const DaemonPluginUiTargetedSurfaceRendererRefV1Schema = z.discriminatedU
   z.object({
     kind: z.literal('declarative'),
     contributionId: PluginContributionLocalIdSchema,
-    model: z.unknown().optional(),
+    // The one strict Protocol-owned final projected declarative model. The
+    // daemon has already normalized and currentness-stamped it; the physical
+    // UI host remains its only consumer and re-parses this same schema.
+    model: PluginDeclarativeProjectedModelV1Schema.optional(),
     documentSource: PluginDeclarativeDocumentSourceV1Schema.optional(),
   }).strict(),
 ]);

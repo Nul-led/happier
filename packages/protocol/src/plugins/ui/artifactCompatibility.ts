@@ -8,18 +8,39 @@ import {
 
 import { PluginUiChannelV1Schema, PluginUiPlatformV1Schema } from '../contributions/ui/compatibility.js';
 
-const ExactRuntimeVersionSchema = z.string().trim().min(1).refine(
-  (value) => value !== '*' && !value.includes('x'),
+const FLOATING_RUNTIME_VERSION_TAGS = new Set([
+  'canary',
+  'current',
+  'latest',
+  'next',
+  'stable',
+]);
+
+function isExactRuntimeVersion(value: string): boolean {
+  const normalized = value.toLowerCase();
+  if (FLOATING_RUNTIME_VERSION_TAGS.has(normalized) || value.includes('*')) {
+    return false;
+  }
+
+  if (/(?:^|[.\s])x(?:$|[.\s])/iu.test(value)) {
+    return false;
+  }
+
+  return !/[<>=~^|]/u.test(value);
+}
+
+export const PluginUiExactRuntimeVersionV1Schema = z.string().trim().min(1).refine(
+  isExactRuntimeVersion,
   { message: 'runtime compatibility versions must be exact' },
 );
 
 export const PluginUiArtifactCompatibilityKeyV1Schema = z.object({
-  hostAppVersion: ExactRuntimeVersionSchema,
-  hostUiApiVersion: ExactRuntimeVersionSchema,
-  reactVersion: ExactRuntimeVersionSchema.optional(),
-  reactNativeVersion: ExactRuntimeVersionSchema.optional(),
-  expoRuntimeVersion: ExactRuntimeVersionSchema.optional(),
-  hermesVersion: ExactRuntimeVersionSchema.optional(),
+  hostAppVersion: PluginUiExactRuntimeVersionV1Schema,
+  hostUiApiVersion: PluginUiExactRuntimeVersionV1Schema,
+  reactVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
+  reactNativeVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
+  expoRuntimeVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
+  hermesVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
   platform: PluginUiPlatformV1Schema,
   channel: PluginUiChannelV1Schema,
   nativeCapabilities: z.array(z.string().trim().min(1)).default([]),
@@ -43,5 +64,3 @@ export function derivePluginUiNativeCapabilitiesDigestV1(
     utf8ToBytes(JSON.stringify(normalized)),
   );
 }
-
-export { ExactRuntimeVersionSchema as PluginUiExactRuntimeVersionV1Schema };

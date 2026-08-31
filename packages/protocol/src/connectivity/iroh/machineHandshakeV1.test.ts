@@ -1,0 +1,163 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  IROH_MACHINE_CARRIER_FLOWS_V1,
+  IROH_MACHINE_HANDSHAKE_VERSION_V1,
+  IrohMachineHandshakeV1Schema,
+  parseIrohMachineHandshakeV1,
+  type IrohMachineHandshakeV1,
+} from './machineHandshakeV1.js';
+
+const SOURCE_ENDPOINT_ID = 'a'.repeat(64);
+const TARGET_ENDPOINT_ID = 'b'.repeat(64);
+/** Canonical unpadded base64url placeholders with the exact decoded lengths the schemas require. */
+const EPHEMERAL_PUBLIC_KEY = 'A'.repeat(43); // 32 bytes
+const GRANT_SIGNATURE = 'A'.repeat(86); // 64 bytes
+const PROOF_DIGEST = 'A'.repeat(43); // 32 bytes
+const PROOF_NONCE = 'A'.repeat(22); // 16 bytes
+const PROOF_SIGNATURE = 'A'.repeat(86); // 64 bytes
+
+function grantPayload() {
+  return {
+    v: 2 as const,
+    grantId: 'grant-1',
+    accountId: 'account-1',
+    machineId: 'machine-2',
+    flowKind: 'bounded_transfer' as const,
+    routeKind: 'iroh_peer' as const,
+    scope: {
+      kind: 'bounded_transfer' as const,
+      mode: 'single' as const,
+      transferId: 'operation-1',
+      maxBytes: 1024,
+    },
+    iat: 1_000,
+    exp: 10_000,
+    aud: 'happier-daemon-route-grant' as const,
+    endpointFingerprint: TARGET_ENDPOINT_ID,
+    iroh: {
+      sourceMachineId: 'machine-1',
+      targetMachineId: 'machine-2',
+      sourceEndpointId: SOURCE_ENDPOINT_ID,
+      targetEndpointId: TARGET_ENDPOINT_ID,
+      role: 'initiator' as const,
+      operationKind: 'file_transfer' as const,
+    },
+    proofKind: 'ephemeral_ed25519' as const,
+    ephemeralPublicKeyBase64Url: EPHEMERAL_PUBLIC_KEY,
+  };
+}
+
+function grant() {
+  return {
+    payload: grantPayload(),
+    signature: {
+      keyId: 'key-1',
+      alg: 'Ed25519' as const,
+      valueBase64Url: GRANT_SIGNATURE,
+    },
+  };
+}
+
+function proof() {
+  return {
+    v: 2 as const,
+    kind: 'ephemeral_ed25519' as const,
+    signedGrantDigestBase64Url: PROOF_DIGEST,
+    nonceBase64Url: PROOF_NONCE,
+    signatureBase64Url: PROOF_SIGNATURE,
+  };
+}
+
+function handshake(overrides: Partial<IrohMachineHandshakeV1> = {}): IrohMachineHandshakeV1 {
+  return {
+    v: 1,
+    role: 'initiator',
+    accountId: 'account-1',
+    sourceMachineId: 'machine-1',
+    targetMachineId: 'machine-2',
+    sourceEndpointId: SOURCE_ENDPOINT_ID,
+    targetEndpointId: TARGET_ENDPOINT_ID,
+    flow: 'file_transfer',
+    operationId: 'operation-1',
+    grant: grant(),
+    proof: proof(),
+    ...overrides,
+  };
+}
+
+describe('IrohMachineHandshakeV1 (canonical happier/machine/1 handshake)', () => {
+  it('exposes the closed v1 wire version, carrier flows, and strict shape', () => {
+    expect(IROH_MACHINE_HANDSHAKE_VERSION_V1).toBe(1);
+    expect(IROH_MACHINE_CARRIER_FLOWS_V1).toEqual(['file_transfer', 'attachment_transfer', 'workspace_sync']);
+    expect(IrohMachineHandshakeV1Schema.parse(handshake())).toEqual(handshake());
+  });
+
+  it('carries the existing signed V2 grant and ephemeral proof verbatim', () => {
+    const parsed = IrohMachineHandshakeV1Schema.parse(handshake());
+    expect(parsed.grant.payload.routeKind).toBe('iroh_peer');
+    expect(parsed.grant.payload.proofKind).toBe('ephemeral_ed25519');
+    expect(parsed.proof.nonceBase64Url).toBe(PROOF_NONCE);
+  });
+
+  it('rejects any handshake identity, orientation, operation, or scope binding that differs from its signed grant', () => {
+    expect(IrohMachineHandshakeV1Schema.safeParse({
+      ...handshake(),
+      sourceMachineId: 'machine-inverted',
+    }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({
+      ...handshake(),
+      role: 'acceptor',
+    }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({
+      ...handshake(),
+      operationId: 'operation-other',
+    }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({
+      ...handshake(),
+      grant: {
+        ...grant(),
+        payload: { ...grantPayload(), accountId: 'account-other' },
+      },
+    }).success).toBe(false);
+  });
+
+  it('rejects unknown fields, wrong versions, and missing grant or proof material', () => {
+    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), extra: true }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), v: 2 }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), grant: undefined }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), proof: undefined }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({
+      ...handshake(),
+      grant: { ...grant(), payload: { ...grantPayload(), v: 1 } },
+    }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({
+      ...handshake(),
+      proof: { ...proof(), v: 1 },
+    }).success).toBe(false);
+  });
+
+  it('rejects malformed endpoint identities, roles, and flows', () => {
+    expect(IrohMachineHandshakeV1Schema.safeParse({
+      ...handshake(),
+      sourceEndpointId: 'endpoint-1',
+    }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({
+      ...handshake(),
+      targetEndpointId: 'A'.repeat(64),
+    }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), role: 'observer' }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), flow: 'tcp_tunnel' }).success).toBe(false);
+  });
+
+  it('rejects an empty or missing operation binding', () => {
+    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), operationId: '' }).success).toBe(false);
+    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), operationId: undefined }).success).toBe(false);
+  });
+
+  it('parses strictly through the canonical helper and throws on invalid input', () => {
+    expect(parseIrohMachineHandshakeV1(handshake())).toEqual(handshake());
+    expect(() => parseIrohMachineHandshakeV1({ ...handshake(), extra: true })).toThrow(TypeError);
+    expect(() => parseIrohMachineHandshakeV1(null)).toThrow(TypeError);
+  });
+});

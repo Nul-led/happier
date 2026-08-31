@@ -5,7 +5,7 @@ http_bind_addr = "[::]:8080"
 enable_metrics = false
 
 [tls]
-https_bind_addr = "[::]:443"
+https_bind_addr = "[::]:8443"
 quic_bind_addr = "[::]:7842"
 cert_mode = "Manual"
 cert_dir = "/etc/iroh/certs"

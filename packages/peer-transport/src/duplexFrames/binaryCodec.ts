@@ -5,7 +5,7 @@ import {
     type PeerTcpTunnelDirectionV1,
     type PeerTcpTunnelBinaryFrameHeaderV2,
 } from '@happier-dev/protocol';
-import type { PeerTcpTunnelBinaryFrameForSessionResult, PeerTcpTunnelFrame } from './types.js';
+import type { PeerTcpTunnelBinaryFrameForSessionResult, PeerTcpTunnelBinarySubstreamFrameResult, PeerTcpTunnelFrame } from './types.js';
 
 function requireDirection(header: PeerTcpTunnelBinaryFrameHeaderV2): PeerTcpTunnelDirectionV1 | null {
     return header.direction ?? null;
@@ -65,6 +65,21 @@ export function encodePeerTcpTunnelBinaryFrameForSubstream(input: Readonly<{
             tunnelId: input.frame.tunnelId,
             substreamId: input.substreamId,
             reasonCode: input.frame.reasonCode,
+            payloadLength: 0,
+        },
+    });
+}
+
+export function encodePeerTcpTunnelBinarySubstreamOpen(input: Readonly<{
+    tunnelId: string;
+    substreamId: string;
+}>): Uint8Array {
+    return encodePeerTcpTunnelBinaryFrameV2({
+        header: {
+            version: 2,
+            kind: 'open',
+            tunnelId: input.tunnelId,
+            substreamId: input.substreamId,
             payloadLength: 0,
         },
     });
@@ -256,4 +271,29 @@ export function decodePeerTcpTunnelBinaryFrameForSession(input: Readonly<{
         };
     }
     return { ok: false, reasonCode: 'frame_invalid' };
+}
+
+export function decodePeerTcpTunnelBinarySubstreamFrame(input: Readonly<{
+    frame: Uint8Array;
+    maxBinaryHeaderBytes: number;
+    maxRawPayloadBytes: number;
+}>): PeerTcpTunnelBinarySubstreamFrameResult {
+    const decoded = decodePeerTcpTunnelBinaryFrameV2({
+        frame: input.frame,
+        maxHeaderBytes: input.maxBinaryHeaderBytes,
+        maxPayloadBytes: input.maxRawPayloadBytes,
+    });
+    if (!decoded.ok) {
+        if (decoded.reasonCode === 'header_too_large') return { ok: false, reasonCode: 'encoded_frame_too_large' };
+        if (decoded.reasonCode === 'payload_too_large') return { ok: false, reasonCode: 'decoded_payload_too_large' };
+        return { ok: false, reasonCode: 'frame_invalid' };
+    }
+    const substreamId = decoded.header.substreamId;
+    if (!substreamId) return { ok: false, reasonCode: 'frame_invalid' };
+    const frame = decodePeerTcpTunnelBinaryFrameForSubstreamSession({
+        header: decoded.header,
+        payload: decoded.payload,
+    });
+    if (!frame) return { ok: false, reasonCode: 'frame_invalid' };
+    return { ok: true, substreamId, frame, rawPayloadBytes: decoded.payload.byteLength };
 }

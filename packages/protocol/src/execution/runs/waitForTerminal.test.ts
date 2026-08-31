@@ -21,7 +21,7 @@ describe('waitForExecutionRunTerminal', () => {
     expect(ExecutionRunWaitResultSchema.safeParse({
       ok: true,
       status: 'succeeded',
-      result: { run: { runId: 'run_1', status: 'succeeded', extra: true } },
+      result: { run: { runId: 'run_1', status: 'running' } },
     }).success).toBe(false);
   });
 

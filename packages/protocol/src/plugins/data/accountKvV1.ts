@@ -421,6 +421,95 @@ export function deletePluginAccountKvEntryV1(
   return version;
 }
 
+function pluginAccountKvEntryVersionV1(
+  entry: PluginAccountStorageEntryV1 | undefined,
+): number | 'absent' {
+  return entry?.version ?? 'absent';
+}
+
+/**
+ * Rebase one already-evaluated logical-key mutation onto a newer physical row.
+ *
+ * The transaction callback is never replayed. A physical-row conflict is safe
+ * to retry only while every key the callback changed still has the version it
+ * observed in the initial snapshot. Unrelated keys come from the newer row;
+ * touched entries come from the callback's pending row with their already
+ * computed author-visible versions.
+ */
+export function rebasePluginAccountKvMutationRowV1(input: Readonly<{
+  initialRow: PluginAccountStorageRowV1;
+  pendingRow: PluginAccountStorageRowV1;
+  latestRow: PluginAccountStorageRowV1;
+  touchedKeys: readonly string[];
+}>): PluginAccountStorageRowV1 {
+  const rebased = clonePluginAccountKvRowV1(input.latestRow);
+  const touchedKeys = new Set(input.touchedKeys.map(normalizePluginAccountKvLogicalKeyV1));
+  for (const key of touchedKeys) {
+    const initial = readPluginAccountKvEntryV1(input.initialRow, key);
+    const latest = readPluginAccountKvEntryV1(input.latestRow, key);
+    if (pluginAccountKvEntryVersionV1(initial) !== pluginAccountKvEntryVersionV1(latest)) {
+      throw new PluginAccountKvRowError(
+        'plugin_account_kv_conflict',
+        'Account KV key changed before the conditional write completed',
+      );
+    }
+    const pending = readPluginAccountKvEntryV1(input.pendingRow, key);
+    if (!pending) {
+      throw new PluginAccountKvRowError(
+        'plugin_account_kv_invalid',
+        'Account KV pending mutation omitted a touched key',
+      );
+    }
+    Object.defineProperty(rebased.values, key, {
+      value: pending,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return PluginAccountStorageRowV1Schema.parse(rebased);
+}
+
+/**
+ * The one aggregate-row commit/rebase loop shared by direct UI and daemon
+ * Account KV. Realm adapters retain transport, encryption and currentness;
+ * this owner decides whether a physical conflict is still the same per-key
+ * mutation. There is deliberately no arbitrary retry count: caller lifetime
+ * cancellation/currentness is the stopping boundary when unrelated writers
+ * keep winning the physical CAS.
+ */
+export async function commitPluginAccountKvMutationWithRebaseV1<
+  TSnapshot extends Readonly<{ row: PluginAccountStorageRowV1 }>,
+>(input: Readonly<{
+  initialSnapshot: TSnapshot;
+  pendingRow: PluginAccountStorageRowV1;
+  touchedKeys: readonly string[];
+  assertCurrent(): void | Promise<void>;
+  readLatest(): Promise<TSnapshot>;
+  write(
+    snapshot: TSnapshot,
+    row: PluginAccountStorageRowV1,
+  ): Promise<'updated' | 'conflict'>;
+}>): Promise<void> {
+  let snapshot = input.initialSnapshot;
+  let candidate = clonePluginAccountKvRowV1(input.pendingRow);
+  for (;;) {
+    await input.assertCurrent();
+    const outcome = await input.write(snapshot, candidate);
+    await input.assertCurrent();
+    if (outcome === 'updated') return;
+    const latest = await input.readLatest();
+    await input.assertCurrent();
+    candidate = rebasePluginAccountKvMutationRowV1({
+      initialRow: input.initialSnapshot.row,
+      pendingRow: input.pendingRow,
+      latestRow: latest.row,
+      touchedKeys: input.touchedKeys,
+    });
+    snapshot = latest;
+  }
+}
+
 /**
  * The cursor is base64url over the shared Protocol encoder rather than a Node
  * `Buffer`, because the same paging runs in the daemon, the browser and Hermes.

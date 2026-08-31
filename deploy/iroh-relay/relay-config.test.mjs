@@ -10,7 +10,7 @@ function read(name) {
 }
 
 describe('self-hosted iroh relay deployment', () => {
-  it('ships the holepunch-only profile as the safe default', () => {
+  it('retains the holepunch-only candidate configuration', () => {
     const config = read('relay.toml');
 
     expect(config).toMatch(/^enable_relay\s*=\s*false\s*(?:#.*)?$/m);
@@ -31,6 +31,12 @@ describe('self-hosted iroh relay deployment', () => {
     expect(readme).toMatch(/forwarding mode.*explicit|explicit.*forwarding mode/is);
   });
 
+  it('keeps the upstream-1.1.0 holepunch-only candidate out of default deployments while its QAD/TLS gate is blocked', () => {
+    const compose = read('compose.yaml');
+
+    expect(compose).toMatch(/profiles:\s*\n\s*-\s*lane06-relay-gate-blocked/);
+  });
+
   it('keeps the deployment stateless and isolated from the Happier server', () => {
     const compose = read('compose.yaml');
     expect(compose).toMatch(/read_only:\s*true/);
@@ -45,10 +51,24 @@ describe('self-hosted iroh relay deployment', () => {
     expect(volumeSection).not.toMatch(/database|postgres|redis|server-secret/i);
   });
 
-  it('pins the relay image to the native Iroh release line', () => {
+  it('builds the relay from the exact locked native Iroh release line', () => {
     const dockerfile = read('Dockerfile');
     expect(dockerfile).toMatch(/IROH_RELAY_VERSION=1\.1\.0/);
-    expect(dockerfile).toMatch(/FROM\s+ghcr\.io\/n0-computer\/iroh-relay:\$\{IROH_RELAY_VERSION\}/);
-    expect(dockerfile).toMatch(/--config.*\/etc\/iroh\/relay\.toml/);
+    expect(dockerfile).toMatch(/FROM\s+rust:1\.94\.0-bookworm@sha256:[a-f0-9]{64}\s+AS\s+builder/i);
+    expect(dockerfile).toMatch(/cargo\s+install[\s\\\n]+.*iroh-relay.*--version[\s\\\n]+"?\$\{IROH_RELAY_VERSION\}"?.*--locked.*--features[\s\\\n]+server/is);
+    expect(dockerfile).toMatch(/FROM\s+debian:bookworm-slim@sha256:[a-f0-9]{64}/i);
+    expect(dockerfile).not.toMatch(/ghcr\.io\/n0-computer\/iroh-relay/i);
+    expect(dockerfile).toMatch(/--config-path.*\/etc\/iroh\/relay\.toml/);
+  });
+
+  it('runs the holepunch-only image without privileged ports or Linux capabilities', () => {
+    const config = read('relay.toml');
+    const compose = read('compose.yaml');
+    const dockerfile = read('Dockerfile');
+
+    expect(config).toMatch(/^https_bind_addr\s*=\s*"\[::\]:8443"\s*(?:#.*)?$/m);
+    expect(dockerfile).toMatch(/^USER\s+65532:65532\s*$/m);
+    expect(compose).toMatch(/cap_drop:\s*\n\s*-\s*ALL/);
+    expect(compose).toMatch(/"7842:7842\/udp"/);
   });
 });

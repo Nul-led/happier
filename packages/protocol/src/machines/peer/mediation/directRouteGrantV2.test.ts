@@ -5,9 +5,21 @@ import {
   DirectRouteGrantRequestV2Schema,
   SignedDirectRouteGrantV2Schema,
   createDirectRouteGrantSigningInputV2,
+  type IrohPeerRouteBindingV2,
 } from './directRouteGrantV2';
 
 const publicKeyBase64Url = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE';
+const sourceEndpointId = 'a'.repeat(64);
+const targetEndpointId = 'b'.repeat(64);
+
+const irohBinding: IrohPeerRouteBindingV2 = {
+  sourceMachineId: 'machine-source',
+  targetMachineId: 'machine-target',
+  sourceEndpointId,
+  targetEndpointId,
+  role: 'initiator',
+  operationKind: 'file_transfer',
+};
 
 function payload() {
   return {
@@ -35,6 +47,81 @@ function payload() {
 }
 
 describe('DirectRouteGrantV2', () => {
+  it('requires and signs the canonical machine/1 binding on iroh_peer requests and payloads', () => {
+    const scope = {
+      kind: 'bounded_transfer' as const,
+      mode: 'single' as const,
+      transferId: 'transfer-1',
+      maxBytes: 1_024,
+    };
+    const request = {
+      v: 2 as const,
+      kind: 'ephemeral_ed25519' as const,
+      ephemeralPublicKeyBase64Url: publicKeyBase64Url,
+      machineId: irohBinding.targetMachineId,
+      flowKind: 'bounded_transfer' as const,
+      routeKind: 'iroh_peer' as const,
+      endpointFingerprint: targetEndpointId,
+      ttlMs: 1_000,
+      scope,
+      iroh: irohBinding,
+    };
+    const grantPayload = {
+      ...request,
+      grantId: 'grant-iroh-v2',
+      accountId: 'account-1',
+      iat: 1_000,
+      exp: 2_000,
+      aud: 'happier-daemon-route-grant' as const,
+      proofKind: 'ephemeral_ed25519' as const,
+    };
+    const { kind: _kind, ttlMs: _ttlMs, ...payloadFields } = grantPayload;
+    void _kind;
+    void _ttlMs;
+
+    expect(DirectRouteGrantRequestV2Schema.parse(request).iroh).toEqual(irohBinding);
+    expect(DirectRouteGrantPayloadV2Schema.parse(payloadFields).iroh).toEqual(irohBinding);
+    expect(DirectRouteGrantRequestV2Schema.safeParse({ ...request, iroh: undefined }).success).toBe(false);
+    expect(DirectRouteGrantPayloadV2Schema.safeParse({ ...payloadFields, iroh: undefined }).success).toBe(false);
+    expect(DirectRouteGrantPayloadV2Schema.safeParse({
+      ...payloadFields,
+      machineId: irohBinding.sourceMachineId,
+    }).success).toBe(false);
+  });
+
+  it('owns the strict machine/1 binding validation on V2', () => {
+    const request = {
+      v: 2 as const,
+      kind: 'ephemeral_ed25519' as const,
+      ephemeralPublicKeyBase64Url: publicKeyBase64Url,
+      machineId: irohBinding.targetMachineId,
+      flowKind: 'bounded_transfer' as const,
+      routeKind: 'iroh_peer' as const,
+      endpointFingerprint: targetEndpointId,
+      ttlMs: 1_000,
+      scope: {
+        kind: 'bounded_transfer' as const,
+        mode: 'single' as const,
+        transferId: 'transfer-1',
+        maxBytes: 1_024,
+      },
+      iroh: irohBinding,
+    };
+
+    expect(DirectRouteGrantRequestV2Schema.safeParse({
+      ...request,
+      iroh: { ...irohBinding, role: 'observer' },
+    }).success).toBe(false);
+    expect(DirectRouteGrantRequestV2Schema.safeParse({
+      ...request,
+      iroh: { ...irohBinding, operationKind: 'tcp_tunnel' },
+    }).success).toBe(false);
+    expect(DirectRouteGrantRequestV2Schema.safeParse({
+      ...request,
+      iroh: { ...irohBinding, targetEndpointId: sourceEndpointId },
+    }).success).toBe(false);
+  });
+
   it('parses a complete strict V2 request and signed grant without changing V1', () => {
     expect(DirectRouteGrantRequestV2Schema.parse({
       v: 2,
@@ -74,6 +161,17 @@ describe('DirectRouteGrantV2', () => {
     expect(DirectRouteGrantPayloadV2Schema.safeParse({
       ...payload(),
       ephemeralPublicKeyBase64Url: publicKeyBase64Url.slice(1),
+    }).success).toBe(false);
+    expect(DirectRouteGrantRequestV2Schema.safeParse({
+      v: 2,
+      kind: 'ephemeral_ed25519',
+      ephemeralPublicKeyBase64Url: publicKeyBase64Url,
+      machineId: 'machine-1',
+      flowKind: 'machine_rpc',
+      routeKind: 'loopback_direct',
+      endpointFingerprint: 'endpoint-1',
+      ttlMs: 1_000,
+      scope: { ...payload().scope, extra: true },
     }).success).toBe(false);
   });
 

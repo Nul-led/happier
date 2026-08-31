@@ -81,8 +81,10 @@ import {
 } from './pluginsCapabilities.js';
 import { PluginDataCollectionsCapabilitiesSchema } from './pluginDataCollectionsCapabilities.js';
 import { AccountDirectoryCapabilitiesSchema } from './accountDirectoryCapabilities.js';
+import { HomeSearchCapabilitiesSchema } from './homeSearchCapabilities.js';
 
 export const CapabilitiesSchema = z.object({
+  homeSearch: HomeSearchCapabilitiesSchema.optional(),
   accountDirectory: AccountDirectoryCapabilitiesSchema.optional(),
   accountStoredContentCompatibility:
     AccountStoredContentCompatibilityServerRequirementsV1Schema.optional(),

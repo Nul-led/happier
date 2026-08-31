@@ -70,18 +70,21 @@ export const ConversationConnectionWebhookEndpointEnsureIdempotencyKeyV1Protocol
         pattern: '^[A-Za-z0-9._:-]+$',
     });
 /**
- * The transport selector shared by connection transfer. Durable push remains
- * outside transfer selection: origin/transport replacement for a durable-push
- * connection is still held at its canonical retarget owner, so a current
- * caller cannot select it through these mutations.
+ * The transport selector shared by connection transfer. A durable-push
+ * connection may select its existing transport so transfer can retarget its
+ * existing generic webhook endpoint. Transfer never creates, detaches, or
+ * converts that endpoint; those lifecycle operations remain generic webhook
+ * owner responsibilities.
  */
 export const CONVERSATION_CONNECTION_SELECTABLE_TRANSPORTS_V1 = [
     'checkpointedPull',
     'socket',
+    'durablePush',
 ] as const;
 export const ConversationConnectionSelectableTransportV1ProtocolSchema = defineProtocolUnion([
     defineProtocolLiteral(CONVERSATION_CONNECTION_SELECTABLE_TRANSPORTS_V1[0]),
     defineProtocolLiteral(CONVERSATION_CONNECTION_SELECTABLE_TRANSPORTS_V1[1]),
+    defineProtocolLiteral(CONVERSATION_CONNECTION_SELECTABLE_TRANSPORTS_V1[2]),
 ]);
 export type ConversationConnectionSelectableTransportV1 = ReturnType<
     typeof ConversationConnectionSelectableTransportV1ProtocolSchema.parse
@@ -102,7 +105,6 @@ export function isConversationConnectionSelectableTransportV1(
  */
 export const CONVERSATION_CONNECTION_CREATE_SELECTABLE_TRANSPORTS_V1 = [
     ...CONVERSATION_CONNECTION_SELECTABLE_TRANSPORTS_V1,
-    'durablePush',
 ] as const;
 export const ConversationConnectionCreateSelectableTransportV1ProtocolSchema = defineProtocolUnion([
     defineProtocolLiteral(CONVERSATION_CONNECTION_CREATE_SELECTABLE_TRANSPORTS_V1[0]),

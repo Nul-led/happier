@@ -346,13 +346,6 @@ export function preflightReviewCommentPublicationRoutingV1(
   });
 }
 
-export const ReviewCommentClaimPublicationDispatchRequestV1Schema = z.object(ReviewCommentPublicationPlanShapeV1)
-  .strict()
-  .superRefine(refineReviewCommentPublicationPlanV1);
-export type ReviewCommentClaimPublicationDispatchRequestV1 = z.infer<
-  typeof ReviewCommentClaimPublicationDispatchRequestV1Schema
->;
-
 export const ReviewCommentPublicationCorrelationV1Schema = z.object({
   happierCommentId: z.string().min(1),
   publicationCorrelationId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
@@ -389,44 +382,14 @@ export function matchReviewCommentPublicationMarkerV1(
       : { kind: 'duplicate' };
 }
 
-export const ReviewCommentClaimPublicationDispatchResponseV1Schema = z.object({
-  disposition: z.enum(['dispatch', 'reconcile']),
-  publicationPlanId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
-  entries: z.array(ReviewCommentPublicationCorrelationV1Schema),
-  verdict: z.object({
-    publicationCorrelationId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
-  }).strict().nullable(),
-}).strict();
-export type ReviewCommentClaimPublicationDispatchResponseV1 = z.infer<
-  typeof ReviewCommentClaimPublicationDispatchResponseV1Schema
->;
-
-export function validateReviewCommentPublicationClaimAgainstPlanV1(
-  plan: ReviewCommentPublicationPlanV1,
-  candidate: unknown,
-): ReviewCommentClaimPublicationDispatchResponseV1 {
-  const parsed = ReviewCommentClaimPublicationDispatchResponseV1Schema.parse(candidate);
-  const correlationIds = [
-    ...parsed.entries.map((entry) => entry.publicationCorrelationId),
-    ...(parsed.verdict === null ? [] : [parsed.verdict.publicationCorrelationId]),
-  ];
-  if (parsed.entries.length !== plan.entries.length
-    || parsed.entries.some((entry, index) => entry.happierCommentId !== plan.entries[index]?.happierCommentId)
-    || (parsed.verdict === null) !== (plan.verdict === null)
-    || new Set(correlationIds).size !== correlationIds.length) {
-    throw new Error('review_comment_publication_claim_cardinality_mismatch');
-  }
-  return parsed;
-}
-
-const ReviewCommentPublicationEntryEffectOutcomeV1Schema = z.union([
+export const ReviewCommentPublicationEntryEffectOutcomeV1Schema = z.union([
   z.object({ kind: z.literal('published'), externalRef: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('failed'), code: z.string().min(1), message: z.string().min(1).optional() }).strict(),
   z.object({ kind: z.literal('uncertain') }).strict(),
   z.object({ kind: z.literal('skippedPriorFailure') }).strict(),
 ]);
 
-const ReviewCommentPublicationVerdictEffectOutcomeV1Schema = z.union([
+export const ReviewCommentPublicationVerdictEffectOutcomeV1Schema = z.union([
   z.object({ kind: z.literal('published'), externalRef: z.string().min(1).optional() }).strict(),
   z.object({
     kind: z.literal('failed'),
@@ -465,6 +428,102 @@ export const ReviewCommentPublicationResultV1Schema = z.object({
 }).strict();
 export type ReviewCommentPublicationResultV1 = z.infer<typeof ReviewCommentPublicationResultV1Schema>;
 
+export const ReviewCommentPublicationDispatchInstructionV1Schema = z.enum([
+  'dispatch',
+  'reconcile',
+  'confirmed',
+  'held',
+]);
+export type ReviewCommentPublicationDispatchInstructionV1 = z.infer<
+  typeof ReviewCommentPublicationDispatchInstructionV1Schema
+>;
+
+export const ReviewCommentClaimPublicationDispatchRequestV1Schema = z.object({
+  ...ReviewCommentPublicationPlanShapeV1,
+  settlement: z.object({
+    dispatchToken: z.string().min(1).nullable(),
+    result: ReviewCommentPublicationResultV1Schema,
+  }).strict().optional(),
+})
+  .strict()
+  .superRefine(refineReviewCommentPublicationPlanV1);
+export type ReviewCommentClaimPublicationDispatchRequestV1 = z.infer<
+  typeof ReviewCommentClaimPublicationDispatchRequestV1Schema
+>;
+
+export const ReviewCommentClaimPublicationDispatchResponseV1Schema = z.object({
+  disposition: z.enum(['dispatch', 'reconcile']),
+  dispatchToken: z.string().min(1).nullable(),
+  publicationPlanId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  entries: z.array(ReviewCommentPublicationCorrelationV1Schema),
+  verdict: z.object({
+    publicationCorrelationId: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  }).strict().nullable(),
+  instructions: z.object({
+    entries: z.array(ReviewCommentPublicationDispatchInstructionV1Schema),
+    verdict: ReviewCommentPublicationDispatchInstructionV1Schema.nullable(),
+  }).strict(),
+  priorResult: ReviewCommentPublicationResultV1Schema.nullable(),
+}).strict().superRefine((claim, context) => {
+  const dispatchInstructions = [
+    ...claim.instructions.entries,
+    ...(claim.instructions.verdict === null ? [] : [claim.instructions.verdict]),
+  ].filter((instruction) => instruction === 'dispatch');
+  if ((claim.disposition === 'dispatch') !== (claim.dispatchToken !== null)
+    || (claim.disposition === 'dispatch') !== (dispatchInstructions.length > 0)) {
+    context.addIssue({
+      code: 'custom',
+      message: 'review_comment_publication_claim_dispatch_mismatch',
+    });
+  }
+});
+export type ReviewCommentClaimPublicationDispatchResponseV1 = z.infer<
+  typeof ReviewCommentClaimPublicationDispatchResponseV1Schema
+>;
+
+function reviewCommentPublicationResultMatchesClaimV1(
+  plan: ReviewCommentPublicationPlanV1,
+  claim: Pick<ReviewCommentClaimPublicationDispatchResponseV1, 'publicationPlanId' | 'entries' | 'verdict'>,
+  result: ReviewCommentPublicationResultV1,
+): boolean {
+  const verdictMatches = plan.verdict === null
+    ? 'kind' in result.verdict && result.verdict.kind === 'notRequested'
+    : !('kind' in result.verdict)
+      && claim.verdict !== null
+      && result.verdict.publicationCorrelationId === claim.verdict.publicationCorrelationId;
+  return result.publicationPlanId === claim.publicationPlanId
+    && result.entries.length === plan.entries.length
+    && !result.entries.some((entry, index) => {
+      const expected = claim.entries[index];
+      return entry.happierCommentId !== plan.entries[index]?.happierCommentId
+        || entry.happierCommentId !== expected?.happierCommentId
+        || entry.publicationCorrelationId !== expected.publicationCorrelationId;
+    })
+    && verdictMatches;
+}
+
+export function validateReviewCommentPublicationClaimAgainstPlanV1(
+  plan: ReviewCommentPublicationPlanV1,
+  candidate: unknown,
+): ReviewCommentClaimPublicationDispatchResponseV1 {
+  const parsed = ReviewCommentClaimPublicationDispatchResponseV1Schema.parse(candidate);
+  const correlationIds = [
+    ...parsed.entries.map((entry) => entry.publicationCorrelationId),
+    ...(parsed.verdict === null ? [] : [parsed.verdict.publicationCorrelationId]),
+  ];
+  if (parsed.entries.length !== plan.entries.length
+    || parsed.entries.some((entry, index) => entry.happierCommentId !== plan.entries[index]?.happierCommentId)
+    || parsed.instructions.entries.length !== plan.entries.length
+    || (parsed.verdict === null) !== (plan.verdict === null)
+    || (parsed.instructions.verdict === null) !== (plan.verdict === null)
+    || new Set(correlationIds).size !== correlationIds.length
+    || (parsed.priorResult !== null
+      && !reviewCommentPublicationResultMatchesClaimV1(plan, parsed, parsed.priorResult))) {
+    throw new Error('review_comment_publication_claim_cardinality_mismatch');
+  }
+  return parsed;
+}
+
 export function validateReviewCommentPublicationResultAgainstPlanV1(
   plan: ReviewCommentPublicationPlanV1,
   claim: ReviewCommentClaimPublicationDispatchResponseV1,
@@ -472,20 +531,7 @@ export function validateReviewCommentPublicationResultAgainstPlanV1(
 ): ReviewCommentPublicationResultV1 {
   const parsedClaim = validateReviewCommentPublicationClaimAgainstPlanV1(plan, claim);
   const parsed = ReviewCommentPublicationResultV1Schema.parse(candidate);
-  const verdictMatches = plan.verdict === null
-    ? 'kind' in parsed.verdict && parsed.verdict.kind === 'notRequested'
-    : !('kind' in parsed.verdict)
-      && parsedClaim.verdict !== null
-      && parsed.verdict.publicationCorrelationId === parsedClaim.verdict.publicationCorrelationId;
-  if (parsed.publicationPlanId !== parsedClaim.publicationPlanId
-    || parsed.entries.length !== plan.entries.length
-    || parsed.entries.some((entry, index) => {
-      const expected = parsedClaim.entries[index];
-      return entry.happierCommentId !== plan.entries[index]?.happierCommentId
-        || entry.happierCommentId !== expected?.happierCommentId
-        || entry.publicationCorrelationId !== expected.publicationCorrelationId;
-    })
-    || !verdictMatches) {
+  if (!reviewCommentPublicationResultMatchesClaimV1(plan, parsedClaim, parsed)) {
     throw new Error('review_comment_publication_result_cardinality_mismatch');
   }
   const routing = preflightReviewCommentPublicationRoutingV1(plan);
@@ -509,6 +555,20 @@ export function validateReviewCommentPublicationResultAgainstPlanV1(
     }
   }
   return parsed;
+}
+
+export function createReviewCommentPublicationSettlementRequestV1(
+  plan: ReviewCommentPublicationPlanV1,
+  claim: ReviewCommentClaimPublicationDispatchResponseV1,
+  result: ReviewCommentPublicationResultV1,
+): ReviewCommentClaimPublicationDispatchRequestV1 {
+  return ReviewCommentClaimPublicationDispatchRequestV1Schema.parse({
+    ...plan,
+    settlement: {
+      dispatchToken: claim.dispatchToken,
+      result: validateReviewCommentPublicationResultAgainstPlanV1(plan, claim, result),
+    },
+  });
 }
 
 export const ReviewCommentCreateResponseV1Schema = z.object({

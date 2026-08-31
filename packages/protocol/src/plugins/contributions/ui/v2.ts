@@ -176,6 +176,17 @@ const PluginDeclarativeCollectionListParametersV1Schema = z.record(
   PluginCollectionMemberNameV1Schema,
   z.union([z.string(), z.number().finite(), z.boolean()]),
 );
+export type PluginDeclarativeCollectionListSourceV1 = Readonly<{
+  collectionId: string;
+  uiQueryId: string;
+  parameters?: Readonly<Record<string, string | number | boolean>>;
+}>;
+/** Shared verbatim by the authoring grammar and the final projected model. */
+export const PluginDeclarativeCollectionListSourceV1Schema = z.object({
+  collectionId: asProtocolZod(PluginContributionLocalIdSchema),
+  uiQueryId: PluginCollectionMemberNameV1Schema,
+  parameters: PluginDeclarativeCollectionListParametersV1Schema.optional(),
+}).strict();
 export const PluginDeclarativeCollectionListProjectionV1Schema = z.object({
   titleField: PluginCollectionProjectedScalarFieldRefV1Schema,
   subtitleField: PluginCollectionProjectedScalarFieldRefV1Schema.optional(),
@@ -214,11 +225,7 @@ const DeclarativeCollectionListNodeSchema = z.object({
   kind: z.literal('collectionList'),
   /** Optional accessible collection name; the renderer resolves it at its mounted localization owner. */
   label: PluginLocalizedStringV2Schema.optional(),
-  source: z.object({
-    collectionId: asProtocolZod(PluginContributionLocalIdSchema),
-    uiQueryId: PluginCollectionMemberNameV1Schema,
-    parameters: PluginDeclarativeCollectionListParametersV1Schema.optional(),
-  }).strict(),
+  source: PluginDeclarativeCollectionListSourceV1Schema,
   projection: PluginDeclarativeCollectionListProjectionV1Schema,
   primaryCommand: PluginCollectionRowCommandV1Schema.optional(),
   secondaryCommands: z.array(PluginCollectionRowCommandV1Schema)

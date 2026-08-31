@@ -255,6 +255,10 @@ export {
 
 export { CapabilitiesSchema, type Capabilities } from './features/payload/capabilities/capabilitiesSchema.js';
 export {
+  HomeSearchCapabilitiesSchema,
+  type HomeSearchCapabilities,
+} from './features/payload/capabilities/homeSearchCapabilities.js';
+export {
   ConnectedServicesCapabilitiesSchema,
   ConnectedServicesCredentialDeleteCapabilitiesSchema,
   ConnectedServicesQualifiedAccountsCapabilitiesSchema,

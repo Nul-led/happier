@@ -1,12 +1,13 @@
-//! Transport-only primitives shared by native Iroh bindings.
-//!
-//! This crate deliberately does not depend on an async runtime. The native Iroh
-//! integration can adapt its stream halves to [`DuplexStream`], while tests and
-//! small host integrations can use the same bounded copier with `std::io` types.
+//! Transport primitives shared by native Iroh bindings: the Iroh endpoint
+//! boundary (explicit relay ownership, cap profiles, one shared process
+//! endpoint per identity, and the endpoint's single incoming accept/ALPN
+//! dispatcher with one exclusive consumer slot per known ALPN), the Home
+//! tunnel acceptor/dialer over the `happier/home-tunnel/1` ALPN, endpoint key
+//! storage, path telemetry, and the native byte pump used by Home and machine
+//! tunnels.
 
 mod endpoint;
 mod errors;
-mod events;
 mod home_tunnel;
 mod limits;
 mod machine;
@@ -17,25 +18,33 @@ mod stream;
 #[cfg(test)]
 mod home_tunnel_tests;
 #[cfg(test)]
+mod machine_tests;
+#[cfg(test)]
 mod preamble_tests;
 
 pub use endpoint::{
-    validate_endpoint_id, validate_loopback_target, EndpointConfig, EndpointHandle,
-    EndpointKeyStore, EndpointManager, EndpointStatus, IrohEndpoint, RelayPolicy,
+    validate_endpoint_id, validate_loopback_bind_addr, validate_loopback_target,
+    AcceptedIrohConnection, ConsumerRegistration, EndpointConfig, EndpointIdentity,
+    EndpointKeyStore, EndpointManager, EndpointSeed, IrohConsumerSender, IrohEndpoint, RelayPolicy,
+    RelaySelection, ResolvedEndpointConfig, MAX_RELAY_URLS, MAX_RELAY_URL_UTF8_BYTES,
 };
 pub use errors::{IrohError, IrohFailureReason, Result};
-pub use events::{IrohHomeTunnelEvent, IrohTunnelEvent};
-pub use home_tunnel::{HomeAcceptor, HomeAcceptorConfig, HomeTunnel, HomeTunnelConfig};
-pub use limits::{
-    IrohCapProfile, IrohConnectionPermit, IrohStreamPermit, IrohTunnelLimits, ResourceLimiter,
+pub use home_tunnel::{
+    HomeAcceptor, HomeAcceptorConfig, HomeAcceptorStatus, HomeTunnel, HomeTunnelConfig,
+    HomeTunnelStatus, PREAMBLE_READ_TIMEOUT,
 };
-pub use machine::{MachineCarrierStatus, MachineFlow, MachineGrantBinding};
-pub use path::{normalize_path, IrohObservedPath, IrohPathSnapshot};
+pub use limits::IrohCapProfile;
+pub use machine::{
+    MachineAcceptor, MachineAcceptorConfig, MachineAcceptorStatus, MachineFailureCode,
+    MachineTunnel, MachineTunnelConfig, MachineTunnelStatus, IROH_MACHINE_APPLICATION_PORT_HEADER,
+    MACHINE_ADMISSION_PATH, MACHINE_CONTROL_TIMEOUT, MACHINE_REMOTE_ENDPOINT_HEADER,
+    MACHINE_STREAM_ACCEPT_BYTE, MACHINE_STREAM_REJECT_BYTE, MAX_MACHINE_HANDSHAKE_BYTES,
+};
+pub use path::{
+    from_incoming_addr, normalize_path, snapshot_for_connection, snapshot_for_incoming_addr,
+    IrohObservedPath, IrohPathSnapshot,
+};
 pub use preamble::{read_preamble, write_preamble};
-pub use stream::{
-    copy_bidirectional, copy_split_bidirectional, CancellationToken, CopyLimits, CopyStats,
-    DirectionStats, DuplexStream,
-};
 
 pub const HOME_TUNNEL_ALPN: &[u8] = b"happier/home-tunnel/1";
 pub const MACHINE_ALPN: &[u8] = b"happier/machine/1";
@@ -72,6 +81,14 @@ pub fn validate_preamble(byte: u8) -> Result<()> {
         .ok_or(IrohError::InvalidPreamble)
 }
 
+/// Monotonic-wall-clock milliseconds for status/telemetry timestamps only.
+pub fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 pub fn validate_alpn(alpn: &[u8]) -> Result<()> {
     IrohAlpn::parse(alpn).map(|_| ())
 }
@@ -98,6 +115,10 @@ mod tests {
         );
         assert_eq!(
             IrohAlpn::parse(b"happier/home-tunnel/2"),
+            Err(IrohError::UnsupportedAlpn)
+        );
+        assert_eq!(
+            IrohAlpn::parse(b"happier/home-tunnel/0"),
             Err(IrohError::UnsupportedAlpn)
         );
     }

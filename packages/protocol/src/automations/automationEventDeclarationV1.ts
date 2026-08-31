@@ -1,7 +1,16 @@
 import { z } from 'zod';
 import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
 
-import { AUTOMATION_INT_COLUMN_MAX } from './automationColumnBoundsV1.js';
+import { AutomationEventPositiveSafeIntegerV1Schema } from './automationColumnBoundsV1.js';
+import {
+  AutomationSourceSelectorIdV1Schema,
+  type AutomationSourceSelectorIdV1,
+} from './automationEventJsonBoundsV1.js';
+export {
+  AutomationSourceSelectorIdV1JsonSchema,
+  AutomationSourceSelectorIdV1Schema,
+  type AutomationSourceSelectorIdV1,
+} from './automationEventJsonBoundsV1.js';
 
 import {
   PluginContributionIdentityV1Schema,
@@ -16,33 +25,6 @@ import {
   PluginActionConnectedAccountPurposeBindingV2Schema,
 } from '../plugins/actions/v2.js';
 import { PluginUiRendererChainBindingV1Schema } from '../plugins/contributions/ui/rendererChainBinding.js';
-
-/**
- * Shared positive counter/version primitive for Automation Event contracts.
- * Its one current use, the Event source contract version, persists as the
- * 32-bit `AutomationTrigger.sourceContractVersion` column, so admission caps it
- * at that column's ceiling rather than at the JavaScript safe-integer range.
- */
-export const AutomationEventPositiveSafeIntegerV1Schema = z.number().int().positive()
-  .max(AUTOMATION_INT_COLUMN_MAX);
-
-const AUTOMATION_SOURCE_SELECTOR_ID_V1_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
-
-/**
- * A source selector identifies the declared Event source independently of a
- * persisted occurrence. Keeping it with Event declarations lets declaration
- * consumers use the exact identity contract without importing occurrence
- * hashing or E2EE lifecycle code.
- */
-export const AutomationSourceSelectorIdV1Schema = z.string().regex(
-  new RegExp(AUTOMATION_SOURCE_SELECTOR_ID_V1_PATTERN, 'u'),
-  'Source selectors must be canonical lowercase RFC 4122 UUID-v4 values',
-).brand<'AutomationSourceSelectorIdV1'>();
-export type AutomationSourceSelectorIdV1 = z.infer<typeof AutomationSourceSelectorIdV1Schema>;
-export const AutomationSourceSelectorIdV1JsonSchema = {
-  type: 'string',
-  pattern: AUTOMATION_SOURCE_SELECTOR_ID_V1_PATTERN,
-} as const satisfies PluginJsonSchemaV2;
 
 export const AutomationQualifiedPluginContributionRefV1Schema =
   PluginContributionIdentityV1Schema;

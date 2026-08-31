@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 /**
  * Every client- or plugin-supplied Automation integer persists as a 32-bit
  * signed column on all three supported datasources: `AutomationTrigger.everyMs`
@@ -11,3 +13,12 @@
  * authoring surfaces all derive their ceiling from this one owner.
  */
 export const AUTOMATION_INT_COLUMN_MAX = 2_147_483_647;
+
+/**
+ * Shared positive counter/version primitive for Automation contracts persisted
+ * in an Automation `Int` column. Keeping the parser with the physical bound
+ * lets portable schemas consume it without importing the full Event
+ * declaration graph.
+ */
+export const AutomationEventPositiveSafeIntegerV1Schema = z.number().int().positive()
+  .max(AUTOMATION_INT_COLUMN_MAX);

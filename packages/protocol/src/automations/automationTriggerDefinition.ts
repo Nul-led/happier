@@ -8,10 +8,10 @@ import {
 } from '../plugins/webhooks/endpointV1.js';
 import { SessionIdSchema, TurnIdSchema } from '../sessions/idsV1.js';
 import {
-  AutomationEventPositiveSafeIntegerV1Schema,
   AutomationQualifiedPluginContributionRefV1Schema,
   AutomationSourceSelectorIdV1Schema,
 } from './automationEventDeclarationV1.js';
+import { AutomationEventPositiveSafeIntegerV1Schema } from './automationColumnBoundsV1.js';
 import {
   AutomationEventFilterV1Schema,
   AutomationEventSourceConfigV1Schema,

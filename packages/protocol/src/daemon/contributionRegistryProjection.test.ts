@@ -38,6 +38,96 @@ import * as protocol from '../index.js';
 import { RPC_METHODS } from '../rpc/index.js';
 import { PluginSettingsContributionV2Schema } from '../plugins/contributions/settings.js';
 import { PluginActionPresentUserAuthorizationFactsSchema } from '../plugins/actions/invocation.js';
+import type { PluginDeclarativeProjectedModelV1 } from '../plugins/contributions/ui/declarativeProjectedModelV1.js';
+
+/**
+ * One complete final projected declarative model exactly as the CLI producer
+ * emits it, typed against the Protocol wire contract. Used both as the
+ * accepted wire payload and as the base for malformed variants that the
+ * strict wire schema must reject.
+ */
+function createValidDeclarativeProjectedModelV1(): PluginDeclarativeProjectedModelV1 {
+  const modeSetting = {
+    id: 'mode',
+    contributionId: 'preferences',
+    qualifiedId: 'acme.review/settings/daemon/preferences/fields/mode',
+    descriptor: {
+      id: 'mode',
+      title: 'Mode',
+      target: { kind: 'plugin' },
+      scope: 'daemon',
+      schema: { type: 'string' },
+      default: 'compact',
+    },
+  } as const;
+  return {
+    identity: {
+      pluginId: 'acme.review',
+      localId: 'review-preview',
+      qualifiedId: 'acme.review/review-preview',
+      generation: 'generation-7',
+    },
+    visible: true,
+    requiredHostMethods: [],
+    declarativeInventory: {
+      actions: [
+        {
+          identity: { pluginId: 'acme.review', localId: 'approve' },
+          qualifiedId: 'acme.review/approve',
+          generation: 'generation-7',
+          enabled: true,
+          title: 'Approve',
+        },
+      ],
+      destinations: [
+        {
+          identity: { pluginId: 'acme.review', localId: 'details' },
+          qualifiedId: 'acme.review/details',
+          generation: 'generation-7',
+        },
+      ],
+      settings: [
+        {
+          pluginId: 'acme.review',
+          id: 'mode',
+          qualifiedId: 'acme.review/settings/daemon/preferences/fields/mode',
+          schema: { type: 'string' },
+          secret: false,
+          setting: modeSetting,
+        },
+      ],
+      uiQueries: [],
+    },
+    root: {
+      kind: 'stack',
+      path: 'root',
+      order: 0,
+      children: [
+        { kind: 'text', path: 'root.children[0]', order: 1, text: 'Review ready' },
+        {
+          kind: 'field',
+          path: 'root.children[1]',
+          order: 2,
+          label: 'Mode',
+          control: { kind: 'text', settingId: 'mode' },
+          setting: modeSetting,
+        },
+        {
+          kind: 'action',
+          path: 'root.children[2]',
+          order: 3,
+          label: 'Approve',
+          action: {
+            identity: { pluginId: 'acme.review', localId: 'approve' },
+            qualifiedId: 'acme.review/approve',
+            generation: 'generation-7',
+          },
+          enabled: true,
+        },
+      ],
+    },
+  };
+}
 
 describe('daemon contribution registry projection (wire)', () => {
   it('accepts the complete normalized Agent lifecycle declaration', () => {
@@ -123,7 +213,7 @@ describe('daemon contribution registry projection (wire)', () => {
         renderer: {
           kind: 'declarative',
           contributionId: 'review-preview',
-          model: { visible: true },
+          model: createValidDeclarativeProjectedModelV1(),
         },
         availability: { state: 'available', reason: 'available', diagnostics: [] },
       },
@@ -168,6 +258,174 @@ describe('daemon contribution registry projection (wire)', () => {
         target: { pluginId: 'acme.review', immutableGenerationId: 'stale-generation' },
       },
     }).success).toBe(false);
+  });
+
+  it('types the final CLI-enriched declarative projection at the wire and rejects malformed models', () => {
+    const model = createValidDeclarativeProjectedModelV1();
+    // The targeted mount correlates the selected renderer identity with its
+    // contributionId; the static projected UI entry carries the renderer's
+    // own local id.
+    const declarativeRenderer = {
+      kind: 'declarative',
+      contributionId: 'detail-renderer',
+      model,
+    } as const;
+
+    // The same strict schema carries the model on targeted Surface mounts,
+    // Composer surface catalog rows, and static projected UI entries.
+    expect(DaemonPluginUiTargetedSurfaceMountV1Schema.safeParse({
+      kind: 'targetedSurface',
+      target: { pluginId: 'acme.target', immutableGenerationId: 'target-generation' },
+      point: { pointId: 'providers', protocol: { id: 'provider', version: 1 } },
+      contributor: {
+        pluginId: 'acme.contributor',
+        contributionId: 'provider-detail',
+        immutableGenerationId: 'contributor-generation',
+      },
+      role: 'detail',
+      presentation: 'content',
+      inputSchema: { type: 'object' },
+      rendererChain: [{ pluginId: 'acme.contributor', localId: 'detail-renderer' }],
+      selectedRenderer: {
+        identity: { pluginId: 'acme.contributor', localId: 'detail-renderer' },
+        renderer: declarativeRenderer,
+        availability: { state: 'available', reason: 'available', diagnostics: [] },
+      },
+      executionOrigin: {
+        serverIdentityId: 'srv_targeted',
+        materializationRef: {
+          machineId: 'machine-targeted',
+          materializationId: 'contributor-materialization',
+          pluginId: 'acme.contributor',
+        },
+      },
+      resourceCapability: { readable: true, dynamic: true },
+      contributorTargetedContributions: {
+        target: { pluginId: 'acme.contributor', immutableGenerationId: 'contributor-generation' },
+        points: [],
+      },
+    }).success).toBe(true);
+    expect(PluginProjectionV2Schema.safeParse({
+      v: 2,
+      generation: 7,
+      familiesById: {
+        pluginUi: {
+          family: 'pluginUi',
+          entriesById: {
+            'settingsPage:acme.review:preferences': {
+              id: 'settingsPage:acme.review:preferences',
+              pluginId: 'acme.review',
+              renderer: {
+                kind: 'declarative',
+                contributionId: 'review-preview',
+                model: declarativeRenderer.model,
+              },
+            },
+          },
+        },
+      },
+    }).success).toBe(true);
+
+    // Malformed models are typed rejections at the wire owner, not opaque
+    // unknown payloads that consumer-side admission must discover.
+    const malformedModels: readonly Record<string, unknown>[] = [
+      // The historically accepted z.unknown() placeholder.
+      { visible: true },
+      // Missing required inventory/root.
+      {
+        ...model,
+        declarativeInventory: undefined,
+      },
+      // Closed object: unknown fields are rejected, not preserved.
+      { ...model, unexpected: true },
+      // Host-method declarations use the canonical finite Host API vocabulary.
+      { ...model, requiredHostMethods: ['inventedHostMethod'] },
+      // Unknown node kind in the projected tree.
+      { ...model, root: { kind: 'mystery', path: 'root', order: 0 } },
+      // An action node naming both an Action and a Composer effect.
+      {
+        ...model,
+        root: {
+          kind: 'action',
+          path: 'root',
+          order: 0,
+          label: 'Broken',
+          action: model.declarativeInventory.actions[0],
+          effect: { kind: 'composerApply', expectedRevision: 'r1', operations: [] },
+          enabled: true,
+        },
+      },
+      // A Settings binding whose reattached field descriptor is malformed.
+      {
+        ...model,
+        declarativeInventory: {
+          ...model.declarativeInventory,
+          settings: [
+            {
+              ...model.declarativeInventory.settings[0],
+              setting: {
+                ...model.declarativeInventory.settings[0].setting,
+                descriptor: { ...model.declarativeInventory.settings[0].setting.descriptor, scope: 'galaxy' },
+              },
+            },
+          ],
+        },
+      },
+    ];
+    for (const malformed of malformedModels) {
+      expect(DaemonPluginUiTargetedSurfaceMountV1Schema.safeParse({
+        kind: 'targetedSurface',
+        target: { pluginId: 'acme.target', immutableGenerationId: 'target-generation' },
+        point: { pointId: 'providers', protocol: { id: 'provider', version: 1 } },
+        contributor: {
+          pluginId: 'acme.contributor',
+          contributionId: 'provider-detail',
+          immutableGenerationId: 'contributor-generation',
+        },
+        role: 'detail',
+        presentation: 'content',
+        inputSchema: { type: 'object' },
+        rendererChain: [{ pluginId: 'acme.contributor', localId: 'detail-renderer' }],
+        selectedRenderer: {
+          identity: { pluginId: 'acme.contributor', localId: 'detail-renderer' },
+          renderer: { ...declarativeRenderer, model: malformed },
+          availability: { state: 'available', reason: 'available', diagnostics: [] },
+        },
+        executionOrigin: {
+          serverIdentityId: 'srv_targeted',
+          materializationRef: {
+            machineId: 'machine-targeted',
+            materializationId: 'contributor-materialization',
+            pluginId: 'acme.contributor',
+          },
+        },
+        resourceCapability: { readable: true, dynamic: true },
+        contributorTargetedContributions: {
+          target: { pluginId: 'acme.contributor', immutableGenerationId: 'contributor-generation' },
+          points: [],
+        },
+      }).success).toBe(false);
+      expect(PluginProjectionV2Schema.safeParse({
+        v: 2,
+        generation: 7,
+        familiesById: {
+          pluginUi: {
+            family: 'pluginUi',
+            entriesById: {
+              'settingsPage:acme.review:preferences': {
+                id: 'settingsPage:acme.review:preferences',
+                pluginId: 'acme.review',
+                renderer: {
+                  kind: 'declarative',
+                  contributionId: 'review-preview',
+                  model: malformed,
+                },
+              },
+            },
+          },
+        },
+      }).success).toBe(false);
+    }
   });
 
   it('admits a crash token only when its targeted surface mount carries exact current target and contributor identities', () => {
@@ -292,7 +550,7 @@ describe('daemon contribution registry projection (wire)', () => {
         renderer: {
           kind: 'declarative',
           contributionId: 'detail-renderer',
-          model: { visible: true },
+          model: createValidDeclarativeProjectedModelV1(),
         },
         availability: { state: 'available', reason: 'available', diagnostics: [] },
       },
@@ -2745,7 +3003,7 @@ describe('daemon contribution registry projection (wire)', () => {
               container: 'appPage',
               target: { kind: 'app' },
               binding,
-              renderer: { kind: 'declarative' },
+              renderer: { kind: 'declarative', contributionId: 'activity-renderer' },
               display: { titleKey: 'activity', developerFallback: 'Activity' },
               actions: [],
               headerActions: [{
@@ -2773,7 +3031,7 @@ describe('daemon contribution registry projection (wire)', () => {
                 destination: { pluginId: 'acme.ui', localId: 'tools' },
                 container: 'settingsPage',
               },
-              renderer: { kind: 'declarative' },
+              renderer: { kind: 'declarative', contributionId: 'tools-renderer' },
               availability: { state: 'available', reason: 'available', diagnostics: [] },
             },
           },

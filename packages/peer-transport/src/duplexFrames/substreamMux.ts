@@ -156,7 +156,6 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
             tunnelId: input.tunnelId,
             initialWindowBytes: input.initialWindowBytes,
             maxFrameBytes: input.maxFrameBytes,
-            maxEncodedFrameBytes: Number.MAX_SAFE_INTEGER,
             maxDecodedPayloadBytes: input.maxRawPayloadBytes,
             maxSendChunkBytes: input.maxRawPayloadBytes,
             maxIdleMs: input.caps.maxSubstreamIdleMs,

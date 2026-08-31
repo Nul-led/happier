@@ -194,6 +194,11 @@ describe('peer TCP tunnel relay protocol', () => {
       trustRoots,
     })).toEqual({ valid: true, payload });
     expect(mod.verifyPeerTcpTunnelRelayAuthorizationV2({
+      authorization,
+      nowMs: 2_000,
+      trustRoots: [{ ...trustRoots[0], expiresAt: 2_000 }],
+    })).toEqual({ valid: false, reasonCode: 'unknown_key' });
+    expect(mod.verifyPeerTcpTunnelRelayAuthorizationV2({
       authorization: {
         ...authorization,
         payload: { ...payload, relaySocketId: 'relay_socket_b' },

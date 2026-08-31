@@ -166,6 +166,68 @@ describe('triage paged panel state', () => {
         expect(settled.canLoadMore).toBe(true);
     });
 
+    it('keeps the last-known-good walk visible when an explicit refresh fails', () => {
+        const settled = reduce(
+            initial(),
+            { kind: 'requestStarted', token: 1 },
+            {
+                kind: 'pageSettled',
+                token: 1,
+                page: {
+                    rows: [{ id: 'old' }],
+                    omittedRowCount: 2,
+                    projectionTruncated: true,
+                    continuation: 'old-cursor',
+                    incomplete: 'pagination',
+                },
+            },
+            { kind: 'refreshStarted', token: 2 },
+            { kind: 'pageFailed', token: 2, failure: { code: 'forbidden' } },
+        );
+
+        expect(settled.kind).toBe('ready');
+        expect(settled.rows).toEqual([{ id: 'old' }]);
+        expect(settled.continuation).toBe('old-cursor');
+        expect(settled.incomplete).toBe('pagination');
+        expect(settled.failure).toEqual({ code: 'forbidden' });
+    });
+
+    it('atomically replaces a last-known-good walk when its refreshed first page succeeds', () => {
+        const settled = reduce(
+            initial(),
+            { kind: 'requestStarted', token: 1 },
+            {
+                kind: 'pageSettled',
+                token: 1,
+                page: {
+                    rows: [{ id: 'old' }],
+                    omittedRowCount: 2,
+                    projectionTruncated: true,
+                    continuation: 'old-cursor',
+                    incomplete: 'pagination',
+                },
+            },
+            { kind: 'refreshStarted', token: 2 },
+            {
+                kind: 'pageSettled',
+                token: 2,
+                page: {
+                    rows: [{ id: 'fresh' }],
+                    omittedRowCount: 0,
+                    projectionTruncated: false,
+                    continuation: null,
+                    incomplete: null,
+                },
+            },
+        );
+
+        expect(settled.rows).toEqual([{ id: 'fresh' }]);
+        expect(settled.omittedRowCount).toBe(0);
+        expect(settled.projectionTruncated).toBe(false);
+        expect(settled.continuation).toBeNull();
+        expect(settled.incomplete).toBeNull();
+    });
+
     it('never retracts a short walk when a later page says nothing about it', () => {
         const settled = reduce(
             initial(),

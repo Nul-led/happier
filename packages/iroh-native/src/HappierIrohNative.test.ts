@@ -12,9 +12,16 @@ describe('HappierIrohNative optional module loading', () => {
   });
 
   it('returns the lifecycle-only native module when present', () => {
-    const native = { startHomeTunnel: vi.fn(), stopHomeTunnel: vi.fn() };
+    const native = { startHomeTunnel: vi.fn(), stopHomeTunnel: vi.fn(), getTunnelStatus: vi.fn() };
     const expoCore = { requireOptionalNativeModule: vi.fn(() => native) };
     expect(readOptionalHappierIrohNativeModuleFromExpoCore(expoCore)).toBe(native);
+  });
+
+  it('rejects a module without exact-handle status observation', () => {
+    const expoCore = {
+      requireOptionalNativeModule: vi.fn(() => ({ startHomeTunnel: vi.fn(), stopHomeTunnel: vi.fn() })),
+    };
+    expect(readOptionalHappierIrohNativeModuleFromExpoCore(expoCore)).toBeNull();
   });
 
   it('rejects a registered module that does not expose lifecycle methods', () => {

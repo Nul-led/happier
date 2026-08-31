@@ -1,7 +1,13 @@
 services:
   iroh-relay:
+    # Upstream 1.1.0 cannot currently start QAD with forwarding disabled; keep
+    # this candidate out of every default Compose deployment until that exact
+    # runtime gate passes with a replacement pinned release.
+    profiles:
+      - lane06-relay-gate-blocked
     image: happier/iroh-relay:holepunch-only
-    build: .
+    build:
+      context: .
     read_only: true
     restart: unless-stopped
     cap_drop:

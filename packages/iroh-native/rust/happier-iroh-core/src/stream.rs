@@ -1,161 +1,34 @@
-use crate::{IrohError, Result};
-use std::io::{Read, Write};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
-pub trait DuplexStream: Read + Write + Send {}
-impl<T: Read + Write + Send> DuplexStream for T {}
-#[derive(Clone, Default)]
-pub struct CancellationToken(Arc<AtomicBool>);
-impl CancellationToken {
-    pub fn new() -> Self {
-        Self::default()
+/// Pumps two split async streams until both directions finish. EOF in either
+/// direction immediately shuts down that direction's destination write half;
+/// it never waits for the opposite direction to drain first.
+///
+/// Task cancellation is deliberately owned by the caller's `JoinSet`. Dropping
+/// the pump future drops all four borrowed halves, so no child task or retry
+/// lifecycle exists below the Home/machine tunnel owners.
+pub(crate) async fn pump_bidirectional<LR, LW, RR, RW>(
+    left_read: &mut LR,
+    left_write: &mut LW,
+    right_read: &mut RR,
+    right_write: &mut RW,
+) where
+    LR: AsyncRead + Unpin,
+    LW: AsyncWrite + Unpin,
+    RR: AsyncRead + Unpin,
+    RW: AsyncWrite + Unpin,
+{
+    async fn copy_and_shutdown<R, W>(reader: &mut R, writer: &mut W)
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        let _ = tokio::io::copy(reader, writer).await;
+        let _ = writer.shutdown().await;
     }
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release)
-    }
-    pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-}
-#[derive(Debug, Clone, Copy)]
-pub struct CopyLimits {
-    pub max_bytes: Option<u64>,
-    pub buffer_size: usize,
-}
-impl Default for CopyLimits {
-    fn default() -> Self {
-        Self {
-            max_bytes: None,
-            buffer_size: 16 * 1024,
-        }
-    }
-}
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct DirectionStats {
-    pub bytes: u64,
-}
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct CopyStats {
-    pub left_to_right: DirectionStats,
-    pub right_to_left: DirectionStats,
-}
-pub fn copy_bidirectional<L: DuplexStream, R: DuplexStream>(
-    left: &mut L,
-    right: &mut R,
-    cancel: &CancellationToken,
-    limits: CopyLimits,
-) -> Result<CopyStats> {
-    // This borrowed convenience API drains both directions while retaining
-    // Rust's aliasing guarantees. Native adapters use their async split halves
-    // and can call `copy_split_bidirectional` for simultaneous pumping.
-    let left_to_right = copy_one(
-        left,
-        right,
-        cancel,
-        limits.buffer_size.max(1),
-        limits.max_bytes,
-    )?;
-    let right_to_left = copy_one(
-        right,
-        left,
-        cancel,
-        limits.buffer_size.max(1),
-        limits.max_bytes,
-    )?;
-    Ok(CopyStats {
-        left_to_right: DirectionStats {
-            bytes: left_to_right,
-        },
-        right_to_left: DirectionStats {
-            bytes: right_to_left,
-        },
-    })
-}
 
-/// Concurrent copier for streams that expose independent owned read/write
-/// halves (for example Tokio TCP/QUIC streams). This is the production path;
-/// the borrowed helper above remains useful for deterministic single-threaded
-/// fixtures.
-pub fn copy_split_bidirectional<
-    LR: Read + Send + 'static,
-    LW: Write + Send + 'static,
-    RR: Read + Send + 'static,
-    RW: Write + Send + 'static,
->(
-    left_read: LR,
-    left_write: LW,
-    right_read: RR,
-    right_write: RW,
-    cancel: &CancellationToken,
-    limits: CopyLimits,
-) -> Result<CopyStats> {
-    let cancel_left = cancel.clone();
-    let cancel_right = cancel.clone();
-    let buffer_size = limits.buffer_size.max(1);
-    let max_bytes = limits.max_bytes;
-    let left_task = std::thread::spawn(move || {
-        let mut reader = left_read;
-        let mut writer = right_write;
-        copy_one(
-            &mut reader,
-            &mut writer,
-            &cancel_left,
-            buffer_size,
-            max_bytes,
-        )
-    });
-    let right_task = std::thread::spawn(move || {
-        let mut reader = right_read;
-        let mut writer = left_write;
-        copy_one(
-            &mut reader,
-            &mut writer,
-            &cancel_right,
-            buffer_size,
-            max_bytes,
-        )
-    });
-    let left_to_right = left_task
-        .join()
-        .unwrap_or(Err(IrohError::TransportClosed))?;
-    let right_to_left = right_task
-        .join()
-        .unwrap_or(Err(IrohError::TransportClosed))?;
-    Ok(CopyStats {
-        left_to_right: DirectionStats {
-            bytes: left_to_right,
-        },
-        right_to_left: DirectionStats {
-            bytes: right_to_left,
-        },
-    })
-}
-
-fn copy_one<R: Read, W: Write>(
-    reader: &mut R,
-    writer: &mut W,
-    cancel: &CancellationToken,
-    buffer_size: usize,
-    max_bytes: Option<u64>,
-) -> Result<u64> {
-    let mut buf = vec![0; buffer_size];
-    let mut bytes = 0u64;
-    loop {
-        if cancel.is_cancelled() {
-            return Err(IrohError::Cancelled);
-        }
-        let n = reader.read(&mut buf)?;
-        if n == 0 {
-            return Ok(bytes);
-        }
-        bytes = bytes.saturating_add(n as u64);
-        if max_bytes.is_some_and(|max| bytes > max) {
-            cancel.cancel();
-            return Err(IrohError::ResourceLimit);
-        }
-        writer.write_all(&buf[..n])?;
-    }
+    tokio::join!(
+        copy_and_shutdown(left_read, right_write),
+        copy_and_shutdown(right_read, left_write),
+    );
 }

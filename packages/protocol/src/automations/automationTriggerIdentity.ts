@@ -1,12 +1,26 @@
 import { z } from 'zod';
 
+import {
+  defineProtocolNumber,
+  defineProtocolTrimmedNonemptyString,
+} from '../plugins/actions/protocolComposableSchema.js';
+import { asProtocolZod } from '../plugins/actions/internalProtocolZodAdapter.js';
+
 /** Stable identity of one mutable automatic trigger. */
-export const AutomationTriggerIdSchema = z.string().trim().min(1).max(191)
+export const AutomationTriggerIdProtocolSchema = defineProtocolTrimmedNonemptyString(191);
+export const AutomationTriggerIdSchema = asProtocolZod(AutomationTriggerIdProtocolSchema)
   .brand<'AutomationTriggerId'>();
 export type AutomationTriggerId = z.infer<typeof AutomationTriggerIdSchema>;
 
 /** Independent currentness witness for one trigger definition. */
-export const AutomationTriggerRevisionSchema = z.number().int().nonnegative().safe();
+export const AutomationTriggerRevisionProtocolSchema = defineProtocolNumber({
+  integer: true,
+  minimum: 0,
+  maximum: Number.MAX_SAFE_INTEGER,
+});
+export const AutomationTriggerRevisionSchema = asProtocolZod(
+  AutomationTriggerRevisionProtocolSchema,
+);
 export type AutomationTriggerRevision = z.infer<typeof AutomationTriggerRevisionSchema>;
 
 export const AutomationTriggerKindSchema = z.enum([

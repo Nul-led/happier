@@ -1,4 +1,4 @@
-import type { NativeIrohModule } from './HappierIrohNative.types';
+import type { NativeIrohModule } from './HappierIrohNative.types.js';
 
 declare const require: ((id: string) => unknown) | undefined;
 
@@ -27,7 +27,9 @@ export function readOptionalHappierIrohNativeModuleFromExpoCore(
     const module = lookup(HAPPIER_IROH_NATIVE_MODULE_NAME);
     if (!module || typeof module !== 'object') return null;
     const candidate = module as Record<string, unknown>;
-    return typeof candidate.startHomeTunnel === 'function' && typeof candidate.stopHomeTunnel === 'function'
+    return typeof candidate.startHomeTunnel === 'function'
+      && typeof candidate.stopHomeTunnel === 'function'
+      && typeof candidate.getTunnelStatus === 'function'
       ? (module as NativeIrohModule)
       : null;
   } catch {

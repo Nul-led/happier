@@ -7,10 +7,8 @@ import { RuntimeDescriptorV1Schema } from '../../metadata/runtimeDescriptorV1.js
 import { AgentExecutionTargetV1Schema } from '../../../agents/executionTargetV1.js';
 
 import {
-  SessionHandoffConflictPolicySchema,
   SessionHandoffStorageModeSchema,
   SessionHandoffTransportStrategySchema,
-  SessionHandoffWorkspaceTransferStrategySchema,
 } from './handoffTypes.js';
 import { HandoffWorkspaceActionV1Schema } from './workspaceSyncSchemas.js';
 import {
@@ -32,9 +30,6 @@ const MAX_TRANSFER_ID_LENGTH = 512;
 const MAX_MANIFEST_HASH_LENGTH = 256;
 const MAX_ENDPOINT_CANDIDATES = 20;
 const MAX_PREFERRED_TRANSPORT_STRATEGIES = 4;
-const MAX_INCLUDE_GLOBS = 128;
-const MAX_SOURCE_CONTROLLER_METADATA_KEYS = 50;
-const MAX_SOURCE_CONTROLLER_METADATA_JSON_BYTES = 32 * 1024;
 const MAX_ATTEMPT_ID_LENGTH = 256;
 
 const LEGACY_HANDOFF_TRANSFER_INLINE_FIELDS = [
@@ -71,26 +66,6 @@ function rejectRetiredWorkspaceActionFields(
     });
   }
 }
-
-export const SessionHandoffWorkspaceTransferSchema = z
-  .object({
-    enabled: z.boolean(),
-    strategy: SessionHandoffWorkspaceTransferStrategySchema.default('transfer_snapshot'),
-    conflictPolicy: SessionHandoffConflictPolicySchema,
-    includeIgnoredMode: z.enum(['exclude', 'include_selected']).default('exclude'),
-    ignoredIncludeGlobs: z.array(z.string().min(1).max(512)).max(MAX_INCLUDE_GLOBS).readonly().default(() => []),
-  })
-  .passthrough()
-  .superRefine((value, context) => {
-    if (value.strategy === 'sync_changes' && value.conflictPolicy === 'create_sibling_copy') {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['conflictPolicy'],
-        message: 'conflictPolicy=create_sibling_copy is not supported for workspaceTransfer.strategy=sync_changes',
-      });
-    }
-  });
-export type SessionHandoffWorkspaceTransfer = z.infer<typeof SessionHandoffWorkspaceTransferSchema>;
 
 const SessionHandoffAgentBundleTransferPublicationSchema = z
   .object({
@@ -149,57 +124,12 @@ function areEquivalentHandoffPublicationValues(
   ));
 }
 
-const SessionHandoffWorkspaceReplicationManifestTransferPublicationSchema = z
-  .object({
-    transferId: z.string().min(1).max(MAX_TRANSFER_ID_LENGTH),
-    endpointCandidates: z.array(TransferEndpointCandidateSchema).max(MAX_ENDPOINT_CANDIDATES).readonly().optional(),
-  })
-  .passthrough();
-export type SessionHandoffWorkspaceReplicationManifestTransferPublication = z.infer<
-  typeof SessionHandoffWorkspaceReplicationManifestTransferPublicationSchema
->;
-
 export const SessionHandoffMetadataV2Schema = z
   .object({
     agentBundleTransferPublication: SessionHandoffAgentBundleTransferPublicationSchema.optional(),
     // Prospective remote-dev persisted prepare-target records used the Provider-era field.
     // Remove this reader only after no supported predecessor produces it and retained jobs are reconciled.
     providerBundleTransferPublication: SessionHandoffAgentBundleTransferPublicationSchema.optional(),
-    workspaceReplicationSourceRootPath: z.string().min(1).max(MAX_PATH_LENGTH).optional(),
-    // When a session is being handed back to its prior source machine using `sync_changes`, the
-    // source daemon can surface the original source-machine workspace root so clients do not need
-    // to rely on hydrated UI state to select the correct target directory.
-    workspaceReplicationHandoffBackTargetRootPath: z.string().min(1).max(MAX_PATH_LENGTH).optional(),
-    workspaceReplicationManifestTransferPublication: SessionHandoffWorkspaceReplicationManifestTransferPublicationSchema.optional(),
-    workspaceReplicationSourceControllerMetadata: z
-      .record(z.string().min(1).max(128), z.unknown())
-      .superRefine((value, context) => {
-        const entries = Object.keys(value);
-        if (entries.length > MAX_SOURCE_CONTROLLER_METADATA_KEYS) {
-          context.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'workspaceReplicationSourceControllerMetadata is too large',
-          });
-        }
-        let json: string;
-        try {
-          json = JSON.stringify(value);
-        } catch {
-          context.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'workspaceReplicationSourceControllerMetadata is too large',
-          });
-          return;
-        }
-        const byteLength = new TextEncoder().encode(json).length;
-        if (byteLength > MAX_SOURCE_CONTROLLER_METADATA_JSON_BYTES) {
-          context.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'workspaceReplicationSourceControllerMetadata is too large',
-          });
-        }
-      })
-      .optional(),
   })
   .passthrough()
   .superRefine((value, context) => {
@@ -323,8 +253,6 @@ export const SessionHandoffCommitRequestSchema = z
   .object({
     handoffId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH),
     mode: z.enum(['target', 'source_cleanup']).optional(),
-    workspaceReplicationReverseSourceRootPath: z.string().min(1).max(MAX_PATH_LENGTH).optional(),
-    workspaceReplicationReverseTargetRootPath: z.string().min(1).max(MAX_PATH_LENGTH).optional(),
   })
   .strict();
 export type SessionHandoffCommitRequest = z.infer<typeof SessionHandoffCommitRequestSchema>;

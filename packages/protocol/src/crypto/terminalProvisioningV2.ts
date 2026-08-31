@@ -15,6 +15,11 @@ export type TerminalProvisioningV2Response =
   | Readonly<{ type: 'dataKey'; key: Uint8Array }>
   | Readonly<{ type: 'tokenOnly' }>;
 
+export type TerminalProvisioningVariantV2 =
+  | 'tokenOnly'
+  | 'dataKey'
+  | 'legacyProvisioningUnavailable';
+
 const TERMINAL_PROVISIONING_V3_MAGIC = new Uint8Array([0x48, 0x50, 0x56, 0x33]);
 const TERMINAL_PROVISIONING_V3_MAC_BYTES = 32;
 const TERMINAL_PROVISIONING_BOX_OVERHEAD_BYTES = 32 + 24 + 16;
@@ -159,6 +164,28 @@ export function isTerminalProvisioningV3Payload(payload: Uint8Array): boolean {
     return false;
   }
   return TERMINAL_PROVISIONING_V3_MAGIC.every((byte, index) => payload[index] === byte);
+}
+
+/**
+ * Reports only the exact v3 envelope structure. It intentionally does not
+ * authenticate the MAC or open the sealed v2 payload.
+ */
+export function inspectTerminalProvisioningV3Payload(
+  payload: Uint8Array,
+): Readonly<{ type: 'tokenOnly' | 'dataKey' }> | null {
+  if (!TERMINAL_PROVISIONING_V3_MAGIC.every((byte, index) => payload[index] === byte)) return null;
+  if (payload.length === TERMINAL_PROVISIONING_V3_TOKEN_ONLY_PAYLOAD_BYTES) return { type: 'tokenOnly' };
+  if (payload.length === TERMINAL_PROVISIONING_V3_DATA_KEY_PAYLOAD_BYTES) return { type: 'dataKey' };
+  return null;
+}
+
+/** Canonical account-mode policy for all new terminal/QR v3 provisioning. */
+export function resolveTerminalProvisioningVariantV2(input: Readonly<{
+  encryptionMode: 'plain' | 'e2ee';
+  dataKeyMaterialAvailable: boolean;
+}>): TerminalProvisioningVariantV2 {
+  if (input.encryptionMode === 'plain') return 'tokenOnly';
+  return input.dataKeyMaterialAvailable ? 'dataKey' : 'legacyProvisioningUnavailable';
 }
 
 function sealTerminalProvisioningV3Response(params: {

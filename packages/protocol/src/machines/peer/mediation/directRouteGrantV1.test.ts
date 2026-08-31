@@ -6,6 +6,8 @@ import {
   createDirectRouteGrantSigningInputV1,
 } from './directRouteGrantV1';
 
+const targetEndpointId = 'b'.repeat(64);
+
 const basePayload = {
   v: 1,
   grantId: 'grant_1',
@@ -23,7 +25,7 @@ const basePayload = {
   iat: 1_000,
   exp: 601_000,
   aud: 'happier-daemon-route-grant',
-  endpointFingerprint: 'endpoint_1',
+  endpointFingerprint: targetEndpointId,
 } as const;
 
 describe('DirectRouteGrantV1', () => {
@@ -124,6 +126,49 @@ describe('DirectRouteGrantV1', () => {
     expect('allowedPorts' in parsed.scope).toBe(false);
   });
 
+  it('rejects iroh_peer on V1 because machine/1 requires the V2 proof grant', () => {
+    const parsed = DirectRouteGrantPayloadV1Schema.safeParse({
+      ...basePayload,
+      routeKind: 'iroh_peer',
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it('has no machine/1 binding field on the closed V1 authority envelope', () => {
+    expect(DirectRouteGrantPayloadV1Schema.safeParse({
+      ...basePayload,
+      iroh: {
+        sourceMachineId: 'machine_client',
+        targetMachineId: 'machine_1',
+        sourceEndpointId: 'a'.repeat(64),
+        targetEndpointId,
+        role: 'initiator',
+        operationKind: 'file_transfer',
+      },
+    }).success).toBe(false);
+  });
+
+  it('rejects unknown fields at every signed V1 authority boundary', () => {
+    expect(DirectRouteGrantPayloadV1Schema.safeParse({
+      ...basePayload,
+      extra: true,
+    }).success).toBe(false);
+    expect(DirectRouteGrantPayloadV1Schema.safeParse({
+      ...basePayload,
+      scope: { ...basePayload.scope, extra: true },
+    }).success).toBe(false);
+    expect(SignedDirectRouteGrantV1Schema.safeParse({
+      payload: basePayload,
+      signature: {
+        keyId: 'key_1',
+        alg: 'Ed25519',
+        valueBase64Url: 'AbCdEf012_-',
+        extra: true,
+      },
+    }).success).toBe(false);
+  });
+
   it('creates deterministic canonical signing input independent of insertion order', () => {
     const reorderedPayload = {
       exp: basePayload.exp,
@@ -149,7 +194,7 @@ describe('DirectRouteGrantV1', () => {
       createDirectRouteGrantSigningInputV1(reorderedPayload),
     );
     expect(createDirectRouteGrantSigningInputV1(basePayload)).toBe(
-      '{"accountId":"account_1","aud":"happier-daemon-route-grant","endpointFingerprint":"endpoint_1","exp":601000,"flowKind":"bounded_transfer","grantFamilyId":"family_1","grantId":"grant_1","iat":1000,"machineId":"machine_1","routeKind":"loopback_direct","scope":{"kind":"bounded_transfer","maxBytes":1024,"mode":"single","transferId":"transfer_1"},"v":1}',
+      `{"accountId":"account_1","aud":"happier-daemon-route-grant","endpointFingerprint":"${targetEndpointId}","exp":601000,"flowKind":"bounded_transfer","grantFamilyId":"family_1","grantId":"grant_1","iat":1000,"machineId":"machine_1","routeKind":"loopback_direct","scope":{"kind":"bounded_transfer","maxBytes":1024,"mode":"single","transferId":"transfer_1"},"v":1}`,
     );
   });
 });

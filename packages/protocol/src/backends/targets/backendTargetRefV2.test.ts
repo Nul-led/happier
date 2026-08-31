@@ -66,6 +66,18 @@ describe('BackendTargetRefV2 compatibility', () => {
     });
   });
 
+  it('parses a qualified Agent key without collapsing its plugin identity', () => {
+    expect((protocol as any).parseBackendTargetKeyV2(
+      'agent:acme.review/reviewer',
+    )).toEqual({
+      kind: 'agent',
+      identity: {
+        pluginId: 'acme.review',
+        localId: 'reviewer',
+      },
+    });
+  });
+
   it('reads legacy V1 backend target key strings into the additive V2 form', () => {
     expect((protocol as any).readBackendTargetRefV2('agent:codex')).toEqual({
       kind: 'backend',
@@ -229,7 +241,7 @@ describe('BackendTargetRefV2 compatibility', () => {
     );
     expect((protocol as any).parseBackendTargetKeyV2(
       'agent:happier.agent.ohmypi/ohmypi',
-    )).toEqual(runtimeTarget);
+    )).toEqual(persistedTarget);
     expect((protocol as any).readBackendTargetRefV2(
       'agent:happier.agent.ohmypi/ohmypi',
     )).toEqual(runtimeTarget);

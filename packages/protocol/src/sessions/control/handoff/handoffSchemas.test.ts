@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { computeWorkspaceSyncPolicyDigest } from './workspaceSyncSchemas.js';
+
+const gitWorktreePolicyDigest = computeWorkspaceSyncPolicyDigest({
+  v: 1, selection: 'git_worktree', extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false,
+});
 
 async function loadHandoffModule() {
   return await import(new URL('./handoffRpc.js', import.meta.url).href).catch((error) => ({ error } as const));
@@ -222,15 +227,6 @@ describe('session handoff schemas', () => {
           ],
           futurePublicationField: 'keep-me',
         },
-        workspaceReplicationSourceRootPath: '/repo',
-        workspaceReplicationHandoffBackTargetRootPath: '/repo-target',
-        workspaceReplicationManifestTransferPublication: {
-          transferId: 'transfer_manifest_1',
-          futureManifestPublicationField: 'keep-me',
-        },
-        workspaceReplicationSourceControllerMetadata: {
-          provider: 'git',
-        },
         futureHandoffMetadataField: 'keep-me',
       },
       workspaceAction: {
@@ -241,7 +237,7 @@ describe('session handoff schemas', () => {
           extraIgnorePatterns: [],
           extraIncludePatterns: [],
           includeGitDirectory: false,
-          policyDigest: 'sha256:policy',
+          policyDigest: gitWorktreePolicyDigest,
         },
       },
       futurePrepareTargetField: 'keep-me',
@@ -252,7 +248,6 @@ describe('session handoff schemas', () => {
     expect((request.endpointCandidates[0] as any).futureEndpointField).toBe('keep-me');
     expect((request.handoffMetadataV2?.agentBundleTransferPublication as any).futurePublicationField).toBe('keep-me');
     expect((request.handoffMetadataV2?.agentBundleTransferPublication?.endpointCandidates?.[0] as any).futureEndpointField).toBe('keep-me');
-    expect((request.handoffMetadataV2?.workspaceReplicationManifestTransferPublication as any).futureManifestPublicationField).toBe('keep-me');
 
     const status = mod.SessionHandoffStatusSchema.parse({
       handoffId: 'handoff_1',
@@ -304,7 +299,7 @@ describe('session handoff schemas', () => {
         totalBytes: 34,
         futureSummaryField: 'keep-me',
       },
-      transportStrategy: 'transfer_snapshot',
+      transportStrategy: 'direct_peer',
       recoveryActions: [],
       futureStatusField: 'keep-me',
     });
@@ -418,7 +413,11 @@ describe('session handoff schemas', () => {
     expect(typeof mod.SessionHandoffMetadataV2Schema).toBe('object');
     expect(typeof mod.TransferEndpointCandidateSchema).toBe('object');
     expect(typeof mod.TransferStreamEnvelopeSchema).toBe('object');
-    expect(typeof mod.SessionHandoffWorkspaceTransferSchema).toBe('object');
+
+    // The retired workspace transfer/replication corridor is not part of the public handoff surface.
+    expect(mod).not.toHaveProperty('SessionHandoffWorkspaceTransferSchema');
+    expect(mod).not.toHaveProperty('SessionHandoffWorkspaceTransferStrategySchema');
+    expect(mod).not.toHaveProperty('SessionHandoffConflictPolicySchema');
 
     // Legacy inline transferred-bundles payloads/artifacts are not part of the steady-state V2 protocol surface.
     expect(mod).not.toHaveProperty('SessionHandoffTransferredPayloadSchema');
@@ -444,7 +443,7 @@ describe('session handoff schemas', () => {
           extraIgnorePatterns: [],
           extraIncludePatterns: [],
           includeGitDirectory: false,
-          policyDigest: 'sha256:policy',
+          policyDigest: gitWorktreePolicyDigest,
         },
       },
     });
@@ -458,7 +457,7 @@ describe('session handoff schemas', () => {
         extraIgnorePatterns: [],
         extraIncludePatterns: [],
         includeGitDirectory: false,
-        policyDigest: 'sha256:policy',
+        policyDigest: gitWorktreePolicyDigest,
       },
     });
 
@@ -509,6 +508,7 @@ describe('session handoff schemas', () => {
       }).success,
     ).toBe(true);
 
+    // Retired workspace replication strategies are not admitted as handoff transport strategies.
     expect(
       mod.SessionHandoffStatusSchema.safeParse({
         handoffId: 'handoff_2',
@@ -517,7 +517,17 @@ describe('session handoff schemas', () => {
         transportStrategy: 'transfer_snapshot',
         recoveryActions: [],
       }).success,
-    ).toBe(true);
+    ).toBe(false);
+
+    // The retired reverse-root handoff-back commit fields are not part of the current commit request.
+    expect(
+      mod.SessionHandoffCommitRequestSchema.safeParse({
+        handoffId: 'handoff_2',
+        mode: 'source_cleanup',
+        workspaceReplicationReverseSourceRootPath: '/repo/source',
+        workspaceReplicationReverseTargetRootPath: '/repo/target',
+      }).success,
+    ).toBe(false);
 
     expect(mod.resolveSessionHandoffProgressTimeline('scan_source')).toEqual([
       'scan_source',
@@ -563,14 +573,6 @@ describe('session handoff schemas', () => {
             expiresAt: 1,
           },
         ],
-      },
-      workspaceReplicationSourceRootPath: '/repo',
-      workspaceReplicationHandoffBackTargetRootPath: '/repo-target',
-      workspaceReplicationManifestTransferPublication: {
-        transferId: 'transfer_manifest_1',
-      },
-      workspaceReplicationSourceControllerMetadata: {
-        provider: 'git',
       },
     };
     expect(mod.SessionHandoffMetadataV2Schema.safeParse(handoffMetadataV2).success).toBe(true);
@@ -825,20 +827,6 @@ describe('session handoff schemas', () => {
         transferId: 'session-handoff:handoff_predecessor_1:conflicting-agent-bundle',
       },
     }).success).toBe(false);
-  });
-
-  it('rejects oversized source controller metadata headers (no large JSON in handoffMetadataV2)', async () => {
-    const mod = await loadHandoffModule();
-    expect(mod).not.toHaveProperty('error');
-    if ('error' in mod) return;
-
-    expect(
-      mod.SessionHandoffMetadataV2Schema.safeParse({
-        workspaceReplicationSourceControllerMetadata: {
-          key: 'x'.repeat(200_000),
-        },
-      }).success,
-    ).toBe(false);
   });
 
   it('accepts absolute transfer endpoint URLs with matching schemes', async () => {

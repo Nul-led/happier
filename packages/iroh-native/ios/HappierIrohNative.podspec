@@ -13,6 +13,11 @@ Pod::Spec.new do |s|
   s.source = { :path => '.' }
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
+  s.prepare_command = <<-CMD
+    set -euo pipefail
+    bash "../scripts/build-rust-ios.sh"
+  CMD
+  s.vendored_frameworks = 'vendor/happier-iroh-native/HappierIrohNativeRust.xcframework'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
   s.source_files = '**/*.{h,m,mm,swift}'
 end

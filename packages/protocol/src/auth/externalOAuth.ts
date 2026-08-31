@@ -1,6 +1,22 @@
 import { z } from 'zod';
 
-export const ExternalOAuthParamsResponseSchema = z.object({ url: z.string().min(1) }).strict();
+const ExternalOAuthParamsBaseResponseSchema = z
+  .object({ url: z.string().min(1) })
+  .strict();
+
+const AccountDirectoryOAuthParamsResponseSchema =
+  ExternalOAuthParamsBaseResponseSchema.extend({
+    purpose: z.literal('account_directory'),
+    credentialTarget: z.literal('account_directory'),
+    endpointUrl: z.string().url(),
+    endpointServerIdentityId: z.string().trim().min(1),
+    expiresAt: z.string().datetime({ offset: true }).max(64),
+  }).strict();
+
+export const ExternalOAuthParamsResponseSchema = z.union([
+  AccountDirectoryOAuthParamsResponseSchema,
+  ExternalOAuthParamsBaseResponseSchema,
+]);
 export type ExternalOAuthParamsResponse = z.infer<typeof ExternalOAuthParamsResponseSchema>;
 
 export const ExternalOAuthErrorResponseSchema = z.object({ error: z.string().min(1) }).strict();

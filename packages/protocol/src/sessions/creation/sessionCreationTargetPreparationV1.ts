@@ -31,6 +31,12 @@ export const SessionCreationPreparedCheckoutV1Schema = z.object({
   finalDirectory: z.string().trim().min(1),
   baseRef: z.string().trim().min(1).nullable(),
   branchMode: z.enum(['new', 'existing']),
+  /**
+   * Target-owned materialization receipt. Only an explicit `true` proves this
+   * preparation created the checkout and may authorize a compensating remove.
+   * Older targets omit it and are therefore never cleaned up speculatively.
+   */
+  created: z.boolean().optional(),
 }).strict();
 export type SessionCreationPreparedCheckoutV1 = z.infer<
   typeof SessionCreationPreparedCheckoutV1Schema

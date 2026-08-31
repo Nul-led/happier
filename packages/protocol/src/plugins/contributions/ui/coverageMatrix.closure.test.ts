@@ -686,14 +686,39 @@ const MAINTAINED_AUTHORED_DESTINATION_DECLARATIONS_V1 = [
     codeIdentifier: ["        container: 'rightSidebarTab',", "        target: { kind: 'session' },"].join('\n'),
   },
   {
+    slotKey: 'rightSidebarTab:project',
+    sourcePath: 'packages/plugin-sdk/examples/public-authoring/definition.ts',
+    codeIdentifier: ["                container: 'rightSidebarTab',", "                target: { kind: 'project' },"].join('\n'),
+  },
+  {
     slotKey: 'rightPane:session',
     sourcePath: 'packages/plugin-sdk/examples/public-authoring/definition.ts',
     codeIdentifier: ["                container: 'rightPane',", "                target: { kind: 'session' },"].join('\n'),
   },
   {
+    slotKey: 'rightPane:project',
+    sourcePath: 'packages/plugin-sdk/examples/public-authoring/definition.ts',
+    codeIdentifier: ["                container: 'rightPane',", "                target: { kind: 'project' },"].join('\n'),
+  },
+  {
     slotKey: 'detailsTab:session',
     sourcePath: 'packages/plugin-sdk/examples/public-authoring/definition.ts',
     codeIdentifier: ["                container: 'detailsTab',", "                target: { kind: 'session' },"].join('\n'),
+  },
+  {
+    slotKey: 'detailsTab:project',
+    sourcePath: 'packages/plugin-sdk/examples/public-authoring/definition.ts',
+    codeIdentifier: ["                container: 'detailsTab',", "                target: { kind: 'project' },"].join('\n'),
+  },
+  {
+    slotKey: 'detailsPane:session',
+    sourcePath: 'packages/plugin-sdk/examples/public-authoring/definition.ts',
+    codeIdentifier: ["                container: 'detailsPane',", "                target: { kind: 'session' },"].join('\n'),
+  },
+  {
+    slotKey: 'detailsPane:project',
+    sourcePath: 'packages/plugin-sdk/examples/public-authoring/definition.ts',
+    codeIdentifier: ["                container: 'detailsPane',", "                target: { kind: 'project' },"].join('\n'),
   },
   {
     slotKey: 'bottomPane:session',
@@ -745,13 +770,7 @@ const MAINTAINED_AUTHORED_DESTINATION_DECLARATIONS_V1 = [
  * shape, and it could not fail on a gain: a real `detailsPane:session` view
  * added to the public-authoring example left this ceiling green and stale.
  */
-const DESTINATION_SLOTS_WITHOUT_MAINTAINED_AUTHORED_DECLARATION = [
-  'rightSidebarTab:project',
-  'rightPane:project',
-  'detailsTab:project',
-  'detailsPane:session',
-  'detailsPane:project',
-] as const satisfies readonly DestinationSlotKey[];
+const DESTINATION_SLOTS_WITHOUT_MAINTAINED_AUTHORED_DECLARATION = [] as const satisfies readonly DestinationSlotKey[];
 
 /**
  * The container/target TUPLE an authored view declares. The tuple, not the

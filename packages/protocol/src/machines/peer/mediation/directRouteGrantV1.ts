@@ -26,6 +26,7 @@ export const DirectRouteGrantPayloadV1Schema = z
     aud: z.literal(DIRECT_ROUTE_GRANT_AUDIENCE_V1),
     endpointFingerprint: z.string().min(1).optional(),
   })
+  .strict()
   .superRefine((payload, ctx) => {
     if (payload.scope.kind !== payload.flowKind) {
       ctx.addIssue({
@@ -41,18 +42,25 @@ export const DirectRouteGrantPayloadV1Schema = z
         message: 'Grant expiry must be after issue time',
       });
     }
+    if (payload.routeKind === 'iroh_peer') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['routeKind'],
+        message: 'The happier/machine/1 carrier requires a V2 ephemeral-proof grant',
+      });
+    }
   });
 
 export const DirectRouteGrantSignatureV1Schema = z.object({
   keyId: z.string().min(1),
   alg: z.literal('Ed25519'),
   valueBase64Url: Base64UrlSchema,
-});
+}).strict();
 
 export const SignedDirectRouteGrantV1Schema = z.object({
   payload: DirectRouteGrantPayloadV1Schema,
   signature: DirectRouteGrantSignatureV1Schema,
-});
+}).strict();
 
 export type DirectRouteGrantPayloadV1 = z.infer<typeof DirectRouteGrantPayloadV1Schema>;
 export type DirectRouteGrantSignatureV1 = z.infer<typeof DirectRouteGrantSignatureV1Schema>;

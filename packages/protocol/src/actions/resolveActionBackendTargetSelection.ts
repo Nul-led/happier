@@ -3,6 +3,7 @@ import {
   BackendTargetRefV2Schema,
   buildBackendTargetKeyV2,
   convertBackendTargetRefV2ToV1,
+  parseBackendTargetKeyV2,
   readBackendTargetRefV2,
   type BackendTargetRefV2,
 } from '../backends/targets/backendTargetRefV2.js';
@@ -16,7 +17,6 @@ import {
 import { isBuiltInBackendAgentId } from '../profiles/builtInBackendProfiles.js';
 import { EXTERNAL_SESSIONS_AGENT_IDS } from '../sessions/external/sourceCatalog.js';
 import type { RuntimeDescriptorV1 } from '../sessions/metadata/runtimeDescriptorV1.js';
-import { parseQualifiedPluginContributionKey } from '../plugins/contributionIdentity.js';
 
 type ActionBackendTargetSelectionInput = Readonly<{
   agentId?: string;
@@ -102,11 +102,15 @@ export function resolveActionBackendTargetSelection(
     };
   }
 
-  const qualifiedAgentIdentity = backendTargetKey
-    && BackendTargetKeyV2Schema.safeParse(backendTargetKey).success
-    && backendTargetKey.startsWith('agent:')
-      ? parseQualifiedPluginContributionKey(backendTargetKey.slice('agent:'.length))
-      : null;
+  const parsedBackendTargetKey = backendTargetKey
+    ? BackendTargetKeyV2Schema.safeParse(backendTargetKey)
+    : null;
+  const parsedTarget = parsedBackendTargetKey?.success
+    ? parseBackendTargetKeyV2(parsedBackendTargetKey.data)
+    : null;
+  const qualifiedAgentIdentity = parsedTarget?.kind === 'agent'
+    ? parsedTarget.identity
+    : null;
   if (qualifiedAgentIdentity) {
     if (input.backendTarget !== undefined && input.backendTarget !== null) {
       return {

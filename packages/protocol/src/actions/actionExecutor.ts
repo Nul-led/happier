@@ -145,9 +145,8 @@ import {
   type SessionHandoffPrepareTargetRequest,
   type SessionHandoffPrepareTargetResumeRequest,
   type SessionHandoffStatusGetRequest,
-  SessionHandoffWorkspaceTransferSchema,
-  type SessionHandoffWorkspaceTransfer,
 } from '../sessions/control/handoff/handoffSchemas.js';
+import type { HandoffWorkspaceActionV1 } from '../sessions/control/handoff/workspaceSyncSchemas.js';
 import type { SessionContinueWithReplayRpcParams } from '../sessions/continueWithReplay.js';
 import { SessionForkRpcParamsSchema } from '../sessions/fork.js';
 import { SpawnSessionErrorCodeSchema } from '../sessions/spawnSession.js';
@@ -512,7 +511,6 @@ function buildSessionSpawnNewArgs(
     assignIfDefined(args, 'callerSurface', ctx.surface);
   }
   if (ctx.surface === 'agent') {
-    assignIfDefined(args, 'callerPermissionMode', ctx.callerPermissionMode ?? null);
     assignIfDefined(args, 'sessionAgentSpawnPolicyV1', ctx.sessionAgentSpawnPolicyV1);
   }
   return args as Parameters<ActionExecutorDeps['sessionSpawnNew']>[0];
@@ -551,33 +549,7 @@ function createPermissionPolicyResult(
   };
 }
 
-function assertAgentPermission(
-  ctx: ActionExecutorContext,
-  requestedMode: unknown,
-  supportedModes?: readonly string[],
-): PermissionEscalationDecision | null {
-  if (!isAgentCaller(ctx)) return null;
-  return assertNonEscalatingPermissionMode({
-    requestedMode,
-    callerMode: ctx.callerPermissionMode ?? 'default',
-    supportedModes,
-  });
-}
-
-function resolveAgentPermission(
-  ctx: ActionExecutorContext,
-  requestedMode: unknown,
-  supportedModes?: readonly string[],
-): PermissionEscalationDecision | null {
-  if (!isAgentCaller(ctx)) return null;
-  return resolveNearestPermissionModeAtOrBelow({
-    requestedMode,
-    callerMode: ctx.callerPermissionMode ?? 'default',
-    supportedModes,
-  });
-}
-
-type AgentExecutionRunPermissionResolution =
+type AgentPermissionResolution =
   | Readonly<{
       ok: true;
       permissionDecision: PermissionEscalationDecision | null;
@@ -596,6 +568,86 @@ function causalPermissionAuthorityFailure(): ActionExecuteFailure {
   };
 }
 
+type AgentEffectivePermissionResolution =
+  | Readonly<{
+      ok: true;
+      effectiveCallerMode: string | null;
+      causalPermissionAuthority?: SessionInputCausalPermissionAuthorityV1;
+    }>
+  | Readonly<{
+      ok: false;
+      error: ActionExecuteFailure;
+    }>;
+
+/**
+ * Resolves the one host-stamped permission mode that an Agent Action may use.
+ * When an active-turn authority is present, the immutable admitted ceiling is
+ * intersected with the mutable current Session mode before any Action-specific
+ * permission decision. A present but invalid authority never falls back to the
+ * mutable mode.
+ */
+function resolveAgentEffectivePermission(
+  ctx: ActionExecutorContext,
+  supportedModes?: readonly string[],
+): AgentEffectivePermissionResolution {
+  if (!isAgentCaller(ctx)) {
+    return { ok: true, effectiveCallerMode: null };
+  }
+  if (!Object.prototype.hasOwnProperty.call(ctx, 'causalPermissionAuthority')) {
+    return { ok: true, effectiveCallerMode: ctx.callerPermissionMode ?? 'default' };
+  }
+
+  const parsedAuthority = SessionInputCausalPermissionAuthorityV1Schema.safeParse(
+    ctx.causalPermissionAuthority,
+  );
+  if (!parsedAuthority.success) {
+    return { ok: false, error: causalPermissionAuthorityFailure() };
+  }
+  const effective = resolveEffectivePermissionMode({
+    currentMode: ctx.callerPermissionMode ?? 'default',
+    admittedPermissionCeiling: parsedAuthority.data.admittedPermissionCeiling,
+    supportedModes,
+  });
+  if (!effective.ok) {
+    return { ok: false, error: causalPermissionAuthorityFailure() };
+  }
+  return {
+    ok: true,
+    effectiveCallerMode: effective.effectiveMode,
+    causalPermissionAuthority: parsedAuthority.data,
+  };
+}
+
+function assertAgentPermission(
+  ctx: ActionExecutorContext,
+  requestedMode: unknown,
+  supportedModes?: readonly string[],
+): AgentPermissionResolution {
+  const effective = resolveAgentEffectivePermission(ctx, supportedModes);
+  if (!effective.ok) return effective;
+  if (effective.effectiveCallerMode === null) {
+    return { ok: true, permissionDecision: null };
+  }
+  const hasRequestedMode = typeof requestedMode === 'string' && requestedMode.trim().length > 0;
+  return {
+    ok: true,
+    permissionDecision: hasRequestedMode
+      ? assertNonEscalatingPermissionMode({
+          requestedMode,
+          callerMode: effective.effectiveCallerMode,
+          supportedModes,
+        })
+      : resolveNearestPermissionModeAtOrBelow({
+          requestedMode: undefined,
+          callerMode: effective.effectiveCallerMode,
+          supportedModes,
+        }),
+    ...(effective.causalPermissionAuthority
+      ? { causalPermissionAuthority: effective.causalPermissionAuthority }
+      : {}),
+  };
+}
+
 /**
  * A Session-agent MCP call explicitly carries host-stamped active-turn
  * authority. That turn's immutable admission ceiling constrains the current
@@ -607,36 +659,18 @@ function resolveAgentExecutionRunPermission(
   ctx: ActionExecutorContext,
   requestedMode: unknown,
   supportedModes: readonly string[],
-): AgentExecutionRunPermissionResolution {
-  if (
-    !isAgentCaller(ctx)
-    || !Object.prototype.hasOwnProperty.call(ctx, 'causalPermissionAuthority')
-  ) {
+): AgentPermissionResolution {
+  const effective = resolveAgentEffectivePermission(ctx, supportedModes);
+  if (!effective.ok) return effective;
+  if (effective.effectiveCallerMode === null) {
     return {
       ok: true,
-      permissionDecision: resolveAgentPermission(ctx, requestedMode, supportedModes),
+      permissionDecision: null,
     };
   }
-
-  const parsedAuthority = SessionInputCausalPermissionAuthorityV1Schema.safeParse(
-    ctx.causalPermissionAuthority,
-  );
-  if (!parsedAuthority.success) {
-    return { ok: false, error: causalPermissionAuthorityFailure() };
-  }
-
-  const effective = resolveEffectivePermissionMode({
-    currentMode: ctx.callerPermissionMode ?? 'default',
-    admittedPermissionCeiling: parsedAuthority.data.admittedPermissionCeiling,
-    supportedModes,
-  });
-  if (!effective.ok) {
-    return { ok: false, error: causalPermissionAuthorityFailure() };
-  }
-
   let permissionDecision = resolveNearestPermissionModeAtOrBelow({
     requestedMode,
-    callerMode: effective.effectiveMode,
+    callerMode: effective.effectiveCallerMode,
     supportedModes,
   });
   // A host-stamped causal ceiling narrows an otherwise valid agent request
@@ -644,10 +678,14 @@ function resolveAgentExecutionRunPermission(
   // the original admitted turn. Preserve an explicitly lower request, but
   // choose the nearest supported mode at the ceiling when the request is
   // broader. Invalid input remains a typed refusal.
-  if (!permissionDecision.ok && permissionDecision.reason === 'permission_escalation_denied') {
+  if (
+    effective.causalPermissionAuthority
+    && !permissionDecision.ok
+    && permissionDecision.reason === 'permission_escalation_denied'
+  ) {
     permissionDecision = resolveNearestPermissionModeAtOrBelow({
       requestedMode: undefined,
-      callerMode: effective.effectiveMode,
+      callerMode: effective.effectiveCallerMode,
       supportedModes,
     });
   }
@@ -655,7 +693,9 @@ function resolveAgentExecutionRunPermission(
   return {
     ok: true,
     permissionDecision,
-    causalPermissionAuthority: parsedAuthority.data,
+    ...(effective.causalPermissionAuthority
+      ? { causalPermissionAuthority: effective.causalPermissionAuthority }
+      : {}),
   };
 }
 
@@ -1652,34 +1692,15 @@ function classifyExecutionRunStartPreDispatchFailure(
     : result;
 }
 
-/**
- * The incumbent waiter owns polling and transport. The Action boundary owns
- * its stable public projection, so raw service payloads never escape through
- * `execution.run.wait` or nested start-and-wait results.
- */
-function projectExecutionRunWaitResult(result: unknown): unknown {
-  const record = readRecord(result);
-  if (record.ok === true) {
-    const rawRun = readRecord(readRecord(record.result).run);
-    return {
-      ok: true,
-      status: record.status,
-      result: {
-        run: {
-          runId: rawRun.runId,
-          status: rawRun.status,
-        },
-      },
-    };
-  }
-  if (record.ok === false && typeof record.code === 'string') {
-    return { ok: false, code: record.code };
-  }
-  return result;
-}
-
 function parseExecutionRunWaitResult(result: unknown) {
-  return ExecutionRunWaitResultSchema.safeParse(projectExecutionRunWaitResult(result));
+  const record = readRecord(result);
+  // Transport failures may carry service-private diagnostics. Keep the public
+  // wait disposition closed while successful observations retain the exact
+  // canonical `execution.run.get` projection returned by the shared waiter.
+  if (record.ok === false && typeof record.code === 'string') {
+    return ExecutionRunWaitResultSchema.safeParse({ ok: false, code: record.code });
+  }
+  return ExecutionRunWaitResultSchema.safeParse(result);
 }
 
 function isExecutionRunWaitCancellation(error: unknown, signal?: AbortSignal): boolean {
@@ -3887,14 +3908,21 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
               ? data.targetSessionStorageMode
               : undefined;
           const targetPath = normalizeId(data.targetPath);
-          const workspaceTransferParsed = SessionHandoffWorkspaceTransferSchema.safeParse(data.workspaceTransfer);
-          const workspaceTransfer = workspaceTransferParsed.success ? workspaceTransferParsed.data : undefined;
+          const workspaceAction = data.workspaceAction as HandoffWorkspaceActionV1 | undefined;
+          const workspaceSyncSourceWorkspaceRefId = normalizeId(data.workspaceSyncSourceWorkspaceRefId);
+          const workspaceSyncTargetWorkspaceRefId = normalizeId(data.workspaceSyncTargetWorkspaceRefId);
+          const workspaceSyncSettingsVersion = typeof data.workspaceSyncSettingsVersion === 'number'
+            ? data.workspaceSyncSettingsVersion
+            : undefined;
           const res = await deps.sessionHandoffStart({
             sessionId,
             targetMachineId,
             ...(targetPath ? { targetPath } : {}),
             ...(targetSessionStorageMode ? { targetSessionStorageMode } : {}),
-            ...(workspaceTransfer ? { workspaceTransfer } : {}),
+            ...(workspaceAction ? { workspaceAction } : {}),
+            ...(workspaceSyncSourceWorkspaceRefId ? { workspaceSyncSourceWorkspaceRefId } : {}),
+            ...(workspaceSyncTargetWorkspaceRefId ? { workspaceSyncTargetWorkspaceRefId } : {}),
+            ...(workspaceSyncSettingsVersion === undefined ? {} : { workspaceSyncSettingsVersion }),
             ...(serverId ? { serverId } : {}),
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           });
@@ -3951,9 +3979,11 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
 
         if (actionId === 'session.spawn_new') {
           const spawnInput = data;
-          const permissionDecision = typeof spawnInput.permissionMode === 'string' && spawnInput.permissionMode.trim().length > 0
-            ? assertAgentPermission(ctx, spawnInput.permissionMode)
-            : null;
+          const permissionResolution = assertAgentPermission(ctx, spawnInput.permissionMode);
+          if (!permissionResolution.ok) {
+            return permissionResolution.error;
+          }
+          const permissionDecision = permissionResolution.permissionDecision;
           if (permissionDecision?.ok === false) {
             return createPermissionPolicyResult(ctx, permissionDecision);
           }
@@ -4202,13 +4232,11 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             ? data.providerConnectionId
             : undefined;
           const permissionOverrideRaw = data.permissionModeOverride;
-          const permissionModeForAgent = isAgentCaller(ctx)
-            && !(typeof permissionOverrideRaw === 'string' && permissionOverrideRaw.trim().length > 0)
-              ? ctx.callerPermissionMode ?? 'default'
-              : permissionOverrideRaw;
-          const permissionDecision = typeof permissionModeForAgent === 'string' && permissionModeForAgent.trim().length > 0
-            ? assertAgentPermission(ctx, permissionModeForAgent)
-            : null;
+          const permissionResolution = assertAgentPermission(ctx, permissionOverrideRaw);
+          if (!permissionResolution.ok) {
+            return permissionResolution.error;
+          }
+          const permissionDecision = permissionResolution.permissionDecision;
           if (permissionDecision?.ok === false) {
             return createPermissionPolicyResult(ctx, permissionDecision);
           }
@@ -4259,7 +4287,6 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             ...(typeof data.timeoutSeconds === 'number' ? { timeoutSeconds: data.timeoutSeconds } : {}),
             ...(serverId ? { serverId } : {}),
             ...(ctx.surface ? { callerSurface: ctx.surface } : {}),
-            ...(isAgentCaller(ctx) ? { callerPermissionMode: ctx.callerPermissionMode ?? null } : {}),
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           };
           if (actionCaller.kind === 'plugin') {
@@ -4343,7 +4370,11 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           }
           const permissionMode = normalizeId(data.permissionMode);
           if (!permissionMode) return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
-          const permissionDecision = assertAgentPermission(ctx, permissionMode);
+          const permissionResolution = assertAgentPermission(ctx, permissionMode);
+          if (!permissionResolution.ok) {
+            return permissionResolution.error;
+          }
+          const permissionDecision = permissionResolution.permissionDecision;
           if (permissionDecision?.ok === false) {
             return createPermissionPolicyResult(ctx, permissionDecision);
           }
@@ -4352,9 +4383,6 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             sessionId,
             permissionMode: permissionDecision?.ok === true ? permissionDecision.normalizedMode : permissionMode,
             ...(serverId ? { serverId } : {}),
-            ...(isAgentCaller(ctx)
-              ? { callerSurface: 'agent' as const, callerPermissionMode: ctx.callerPermissionMode ?? null }
-              : {}),
           });
           return completeActionResult(res);
         }

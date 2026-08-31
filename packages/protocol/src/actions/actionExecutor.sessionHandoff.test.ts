@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createActionExecutor, type ActionExecutorDeps } from './actionExecutor.js';
+import { computeWorkspaceSyncPolicyDigest } from '../sessions/control/handoff/workspaceSyncSchemas.js';
 
 function createDeps(overrides: Partial<ActionExecutorDeps> = {}): ActionExecutorDeps {
   return {
@@ -83,7 +84,7 @@ describe('createActionExecutor (session.handoff)', () => {
     });
   });
 
-  it('passes workspace transfer and target storage mode through to sessionHandoffStart', async () => {
+  it('passes canonical workspace action and target storage mode through to sessionHandoffStart', async () => {
     const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] } }));
     const deps = createDeps({
       sessionHandoffStart,
@@ -91,18 +92,29 @@ describe('createActionExecutor (session.handoff)', () => {
     });
     const executor = createActionExecutor(deps);
 
+    const policyDigest = computeWorkspaceSyncPolicyDigest({
+      v: 1, selection: 'git_worktree', extraIgnorePatterns: [], extraIncludePatterns: ['dist/**'], includeGitDirectory: false,
+    });
     const result = await executor.execute(
       'session.handoff',
       {
         targetMachineId: 'machine_2',
         targetPath: '/home/guest/workspace',
         targetSessionStorageMode: 'persisted',
-        workspaceTransfer: {
-          enabled: true,
-          conflictPolicy: 'replace_existing',
-          includeIgnoredMode: 'include_selected',
-          ignoredIncludeGlobs: ['dist/**'],
+        workspaceAction: {
+          kind: 'copy_once',
+          contentPolicy: {
+            v: 1,
+            selection: 'git_worktree',
+            extraIgnorePatterns: [],
+            extraIncludePatterns: ['dist/**'],
+            includeGitDirectory: false,
+            policyDigest,
+          },
         },
+        workspaceSyncSourceWorkspaceRefId: 'workspace-source',
+        workspaceSyncTargetWorkspaceRefId: 'workspace-target',
+        workspaceSyncSettingsVersion: 8,
       },
       { surface: 'ui', defaultSessionId: 'sess_1' },
     );
@@ -113,13 +125,51 @@ describe('createActionExecutor (session.handoff)', () => {
       targetMachineId: 'machine_2',
       targetPath: '/home/guest/workspace',
       targetSessionStorageMode: 'persisted',
-      workspaceTransfer: {
-        enabled: true,
-        strategy: 'transfer_snapshot',
-        conflictPolicy: 'replace_existing',
-        includeIgnoredMode: 'include_selected',
-        ignoredIncludeGlobs: ['dist/**'],
+      workspaceAction: {
+        kind: 'copy_once',
+        contentPolicy: {
+          v: 1,
+          selection: 'git_worktree',
+          extraIgnorePatterns: [],
+          extraIncludePatterns: ['dist/**'],
+          includeGitDirectory: false,
+          policyDigest,
+        },
       },
+      workspaceSyncSourceWorkspaceRefId: 'workspace-source',
+      workspaceSyncTargetWorkspaceRefId: 'workspace-target',
+      workspaceSyncSettingsVersion: 8,
+      serverId: 'server_a',
+    });
+  });
+
+  it('passes the canonical workspaceAction through to sessionHandoffStart', async () => {
+    const sessionHandoffStart = vi.fn(async () => ({ handoffId: 'handoff_1', status: { handoffId: 'handoff_1', status: 'pending', phase: 'preparing', recoveryActions: [] } }));
+    const deps = createDeps({
+      sessionHandoffStart,
+      resolveServerIdForSessionId: vi.fn(() => 'server_a'),
+    });
+    const executor = createActionExecutor(deps);
+    const workspaceAction = {
+      kind: 'relationship' as const,
+      relationshipId: 'relationship_1',
+      flushBeforeCommit: true,
+    };
+
+    const result = await executor.execute(
+      'session.handoff',
+      {
+        targetMachineId: 'machine_2',
+        workspaceAction,
+      },
+      { surface: 'ui', defaultSessionId: 'sess_1' },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(sessionHandoffStart).toHaveBeenCalledWith({
+      sessionId: 'sess_1',
+      targetMachineId: 'machine_2',
+      workspaceAction,
       serverId: 'server_a',
     });
   });

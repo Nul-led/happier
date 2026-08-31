@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { parseIrohEndpointDescriptor, HOME_TUNNEL_ALPN, TUNNEL_PREAMBLE } from './descriptor';
+import { HOME_TUNNEL_ALPN, TUNNEL_PREAMBLE, parseIrohEndpointDescriptor } from './descriptor';
 
-describe('Iroh endpoint descriptor', () => {
+describe('Iroh endpoint descriptor (native adapter over the canonical protocol definition)', () => {
   it('accepts the strict transport-only shape', () => {
     expect(parseIrohEndpointDescriptor({
       endpointId: 'a'.repeat(64),
@@ -18,6 +18,21 @@ describe('Iroh endpoint descriptor', () => {
     expect(() => parseIrohEndpointDescriptor({ endpointId: 'a'.repeat(64), token: 'secret' })).toThrow();
     expect(() => parseIrohEndpointDescriptor({ endpointId: 'a'.repeat(64), port: 80 })).toThrow();
     expect(() => parseIrohEndpointDescriptor({ endpointId: 'a'.repeat(64), extra: true })).toThrow();
+  });
+
+  it('honors the shared protocol bounds instead of a second native grammar', () => {
+    expect(parseIrohEndpointDescriptor({
+      endpointId: 'a'.repeat(64),
+      directAddresses: Array.from({ length: 16 }, (_, index) => `192.0.2.${index + 1}:443`),
+    }).directAddresses).toHaveLength(16);
+    expect(() => parseIrohEndpointDescriptor({
+      endpointId: 'a'.repeat(64),
+      directAddresses: Array.from({ length: 17 }, (_, index) => `192.0.2.${index + 1}:443`),
+    })).toThrow();
+    expect(() => parseIrohEndpointDescriptor({
+      endpointId: 'a'.repeat(64),
+      relayUrls: ['https://user:pass@relay.example'],
+    })).toThrow();
   });
 
   it('publishes the locked ALPN and preamble', () => {

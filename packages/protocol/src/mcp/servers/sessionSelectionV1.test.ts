@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { readSessionMcpSelectionV1FromMetadata, SessionMcpSelectionV1Schema } from './sessionSelectionV1.js';
+import {
+  areSessionMcpSelectionsEquivalent,
+  readSessionMcpSelectionRestartRequiredV1FromMetadata,
+  readSessionMcpSelectionV1FromMetadata,
+  SessionMcpSelectionV1Schema,
+} from './sessionSelectionV1.js';
 
 describe('SessionMcpSelectionV1Schema', () => {
   it('defaults to enabled managed servers with empty include/exclude lists', () => {
@@ -41,6 +46,28 @@ describe('SessionMcpSelectionV1Schema', () => {
       managedServersEnabled: false,
       forceIncludeServerIds: ['server-a'],
       forceExcludeServerIds: ['server-b'],
+    });
+  });
+
+  it('compares effective behavior and reads the applied-selection marker', () => {
+    const appliedSelection = {
+      v: 1 as const,
+      managedServersEnabled: false,
+      forceIncludeServerIds: ['server-b', 'excluded', 'server-a'],
+      forceExcludeServerIds: ['excluded'],
+    };
+    expect(areSessionMcpSelectionsEquivalent(appliedSelection, {
+      ...appliedSelection,
+      forceIncludeServerIds: ['server-a', 'server-b'],
+    })).toBe(true);
+    expect(readSessionMcpSelectionRestartRequiredV1FromMetadata({
+      mcpSelectionRestartRequiredV1: { v: 1, appliedSelection },
+    })).toEqual({
+      v: 1,
+      appliedSelection: {
+        ...appliedSelection,
+        forceIncludeServerIds: ['server-b', 'excluded', 'server-a'],
+      },
     });
   });
 });

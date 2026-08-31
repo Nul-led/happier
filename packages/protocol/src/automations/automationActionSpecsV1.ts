@@ -12,10 +12,12 @@ import {
 } from './automationIdV1.js';
 import { AutomationAccountCurrentnessWitnessV1Schema } from './automationAccountCurrentnessV1.js';
 import {
-  AutomationEventPositiveSafeIntegerV1Schema as POSITIVE_SAFE_INTEGER_SCHEMA,
   AutomationQualifiedPluginContributionRefV1Schema,
   AutomationSourceSelectorIdV1Schema,
 } from './automationEventDeclarationV1.js';
+import {
+  AutomationEventPositiveSafeIntegerV1Schema as POSITIVE_SAFE_INTEGER_SCHEMA,
+} from './automationColumnBoundsV1.js';
 import {
   AutomationEventPayloadV1Schema,
   AutomationEventSourceConfigV1Schema,

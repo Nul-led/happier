@@ -11,7 +11,7 @@ import {
   AutomationRunCauseSchema,
   type AutomationRunCause,
 } from './automationRunCause.js';
-import { AutomationEventPositiveSafeIntegerV1Schema } from './automationEventDeclarationV1.js';
+import { AutomationEventPositiveSafeIntegerV1Schema } from './automationColumnBoundsV1.js';
 import { AutomationAccountCurrentnessWitnessV1Schema } from './automationAccountCurrentnessV1.js';
 import {
   AutomationEventPayloadV1Schema,

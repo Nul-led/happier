@@ -40,8 +40,8 @@ import type {
   SessionHandoffPrepareTargetResumeRequest,
   SessionHandoffPrepareTargetResultGetRequest,
   SessionHandoffStatusGetRequest,
-  SessionHandoffWorkspaceTransfer,
 } from '../../sessions/control/handoff/handoffSchemas.js';
+import type { HandoffWorkspaceActionV1 } from '../../sessions/control/handoff/workspaceSyncSchemas.js';
 import type { SessionContinueWithReplayRpcParams } from '../../sessions/continueWithReplay.js';
 import type { SessionForkRpcParams } from '../../sessions/fork.js';
 import type {
@@ -737,7 +737,10 @@ export type ActionExecutorDeps = Readonly<{
     targetMachineId: string;
     targetPath?: string;
     targetSessionStorageMode?: 'direct' | 'persisted';
-    workspaceTransfer?: SessionHandoffWorkspaceTransfer;
+    workspaceAction?: HandoffWorkspaceActionV1;
+    workspaceSyncSourceWorkspaceRefId?: string;
+    workspaceSyncTargetWorkspaceRefId?: string;
+    workspaceSyncSettingsVersion?: number;
     serverId?: string | null;
     signal?: AbortSignal;
   }>) => Promise<unknown>;
@@ -759,7 +762,6 @@ export type ActionExecutorDeps = Readonly<{
     /** Host-stamped caller identity; never supplied by Action input. */
     actionCaller: ActionCaller;
     callerSurface?: keyof ActionSurfaces | null;
-    callerPermissionMode?: string | null;
     sessionAgentSpawnPolicyV1?: unknown;
     actionRequestId?: string | null;
     resumeActionRequest?: boolean;
@@ -901,7 +903,6 @@ export type ActionExecutorDeps = Readonly<{
     timeoutSeconds?: number;
     serverId?: string | null;
     callerSurface?: keyof ActionSurfaces | null;
-    callerPermissionMode?: string | null;
     signal?: AbortSignal;
   }>) => Promise<unknown>;
   sessionTitleSet?: (args: Readonly<{ sessionId: string; title: string; serverId?: string | null }>) => Promise<unknown>;
@@ -921,8 +922,6 @@ export type ActionExecutorDeps = Readonly<{
     sessionId: string;
     permissionMode: string;
     serverId?: string | null;
-    callerSurface?: keyof ActionSurfaces | null;
-    callerPermissionMode?: string | null;
   }>) => Promise<unknown>;
   sessionModelSet?: (args: Readonly<{
     sessionId: string;

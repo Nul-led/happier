@@ -4,6 +4,8 @@ use std::fmt;
 pub enum IrohFailureReason {
     UnsupportedAlpn,
     InvalidPreamble,
+    InvalidDescriptor,
+    EndpointConfigConflict,
     Io,
     Cancelled,
     ResourceLimit,
@@ -16,6 +18,12 @@ pub enum IrohFailureReason {
 pub enum IrohError {
     UnsupportedAlpn,
     InvalidPreamble,
+    /// Descriptor-derived metadata failed strict validation (grammar, bounds,
+    /// credentials, or scheme). Never downgraded to a fallback path.
+    InvalidDescriptor,
+    /// The same endpoint identity key was requested with a different relay or
+    /// cap configuration. Failing clearly prevents a silent second owner.
+    EndpointConfigConflict,
     Io(std::io::Error),
     Cancelled,
     ResourceLimit,
@@ -35,6 +43,8 @@ impl IrohError {
         match self {
             Self::UnsupportedAlpn => IrohFailureReason::UnsupportedAlpn,
             Self::InvalidPreamble => IrohFailureReason::InvalidPreamble,
+            Self::InvalidDescriptor => IrohFailureReason::InvalidDescriptor,
+            Self::EndpointConfigConflict => IrohFailureReason::EndpointConfigConflict,
             Self::Io(_) => IrohFailureReason::Io,
             Self::Cancelled => IrohFailureReason::Cancelled,
             Self::ResourceLimit => IrohFailureReason::ResourceLimit,

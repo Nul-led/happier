@@ -37,6 +37,25 @@ function readOptionalPath(root: unknown, path: ReadonlyArray<string>): unknown {
 }
 
 describe('FeaturesResponseSchema', () => {
+  it('accepts an optional strict Home search capability and keeps old-server omission safe', () => {
+    const oldServer = FeaturesResponseSchema.parse({ features: {}, capabilities: {} });
+    expect(oldServer.capabilities.homeSearch).toBeUndefined();
+
+    const current = FeaturesResponseSchema.parse({
+      features: {},
+      capabilities: {
+        homeSearch: { enabled: false, provider: 'home', reason: 'indexing' },
+      },
+    });
+    expect(current.capabilities.homeSearch).toEqual({ enabled: false, provider: 'home', reason: 'indexing' });
+    expect(FeaturesResponseSchema.safeParse({
+      features: {},
+      capabilities: {
+        homeSearch: { enabled: true, provider: 'home', extra: true },
+      },
+    }).success).toBe(false);
+  });
+
   it('applies safe defaults for missing subtrees', () => {
     const parsed = FeaturesResponseSchema.parse({
       features: {},
@@ -114,6 +133,41 @@ describe('FeaturesResponseSchema', () => {
       },
     });
     expect(parsed.capabilities.auth.misconfig).toEqual([]);
+  });
+
+  it('parses an additive optional Home connection descriptor and invalidates malformed ones', () => {
+    // Old servers predate the field entirely and must remain valid.
+    const oldServer = FeaturesResponseSchema.parse({ features: {}, capabilities: {} });
+    expect(oldServer.homeConnectionDescriptor).toBeUndefined();
+
+    const descriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_features_home',
+      canonicalServerUrl: 'http://127.0.0.1:3005',
+      revision: 3,
+      endpoints: [
+        { kind: 'iroh' as const, endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test'] },
+      ],
+    };
+    const current = FeaturesResponseSchema.parse({
+      features: {},
+      capabilities: {},
+      homeConnectionDescriptor: descriptor,
+    });
+    expect(current.homeConnectionDescriptor).toEqual(descriptor);
+
+    // The canonical outer descriptor schema owns validation: a present but
+    // malformed field invalidates the response instead of being dropped.
+    expect(FeaturesResponseSchema.safeParse({
+      features: {},
+      capabilities: {},
+      homeConnectionDescriptor: { ...descriptor, revision: 0 },
+    }).success).toBe(false);
+    expect(FeaturesResponseSchema.safeParse({
+      features: {},
+      capabilities: {},
+      homeConnectionDescriptor: { ...descriptor, endpoints: [] },
+    }).success).toBe(false);
   });
 
   it('accepts an advertised revision-guarded connected-service delete capability', () => {

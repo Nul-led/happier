@@ -50,6 +50,115 @@ const canonicalSessionSpawnInput = {
 } as const;
 
 describe('createActionExecutor (session control)', () => {
+  it('clamps every agent Session mutation to the admitted causal permission ceiling', async () => {
+    const sessionSpawnNew = vi.fn(async () => ({ type: 'success' as const }));
+    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionPermissionModeSet = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({
+      sessionSpawnNew,
+      sessionSendMessage,
+      sessionPermissionModeSet,
+    });
+    const agentContext = {
+      surface: 'agent' as const,
+      authority: 'present_user' as const,
+      defaultSessionId: 'caller',
+      callerPermissionMode: 'yolo',
+      causalPermissionAuthority: {
+        kind: 'admittedSessionInputV1' as const,
+        admittedPermissionCeiling: 'read-only' as const,
+      },
+    };
+
+    await expect(executor.execute(
+      'session.message.send' as any,
+      { sessionId: 'target', message: 'Continue' },
+      agentContext,
+    )).resolves.toEqual({ ok: true, result: { ok: true } });
+    expect(sessionSendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      permissionModeOverride: 'read-only',
+      callerSurface: 'agent',
+    }));
+
+    await expect(executor.execute(
+      'session.permission_mode.set' as any,
+      { sessionId: 'target', permissionMode: 'yolo' },
+      agentContext,
+    )).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'permission_escalation_denied',
+    });
+    expect(sessionPermissionModeSet).not.toHaveBeenCalled();
+
+    await expect(executor.execute(
+      'session.spawn_new' as any,
+      { ...canonicalSessionSpawnInput, permissionMode: 'yolo' },
+      agentContext,
+    )).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'permission_escalation_denied',
+    });
+    expect(sessionSpawnNew).not.toHaveBeenCalled();
+  });
+
+  it('fails every agent Session mutation closed when causal permission authority is malformed', async () => {
+    const sessionSpawnNew = vi.fn(async () => ({ type: 'success' as const }));
+    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const sessionPermissionModeSet = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({
+      sessionSpawnNew,
+      sessionSendMessage,
+      sessionPermissionModeSet,
+    });
+    const agentContext = {
+      surface: 'agent' as const,
+      authority: 'present_user' as const,
+      defaultSessionId: 'caller',
+      callerPermissionMode: 'yolo',
+      causalPermissionAuthority: {
+        kind: 'admittedSessionInputV1' as const,
+        admittedPermissionCeiling: 'not-a-permission-mode',
+      },
+    };
+
+    for (const [actionId, input] of [
+      ['session.message.send', { sessionId: 'target', message: 'Continue' }],
+      ['session.permission_mode.set', { sessionId: 'target', permissionMode: 'read-only' }],
+      ['session.spawn_new', { ...canonicalSessionSpawnInput, permissionMode: 'read-only' }],
+    ] as const) {
+      await expect(executor.execute(actionId as any, input, agentContext)).resolves.toEqual({
+        ok: false,
+        errorCode: 'causal_permission_authority_invalid',
+        error: 'causal_permission_authority_invalid',
+      });
+    }
+    expect(sessionSendMessage).not.toHaveBeenCalled();
+    expect(sessionPermissionModeSet).not.toHaveBeenCalled();
+    expect(sessionSpawnNew).not.toHaveBeenCalled();
+  });
+
+  it('does not apply agent causal authority to a present-user Session mutation', async () => {
+    const sessionPermissionModeSet = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionPermissionModeSet });
+
+    await expect(executor.execute(
+      'session.permission_mode.set' as any,
+      { sessionId: 'target', permissionMode: 'yolo' },
+      {
+        surface: 'ui',
+        authority: 'present_user',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'not-a-permission-mode',
+        },
+      },
+    )).resolves.toEqual({ ok: true, result: { ok: true } });
+    expect(sessionPermissionModeSet).toHaveBeenCalledWith({
+      sessionId: 'target',
+      permissionMode: 'yolo',
+    });
+  });
+
   it('executes session.message.send via deps.sessionSendMessage (including optional overrides)', async () => {
     const sessionSendMessage = vi.fn(async () => ({ ok: true }));
     const executor = createExecutor({ sessionSendMessage });
@@ -430,7 +539,6 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionSendMessage).toHaveBeenCalledWith(expect.objectContaining({
       permissionModeOverride: 'read-only',
       callerSurface: 'agent',
-      callerPermissionMode: 'read-only',
     }));
   });
 

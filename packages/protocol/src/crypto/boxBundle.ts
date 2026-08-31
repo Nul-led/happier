@@ -15,11 +15,45 @@ export function deriveBoxPublicKeyFromSeed(seed: Uint8Array): Uint8Array {
   return tweetnacl.box.keyPair.fromSecretKey(secretKey).publicKey;
 }
 
+/**
+ * Fixed nonzero X25519 scalar used only as a low-order probe. tweetnacl
+ * clamps scalars, and a clamped scalar is always a multiple of 8, so it
+ * annihilates every point of the curve's order-8 torsion subgroup: probing a
+ * low-order public key (including the all-zero key) yields the all-zero
+ * result, while a valid high-order public key never does.
+ */
+const BOX_BUNDLE_LOW_ORDER_PROBE_SECRET_SCALAR = deriveBoxSecretKeyFromSeed(
+  new TextEncoder().encode('happier.boxBundle.low-order-probe.v1'),
+);
+
+/**
+ * Validates an X25519 public key for use as a box-bundle key: exact 32-byte
+ * length and not a low-order point. Low-order keys let unrelated private
+ * scalars derive the same shared secret, defeating unique key binding, so
+ * they are rejected on the cryptographic property rather than a blacklist.
+ */
+export function isValidBoxBundlePublicKey(publicKey: Uint8Array): boolean {
+  if (publicKey.length !== BOX_BUNDLE_PUBLIC_KEY_BYTES) return false;
+  try {
+    const probe = tweetnacl.scalarMult(BOX_BUNDLE_LOW_ORDER_PROBE_SECRET_SCALAR, publicKey);
+    return probe.some((byte) => byte !== 0);
+  } catch {
+    return false;
+  }
+}
+
 export function sealBoxBundle(params: {
   plaintext: Uint8Array;
   recipientPublicKey: Uint8Array;
   randomBytes: (length: number) => Uint8Array;
 }): Uint8Array {
+  if (params.recipientPublicKey.length !== BOX_BUNDLE_PUBLIC_KEY_BYTES) {
+    throw new Error(`Invalid recipient public key length: ${params.recipientPublicKey.length}`);
+  }
+  if (!isValidBoxBundlePublicKey(params.recipientPublicKey)) {
+    throw new Error('Invalid recipient public key: low-order X25519 public keys are rejected');
+  }
+
   const ephSecretKey = params.randomBytes(tweetnacl.box.secretKeyLength);
   if (ephSecretKey.length !== tweetnacl.box.secretKeyLength) {
     throw new Error(`Invalid ephemeral secret key length: ${ephSecretKey.length}`);
@@ -55,6 +89,10 @@ export function openBoxBundle(params: {
   const ephemeralPublicKey = bundle.slice(0, BOX_BUNDLE_PUBLIC_KEY_BYTES);
   const nonce = bundle.slice(BOX_BUNDLE_PUBLIC_KEY_BYTES, BOX_BUNDLE_PUBLIC_KEY_BYTES + BOX_BUNDLE_NONCE_BYTES);
   const boxed = bundle.slice(BOX_BUNDLE_PUBLIC_KEY_BYTES + BOX_BUNDLE_NONCE_BYTES);
+
+  // A low-order embedded ephemeral key forces a publicly computable shared
+  // secret; reject before any plaintext could be produced.
+  if (!isValidBoxBundlePublicKey(ephemeralPublicKey)) return null;
 
   const tryOpen = (secretKey: Uint8Array): Uint8Array | null => {
     try {

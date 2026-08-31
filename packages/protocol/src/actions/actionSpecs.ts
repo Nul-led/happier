@@ -366,8 +366,8 @@ import {
   SessionHandoffPrepareTargetResumeRequestSchema,
   SessionHandoffPrepareTargetResumeResponseSchema,
   SessionHandoffStatusGetRequestSchema,
-  SessionHandoffWorkspaceTransferSchema,
 } from '../sessions/control/handoff/handoffSchemas.js';
+import { HandoffWorkspaceActionV1Schema } from '../sessions/control/handoff/workspaceSyncSchemas.js';
 import { SessionContinueWithReplayRpcParamsSchema } from '../sessions/continueWithReplay.js';
 import { RPC_METHODS, SESSION_RPC_METHODS } from '../rpc/methods.js';
 import { resolveActionBackendTargetSelection } from './resolveActionBackendTargetSelection.js';
@@ -1274,7 +1274,10 @@ const SessionHandoffInputSchema = z.object({
   targetMachineId: z.string().min(1).optional(),
   targetPath: z.string().min(1).optional(),
   targetSessionStorageMode: z.enum(['direct', 'persisted']).optional(),
-  workspaceTransfer: SessionHandoffWorkspaceTransferSchema.optional(),
+  workspaceAction: HandoffWorkspaceActionV1Schema.optional(),
+  workspaceSyncSourceWorkspaceRefId: z.string().trim().min(1).max(512).optional(),
+  workspaceSyncTargetWorkspaceRefId: z.string().trim().min(1).max(512).optional(),
+  workspaceSyncSettingsVersion: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
 }).passthrough();
 
 const SessionSpawnNewInputSchema = SessionSpawnNewInputV2Schema;

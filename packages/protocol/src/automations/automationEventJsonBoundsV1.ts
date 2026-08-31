@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
-import { defineProtocolJsonValue } from '../plugins/actions/protocolComposableSchema.js';
+import {
+  defineProtocolJsonValue,
+  defineProtocolString,
+} from '../plugins/actions/protocolComposableSchema.js';
 import type { PluginJsonValueV2 } from '../plugins/contributions/publicTypes.js';
 
 export const MAX_AUTOMATION_EVENT_PAYLOAD_UTF8_BYTES = 64 * 1024;
@@ -8,6 +11,20 @@ export const MAX_AUTOMATION_SOURCE_CONFIG_UTF8_BYTES = 64 * 1024;
 export const MAX_AUTOMATION_SOURCE_DISPLAY_LABEL_CODE_POINTS = 256;
 export const MAX_AUTOMATION_SOURCE_OR_OCCURRENCE_ID_UTF8_BYTES = 512;
 export const MAX_AUTOMATION_REPLY_CONTEXT_UTF8_BYTES = 64 * 1024;
+
+const AUTOMATION_SOURCE_SELECTOR_ID_V1_PATTERN = '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
+
+/** Portable source-selector identity used by declaration and Action schemas. */
+export const AutomationSourceSelectorIdV1ProtocolSchema = defineProtocolString({
+  pattern: AUTOMATION_SOURCE_SELECTOR_ID_V1_PATTERN,
+});
+export const AutomationSourceSelectorIdV1Schema = z.string().regex(
+  new RegExp(AUTOMATION_SOURCE_SELECTOR_ID_V1_PATTERN, 'u'),
+  'Source selectors must be canonical lowercase RFC 4122 UUID-v4 values',
+).brand<'AutomationSourceSelectorIdV1'>();
+export type AutomationSourceSelectorIdV1 = z.infer<typeof AutomationSourceSelectorIdV1Schema>;
+export const AutomationSourceSelectorIdV1JsonSchema =
+  AutomationSourceSelectorIdV1ProtocolSchema.jsonSchema;
 
 const UTF8_ENCODER = new TextEncoder();
 

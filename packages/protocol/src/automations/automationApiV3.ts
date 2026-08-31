@@ -14,7 +14,7 @@ import {
   AutomationEventSourceStatusV1Schema,
   MAX_AUTOMATION_STORED_ENVELOPE_UTF8_BYTES,
 } from './automationEventV1.js';
-import { AutomationEventPositiveSafeIntegerV1Schema } from './automationEventDeclarationV1.js';
+import { AutomationEventPositiveSafeIntegerV1Schema } from './automationColumnBoundsV1.js';
 import {
   AutomationEventSourceCatalogStatusStateV1Schema,
   OPAQUE_CURSOR_SCHEMA,

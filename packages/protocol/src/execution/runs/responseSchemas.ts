@@ -140,11 +140,6 @@ export const ExecutionRunGetResponseSchema = z.object({
 }).passthrough();
 export type ExecutionRunGetResponse = z.infer<typeof ExecutionRunGetResponseSchema>;
 
-const ExecutionRunWaitTerminalRunSchema = z.object({
-  runId: z.string().min(1),
-  status: ExecutionRunTerminalStatusSchema,
-}).strict();
-
 /**
  * One public observation disposition for `execution.run.wait` and optional
  * `execution.run.start({ waitForCompletion: true })` composition. It says
@@ -153,7 +148,7 @@ const ExecutionRunWaitTerminalRunSchema = z.object({
 const ExecutionRunWaitCompletedResultSchema = z.object({
   ok: z.literal(true),
   status: ExecutionRunTerminalStatusSchema,
-  result: z.object({ run: ExecutionRunWaitTerminalRunSchema }).strict(),
+  result: ExecutionRunGetResponseSchema,
 }).strict().superRefine((value, ctx) => {
   if (value.result.run.status !== value.status) {
     ctx.addIssue({

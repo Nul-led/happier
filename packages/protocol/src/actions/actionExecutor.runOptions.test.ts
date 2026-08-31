@@ -62,7 +62,26 @@ const RUN_START_BASE = {
 const EXECUTION_RUN_WAIT_SUCCEEDED = {
   ok: true,
   status: 'succeeded',
-  result: { run: { runId: 'run_1', status: 'succeeded' } },
+  result: {
+    run: {
+      runId: 'run_1',
+      callId: 'call_1',
+      sidechainId: 'call_1',
+      intent: 'task',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      permissionMode: 'read_only',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      status: 'succeeded',
+      startedAtMs: 1,
+      finishedAtMs: 2,
+      output: { summary: 'structured output', count: 0 },
+    },
+    latestToolResult: false,
+    structuredMeta: { kind: 'execution_result', payload: { accepted: false, count: 0 } },
+    structuredMetaArtifactRef: { artifactId: 'artifact_1' },
+  },
 } as const;
 
 describe('createActionExecutor run options parity (model + effort)', () => {
@@ -243,12 +262,8 @@ describe('createActionExecutor run options parity (model + effort)', () => {
     expect(executionRunStop).not.toHaveBeenCalled();
   });
 
-  it('projects a direct waiter payload through the same strict Action result schema', async () => {
-    const executionRunWait = vi.fn(async () => ({
-      ok: true as const,
-      status: 'succeeded',
-      result: { run: { runId: 'run_1', status: 'succeeded', unexpected: true } },
-    }));
+  it('preserves the canonical get result through the direct public waiter', async () => {
+    const executionRunWait = vi.fn(async () => EXECUTION_RUN_WAIT_SUCCEEDED);
     const executor = createActionExecutor(createDeps({ executionRunWait }));
 
     await expect(executor.execute(

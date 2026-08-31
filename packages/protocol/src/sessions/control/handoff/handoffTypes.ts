@@ -6,11 +6,5 @@ export type SessionHandoffStorageMode = z.infer<typeof SessionHandoffStorageMode
 export const SessionHandoffTransportStrategySchema = z.enum(['direct_peer', 'server_routed_stream']);
 export type SessionHandoffTransportStrategy = z.infer<typeof SessionHandoffTransportStrategySchema>;
 
-export const SessionHandoffConflictPolicySchema = z.enum(['create_sibling_copy', 'replace_existing']);
-export type SessionHandoffConflictPolicy = z.infer<typeof SessionHandoffConflictPolicySchema>;
-
-export const SessionHandoffWorkspaceTransferStrategySchema = z.enum(['transfer_snapshot', 'sync_changes']);
-export type SessionHandoffWorkspaceTransferStrategy = z.infer<typeof SessionHandoffWorkspaceTransferStrategySchema>;
-
 export const SessionHandoffRecoveryActionSchema = z.enum(['restart_on_source', 'keep_stopped']);
 export type SessionHandoffRecoveryAction = z.infer<typeof SessionHandoffRecoveryActionSchema>;

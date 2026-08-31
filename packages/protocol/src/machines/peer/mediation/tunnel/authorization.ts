@@ -120,6 +120,7 @@ export type PeerTcpTunnelRelayAuthorization = z.infer<typeof PeerTcpTunnelRelayA
 export type PeerTcpTunnelRelayAuthorizationTrustRootV1 = Readonly<{
   keyId: string;
   publicKeyBase64Url: string;
+  expiresAt?: number | null;
 }>;
 
 export type VerifyPeerTcpTunnelRelayAuthorizationV2Result =
@@ -168,7 +169,9 @@ export function verifyPeerTcpTunnelRelayAuthorizationV2(input: Readonly<{
   }
 
   const trustRoot = input.trustRoots.find((candidate) => candidate.keyId === authorization.signature.keyId);
-  if (!trustRoot) return { valid: false, reasonCode: 'unknown_key' };
+  if (!trustRoot || (trustRoot.expiresAt != null && input.nowMs >= trustRoot.expiresAt)) {
+    return { valid: false, reasonCode: 'unknown_key' };
+  }
 
   const publicKey = decodeBase64UrlStrict(trustRoot.publicKeyBase64Url);
   if (!publicKey || publicKey.byteLength !== tweetnacl.sign.publicKeyLength) {

@@ -157,7 +157,7 @@ export const MAX_TRIAGE_CONFIGURATION_TOKEN_UTF8_BYTES_V1 = 1024;
  * This is not a provider-cursor guess: changing the Action envelope, aggregate
  * result shape, lane batch, or row window forces the derivation to move.
  */
-export const MAX_TRIAGE_PAGING_TOKEN_UTF8_BYTES_V1 = 40_350;
+export const MAX_TRIAGE_PAGING_TOKEN_UTF8_BYTES_V1 = 40_322;
 /** Bounded non-secret failure detail. */
 export const MAX_TRIAGE_FAILURE_DETAIL_UTF8_BYTES_V1 = 256;
 /**

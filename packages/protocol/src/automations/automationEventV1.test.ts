@@ -36,6 +36,7 @@ import {
   isAutomationConversationResultDeliveryOwnedByCallerV1,
   MAX_AUTOMATION_EVENT_PAYLOAD_UTF8_BYTES,
   MAX_AUTOMATION_SOURCE_RESOLUTION_INPUT_UTF8_BYTES,
+  PluginEventAutomationHistoryGapResetActionInputV1JsonSchema,
   MAX_AUTOMATION_SOURCE_RETRY_AFTER_MS,
   PluginEventAutomationHistoryGapResetActionInputV1Schema,
   PluginEventAutomationHistoryGapResetActionResultV1Schema,
@@ -45,6 +46,7 @@ import {
   isAutomationEventSourcesListPageProgressingV1,
   validateAutomationEventFilterAgainstPayloadSchemaV1,
 } from './automationEventV1.js';
+import { compilePluginJsonSchema } from '../plugins/actions/jsonSchemaValidation.js';
 import {
   AutomationEventAdmitItemResultV1Schema,
   AutomationEventSourcesListResultV1Schema,
@@ -423,6 +425,26 @@ describe('Automation event V1 contracts', () => {
       kind: 'baselined',
       cursor: 'must-not-leak',
     }).success).toBe(false);
+  });
+
+  it('admits the same history-gap reset input through its executable and declared Action schemas', () => {
+    const validateDeclaredInput = compilePluginJsonSchema(
+      PluginEventAutomationHistoryGapResetActionInputV1JsonSchema,
+    );
+    const valid = {
+      automationId: 'automation-1',
+      triggerId,
+      triggerRevision,
+      sourceSelectorId,
+    };
+    const oversizedTrigger = { ...valid, triggerId: 'x'.repeat(192) };
+    const paddedTrigger = { ...valid, triggerId: ' trigger-1 ' };
+
+    expect(validateDeclaredInput(valid)).toBe(true);
+    expect(validateDeclaredInput(oversizedTrigger)).toBe(false);
+    expect(validateDeclaredInput(paddedTrigger)).toBe(true);
+    expect(PluginEventAutomationHistoryGapResetActionInputV1Schema.parse(paddedTrigger))
+      .toEqual({ ...valid, triggerId: 'trigger-1' });
   });
 
   it('uses the one bounded filter grammar and evaluates absent/mismatched fields without coercion', () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { AUTOMATION_INT_COLUMN_MAX } from './automationColumnBoundsV1.js';
-import { AutomationEventPositiveSafeIntegerV1Schema } from './automationEventDeclarationV1.js';
+import { AutomationEventPositiveSafeIntegerV1Schema } from './automationColumnBoundsV1.js';
 import { AutomationPluginEventTriggerSchema } from './automationApiV3.js';
 
 import { compilePluginJsonSchema } from '../plugins/actions/jsonSchemaValidation.js';

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES,
+  ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES,
   ACCOUNT_DIRECTORY_ASSERTION_SIGNING_DOMAIN_V1,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1,
   AccountDirectoryCapabilitiesSchema,
@@ -16,6 +18,8 @@ import {
   AccountDirectoryPreferredHomePatchResponseV1Schema,
   AccountDirectoryRouteErrorResponseV1Schema,
   HomeConnectionDescriptorV1Schema,
+  HomeDeviceApprovalRequestV1Schema,
+  HomeDeviceApprovalListV1Schema,
   HomeLoginAssertionRequestV1Schema,
   HomeLoginAssertionResponseV1Schema,
   HomeLoginAssertionV1Schema,
@@ -23,7 +27,10 @@ import {
   HomeLoginRedemptionResultV1Schema,
   HomeLoginRedemptionResponseV1Schema,
   createHomeLoginAssertionSigningBytesV1,
+  createHomeLoginRequesterFingerprintV1,
 } from './accountDirectory.js';
+import { BOX_BUNDLE_MIN_BYTES } from '../crypto/boxBundle.js';
+import { encodeBase64 } from '../crypto/base64.js';
 
 const HTTPS_DESCRIPTOR = {
   v: 1 as const,
@@ -40,7 +47,7 @@ const IROH_DESCRIPTOR = {
   revision: 7,
   endpoints: [{
     kind: 'iroh' as const,
-    endpointId: 'endpoint-home-iroh',
+    endpointId: 'b'.repeat(64),
     relayUrls: ['https://relay.example.test'],
     directAddresses: ['192.0.2.10:443'],
   }],
@@ -53,7 +60,7 @@ const MIXED_DESCRIPTOR = {
   revision: 3,
   endpoints: [
     { kind: 'https' as const, url: 'https://home.example.test/base' },
-    { kind: 'iroh' as const, endpointId: 'endpoint-home-mixed' },
+    { kind: 'iroh' as const, endpointId: 'c'.repeat(64) },
   ],
 };
 
@@ -71,6 +78,61 @@ const ASSERTION = {
 };
 
 describe('Account Directory protocol DTOs', () => {
+  it('owns the token-only credential envelope bound and requester fingerprint', () => {
+    expect(ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES).toBe(4_096 + 12);
+    expect(ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES).toBe(
+      ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES + BOX_BUNDLE_MIN_BYTES,
+    );
+
+    const maximumSealedEnvelope = encodeBase64(
+      new Uint8Array(ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES).fill(1),
+      'base64url',
+    );
+    const oversizedSealedEnvelope = encodeBase64(
+      new Uint8Array(ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES + 1).fill(1),
+      'base64url',
+    );
+    const response = {
+      v: 1 as const,
+      homeServerIdentityId: ASSERTION.audienceHomeServerIdentityId,
+      sealedHomeTokenBase64Url: maximumSealedEnvelope,
+      issuedAtMs: ASSERTION.issuedAtMs,
+      expiresAtMs: ASSERTION.expiresAtMs,
+    };
+    expect(HomeLoginRedemptionResponseV1Schema.safeParse(response).success).toBe(true);
+    expect(HomeLoginRedemptionResponseV1Schema.safeParse({
+      ...response,
+      sealedHomeTokenBase64Url: oversizedSealedEnvelope,
+    }).success).toBe(false);
+
+    expect(createHomeLoginRequesterFingerprintV1(
+      encodeBase64(new Uint8Array(32).fill(1), 'base64'),
+    )).toBe('manQ-MZqE-KNsy-FbcS');
+  });
+
+  it('owns the strict Home approval-list contract without an arbitrary cardinality cap', () => {
+    const item = {
+      approvalId: 'approval-1',
+      accountId: 'account-1',
+      flow: 'account_assertion' as const,
+      requesterBoxPublicKeyBase64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      issuerServerIdentityId: 'srv_account_service',
+      issuerSubjectId: 'account-1',
+      deviceLabel: 'Phone',
+      status: 'pending' as const,
+      expiresAtMs: ASSERTION.expiresAtMs,
+      decidedAtMs: null,
+    };
+
+    expect(HomeDeviceApprovalRequestV1Schema.parse(item)).toEqual(item);
+    expect(HomeDeviceApprovalRequestV1Schema.safeParse({ ...item, flow: 'direct_qr' }).success).toBe(false);
+    expect(HomeDeviceApprovalRequestV1Schema.safeParse({ ...item, unexpected: true }).success).toBe(false);
+    expect(HomeDeviceApprovalListV1Schema.parse(Array.from({ length: 101 }, (_, index) => ({
+      ...item,
+      approvalId: `approval-${index}`,
+    })))).toHaveLength(101);
+  });
+
   it('accepts HTTPS-only, Iroh-only, and mixed Home descriptors', () => {
     expect(HomeConnectionDescriptorV1Schema.parse(HTTPS_DESCRIPTOR)).toEqual(HTTPS_DESCRIPTOR);
     expect(HomeConnectionDescriptorV1Schema.parse(IROH_DESCRIPTOR)).toEqual(IROH_DESCRIPTOR);
@@ -96,6 +158,16 @@ describe('Account Directory protocol DTOs', () => {
     expect(HomeConnectionDescriptorV1Schema.safeParse({
       ...HTTPS_DESCRIPTOR,
       endpoints: [{ kind: 'https', url: 'https://home.example.test', unexpected: true }],
+    }).success).toBe(false);
+    // The composed Iroh variant keeps the canonical connectivity module's
+    // strict/unknown-field rejection inside the outer descriptor union.
+    expect(HomeConnectionDescriptorV1Schema.safeParse({
+      ...HTTPS_DESCRIPTOR,
+      endpoints: [{ ...IROH_DESCRIPTOR.endpoints[0], unexpected: true }],
+    }).success).toBe(false);
+    expect(HomeConnectionDescriptorV1Schema.safeParse({
+      ...HTTPS_DESCRIPTOR,
+      endpoints: [{ ...IROH_DESCRIPTOR.endpoints[0], v: 1 }],
     }).success).toBe(false);
   });
 
@@ -155,6 +227,16 @@ describe('Account Directory protocol DTOs', () => {
       homes: [homeEntry],
       preferredHomeServerIdentityId: HTTPS_DESCRIPTOR.homeServerIdentityId,
     })).toBeTruthy();
+    expect(AccountDirectoryHomesResponseV1Schema.safeParse({
+      v: 1,
+      homes: [homeEntry],
+      preferredHomeServerIdentityId: null,
+    }).success).toBe(false);
+    expect(AccountDirectoryHomesResponseV1Schema.safeParse({
+      v: 1,
+      homes: [{ ...homeEntry, preferred: false }],
+      preferredHomeServerIdentityId: HTTPS_DESCRIPTOR.homeServerIdentityId,
+    }).success).toBe(false);
     expect(AccountDirectoryHomePutRequestV1Schema.safeParse({
       v: 1,
       accountId: 'caller-supplied-account',
@@ -172,6 +254,35 @@ describe('Account Directory protocol DTOs', () => {
     expect(me.linkedAuthenticationMethods).toHaveLength(1);
   });
 
+  it('parses directories beyond the former 256-Home product quota', () => {
+    const homes = Array.from({ length: 257 }, (_, index) => {
+      const suffix = index.toString().padStart(3, '0');
+      const homeServerIdentityId = `srv_home_${suffix}`;
+      const canonicalServerUrl = `https://home-${suffix}.example.test`;
+      return {
+        v: 1 as const,
+        homeServerIdentityId,
+        canonicalServerUrl,
+        label: `Home ${suffix}`,
+        connectionDescriptor: {
+          v: 1 as const,
+          homeServerIdentityId,
+          canonicalServerUrl,
+          revision: 1,
+          endpoints: [{ kind: 'https' as const, url: canonicalServerUrl }],
+        },
+        createdAtMs: 1_700_000_000_000 + index,
+        updatedAtMs: 1_700_000_000_000 + index,
+        preferred: index === 0,
+      };
+    });
+    expect(AccountDirectoryHomesResponseV1Schema.parse({
+      v: 1,
+      homes,
+      preferredHomeServerIdentityId: homes[0]!.homeServerIdentityId,
+    }).homes).toHaveLength(257);
+  });
+
   it('pins link issuer facts and gives relinking an explicit request field', () => {
     const link = {
       v: 1 as const,
@@ -185,6 +296,12 @@ describe('Account Directory protocol DTOs', () => {
     expect(AccountDirectoryLinkDeleteRequestV1Schema.parse({ v: 1 })).toEqual({ v: 1 });
     expect(AccountDirectoryLinkPutRequestV1Schema.safeParse({ ...link, accountId: 'account-1' }).success).toBe(false);
     expect(AccountDirectoryLinkV1Schema.safeParse({ ...link, issuerSigningKeyId: 'not-a-sha256-key-id' }).success).toBe(false);
+    // The pinned issuer key must be canonical unpadded base64url — padded or
+    // non-canonical encodings are rejected, matching the capability projection.
+    expect(AccountDirectoryLinkV1Schema.safeParse({
+      ...link,
+      issuerSigningPublicKeyBase64Url: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+    }).success).toBe(false);
   });
 
   it('validates assertion request/response and sealed token redemption DTOs', () => {
@@ -198,13 +315,22 @@ describe('Account Directory protocol DTOs', () => {
     expect(HomeLoginRedemptionRequestV1Schema.parse({ v: 1, assertion: ASSERTION })).toEqual({ v: 1, assertion: ASSERTION });
     const authorized = {
       v: 1 as const,
-      outcome: 'authorized' as const,
       homeServerIdentityId: ASSERTION.audienceHomeServerIdentityId,
       sealedHomeTokenBase64Url: 'A'.repeat(64),
       issuedAtMs: ASSERTION.issuedAtMs,
       expiresAtMs: ASSERTION.expiresAtMs,
     };
+    // Authorized redemption is the locked exact-five response shape. Approval is
+    // a separate strict outcome; mixed payloads fail closed in the union.
     expect(HomeLoginRedemptionResponseV1Schema.parse(authorized)).toEqual(authorized);
+    expect(HomeLoginRedemptionResultV1Schema.parse(authorized)).toEqual(authorized);
+    expect(Object.keys(HomeLoginRedemptionResponseV1Schema.parse(authorized)).sort()).toEqual([
+      'expiresAtMs',
+      'homeServerIdentityId',
+      'issuedAtMs',
+      'sealedHomeTokenBase64Url',
+      'v',
+    ]);
     expect(HomeLoginRedemptionResultV1Schema.parse({
       v: 1,
       outcome: 'approval_required',
@@ -212,10 +338,32 @@ describe('Account Directory protocol DTOs', () => {
       approvalId: 'approval-1',
       deviceLabel: null,
       expiresAtMs: ASSERTION.expiresAtMs,
-    })).toBeTruthy();
+    })).toMatchObject({ outcome: 'approval_required', approvalId: 'approval-1' });
+    expect(HomeLoginRedemptionResultV1Schema.safeParse({
+      v: 1,
+      outcome: 'approval_required',
+      homeServerIdentityId: ASSERTION.audienceHomeServerIdentityId,
+      approvalId: 'approval-1',
+      deviceLabel: null,
+      expiresAtMs: ASSERTION.expiresAtMs,
+      sealedHomeTokenBase64Url: authorized.sealedHomeTokenBase64Url,
+    }).success).toBe(false);
+    // Mixed/unknown authority fields fail closed and success never carries a discriminator or data key.
+    expect(HomeLoginRedemptionResponseV1Schema.safeParse({
+      ...authorized,
+      outcome: 'authorized',
+    }).success).toBe(false);
+    expect(HomeLoginRedemptionResponseV1Schema.safeParse({
+      ...authorized,
+      approvalId: 'approval-1',
+    }).success).toBe(false);
     expect(HomeLoginRedemptionResponseV1Schema.safeParse({
       ...authorized,
       dataKey: 'must-not-cross-this-boundary',
+    }).success).toBe(false);
+    expect(HomeLoginRedemptionResultV1Schema.safeParse({
+      ...authorized,
+      outcome: 'unknown',
     }).success).toBe(false);
   });
 
@@ -224,6 +372,10 @@ describe('Account Directory protocol DTOs', () => {
     expect(HomeLoginAssertionV1Schema.safeParse({ ...ASSERTION, expiresAtMs: ASSERTION.issuedAtMs + 300_001 }).success).toBe(false);
     expect(HomeLoginAssertionV1Schema.safeParse({ ...ASSERTION, signatureBase64Url: 'A' }).success).toBe(false);
     expect(HomeLoginAssertionV1Schema.safeParse({ ...ASSERTION, clientBoxPublicKeyBase64: 'A' }).success).toBe(false);
+    expect(HomeLoginAssertionV1Schema.safeParse({
+      ...ASSERTION,
+      clientBoxPublicKeyBase64: ASSERTION.clientBoxPublicKeyBase64.replace(/=+$/u, ''),
+    }).success).toBe(false);
     expect(HomeLoginAssertionV1Schema.safeParse({ ...ASSERTION, purpose: 'wrong-purpose' }).success).toBe(false);
     expect(HomeLoginAssertionV1Schema.safeParse({ ...ASSERTION, audienceHomeServerIdentityId: 'srv_other' }).success).toBe(true);
   });
@@ -239,6 +391,9 @@ describe('Account Directory protocol DTOs', () => {
     expect(ACCOUNT_DIRECTORY_ERROR_CODES_V1).toMatchObject({ invalidAssertionSignature: 'invalid_assertion_signature' });
     expect(AccountDirectoryRouteErrorResponseV1Schema.parse({ error: 'invalid_assertion_signature' })).toEqual({
       error: 'invalid_assertion_signature',
+    });
+    expect(AccountDirectoryRouteErrorResponseV1Schema.parse({ error: 'rate_limited' })).toEqual({
+      error: 'rate_limited',
     });
     expect(AccountDirectoryRouteErrorResponseV1Schema.safeParse({ error: 'invalid_token', token: 'secret' }).success).toBe(false);
   });

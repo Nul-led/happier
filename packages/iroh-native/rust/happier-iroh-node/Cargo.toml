@@ -1,0 +1,28 @@
+[package]
+name = "happier-iroh-node"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "happier_iroh_node"
+crate-type = ["cdylib"]
+
+[features]
+test-relay-fixture = ["happier-iroh-native/test-relay-fixture"]
+
+[dependencies]
+# Lifecycle-only Node/Bun binding over the existing public JSON C ABI. The
+# rlib is linked into this cdylib, so the exported
+# `happier_iroh_native_*_json` symbols — and the one process-wide tokio
+# runtime / NativeRuntime / EndpointManager behind them — stay the single
+# owner shared with every other host binding.
+happier-iroh-native = { path = "../happier-iroh-native" }
+# Keep the NAPI stack pinned to the exact versions `packages/desktop-native`
+# resolves, so both addons stay on one audited release line.
+napi = { version = "3.12.1", default-features = false, features = ["napi8"] }
+napi-derive = "3.6.3"
+
+[build-dependencies]
+napi-build = "2.4.1"

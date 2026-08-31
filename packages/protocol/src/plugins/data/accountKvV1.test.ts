@@ -10,6 +10,8 @@ import {
   PluginAccountStorageRowV1Schema,
   assertPluginAccountKvExpectedVersionV1,
   assertPluginAccountStorageEnvelopeForModeV1,
+  commitPluginAccountKvMutationWithRebaseV1,
+  clonePluginAccountKvRowV1,
   createEmptyPluginAccountKvRowV1,
   deletePluginAccountKvEntryV1,
   listPluginAccountKvEntriesV1,
@@ -204,6 +206,121 @@ describe('Plugin Account KV v1', () => {
 });
 
 describe('Plugin Account KV logical-key row algebra', () => {
+  it('rebases one aggregate-row conflict only while every touched key version is unchanged', async () => {
+    const initial = PluginAccountStorageRowV1Schema.parse({
+      v: 1,
+      values: {
+        target: { version: 2, value: 'before' },
+        other: { version: 0, value: 'old-other' },
+      },
+    });
+    const pending = clonePluginAccountKvRowV1(initial);
+    setPluginAccountKvEntryV1(
+      pending,
+      'target',
+      'mine',
+      assertPluginAccountKvExpectedVersionV1(pending, 'target', 2),
+    );
+    const latest = PluginAccountStorageRowV1Schema.parse({
+      v: 1,
+      values: {
+        target: { version: 2, value: 'before' },
+        other: { version: 1, value: 'new-other' },
+      },
+    });
+    const writes: Array<Readonly<{ revision: number; row: unknown }>> = [];
+
+    await expect(commitPluginAccountKvMutationWithRebaseV1({
+      initialSnapshot: { revision: 4, row: initial },
+      pendingRow: pending,
+      touchedKeys: ['target'],
+      assertCurrent: () => undefined,
+      readLatest: async () => ({ revision: 5, row: latest }),
+      write: async (snapshot, row) => {
+        writes.push({ revision: snapshot.revision, row });
+        return writes.length === 1 ? 'conflict' : 'updated';
+      },
+    })).resolves.toBeUndefined();
+
+    expect(writes).toEqual([
+      { revision: 4, row: pending },
+      {
+        revision: 5,
+        row: {
+          v: 1,
+          values: {
+            target: { version: 3, value: 'mine' },
+            other: { version: 1, value: 'new-other' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('rejects a physical-row retry when a touched key version changed', async () => {
+    const initial = PluginAccountStorageRowV1Schema.parse({
+      v: 1,
+      values: { target: { version: 0, value: 'before' } },
+    });
+    const pending = clonePluginAccountKvRowV1(initial);
+    setPluginAccountKvEntryV1(
+      pending,
+      'target',
+      'mine',
+      assertPluginAccountKvExpectedVersionV1(pending, 'target', 0),
+    );
+
+    await expect(commitPluginAccountKvMutationWithRebaseV1({
+      initialSnapshot: { revision: 2, row: initial },
+      pendingRow: pending,
+      touchedKeys: ['target'],
+      assertCurrent: () => undefined,
+      readLatest: async () => ({
+        revision: 3,
+        row: PluginAccountStorageRowV1Schema.parse({
+          v: 1,
+          values: { target: { version: 1, value: 'someone-else' } },
+        }),
+      }),
+      write: async () => 'conflict',
+    })).rejects.toMatchObject({ code: 'plugin_account_kv_conflict' });
+  });
+
+  it('does not reread or retry after the caller lifetime is cancelled by a conflicting write', async () => {
+    const initial = PluginAccountStorageRowV1Schema.parse({ v: 1, values: {} });
+    const pending = clonePluginAccountKvRowV1(initial);
+    setPluginAccountKvEntryV1(
+      pending,
+      'target',
+      'mine',
+      assertPluginAccountKvExpectedVersionV1(pending, 'target', 'absent'),
+    );
+    let current = true;
+    let reads = 0;
+    let writes = 0;
+
+    await expect(commitPluginAccountKvMutationWithRebaseV1({
+      initialSnapshot: { revision: 0, row: initial },
+      pendingRow: pending,
+      touchedKeys: ['target'],
+      assertCurrent: () => {
+        if (!current) throw new Error('caller-retired');
+      },
+      readLatest: async () => {
+        reads += 1;
+        return { revision: 1, row: initial };
+      },
+      write: async () => {
+        writes += 1;
+        current = false;
+        return 'conflict';
+      },
+    })).rejects.toThrow('caller-retired');
+
+    expect(writes).toBe(1);
+    expect(reads).toBe(0);
+  });
+
   it('advances one key version per write and keeps a deleted key revivable at its next version', () => {
     const row = createEmptyPluginAccountKvRowV1();
 

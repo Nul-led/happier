@@ -88,12 +88,14 @@ import { AutomationAccountCurrentnessWitnessV1Schema } from './automationAccount
 export { AutomationIdV1Schema };
 export type { AutomationIdV1 };
 import {
-  AutomationEventPositiveSafeIntegerV1Schema as POSITIVE_SAFE_INTEGER_SCHEMA,
   AutomationObservationTransportKindV1Schema,
   AutomationQualifiedPluginContributionRefV1Schema,
   AutomationSourceSelectorIdV1Schema,
   type AutomationSourceSelectorIdV1,
 } from './automationEventDeclarationV1.js';
+import {
+  AutomationEventPositiveSafeIntegerV1Schema as POSITIVE_SAFE_INTEGER_SCHEMA,
+} from './automationColumnBoundsV1.js';
 import {
   AutomationEventPayloadV1Schema,
   AutomationEventReplyContextV1Schema,

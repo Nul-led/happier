@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest';
 import tweetnacl from 'tweetnacl';
 
 import {
+  inspectTerminalProvisioningV3Payload,
   isTerminalProvisioningV3Payload,
   openTerminalProvisioningV2Response,
   openTerminalProvisioningV3Response,
   openTerminalProvisioningV3Payload,
   openTerminalProvisioningV2Payload,
+  resolveTerminalProvisioningVariantV2,
   sealTerminalProvisioningV2TokenOnlyPayload,
   sealTerminalProvisioningV3TokenOnlyPayload,
   sealTerminalProvisioningV3Payload,
@@ -16,6 +18,7 @@ import {
   TERMINAL_PROVISIONING_V2_VERSION_BYTE,
 } from './terminalProvisioningV2.js';
 import { sealBoxBundle } from './boxBundle.js';
+import { encodeBase64 } from './base64.js';
 
 function deterministicRandomBytesFactory(): (length: number) => Uint8Array {
   let counter = 1;
@@ -142,6 +145,25 @@ describe('terminalProvisioningV3', () => {
     expiresAtMs: 61_000,
   } as const;
 
+  it('keeps the shipped token-only and data-key bytes stable for fixed v3 vectors', () => {
+    const dataKeyPayload = sealTerminalProvisioningV3Payload({
+      contentPrivateKey: new Uint8Array(32).fill(7),
+      ...context,
+      randomBytes: deterministicRandomBytesFactory(),
+    });
+    const tokenOnlyPayload = sealTerminalProvisioningV3TokenOnlyPayload({
+      ...context,
+      randomBytes: deterministicRandomBytesFactory(),
+    });
+
+    expect(encodeBase64(dataKeyPayload)).toBe(
+      'SFBWMwejfLwUIJPIt1XcGxDobLQmN0rRaqhT7QvfwLK4bRx8ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4A4QhrGjtxxNUAplUSOdxF+gWcqRefGz0wq3Mu8kAJwc5bu5qAHEnuHAX6kYACRJzIuHULCLyBM12KEo1/EJcyEzNXClcNP3k8OUxbqtH4Y6o',
+    );
+    expect(encodeBase64(tokenOnlyPayload)).toBe(
+      'SFBWMwejfLwUIJPIt1XcGxDobLQmN0rRaqhT7QvfwLK4bRx8ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4a56BVuZ6I82ZK5AygItuqumgtMGeXSWkfcLcvYBzG5CAqSS1aQha9vKjylaWnogZgA==',
+    );
+  });
+
   it('authenticates the sealed content key with the QR-only secret', () => {
     const contentPrivateKey = new Uint8Array(32).fill(7);
     const payload = sealTerminalProvisioningV3Payload({
@@ -233,5 +255,120 @@ describe('terminalProvisioningV3', () => {
       ...context,
       nowMs: 2_000,
     })).toBeNull();
+  });
+
+  it('rejects a dataKey response sealed for a different recipient key', () => {
+    const payload = sealTerminalProvisioningV3Payload({
+      contentPrivateKey: new Uint8Array(32).fill(7),
+      ...context,
+      randomBytes: deterministicRandomBytesFactory(),
+    });
+    expect(openTerminalProvisioningV3Payload({
+      payload,
+      recipientSecretKeyOrSeed: new Uint8Array(32).fill(5),
+      ...context,
+      nowMs: 2_000,
+    })).toBeNull();
+  });
+
+  it('fails closed on invalid pairing context lengths and validity windows', () => {
+    const payload = sealTerminalProvisioningV3TokenOnlyPayload({
+      ...context,
+      randomBytes: deterministicRandomBytesFactory(),
+    });
+    const base = {
+      payload,
+      recipientSecretKeyOrSeed: terminalSecretKey,
+      terminalEphemeralPublicKey: terminalPublicKey,
+      createdAtMs: 1_000,
+      expiresAtMs: 61_000,
+      nowMs: 2_000,
+    } as const;
+    expect(openTerminalProvisioningV3Response({ ...base, pairingSecret: new Uint8Array(31) })).toBeNull();
+    expect(openTerminalProvisioningV3Response({ ...base, terminalEphemeralPublicKey: new Uint8Array(31) })).toBeNull();
+    expect(openTerminalProvisioningV3Response({ ...base, createdAtMs: 61_000, expiresAtMs: 61_000 })).toBeNull();
+    expect(openTerminalProvisioningV3Response({ ...base, createdAtMs: Number.NaN })).toBeNull();
+  });
+
+  it('refuses to seal data-key material of the wrong length or an inverted validity window', () => {
+    expect(() => sealTerminalProvisioningV3Payload({
+      contentPrivateKey: new Uint8Array(31),
+      ...context,
+      randomBytes: deterministicRandomBytesFactory(),
+    })).toThrow();
+    expect(() => sealTerminalProvisioningV3Payload({
+      contentPrivateKey: new Uint8Array(32).fill(7),
+      ...context,
+      createdAtMs: 2_000,
+      expiresAtMs: 1_000,
+      randomBytes: deterministicRandomBytesFactory(),
+    })).toThrow();
+  });
+});
+
+describe('terminalProvisioningV3 structural inspection', () => {
+  const inspectorContext = {
+    terminalEphemeralPublicKey: tweetnacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(9)).publicKey,
+    pairingSecret: new Uint8Array(32).fill(11),
+    createdAtMs: 1_000,
+    expiresAtMs: 61_000,
+  } as const;
+
+  it('reports the canonical v3 structure of both variants without authenticating', () => {
+    const dataKeyPayload = sealTerminalProvisioningV3Payload({
+      contentPrivateKey: new Uint8Array(32).fill(7),
+      ...inspectorContext,
+      randomBytes: deterministicRandomBytesFactory(),
+    });
+    const tokenOnlyPayload = sealTerminalProvisioningV3TokenOnlyPayload({
+      ...inspectorContext,
+      randomBytes: deterministicRandomBytesFactory(),
+    });
+    expect(inspectTerminalProvisioningV3Payload(dataKeyPayload)).toEqual({ type: 'dataKey' });
+    expect(inspectTerminalProvisioningV3Payload(tokenOnlyPayload)).toEqual({ type: 'tokenOnly' });
+
+    // Structural inspection only: tampering the authentication tag keeps the
+    // declared structure, while authenticated opening fails closed.
+    const tamperedMac = dataKeyPayload.slice();
+    tamperedMac[tamperedMac.length - 1] ^= 1;
+    expect(inspectTerminalProvisioningV3Payload(tamperedMac)).toEqual({ type: 'dataKey' });
+    expect(openTerminalProvisioningV3Payload({
+      payload: tamperedMac,
+      recipientSecretKeyOrSeed: new Uint8Array(32).fill(9),
+      ...inspectorContext,
+      nowMs: 2_000,
+    })).toBeNull();
+  });
+
+  it('rejects truncated, extended, wrong-magic, and empty payloads', () => {
+    const payload = sealTerminalProvisioningV3TokenOnlyPayload({
+      ...inspectorContext,
+      randomBytes: deterministicRandomBytesFactory(),
+    });
+    const wrongMagic = payload.slice();
+    wrongMagic[0] ^= 0xff;
+    const extended = new Uint8Array(payload.length + 1);
+    extended.set(payload);
+
+    expect(inspectTerminalProvisioningV3Payload(wrongMagic)).toBeNull();
+    expect(inspectTerminalProvisioningV3Payload(payload.slice(1))).toBeNull();
+    expect(inspectTerminalProvisioningV3Payload(extended)).toBeNull();
+    expect(inspectTerminalProvisioningV3Payload(new Uint8Array(0))).toBeNull();
+    expect(isTerminalProvisioningV3Payload(wrongMagic)).toBe(false);
+  });
+});
+
+describe('terminalProvisioningVariantPolicy', () => {
+  it('resolves plain accounts to token-only regardless of material availability', () => {
+    expect(resolveTerminalProvisioningVariantV2({ encryptionMode: 'plain', dataKeyMaterialAvailable: true })).toBe('tokenOnly');
+    expect(resolveTerminalProvisioningVariantV2({ encryptionMode: 'plain', dataKeyMaterialAvailable: false })).toBe('tokenOnly');
+  });
+
+  it('resolves e2ee accounts with valid data-key material to dataKey', () => {
+    expect(resolveTerminalProvisioningVariantV2({ encryptionMode: 'e2ee', dataKeyMaterialAvailable: true })).toBe('dataKey');
+  });
+
+  it('fails closed for e2ee accounts without valid data-key material', () => {
+    expect(resolveTerminalProvisioningVariantV2({ encryptionMode: 'e2ee', dataKeyMaterialAvailable: false })).toBe('legacyProvisioningUnavailable');
   });
 });

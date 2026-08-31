@@ -2,22 +2,18 @@ import { z } from 'zod';
 
 import { PluginUiFallbackRefV1Schema } from '../contributions/ui/actions.js';
 import { PluginUiChannelV1Schema, PluginUiPlatformV1Schema } from '../contributions/ui/compatibility.js';
-
-const ExactRuntimeVersionSchema = z.string().trim().min(1).refine(
-  (value) => value !== '*' && !value.includes('x'),
-  { message: 'runtime compatibility versions must be exact' },
-);
+import { PluginUiExactRuntimeVersionV1Schema } from './artifactCompatibility.js';
 
 export const PluginReactNativeCompatibilityInputV1Schema = z.object({
   pluginId: z.string().trim().min(1),
   contributionId: z.string().trim().min(1),
   artifactDigest: z.string().trim().min(1),
-  hostAppVersion: ExactRuntimeVersionSchema,
-  hostUiApiVersion: ExactRuntimeVersionSchema,
-  reactVersion: ExactRuntimeVersionSchema,
-  reactNativeVersion: ExactRuntimeVersionSchema,
-  expoRuntimeVersion: ExactRuntimeVersionSchema.optional(),
-  hermesVersion: ExactRuntimeVersionSchema.optional(),
+  hostAppVersion: PluginUiExactRuntimeVersionV1Schema,
+  hostUiApiVersion: PluginUiExactRuntimeVersionV1Schema,
+  reactVersion: PluginUiExactRuntimeVersionV1Schema,
+  reactNativeVersion: PluginUiExactRuntimeVersionV1Schema,
+  expoRuntimeVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
+  hermesVersion: PluginUiExactRuntimeVersionV1Schema.optional(),
   platform: PluginUiPlatformV1Schema,
   channel: PluginUiChannelV1Schema,
   availableNativeCapabilities: z.array(z.string().trim().min(1)).default([]),

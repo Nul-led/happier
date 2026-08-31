@@ -84,7 +84,7 @@ export {
 } from './declarativeDocumentPreflightV1.js';
 export { parsePluginDeclarativeDocumentResourceBytesV1 } from './declarativeDocumentPreflightV1.js';
 
-const MAX_PLUGIN_DECLARATIVE_DOCUMENT_GENERATION_LENGTH_V1 = 256;
+export const MAX_PLUGIN_DECLARATIVE_DOCUMENT_GENERATION_LENGTH_V1 = 256;
 
 export type PluginDeclarativeDocumentNormalizationErrorCodeV1 =
   | 'plugin_declarative_identity_invalid'
@@ -168,7 +168,10 @@ export type PluginDeclarativeSettingsInventoryEntryV1 = Readonly<{
   secret: boolean;
 }>;
 
-export const PluginDeclarativeSettingsInventoryEntryV1Schema: z.ZodType<PluginDeclarativeSettingsInventoryEntryV1> = z.object({
+// Deliberately unannotated: the projected-model contract composes this schema
+// with `.extend`, and a `z.ZodType<T>` annotation would erase the object
+// internals (see providers/capabilities/v1.ts for the same ruling).
+export const PluginDeclarativeSettingsInventoryEntryV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
   id: asProtocolZod(PluginContributionLocalIdSchema),
   qualifiedId: z.string().trim().min(1).max(1_024),

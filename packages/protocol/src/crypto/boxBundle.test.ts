@@ -4,6 +4,9 @@ import { sha512 } from '@noble/hashes/sha512';
 import tweetnacl from 'tweetnacl';
 
 import {
+  BOX_BUNDLE_NONCE_BYTES,
+  BOX_BUNDLE_PUBLIC_KEY_BYTES,
+  isValidBoxBundlePublicKey,
   openBoxBundle,
   sealBoxBundle,
 } from './boxBundle.js';
@@ -19,6 +22,21 @@ function deterministicRandomBytesFactory(): (length: number) => Uint8Array {
     return out;
   };
 }
+
+function bytesFromHex(hex: string): Uint8Array {
+  return new Uint8Array(hex.match(/.{2}/gu)!.map((byte) => parseInt(byte, 16)));
+}
+
+// Published low-order X25519 u-coordinates (little-endian). Each encodes a
+// point of the curve's order-8 torsion subgroup (or the identity), which any
+// clamped scalar annihilates. Syntactically they are canonical 32-byte keys.
+const LOW_ORDER_PUBLIC_KEYS: ReadonlyArray<Readonly<{ name: string; bytes: Uint8Array }>> = [
+  { name: 'all-zero (order 1)', bytes: new Uint8Array(32) },
+  { name: 'u=1 (small order)', bytes: bytesFromHex('0100000000000000000000000000000000000000000000000000000000000000') },
+  { name: 'order-8 point', bytes: bytesFromHex('e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800') },
+  { name: 'order-8 point (negation)', bytes: bytesFromHex('5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157') },
+  { name: 'p-1 (order 2)', bytes: bytesFromHex('ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f') },
+];
 
 describe('boxBundle', () => {
   it('seals and opens a box bundle with recipient secret key', () => {
@@ -76,5 +94,51 @@ describe('boxBundle', () => {
       randomBytes: deterministicRandomBytesFactory(),
     });
     expect(openBoxBundle({ bundle, recipientSecretKeyOrSeed: new Uint8Array(10) })).toBeNull();
+  });
+
+  it('seals reject all-zero and representative low-order recipient public keys', () => {
+    const plaintext = new Uint8Array(32).fill(3);
+    for (const key of LOW_ORDER_PUBLIC_KEYS) {
+      expect(() => sealBoxBundle({
+        plaintext,
+        recipientPublicKey: key.bytes,
+        randomBytes: deterministicRandomBytesFactory(),
+      })).toThrowError(/recipient public key/i);
+    }
+  });
+
+  it('seals reject wrong-length recipient public keys', () => {
+    expect(() => sealBoxBundle({
+      plaintext: new Uint8Array(32).fill(3),
+      recipientPublicKey: new Uint8Array(31),
+      randomBytes: deterministicRandomBytesFactory(),
+    })).toThrowError(/recipient public key/i);
+  });
+
+  it('open rejects a low-order embedded ephemeral public key before any plaintext is returned', () => {
+    const victimKeyPair = tweetnacl.box.keyPair();
+    const lowOrderEphemeral = new Uint8Array(32);
+    const attackerSecretKey = new Uint8Array(32).fill(1);
+    const plaintext = new TextEncoder().encode('attacker-chosen plaintext');
+    const nonce = deterministicRandomBytesFactory()(tweetnacl.box.nonceLength);
+    // Attacker-side sealing against the low-order ephemeral point derives the
+    // same public (all-zero) shared secret the victim will derive, so the
+    // ciphertext authenticates without any victim secret material.
+    const boxed = tweetnacl.box(plaintext, nonce, lowOrderEphemeral, attackerSecretKey);
+    const bundle = new Uint8Array(BOX_BUNDLE_PUBLIC_KEY_BYTES + BOX_BUNDLE_NONCE_BYTES + boxed.length);
+    bundle.set(lowOrderEphemeral, 0);
+    bundle.set(nonce, BOX_BUNDLE_PUBLIC_KEY_BYTES);
+    bundle.set(boxed, BOX_BUNDLE_PUBLIC_KEY_BYTES + BOX_BUNDLE_NONCE_BYTES);
+
+    expect(openBoxBundle({ bundle, recipientSecretKeyOrSeed: victimKeyPair.secretKey })).toBeNull();
+  });
+
+  it('validates public keys by the cryptographic property, not syntax alone', () => {
+    expect(isValidBoxBundlePublicKey(tweetnacl.box.keyPair().publicKey)).toBe(true);
+    expect(isValidBoxBundlePublicKey(new Uint8Array(31))).toBe(false);
+    expect(isValidBoxBundlePublicKey(new Uint8Array(33))).toBe(false);
+    for (const key of LOW_ORDER_PUBLIC_KEYS) {
+      expect(isValidBoxBundlePublicKey(key.bytes)).toBe(false);
+    }
   });
 });

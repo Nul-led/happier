@@ -143,6 +143,8 @@ describe('ActionSpec-generated plugin action types', () => {
     expectTypeOf<PluginActionResultById['execution.run.send']>().toEqualTypeOf<ExecutionRunSendResponse>();
     expectTypeOf<PluginActionResultById['execution.run.stop']>().toEqualTypeOf<ExecutionRunStopResponse>();
     expectTypeOf<PluginActionResultById['execution.run.wait']>().toEqualTypeOf<ExecutionRunWaitResult>();
+    expectTypeOf<Extract<ExecutionRunWaitResult, { ok: true }>['result']>()
+      .toEqualTypeOf<ExecutionRunGetResponse>();
     expectTypeOf<ExecutionRunStartResponse['wait']>().toEqualTypeOf<ExecutionRunWaitResult | undefined>();
     expectTypeOf<PluginActionInputById['session.transcript.get']>()
       .toEqualTypeOf<SessionTranscriptGetExternalShareableInputV1>();

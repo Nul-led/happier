@@ -152,12 +152,15 @@ describe('review comment publication contract', () => {
     });
     const claim = {
       disposition: 'dispatch' as const,
+      dispatchToken: 'dispatch-1',
       publicationPlanId: correlation('p'),
       entries: [
         { happierCommentId: 'comment-1', publicationCorrelationId: correlation('a') },
         { happierCommentId: 'comment-2', publicationCorrelationId: correlation('b') },
       ],
       verdict: { publicationCorrelationId: correlation('v') },
+      instructions: { entries: ['dispatch', 'dispatch'] as const, verdict: 'dispatch' as const },
+      priorResult: null,
     };
     const publishedEntry: ReviewCommentPublicationEntryResultV1 = {
       happierCommentId: 'comment-1',
@@ -280,12 +283,15 @@ describe('review comment publication contract', () => {
 
     const claim = {
       disposition: 'dispatch' as const,
+      dispatchToken: 'dispatch-1',
       publicationPlanId: correlation('p'),
       entries: [
         { happierCommentId: 'comment-inline', publicationCorrelationId: correlation('a') },
         { happierCommentId: 'comment-summary', publicationCorrelationId: correlation('b') },
       ],
       verdict: { publicationCorrelationId: correlation('v') },
+      instructions: { entries: ['dispatch', 'dispatch'] as const, verdict: 'dispatch' as const },
+      priorResult: null,
     };
     expect(validateReviewCommentPublicationResultAgainstPlanV1(withVerdict, claim, {
       publicationPlanId: claim.publicationPlanId,

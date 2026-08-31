@@ -1,8 +1,25 @@
 import { z } from 'zod';
 
 import { decodeBase64, encodeBase64 } from '../crypto/base64.js';
-import { encodeCanonicalLengthDelimited } from '../crypto/canonicalDigest.js';
+import {
+  computeCanonicalDomainSeparatedDigest,
+  encodeCanonicalLengthDelimited,
+} from '../crypto/canonicalDigest.js';
+import { BOX_BUNDLE_MIN_BYTES } from '../crypto/boxBundle.js';
 import { normalizeServerIdentityIdCapability } from '../features/payload/capabilities/serverIdentityCapabilities.js';
+import {
+  IROH_DESCRIPTOR_MAX_DIRECT_ADDRESSES,
+  IROH_DESCRIPTOR_MAX_RELAY_URLS,
+  IrohEndpointDescriptorV1Schema,
+} from '../connectivity/iroh/endpointDescriptorV1.js';
+
+export {
+  IROH_DESCRIPTOR_MAX_DIRECT_ADDRESSES,
+  IROH_DESCRIPTOR_MAX_RELAY_URLS,
+  IrohEndpointDescriptorV1Schema,
+  parseIrohEndpointDescriptorV1,
+  type IrohEndpointDescriptorV1,
+} from '../connectivity/iroh/endpointDescriptorV1.js';
 export { AccountDirectoryCapabilitiesSchema } from '../features/payload/capabilities/accountDirectoryCapabilities.js';
 export type { AccountDirectoryCapabilities } from '../features/payload/capabilities/accountDirectoryCapabilities.js';
 
@@ -26,13 +43,22 @@ export const ACCOUNT_DIRECTORY_ASSERTION_MAX_LIFETIME_MS = 5 * 60 * 1000;
 export const ACCOUNT_DIRECTORY_ASSERTION_CLOCK_SKEW_MS = 30 * 1000;
 
 export const ACCOUNT_DIRECTORY_MAX_ENDPOINTS = 16;
-export const ACCOUNT_DIRECTORY_MAX_RELAY_URLS = 8;
-export const ACCOUNT_DIRECTORY_MAX_DIRECT_ADDRESSES = 16;
-export const ACCOUNT_DIRECTORY_MAX_HOMES = 256;
+export const ACCOUNT_DIRECTORY_MAX_RELAY_URLS = IROH_DESCRIPTOR_MAX_RELAY_URLS;
+export const ACCOUNT_DIRECTORY_MAX_DIRECT_ADDRESSES = IROH_DESCRIPTOR_MAX_DIRECT_ADDRESSES;
 export const ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES = 128;
 export const ACCOUNT_DIRECTORY_MAX_ID_UTF8_BYTES = 256;
 export const ACCOUNT_DIRECTORY_MAX_URL_UTF8_BYTES = 512;
-export const ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES = 16 * 1024 * 1024;
+/** Existing ordinary Home-token boundary shared with direct enrollment. */
+export const ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES = 4_096;
+/** Exact token-only JSON wrapper (`{"token":""}`) around that Home token. */
+export const ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES =
+  ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES + 12;
+/**
+ * Maximum decoded box-bundle bytes. This protects response parsing/allocation;
+ * encoded base64url length is derived by `strictEncodedBytes`, not a second limit.
+ */
+export const ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES =
+  ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES + BOX_BUNDLE_MIN_BYTES;
 
 const UTF8_ENCODER = new TextEncoder();
 const SERVER_IDENTITY_ID_PATTERN = /^srv_[A-Za-z0-9._-]{1,60}$/u;
@@ -117,13 +143,9 @@ const SealedHomeTokenBase64UrlSchema = strictEncodedBytes(
 const PositiveRevisionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const TimestampMsSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
-const IrohEndpointDescriptorV1Schema = z.object({
-  kind: z.literal('iroh'),
-  endpointId: BoundedIdentifierSchema,
-  relayUrls: z.array(URL_WITHOUT_CREDENTIALS_OR_FRAGMENT).max(ACCOUNT_DIRECTORY_MAX_RELAY_URLS).optional(),
-  directAddresses: z.array(z.string().trim().min(1).max(256)).max(ACCOUNT_DIRECTORY_MAX_DIRECT_ADDRESSES).optional(),
-}).strict();
-
+// The Iroh endpoint sub-descriptor is owned by the shared connectivity module
+// (`connectivity/iroh/endpointDescriptorV1.ts`) and re-exported above; the
+// union variant below composes it without redefining the wire shape.
 const HttpsEndpointDescriptorV1Schema = z.object({
   kind: z.literal('https'),
   url: URL_WITHOUT_CREDENTIALS_OR_FRAGMENT,
@@ -131,7 +153,9 @@ const HttpsEndpointDescriptorV1Schema = z.object({
 
 export const HomeConnectionEndpointV1Schema = z.discriminatedUnion('kind', [
   HttpsEndpointDescriptorV1Schema,
-  IrohEndpointDescriptorV1Schema,
+  // Extend keeps the canonical schema's strict/unknown-field rejection while
+  // adding the outer endpoint-union discriminant.
+  IrohEndpointDescriptorV1Schema.extend({ kind: z.literal('iroh') }),
 ]);
 export type HomeConnectionEndpointV1 = z.infer<typeof HomeConnectionEndpointV1Schema>;
 
@@ -204,7 +228,7 @@ export type AccountDirectoryHomeDeleteResponseV1 = z.infer<typeof AccountDirecto
 
 export const AccountDirectoryHomesResponseV1Schema = z.object({
   v: z.literal(1),
-  homes: z.array(AccountDirectoryHomeEntryV1Schema).max(ACCOUNT_DIRECTORY_MAX_HOMES),
+  homes: z.array(AccountDirectoryHomeEntryV1Schema),
   preferredHomeServerIdentityId: ServerIdentityIdSchema.nullable(),
 }).strict().superRefine((value, context) => {
   const preferred = value.preferredHomeServerIdentityId;
@@ -214,6 +238,12 @@ export const AccountDirectoryHomesResponseV1Schema = z.object({
   const preferredEntries = value.homes.filter((home) => home.preferred);
   if (preferredEntries.length > 1) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['homes'], message: 'At most one Home may be marked preferred' });
+  }
+  if (preferred === null && preferredEntries.length !== 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['homes'], message: 'No Home may be marked preferred when the preferred pointer is null' });
+  }
+  if (preferred !== null && preferredEntries.length !== 1) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['homes'], message: 'Exactly one Home must be marked preferred when the preferred pointer is set' });
   }
   if (preferred && preferredEntries.length === 1 && preferredEntries[0]!.homeServerIdentityId !== preferred) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['homes'], message: 'Entry preferred status must match preferredHomeServerIdentityId' });
@@ -310,6 +340,7 @@ export function createHomeLoginAssertionSigningBytesV1(
   const { signatureBase64Url: _signature, ...facts } = input as HomeLoginAssertionV1;
   const parsed = HomeLoginAssertionSigningFactsV1Schema.parse(facts);
   return encodeCanonicalLengthDelimited([
+    ACCOUNT_DIRECTORY_ASSERTION_SIGNING_DOMAIN_V1,
     String(parsed.v),
     parsed.purpose,
     parsed.issuerServerIdentityId,
@@ -325,6 +356,24 @@ export function createHomeLoginAssertionSigningBytesV1(
 /** Alias used by signers that call the canonical bytes a signing input. */
 export const createHomeLoginAssertionSigningInputV1 = createHomeLoginAssertionSigningBytesV1;
 
+const HOME_LOGIN_REQUESTER_FINGERPRINT_DOMAIN_V1 =
+  'happier.account-directory.requester-fingerprint.v1' as const;
+
+/**
+ * Stable advisory label for an assertion-bound requester key. It is deliberately
+ * truncated for display and must never be used as identity or authorization.
+ */
+export function createHomeLoginRequesterFingerprintV1(
+  clientBoxPublicKeyBase64: string,
+): string {
+  const canonicalKey = ClientBoxPublicKeyBase64Schema.parse(clientBoxPublicKeyBase64);
+  const digest = computeCanonicalDomainSeparatedDigest(
+    HOME_LOGIN_REQUESTER_FINGERPRINT_DOMAIN_V1,
+    [decodeBase64(canonicalKey, 'base64')],
+  ).slice(0, 16);
+  return digest.match(/.{1,4}/gu)!.join('-');
+}
+
 export const HomeLoginRedemptionRequestV1Schema = z.object({
   v: z.literal(1),
   assertion: HomeLoginAssertionV1Schema,
@@ -332,16 +381,19 @@ export const HomeLoginRedemptionRequestV1Schema = z.object({
 }).strict();
 export type HomeLoginRedemptionRequestV1 = z.infer<typeof HomeLoginRedemptionRequestV1Schema>;
 
+/**
+ * Locked five-field V1 success shape. `expiresAtMs` bounds assertion redemption;
+ * it is not the expiry of the durable ordinary Home token inside the sealed envelope.
+ */
 export const HomeLoginRedemptionResponseV1Schema = z.object({
   v: z.literal(1),
-  outcome: z.literal('authorized'),
   homeServerIdentityId: ServerIdentityIdSchema,
   sealedHomeTokenBase64Url: SealedHomeTokenBase64UrlSchema,
   issuedAtMs: TimestampMsSchema,
   expiresAtMs: TimestampMsSchema,
 }).strict().superRefine((value, context) => {
   if (value.expiresAtMs <= value.issuedAtMs) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['expiresAtMs'], message: 'Home token expiry must be after issuance' });
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['expiresAtMs'], message: 'Redemption validity expiry must be after issuance' });
   }
 });
 export type HomeLoginRedemptionResponseV1 = z.infer<typeof HomeLoginRedemptionResponseV1Schema>;
@@ -356,10 +408,28 @@ export const HomeLoginRedemptionApprovalRequiredV1Schema = z.object({
 }).strict();
 export type HomeLoginRedemptionApprovalRequiredV1 = z.infer<typeof HomeLoginRedemptionApprovalRequiredV1Schema>;
 
-export const HomeLoginRedemptionResultV1Schema = z.discriminatedUnion('outcome', [
+export const HomeLoginRedemptionResultV1Schema = z.union([
   HomeLoginRedemptionResponseV1Schema,
   HomeLoginRedemptionApprovalRequiredV1Schema,
 ]);
+
+export const HomeDeviceApprovalRequestV1Schema = z.object({
+  approvalId: BoundedIdentifierSchema,
+  accountId: BoundedIdentifierSchema,
+  flow: z.literal('account_assertion'),
+  requesterBoxPublicKeyBase64: ClientBoxPublicKeyBase64Schema,
+  issuerServerIdentityId: ServerIdentityIdSchema,
+  issuerSubjectId: BoundedIdentifierSchema,
+  deviceLabel: z.string().max(256).nullable(),
+  status: z.enum(['pending', 'approved', 'rejected']),
+  expiresAtMs: TimestampMsSchema,
+  decidedAtMs: TimestampMsSchema.nullable(),
+}).strict();
+export type HomeDeviceApprovalRequestV1 = z.infer<typeof HomeDeviceApprovalRequestV1Schema>;
+
+/** Lane 05 defines no approval-list cardinality cap; consumers must not invent one. */
+export const HomeDeviceApprovalListV1Schema = z.array(HomeDeviceApprovalRequestV1Schema);
+export type HomeDeviceApprovalListV1 = z.infer<typeof HomeDeviceApprovalListV1Schema>;
 export type HomeLoginRedemptionResultV1 = z.infer<typeof HomeLoginRedemptionResultV1Schema>;
 
 export const ACCOUNT_DIRECTORY_ERROR_CODES_V1 = {
@@ -377,6 +447,7 @@ export const ACCOUNT_DIRECTORY_ERROR_CODES_V1 = {
   assertionClockSkew: 'assertion_clock_skew',
   directoryLinkNotFound: 'directory_link_not_found',
   approvalRequired: 'approval_required',
+  rateLimited: 'rate_limited',
 } as const;
 
 export const AccountDirectoryErrorCodeV1Schema = z.enum([
@@ -394,6 +465,7 @@ export const AccountDirectoryErrorCodeV1Schema = z.enum([
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.assertionClockSkew,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.directoryLinkNotFound,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalRequired,
+  ACCOUNT_DIRECTORY_ERROR_CODES_V1.rateLimited,
 ]);
 export type AccountDirectoryErrorCodeV1 = z.infer<typeof AccountDirectoryErrorCodeV1Schema>;
 

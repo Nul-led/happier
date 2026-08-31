@@ -486,6 +486,51 @@ export function defineProtocolString(
   );
 }
 
+/**
+ * A bounded nonempty string whose executable representation preserves the
+ * established JavaScript `trim()` normalization while its JSON Schema
+ * projection admits that same spelling. Identity owners use this only when
+ * their public contract has already made trim normalization observable.
+ */
+export function defineProtocolTrimmedNonemptyString(
+  maxLength: number,
+): ProtocolComposableSchema<string, string> {
+  const normalizedMaxLength = assertPositiveSafeInteger(
+    maxLength,
+    'trimmed string maxLength',
+  );
+  const normalizedCore = normalizedMaxLength === 1
+    ? '\\S'
+    : `(?:\\S|\\S[\\s\\S]{0,${normalizedMaxLength - 2}}\\S)`;
+  const projection = {
+    type: 'string',
+    pattern: `^\\s*${normalizedCore}\\s*$`,
+  };
+  return createProtocolComposableSchema<string, string>(projection, (input) => {
+    if (typeof input !== 'string') {
+      return createProtocolSingleFailure('invalid_string', 'Value must be a string');
+    }
+    const trimmed = input.trim();
+    // This owner projects the incumbent Zod identity contract, whose bound is
+    // JavaScript string length rather than the generic Protocol string's
+    // code-point measure.
+    return trimmed.length > 0 && trimmed.length <= normalizedMaxLength
+      ? { success: true, data: trimmed }
+      : createProtocolSingleFailure('invalid_string', 'Value does not satisfy the trimmed string constraint');
+  });
+}
+
+function readProtocolTrimmedNonemptyStringMaxLength(pattern: string): number | null {
+  if (pattern === '^\\s*\\S\\s*$') return 1;
+  const prefix = '^\\s*(?:\\S|\\S[\\s\\S]{0,';
+  const suffix = '}\\S)\\s*$';
+  if (!pattern.startsWith(prefix) || !pattern.endsWith(suffix)) return null;
+  const encodedMaximum = pattern.slice(prefix.length, -suffix.length);
+  if (!/^(?:0|[1-9][0-9]*)$/u.test(encodedMaximum)) return null;
+  const maximum = Number(encodedMaximum) + 2;
+  return Number.isSafeInteger(maximum) ? maximum : null;
+}
+
 export function defineProtocolUtf8String(
   options: ProtocolUtf8StringOptions,
 ): ProtocolComposableSchema<string, string> {
@@ -917,6 +962,14 @@ function readCanonicalComposableSchemaProjection(
         ...(typeof value.maxLength === 'number' ? { maxLength: value.maxLength } : {}),
         ...(typeof value.pattern === 'string' ? { pattern: value.pattern } : {}),
       });
+      const trimmedNonemptyMaxLength = value.minLength === undefined
+        && value.maxLength === undefined
+        && typeof value.pattern === 'string'
+        ? readProtocolTrimmedNonemptyStringMaxLength(value.pattern)
+        : null;
+      if (trimmedNonemptyMaxLength !== null) {
+        return defineProtocolTrimmedNonemptyString(trimmedNonemptyMaxLength);
+      }
       const maxUtf8Bytes = value[HAPPIER_MAX_UTF8_BYTES_KEYWORD];
       return maxUtf8Bytes === undefined
         ? defineProtocolString(options)
