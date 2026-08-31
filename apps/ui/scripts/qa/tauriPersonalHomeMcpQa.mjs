@@ -86,7 +86,12 @@ export async function inspectPersonalHomeRuntimeEvidence({
     if (managedEnv.HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE !== 'plain') {
         throw new Error('Loaded Personal Home default Account mode is not plain.');
     }
-    const listener = requireLoopbackListener(receipt?.host, Number(receipt?.port), canonicalServerUrl);
+    const listenerAddress = requireLoopbackListener(receipt?.host, Number(receipt?.port), canonicalServerUrl);
+    const listenerPid = Number(receipt?.pid);
+    if (!Number.isSafeInteger(listenerPid) || listenerPid <= 0) {
+        throw new Error('Personal Home startup receipt did not identify the loaded server process.');
+    }
+    const listener = { ...listenerAddress, pid: listenerPid };
     const healthResponse = await fetchImpl(new URL('/health', canonicalServerUrl), {
         headers: { accept: 'application/json' },
         signal: AbortSignal.timeout(10_000),
@@ -104,6 +109,36 @@ export async function inspectPersonalHomeRuntimeEvidence({
         storagePolicy: 'plaintext_only',
         version: readString(state?.version) || null,
     };
+}
+
+export async function waitForRestartedPersonalHomeEvidence({
+    initialPid,
+    readEvidence = async () => await inspectPersonalHomeRuntimeEvidence(),
+    wait = delay,
+    pollDelayMs = 1_000,
+    maxAttempts = 120,
+} = {}) {
+    let lastError = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        try {
+            // eslint-disable-next-line no-await-in-loop
+            const evidence = await readEvidence();
+            if (evidence?.healthy === true
+                && evidence?.anonymousSignupEnabled === false
+                && Number(evidence?.listener?.pid) > 0
+                && Number(evidence.listener.pid) !== Number(initialPid)) {
+                return evidence;
+            }
+        } catch (error) {
+            lastError = error;
+        }
+        if (attempt + 1 < maxAttempts) {
+            // eslint-disable-next-line no-await-in-loop
+            await wait(pollDelayMs);
+        }
+    }
+    const detail = lastError instanceof Error ? ` Last error: ${lastError.message}` : '';
+    throw new Error(`Personal Home did not return healthy with a new process after restart.${detail}`);
 }
 
 function resolveArtifactRoot(env = process.env) {
@@ -180,6 +215,17 @@ async function navigate(pathname, { appIdentifier, env } = {}) {
     ], { appIdentifier, env });
 }
 
+async function clickSelector(selector, { appIdentifier, env } = {}) {
+    await runCli([
+        'webview-wait-for', '--type', 'selector', '--strategy', 'css', '--value', selector,
+        '--timeout', '30000', '--app-identifier', appIdentifier,
+    ], { appIdentifier, env });
+    await runCli([
+        'webview-interact', '--action', 'click', '--selector', selector,
+        '--app-identifier', appIdentifier,
+    ], { appIdentifier, env });
+}
+
 async function captureLoadedSurface(plan, { env } = {}) {
     const screenshotPath = join(plan.artifactRoot, '01-personal-home-ready.png');
     await runCli([
@@ -246,14 +292,23 @@ async function main(argv = process.argv.slice(2)) {
         throw new Error('Canonical Personal Home settings projection did not load after bootstrap.');
     }
 
-    const runtimeEvidence = await inspectPersonalHomeRuntimeEvidence({ env: process.env });
+    const runtimeEvidenceBeforeRestart = await inspectPersonalHomeRuntimeEvidence({ env: process.env });
+    await clickSelector('[data-testid="settings.personalHomeRuntime.restart"]', {
+        appIdentifier: plan.appIdentifier,
+        env: process.env,
+    });
+    const runtimeEvidenceAfterRestart = await waitForRestartedPersonalHomeEvidence({
+        initialPid: runtimeEvidenceBeforeRestart.listener.pid,
+        readEvidence: async () => await inspectPersonalHomeRuntimeEvidence({ env: process.env }),
+    });
     const screenshotPath = await captureLoadedSurface(plan, { env: process.env });
     const summary = {
         ok: true,
         appIdentifier: plan.appIdentifier,
         build: await readBuildIdentity(),
         matchedShellSelector,
-        runtimeEvidence,
+        runtimeEvidenceAfterRestart,
+        runtimeEvidenceBeforeRestart,
         screenshotPath,
         setupSurfaceObserved,
     };

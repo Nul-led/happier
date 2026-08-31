@@ -15,11 +15,6 @@ const ensureHomeIrohEndpoint = vi.fn<(
     failureReason: null,
 }));
 const stopHomeIrohEndpoint = vi.fn(async () => {});
-const signupRefusalFetch = vi.fn(async () => new Response(
-    JSON.stringify({ error: "signup-disabled" }),
-    { status: 403, headers: { "content-type": "application/json" } },
-));
-
 vi.mock("@/app/iroh/homeIrohEndpoint", async () => {
     const actual = await vi.importActual<typeof import("@/app/iroh/homeIrohEndpoint")>("@/app/iroh/homeIrohEndpoint");
     return {
@@ -71,18 +66,11 @@ describe("startServer managed Home Iroh composition", () => {
         startServerDbMocks.reset();
         ensureHomeIrohEndpoint.mockClear();
         stopHomeIrohEndpoint.mockClear();
-        signupRefusalFetch.mockClear();
-        signupRefusalFetch.mockImplementation(async () => new Response(
-            JSON.stringify({ error: "signup-disabled" }),
-            { status: 403, headers: { "content-type": "application/json" } },
-        ));
-        vi.stubGlobal("fetch", signupRefusalFetch);
         ping.mockClear();
         startServerHarness.reset();
     });
 
     afterEach(() => {
-        vi.unstubAllGlobals();
         startServerHarness.restore();
     });
 
@@ -96,30 +84,21 @@ describe("startServer managed Home Iroh composition", () => {
 
         expect(ensureHomeIrohEndpoint).toHaveBeenCalledTimes(1);
         expect(ensureHomeIrohEndpoint.mock.calls[0]?.[0]).toMatchObject({ apiPort: 3005 });
-        expect(signupRefusalFetch).toHaveBeenCalledWith(
-            "http://127.0.0.1:3005/v1/auth",
-            expect.objectContaining({ method: "POST" }),
-        );
 
         const { initiateShutdown } = await import("@/utils/process/shutdown");
         await initiateShutdown("test");
         expect(stopHomeIrohEndpoint).toHaveBeenCalledTimes(1);
     });
 
-    it("starts no Iroh endpoint when the live anonymous-signup attempt is not refused", async () => {
-        signupRefusalFetch.mockResolvedValueOnce(new Response(
-            JSON.stringify({ error: "Invalid token" }),
-            { status: 401, headers: { "content-type": "application/json" } },
-        ));
-
+    it("keeps HTTP startup available and starts no Iroh endpoint when the canonical closure proof fails", async () => {
         await startServerHarness.start("light", {
             SERVER_ROLE: "all",
             HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
             HAPPIER_PUBLIC_SERVER_URL: "http://127.0.0.1:3005",
-            AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
+            AUTH_ANONYMOUS_SIGNUP_ENABLED: "1",
         });
 
-        expect(signupRefusalFetch).toHaveBeenCalledTimes(1);
+        expect(startServerHarness.startApi).toHaveBeenCalledTimes(1);
         expect(ensureHomeIrohEndpoint).not.toHaveBeenCalled();
     });
 
@@ -132,7 +111,6 @@ describe("startServer managed Home Iroh composition", () => {
             AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
         });
 
-        expect(signupRefusalFetch).not.toHaveBeenCalled();
         expect(ensureHomeIrohEndpoint).not.toHaveBeenCalled();
     });
 

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdtemp, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { promisify } from 'node:util';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -115,19 +115,30 @@ test('tauri MCP QA personal-home execution fails closed before launch without a 
     );
 });
 
-test('tauri MCP QA personal-home execution accepts an exact stack-owned target only with explicit dedicated-runtime isolation', async () => {
+test('tauri MCP QA personal-home execution propagates a disposable OS home while preserving the host Rust toolchain', async () => {
     const scriptsDir = dirname(fileURLToPath(import.meta.url));
     const scriptPath = join(scriptsDir, 'tauriMcpQa.mjs');
     const module = await import(pathToFileURL(scriptPath).href);
+    const disposableHome = await mkdtemp(join(tmpdir(), 'tauri-personal-home-launch-'));
+    const hostHome = userInfo().homedir;
+    const cargoHome = process.env.CARGO_HOME ?? join(hostHome, '.cargo');
+    const rustupHome = process.env.RUSTUP_HOME ?? join(hostHome, '.rustup');
     const env = {
         ...process.env,
         HAPPIER_STACK_STACK: 'lane03-personal-home-qa',
         HAPPIER_STACK_TAURI_IDENTIFIER: 'com.happier.stack.lane03-personal-home-qa',
         HAPPIER_TAURI_PERSONAL_HOME_QA_DEDICATED_RUNTIME: '1',
+        HAPPIER_TAURI_PERSONAL_HOME_QA_HOME: disposableHome,
+        CARGO_HOME: cargoHome,
+        RUSTUP_HOME: rustupHome,
     };
     const plan = await module.resolveTauriMcpQaPlan({ argv: ['--personal-home'], env });
 
     assert.doesNotThrow(() => module.assertPersonalHomeQaLaunchIsolation({ plan, env }));
+    assert.equal(plan.tauriDev.env?.HOME, disposableHome);
+    assert.equal(plan.tauriDev.env?.USERPROFILE, disposableHome);
+    assert.equal(plan.tauriDev.env?.CARGO_HOME, cargoHome);
+    assert.equal(plan.tauriDev.env?.RUSTUP_HOME, rustupHome);
 });
 
 test('tauri MCP QA personal-home launch never reuses another attachable app and never injects a stack server', async () => {

@@ -2,7 +2,6 @@ import { startApi } from '@/app/api/api';
 import { startMetricsServer } from '@/app/monitoring/metrics';
 import { startDatabaseMetricsUpdater, setSocketAdapterModeInfo } from '@/app/monitoring/metrics/index';
 import { auth } from '@/app/auth/auth';
-import { isAnonymousSignupExplicitlyDisabled } from '@/app/auth/authPolicy';
 import { activityCache } from '@/app/presence/sessionCache';
 import { startTimeout } from '@/app/presence/timeout';
 import { initEncrypt } from '@/modules/encrypt';
@@ -403,8 +402,7 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
             if (
                 flavor === 'light'
                 && process.env.HAPPIER_MANAGED_RELAY_PURPOSE === 'personal-home'
-                && isAnonymousSignupExplicitlyDisabled(process.env)
-                && await verifyPersonalHomeExposureProof({ env: process.env, listener })
+                && verifyPersonalHomeExposureProof({ env: process.env, listener })
             ) {
                 await ensureHomeIrohEndpoint({
                     env: process.env,

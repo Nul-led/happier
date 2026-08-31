@@ -45,10 +45,14 @@ function session() {
   };
 }
 
-function snapshot(relationships = [relationship]) {
+function snapshot(
+  relationships = [relationship],
+  rawRelationships: unknown = relationships,
+) {
   return {
     source: 'network' as const,
     settings: AccountSettingsSchema.parse({ workspaceSyncRelationshipsV1: relationships }),
+    rawSettings: { workspaceSyncRelationshipsV1: rawRelationships },
     settingsVersion: 1,
     loadedAtMs: 1,
     settingsSecretsReadKeys: [],
@@ -119,6 +123,7 @@ function boundaries(options: Readonly<{
       resolveInstalledComponentPaths, resolveArtifactPaths, assertArtifactPayload, resolveDataLayout,
     } satisfies DaemonWorkspaceSyncRuntimeDependencies,
     activateRelationships: () => { activeRelationships = true; listener?.(null, snapshot()); },
+    publishSnapshot: (next: ReturnType<typeof snapshot>) => { listener?.(null, next); },
     command, closeBroker, stopSidecar, spawnSidecar, createBroker, unsubscribeSettings,
     resolveInstalledComponentPaths, resolveArtifactPaths, assertArtifactPayload, resolveDataLayout,
     deleteConflictLoserAtTarget, readFileAtTarget, brokerBootstrapDescriptor,
@@ -173,6 +178,29 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
     releaseTarget();
     await runtime.whenSettingsSettled();
     expect(harness.command.mock.calls.length).toBeGreaterThan(commandsBeforeUpdate);
+    await runtime.stop();
+  });
+
+  it('preserves the last-known-good relationships when the raw settings field is malformed', async () => {
+    const harness = boundaries();
+    const runtime = createDaemonWorkspaceSyncRuntime(harness.deps);
+    await runtime.start();
+    harness.activateRelationships();
+    await runtime.whenSettingsSettled();
+    harness.command.mockClear();
+
+    harness.publishSnapshot(snapshot([], [{ ...relationship, mode: 'unsupported-mode' }]));
+
+    await expect(runtime.whenSettingsSettled()).rejects.toMatchObject({
+      code: 'workspace_sync_settings_invalid',
+    });
+    expect(harness.command).not.toHaveBeenCalledWith(
+      expect.objectContaining({ t: 'terminate' }),
+      expect.anything(),
+    );
+    await expect(runtime.managedWorkspaceSync.get(relationship.relationshipId)).resolves.toMatchObject({
+      relationshipId: relationship.relationshipId,
+    });
     await runtime.stop();
   });
 

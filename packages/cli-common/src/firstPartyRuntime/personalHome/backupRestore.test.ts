@@ -1383,6 +1383,47 @@ describe('Personal Home backup and restore owner', () => {
     } finally { await rm(destination.root, { recursive: true, force: true }); }
   });
 
+  it('resumes filesystem rollback after configuration rollback was applied before its journal reference was cleared', async () => {
+    const destination = await fixture();
+    try {
+      const id = randomUUID();
+      const stage = `${destination.layout.dataDir}.restore-stage-742-${id}`;
+      const journal = recoveryJournalFixture(destination.layout, stage, id);
+      const artifact = join(destination.layout.configDir, `server.env.${id}.restore-rollback`);
+      const databaseRollback = `${destination.layout.databasePath}.restore-rollback-${id}`;
+      journal.phase = 'rolling_back';
+      Object.assign(journal, {
+        configurationRollbackArtifact: artifact,
+        configurationRollbackState: 'applied',
+      });
+      journal.entries[0] = {
+        ...journal.entries[0]!,
+        rollback: databaseRollback,
+        hadTarget: true,
+        state: 'promoted',
+      };
+      await writeFile(databaseRollback, 'destination-before-restore');
+      await writeFile(destination.layout.databasePath, 'promoted-candidate');
+      const journalPath = join(destination.layout.dataDir, '.operations', 'restore-journal.json');
+      await mkdir(dirname(journalPath), { recursive: true });
+      await writeFile(journalPath, JSON.stringify(journal));
+      let recoverConfigurationCalls = 0;
+
+      await expect(recoverPersonalHomeRestoreWithLease({
+        layout: destination.layout,
+        operationLeaseHeld: true,
+        isHomeRunning: async () => false,
+        stopHome: async () => undefined,
+        startHome: async () => undefined,
+        healthCheck: async () => true,
+        recoverConfiguration: async () => { recoverConfigurationCalls += 1; },
+      })).resolves.toMatchObject({ outcome: 'rolled_back', restartedHome: false });
+      expect(recoverConfigurationCalls).toBe(0);
+      await expect(readFile(destination.layout.databasePath, 'utf8')).resolves.toBe('destination-before-restore');
+      await expect(lstat(journalPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await rm(destination.root, { recursive: true, force: true }); }
+  });
+
   it('rejects incomplete or reordered restore journals before lifecycle mutation', async () => {
     const destination = await fixture();
     try {
