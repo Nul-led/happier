@@ -32,6 +32,10 @@ import {
   type WorkspaceSyncHandoffAdapter,
 } from '@/workspaces/sync/workspaceSyncHandoffAdapter';
 import { createWorkspaceSyncMutagenAdapter } from '@/workspaces/sync/workspaceSyncMutagenAdapter';
+import {
+  parseWorkspaceSyncRelationships,
+  WORKSPACE_SYNC_SETTINGS_KEY,
+} from '@/workspaces/sync/workspaceSyncSettings';
 import type {
   WorkspaceRootOwnershipHandle,
   WorkspaceRootOwnershipManager,
@@ -125,6 +129,7 @@ export function createDaemonWorkspaceSyncRuntime(
   });
   const getSnapshot = dependencies.getSettingsSnapshot ?? getActiveAccountSettingsSnapshot;
   const subscribeSnapshot = dependencies.subscribeSettingsSnapshot ?? subscribeActiveAccountSettingsSnapshot;
+  let acceptedRelationships: readonly WorkspaceSyncRelationshipV1[] = [];
 
   let verifiedRuntime: Promise<Readonly<{
     managerPath: string;
@@ -188,7 +193,7 @@ export function createDaemonWorkspaceSyncRuntime(
     resolveWorkspaceRef: dependencies.resolveWorkspaceRef,
     rootOwnershipManager: dependencies.rootOwnershipManager,
     resolveRelationshipDefinition: (relationshipId) => {
-      const matches = (getSnapshot()?.settings.workspaceSyncRelationshipsV1 ?? []).filter((candidate) => (
+      const matches = acceptedRelationships.filter((candidate) => (
         candidate.relationshipId === relationshipId
         && candidate.enabled
         && candidate.controllerMachineId === dependencies.localMachineId
@@ -217,10 +222,24 @@ export function createDaemonWorkspaceSyncRuntime(
   let started = false;
   let stopped = false;
 
+  const readRelationships = (snapshot: ActiveAccountSettingsSnapshot | null): readonly WorkspaceSyncRelationshipV1[] => {
+    const rawValue = snapshot?.rawSettings
+      ? snapshot.rawSettings[WORKSPACE_SYNC_SETTINGS_KEY]
+      : snapshot?.settings.workspaceSyncRelationshipsV1;
+    try {
+      return parseWorkspaceSyncRelationships(rawValue);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : 'Invalid workspace sync settings';
+      throw Object.assign(new Error(message), { code: 'workspace_sync_settings_invalid' as const });
+    }
+  };
+
   const applySnapshot = (snapshot: ActiveAccountSettingsSnapshot | null): Promise<void> => {
     const next = settingsTail.catch(() => undefined).then(async () => {
+      const relationships = readRelationships(snapshot);
+      acceptedRelationships = relationships;
       await lifecycle.runReconciliation(async () => {
-        await controller.rehydrateFromSettings(snapshot?.settings.workspaceSyncRelationshipsV1 ?? []);
+        await controller.rehydrateFromSettings(relationships);
       });
     });
     settingsTail = next;
