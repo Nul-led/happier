@@ -3,8 +3,6 @@ import { View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { Switch } from '@/components/ui/forms/Switch';
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { Text, TextInput } from '@/components/ui/text/Text';
@@ -12,14 +10,15 @@ import { t } from '@/text';
 import {
     normalizeSessionHandoffDefaults,
     parseSessionHandoffIgnoredIncludeGlobs,
-    SESSION_HANDOFF_CONFLICT_POLICY_OPTIONS,
     SESSION_HANDOFF_DIRECT_TARGET_MODE_OPTIONS,
     SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS,
-    SESSION_HANDOFF_WORKSPACE_TRANSFER_STRATEGY_OPTIONS,
+    SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS,
     type SessionHandoffDefaultsV1,
+    type SessionHandoffWorkspaceMode,
 } from '@/sync/domains/sessionHandoff/sessionHandoffDefaults';
 import { useSettingMutable } from '@/sync/domains/state/storage';
 import { Icon } from '@/components/ui/icons/Icon';
+import { WorkspaceSyncRelationshipList } from '@/components/workspaces/sync/WorkspaceSyncRelationshipList';
 
 export const SessionHandoffSettingsView = React.memo(function SessionHandoffSettingsView() {
     const { theme } = useUnistyles();
@@ -27,10 +26,9 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
     const [rawDefaults, setRawDefaults] = useSettingMutable('sessionHandoffDefaultsV1');
     const defaults = React.useMemo(() => normalizeSessionHandoffDefaults(rawDefaults), [rawDefaults]);
     const defaultsRef = React.useRef(defaults);
-    const [openConflictPolicyMenu, setOpenConflictPolicyMenu] = React.useState(false);
+    const [openWorkspaceModeMenu, setOpenWorkspaceModeMenu] = React.useState(false);
     const [openIgnoredModeMenu, setOpenIgnoredModeMenu] = React.useState(false);
     const [openDirectModeMenu, setOpenDirectModeMenu] = React.useState(false);
-    const [openWorkspaceTransferStrategyMenu, setOpenWorkspaceTransferStrategyMenu] = React.useState(false);
 
     React.useEffect(() => {
         defaultsRef.current = defaults;
@@ -42,51 +40,46 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
             ...patch,
         };
         defaultsRef.current = next;
-        setRawDefaults(next as any);
+        setRawDefaults(next);
     }, [setRawDefaults]);
+
+    const selectedWorkspaceMode = React.useMemo(
+        () => SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS.find((option) => option.id === defaults.workspaceSyncMode)
+            ?? SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS[0],
+        [defaults.workspaceSyncMode],
+    );
 
     return (
         <ItemList ref={popoverBoundaryRef} style={{ paddingTop: 0 }}>
             <ItemGroup
-                title={t('settingsSession.handoff.workspaceTransfer.groupTitle')}
-                footer={t('settingsSession.handoff.workspaceTransfer.groupFooter')}
+                title={t('settingsSession.handoff.groupTitle')}
+                footer={t('settingsSession.handoff.groupFooter')}
             >
-                <Item
-                    title={t('settingsSession.handoff.workspaceTransfer.title')}
-                    subtitle={
-                        defaults.workspaceTransferEnabled
-                            ? t('settingsSession.handoff.workspaceTransfer.enabledSubtitle')
-                            : t('settingsSession.handoff.workspaceTransfer.disabledSubtitle')
-                    }
-                    icon={<Icon name="folder-open" size={29} color={theme.colors.accent.blue} />}
-                    rightElement={<Switch value={defaults.workspaceTransferEnabled} onValueChange={(next) => updateDefaults({ workspaceTransferEnabled: next })} />}
-                    showChevron={false}
-                    onPress={() => updateDefaults({ workspaceTransferEnabled: !defaults.workspaceTransferEnabled })}
-                />
                 <DropdownMenu
-                    open={openWorkspaceTransferStrategyMenu}
-                    onOpenChange={setOpenWorkspaceTransferStrategyMenu}
+                    open={openWorkspaceModeMenu}
+                    onOpenChange={setOpenWorkspaceModeMenu}
                     variant="selectable"
                     search={false}
-                    selectedId={defaults.workspaceTransferStrategy}
+                    selectedId={defaults.workspaceSyncMode}
                     showCategoryTitles={false}
                     matchTriggerWidth={true}
                     connectToTrigger={true}
                     rowKind="item"
                     popoverBoundaryRef={popoverBoundaryRef}
                     itemTrigger={{
-                        title: t('settingsSession.handoff.workspaceTransfer.strategy.title'),
-                        subtitle: t('settingsSession.handoff.workspaceTransfer.strategy.subtitle'),
-                        icon: <Icon name="git-branch" size={29} color={theme.colors.accent.blue} />,
+                        title: t('settingsSession.handoff.workspaceMode.title'),
+                        subtitle: t(selectedWorkspaceMode.subtitleKey),
+                        icon: <Icon name="folder-open" size={29} color={theme.colors.accent.blue} />,
+                        itemProps: { testID: 'session-handoff-workspace-sync-mode-trigger' },
                     }}
-                    items={SESSION_HANDOFF_WORKSPACE_TRANSFER_STRATEGY_OPTIONS.map((item) => ({
+                    items={SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS.map((item) => ({
                         id: item.id,
                         title: t(item.titleKey),
                         subtitle: t(item.subtitleKey),
                         icon: (
                             <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
                                 <Icon
-                                    name={item.id === 'sync_changes' ? 'git-diff' : 'archive'}
+                                    name={item.id === 'mirror_exactly' ? 'warning' : item.id === 'none' ? 'eye-slash' : 'folder'}
                                     size={20}
                                     color={theme.colors.text.secondary}
                                 />
@@ -94,43 +87,12 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
                         ),
                     }))}
                     onSelect={(itemId) => {
-                        updateDefaults({ workspaceTransferStrategy: itemId as SessionHandoffDefaultsV1['workspaceTransferStrategy'] });
-                        setOpenWorkspaceTransferStrategyMenu(false);
-                    }}
-                />
-                <DropdownMenu
-                    open={openConflictPolicyMenu}
-                    onOpenChange={setOpenConflictPolicyMenu}
-                    variant="selectable"
-                    search={false}
-                    selectedId={defaults.conflictPolicy}
-                    showCategoryTitles={false}
-                    matchTriggerWidth={true}
-                    connectToTrigger={true}
-                    rowKind="item"
-                    popoverBoundaryRef={popoverBoundaryRef}
-                    itemTrigger={{
-                        title: t('settingsSession.handoff.conflictPolicy.title'),
-                        subtitle: t('settingsSession.handoff.conflictPolicy.subtitle'),
-                        icon: <Icon name="git-diff" size={29} color={theme.colors.accent.orange} />,
-                    }}
-                    items={SESSION_HANDOFF_CONFLICT_POLICY_OPTIONS.map((item) => ({
-                        id: item.id,
-                        title: t(item.titleKey),
-                        subtitle: t(item.subtitleKey),
-                        icon: (
-                            <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
-                                <Icon
-                                    name={item.id === 'replace_existing' ? 'arrows-left-right' : 'copy'}
-                                    size={20}
-                                    color={theme.colors.text.secondary}
-                                />
-                            </View>
-                        ),
-                    }))}
-                    onSelect={(itemId) => {
-                        updateDefaults({ conflictPolicy: itemId as SessionHandoffDefaultsV1['conflictPolicy'] });
-                        setOpenConflictPolicyMenu(false);
+                        const nextMode = itemId as SessionHandoffWorkspaceMode;
+                        updateDefaults({
+                            workspaceSyncMode: nextMode,
+                            workspaceSyncRelationshipId: null,
+                        });
+                        setOpenWorkspaceModeMenu(false);
                     }}
                 />
                 <DropdownMenu
@@ -148,6 +110,7 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
                         title: t('settingsSession.handoff.includeIgnoredMode.title'),
                         subtitle: t('settingsSession.handoff.includeIgnoredMode.subtitle'),
                         icon: <Icon name="funnel-simple" size={29} color={theme.colors.accent.indigo} />,
+                        itemProps: { testID: 'session-handoff-ignored-mode-trigger' },
                     }}
                     items={SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS.map((item) => ({
                         id: item.id,
@@ -174,6 +137,7 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
                             {t('settingsSession.handoff.includeIgnoredMode.globsTitle')}
                         </Text>
                         <TextInput
+                            accessibilityLabel={t('settingsSession.handoff.includeIgnoredMode.globsTitle')}
                             value={defaults.ignoredIncludeGlobs.join(', ')}
                             onChangeText={(value) => updateDefaults({ ignoredIncludeGlobs: parseSessionHandoffIgnoredIncludeGlobs(value) })}
                             placeholder={t('settingsSession.handoff.includeIgnoredMode.globsPlaceholder')}
@@ -233,6 +197,8 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
                     }}
                 />
             </ItemGroup>
+
+            <WorkspaceSyncRelationshipList />
         </ItemList>
     );
 });

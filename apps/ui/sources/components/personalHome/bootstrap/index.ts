@@ -7,7 +7,6 @@ export { createPersonalHomeRuntimeSpec } from '@happier-dev/cli-common/firstPart
 export type { PersonalHomeRuntimeSpec } from '@happier-dev/cli-common/firstPartyRuntime';
 export { usePersonalHomeBootstrapController, isPersonalHomeDesktopHost } from './usePersonalHomeBootstrapController';
 export {
-    PersonalHomeBootstrapBlockedError,
     PersonalHomeBootstrapRuntimeMount,
     usePersonalHomeBootstrapRuntime,
 } from './usePersonalHomeBootstrapRuntime';

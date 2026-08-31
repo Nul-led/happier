@@ -43,10 +43,11 @@ vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
 vi.mock('@/auth/pairing/pairingUrl', () => ({
     buildPairingDeepLink: () => 'happier:///pair?v=1&pairId=p&secret=s',
     parsePairingDeepLink: () => ({ pairId: 'pair_123', secret: 'secret_123', serverUrl: null }),
+    parseHomeQrInviteDeepLink: () => null,
 }));
 
 vi.mock('@/sync/api/account/apiPairingAuth', () => ({
-    pairingRequest: vi.fn(async () => ({ ok: true, data: { state: 'requested', confirmCode: '000 000' } })),
+    pairingRequest: vi.fn(async () => ({ ok: true, data: { state: 'requested' } })),
 }));
 
 vi.mock('@/auth/flows/qrStart', () => ({

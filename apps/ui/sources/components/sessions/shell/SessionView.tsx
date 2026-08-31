@@ -38,6 +38,7 @@ import {
     type PluginContributedActionOpenOutcome,
 } from '@/components/plugins/actions/pluginContributedActionController';
 import { useSessionConnectedServicesAuthSwitch } from '@/components/sessions/agentInput/hooks/useSessionConnectedServicesAuthSwitch';
+import { useExistingSessionMcpSelection } from '@/components/sessions/agentInput/hooks/useExistingSessionMcpSelection';
 import {
     deriveSessionIntentionalRestartSignals,
     resolveSessionIntentionalRestartRecoveryEvidenceAtMs,
@@ -354,7 +355,11 @@ import {
     buildStaleSessionRunnerNoticePresentation,
     type StaleSessionRunnerOperationStatus,
 } from '@/components/sessions/sessionRunner/staleSessionRunnerNoticePresentation';
-import { readStaleSessionRunnerRuntimeState } from '@/sync/domains/sessionRunnerRuntime/sessionRunnerRuntimeStatus';
+import { buildMcpSelectionRestartNoticePresentation, type McpSelectionRestartOperationStatus } from '@/components/sessions/mcp/mcpSelectionRestartNoticePresentation';
+import {
+    readSessionRunnerRuntimeStateForTarget,
+    readStaleSessionRunnerRuntimeState,
+} from '@/sync/domains/sessionRunnerRuntime/sessionRunnerRuntimeStatus';
 import {
     sessionRunnerRuntimeStatusRetention as sessionRunnerRuntimeStatusRetentionStore,
     type SessionRunnerRuntimeStatusIdentity,
@@ -362,6 +367,7 @@ import {
 } from '@/sync/domains/sessionRunnerRuntime/sessionRunnerRuntimeStatusRetention';
 import {
     getSessionRunnerRuntimeStatusSnapshot,
+    restartSessionRunnerForConfigurationChange,
     restartSessionRunnerForProviderBindingChange,
     restartSessionRunnerOnCurrentRuntime,
 } from '@/sync/ops/sessionRunnerRestart';
@@ -473,6 +479,9 @@ import { formatShortRelativeTimeAt } from '@/utils/time/formatShortRelativeTime'
 import { combineSessionViewExtraActionChips } from './view/combineSessionViewExtraActionChips';
 import { resolveSessionViewModeOptionIds } from './view/resolveSessionViewModeOptionIds';
 import { resolveSessionViewHeaderProps } from './view/resolveSessionViewHeaderProps';
+import { useWorkspaceSyncRelationshipSummaries } from '@/sync/domains/sessionHandoff/useWorkspaceSyncRelationshipSummaries';
+import { resolveWorkspaceSyncConflictCountForWorkspaceRef } from '@/sync/domains/sessionHandoff/workspaceSyncRelationshipModel';
+import { createWorkspaceSyncConflictDetailsTab } from '@/components/workspaces/sync/workspaceSyncConflictDetailsTab';
 import { SessionAgentCatalogIdentityIcon } from '@/components/sessions/presentation/SessionAgentCatalogIdentityIcon';
 import {
     readExternalAgentObservationPresentationInput,
@@ -1786,6 +1795,21 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         machineTarget: headerMachineTarget,
         workspaceRefs: Array.isArray(workspaceRefsV1) ? workspaceRefsV1 : [],
     }), [currentSessionRouteServerId, headerMachineTarget, stableSessionForHeader, workspaceRefsV1]);
+    const headerWorkspaceSyncSummaries = useWorkspaceSyncRelationshipSummaries(headerWorkspaceDisplay.workspaceRefId);
+    const headerWorkspaceSyncConflictCount = React.useMemo(
+        () => headerWorkspaceDisplay.workspaceRefId
+            ? resolveWorkspaceSyncConflictCountForWorkspaceRef(
+                headerWorkspaceSyncSummaries,
+                headerWorkspaceDisplay.workspaceRefId,
+            )
+            : 0,
+        [headerWorkspaceDisplay.workspaceRefId, headerWorkspaceSyncSummaries],
+    );
+    const openHeaderWorkspaceSyncConflicts = React.useCallback(() => {
+        const conflicted = headerWorkspaceSyncSummaries.find((summary) => (summary.status?.conflictCount ?? 0) > 0);
+        if (!conflicted) return;
+        pane.openDetailsTab(createWorkspaceSyncConflictDetailsTab(conflicted, headerWorkspaceDisplay.workspaceRefId), { intent: 'pinned' });
+    }, [headerWorkspaceDisplay.workspaceRefId, headerWorkspaceSyncSummaries, pane]);
 
     // Phase 2.2 — plugin-UI projection + open handler for the session header
     // action menu (closing finding #11; the header action menu was previously
@@ -1886,6 +1910,8 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         pluginUiScopedLaunchFacts: headerScopedLaunchFacts,
         pluginUiScopeIsCurrent: headerPluginScopeIsCurrent,
         onOpenPluginSurface: handleOpenSessionPluginSurface,
+        workspaceSyncConflictCount: headerWorkspaceSyncConflictCount,
+        onOpenWorkspaceSyncConflicts: openHeaderWorkspaceSyncConflicts,
     }), [
         buildCurrentSessionHref,
         clientExecutableRegistrationRevision,
@@ -1897,6 +1923,8 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         headerPluginProjection.pluginUiProjection,
         headerWorkspaceDisplay.displayTitle,
         headerWorkspaceDisplay.subtitleEllipsizeMode,
+        headerWorkspaceSyncConflictCount,
+        openHeaderWorkspaceSyncConflicts,
         externalSessionRuntimePresentation,
         headerMenuExtraItems,
         isDataReady,
@@ -2755,6 +2783,7 @@ function SessionViewLoaded({
     // account-level "remember" preference decides between session-scoped and device-persisted state.
     const usageLimitRecoveryBanner = useComposerBannerCollapse('usageLimitRecovery');
     const staleSessionRunnerBanner = useComposerBannerCollapse('staleSessionRunner');
+    const mcpSelectionRestartRequiredBanner = useComposerBannerCollapse('mcpSelectionRestartRequired');
     const authRecoveryBanner = useComposerBannerCollapse('authRecovery');
     const pendingQueueResumeFailedBanner = useComposerBannerCollapse('pendingQueueResumeFailed');
     const providerBindingBannerCollapse = useComposerBannerCollapse('providerBinding');
@@ -2798,6 +2827,10 @@ function SessionViewLoaded({
     const [staleSessionRunnerOperationStatus, setStaleSessionRunnerOperationStatus] = React.useState<Readonly<{
         fingerprint: string;
         status: StaleSessionRunnerOperationStatus;
+    }> | null>(null);
+    const [mcpSelectionRestartOperation, setMcpSelectionRestartOperation] = React.useState<Readonly<{
+        fingerprint: string;
+        status: Exclude<McpSelectionRestartOperationStatus, null>;
     }> | null>(null);
     const hasWriteAccess = hasSessionWriteAccess(session.accessLevel);
     const sessionMachineRecord = useMachine(typeof machineId === 'string' ? machineId : '');
@@ -3068,6 +3101,14 @@ function SessionViewLoaded({
     ]);
     const staleSessionRunnerRuntimeState = React.useMemo(
         () => readStaleSessionRunnerRuntimeState({
+            metadata: staleSessionRunnerMetadata,
+            sessionId,
+            machineId: staleSessionRunnerMachineId,
+        }),
+        [sessionId, staleSessionRunnerMachineId, staleSessionRunnerMetadata],
+    );
+    const mcpSelectionRestartRuntimeState = React.useMemo(
+        () => readSessionRunnerRuntimeStateForTarget({
             metadata: staleSessionRunnerMetadata,
             sessionId,
             machineId: staleSessionRunnerMachineId,
@@ -3351,6 +3392,55 @@ function SessionViewLoaded({
         staleSessionRunnerPresentation,
         t,
     ]);
+    const mcpSelectionRestartBasePresentation = React.useMemo(
+        () => buildMcpSelectionRestartNoticePresentation({
+            sessionActive: session.active === true,
+            metadata: ownerMetadata,
+            operationStatus: null,
+            translate: tLoose,
+        }),
+        [ownerMetadata, session.active],
+    );
+    React.useEffect(() => {
+        if (!mcpSelectionRestartOperation) return;
+        if (mcpSelectionRestartOperation.fingerprint === mcpSelectionRestartBasePresentation?.fingerprint) return;
+        setMcpSelectionRestartOperation(null);
+    }, [mcpSelectionRestartBasePresentation?.fingerprint, mcpSelectionRestartOperation]);
+    const activeMcpSelectionRestartOperationStatus = mcpSelectionRestartOperation
+        && mcpSelectionRestartOperation.fingerprint === mcpSelectionRestartBasePresentation?.fingerprint
+        ? mcpSelectionRestartOperation.status
+        : null;
+    const mcpSelectionRestartPresentation = React.useMemo(
+        () => buildMcpSelectionRestartNoticePresentation({
+            sessionActive: session.active === true,
+            metadata: ownerMetadata,
+            operationStatus: activeMcpSelectionRestartOperationStatus,
+            translate: tLoose,
+        }),
+        [activeMcpSelectionRestartOperationStatus, ownerMetadata, session.active],
+    );
+    const visibleMcpSelectionRestartPresentation = mcpSelectionRestartRequiredBanner.collapsed
+        ? null
+        : mcpSelectionRestartPresentation;
+    const mcpSelectionRestartBadges = React.useMemo<ReadonlyArray<AgentInputStatusBadge>>(() => {
+        if (!mcpSelectionRestartPresentation) return [];
+        return [{
+            ...mcpSelectionRestartPresentation.statusBadge,
+            ...buildComposerBannerBadgeAccessibility({
+                statusLabel: mcpSelectionRestartPresentation.statusBadge.label,
+                collapsed: mcpSelectionRestartRequiredBanner.collapsed,
+                expandHint: t('session.mcpRestartRequired.actions.showBanner'),
+                collapseHint: t('session.mcpRestartRequired.actions.hideBanner'),
+            }),
+            icon: (tint) => <Icon name="arrow-clockwise" size={14} color={tint} />,
+            onPress: mcpSelectionRestartRequiredBanner.toggle,
+        }];
+    }, [
+        mcpSelectionRestartPresentation,
+        mcpSelectionRestartRequiredBanner.collapsed,
+        mcpSelectionRestartRequiredBanner.toggle,
+        t,
+    ]);
     const usageLimitRecoveryBadges = React.useMemo<ReadonlyArray<AgentInputStatusBadge>>(() => {
         if (!usageLimitRecoveryPresentation) return [];
         return [{
@@ -3437,8 +3527,9 @@ function SessionViewLoaded({
     const sessionStatusBadges = React.useMemo<ReadonlyArray<AgentInputStatusBadge>>(() => [
         ...usageLimitRecoveryBadges,
         ...staleSessionRunnerBadges,
+        ...mcpSelectionRestartBadges,
         ...sessionWorkStateBadges,
-    ], [sessionWorkStateBadges, staleSessionRunnerBadges, usageLimitRecoveryBadges]);
+    ], [mcpSelectionRestartBadges, sessionWorkStateBadges, staleSessionRunnerBadges, usageLimitRecoveryBadges]);
     React.useEffect(() => {
         if (shouldRetainSessionActivityStatusBadge({
             activeStatusBadgeKey,
@@ -3448,10 +3539,12 @@ function SessionViewLoaded({
         })) return;
         if (usageLimitRecoveryPresentation && activeStatusBadgeKey === SESSION_USAGE_LIMIT_RECOVERY_BADGE_KEY) return;
         if (staleSessionRunnerPresentation && activeStatusBadgeKey === STALE_SESSION_RUNNER_STATUS_BADGE_KEY) return;
+        if (mcpSelectionRestartPresentation && activeStatusBadgeKey === 'session-mcp-selection-restart-required') return;
         setActiveStatusBadgeKey(null);
     }, [
         activeStatusBadgeKey,
         canEditSessionGoals,
+        mcpSelectionRestartPresentation,
         primaryWorkStateItem,
         sessionWorkflowActivity.activeRuns.length,
         staleSessionRunnerPresentation,
@@ -3489,6 +3582,38 @@ function SessionViewLoaded({
         sessionRouteServerId,
         staleSessionRunnerPresentation,
         staleSessionRunnerRuntimeState,
+    ]);
+    const handleMcpSelectionRestart = React.useCallback(async () => {
+        if (!hasWriteAccess) {
+            Modal.alert(t('common.error'), t('session.sharing.noEditPermission'));
+            return;
+        }
+        if (
+            !mcpSelectionRestartRuntimeState
+            || !mcpSelectionRestartPresentation
+            || mcpSelectionRestartOperation?.status === 'pending'
+        ) return;
+
+        const fingerprint = mcpSelectionRestartPresentation.fingerprint;
+        setMcpSelectionRestartOperation({ fingerprint, status: 'pending' });
+        const result = await restartSessionRunnerForConfigurationChange({
+            runtimeState: mcpSelectionRestartRuntimeState,
+            serverId: sessionRouteServerId,
+        });
+        if (result.status === 'restarted') {
+            setMcpSelectionRestartOperation({ fingerprint, status: 'restarted' });
+            onSessionRunnerRuntimeStatusInvalidated();
+            void sync.refreshSessions();
+            return;
+        }
+        setMcpSelectionRestartOperation({ fingerprint, status: 'failed' });
+    }, [
+        hasWriteAccess,
+        mcpSelectionRestartOperation?.status,
+        mcpSelectionRestartPresentation,
+        mcpSelectionRestartRuntimeState,
+        onSessionRunnerRuntimeStatusInvalidated,
+        sessionRouteServerId,
     ]);
     const markUsageLimitRecoveryIssueResolved = React.useCallback(() => {
         const issueFingerprint = usageLimitRecoveryPresentation?.issueFingerprint
@@ -5993,6 +6118,16 @@ function SessionViewLoaded({
             });
         }, [composerPluginActionController, composerPluginActionScopeSignal, openSessionComposerContributedAction]);
         const composerPluginActionChips = composerPluginPresentation.extraActionChips;
+        const sessionMcpChip = useExistingSessionMcpSelection({
+            sessionId,
+            sessionMetadata: ownerMetadata,
+            machineId: controlMachineTarget?.machineId ?? machineId ?? null,
+            directory: liveAuthoringContext.snapshot.directory,
+            agentId,
+            serverId: capabilityServerId,
+            isReadOnly,
+            sessionActive: session.active === true,
+        });
         const routingControls = useSessionAgentInputRoutingControls({
             isReadOnly,
             participantTargets,
@@ -6399,10 +6534,13 @@ function SessionViewLoaded({
                 combineSessionViewExtraActionChips(
                     combineSessionViewExtraActionChips(
                         combineSessionViewExtraActionChips(
-                            sessionExtraActionPresentation.actionChips,
-                            sessionGoalActionChips,
+                            combineSessionViewExtraActionChips(
+                                sessionExtraActionPresentation.actionChips,
+                                sessionGoalActionChips,
+                            ),
+                            composerPluginActionChips,
                         ),
-                        composerPluginActionChips,
+                        sessionMcpChip ? [sessionMcpChip] : undefined,
                     ),
                     sessionConnectedServicesAuthSwitch.connectedServicesAuthChip
                         ? [sessionConnectedServicesAuthSwitch.connectedServicesAuthChip]
@@ -6414,6 +6552,7 @@ function SessionViewLoaded({
                 sessionExtraActionPresentation.actionChips,
                 sessionGoalActionChips,
                 composerPluginActionChips,
+                sessionMcpChip,
                 sessionConnectedServicesAuthSwitch.connectedServicesAuthChip,
                 routingControls.extraActionChips,
             ],
@@ -6572,6 +6711,25 @@ function SessionViewLoaded({
                         actionBusy={visibleStaleSessionRunnerPresentation.banner.actionBusy}
                         disabled={visibleStaleSessionRunnerPresentation.banner.disabled || !hasWriteAccess}
                         onActionPress={handleStaleSessionRunnerRestart}
+                    />
+                </ComposerAuxiliaryFrame>
+            ) : null}
+            {visibleMcpSelectionRestartPresentation ? (
+                <ComposerAuxiliaryFrame>
+                    <WarningActionBanner
+                        testID={visibleMcpSelectionRestartPresentation.banner.testID}
+                        actionTestID={visibleMcpSelectionRestartPresentation.banner.actionTestID}
+                        title={visibleMcpSelectionRestartPresentation.banner.title}
+                        body={visibleMcpSelectionRestartPresentation.banner.body}
+                        actionLabel={visibleMcpSelectionRestartPresentation.banner.actionLabel}
+                        actionAccessibilityLabel={visibleMcpSelectionRestartPresentation.banner.actionAccessibilityLabel}
+                        actionBusy={visibleMcpSelectionRestartPresentation.banner.actionBusy}
+                        disabled={
+                            visibleMcpSelectionRestartPresentation.banner.disabled
+                            || !hasWriteAccess
+                            || !mcpSelectionRestartRuntimeState
+                        }
+                        onActionPress={handleMcpSelectionRestart}
                     />
                 </ComposerAuxiliaryFrame>
             ) : null}

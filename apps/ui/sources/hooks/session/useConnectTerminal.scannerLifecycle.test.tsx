@@ -66,6 +66,10 @@ vi.mock('expo-camera', () => ({
   useCameraPermissions: () => [{ granted: true }, vi.fn(async () => ({ granted: true }))],
 }));
 
+vi.mock('expo-device', () => ({
+  isDevice: true,
+}));
+
 vi.mock('@/utils/platform/platform', () => ({
   isRunningOnMac: () => false,
 }));
@@ -108,17 +112,8 @@ vi.mock('@/sync/sync', () => ({
 }));
 
 vi.mock('@/auth/terminal/terminalProvisioning', () => ({
-  buildTerminalResponseV1: vi.fn(() => new Uint8Array()),
-  buildTerminalResponseV2: vi.fn(() => new Uint8Array([1, 2, 3])),
   buildTerminalResponseV3: vi.fn(() => new Uint8Array([3, 2, 1])),
 }));
-
-vi.mock('@/sync/domains/state/storageStore', () => {
-  const storage = {
-    getState: () => ({ settings: { terminalConnectLegacySecretExportEnabled: false } }),
-  };
-  return { storage, getStorage: () => storage };
-});
 
 describe('useConnectTerminal (scanner lifecycle)', () => {
   beforeEach(() => {

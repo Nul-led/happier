@@ -523,7 +523,7 @@ describe('syncSettings account settings ciphertext', () => {
         );
     });
 
-    it('recomputes a functional account-settings mutation after a CAS conflict', async () => {
+    it('reapplies an immutable account-settings mutation after a CAS conflict', async () => {
         const encryptionStub = {
             getContentPrivateKey: () => TEST_MACHINE_KEY,
         } as unknown as Encryption;
@@ -574,12 +574,8 @@ describe('syncSettings account settings ciphertext', () => {
             encryption: encryptionStub,
             pendingSettings: {},
             clearPendingSettings: vi.fn(),
-            serverSettingsMutation: (raw) => {
-                const provider = raw.providerSettingsV1 as Record<string, unknown>;
-                return {
-                    ...raw,
-                    providerSettingsV1: { ...provider, machineGrants: [] },
-                };
+            accountSettingsMutation: {
+                operations: [{ op: 'set', key: 'analyticsOptOut', value: true }],
             },
         });
 
@@ -592,7 +588,10 @@ describe('syncSettings account settings ciphertext', () => {
             material: { type: 'dataKey', machineKey: TEST_MACHINE_KEY },
             ciphertext: postBodies[1]!.content.c,
         })?.value as Record<string, any>;
-        expect(committed.providerSettingsV1.machineGrants).toEqual([]);
+        expect(committed.analyticsOptOut).toBe(true);
+        expect(committed.providerSettingsV1.machineGrants).toEqual([
+            { machineId: 'revoked', connectionId: 'pc-a' },
+        ]);
         expect(committed.providerSettingsV1.manualModelsByConnectionId).toEqual({
             'pc-a': [{ id: 'concurrent/model', addedAt: 9 }],
         });

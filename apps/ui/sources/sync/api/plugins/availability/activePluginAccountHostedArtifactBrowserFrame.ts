@@ -18,6 +18,7 @@ type BrowserArtifactFrameServerSnapshot = Readonly<{
 
 type BrowserArtifactFrameRequestAuthority = Readonly<{
     request: (path: string, init?: RequestInit) => Promise<Response>;
+    release?: () => Promise<void>;
 }>;
 
 export type ActivePluginAccountHostedArtifactBrowserFrameIssueInput = Readonly<{
@@ -139,7 +140,7 @@ function defaultDependencies(): ActivePluginAccountHostedArtifactBrowserFrameIss
                 scope,
                 activeRequest,
             });
-            return Object.freeze({ request: authority.request });
+            return Object.freeze({ request: authority.request, release: authority.release });
         },
     };
 }
@@ -180,6 +181,7 @@ export function createActivePluginAccountHostedArtifactBrowserFrameIssuer(
         const retirement = input.accountLifetime.onRetire(abort);
         input.signal?.addEventListener('abort', abort, { once: true });
         if (input.signal?.aborted) abort();
+        let authority: BrowserArtifactFrameRequestAuthority | null = null;
         try {
             const beforeAuthority = readCurrentnessCode({
                 accountLifetime: input.accountLifetime,
@@ -189,7 +191,7 @@ export function createActivePluginAccountHostedArtifactBrowserFrameIssuer(
             if (beforeAuthority) return unavailable(beforeAuthority);
             if (controller.signal.aborted) return unavailable(cancellationCode(input));
 
-            const authority = await dependencies.captureRequestAuthority({
+            authority = await dependencies.captureRequestAuthority({
                 scope: input.accountLifetime.scope,
                 activeRequest: (path, init) => apiSocket.request(path, init),
             });
@@ -256,6 +258,7 @@ export function createActivePluginAccountHostedArtifactBrowserFrameIssuer(
             if (!output.success) return unavailable('response_invalid');
             return Object.freeze({ kind: 'available', value: output.data });
         } finally {
+            await authority?.release?.();
             input.signal?.removeEventListener('abort', abort);
             retirement.dispose();
         }

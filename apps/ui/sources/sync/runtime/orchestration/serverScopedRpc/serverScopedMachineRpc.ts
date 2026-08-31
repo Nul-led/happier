@@ -338,7 +338,9 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
             'scoped',
             async (timeoutMs) =>
                 await createEphemeralServerSocketClient({
-                    serverUrl: context.targetServerUrl,
+                    serverUrl: context.runtimeOrigin ?? context.targetServerUrl,
+                    reachabilityServerUrl: context.targetServerUrl,
+                    ...(context.carrier ? { carrier: context.carrier } : {}),
                     token: context.token,
                     timeoutMs,
                 }),
@@ -405,6 +407,7 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
             });
         } finally {
             socket.disconnect();
+            await context.release?.();
         }
     };
 

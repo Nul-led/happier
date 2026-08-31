@@ -124,7 +124,7 @@ export const LOCAL_ACCOUNT_SETTING_DEFINITIONS = defineSettingDefinitions({
     terminalConnectLegacySecretExportEnabled: {
         schema: z.boolean(),
         default: false,
-        description: 'Allow terminal connect to export its legacy compatibility secret',
+        description: 'Retired terminal-connect field retained only to read and isolate existing local settings',
         storageScope: 'local',
     },
 });

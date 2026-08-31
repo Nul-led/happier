@@ -26,8 +26,8 @@ import { Modal, type CustomModalInjectedProps, type IModal } from '@/modal';
 import { t } from '@/text';
 import {
     composeAppShellInvocationSignal,
-    DEFAULT_INVOCATION_TIMEOUT_MS,
 } from './pluginUiInvocationHost';
+import { PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS } from '@/components/plugins/hostApi/interactionLifetime';
 
 const styles = StyleSheet.create((theme) => ({
     body: { maxHeight: 520, padding: 16, gap: 18 },
@@ -577,7 +577,7 @@ export function createAppShellTransientInteractions(input: Readonly<{
     const owner = createTransientInteractionOwner({
         scope: Object.freeze({ kind: 'app' }),
         isGenerationCurrent: input.isCurrent,
-        deadlineMs: DEFAULT_INVOCATION_TIMEOUT_MS,
+        deadlineMs: PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS,
         present: async (request, options) => await presentAppShellTransientInteraction({
             request,
             signal: options.signal,

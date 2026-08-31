@@ -175,14 +175,14 @@ function resolvedClient<TValue extends PluginAccountCollectionValue<PluginAccoun
 export function createPluginUiDataClient(input: Readonly<{
     pluginId: string;
     accountLifetime: ActiveServerAccountScopeLifetime;
-    availabilityReader: PluginAccountAvailabilityReader;
+    readAvailability: () => PluginAccountAvailabilityReader;
 }>): PluginUiDataClient {
     const resolve = async <TValue extends PluginAccountCollectionValue<PluginAccountCollectionDefinition>>(
         requested: PluginCollectionContractRefV1,
         signal?: AbortSignal,
     ) => {
         assertCurrent(input.accountLifetime, signal);
-        const admission = input.availabilityReader.readCurrentCollectionContract({
+        const admission = input.readAvailability().readCurrentCollectionContract({
             pluginId: requested.pluginId,
             collectionId: requested.collectionId,
         });
@@ -372,7 +372,7 @@ export function createPluginUiDataClient(input: Readonly<{
     const openCollectionQuery = async (
         query: PluginUiCollectionQueryInput,
     ): Promise<PluginUiCollectionQueryPager> => {
-        const admission = input.availabilityReader.readCurrentCollectionContract({
+        const admission = input.readAvailability().readCurrentCollectionContract({
             pluginId: input.pluginId,
             collectionId: query.collectionId,
         });
@@ -408,6 +408,7 @@ export function createPluginUiDataClient(input: Readonly<{
         accountKv: createActivePluginAccountKvClient({
             pluginId: input.pluginId,
             accountLifetime: input.accountLifetime,
+            readAvailability: input.readAvailability,
         }),
     });
 }

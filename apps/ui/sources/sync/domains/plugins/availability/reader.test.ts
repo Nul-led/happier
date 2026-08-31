@@ -416,9 +416,9 @@ describe('Plugin Account Availability reader', () => {
                 normalizedManifest: response.release.normalizedManifest,
             },
         });
-        expect(reader.readCurrentCollectionCapability({ pluginId: 'com.acme.fixture' })).toEqual({
+        expect(reader.readCurrentAccountDataCapability({ pluginId: 'com.acme.fixture' })).toEqual({
             kind: 'unavailable',
-            code: 'collection_not_current',
+            code: 'account_data_not_current',
         });
     });
 
@@ -467,7 +467,7 @@ describe('Plugin Account Availability reader', () => {
         });
     });
 
-    it('admits Account Data rendering only when the current enabled release has a Collection contract', () => {
+    it('admits Account Data rendering for either a Collection contract or declared Account KV', () => {
         const ref = {
             pluginId: 'com.acme.fixture',
             collectionId: 'tasks',
@@ -478,6 +478,7 @@ describe('Plugin Account Availability reader', () => {
         const readerFor = (input: Readonly<{
             contracts: readonly typeof ref[];
             enabled?: boolean;
+            accountStorage?: 'required' | 'optional';
         }>) => createPluginAccountAvailabilityReader({
             scope,
             snapshot: {
@@ -490,32 +491,80 @@ describe('Plugin Account Availability reader', () => {
                             ? { ...response.intent, enabled: input.enabled ?? true }
                             : null,
                         release: response.release
-                            ? { ...response.release, collectionContracts: input.contracts }
+                            ? {
+                                ...response.release,
+                                collectionContracts: input.contracts,
+                                normalizedManifest: {
+                                    ...response.release.normalizedManifest,
+                                    hostAccess: {
+                                        required: input.accountStorage === 'required'
+                                            ? [{
+                                                id: 'account-storage',
+                                                capability: 'storage.account' as const,
+                                                reason: 'Persist Account-scoped plugin state.',
+                                                scope: { enabled: true as const },
+                                            }]
+                                            : [],
+                                        optional: input.accountStorage === 'optional'
+                                            ? [{
+                                                id: 'optional-account-storage',
+                                                capability: 'storage.account' as const,
+                                                reason: 'Persist optional Account-scoped plugin state.',
+                                                scope: { enabled: true as const },
+                                            }]
+                                            : [],
+                                    },
+                                },
+                            }
                             : null,
                     },
                 }],
             },
         });
 
-        expect(readerFor({ contracts: [] }).readCurrentCollectionCapability({
+        expect(readerFor({ contracts: [] }).readCurrentAccountDataCapability({
             pluginId: 'com.acme.fixture',
         })).toEqual({
             kind: 'unavailable',
-            code: 'collection_not_current',
+            code: 'account_data_not_current',
         });
-        // Read capability is release-declared, not inferred from the mutable
-        // intent list. CAS remains Data-owned and can require a writable grant.
-        expect(readerFor({ contracts: [ref] }).readCurrentCollectionCapability({
+        expect(readerFor({ contracts: [ref] }).readCurrentAccountKvCapability({
+            pluginId: 'com.acme.fixture',
+        })).toEqual({
+            kind: 'unavailable',
+            code: 'account_kv_not_current',
+        });
+        expect(readerFor({ contracts: [], accountStorage: 'required' }).readCurrentAccountDataCapability({
             pluginId: 'com.acme.fixture',
         })).toEqual({
             kind: 'available',
             availabilityCursor: 42,
         });
-        expect(readerFor({ contracts: [ref], enabled: false }).readCurrentCollectionCapability({
+        expect(readerFor({ contracts: [], accountStorage: 'required' }).readCurrentAccountKvCapability({
+            pluginId: 'com.acme.fixture',
+        })).toEqual({
+            kind: 'available',
+            availabilityCursor: 42,
+        });
+        expect(readerFor({ contracts: [], accountStorage: 'optional' }).readCurrentAccountDataCapability({
             pluginId: 'com.acme.fixture',
         })).toEqual({
             kind: 'unavailable',
-            code: 'collection_not_current',
+            code: 'account_data_not_current',
+        });
+        // Read capability is release-declared, not inferred from the mutable
+        // intent list. CAS remains Data-owned and can require a writable grant.
+        expect(readerFor({ contracts: [ref] }).readCurrentAccountDataCapability({
+            pluginId: 'com.acme.fixture',
+        })).toEqual({
+            kind: 'available',
+            availabilityCursor: 42,
+        });
+        expect(readerFor({ contracts: [ref], enabled: false }).readCurrentAccountDataCapability({
+            pluginId: 'com.acme.fixture',
+        })).toEqual({
+            kind: 'unavailable',
+            code: 'account_data_not_current',
         });
     });
 

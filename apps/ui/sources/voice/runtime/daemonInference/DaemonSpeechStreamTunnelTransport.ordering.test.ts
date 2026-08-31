@@ -10,8 +10,8 @@ import {
   encodePeerApplicationEncryptedFrameV1,
   openEncryptedDataKeyEnvelopeV1,
   type DaemonVoiceInferenceSttStreamStartRequest,
-  type PeerTcpTunnelFrameV1,
 } from '@happier-dev/protocol';
+import type { PeerTcpTunnelFrame } from '@happier-dev/peer-transport/duplexFrames';
 import { describe, expect, it, vi } from 'vitest';
 
 import { encodeBase64 } from '@/encryption/base64';
@@ -83,7 +83,7 @@ describe('DaemonSpeechStreamTunnelTransport carrier ordering', () => {
     );
     const handlers = new Set<(event: Readonly<{
       substreamId: string;
-      frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>;
+      frame: PeerTcpTunnelFrame;
     }>) => void>();
     let installedKey: Uint8Array | null = null;
     const sentCarrierSequences: number[] = [];
@@ -157,12 +157,12 @@ describe('DaemonSpeechStreamTunnelTransport carrier ordering', () => {
             tunnelId: 'tun_voice',
             direction: 'daemon_to_client' as const,
             sequence: outbound.sequence,
-            payloadBase64: encodeBase64(encodePeerApplicationEncryptedFrameV1({
+            payload: encodePeerApplicationEncryptedFrameV1({
               v: 1,
               kind: encrypted.kind,
               nonceBase64Url: encodeProtocolBase64(responseNonce, 'base64url'),
               ciphertextBase64Url: encodeProtocolBase64(responseCiphertext, 'base64url'),
-            })),
+            }),
           },
         };
         for (const handler of [...handlers]) handler(event);

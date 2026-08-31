@@ -81,6 +81,7 @@ export function RootLayoutNavigationEffects(): React.ReactElement | null {
             const route = buildTerminalConnectWebHref({
                 publicKeyB64Url: pendingTerminalConnect.publicKeyB64Url,
                 serverUrl: pendingTerminalConnect.serverUrl,
+                serverIdentityId: pendingTerminalConnect.serverIdentityId,
                 ...(pendingTerminalConnect.pairing ? { pairing: pendingTerminalConnect.pairing } : {}),
                 ...(pendingTerminalConnect.supportsTokenOnly ? { supportsTokenOnly: true } : {}),
             });

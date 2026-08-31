@@ -11,6 +11,11 @@ import {
 } from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { parseToken } from '@/utils/auth/parseToken';
+import {
+  resolveServerScopedTransport,
+} from './resolveServerScopedTransport';
+
+export { ServerScopedTransportUnavailableError } from './resolveServerScopedTransport';
 
 import { DEFAULT_SERVER_SCOPED_RPC_TIMEOUT_MS } from './serverScopedRpcTypes';
 import type { ScopedRpcSessionEncryptionContext } from './serverScopedRpcTypes';
@@ -31,11 +36,22 @@ export type ResolvedServerSessionRpcContext =
       /** Present for contexts produced by the runtime; optional for injected adapters. */
       credentials?: AuthCredentials;
       encryption: ScopedRpcSessionEncryptionContext | null;
+      runtimeOrigin?: string;
+      carrier?: 'https' | 'iroh';
+      release?: () => Promise<void>;
     }>;
 
 async function buildScopedContext(params: Readonly<{
   serverId: string;
   serverUrl: string;
+  profile?: Readonly<{
+    serverUrl: string;
+    canonicalServerUrl?: string | null;
+    publicServerUrl?: string | null;
+    serverIdentityId?: string | null;
+    irohEndpoint?: import('@happier-dev/protocol').IrohEndpointDescriptorV1;
+    connectionDescriptorRevision?: number;
+  }>;
   timeoutMs: number;
 }>): Promise<Extract<ResolvedServerSessionRpcContext, { scope: 'scoped' }>> {
   const credentials = await TokenStorage.getCredentialsForServerUrl(params.serverUrl, { serverId: params.serverId });
@@ -46,15 +62,22 @@ async function buildScopedContext(params: Readonly<{
   const encryption = isTokenOnlyAuthCredentials(credentials)
     ? null
     : (await createEncryptionFromAuthCredentials(credentials)) as ScopedRpcSessionEncryptionContext;
+  const transport = await resolveServerScopedTransport({
+    profile: params.profile ?? { serverUrl: params.serverUrl },
+    credentials,
+  });
   return {
     scope: 'scoped',
     timeoutMs: params.timeoutMs,
     targetServerId: params.serverId,
-    targetServerUrl: params.serverUrl,
+    targetServerUrl: transport.canonicalServerUrl,
     targetAccountId: parseToken(credentials.token),
     token: credentials.token,
     credentials,
     encryption,
+    runtimeOrigin: transport.runtimeOrigin,
+    carrier: transport.carrier,
+    release: transport.release,
   };
 }
 
@@ -77,6 +100,7 @@ export async function resolveServerScopedSessionContext(params: Readonly<{
         serverId: activeServerId,
         serverUrl: activeSnapshot.serverUrl,
         timeoutMs,
+        profile: getServerProfileById(activeServerId) ?? { serverUrl: activeSnapshot.serverUrl },
       });
     }
     return { scope: 'active', timeoutMs };
@@ -92,5 +116,6 @@ export async function resolveServerScopedSessionContext(params: Readonly<{
     serverId: resolvedTargetServerId,
     serverUrl: targetProfile.serverUrl,
     timeoutMs,
+    profile: targetProfile,
   });
 }

@@ -168,9 +168,12 @@ describe('review comments HTTP action executor', () => {
     it('claims one publication dispatch without manufacturing a comment mutation event', async () => {
         const claim = {
             disposition: 'dispatch' as const,
+            dispatchToken: 'dispatch-token-1',
             publicationPlanId: 'P'.repeat(43),
             entries: [{ happierCommentId: 'comment-1', publicationCorrelationId: 'A'.repeat(43) }],
             verdict: null,
+            instructions: { entries: ['dispatch'] as const, verdict: null },
+            priorResult: null,
         };
         serverFetchSpy.mockResolvedValueOnce(jsonResponse(claim));
         const { createReviewCommentsHttpActionExecutor } = await import('./api');

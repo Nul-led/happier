@@ -89,3 +89,39 @@ export function removeAiLaunchProfile(raw: unknown, profileId: string): readonly
         entry.kind !== 'opaque' && entry.profile.id === profileId ? [] : [entry.raw]
     ));
 }
+
+function removeRecordKey(value: unknown, key: string): unknown {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    if (!Object.prototype.hasOwnProperty.call(value, key)) return value;
+    const next = { ...(value as Readonly<Record<string, unknown>>) };
+    delete next[key];
+    return next;
+}
+
+/**
+ * The single Account Settings mutation for deleting a Launch Profile.
+ *
+ * Profile rows and their preference/binding residue are one user-visible
+ * entity. Apply the deletion against the current CAS winner so Settings and
+ * New Session cannot leave different subsets behind or overwrite concurrent
+ * sibling settings.
+ */
+export function removeAiLaunchProfileFromAccountSettings(
+    raw: Readonly<Record<string, unknown>>,
+    profileId: string,
+): Record<string, unknown> {
+    return {
+        ...raw,
+        profiles: removeAiLaunchProfile(raw.profiles, profileId),
+        ...(raw.lastUsedProfile === profileId ? { lastUsedProfile: null } : {}),
+        ...(Array.isArray(raw.favoriteProfiles)
+            ? { favoriteProfiles: raw.favoriteProfiles.filter((entry) => entry !== profileId) }
+            : {}),
+        ...(Object.prototype.hasOwnProperty.call(raw, 'profileEnabledById')
+            ? { profileEnabledById: removeRecordKey(raw.profileEnabledById, profileId) }
+            : {}),
+        ...(Object.prototype.hasOwnProperty.call(raw, 'secretBindingsByProfileId')
+            ? { secretBindingsByProfileId: removeRecordKey(raw.secretBindingsByProfileId, profileId) }
+            : {}),
+    };
+}

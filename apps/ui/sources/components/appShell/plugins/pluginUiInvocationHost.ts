@@ -20,14 +20,12 @@ import {
 import type { PluginSurfaceDestinationNavigationBinding } from '@/components/plugins/surfaces/pluginSurfaceDestinationNavigation';
 import type { machinePluginStructuredMessageActionExecute } from '@/sync/ops/machineContributionRegistryProjection';
 import type { PluginUiProjectionModel } from '@/sync/domains/plugins/ui/projection';
+import { PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS } from '@/components/plugins/hostApi/interactionLifetime';
 
 export type AppShellPluginUiActionExecute = (
     machineId: string,
     opts: Parameters<typeof machinePluginStructuredMessageActionExecute>[1],
 ) => Promise<Awaited<ReturnType<typeof machinePluginStructuredMessageActionExecute>>>;
-
-/** The app-shell owner bounds every present-user plugin invocation to this lifetime. */
-export const DEFAULT_INVOCATION_TIMEOUT_MS = 30_000;
 
 function invocationError(
     code: string,
@@ -163,7 +161,7 @@ export function createAppShellPluginUiInvocationHost(input: Readonly<{
                     machineId: input.machineId,
                     serverId: input.serverId ?? null,
                     expectedGeneration: input.generation,
-                    timeoutMs: input.timeoutMs ?? DEFAULT_INVOCATION_TIMEOUT_MS,
+                    timeoutMs: input.timeoutMs ?? PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS,
                     ...(input.execute
                         ? { execute: input.execute as PluginSurfaceContributedActionTransport }
                         : {}),

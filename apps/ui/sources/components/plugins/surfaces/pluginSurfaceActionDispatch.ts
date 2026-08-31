@@ -57,6 +57,7 @@ import type {
 } from '@happier-dev/protocol/plugins/ui';
 
 import { machinePluginStructuredMessageActionExecute } from '@/sync/ops/machineContributionRegistryProjection';
+import { qualifyPluginContributionReference } from '@/components/plugins/qualifyPluginContributionReference';
 import {
     resolvePluginUiClientActionRegistration,
     type PluginUiClientExecutableRegistration,
@@ -461,9 +462,10 @@ function clientActionOpenSurface(
         // This is the SDK's public bare-reference qualification rule. It only
         // adapts the Action capability to the existing incumbent navigation
         // owner; it does not resolve a route or create a second surface owner.
-        const destination = typeof view === 'string'
-            ? { pluginId: selection.action.pluginId, localId: view }
-            : { pluginId: view.pluginId, localId: view.localId };
+        const destination = qualifyPluginContributionReference(
+            view,
+            selection.action.pluginId,
+        );
         const outcome = await openSurface({
             destination,
             ...(actionInput === undefined ? {} : { input: actionInput }),

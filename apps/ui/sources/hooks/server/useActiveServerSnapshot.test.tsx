@@ -61,6 +61,46 @@ describe('useActiveServerSnapshot', () => {
         expect(hook.getCurrent().serverUrl).toBe('http://api.other.test');
     });
 
+    it('updates when only the active transport projection changes', async () => {
+        const currentSnapshot = {
+            serverId: 'server-a',
+            serverUrl: 'https://home.example.test',
+            generation: 1,
+            connectionDescriptorRevision: 4,
+            runtimeOrigin: 'http://127.0.0.1:45100',
+            carrier: 'iroh' as const,
+            irohObservedPath: 'direct' as 'direct' | 'relay',
+            irohRelayPolicy: 'automatic' as 'automatic' | 'disabled',
+        };
+        let activeServerListener: (() => void) | null = null;
+        getActiveServerSnapshotMock.mockImplementation(() => currentSnapshot);
+        subscribeActiveServerMock.mockImplementation((listener: () => void) => {
+            activeServerListener = listener;
+            return () => {};
+        });
+
+        const { useActiveServerSnapshot } = await import('./useActiveServerSnapshot');
+        const hook = await renderHook(() => useActiveServerSnapshot());
+        expect(hook.getCurrent().irohObservedPath).toBe('direct');
+
+        currentSnapshot.runtimeOrigin = 'http://127.0.0.1:45101';
+        currentSnapshot.irohObservedPath = 'relay';
+        currentSnapshot.irohRelayPolicy = 'disabled';
+        currentSnapshot.connectionDescriptorRevision = 5;
+        await act(async () => {
+            activeServerListener?.();
+        });
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(hook.getCurrent()).toMatchObject({
+            runtimeOrigin: 'http://127.0.0.1:45101',
+            carrier: 'iroh',
+            irohObservedPath: 'relay',
+            irohRelayPolicy: 'disabled',
+            connectionDescriptorRevision: 5,
+        });
+    });
+
     it('does not subscribe or read the active server while disabled', async () => {
         getActiveServerSnapshotMock.mockReturnValue({
             serverId: 'server-a',

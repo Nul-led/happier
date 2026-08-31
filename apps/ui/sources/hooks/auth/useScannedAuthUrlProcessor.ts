@@ -1,6 +1,8 @@
 import * as React from 'react';
+import { useRouter } from 'expo-router';
 
 import { parseAccountConnectDeepLink } from '@/auth/pairing/accountConnectUrl';
+import { buildHomeQrInviteRestoreRoutePath } from '@/auth/pairing/pairingUrl';
 import { useConnectAccount } from '@/hooks/auth/useConnectAccount';
 import { useConnectTerminal } from '@/hooks/session/useConnectTerminal';
 import { Modal } from '@/modal';
@@ -14,6 +16,7 @@ type UseScannedAuthUrlProcessorOptions = Readonly<{
 }>;
 
 export function useScannedAuthUrlProcessor(options?: UseScannedAuthUrlProcessorOptions) {
+    const router = useRouter();
     const accountConnect = useConnectAccount(options);
     const terminalConnect = useConnectTerminal(options);
 
@@ -22,6 +25,16 @@ export function useScannedAuthUrlProcessor(options?: UseScannedAuthUrlProcessorO
         if (!url) return false;
 
         try {
+            const restorePath = buildHomeQrInviteRestoreRoutePath(url);
+            if (restorePath) {
+                if (options?.allowedUrlKind !== 'account') {
+                    await Modal.alertAsync(t('common.error'), t('modals.invalidAuthUrl'), [{ text: t('common.ok') }]);
+                    return false;
+                }
+                router.push(restorePath);
+                return true;
+            }
+
             if (parseTerminalConnectUrl(url)) {
                 if (options?.allowedUrlKind !== 'terminal') {
                     await Modal.alertAsync(t('common.error'), t('modals.invalidAuthUrl'), [{ text: t('common.ok') }]);
@@ -44,7 +57,7 @@ export function useScannedAuthUrlProcessor(options?: UseScannedAuthUrlProcessorO
             options?.onError?.(error);
             throw error;
         }
-    }, [accountConnect, options, terminalConnect]);
+    }, [accountConnect, options, router, terminalConnect]);
 
     return {
         processAuthUrl,

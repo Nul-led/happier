@@ -152,6 +152,7 @@ export function createServerScopedSessionSendMessage(deps?: Partial<ServerScoped
         serverId: args.serverId,
         timeoutMs: typeof args.timeoutMs === 'number' && args.timeoutMs > 0 ? args.timeoutMs : 30_000,
       });
+      try {
       const session = d.getSession(sessionId);
       if (!session) return { ok: false, errorCode: 'session_not_found', error: 'session_not_found' };
       const displayText = typeof args.displayText === 'string' ? args.displayText : undefined;
@@ -228,6 +229,9 @@ export function createServerScopedSessionSendMessage(deps?: Partial<ServerScoped
           accepted: result.accepted,
         },
       };
+      } finally {
+        if (context.scope === 'scoped') await context.release?.();
+      }
     },
   };
 }

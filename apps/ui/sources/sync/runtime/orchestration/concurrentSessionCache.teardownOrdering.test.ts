@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServerProfilesModuleMock } from '@/dev/testkit';
 
 const reportServerUnreachableSpy = vi.fn<(...args: any[]) => void>();
-const startServerReachabilitySupervisorSpy = vi.fn<(...args: any[]) => Promise<void>>(async () => {});
-const stopServerReachabilitySupervisorSpy = vi.fn<(...args: any[]) => Promise<void>>(async () => {});
+const releaseServerReachabilitySupervisorSpy = vi.fn(async () => {});
+const acquireServerReachabilitySupervisorSpy = vi.fn(async () => ({
+    release: releaseServerReachabilitySupervisorSpy,
+}));
 
 function onlineState() {
     return {
@@ -22,8 +24,8 @@ describe('concurrentSessionCache teardown ordering', () => {
     beforeEach(() => {
         vi.useFakeTimers();
         reportServerUnreachableSpy.mockReset();
-        startServerReachabilitySupervisorSpy.mockClear();
-        stopServerReachabilitySupervisorSpy.mockClear();
+        acquireServerReachabilitySupervisorSpy.mockClear();
+        releaseServerReachabilitySupervisorSpy.mockClear();
     });
 
     afterEach(async () => {
@@ -57,8 +59,7 @@ describe('concurrentSessionCache teardown ordering', () => {
                 }, 0);
                 return () => {};
             },
-            startServerReachabilitySupervisor: startServerReachabilitySupervisorSpy,
-            stopServerReachabilitySupervisor: stopServerReachabilitySupervisorSpy,
+            acquireServerReachabilitySupervisor: acquireServerReachabilitySupervisorSpy,
             reportServerUnreachable: reportServerUnreachableSpy,
             resetServerReachabilitySupervisors: async () => {},
         }));
@@ -67,7 +68,10 @@ describe('concurrentSessionCache teardown ordering', () => {
             TokenStorage: {
                 getCredentialsForServerUrl: vi.fn(async () => ({ token: 'token-b', secret: 'secret-b' })),
             },
+            subscribeHomeCredentialMutations: () => () => {},
             isLegacyAuthCredentials: () => true,
+            isDataKeyAuthCredentials: () => false,
+            isTokenOnlyAuthCredentials: () => false,
         }));
 
         vi.doMock('@/sync/domains/server/serverProfiles', () => createServerProfilesModuleMock({
@@ -75,6 +79,11 @@ describe('concurrentSessionCache teardown ordering', () => {
                 { id: 'server-a', serverUrl: 'https://stack-a.example.test', name: 'Server A' },
                 { id: 'server-b', serverUrl: 'https://stack-b.example.test', name: 'Server B' },
             ],
+            overrides: {
+                loadHomeViewState: () => null,
+                subscribeHomeViewState: () => () => {},
+                subscribeServerProfiles: () => () => {},
+            },
         }));
 
         vi.doMock('@/sync/domains/server/serverRuntime', () => ({
@@ -181,8 +190,8 @@ describe('concurrentSessionCache teardown ordering', () => {
 
         stopConcurrentSessionCacheSync();
 
-        expect(startServerReachabilitySupervisorSpy).toHaveBeenCalled();
-        expect(stopServerReachabilitySupervisorSpy).toHaveBeenCalled();
+        expect(acquireServerReachabilitySupervisorSpy).toHaveBeenCalled();
+        expect(releaseServerReachabilitySupervisorSpy).toHaveBeenCalled();
         expect(reportServerUnreachableSpy).not.toHaveBeenCalled();
     });
 });

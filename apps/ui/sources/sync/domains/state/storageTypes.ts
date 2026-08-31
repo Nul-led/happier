@@ -29,6 +29,8 @@ import {
     SessionActiveModelSelectionV1Schema,
     SessionAppliedModelV1Schema,
     SessionModelSelectionIntentV1Schema,
+    SessionMcpSelectionV1Schema,
+    SessionMcpSelectionRestartRequiredV1Schema,
     SessionWorkspaceLocationV1Schema,
     WindowsRemoteSessionLaunchModeSchema,
 } from "@happier-dev/protocol";
@@ -237,6 +239,10 @@ const MetadataObjectSchema = z.object({
      */
     modelOverrideV1: createModelOverrideV1Schema(z).optional(),
     modelSelectionIntentV1: SessionModelSelectionIntentV1Schema.optional(),
+    /** Per-session overlay for the account-owned managed MCP catalog. */
+    mcpSelectionV1: SessionMcpSelectionV1Schema.optional(),
+    /** Applied baseline retained only while an active runner needs a restart. */
+    mcpSelectionRestartRequiredV1: SessionMcpSelectionRestartRequiredV1Schema.optional(),
     sessionAppliedModelV1: SessionAppliedModelV1Schema.optional(),
     /**
      * Local-only markers for committed transcript messages that should be treated as discarded

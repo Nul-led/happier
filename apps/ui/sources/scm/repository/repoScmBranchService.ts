@@ -51,6 +51,7 @@ export class RepoScmBranchService {
         serverId?: string | null;
         machineId: string;
         path: string;
+        homeDir?: string | null;
         includeRemotes?: boolean;
     }>): Promise<ReadonlyArray<ScmBranchListEntry>> {
         const request = resolveRepoScmMachinePathRequest(input);
@@ -111,8 +112,10 @@ export class RepoScmBranchService {
     }
 
     readCachedBranchesForMachinePath(input: Readonly<{
+        serverId?: string | null;
         machineId: string;
         path: string;
+        homeDir?: string | null;
         includeRemotes?: boolean;
     }>): ReadonlyArray<ScmBranchListEntry> {
         const request = resolveRepoScmMachinePathRequest(input);

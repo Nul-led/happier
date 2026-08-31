@@ -7,8 +7,13 @@ import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/acti
 type SharedValueEntry = {
     value: unknown;
     dispose(): void;
-    leaseCount: number;
+    onExecutionOriginChange?: () => void;
+    readonly leases: Set<SharedValueLease>;
 };
+
+type SharedValueLease = Readonly<{
+    executionOriginKey: string;
+}>;
 
 type GenerationScope = {
     readonly immutableGenerationId: string;
@@ -17,7 +22,10 @@ type GenerationScope = {
 };
 
 type PluginScopeRecord = {
-    readonly slots: Map<string, { current: GenerationScope | null }>;
+    /** Per-transport currentness fences; these never participate in value identity. */
+    readonly origins: Map<string, { current: GenerationScope | null }>;
+    /** Opaque value identity is exactly Account + plugin + immutable generation. */
+    readonly generations: Map<string, GenerationScope>;
 };
 
 type AccountScopeRecord = {
@@ -28,6 +36,7 @@ type AccountScopeRecord = {
 const accountScopes = new WeakMap<ActiveServerAccountScopeLifetime, AccountScopeRecord>();
 
 function disposeSharedValue(entry: SharedValueEntry): void {
+    entry.leases.clear();
     try {
         entry.dispose();
     } catch {
@@ -48,9 +57,9 @@ function retireAccount(record: AccountScopeRecord): void {
     if (record.retired) return;
     record.retired = true;
     for (const plugin of record.plugins.values()) {
-        for (const slot of plugin.slots.values()) {
-            if (slot.current) retireGeneration(slot.current);
-        }
+        for (const generation of plugin.generations.values()) retireGeneration(generation);
+        plugin.generations.clear();
+        plugin.origins.clear();
     }
     record.plugins.clear();
 }
@@ -86,12 +95,17 @@ function createGenerationFacade(input: Readonly<{
     account: AccountScopeRecord;
     slot: { current: GenerationScope | null };
     generation: GenerationScope;
+    executionOriginKey: string;
     isCurrent(): boolean;
 }>): PluginUiEphemeralSharedScope {
     return Object.freeze({
         acquire<T>(
             localKey: string,
-            create: () => Readonly<{ value: T; dispose(): void }>,
+            create: () => Readonly<{
+                value: T;
+                dispose(): void;
+                onExecutionOriginChange?(): void;
+            }>,
         ) {
             if (
                 input.account.retired
@@ -107,7 +121,10 @@ function createGenerationFacade(input: Readonly<{
                 entry = {
                     value: created.value,
                     dispose: created.dispose,
-                    leaseCount: 0,
+                    ...(created.onExecutionOriginChange === undefined
+                        ? {}
+                        : { onExecutionOriginChange: created.onExecutionOriginChange }),
+                    leases: new Set(),
                 };
                 // `create` is trusted plugin code and may synchronously retire
                 // this mount. Refuse publication and dispose its value if the
@@ -125,7 +142,8 @@ function createGenerationFacade(input: Readonly<{
                 input.generation.values.set(localKey, entry);
             }
 
-            entry.leaseCount += 1;
+            const leaseRecord = Object.freeze({ executionOriginKey: input.executionOriginKey });
+            entry.leases.add(leaseRecord);
             let released = false;
             const leasedEntry = entry;
             return Object.freeze({
@@ -133,11 +151,26 @@ function createGenerationFacade(input: Readonly<{
                 release(): void {
                     if (released) return;
                     released = true;
+                    const activeBeforeRelease = leasedEntry.leases.values().next().value as SharedValueLease | undefined;
+                    if (!leasedEntry.leases.delete(leaseRecord)) return;
                     if (input.generation.values.get(localKey) !== leasedEntry) return;
-                    leasedEntry.leaseCount -= 1;
-                    if (leasedEntry.leaseCount !== 0) return;
-                    input.generation.values.delete(localKey);
-                    disposeSharedValue(leasedEntry);
+                    if (leasedEntry.leases.size === 0) {
+                        input.generation.values.delete(localKey);
+                        disposeSharedValue(leasedEntry);
+                        return;
+                    }
+                    const activeAfterRelease = leasedEntry.leases.values().next().value as SharedValueLease | undefined;
+                    if (
+                        activeBeforeRelease === leaseRecord
+                        && activeAfterRelease?.executionOriginKey !== input.executionOriginKey
+                    ) {
+                        try {
+                            leasedEntry.onExecutionOriginChange?.();
+                        } catch {
+                            // A plugin-owned lifecycle observer cannot prevent
+                            // the host from completing lease retirement.
+                        }
+                    }
                 },
             });
         },
@@ -153,7 +186,7 @@ export function getPluginUiEphemeralSharedScope(input: Readonly<{
     accountLifetime: ActiveServerAccountScopeLifetime | null;
     pluginId: string;
     immutableGenerationId: string;
-    /** Exact producer execution/materialization origin; local mounts use one slot. */
+    /** Exact transport participant; it fences currentness but never keys the value. */
     executionOrigin?: PluginMachineExecutionOriginV1 | null;
     isCurrent(): boolean;
 }>): PluginUiEphemeralSharedScope | null {
@@ -163,27 +196,37 @@ export function getPluginUiEphemeralSharedScope(input: Readonly<{
 
     let plugin = account.plugins.get(input.pluginId);
     if (!plugin) {
-        plugin = { slots: new Map() };
+        plugin = { origins: new Map(), generations: new Map() };
         account.plugins.set(input.pluginId, plugin);
     }
 
-    const originSlot = readExecutionOriginSlot(input.executionOrigin);
-    let slot = plugin.slots.get(originSlot);
+    const executionOriginKey = readExecutionOriginSlot(input.executionOrigin);
+    let slot = plugin.origins.get(executionOriginKey);
     if (!slot) {
         slot = { current: null };
-        plugin.slots.set(originSlot, slot);
+        plugin.origins.set(executionOriginKey, slot);
     }
-    let generation = slot.current;
-    if (!generation || generation.immutableGenerationId !== input.immutableGenerationId) {
-        if (generation) {
-            retireGeneration(generation);
-        }
+    let generation = plugin.generations.get(input.immutableGenerationId);
+    if (!generation || generation.retired) {
         generation = {
             immutableGenerationId: input.immutableGenerationId,
             values: new Map(),
             retired: false,
         };
+        plugin.generations.set(input.immutableGenerationId, generation);
+    }
+    const precedingGeneration = slot.current;
+    if (precedingGeneration !== generation) {
         slot.current = generation;
+        const precedingStillCurrent = precedingGeneration
+            ? [...plugin.origins.values()].some((origin) => origin.current === precedingGeneration)
+            : false;
+        if (precedingGeneration && !precedingStillCurrent) {
+            if (plugin.generations.get(precedingGeneration.immutableGenerationId) === precedingGeneration) {
+                plugin.generations.delete(precedingGeneration.immutableGenerationId);
+            }
+            retireGeneration(precedingGeneration);
+        }
     }
 
     return createGenerationFacade({
@@ -191,6 +234,7 @@ export function getPluginUiEphemeralSharedScope(input: Readonly<{
         account,
         slot,
         generation,
+        executionOriginKey,
         isCurrent: input.isCurrent,
     });
 }

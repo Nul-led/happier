@@ -40,6 +40,9 @@ export type ScopedServerRpcContext = Readonly<{
     timeoutMs: number;
     targetServerId: string;
     targetServerUrl: string;
+    runtimeOrigin?: string;
+    carrier?: 'https' | 'iroh';
+    release?: () => Promise<void>;
     token: string;
     encryption: ScopedRpcEncryptionContext | null;
 }>;
@@ -70,7 +73,11 @@ export type ScopedSessionEncryption = Readonly<{
 }>;
 
 export type ScopedSocketConnectParams = Readonly<{
+    /** Actual verified Socket.IO origin. */
     serverUrl: string;
+    /** Stable Home identity/auth audience and reachability key. */
+    reachabilityServerUrl?: string;
+    carrier?: 'https' | 'iroh';
     token: string;
     timeoutMs: number;
 }>;

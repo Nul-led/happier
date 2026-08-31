@@ -2446,12 +2446,12 @@ export function PluginSurfaceHost(props: Readonly<(
     const hasAvailabilityReader = availabilityReader !== null;
     // Client construction alone is not a renderer admission fact: every active
     // Account exposes the bound reader. Availability remains the one owner of
-    // whether this exact current release has an Account Collection contract to
-    // read/watch; it neither leaks the contract inventory nor grants CAS.
-    const currentAccountCollectionCapability = availabilityReader?.readCurrentCollectionCapability({
+    // whether this exact current release admits Account Data; it leaks neither
+    // Collection/declaration details nor mutation authority.
+    const currentAccountDataCapability = availabilityReader?.readCurrentAccountDataCapability({
         pluginId: mountedPluginId,
     });
-    const accountCollectionRendererEligible = currentAccountCollectionCapability?.kind === 'available';
+    const accountDataRendererEligible = currentAccountDataCapability?.kind === 'available';
     // One client belongs to this mounted plugin and its captured Account
     // lifetime. It is only a thin adapter over the Data owner: no UI cache,
     // query planner, cursor, watcher, or competing Account epoch lives here.
@@ -2462,7 +2462,7 @@ export function PluginSurfaceHost(props: Readonly<(
                 ? createPluginUiDataClient({
                     pluginId: mountedPluginId,
                     accountLifetime,
-                    availabilityReader: reader,
+                    readAvailability: () => availabilityReaderRef.current ?? reader,
                 })
                 : null;
         },
@@ -2483,18 +2483,18 @@ export function PluginSurfaceHost(props: Readonly<(
             : undefined,
         [mountedPluginUiDataClient],
     );
-    // A renderer whose current release admits Account Collection Data remains
-    // usable through a daemon outage: its reads/CAS keep their own scoped
-    // currentness and transport authority. Do not make client construction a
-    // general offline admission — a zero-Collection release keeps the existing
-    // exact daemon/endpoint gate. The controller separately owns the factual
-    // daemon-backed Action/Resource method set; no renderer infers it.
+    // A renderer whose current release admits Account Data remains usable
+    // through a daemon outage: Collection reads/CAS and Account KV keep their
+    // own scoped currentness and transport authority. Client construction is
+    // not itself admission; the current release must carry an exact Collection
+    // contract or required storage.account declaration. The controller
+    // separately owns the factual daemon-backed Action/Resource method set.
     const localControllerInteractionEnabled = accountLocalInteractionEnabled
         && projectionInteractionEnabled !== false
         && originInteractionCurrent;
     const rendererInteractionEnabled = localControllerInteractionEnabled
         && (
-            accountCollectionRendererEligible
+            accountDataRendererEligible
             || (daemonInteraction.hasAddressedMachine
                 ? daemonInteraction.daemonReachable
                 : daemonInteraction.endpointOnline)

@@ -6,7 +6,7 @@ export function resolveServerRuntimeOrigin(snapshot: Readonly<{
     runtimeOrigin?: string;
     carrier?: 'https' | 'iroh';
 }>): string {
-    if (snapshot.carrier === 'iroh' && typeof snapshot.runtimeOrigin === 'string' && snapshot.runtimeOrigin.trim()) {
+    if ((snapshot.carrier === 'iroh' || snapshot.carrier === 'https') && typeof snapshot.runtimeOrigin === 'string' && snapshot.runtimeOrigin.trim()) {
         const candidate = snapshot.runtimeOrigin.trim().replace(/\/+$/, '');
         try {
             const parsed = new URL(candidate);

@@ -1,6 +1,9 @@
+import * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ScmWorkingSnapshot } from '@/sync/domains/state/storageTypes';
 import type { machineScmChangeExclude, machineScmChangeInclude } from '@/sync/ops/scm/machineScm';
+import { renderScreen } from '@/dev/testkit';
+import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 
 const machineScmChangeIncludeSpy = vi.hoisted(() => vi.fn<typeof machineScmChangeInclude>(async () => ({ success: true })));
 const machineScmChangeExcludeSpy = vi.hoisted(() => vi.fn<typeof machineScmChangeExclude>(async () => ({ success: true })));
@@ -117,5 +120,32 @@ describe('applyWorkspaceFileStageAction', () => {
             { cwd: '/repo', paths: ['src/a.ts'] },
             { serverId: 'server-1' },
         );
+    });
+
+    it('describes real index changes as stage and unstage actions', async () => {
+        const { WorkspaceScmCommitSelectionToggleButton } = await import('./WorkspaceScmCommitSelectionToggleButton');
+        const filePath = 'src/a.ts';
+
+        const staged = await renderScreen(React.createElement(WorkspaceScmCommitSelectionToggleButton, {
+            scope: { serverId: 'server-1', machineId: 'machine-1', rootPath: '/repo' },
+            snapshot: createSnapshot(),
+            scmWriteEnabled: true,
+            commitStrategy: 'git_staging',
+            file: { fullPath: filePath } as any,
+            selectedForCommit: false,
+        }));
+        expect(staged.findByTestId(`scm-commit-selection-toggle-${toTestIdSafeValue(filePath)}`)?.props.accessibilityLabel)
+            .toBe('files.fileActions.stageFile');
+
+        const unstaged = await renderScreen(React.createElement(WorkspaceScmCommitSelectionToggleButton, {
+            scope: { serverId: 'server-1', machineId: 'machine-1', rootPath: '/repo' },
+            snapshot: createSnapshot(),
+            scmWriteEnabled: true,
+            commitStrategy: 'git_staging',
+            file: { fullPath: filePath } as any,
+            selectedForCommit: true,
+        }));
+        expect(unstaged.findByTestId(`scm-commit-selection-toggle-${toTestIdSafeValue(filePath)}`)?.props.accessibilityLabel)
+            .toBe('files.fileActions.unstageFile');
     });
 });

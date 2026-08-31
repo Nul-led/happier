@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HappyError } from '@/utils/errors/errors';
 import { createExternalOAuthProvider } from './externalOAuthProvider';
+import type { ExternalOAuthEndpointRequest } from './types';
 
 vi.mock('@/sync/domains/server/serverConfig', () => ({
     getServerUrl: () => 'https://api.example.test',
@@ -53,6 +54,102 @@ afterEach(() => {
 });
 
 describe('createExternalOAuthProvider', () => {
+    it('targets an injected Account Directory endpoint and requests the restricted purpose', async () => {
+        const requestAtEndpoint = vi.fn<ExternalOAuthEndpointRequest>(async () => jsonResponse({
+            ok: true,
+            status: 200,
+            body: {
+                url: 'https://oauth.example.test/directory',
+                purpose: 'account_directory',
+                credentialTarget: 'account_directory',
+                endpointUrl: 'https://directory.example.test',
+                endpointServerIdentityId: 'directory-1',
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            },
+        }) as Response);
+
+        const provider = createProvider();
+        await expect(provider.getExternalAuthUrl(
+            { mode: 'keyless', proofHash: 'abc123' },
+            {
+                request: requestAtEndpoint,
+                purpose: 'account_directory',
+                endpointUrl: 'https://directory.example.test',
+                endpointServerIdentityId: 'directory-1',
+            },
+        )).resolves.toEqual(expect.objectContaining({
+            url: 'https://oauth.example.test/directory',
+            purpose: 'account_directory',
+        }));
+        expect(requestAtEndpoint).toHaveBeenCalledWith(
+            expect.stringContaining('/v1/auth/external/github/params?'),
+            undefined,
+            { includeAuth: false, retry: 'none' },
+        );
+        expect(requestAtEndpoint.mock.calls[0]?.[0]).toContain('purpose=account_directory');
+        expect(requestAtEndpoint.mock.calls[0]?.[0]).toContain(
+            'endpointUrl=https%3A%2F%2Fdirectory.example.test',
+        );
+        expect(requestAtEndpoint.mock.calls[0]?.[0]).toContain(
+            'endpointServerIdentityId=directory-1',
+        );
+    });
+
+    it('emits the canonical keyed query only for explicit Account Directory context', async () => {
+        const requestAtEndpoint = vi.fn<ExternalOAuthEndpointRequest>(async () => jsonResponse({
+            ok: true,
+            status: 200,
+            body: {
+                url: 'https://oauth.example.test/directory',
+                purpose: 'account_directory',
+                credentialTarget: 'account_directory',
+                endpointUrl: 'https://directory.example.test',
+                endpointServerIdentityId: 'directory-1',
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            },
+        }) as Response);
+        const provider = createProvider();
+
+        await provider.getExternalAuthUrl(
+            { mode: 'keyed', publicKey: 'pk1' },
+            {
+                request: requestAtEndpoint,
+                purpose: 'account_directory',
+                endpointUrl: 'https://directory.example.test',
+                endpointServerIdentityId: 'directory-1',
+            },
+        );
+
+        expect(requestAtEndpoint.mock.calls[0]?.[0]).toContain('mode=keyed');
+        expect(requestAtEndpoint.mock.calls[0]?.[0]).toContain('publicKey=pk1');
+    });
+
+    it('rejects Account Directory params that do not bind the requested endpoint identity', async () => {
+        const requestAtEndpoint = vi.fn<ExternalOAuthEndpointRequest>(async () => jsonResponse({
+            ok: true,
+            status: 200,
+            body: {
+                url: 'https://oauth.example.test/directory',
+                purpose: 'account_directory',
+                credentialTarget: 'account_directory',
+                endpointUrl: 'https://directory.example.test',
+                endpointServerIdentityId: 'directory-tampered',
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            },
+        }) as Response);
+        const provider = createProvider();
+
+        await expect(provider.getExternalAuthUrl(
+            { mode: 'keyless', proofHash: 'abc123' },
+            {
+                request: requestAtEndpoint,
+                purpose: 'account_directory',
+                endpointUrl: 'https://directory.example.test',
+                endpointServerIdentityId: 'directory-1',
+            },
+        )).rejects.toThrow('external-auth-unavailable');
+    });
+
     it('returns the external auth URL when params endpoint is successful', async () => {
         stubFetch(async () => ({
             ok: true,

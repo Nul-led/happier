@@ -10,7 +10,7 @@ import { useAllProfileMachineInventorySnapshots } from '@/sync/domains/machines/
 import { useActivePluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/projection';
 import type { PluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/reader';
 import { storage } from '@/sync/domains/state/storageStore';
-import { useSetting } from '@/sync/store/hooks';
+import { useSetting, useSettingsVersion } from '@/sync/store/hooks';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
 import {
@@ -99,6 +99,7 @@ export function usePluginMachineExecutionOriginSelection(params: Readonly<{
     const reader = useActivePluginAccountAvailabilityReader();
     const machineSnapshots = useAllProfileMachineInventorySnapshots();
     const selections = useSetting('machineAdministrationSelectionsV1');
+    const settingsVersion = useSettingsVersion();
     const storedOrigin = selections.pluginExecutionOriginsByPluginId[params.pluginId] ?? null;
     const materializationAdmission = React.useMemo(
         () => reader?.readMaterializations() ?? null,
@@ -120,10 +121,11 @@ export function usePluginMachineExecutionOriginSelection(params: Readonly<{
 
     React.useEffect(() => {
         if (storedOrigin || state.kind !== 'selected' || state.selectionSource !== 'soleCandidate') return;
-        fireAndForget(persistMachineAdministrationSelectionMutation((current) => (
+        if (settingsVersion === null) return;
+        fireAndForget(persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
             setPluginMachineExecutionOriginPreference(current, params.pluginId, state.origin)
         )), { tag: 'usePluginMachineExecutionOriginSelection.initialize' });
-    }, [params.pluginId, state, storedOrigin]);
+    }, [params.pluginId, settingsVersion, state, storedOrigin]);
 
     const selectOrigin = React.useCallback((origin: PluginMachineExecutionOriginV1) => {
         const proposed = resolvePluginMachineExecutionOriginState({
@@ -132,16 +134,18 @@ export function usePluginMachineExecutionOriginSelection(params: Readonly<{
             candidates,
         });
         if (proposed.kind !== 'selected') return;
-        fireAndForget(persistMachineAdministrationSelectionMutation((current) => (
+        if (settingsVersion === null) return;
+        fireAndForget(persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
             setPluginMachineExecutionOriginPreference(current, params.pluginId, proposed.origin)
         )), { tag: 'usePluginMachineExecutionOriginSelection.select' });
-    }, [candidates, params.pluginId]);
+    }, [candidates, params.pluginId, settingsVersion]);
 
     const clearOrigin = React.useCallback(() => {
-        fireAndForget(persistMachineAdministrationSelectionMutation((current) => (
+        if (settingsVersion === null) return;
+        fireAndForget(persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
             clearPluginMachineExecutionOriginPreference(current, params.pluginId)
         )), { tag: 'usePluginMachineExecutionOriginSelection.clear' });
-    }, [params.pluginId]);
+    }, [params.pluginId, settingsVersion]);
 
     const resolveExecutionOrigin = React.useCallback(() => resolveFreshPluginMachineExecutionOrigin({
         pluginId: params.pluginId,

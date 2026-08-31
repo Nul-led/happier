@@ -22,8 +22,12 @@ const setting = Object.freeze({
     secret: false,
     setting: Object.freeze({
         id: 'density',
+        contributionId: 'dashboard',
         qualifiedId: 'acme.dashboard/density',
         descriptor: Object.freeze({
+            id: 'density',
+            title: 'Density',
+            target: Object.freeze({ kind: 'plugin' }),
             scope: 'account',
             schema: Object.freeze({ type: 'string' }),
             secret: false,
@@ -52,6 +56,7 @@ function model(inventory: Readonly<Record<string, unknown>>) {
             generation: '7',
         }),
         visible: true,
+        requiredHostMethods: Object.freeze([]),
         declarativeInventory: Object.freeze({
             actions: Object.freeze([]),
             destinations: Object.freeze([]),
@@ -113,7 +118,7 @@ describe('admitDeclarativeStaticModel', () => {
     ) => {
         const complete = model({});
         const completeInventory = complete.declarativeInventory;
-        const candidateInventory = Object.fromEntries(Object.entries(completeInventory)
+        const candidateInventory: Record<string, unknown> = Object.fromEntries(Object.entries(completeInventory)
             .filter(([key]) => key !== inventoryKey));
         if (replacement !== undefined) candidateInventory[inventoryKey] = replacement;
 

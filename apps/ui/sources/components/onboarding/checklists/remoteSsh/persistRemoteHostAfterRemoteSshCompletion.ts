@@ -10,9 +10,9 @@ import {
 } from '@/sync/domains/remoteHosts/remoteHostModel';
 import { upsertRemoteHostLocalOverrides } from '@/sync/domains/remoteHosts/remoteHostLocalOverrides';
 import { randomUUID } from '@/platform/randomUUID';
-import { upsertServerProfile } from '@/sync/domains/server/serverProfiles';
+import { adoptHomeProfile } from '@/sync/domains/server/serverProfiles';
 
-export function persistRemoteHostAfterRemoteSshCompletion(params: Readonly<{
+export async function persistRemoteHostAfterRemoteSshCompletion(params: Readonly<{
     managementEnabled: boolean;
     secretMaterialEnabled: boolean;
     remoteHostsRaw: RemoteHostsV1Raw;
@@ -41,7 +41,14 @@ export function persistRemoteHostAfterRemoteSshCompletion(params: Readonly<{
     );
     const shouldSaveSecret = Boolean(params.runContext?.saveSecretMaterial && params.secretMaterialEnabled);
     const relayProfile = params.completion.relayRuntimeUrl
-        ? upsertServerProfile({ serverUrl: params.completion.relayRuntimeUrl, source: 'manual' })
+        ? await adoptHomeProfile({
+            descriptor: {
+                serverUrl: params.completion.relayRuntimeUrl,
+                canonicalServerUrl: params.completion.relayRuntimeUrl,
+            },
+            source: 'manual',
+            preserveUserLabel: true,
+        })
         : null;
 
     if (!params.managementEnabled) {

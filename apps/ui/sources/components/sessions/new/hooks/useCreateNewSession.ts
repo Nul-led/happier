@@ -230,7 +230,7 @@ function resolveStaticAgentId(params: Readonly<{
 function resolveNewSessionLaunchTargetServerId(params: Readonly<{
     targetServerId?: string | null;
     allowedTargetServerIds?: ReadonlyArray<string>;
-}>): string {
+}>): string | null {
     const requestedServerId = typeof params.targetServerId === 'string' ? params.targetServerId.trim() : '';
     const snapshot = getActiveServerSnapshot();
     const allowedServerIds = Array.isArray(params.allowedTargetServerIds)
@@ -241,10 +241,7 @@ function resolveNewSessionLaunchTargetServerId(params: Readonly<{
         activeServerId: snapshot.serverId,
         allowedServerIds,
     });
-    return typeof targetResolution.targetServerId === 'string'
-        && targetResolution.targetServerId.trim().length > 0
-        ? targetResolution.targetServerId
-        : snapshot.serverId;
+    return targetResolution.targetServerId;
 }
 
 function buildProviderLaunchErrorScopeKey(
@@ -257,7 +254,7 @@ function buildProviderLaunchErrorScopeKey(
         ?? { kind: 'backend' as const, backendId: params.agentType };
     return JSON.stringify([
         normalizeLaunchScopePart(params.selectedMachineId),
-        resolvedTargetServerId ?? resolveNewSessionLaunchTargetServerId(params),
+        resolvedTargetServerId ?? resolveNewSessionLaunchTargetServerId(params) ?? 'no-target',
         params.agentType,
         resolveBackendTargetKeyV2(backendTarget),
         params.useProfiles,
@@ -491,6 +488,11 @@ export function useCreateNewSession(params: Readonly<{
 
         try {
             const resolvedTargetServerId = resolveNewSessionLaunchTargetServerId(current);
+            if (!resolvedTargetServerId) {
+                Modal.alert(t('common.error'), t('newSession.failedToStart'));
+                current.setIsCreating(false);
+                return;
+            }
             const launchScopeKey = buildNewSessionLaunchScopeKey({
                 machineId: selectedMachineId,
                 serverId: resolvedTargetServerId,
@@ -508,6 +510,7 @@ export function useCreateNewSession(params: Readonly<{
                     ? latestRequestedPath
                     : latest.selectedPath).trim();
                 const latestResolvedTargetServerId = resolveNewSessionLaunchTargetServerId(latest);
+                if (!latestResolvedTargetServerId) return 'no-target';
                 return buildNewSessionLaunchScopeKey({
                     machineId: latest.selectedMachineId,
                     serverId: latestResolvedTargetServerId,
@@ -638,9 +641,6 @@ export function useCreateNewSession(params: Readonly<{
                     backendTarget: current.backendTarget,
                     selectedBuiltInAgentId: staticAgentId,
                 }));
-            }
-            if (profilesActive) {
-                settingsUpdate.lastUsedProfile = current.selectedProfileId;
             }
             applySettings(settingsUpdate);
 
@@ -1130,6 +1130,9 @@ export function useCreateNewSession(params: Readonly<{
                     publishLaunchAttempt(null);
                     current.setIsCreating(false);
                     return;
+                }
+                if (profilesActive) {
+                    applySettings({ lastUsedProfile: current.selectedProfileId });
                 }
                 const spawnedBackendTargetKey = resolveBackendTargetKeyV2(selectedBackendTarget);
                 const modelPolicyAgentId = current.staticAgentId ?? current.agentType;

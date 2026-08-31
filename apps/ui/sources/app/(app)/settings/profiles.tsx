@@ -50,10 +50,9 @@ import {
     appendAiLaunchProfile,
     readUiAiLaunchProfiles,
     readUiAiLaunchProfilesForLegacyUi,
-    removeAiLaunchProfile,
     replaceAiLaunchProfile,
 } from '@/sync/domains/profiles/aiLaunchProfileCollection';
-import { useApplyProfileSave } from '@/sync/store/settingsWriters';
+import { useApplyProfileSave, useDeleteAiLaunchProfile } from '@/sync/store/settingsWriters';
 
 interface ProfileManagerProps {
     onProfileSelect?: (profile: AIBackendProfile | null) => void;
@@ -72,7 +71,6 @@ const ProfileManager = React.memo(function ProfileManager({ onProfileSelect, sel
     const writeRawProfiles = React.useCallback((next: readonly unknown[]) => {
         setRawProfiles(next as AIBackendProfile[]);
     }, [setRawProfiles]);
-    const [lastUsedProfile, setLastUsedProfile] = useSettingMutable('lastUsedProfile');
     const [favoriteProfileIds, setFavoriteProfileIds] = useSettingMutable('favoriteProfiles');
     const [profileEnabledByIdRaw, setProfileEnabledById] = useSettingMutable('profileEnabledById');
     const profileEnabledById = React.useMemo(
@@ -90,6 +88,7 @@ const ProfileManager = React.memo(function ProfileManager({ onProfileSelect, sel
     const [secrets, setSecrets] = useSavedSecretsMutable();
     const [secretBindingsByProfileId, setSecretBindingsByProfileId] = useCurrentSecretBindingsByProfileIdMutable();
     const applyProfileSave = useApplyProfileSave();
+    const deleteAiLaunchProfile = useDeleteAiLaunchProfile();
     const administrationTargetSelection = useMachineAdministrationTargetSelection(
         MACHINE_ADMINISTRATION_SELECTION_KEYS_V1.agents,
     );
@@ -229,11 +228,14 @@ const ProfileManager = React.memo(function ProfileManager({ onProfileSelect, sel
         );
         if (!confirmed) return;
 
-        writeRawProfiles(removeAiLaunchProfile(rawProfiles, profile.id));
-
-        // Clear last used profile if it was deleted
-        if (lastUsedProfile === profile.id) {
-            setLastUsedProfile(null);
+        try {
+            await deleteAiLaunchProfile(profile.id);
+        } catch (error) {
+            Modal.alert(
+                t('common.error'),
+                error instanceof Error ? error.message : t('common.error'),
+            );
+            return;
         }
 
         // Notify parent if this was the selected profile
@@ -252,7 +254,6 @@ const ProfileManager = React.memo(function ProfileManager({ onProfileSelect, sel
         if (onProfileSelect) {
             onProfileSelect(profile);
         }
-        setLastUsedProfile(profileId);
     };
 
     const buildProfileEnablementActions = React.useCallback((profile: AIBackendProfile): ItemAction[] => {

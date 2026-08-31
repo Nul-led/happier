@@ -15,6 +15,7 @@ import {
     useSettingMutable,
     useSettings,
 } from '@/sync/domains/state/storage';
+import { useSettingsVersion } from '@/sync/store/hooks';
 import type { Machine, MachineMetadata, Session } from '@/sync/domains/state/storageTypes';
 import {
     machineStopDaemon,
@@ -255,6 +256,7 @@ export default function MachineDetailScreen() {
     const windowsRemoteSessionLaunchModeDefault = useSetting('sessionWindowsRemoteSessionLaunchMode');
     const [terminalTmuxByMachineId, setTerminalTmuxByMachineId] = useSettingMutable('sessionTmuxByMachineId');
     const settings = useSettings();
+    const settingsVersion = useSettingsVersion();
     const hasDurableProviderCleanup = useMemo(() => {
         if (!machineId || !machine?.revokedAt) return false;
         return hasProviderMachineStateV1(
@@ -491,9 +493,9 @@ export default function MachineDetailScreen() {
 
             setIsRevokingMachine(true);
             try {
-                const result = await machineRevokeWithProviderCleanup(machineId, {
+                const result = await machineRevokeWithProviderCleanup(machineId, settingsVersion, {
                     revoke: machineRevokeFromAccount,
-                    mutateAccountSettings: sync.mutateAccountSettings,
+                    mutateAccountSettingsOnce: sync.mutateAccountSettingsOnce,
                 });
                 if (!result.ok) {
                     if ('machineRevoked' in result && result.machineRevoked) {
@@ -515,7 +517,7 @@ export default function MachineDetailScreen() {
                 setIsRevokingMachine(false);
             }
         })(), { tag: 'MachineDetailScreen.revokeMachine' });
-    }, [isRevokingMachine, machine?.revokedAt, machineId, providerCleanupPending, router]);
+    }, [isRevokingMachine, machine?.revokedAt, machineId, providerCleanupPending, router, settingsVersion]);
 
     const replacementCandidates = useMemo<MachineReplacementPickerCandidate[]>(() => {
         if (!machineId) return [];

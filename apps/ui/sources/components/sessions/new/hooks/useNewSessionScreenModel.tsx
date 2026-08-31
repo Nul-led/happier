@@ -61,6 +61,7 @@ import type { NewSessionTranscriptStorage } from '@/components/sessions/new/modu
 import type { AgentInputChipPickerOption } from '@/components/sessions/agentInput/components/AgentInputChipPickerTypes';
 import type { AgentInputStatusBadge } from '@/components/sessions/agentInput/agentInputContracts';
 import { useAutomationsSupport } from '@/hooks/server/useAutomationsSupport';
+import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import {
     buildNewSessionAuthoringDraftFromPersistedDraft,
@@ -152,8 +153,8 @@ import type { NewSessionLaunchAttempt } from '@/components/sessions/new/modules/
 import {
     readUiAiLaunchProfiles,
     readUiAiLaunchProfilesForLegacyUi,
-    removeAiLaunchProfile,
 } from '@/sync/domains/profiles/aiLaunchProfileCollection';
+import { useDeleteAiLaunchProfile } from '@/sync/store/settingsWriters';
 import { readProfileEnabledById } from '@/sync/domains/profiles/profileEnablement';
 import { resolveVisibleBuiltInLaunchProfiles } from '@/sync/domains/profiles/visibleBuiltInLaunchProfiles';
 import { readProviderSettingsFromAccountSettingsV1 } from '@happier-dev/protocol';
@@ -377,7 +378,12 @@ export function useNewSessionScreenModel(input?: Readonly<{
     const [secrets, setSecrets] = useSavedSecretsMutable();
     const [secretBindingsByProfileId, setSecretBindingsByProfileId] = useCurrentSecretBindingsByProfileIdMutable();
     const sessionDefaultPermissionModeByTargetKey = useSetting('sessionDefaultPermissionModeByTargetKey');
-    const settings = useSettings() ?? settingsDefaults;
+    const accountSettings = useSettings() ?? settingsDefaults;
+    const homeViewSelectionSettings = useHomeViewSelectionSettings(accountSettings);
+    const settings = React.useMemo(() => ({
+        ...accountSettings,
+        ...homeViewSelectionSettings,
+    }), [accountSettings, homeViewSelectionSettings]);
     const executionRunsEnabled = resolveLocalFeaturePolicyEnabled('execution.runs', settings);
     const activeServerSource = useNewSessionActiveServerSource();
     const {
@@ -422,7 +428,8 @@ export function useNewSessionScreenModel(input?: Readonly<{
     const externalSessionsFeatureEnabled = useFeatureEnabled('sessions.direct', { scopeKind: 'spawn', serverId: targetServerId });
     const useMachinePickerSearch = useSetting('useMachinePickerSearch');
     const usePathPickerSearch = useSetting('usePathPickerSearch');
-    const [rawProfiles, setRawProfiles] = useSettingMutable('profiles');
+    const rawProfiles = useSetting('profiles');
+    const deleteAiLaunchProfile = useDeleteAiLaunchProfile();
     const launchProfiles = React.useMemo(() => readUiAiLaunchProfiles(rawProfiles), [rawProfiles]);
     const profiles = React.useMemo(() => readUiAiLaunchProfilesForLegacyUi(rawProfiles), [rawProfiles]);
     const lastUsedProfile = useSetting('lastUsedProfile');
@@ -951,8 +958,8 @@ export function useNewSessionScreenModel(input?: Readonly<{
         setBackendTarget,
     });
 
-    const executionTarget = selectedMachineId
-        ? { serverId: targetServerId ?? activeServerSource.activeServerId, machineId: selectedMachineId }
+    const executionTarget = selectedMachineId && targetServerId
+        ? { serverId: targetServerId, machineId: selectedMachineId }
         : null;
     const organizationPlacementState = useNewSessionOrganizationPlacement({
         executionTarget,
@@ -1092,6 +1099,7 @@ export function useNewSessionScreenModel(input?: Readonly<{
         [providerSettingsForProfileIntent.modelVisibilityByRef, providersFeatureEnabled],
     );
     const repoScmSnapshot = useNewSessionRepoScmSnapshot({
+        serverId: targetServerId,
         machineId: selectedMachineId,
         path: selectedPath,
         machineHomeDir: selectedMachine?.metadata?.homeDir ?? null,
@@ -1569,9 +1577,7 @@ export function useNewSessionScreenModel(input?: Readonly<{
         hasUserTouchedProfileSelectionRef,
         setSelectedProfileId,
         selectedProfileId,
-        deleteProfile: (profileId) => {
-            setRawProfiles(removeAiLaunchProfile(rawProfiles, profileId) as AIBackendProfile[]);
-        },
+        deleteProfile: deleteAiLaunchProfile,
     });
 
     const {
@@ -1929,6 +1935,7 @@ export function useNewSessionScreenModel(input?: Readonly<{
     });
 
     const canCreate = canCreateFromAuthoring
+        && targetServerId !== null
         && selectedAgentSettingsReady
         && organizationPlacementState.valid
         && !confirmExperimentalProviderModel.pending

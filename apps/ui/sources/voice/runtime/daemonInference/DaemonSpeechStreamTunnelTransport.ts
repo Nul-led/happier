@@ -5,8 +5,8 @@ import type {
   DaemonVoiceInferenceSttStreamStartRequest,
   DaemonVoiceInferenceSttStreamStartResponse,
   PeerApplicationEncryptionAuthorityBindingV1,
-  PeerTcpTunnelFrameV1,
 } from '@happier-dev/protocol';
+import type { PeerTcpTunnelFrame } from '@happier-dev/peer-transport/duplexFrames';
 import {
   DaemonVoiceInferenceSttStreamChunkResponseSchema as SttStreamChunkResponseSchema,
   DaemonVoiceInferenceSttStreamFinishResponseSchema as SttStreamFinishResponseSchema,
@@ -35,7 +35,7 @@ export type DaemonSpeechStreamTunnelTransportOptions = Readonly<{
   stream: Pick<PeerTcpTunnelClientStream, 'sendFrame' | 'sendSubstreamDataFrame' | 'sendSubstreamFrame' | 'onSubstreamFrame'>;
   controlTransport: Pick<DaemonSpeechStreamTransport, 'start' | 'finish' | 'cancel'>;
   fallbackTransport?: Pick<DaemonSpeechStreamTransport, 'chunk'> | null;
-  direction?: Extract<PeerTcpTunnelFrameV1, { kind: 'data' }>['direction'];
+  direction?: Extract<PeerTcpTunnelFrame, { kind: 'data' }>['direction'];
   responseTimeoutMs?: number;
   resolveSubstreamId?: (input: Readonly<{
     streamId: string;
@@ -57,33 +57,29 @@ export function createDaemonSpeechStreamTunnelSubstreamId(input: Readonly<{
   return `daemon.voiceInference.stt.${input.streamId}.${input.generation}`;
 }
 
-function createLegacyBinaryDataFrame(input: Readonly<{
+function createBinaryDataFrame(input: Readonly<{
   tunnelId: string;
-  direction: Extract<PeerTcpTunnelFrameV1, { kind: 'data' }>['direction'];
+  direction: Extract<PeerTcpTunnelFrame, { kind: 'data' }>['direction'];
   sequence: number;
   payloadBytes: Uint8Array;
-}>): Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }> {
+}>): PeerTcpTunnelFrame {
   return {
     v: 1,
     kind: 'data',
     tunnelId: input.tunnelId,
     direction: input.direction,
     sequence: input.sequence,
-    payloadBase64: encodeBase64(input.payloadBytes),
+    payload: input.payloadBytes,
   };
 }
 
 function decodeSubstreamResponseBytes(
-  frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>,
+  frame: PeerTcpTunnelFrame,
 ): Uint8Array | null {
   if (frame.kind !== 'data' || frame.direction !== 'daemon_to_client') {
     return null;
   }
-  try {
-    return decodeBase64(frame.payloadBase64);
-  } catch {
-    return null;
-  }
+  return frame.payload;
 }
 
 async function waitForSubstreamResponseBytes(input: Readonly<{
@@ -176,7 +172,7 @@ export function createDaemonSpeechStreamTunnelTransport(
         return;
       }
       if (!options.stream.sendSubstreamFrame) throw new Error('daemon_voice_inference_tunnel_substream_unavailable');
-      await options.stream.sendSubstreamFrame(substreamId, createLegacyBinaryDataFrame({
+      await options.stream.sendSubstreamFrame(substreamId, createBinaryDataFrame({
         tunnelId: options.tunnelId,
         direction,
         sequence,

@@ -101,6 +101,8 @@ type ResolveSessionViewHeaderPropsInput = Readonly<{
     /** Existing Session Account-lifetime predicate for action execution. */
     pluginUiScopeIsCurrent?: (() => boolean) | null;
     onOpenPluginSurface?: PluginSurfaceOpenHandler;
+    workspaceSyncConflictCount?: number;
+    onOpenWorkspaceSyncConflicts?: () => void;
 }>;
 
 const LOADING_HEADER_PROPS: SessionViewHeaderProps = {
@@ -178,6 +180,7 @@ function buildSessionViewHeaderPropsCacheKey(input: Readonly<{
     pluginUiScopedGeneration: number | null;
     pluginUiInteractionEnabled: boolean;
     externalAgentState: ExternalSessionRuntimePresentation['externalAgent']['state'] | null;
+    workspaceSyncConflictCount: number;
 }>): string {
     return JSON.stringify([
         input.sessionId,
@@ -213,6 +216,7 @@ function buildSessionViewHeaderPropsCacheKey(input: Readonly<{
         input.pluginUiScopedGeneration ?? '',
         input.pluginUiInteractionEnabled,
         input.externalAgentState ?? '',
+        input.workspaceSyncConflictCount,
     ]);
 }
 
@@ -289,14 +293,16 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
         pluginUiScopedGeneration: input.pluginUiScopedLaunchFacts?.generation ?? null,
         pluginUiInteractionEnabled: input.pluginUiScopedLaunchFacts?.interactionEnabled === true,
         externalAgentState: input.externalSessionRuntime?.externalAgent.state ?? null,
+        workspaceSyncConflictCount: input.workspaceSyncConflictCount ?? 0,
     });
 
-    // A plugin projection makes the element carry live projection, navigation,
-    // and Account-lifetime authority. Scalar cache keys cannot distinguish a
-    // same-generation successor, so retain the LRU only for authority-free
-    // headers rather than adding a second identity/currentness registry.
-    const hasPluginUiAuthority = input.pluginUiProjection != null;
-    if (!hasPluginUiAuthority) {
+    // Plugin actions and workspace-conflict navigation carry live authority.
+    // Scalar cache keys cannot distinguish a same-generation successor or a
+    // same-count conflict moving between relationships, so retain the LRU only
+    // for authority-free headers rather than caching stale action closures.
+    const hasLiveUiAuthority = input.pluginUiProjection != null
+        || (input.workspaceSyncConflictCount ?? 0) > 0;
+    if (!hasLiveUiAuthority) {
         const cached = SESSION_VIEW_HEADER_PROPS_CACHE.get(cacheKey);
         if (cached) {
             return cached;
@@ -421,6 +427,24 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
                 ) : null}
                 <SessionHeaderTerminalButton sessionId={input.sessionId} scopeId={input.paneScopeId} />
                 <SessionHeaderBrowserButton sessionId={input.sessionId} scopeId={input.paneScopeId} />
+                {(input.workspaceSyncConflictCount ?? 0) > 0 && input.onOpenWorkspaceSyncConflicts ? (
+                    <Pressable
+                        onPress={input.onOpenWorkspaceSyncConflicts}
+                        style={({ pressed }) => ({
+                            width: SESSION_HEADER_ACTION_TAP_TARGET_PX,
+                            height: SESSION_HEADER_ACTION_TAP_TARGET_PX,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            opacity: pressed ? 0.7 : 1,
+                        })}
+                        accessibilityRole="button"
+                        accessibilityLabel={t('workspaceSync.openConflicts', { count: input.workspaceSyncConflictCount ?? 0 })}
+                    >
+                        <SessionHeaderIconWithCount count={input.workspaceSyncConflictCount ?? 0} badgeColor={input.statusErrorColor}>
+                            <Icon name="warning" size={SESSION_HEADER_ICON_SIZE_PX} color={input.headerTintColor} />
+                        </SessionHeaderIconWithCount>
+                    </Pressable>
+                ) : null}
 {/* Never folded. Session details used to be reachable by pressing the avatar, which was
                 shown on every width; moving that navigation to an icon that folds below 520pt would
                 delete the only path to it on phones rather than tidy the row. */}
@@ -458,7 +482,7 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
         flavor,
     };
 
-    if (!hasPluginUiAuthority) {
+    if (!hasLiveUiAuthority) {
         SESSION_VIEW_HEADER_PROPS_CACHE.set(cacheKey, next);
     }
     return next;

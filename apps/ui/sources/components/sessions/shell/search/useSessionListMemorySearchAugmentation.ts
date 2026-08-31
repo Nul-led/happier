@@ -1,9 +1,13 @@
 import * as React from 'react';
 
+import type { MemorySearchHitV1 } from '@happier-dev/protocol';
+
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { fetchDaemonMemoryStatus } from '@/sync/domains/memory/fetchDaemonMemoryStatus';
 import { isDaemonMemorySearchUsable } from '@/sync/domains/memory/isDaemonMemorySearchUsable';
 import { searchDaemonMemory } from '@/sync/domains/memory/searchDaemonMemory';
+import { searchHomeMemory } from '@/sync/domains/memory/searchHomeMemory';
+import { useMemorySearchProvider } from '@/sync/domains/memory/useMemorySearchProvider';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { useAllMachines } from '@/sync/domains/state/storage';
 
@@ -75,6 +79,8 @@ export function useSessionListMemorySearchAugmentation(input: Readonly<{
     enabled?: boolean;
 }>): SessionListMemorySearchAugmentationState {
     const memorySearchEnabled = useFeatureEnabled('memory.search');
+    const memorySearchProvider = useMemorySearchProvider();
+    const isHomeProvider = memorySearchProvider.provider === 'home';
     const machines = useAllMachines();
     const machineId = readFirstMachineId(machines);
     const serverId = getActiveServerSnapshot().serverId;
@@ -101,14 +107,38 @@ export function useSessionListMemorySearchAugmentation(input: Readonly<{
             || !memorySearchEnabled
             || normalizedQuery.length < SESSION_LIST_MEMORY_SEARCH_MIN_QUERY_LENGTH
             || !serverId
-            || !machineId
+            || (!isHomeProvider && !machineId)
             || candidateSignature.length === 0
         ) {
             setState((current) => resolveIdleMemorySearchState(current));
             return;
         }
 
+        if (isHomeProvider && !memorySearchProvider.queryAvailable) {
+            setState((current) => resolveIdleMemorySearchState(
+                current,
+                `home_${memorySearchProvider.homeReadiness ?? 'unknown'}`,
+            ));
+            return;
+        }
+
         setState((current) => resolveRefreshingMemorySearchState(current, normalizedQuery));
+
+        const applySearchHits = (hits: ReadonlyArray<MemorySearchHitV1>) => {
+            const candidateSessionKeys = candidateSessionKeysRef.current;
+            const nextKeys = new Set<string>();
+            for (const hit of hits) {
+                const key = sessionTagKey(serverId, hit.sessionId);
+                if (candidateSessionKeys.has(key)) {
+                    nextKeys.add(key);
+                }
+            }
+            setState({
+                memoryMatchedSessionKeys: nextKeys.size > 0 ? nextKeys : EMPTY_MEMORY_MATCHED_SESSION_KEYS,
+                isSearchingMemory: false,
+                lastSuccessfulQuery: normalizedQuery,
+            });
+        };
 
         const timeout = setTimeout(() => {
             void (async () => {
@@ -118,6 +148,23 @@ export function useSessionListMemorySearchAugmentation(input: Readonly<{
                         isSearchingMemory: true,
                         memorySearchUnavailableReason: undefined,
                     }));
+
+                    if (isHomeProvider) {
+                        // Home search never requires a machine or a running daemon.
+                        const homeResult = await searchHomeMemory({
+                            query: normalizedQuery,
+                            scope: { type: 'global' },
+                            mode: 'auto',
+                            maxResults: SESSION_LIST_MEMORY_SEARCH_MAX_RESULTS,
+                        });
+                        if (!isCurrent()) return;
+                        if (!homeResult.ok) {
+                            setState((current) => resolveIdleMemorySearchState(current, homeResult.errorCode));
+                            return;
+                        }
+                        applySearchHits(homeResult.hits);
+                        return;
+                    }
 
                     const status = await fetchDaemonMemoryStatus({ serverId, machineId });
                     if (!isCurrent()) return;
@@ -141,19 +188,7 @@ export function useSessionListMemorySearchAugmentation(input: Readonly<{
                         return;
                     }
 
-                    const candidateSessionKeys = candidateSessionKeysRef.current;
-                    const nextKeys = new Set<string>();
-                    for (const hit of result.hits) {
-                        const key = sessionTagKey(serverId, hit.sessionId);
-                        if (candidateSessionKeys.has(key)) {
-                            nextKeys.add(key);
-                        }
-                    }
-                    setState({
-                        memoryMatchedSessionKeys: nextKeys.size > 0 ? nextKeys : EMPTY_MEMORY_MATCHED_SESSION_KEYS,
-                        isSearchingMemory: false,
-                        lastSuccessfulQuery: normalizedQuery,
-                    });
+                    applySearchHits(result.hits);
                 } catch {
                     if (!isCurrent()) return;
                     setState((current) => resolveIdleMemorySearchState(current, 'rpc_error'));
@@ -167,7 +202,10 @@ export function useSessionListMemorySearchAugmentation(input: Readonly<{
     }, [
         candidateSignature,
         input.enabled,
+        isHomeProvider,
         machineId,
+        memorySearchProvider.homeReadiness,
+        memorySearchProvider.queryAvailable,
         memorySearchEnabled,
         normalizedQuery,
         serverId,

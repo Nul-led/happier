@@ -2,6 +2,7 @@ import {
     isSafeDirectTransferEndpointCandidate,
     normalizeDirectPeerTransferEndpointBaseUrl,
     TransferChunkEnvelopeSchema,
+    TransferEndpointCandidateSchema,
     type PromptRegistryConfiguredSourceV1,
     type TransferEndpointCandidate,
 } from '@happier-dev/protocol';
@@ -21,6 +22,7 @@ import {
     createDirectTransferRequestAbortSignal,
     resolveDirectTransferRequestTimeoutMs,
 } from './directTransferRequestDeadline';
+import { rebaseMachineCarrierHttpEndpoint } from './machineCarrierHttpLease';
 
 type DirectTransferExportPrepareRequest =
     | Readonly<{
@@ -144,6 +146,7 @@ async function prepareDirectTransferExport(params: Readonly<{
     request: DirectTransferExportPrepareRequest;
     timeoutMs?: number | null;
     signal?: AbortSignal | null;
+    httpOriginOverride?: string | null;
 }>): Promise<DirectTransferPrepareResult> {
     try {
         const requestTimeoutMs = resolveDirectTransferRequestTimeoutMs(params.timeoutMs);
@@ -168,7 +171,26 @@ async function prepareDirectTransferExport(params: Readonly<{
                 error: 'Direct export prepare returned an unsupported response',
             };
         }
-        const endpointCandidates = prepare.endpointCandidates.filter(isSafeDirectTransferEndpointCandidate);
+        const endpointCandidates: TransferEndpointCandidate[] = [];
+        for (const candidate of prepare.endpointCandidates) {
+            const parsedCandidate = TransferEndpointCandidateSchema.safeParse(candidate);
+            if (!parsedCandidate.success) {
+                continue;
+            }
+            try {
+                const effectiveCandidate = params.httpOriginOverride
+                    ? {
+                        ...parsedCandidate.data,
+                        url: rebaseMachineCarrierHttpEndpoint(parsedCandidate.data.url, params.httpOriginOverride),
+                    }
+                    : parsedCandidate.data;
+                if (isSafeDirectTransferEndpointCandidate(effectiveCandidate)) {
+                    endpointCandidates.push(effectiveCandidate);
+                }
+            } catch {
+                continue;
+            }
+        }
         if (endpointCandidates.length === 0) {
             return {
                 ok: false,
@@ -188,14 +210,17 @@ async function prepareDirectTransferExport(params: Readonly<{
     }
 }
 
-function extractDirectPeerRequestAuth(candidate: TransferEndpointCandidate): Readonly<{
+function extractDirectPeerRequestAuth(candidate: TransferEndpointCandidate, preserveQuery: boolean): Readonly<{
     requestUrl: string;
     authorizationHeader?: string;
 }> {
     const authorizationToken = typeof candidate.authorizationToken === 'string'
         ? candidate.authorizationToken.trim()
         : '';
-    const requestUrl = normalizeDirectPeerTransferEndpointBaseUrl(candidate.url);
+    const normalizedRequestUrl = normalizeDirectPeerTransferEndpointBaseUrl(candidate.url);
+    const requestUrl = preserveQuery
+        ? `${normalizedRequestUrl}${new URL(candidate.url).search}`
+        : normalizedRequestUrl;
     return {
         requestUrl,
         ...(authorizationToken
@@ -260,6 +285,7 @@ export async function downloadBulkPayloadViaDirectExportToDestination(params: Re
     timeoutMs?: number | null;
     onProgress?: ((progress: ChunkDownloadProgress) => void) | null;
     signal?: AbortSignal | null;
+    httpOriginOverride?: string | null;
 }>): Promise<DirectTransferFileDownloadResponse> {
     async function cleanupFailedDestination(): Promise<void> {
         if (params.cleanupOnFailure === false) {
@@ -325,7 +351,7 @@ export async function downloadBulkPayloadViaDirectExportToDestination(params: Re
         const hasMoreCandidates = index + 1 < prepare.endpointCandidates.length;
         try {
             const manifestHasher = createTransferManifestHasher();
-            const { requestUrl, authorizationHeader } = extractDirectPeerRequestAuth(candidate);
+            const { requestUrl, authorizationHeader } = extractDirectPeerRequestAuth(candidate, Boolean(params.httpOriginOverride));
             const openHeaders = {
                 'x-happier-transfer-recipient-public-key': recipientKeyPair.recipientPublicKeyBase64,
                 ...(authorizationHeader ? { authorization: authorizationHeader } : {}),
@@ -463,6 +489,8 @@ export async function downloadBulkJsonPayloadViaDirectExport<TPayload>(params: R
     request: DirectTransferExportPrepareRequest;
     parsePayload: (value: unknown) => TPayload | null;
     timeoutMs?: number | null;
+    signal?: AbortSignal | null;
+    httpOriginOverride?: string | null;
 }>): Promise<DirectTransferJsonDownloadResponse<TPayload>> {
     const prepared = await prepareDirectTransferExport(params);
     if (!prepared.ok) {
@@ -479,7 +507,7 @@ export async function downloadBulkJsonPayloadViaDirectExport<TPayload>(params: R
 
     for (const candidate of prepare.endpointCandidates) {
         try {
-            const { requestUrl, authorizationHeader } = extractDirectPeerRequestAuth(candidate);
+            const { requestUrl, authorizationHeader } = extractDirectPeerRequestAuth(candidate, Boolean(params.httpOriginOverride));
             const headers = {
                 'x-happier-transfer-recipient-public-key': recipientKeyPair.recipientPublicKeyBase64,
                 ...(authorizationHeader ? { authorization: authorizationHeader } : {}),
@@ -495,6 +523,7 @@ export async function downloadBulkJsonPayloadViaDirectExport<TPayload>(params: R
                 {
                     timeoutMs: requestTimeoutMs,
                     maxBodyBytes: DIRECT_TRANSFER_OPEN_RESPONSE_MAX_BYTES,
+                    signal: params.signal ?? null,
                 },
             );
             if (!isDirectTransferOpenResponse(openJson) || openJson.transferId !== prepare.transferId) {
@@ -524,6 +553,7 @@ export async function downloadBulkJsonPayloadViaDirectExport<TPayload>(params: R
                         {
                             timeoutMs: requestTimeoutMs,
                             maxBodyBytes: DIRECT_TRANSFER_CHUNK_RESPONSE_MAX_BYTES,
+                            signal: params.signal ?? null,
                         },
                 );
                 const parsedChunk = TransferChunkEnvelopeSchema.safeParse(chunkJson);

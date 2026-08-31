@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { View } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useNavigation, useRouter } from 'expo-router';
 import { StyleSheet } from 'react-native-unistyles';
 import {
     AutomationSourceSelectorIdV1Schema,
@@ -51,6 +51,13 @@ import { storage, useActiveServerAccountScope, useAutomation, useSessions, useSe
 import { sync } from '@/sync/sync';
 import { t } from '@/text';
 import { navigateWithBlurOnWeb } from '@/utils/platform/deferOnWeb';
+import {
+    type ActiveUnsavedChangesGuard,
+    runUnsavedChangesGuard,
+} from '@/utils/navigation/runGuardedNavigation';
+import { useActiveUnsavedChangesGuard } from '@/utils/navigation/useActiveUnsavedChangesGuard';
+import { useUnsavedChangesBeforeRemoveGuard } from '@/utils/navigation/useUnsavedChangesBeforeRemoveGuard';
+import { promptUnsavedChangesAlert } from '@/utils/ui/promptUnsavedChangesAlert';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -189,6 +196,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
     exactTurnPrefill?: ExactTurnAutomationPrefill | null;
 }>) {
     const router = useRouter();
+    const navigation = useNavigation();
     const definition = useAutomation(props.automationId);
     const sessions = useSessions() ?? [];
     const settings = useSettings();
@@ -245,6 +253,9 @@ export function AutomationEditorHostScreen(props: Readonly<{
         exactTurnBinding?.sourceSessionId,
     ]);
     const [draft, setDraft] = React.useState<AutomationEditorDraft | null>(null);
+    const hydratedDraftRef = React.useRef<AutomationEditorDraft | null>(null);
+    const [isDirty, setIsDirty] = React.useState(false);
+    const isDirtyRef = React.useRef(false);
     const [draftLifetimeIdentity, setDraftLifetimeIdentity] = React.useState<string | null>(null);
     const latestDraftRef = React.useRef(draft);
     latestDraftRef.current = draft;
@@ -263,6 +274,9 @@ export function AutomationEditorHostScreen(props: Readonly<{
         const accountLifetime = captureActiveServerAccountScopeLifetime();
         setLoadError(false);
         setDraft(null);
+        hydratedDraftRef.current = null;
+        isDirtyRef.current = false;
+        setIsDirty(false);
         setDraftLifetimeIdentity(null);
         setEventEditSeeds(new Map());
         setStalePrefill(null);
@@ -308,6 +322,9 @@ export function AutomationEditorHostScreen(props: Readonly<{
                     ? observed
                     : null);
                 setDraftLifetimeIdentity(capturedIdentity);
+                hydratedDraftRef.current = withPrefill;
+                isDirtyRef.current = false;
+                setIsDirty(false);
                 setDraft(withPrefill);
             }
         })().catch(() => {
@@ -339,7 +356,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
         ?? null
     ), [draft?.assignments]);
 
-    const handleSave = React.useCallback(async () => {
+    const handleSave = React.useCallback(async (): Promise<boolean> => {
         const capturedDraft = latestDraftRef.current;
         const capturedDraftLifetimeIdentity = draftLifetimeIdentity;
         const accountLifetime = captureActiveServerAccountScopeLifetime();
@@ -425,7 +442,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
                     await Modal.alert(t('automations.exactTurn.staleTitle'), t('automations.exactTurn.staleBody'));
                 }
             }
-            return;
+            return false;
         }
         const isCurrent = () => mountedRef.current
             && accountLifetime.isCurrent()
@@ -437,7 +454,10 @@ export function AutomationEditorHostScreen(props: Readonly<{
         try {
             const saved = await sync.saveAutomationEditorDraft(capturedDraft, { isCurrent });
             if (isCurrent()) {
+                isDirtyRef.current = false;
+                setIsDirty(false);
                 navigateWithBlurOnWeb(() => router.replace(`/automations/${saved.id}` as never));
+                return true;
             }
         } catch (error) {
             const exactTurnRejected = isAutomationApiErrorCode(error, 'sourceTurnNotCurrent')
@@ -464,7 +484,57 @@ export function AutomationEditorHostScreen(props: Readonly<{
         } finally {
             if (mountedRef.current) setSubmitting(false);
         }
+        return false;
     }, [draftLifetimeIdentity, editorLifetimeIdentity, exactTurnAuthority, exactTurnBinding, props.automationId, router, submitting]);
+
+    const requestUnsavedChangesDecision = React.useCallback(() => promptUnsavedChangesAlert(
+        (title, message, buttons) => Modal.alert(title, message, buttons),
+        {
+            title: t('common.discardChanges'),
+            message: t('common.unsavedChangesWarning'),
+            discardText: t('common.discard'),
+            saveText: t('common.save'),
+            keepEditingText: t('common.keepEditing'),
+        },
+    ), []);
+    const discardDraft = React.useCallback(() => {
+        isDirtyRef.current = false;
+        setIsDirty(false);
+    }, []);
+    const unsavedChangesGuard = React.useMemo<ActiveUnsavedChangesGuard>(() => ({
+        isDirtyRef,
+        requestDecision: requestUnsavedChangesDecision,
+        onDiscard: discardDraft,
+        onSave: handleSave,
+        continueOnSave: false,
+        tag: 'AutomationEditorHostScreen.beforeRemove',
+    }), [discardDraft, handleSave, requestUnsavedChangesDecision]);
+    const continueNavigation = React.useCallback((action: unknown) => {
+        const dispatch = (navigation as { dispatch?: (nextAction: unknown) => void } | null)?.dispatch;
+        if (action && typeof dispatch === 'function') {
+            dispatch(action);
+            return;
+        }
+        router.back();
+    }, [navigation, router]);
+    useUnsavedChangesBeforeRemoveGuard({
+        isDirty,
+        isDirtyRef,
+        requestDecision: requestUnsavedChangesDecision,
+        onDiscard: discardDraft,
+        onSave: handleSave,
+        continueOnSave: false,
+        onContinue: continueNavigation,
+        tag: unsavedChangesGuard.tag,
+    });
+    useActiveUnsavedChangesGuard({
+        navigation,
+        guard: unsavedChangesGuard,
+        enabled: isDirty,
+    });
+    const handleCancel = React.useCallback(() => {
+        void runUnsavedChangesGuard(unsavedChangesGuard, () => router.back());
+    }, [router, unsavedChangesGuard]);
 
     // Explicit "Use current turn": the only path that mutates the mounted
     // binding. It advances just the exact lifecycle row(s) through the
@@ -488,6 +558,8 @@ export function AutomationEditorHostScreen(props: Readonly<{
             return;
         }
         setDraft(replacement);
+        isDirtyRef.current = replacement !== hydratedDraftRef.current;
+        setIsDirty(isDirtyRef.current);
         setStalePrefill(null);
         setExactTurnBinding(current);
         // Route params remain URL truth only; the mounted draft above was the
@@ -535,7 +607,13 @@ export function AutomationEditorHostScreen(props: Readonly<{
                     <AutomationPluralEditorScreen
                         variant="edit"
                         value={draft}
-                        onChange={setDraft}
+                        onChange={(next) => {
+                            setDraft(next);
+                            if (next !== hydratedDraftRef.current) {
+                                isDirtyRef.current = true;
+                                setIsDirty(true);
+                            }
+                        }}
                         sessionOptions={sessionOptions}
                         resolveCurrentSessionTurn={(sessionId) => {
                             const candidate = storage.getState().sessions[sessionId];
@@ -561,7 +639,7 @@ export function AutomationEditorHostScreen(props: Readonly<{
                             />
                         )}
                         onSubmit={() => { void handleSave(); }}
-                        onCancel={() => router.back()}
+                        onCancel={handleCancel}
                         submitting={submitting}
                         submitDisabled={!draft.name.trim()}
                     />

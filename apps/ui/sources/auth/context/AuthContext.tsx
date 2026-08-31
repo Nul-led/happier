@@ -1,15 +1,21 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
-import { syncSwitchServer } from '@/sync/sync';
-import { localSettingsDefaults } from '@/sync/domains/settings/localSettings';
-import { loadLocalSettings, saveLocalSettings } from '@/sync/domains/state/persistence';
-import { clearPersistence } from '@/sync/domains/state/persistenceLifecycle';
+import { loadLocalSettings } from '@/sync/domains/state/persistence';
 import { forgetPluginAccountAvailabilityArtifacts } from '@/sync/domains/plugins/availability/projection';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 import { useApplyLocalSettings } from '@/sync/store/settingsWriters';
 import { trackLogout } from '@/track';
 import { getActiveServerSnapshot, subscribeActiveServer } from '@/sync/domains/server/serverRuntime';
-import { switchConnectionToActiveServer } from '@/sync/runtime/orchestration/connectionManager';
+import {
+    areServerProfileIdentifiersEquivalent,
+    listServerProfiles,
+    resolveServerProfileScopeId,
+} from '@/sync/domains/server/serverProfiles';
+import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
+import {
+    disconnectActiveServerConnection,
+    switchConnectionToActiveServer,
+} from '@/sync/runtime/orchestration/connectionManager';
 import { startConcurrentSessionCacheSync, stopConcurrentSessionCacheSync } from '@/sync/runtime/orchestration/concurrentSessionCache';
 import { subscribeAuthCredentialsInvalidation } from '@/sync/runtime/orchestration/authCredentialsInvalidation';
 import { fireAndForget } from '@/utils/system/fireAndForget';
@@ -19,6 +25,8 @@ import {
     type AccountEncryptionFirstKeyCredentialPersistenceOptions,
     type AccountEncryptionFirstKeyRecoveryHandle,
 } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
+import { loadExpoPushTokensToUnregister } from '@/sync/domains/state/pushTokenRegistration';
+import { unregisterPushTokenForHomeBestEffort } from '@/sync/engine/account/syncAccount';
 
 export type AuthCredentialLifecycleResult =
     | Readonly<{ kind: 'completed' }>
@@ -30,6 +38,7 @@ export type AuthCredentialLifecycleResult =
 
 type AuthLogoutOptions = Readonly<{
     beforeMutation?: () => void | Promise<void>;
+    scope?: 'focused-home' | 'all-credentials';
 }>;
 
 interface AuthContextType {
@@ -48,17 +57,39 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-function resolveActiveServerKey(snapshot: Readonly<{ serverId?: string | null; serverUrl?: string | null }>): string | null {
+function resolveActiveServerKey(snapshot: Readonly<{
+    serverId?: string | null;
+    serverUrl?: string | null;
+    connectionDescriptorRevision?: number;
+}>): string | null {
     const serverId = String(snapshot.serverId ?? '').trim();
     const serverUrl = String(snapshot.serverUrl ?? '').trim();
     if (!serverId && !serverUrl) return null;
-    return `${serverId}|${serverUrl}`;
+    return `${serverId}|${serverUrl}|${snapshot.connectionDescriptorRevision ?? 0}`;
+}
+
+function isSameServerTarget(
+    left: Readonly<{ serverId?: string | null; serverUrl?: string | null }>,
+    right: Readonly<{ serverId?: string | null; serverUrl?: string | null }>,
+): boolean {
+    const leftServerId = String(left.serverId ?? '').trim();
+    const rightServerId = String(right.serverId ?? '').trim();
+    if (leftServerId && rightServerId) {
+        return areServerProfileIdentifiersEquivalent(leftServerId, rightServerId);
+    }
+    const leftServerUrl = createServerUrlComparableKey(String(left.serverUrl ?? ''));
+    return Boolean(
+        leftServerUrl
+        && leftServerUrl === createServerUrlComparableKey(String(right.serverUrl ?? '')),
+    );
 }
 
 export function AuthProvider({ children, initialCredentials }: { children: ReactNode; initialCredentials: AuthCredentials | null }) {
     const [isAuthenticated, setIsAuthenticated] = useState(!!initialCredentials);
     const [credentials, setCredentials] = useState<AuthCredentials | null>(initialCredentials);
-    const activeServerKeyRef = React.useRef<string | null>(null);
+    const activeServerKeyRef = React.useRef<string | null>(
+        resolveActiveServerKey(getActiveServerSnapshot()),
+    );
     const isLoginSyncInFlightRef = React.useRef(false);
     const loginSyncServerKeyRef = React.useRef<string | null>(null);
     const applyLocalSettings = useApplyLocalSettings();
@@ -68,7 +99,6 @@ export function AuthProvider({ children, initialCredentials }: { children: React
         if (!nextCredentials) {
             const activeServerKey = resolveActiveServerKey(getActiveServerSnapshot());
             if (isLoginSyncInFlightRef.current && activeServerKey === loginSyncServerKeyRef.current) return;
-            await syncSwitchServer(null);
         }
         setCredentials(nextCredentials);
         setIsAuthenticated(Boolean(nextCredentials));
@@ -110,14 +140,16 @@ export function AuthProvider({ children, initialCredentials }: { children: React
         fireAndForget(
             (async () => {
                 try {
-                    await syncSwitchServer(newCredentials);
+                    // TokenStorage is already authoritative. Reuse the one
+                    // active-connection owner so an Iroh-only Home publishes a
+                    // verified runtime origin before Sync initializes/switches.
+                    await switchConnectionToActiveServer();
                 } finally {
                     isLoginSyncInFlightRef.current = false;
                     loginSyncServerKeyRef.current = null;
-                    fireAndForget(refreshFromActiveServer(), { tag: 'AuthContext.login.refreshFromActiveServer' });
                 }
             })(),
-            { tag: 'AuthContext.login.syncSwitchServer' },
+            { tag: 'AuthContext.login.switchConnectionToActiveServer' },
         );
         return { kind: 'completed' };
     }, [applyLocalSettings, refreshFromActiveServer]);
@@ -136,39 +168,124 @@ export function AuthProvider({ children, initialCredentials }: { children: React
     const logout = React.useCallback(async (
         options?: AuthLogoutOptions,
     ): Promise<AuthCredentialLifecycleResult> => {
+        const activeServer = getActiveServerSnapshot();
+        const activeServerId = String(activeServer.serverId ?? '').trim();
+        const activeServerUrl = String(activeServer.serverUrl ?? '').trim();
+        const forgottenScope = getActiveServerAccountScope();
         const guard =
             await guardAccountEncryptionFirstKeyCredentialMutation();
         if (guard.kind !== 'allowed') {
             return guard;
         }
         await options?.beforeMutation?.();
+        if (options?.scope === 'all-credentials') {
+            const pushTokens = loadExpoPushTokensToUnregister();
+            const pushCleanupTargets: Array<Parameters<typeof unregisterPushTokenForHomeBestEffort>[0]> = [];
+            for (const profile of listServerProfiles()) {
+                const profileCredentials = await TokenStorage
+                    .getCredentialsForServerUrl(profile.serverUrl, {
+                        serverId: resolveServerProfileScopeId(profile),
+                    })
+                    .catch(() => null);
+                if (!profileCredentials) continue;
+                for (const pushToken of pushTokens) {
+                    pushCleanupTargets.push({
+                        credentials: profileCredentials,
+                        token: pushToken,
+                        serverUrl: profile.serverUrl,
+                        profile,
+                    });
+                }
+            }
+
+            const credentialsRemoved = await TokenStorage.removeCredentials();
+            const accountDirectoryCredentialsRemoved =
+                await TokenStorage.accountDirectoryAuthCredentials.clear();
+            const pendingAccountDirectoryAuthRemoved =
+                await TokenStorage.clearPendingAccountDirectoryAuth();
+            if (
+                !credentialsRemoved
+                || !accountDirectoryCredentialsRemoved
+                || !pendingAccountDirectoryAuthRemoved
+            ) {
+                throw new Error('Failed to remove all local credentials');
+            }
+
+            trackLogout();
+            if (forgottenScope) {
+                forgetPluginAccountAvailabilityArtifacts(forgottenScope);
+            }
+            loginSyncServerKeyRef.current = null;
+            setCredentials(null);
+            setIsAuthenticated(false);
+            const cleanup = Promise.allSettled(
+                pushCleanupTargets.map(async (target) =>
+                    await unregisterPushTokenForHomeBestEffort(target)),
+            );
+            await switchConnectionToActiveServer();
+            await cleanup;
+            return { kind: 'completed' };
+        }
+
+        let activeCredentials: AuthCredentials | null = credentials;
+        if (activeServerUrl) {
+            try {
+                activeCredentials = await TokenStorage.getCredentialsForServerUrl(activeServerUrl, {
+                    serverId: activeServerId || undefined,
+                }) ?? credentials;
+            } catch {
+                activeCredentials = credentials;
+            }
+        }
+        const activeProfile = activeServerUrl && activeCredentials
+            ? listServerProfiles().find((profile) => (
+                areServerProfileIdentifiersEquivalent(resolveServerProfileScopeId(profile), activeServerId)
+            ))
+            : undefined;
+        const pushCleanupTargets = activeServerUrl && activeCredentials
+            ? loadExpoPushTokensToUnregister().map((pushToken) => ({
+                    credentials: activeCredentials,
+                    token: pushToken,
+                    serverUrl: activeServerUrl,
+                    ...(activeProfile ? { profile: activeProfile } : {}),
+                }))
+            : [];
         trackLogout();
         // Signing out forgets this Account on this device, so its Artifact
         // bytes are deleted as well as retired. An Account switch or
         // deactivation deliberately does not: it retires reachability and
         // leaves the Account-qualified bytes inert and reusable.
-        const forgottenScope = getActiveServerAccountScope();
         if (forgottenScope) forgetPluginAccountAvailabilityArtifacts(forgottenScope);
-        // Preserve device-local flags across logout — the user is signing out of
-        // an account but the device itself has still seen the brand hero and
-        // still has prior auth experience. Clearing these would force returning
-        // users back into the first-time welcome copy after every logout.
-        const { brandHeroSeenAt, hasCompletedAuthOnce } = loadLocalSettings();
-        clearPersistence();
-        if (brandHeroSeenAt != null || hasCompletedAuthOnce) {
-            saveLocalSettings({
-                ...localSettingsDefaults,
-                brandHeroSeenAt,
-                hasCompletedAuthOnce,
+        // Home logout is scoped to the focused Home. Device-global Home-view
+        // persistence, other Home credentials, and Account Service credentials
+        // remain intact; only an explicit global-forget flow may clear them.
+        if (activeServerUrl) {
+            const removed = await TokenStorage.removeCredentialsForServerUrl(activeServerUrl, {
+                serverId: activeServerId || undefined,
             });
+            if (!removed) {
+                throw new Error('Failed to remove active Home credentials');
+            }
         }
-        await TokenStorage.removeCredentials();
-        await syncSwitchServer(null);
-        loginSyncServerKeyRef.current = null;
-        setCredentials(null);
-        setIsAuthenticated(false);
+        const shouldClearFocusedAuth = (
+            (!activeServerId && !activeServerUrl)
+            || isSameServerTarget(activeServer, getActiveServerSnapshot())
+        );
+        if (shouldClearFocusedAuth) {
+            loginSyncServerKeyRef.current = null;
+            setCredentials(null);
+            setIsAuthenticated(false);
+        }
+        const cleanup = Promise.allSettled(
+            pushCleanupTargets.map(async (target) =>
+                await unregisterPushTokenForHomeBestEffort(target)),
+        );
+        if (shouldClearFocusedAuth) {
+            await switchConnectionToActiveServer();
+        }
+        await cleanup;
         return { kind: 'completed' };
-    }, []);
+    }, [credentials]);
 
     // Single source of truth for the context value so consumers (and the non-React
     // `getCurrentAuth()` bridge) share one identity-stable object. Without this memo the
@@ -205,10 +322,10 @@ export function AuthProvider({ children, initialCredentials }: { children: React
                 === 'first_key_recovery_required'
             ) {
                 fireAndForget((async () => {
-                    await syncSwitchServer(null);
                     loginSyncServerKeyRef.current = null;
                     setCredentials(null);
                     setIsAuthenticated(false);
+                    await disconnectActiveServerConnection();
                 })(), {
                     tag: 'AuthContext.authCredentialsInvalidated.firstKeyRecovery',
                 });

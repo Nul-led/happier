@@ -3,6 +3,18 @@ import { describe, expect, it } from 'vitest';
 import { resolveAgentExecutionTargetForBackendTarget } from './resolveAgentExecutionTargetForBackendTarget';
 
 describe('resolveAgentExecutionTargetForBackendTarget', () => {
+    it('preserves an already-qualified external Agent identity without a backend alias', () => {
+        expect(resolveAgentExecutionTargetForBackendTarget({
+            backendTarget: {
+                kind: 'agent',
+                identity: { pluginId: 'acme.review', localId: 'reviewer' },
+            },
+        })).toEqual({
+            kind: 'agent',
+            identity: { pluginId: 'acme.review', localId: 'reviewer' },
+        });
+    });
+
     it('uses the bundled qualified identity for a built-in backend', () => {
         expect(resolveAgentExecutionTargetForBackendTarget({
             backendTarget: { kind: 'backend', backendId: 'codex' },

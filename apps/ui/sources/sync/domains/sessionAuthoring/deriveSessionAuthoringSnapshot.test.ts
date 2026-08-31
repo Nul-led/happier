@@ -31,7 +31,9 @@ describe('deriveSessionAuthoringSnapshot', () => {
                         backendId: 'review-bot',
                         title: 'Review Bot',
                     },
-                    mcpSelection: {
+                    mcpSelectionV1: {
+                        v: 1,
+                        managedServersEnabled: true,
                         forceIncludeServerIds: ['managed-1'],
                         forceExcludeServerIds: [],
                     },

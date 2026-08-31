@@ -20,9 +20,9 @@ import { resolveServerScopedSessionContext } from '@/sync/runtime/orchestration/
 import type {
     ServerAccountSessionRequestAuthority,
 } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { createSessionRequestForResolvedServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
 import { sessionRpcWithPreferredSessionScope } from '@/sync/runtime/orchestration/serverScopedRpc/sessionRpcWithPreferredSessionScope';
 import { sessionRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc';
-import { runtimeFetchWithServerReachability } from '@/sync/runtime/connectivity/serverReachabilityRuntimeFetch';
 import { prepareAccountSettingsForDaemonSpawnIfNeeded } from './accountSettingsDaemonSpawnPreparation';
 import type {
     BackendTargetRefV1,
@@ -1047,28 +1047,25 @@ async function archiveRequestWithContext(params: Readonly<{
     sessionId: string;
     serverId?: string | null;
     action: 'archive' | 'unarchive';
-}>): Promise<Response> {
+}>): Promise<Readonly<{ response: Response; release: () => Promise<void> }>> {
     const context = await resolveServerScopedSessionContext({
         serverId: params.serverId ?? resolvePreferredServerIdForSessionId(params.sessionId) ?? null,
     });
     const path = `/v2/sessions/${params.sessionId}/${params.action}`;
 
-    if (context.scope === 'active') {
-        return await apiSocket.request(path, { method: 'POST' });
+    try {
+        const response = await createSessionRequestForResolvedServerScope({
+            context,
+            activeRequest: (requestPath, init) => apiSocket.request(requestPath, init),
+        })(path, { method: 'POST' });
+        return {
+            response,
+            release: context.scope === 'scoped' ? (context.release ?? (async () => undefined)) : async () => undefined,
+        };
+    } catch (error) {
+        if (context.scope === 'scoped') await context.release?.();
+        throw error;
     }
-
-    return await runtimeFetchWithServerReachability({
-        serverUrl: context.targetServerUrl,
-        token: context.token,
-        url: `${context.targetServerUrl}${path}`,
-        init: {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${context.token}`,
-            },
-        },
-        timeoutMs: context.timeoutMs,
-    });
 }
 
 async function applyArchivedAtToLocalSession(sessionId: string, archivedAt: number | null): Promise<void> {
@@ -1088,7 +1085,9 @@ export async function sessionArchiveWithServerScope(
     opts?: Readonly<{ serverId?: string | null }>,
 ): Promise<SessionArchiveResponse> {
     try {
-        const response = await archiveRequestWithContext({ sessionId, serverId: opts?.serverId ?? null, action: 'archive' });
+        const request = await archiveRequestWithContext({ sessionId, serverId: opts?.serverId ?? null, action: 'archive' });
+        try {
+        const { response } = request;
         if (!response.ok) {
             const message = await response.text().catch(() => '');
             if (response.status === 409) {
@@ -1100,6 +1099,9 @@ export async function sessionArchiveWithServerScope(
         const archivedAt = typeof (json as any)?.archivedAt === 'number' ? (json as any).archivedAt : null;
         await applyArchivedAtToLocalSession(sessionId, archivedAt);
         return { success: true, archivedAt };
+        } finally {
+            await request.release();
+        }
     } catch (error) {
         return { success: false, message: error instanceof Error ? error.message : 'Unknown error' };
     }
@@ -1110,7 +1112,9 @@ export async function sessionUnarchiveWithServerScope(
     opts?: Readonly<{ serverId?: string | null }>,
 ): Promise<SessionArchiveResponse> {
     try {
-        const response = await archiveRequestWithContext({ sessionId, serverId: opts?.serverId ?? null, action: 'unarchive' });
+        const request = await archiveRequestWithContext({ sessionId, serverId: opts?.serverId ?? null, action: 'unarchive' });
+        try {
+        const { response } = request;
         if (!response.ok) {
             const message = await response.text().catch(() => '');
             return { success: false, message: message || 'Failed to unarchive session' };
@@ -1118,6 +1122,9 @@ export async function sessionUnarchiveWithServerScope(
         await response.json().catch(() => null);
         await applyArchivedAtToLocalSession(sessionId, null);
         return { success: true, archivedAt: null };
+        } finally {
+            await request.release();
+        }
     } catch (error) {
         return { success: false, message: error instanceof Error ? error.message : 'Unknown error' };
     }
@@ -1204,26 +1211,10 @@ export async function sessionDeleteWithServerScope(
 ): Promise<SessionDeleteResult> {
     const context = await resolveServerScopedSessionContext({ serverId: opts?.serverId ?? null });
     try {
-        if (context.scope === 'active') {
-            const response = await apiSocket.request(`/v1/sessions/${sessionId}`, { method: 'DELETE' });
-            if (response.ok) {
-                await response.json().catch(() => null);
-                return { success: true };
-            }
-            return await readSessionDeleteFailure(response);
-        }
-
-        const response = await runtimeFetchWithServerReachability({
-            serverUrl: context.targetServerUrl,
-            token: context.token,
-            url: `${context.targetServerUrl}/v1/sessions/${sessionId}`,
-            init: {
-                method: 'DELETE',
-                headers: {
-                    Authorization: `Bearer ${context.token}`,
-                },
-            },
-        });
+        const response = await createSessionRequestForResolvedServerScope({
+            context,
+            activeRequest: (path, init) => apiSocket.request(path, init),
+        })(`/v1/sessions/${sessionId}`, { method: 'DELETE' });
         if (response.ok) {
             await response.json().catch(() => null);
             return { success: true };
@@ -1234,6 +1225,8 @@ export async function sessionDeleteWithServerScope(
             success: false,
             message: error instanceof Error ? error.message : 'Unknown error',
         };
+    } finally {
+        if (context.scope === 'scoped') await context.release?.();
     }
 }
 

@@ -69,7 +69,7 @@ describe('SessionHandoffProgressModal', () => {
         const screen = await renderScreen(
             <SessionHandoffProgressModal
                 onClose={() => {}}
-                workspaceTransferEnabled={false}
+                workspaceSyncEnabled={false}
                 operation={{
                     version: 1,
                     operationId: 'handoff-operation-1',
@@ -123,6 +123,32 @@ describe('SessionHandoffProgressModal', () => {
         );
 
         expect(screen.findByTestId('session-handoff-step-transfer-session')?.props.accessibilityState?.selected).toBe(true);
+    });
+
+    it('suppresses semantically duplicate workspace progress labels', async () => {
+        const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
+        const screen = await renderScreen(
+            <SessionHandoffProgressModal
+                onClose={() => {}}
+                workspaceSyncEnabled
+                operation={{
+                    version: 1,
+                    operationId: 'handoff-operation-3',
+                    requestId: 'request-3',
+                    revision: 5,
+                    actionId: 'session.handoff',
+                    state: 'running',
+                    scope: { accountId: 'account-1', machineId: 'source-machine', sessionId: 'session-1' },
+                    title: 'Hand off session',
+                    createdAt: 1,
+                    startedAt: 1,
+                    progress: { kind: 'determinate', current: 1024, total: 4096, label: 'Transferring workspace' },
+                    cancellation: 'supported',
+                }}
+            />,
+        );
+
+        expect(screen.getTextContent()).not.toContain('Transferring workspace');
     });
 
     it('offers Resume for an interrupted handoff but never invokes it during passive render', async () => {

@@ -9,10 +9,11 @@ import { z } from 'zod';
 export async function registerPushToken(
     credentials: AuthCredentials,
     token: string,
-    opts: Readonly<{ serverId?: string; apiEndpoint?: string; clientServerUrl?: string; retry?: 'default' | 'none' }> = {},
+    opts: Readonly<{ serverId?: string; apiEndpoint?: string; clientServerUrl?: string; retry?: 'default' | 'none'; runtimeOrigin?: string }> = {},
 ): Promise<void> {
     const API_ENDPOINT = (opts.apiEndpoint ?? '').trim().replace(/\/+$/, '');
     const CLIENT_SERVER_URL = (opts.clientServerUrl ?? '').trim().replace(/\/+$/, '');
+    const RUNTIME_ORIGIN = (opts.runtimeOrigin ?? '').trim().replace(/\/+$/, '');
     const path = '/v1/push-tokens';
 
     const run = async () => {
@@ -30,7 +31,8 @@ export async function registerPushToken(
             ? (p: string, init: RequestInit) => runtimeFetchWithServerReachability({
                 serverUrl: API_ENDPOINT,
                 token: effectiveCredentials.token,
-                url: `${API_ENDPOINT}${p}`,
+                url: `${RUNTIME_ORIGIN || API_ENDPOINT}${p}`,
+                ...(RUNTIME_ORIGIN ? { runtimeOrigin: RUNTIME_ORIGIN } : {}),
                 init,
             })
             : (p: string, init: RequestInit) => serverFetch(p, init, { includeAuth: false });
@@ -157,9 +159,10 @@ export async function fetchPushTokens(
 export async function deletePushToken(
     credentials: AuthCredentials,
     token: string,
-    opts: Readonly<{ apiEndpoint?: string }> = {},
+    opts: Readonly<{ apiEndpoint?: string; runtimeOrigin?: string }> = {},
 ): Promise<void> {
     const API_ENDPOINT = (opts.apiEndpoint ?? '').trim().replace(/\/+$/, '');
+    const RUNTIME_ORIGIN = (opts.runtimeOrigin ?? '').trim().replace(/\/+$/, '');
     const encodedToken = encodeURIComponent(String(token ?? '').trim());
     if (!encodedToken) {
         throw new Error('Missing push token');
@@ -170,7 +173,8 @@ export async function deletePushToken(
         ? (p: string, init: RequestInit) => runtimeFetchWithServerReachability({
             serverUrl: API_ENDPOINT,
             token: credentials.token,
-            url: `${API_ENDPOINT}${p}`,
+            url: `${RUNTIME_ORIGIN || API_ENDPOINT}${p}`,
+            ...(RUNTIME_ORIGIN ? { runtimeOrigin: RUNTIME_ORIGIN } : {}),
             init,
         })
         : (p: string, init: RequestInit) => serverFetch(p, init, { includeAuth: false });

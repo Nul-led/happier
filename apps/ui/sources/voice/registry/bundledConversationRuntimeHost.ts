@@ -1085,6 +1085,7 @@ export function createBundledConversationRuntimeHostLease(input: Readonly<{
           scope,
           activeRequest: (path, init) => apiSocket.request(path, init),
         });
+        try {
         const conversationSessionId = await discoverVoiceHistorySession({
           prepareLookup: () => requireCurrentAccountStoredContentServerCompatibility({
             serverId: authority.scope.serverId,
@@ -1149,6 +1150,9 @@ export function createBundledConversationRuntimeHostLease(input: Readonly<{
           },
         });
         await fixedCarrierAttempt.forget();
+        } finally {
+          await authority.release?.();
+        }
       });
     },
     applyTargetSelection: async (input: Parameters<typeof applyVoiceSessionTargetSelection>[0]) => {

@@ -6892,7 +6892,8 @@ describe('PluginSurfacePlacementHost', () => {
             },
         });
         pluginDataTransport.enabled = true;
-        pluginDataTransport.request.mockImplementation(async (path: string) => {
+        const accountKvWrites: unknown[] = [];
+        pluginDataTransport.request.mockImplementation(async (path: string, init?: RequestInit) => {
             if (path === '/v1/account/encryption/currentness') {
                 return new Response(JSON.stringify({
                     mode: 'plain',
@@ -6924,6 +6925,19 @@ describe('PluginSurfacePlacementHost', () => {
                     results: [{ rowId: 'account-item-1', revision: 4, deleted: false }],
                     changeCursor: 4,
                 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            if (path === '/v1/account/plugin-storage/acme.browser') {
+                if ((init?.method ?? 'GET') === 'GET') {
+                    return new Response(JSON.stringify({ status: 'absent' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                accountKvWrites.push(JSON.parse(String(init?.body ?? 'null')));
+                return new Response(JSON.stringify({ status: 'updated', revision: 1 }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
             }
             throw new Error(`Unexpected plugin Data path: ${path}`);
         });
@@ -7048,6 +7062,76 @@ describe('PluginSurfacePlacementHost', () => {
                 projection: { title: 'Updated offline' },
             }],
         });
+
+        // A release may need only Account KV. Its admitted storage.account
+        // capability is still Account Data and keeps the mounted UI interactive
+        // while every daemon is offline; an empty Collection inventory cannot
+        // erase that separate public storage surface.
+        activePluginAvailability.reader = createPluginAccountAvailabilityReader({
+            scope: { serverId: 'server-a', accountId: 'account-a' },
+            snapshot: {
+                availabilityCursor: 2,
+                materializations: [],
+                snapshots: [],
+                intentReads: [{
+                    pluginId: 'acme.browser',
+                    response: {
+                        availabilityCursor: 2,
+                        hostingCapability: {
+                            enabled: true,
+                            maxArtifactBytes: 1024,
+                            maxAccountBytes: 2048,
+                        },
+                        intent: {
+                            pluginId: 'acme.browser',
+                            desiredVersion: '3.2.1',
+                            enabled: true,
+                            offlineUiHosting: 'enabled',
+                            writableCollections: [],
+                            revision: 'intent-2',
+                        },
+                        release: {
+                            ref: { pluginId: 'acme.browser', version: '3.2.1' },
+                            archiveDigestSha256: `sha256:${'a'.repeat(64)}`,
+                            normalizedManifest: PluginPortableReleaseManifestV1Schema.parse({
+                                schemaVersion: 2,
+                                id: 'acme.browser',
+                                version: '3.2.1',
+                                displayName: 'Browser Inspector',
+                                engines: { happier: '^1.0.0' },
+                                runtime: { apiVersion: 1 },
+                                contributes: {},
+                                hostAccess: {
+                                    required: [{
+                                        id: 'account-storage',
+                                        capability: 'storage.account',
+                                        reason: 'Persist Account-scoped UI state.',
+                                        scope: { enabled: true },
+                                    }],
+                                    optional: [],
+                                },
+                            }),
+                            collectionContracts: [],
+                            uiSlots: [],
+                            packageAssetArchive: {
+                                archiveDigestSha256: `sha256:${'c'.repeat(64)}`,
+                                resources: [],
+                            },
+                        },
+                        uiArtifacts: [],
+                    },
+                }],
+            } satisfies PluginAccountAvailabilitySnapshot,
+        });
+        await screen.update(renderPlacement(false));
+        const kvOnlyOfflineProps = reactNativeSurfaceProps.at(-1) as typeof offlineProps;
+        expect(kvOnlyOfflineProps.interactionEnabled).toBe(true);
+        await expect(kvOnlyOfflineProps.privateHostBindings!.dataClient!.accountKv.set(
+            'saved-view',
+            { title: 'Mine' },
+            { expectedVersion: 'absent' },
+        )).resolves.toEqual({ version: 0 });
+        expect(accountKvWrites).toHaveLength(1);
 
         await screen.update(renderPlacement(true));
         const reconnectedProps = reactNativeSurfaceProps.at(-1) as typeof offlineProps;

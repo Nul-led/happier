@@ -42,13 +42,10 @@ describe('executeSessionHandoffAction', () => {
       targetMachineId: 'machine_target',
       targetPath: '/home/guest/workspace',
       targetSessionStorageMode: 'persisted',
-      workspaceTransfer: {
-        enabled: true,
-        strategy: 'transfer_snapshot',
-        conflictPolicy: 'replace_existing',
-        includeIgnoredMode: 'include_selected',
-        ignoredIncludeGlobs: ['dist/**'],
-      },
+      workspaceAction: { kind: 'none' },
+      workspaceSyncSourceWorkspaceRefId: 'workspace-source',
+      workspaceSyncTargetWorkspaceRefId: 'workspace-target',
+      workspaceSyncSettingsVersion: 17,
       context: { defaultSessionId: 'sess_1', surface: 'ui', placement: 'session_info' } as any,
     });
 
@@ -59,13 +56,10 @@ describe('executeSessionHandoffAction', () => {
         targetMachineId: 'machine_target',
         targetPath: '/home/guest/workspace',
         targetSessionStorageMode: 'persisted',
-        workspaceTransfer: {
-          enabled: true,
-          strategy: 'transfer_snapshot',
-          conflictPolicy: 'replace_existing',
-          includeIgnoredMode: 'include_selected',
-          ignoredIncludeGlobs: ['dist/**'],
-        },
+        workspaceAction: { kind: 'none' },
+        workspaceSyncSourceWorkspaceRefId: 'workspace-source',
+        workspaceSyncTargetWorkspaceRefId: 'workspace-target',
+        workspaceSyncSettingsVersion: 17,
       },
       expect.anything(),
     );

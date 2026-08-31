@@ -32,6 +32,9 @@ vi.mock('@/sync/api/session/apiPush', () => ({
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     listServerProfiles: mocks.listServerProfiles,
+    areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '') === String(right ?? ''),
+    resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) =>
+        profile.serverIdentityId ?? profile.id,
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
@@ -59,7 +62,7 @@ async function notificationsMock() {
 
 beforeEach(() => {
     mocks.registerPushToken.mockResolvedValue({ ok: true });
-    mocks.listServerProfiles.mockReturnValue([{ serverUrl: 'https://active.example.test' }]);
+    mocks.listServerProfiles.mockReturnValue([{ id: 'active', serverUrl: 'https://active.example.test' }]);
     mocks.getActiveServerSnapshot.mockReturnValue({
         serverId: 'active',
         serverUrl: 'https://active.example.test',
@@ -78,8 +81,12 @@ afterEach(() => {
 });
 
 describe('registerPushTokenIfAvailable push policy', () => {
-    it('skips registration when the Home disabled Expo push', async () => {
+    it('skips a focused Home whose offline settings fallback disables Expo push', async () => {
         const notifications = await notificationsMock();
+        vi.mocked(notifications.getPermissionsAsync).mockResolvedValue({
+            status: 'granted', granted: true, canAskAgain: true,
+        } as never);
+        vi.mocked(notifications.getExpoPushTokenAsync).mockResolvedValue({ data: pushToken } as never);
         const { log } = collectLogs();
         const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
@@ -89,13 +96,122 @@ describe('registerPushTokenIfAvailable push policy', () => {
             getAccountSettings: () => ({
                 attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } },
             }),
-            getHomeAccountSettings: async () => ({
-                attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } },
-            }),
+            getHomeAccountSettings: async () => null,
         });
 
         expect(notifications.getPermissionsAsync).toHaveBeenCalled();
         expect(mocks.registerPushToken).not.toHaveBeenCalled();
+        expect(mocks.deletePushToken).toHaveBeenCalledWith(
+            expect.objectContaining({ token: 'token-https://active.example.test' }),
+            pushToken,
+            { apiEndpoint: 'https://active.example.test', runtimeOrigin: 'https://active.example.test' },
+        );
+    });
+
+    it('treats a disabled focused Home as terminal with no fallback re-registration', async () => {
+        const notifications = await notificationsMock();
+        vi.mocked(notifications.getPermissionsAsync).mockResolvedValue({
+            status: 'granted', granted: true, canAskAgain: true,
+        } as never);
+        vi.mocked(notifications.getExpoPushTokenAsync).mockResolvedValue({ data: pushToken } as never);
+        mocks.listServerProfiles.mockReturnValue([
+            { id: 'home-a', serverUrl: 'https://home-a.example.test' },
+            { id: 'home-b', serverUrl: 'https://home-b.example.test' },
+        ]);
+        mocks.getActiveServerSnapshot.mockReturnValue({
+            serverId: 'home-a',
+            serverUrl: 'https://home-a.example.test',
+            kind: 'custom',
+            generation: 1,
+        });
+        const { log } = collectLogs();
+        const { registerPushTokenIfAvailable } = await import('./syncAccount');
+
+        await registerPushTokenIfAvailable({
+            credentials,
+            log,
+            getHomeAccountSettings: async (home) => home.serverUrl.includes('home-a')
+                ? { attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } } }
+                : {},
+        });
+
+        // The focused Home opted out: its registration decision is terminal. The
+        // legacy active-Home fallback must not re-register it after opt-out, and
+        // the other Home must remain registered.
+        const registerEndpoints = mocks.registerPushToken.mock.calls.map((call) => (call[2] as { apiEndpoint?: string } | undefined)?.apiEndpoint);
+        expect(registerEndpoints).toEqual(['https://home-b.example.test']);
+        expect(mocks.deletePushToken).toHaveBeenCalledWith(
+            expect.objectContaining({ token: 'token-https://home-a.example.test' }),
+            pushToken,
+            { apiEndpoint: 'https://home-a.example.test', runtimeOrigin: 'https://home-a.example.test' },
+        );
+    });
+
+    it('uses caller credentials inside the focused Home decision when stored credentials are missing', async () => {
+        const notifications = await notificationsMock();
+        vi.mocked(notifications.getPermissionsAsync).mockResolvedValue({
+            status: 'granted', granted: true, canAskAgain: true,
+        } as never);
+        vi.mocked(notifications.getExpoPushTokenAsync).mockResolvedValue({ data: pushToken } as never);
+        mocks.listServerProfiles.mockReturnValue([
+            { id: 'home-a', serverUrl: 'https://home-a.example.test' },
+            { id: 'home-b', serverUrl: 'https://home-b.example.test' },
+        ]);
+        mocks.getActiveServerSnapshot.mockReturnValue({
+            serverId: 'home-a',
+            serverUrl: 'https://home-a.example.test',
+            kind: 'custom',
+            generation: 1,
+        });
+        mocks.getCredentialsForServerUrl.mockImplementation(async (_url: string, options?: { serverId?: string }) => (
+            options?.serverId === 'home-b' ? { token: 'home-b-token', secret: 'home-b-secret' } : null
+        ));
+        const { registerPushTokenIfAvailable } = await import('./syncAccount');
+
+        await registerPushTokenIfAvailable({
+            credentials,
+            log: { log: vi.fn() },
+            getHomeAccountSettings: async (home) => home.id === 'home-a'
+                ? { attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } } }
+                : {},
+        });
+
+        expect(mocks.registerPushToken).toHaveBeenCalledTimes(1);
+        expect(mocks.registerPushToken).toHaveBeenCalledWith(
+            expect.objectContaining({ token: 'home-b-token' }),
+            pushToken,
+            expect.objectContaining({ apiEndpoint: 'https://home-b.example.test' }),
+        );
+        expect(mocks.deletePushToken).toHaveBeenCalledWith(
+            credentials,
+            pushToken,
+            { apiEndpoint: 'https://home-a.example.test', runtimeOrigin: 'https://home-a.example.test' },
+        );
+    });
+
+    it('does not let the absent-profile compatibility path bypass focused Home consent', async () => {
+        const notifications = await notificationsMock();
+        vi.mocked(notifications.getPermissionsAsync).mockResolvedValue({
+            status: 'granted', granted: true, canAskAgain: true,
+        } as never);
+        vi.mocked(notifications.getExpoPushTokenAsync).mockResolvedValue({ data: pushToken } as never);
+        mocks.listServerProfiles.mockReturnValue([]);
+        const { registerPushTokenIfAvailable } = await import('./syncAccount');
+
+        await registerPushTokenIfAvailable({
+            credentials,
+            log: { log: vi.fn() },
+            getAccountSettings: () => ({
+                attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } },
+            }),
+        });
+
+        expect(mocks.registerPushToken).not.toHaveBeenCalled();
+        expect(mocks.deletePushToken).toHaveBeenCalledWith(
+            credentials,
+            pushToken,
+            { apiEndpoint: 'https://active.example.test', runtimeOrigin: 'https://active.example.test' },
+        );
     });
 
     it('never triggers the OS permission prompt from background registration', async () => {

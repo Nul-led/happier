@@ -12,7 +12,6 @@ import { Icon } from '@/components/ui/icons/Icon';
 export const SessionRuntimeSettingsView = React.memo(function SessionRuntimeSettingsView() {
     const { theme } = useUnistyles();
     const [useTmux, setUseTmux] = useSettingMutable('sessionUseTmux');
-    const [terminalConnectLegacySecretExportEnabled, setTerminalConnectLegacySecretExportEnabled] = useSettingMutable('terminalConnectLegacySecretExportEnabled');
 
     return (
         <ItemList style={{ paddingTop: 0 }}>
@@ -25,18 +24,6 @@ export const SessionRuntimeSettingsView = React.memo(function SessionRuntimeSett
                     rightElement={<Switch value={useTmux} onValueChange={setUseTmux} />}
                     showChevron={false}
                     onPress={() => setUseTmux(!useTmux)}
-                />
-            </ItemGroup>
-            <ItemGroup title={t('settingsSession.terminalConnect.title')}>
-                <Item
-                    title={t('settingsSession.terminalConnect.legacySecretExportTitle')}
-                    subtitle={terminalConnectLegacySecretExportEnabled
-                        ? t('settingsSession.terminalConnect.legacySecretExportEnabledSubtitle')
-                        : t('settingsSession.terminalConnect.legacySecretExportDisabledSubtitle')}
-                    icon={<Icon name="shield" size={29} color={theme.colors.accent.indigo} />}
-                    rightElement={<Switch value={terminalConnectLegacySecretExportEnabled} onValueChange={setTerminalConnectLegacySecretExportEnabled} />}
-                    showChevron={false}
-                    onPress={() => setTerminalConnectLegacySecretExportEnabled(!terminalConnectLegacySecretExportEnabled)}
                 />
             </ItemGroup>
         </ItemList>

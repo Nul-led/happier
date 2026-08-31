@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
 
 type SocketHandler = (...args: any[]) => void;
 
@@ -81,7 +82,7 @@ describe('createConcurrentServerSocketTransport', () => {
                     clientPurpose: 'concurrent-server-cache',
                     accountStoredContentCompatibility: {
                         v: 1,
-                        protocolVersion: 1,
+                        protocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION.protocolVersion,
                     },
                 }),
                 forceNew: true,

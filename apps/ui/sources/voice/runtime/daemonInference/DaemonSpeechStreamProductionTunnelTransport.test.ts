@@ -18,6 +18,7 @@ import {
   type PeerRouteNonceProofV1,
   type SignedDirectRouteGrantV1,
 } from '@happier-dev/protocol';
+import type { PeerTcpTunnelFrame } from '@happier-dev/peer-transport/duplexFrames';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { encodeBase64 } from '@/encryption/base64';
@@ -444,7 +445,7 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
         tunnelId: string;
         direction: 'daemon_to_client';
         sequence: number;
-        payloadBase64: string;
+        payload: Uint8Array;
       }>;
     }>) => void) | null = null;
     const sendSubstreamDataFrame = vi.fn(async (
@@ -460,13 +461,13 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
             tunnelId: frame.tunnelId,
             direction: 'daemon_to_client',
             sequence: frame.sequence,
-            payloadBase64: encodeBase64(new TextEncoder().encode(JSON.stringify({
+            payload: new TextEncoder().encode(JSON.stringify({
               ok: true,
               streamId: 'stream-1',
               generation: 7,
               ackSeq: frame.sequence,
               events: [],
-            }))),
+            })),
           },
         });
       });
@@ -1021,14 +1022,7 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
     const sendSubstreamFrame = vi.fn();
     let substreamHandler: ((event: Readonly<{
       substreamId: string;
-      frame: Readonly<{
-        v: 1;
-        kind: 'data';
-        tunnelId: string;
-        direction: 'daemon_to_client';
-        sequence: number;
-        payloadBase64: string;
-      }>;
+      frame: PeerTcpTunnelFrame;
     }>) => void) | null = null;
     const sendSubstreamDataFrame = vi.fn(async (
       substreamId: string,
@@ -1102,12 +1096,12 @@ describe('DaemonSpeechStreamProductionTunnelTransport', () => {
           tunnelId: frame.tunnelId,
           direction: 'daemon_to_client',
           sequence: frame.sequence,
-          payloadBase64: encodeBase64(encodePeerApplicationEncryptedFrameV1({
+          payload: encodePeerApplicationEncryptedFrameV1({
             v: 1,
             kind: encrypted.kind,
             nonceBase64Url: encodeProtocolBase64(responseNonce, 'base64url'),
             ciphertextBase64Url: encodeProtocolBase64(responseCiphertext, 'base64url'),
-          })),
+          }),
         },
       });
     });

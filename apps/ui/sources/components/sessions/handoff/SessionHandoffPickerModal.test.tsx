@@ -52,28 +52,6 @@ vi.mock('@happier-dev/protocol', async (importOriginal) => {
     return {
         ...actual,
         getActionSpec: () => ({ id: 'session.handoff', title: 'session.handoff.title', description: 'session.handoff.description' }),
-        evaluateSessionHandoffWorkspaceTransferSourcePathSafety: (params: {
-            sourcePath?: string;
-            sourceHomeDir?: string;
-            fallbackSourceHomeDir?: string;
-        }) => {
-            const rawSourcePath = String(params?.sourcePath ?? '').trim();
-            if (!rawSourcePath) {
-                return { allowed: false, reasonCode: 'missing_source_path' };
-            }
-            if (rawSourcePath === '~' || rawSourcePath === '~/') {
-                return { allowed: false, reasonCode: 'path_is_home_directory' };
-            }
-            const isAbsolute = rawSourcePath.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(rawSourcePath) || /^(\\\\|\/\/)[^\\/]+[\\/][^\\/]+(?:[\\/].*)?$/.test(rawSourcePath);
-            if (!isAbsolute) {
-                return { allowed: false, reasonCode: 'path_is_not_absolute' };
-            }
-            const sourceHomeDir = String(params?.sourceHomeDir ?? '').trim() || String(params?.fallbackSourceHomeDir ?? '').trim();
-            const samePath = rawSourcePath === sourceHomeDir;
-            return samePath
-                ? { allowed: false, reasonCode: 'path_is_home_directory' }
-                : { allowed: true, reasonCode: null };
-        },
     };
 });
 
@@ -114,10 +92,6 @@ vi.mock('@/components/ui/lists/Item', () => ({
 
 vi.mock('@/components/ui/buttons/RoundButton', () => ({
     RoundButton: (props: any) => React.createElement('RoundButton', props),
-}));
-
-vi.mock('@/components/ui/forms/Switch', () => ({
-    Switch: (props: any) => React.createElement('Switch', props),
 }));
 
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
@@ -208,9 +182,8 @@ describe('SessionHandoffPickerModal', () => {
         settingsState.recentMachinePaths = [];
         settingsState.sessionHandoffDefaultsV1 = {
             v: 1,
-            workspaceTransferEnabled: true,
-            workspaceTransferStrategy: 'transfer_snapshot',
-            conflictPolicy: 'create_sibling_copy',
+            workspaceSyncMode: 'copy_once',
+            workspaceSyncRelationshipId: null,
             includeIgnoredMode: 'include_selected',
             ignoredIncludeGlobs: ['dist/**'],
             directTargetMode: 'convert_to_persisted',
@@ -267,16 +240,65 @@ describe('SessionHandoffPickerModal', () => {
 
         expect(onResolve).toHaveBeenCalledWith({
             targetMachineId: 'machine_target',
+            sourceRootPath: '~/projects/happier',
             targetSessionStorageMode: 'persisted',
-            workspaceTransfer: {
-                enabled: true,
-                strategy: 'transfer_snapshot',
-                conflictPolicy: 'create_sibling_copy',
-                includeIgnoredMode: 'include_selected',
-                ignoredIncludeGlobs: ['dist/**'],
+            workspaceAction: {
+                kind: 'copy_once',
+                contentPolicy: {
+                    v: 1,
+                    selection: 'git_worktree',
+                    extraIgnorePatterns: [],
+                    extraIncludePatterns: ['dist/**'],
+                    includeGitDirectory: false,
+                    policyDigest: expect.any(String),
+                },
             },
         });
         expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it('offers creation of the first persistent relationship without seeded settings state', async () => {
+        settingsState.sessionHandoffDefaultsV1 = {
+            v: 1,
+            workspaceSyncMode: 'keep_synced',
+            workspaceSyncRelationshipId: null,
+            includeIgnoredMode: 'exclude',
+            ignoredIncludeGlobs: [],
+            directTargetMode: 'convert_to_persisted',
+        };
+        settingsState.workspaceSyncRelationshipsV1 = [];
+        const onResolve = vi.fn();
+        let chrome: CustomModalChromeConfig | null = null;
+        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
+        const screen = await renderScreen(<SessionHandoffPickerModal
+            onClose={vi.fn()}
+            setChrome={(next) => { chrome = next; }}
+            onResolve={onResolve}
+            sessionId="sess_1"
+            sourceMachineId="machine_source"
+            serverId="server_a"
+        />);
+
+        await act(async () => {
+            invokeTestInstanceHandler(screen.tree.findByType('MachineSelector' as any), 'onSelect', {
+                id: 'machine_target',
+                active: true,
+                metadata: { displayName: 'Target machine', homeDir: '/home/target' },
+            });
+            screen.changeTextByTestId('path-selection-list:header:input', '/home/target/happier');
+        });
+
+        const startButton = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        expect(startButton?.props.disabled).toBe(false);
+        await act(async () => {
+            await (startButton!.props as { onPress: () => unknown }).onPress();
+        });
+
+        expect(onResolve).toHaveBeenCalledWith(expect.objectContaining({
+            targetMachineId: 'machine_target',
+            targetPath: '/home/target/happier',
+            workspaceSyncRelationshipIntent: expect.objectContaining({ mode: 'keep_synced' }),
+        }));
     });
 
     it('reuses the editable recent-path picker and opens its browser only on Browse', async () => {
@@ -385,7 +407,7 @@ describe('SessionHandoffPickerModal', () => {
         expect(directModeMenu).toBeTruthy();
     });
 
-    it('forces conflictPolicy=replace_existing when workspace transfer strategy is sync_changes', async () => {
+    it('selects the canonical none action without exposing copy policy controls', async () => {
         const onResolve = vi.fn();
         const onClose = vi.fn();
         const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
@@ -411,21 +433,20 @@ describe('SessionHandoffPickerModal', () => {
             invokeTestInstanceHandler(machineSelector, 'onSelect', { id: 'machine_target', metadata: { displayName: 'Target machine' } });
         });
 
-        const dropdowns = tree.findAllByType('DropdownMenu' as any);
-        const strategyMenu = dropdowns.find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.workspaceTransfer.strategy.title');
-        const conflictMenu = dropdowns.find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.conflictPolicy.title');
-
-        expect(strategyMenu).toBeTruthy();
-        expect(conflictMenu).toBeTruthy();
-        expect(conflictMenu?.props.selectedId).toBe('create_sibling_copy');
+        const modeMenu = tree.findAllByType('DropdownMenu' as any)
+            .find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.workspaceMode.title');
+        expect(modeMenu?.props.selectedId).toBe('copy_once');
 
         await act(async () => {
-            invokeTestInstanceHandler(strategyMenu!, 'onSelect', 'sync_changes');
+            invokeTestInstanceHandler(modeMenu!, 'onSelect', 'none');
         });
 
-        const dropdownsAfter = tree.findAllByType('DropdownMenu' as any);
-        const conflictMenuAfter = dropdownsAfter.find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.conflictPolicy.title');
-        expect(conflictMenuAfter?.props.selectedId).toBe('replace_existing');
+        const ignoredModeMenu = tree.findAllByType('DropdownMenu' as any)
+            .find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.includeIgnoredMode.title');
+        expect(ignoredModeMenu?.props.itemTrigger.itemProps.disabled).toBe(true);
+        const globInput = tree.findAllByType('TextInput' as any)
+            .find((node: any) => node.props.value === 'dist/**');
+        expect(globInput?.props.editable).toBe(false);
 
         const footer = requireCardChrome(chrome).footer;
         const startButton = findElementByTestId(footer, 'session-handoff-start');
@@ -439,19 +460,14 @@ describe('SessionHandoffPickerModal', () => {
 
         expect(onResolve).toHaveBeenCalledWith({
             targetMachineId: 'machine_target',
+            sourceRootPath: '~/projects/happier',
             targetSessionStorageMode: 'persisted',
-            workspaceTransfer: {
-                enabled: true,
-                strategy: 'sync_changes',
-                conflictPolicy: 'replace_existing',
-                includeIgnoredMode: 'include_selected',
-                ignoredIncludeGlobs: ['dist/**'],
-            },
+            workspaceAction: { kind: 'none' },
         });
         expect(onClose).not.toHaveBeenCalled();
     });
 
-    it('forces workspace transfer off for sessions rooted at the machine home directory', async () => {
+    it('blocks a canonical workspace operation at the machine home while keeping none available', async () => {
         sessionsByIdState = {
             sess_1: {
                 id: 'sess_1',
@@ -494,80 +510,29 @@ describe('SessionHandoffPickerModal', () => {
                     serverId="server_a"
                 />)).tree;
 
-        const switchNode = tree.findByType('Switch' as any);
-        expect(switchNode.props.value).toBe(false);
-        expect(switchNode.props.disabled).toBe(true);
-
         const machineSelector = tree.findByType('MachineSelector' as any);
         await act(async () => {
             invokeTestInstanceHandler(machineSelector, 'onSelect', { id: 'machine_target', metadata: { displayName: 'Target machine' } });
         });
 
-        const footer = requireCardChrome(chrome).footer;
-        const startButton = findElementByTestId(footer, 'session-handoff-start');
+        let startButton = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        expect(startButton?.props.disabled).toBe(true);
+
+        const modeMenu = tree.findAllByType('DropdownMenu' as any)
+            .find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.workspaceMode.title');
+        expect(modeMenu?.props.selectedId).toBe('copy_once');
         await act(async () => {
-            const onPress = (startButton!.props as { onPress?: () => unknown }).onPress;
-            if (typeof onPress !== 'function') {
-                throw new Error('expected start button to have an onPress handler');
-            }
-            await onPress();
+            invokeTestInstanceHandler(modeMenu!, 'onSelect', 'none');
         });
+        startButton = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        expect(startButton?.props.disabled).toBe(false);
 
-        expect(onResolve).toHaveBeenCalledWith({
-            targetMachineId: 'machine_target',
-            targetSessionStorageMode: 'persisted',
+        await act(async () => {
+            await (startButton!.props as { onPress: () => unknown }).onPress();
         });
-        expect(onClose).not.toHaveBeenCalled();
-    });
-
-    it('forces workspace transfer off when session metadata is missing homeDir but the source machine home directory matches the path', async () => {
-        sessionsByIdState = {
-            sess_1: {
-                id: 'sess_1',
-                metadata: {
-                    flavor: 'claude',
-                    machineId: 'machine_source',
-                    path: '/Users/tester',
-                },
-            },
-        };
-        sessionsState = [
-            {
-                id: 'sess_1',
-                metadata: {
-                    flavor: 'claude',
-                    machineId: 'machine_source',
-                    path: '/Users/tester',
-                },
-            },
-        ];
-        machineListByServerIdState = {
-            server_a: [
-                { id: 'machine_source', metadata: { displayName: 'Source machine', host: 'source.local', homeDir: '/Users/tester' } },
-                { id: 'machine_target', metadata: { displayName: 'Target machine', host: 'target.local' } },
-            ],
-        };
-        allMachinesState = [
-            { id: 'machine_source', metadata: { displayName: 'Source machine', host: 'source.local', homeDir: '/Users/tester' } },
-            { id: 'machine_target', metadata: { displayName: 'Target machine', host: 'target.local' } },
-        ];
-
-        const onResolve = vi.fn();
-        const onClose = vi.fn();
-        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
-
-        let tree!: ReactTestRenderer;
-        tree = (await renderScreen(<SessionHandoffPickerModal
-                    onClose={onClose}
-                    onResolve={onResolve}
-                    sessionId="sess_1"
-                    sourceMachineId="machine_source"
-                    serverId="server_a"
-                />)).tree;
-
-        const switchNode = tree.findByType('Switch' as any);
-        expect(switchNode.props.value).toBe(false);
-        expect(switchNode.props.disabled).toBe(true);
+        expect(onResolve).toHaveBeenCalledWith(expect.objectContaining({
+            workspaceAction: { kind: 'none' },
+        }));
     });
 
     it('falls back to current session machineId when sourceMachineId prop is missing', async () => {
@@ -613,10 +578,6 @@ describe('SessionHandoffPickerModal', () => {
                     sessionId="sess_1"
                     serverId="server_a"
                 />)).tree;
-
-        const switchNode = tree.findByType('Switch' as any);
-        expect(switchNode.props.value).toBe(false);
-        expect(switchNode.props.disabled).toBe(true);
 
         const machineSelector = tree.findByType('MachineSelector' as any);
         expect(machineSelector.props.machines).toEqual([
@@ -672,129 +633,6 @@ describe('SessionHandoffPickerModal', () => {
         expect(machineSelector.props.machines).toEqual([
             { id: 'machine_target', metadata: { displayName: 'Target machine', host: 'target.local' } },
         ]);
-    });
-
-    it('forces workspace transfer off for home-directory shorthand paths', async () => {
-        sessionsByIdState = {
-            sess_1: {
-                id: 'sess_1',
-                metadata: {
-                    flavor: 'claude',
-                    machineId: 'machine_source',
-                    path: '~',
-                },
-            },
-        };
-        sessionsState = [
-            {
-                id: 'sess_1',
-                metadata: {
-                    flavor: 'claude',
-                    machineId: 'machine_source',
-                    path: '~',
-                },
-            },
-        ];
-
-        const onResolve = vi.fn();
-        const onClose = vi.fn();
-        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
-
-        let tree!: ReactTestRenderer;
-        tree = (await renderScreen(<SessionHandoffPickerModal
-                    onClose={onClose}
-                    onResolve={onResolve}
-                    sessionId="sess_1"
-                    serverId="server_a"
-                />)).tree;
-
-        const switchNode = tree.findByType('Switch' as any);
-        expect(switchNode.props.value).toBe(false);
-        expect(switchNode.props.disabled).toBe(true);
-    });
-
-    it('omits workspace transfer from the picker result when transfer stays disabled', async () => {
-        const onResolve = vi.fn();
-        const onClose = vi.fn();
-        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
-        let chrome: CustomModalChromeConfig | null = null;
-        const setChrome = vi.fn((next: CustomModalChromeConfig | null) => {
-            chrome = next;
-        });
-
-        let tree!: ReactTestRenderer;
-        tree = (await renderScreen(<SessionHandoffPickerModal
-                    onClose={onClose}
-                    setChrome={setChrome}
-                    onResolve={onResolve}
-                    sessionId="sess_1"
-                    sourceMachineId="machine_source"
-                    serverId="server_a"
-                />)).tree;
-
-        const machineSelector = tree.findByType('MachineSelector' as any);
-        await act(async () => {
-            invokeTestInstanceHandler(machineSelector, 'onSelect', { id: 'machine_target', metadata: { displayName: 'Target machine' } });
-        });
-
-        const switchNode = tree.findByType('Switch' as any);
-        await act(async () => {
-            invokeTestInstanceHandler(switchNode, 'onValueChange', false);
-        });
-
-        const dropdowns = tree.findAllByType('DropdownMenu' as any);
-        const strategyMenu = dropdowns.find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.workspaceTransfer.strategy.title');
-        const conflictMenu = dropdowns.find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.conflictPolicy.title');
-        const directModeMenu = dropdowns.find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.directTargetMode.title');
-        const ignoredMenu = dropdowns.find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.includeIgnoredMode.title');
-
-        expect(strategyMenu?.props?.itemTrigger?.itemProps).toMatchObject({
-            testID: 'session-handoff-workspace-transfer-strategy-trigger',
-            disabled: true,
-        });
-        expect(conflictMenu?.props?.itemTrigger?.itemProps).toMatchObject({ disabled: true });
-        expect(ignoredMenu?.props?.itemTrigger?.itemProps).toMatchObject({ disabled: true });
-
-        await act(async () => {
-            invokeTestInstanceHandler(strategyMenu!, 'onSelect', 'sync_changes');
-            conflictMenu!.props.onSelect('replace_existing');
-            ignoredMenu!.props.onSelect('include_selected');
-            directModeMenu!.props.onSelect('keep_direct');
-        });
-
-        const globInput = tree.findAllByType('TextInput' as any).find((node: any) => node.props.value === 'dist/**');
-        if (!globInput) {
-            throw new Error('expected the ignored-glob input');
-        }
-        expect(globInput.props.editable).toBe(false);
-        await act(async () => {
-            globInput.props.onChangeText('dist/**, .env.local');
-        });
-
-        const dropdownsAfterAttempt = tree.findAllByType('DropdownMenu' as any);
-        const strategyMenuAfterAttempt = dropdownsAfterAttempt.find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.workspaceTransfer.strategy.title');
-        const conflictMenuAfterAttempt = dropdownsAfterAttempt.find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.conflictPolicy.title');
-        const ignoredMenuAfterAttempt = dropdownsAfterAttempt.find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.includeIgnoredMode.title');
-
-        expect(strategyMenuAfterAttempt?.props.selectedId).toBe('transfer_snapshot');
-        expect(conflictMenuAfterAttempt?.props.selectedId).toBe('create_sibling_copy');
-        expect(ignoredMenuAfterAttempt?.props.selectedId).toBe('include_selected');
-        expect(tree.findAllByType('TextInput' as any).find((node: any) => node.props.value === 'dist/**')).toBeTruthy();
-
-        const footer = requireCardChrome(chrome).footer;
-        const startButton = findElementByTestId(footer, 'session-handoff-start');
-        await act(async () => {
-            const onPress = (startButton!.props as { onPress?: () => unknown }).onPress;
-            if (typeof onPress !== 'function') {
-                throw new Error('expected start button to have an onPress handler');
-            }
-            await onPress();
-        });
-
-        expect(onResolve).toHaveBeenCalledWith({
-            targetMachineId: 'machine_target',
-            targetSessionStorageMode: 'direct',
-        });
     });
 
     it('does not start when the selected machine is structurally offline', async () => {

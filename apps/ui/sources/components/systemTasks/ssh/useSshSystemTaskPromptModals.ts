@@ -2,10 +2,16 @@ import * as React from 'react';
 
 import { buildSshHostKeyPromptBody } from '@/components/ssh/buildSshHostKeyPromptBody';
 import { Modal } from '@/modal';
-import { t } from '@/text';
+import { t, tLoose } from '@/text';
 
 import type { SystemTaskRunState, SystemTaskRunner } from '../types';
 import type { SystemTaskPromptEnvelope } from '../prompts/readLatestSystemTaskPrompt';
+
+function personalHomeCopy(key: string, fallback: string): string {
+    const translationKey = `personalHome.settings.${key}`;
+    const value = tLoose(translationKey);
+    return value === translationKey ? fallback : value;
+}
 
 export function useSshSystemTaskPromptModals(params: Readonly<{
     runner: SystemTaskRunner;
@@ -28,6 +34,50 @@ export function useSshSystemTaskPromptModals(params: Readonly<{
             : `${taskId}:${prompt.kind}:${JSON.stringify(prompt.data)}`;
         if (handledPromptRef.current === promptKey) return;
         handledPromptRef.current = promptKey;
+
+        if (prompt.kind === 'personal_home.confirm_remote_erase.v1') {
+            void (async () => {
+                const rawPaths = Array.isArray(prompt.data.paths) ? prompt.data.paths : [];
+                const paths = rawPaths.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+                const canonicalServerUrl = typeof prompt.data.canonicalServerUrl === 'string'
+                    ? prompt.data.canonicalServerUrl.trim()
+                    : '';
+                const homeServerIdentityId = prompt.data.homeServerIdentityId === null
+                    || (typeof prompt.data.homeServerIdentityId === 'string'
+                        && prompt.data.homeServerIdentityId.trim().length > 0)
+                    ? prompt.data.homeServerIdentityId
+                    : undefined;
+                const estimatedBytes = prompt.data.estimatedBytes;
+                const factsAreExact = canonicalServerUrl.length > 0
+                    && homeServerIdentityId !== undefined
+                    && paths.length > 0
+                    && paths.length === rawPaths.length
+                    && (estimatedBytes === null
+                        || (typeof estimatedBytes === 'number' && Number.isFinite(estimatedBytes) && estimatedBytes >= 0));
+                if (!factsAreExact) {
+                    await params.runner.respond(taskId, { confirmed: false }).catch(() => {});
+                    return;
+                }
+                const accepted = await Modal.confirm(
+                    prompt.message || personalHomeCopy('eraseDataTitle', 'Delete Personal Home data?'),
+                    [
+                        `${personalHomeCopy('canonicalServerUrl', 'Home URL')}: ${canonicalServerUrl}`,
+                        `${personalHomeCopy('identityTitle', 'Home identity')}: ${homeServerIdentityId || personalHomeCopy('notAvailable', 'Not available')}`,
+                        `${personalHomeCopy('estimatedSize', 'Estimated size')}: ${estimatedBytes === null ? personalHomeCopy('unknownSize', 'Unknown size') : String(estimatedBytes)}`,
+                        '',
+                        personalHomeCopy('eraseDataBody', 'This permanently deletes only the owner-validated Home paths below:'),
+                        ...paths.map((path) => `• ${path}`),
+                    ].join('\n'),
+                    {
+                        destructive: true,
+                        confirmText: personalHomeCopy('eraseDataAction', 'Delete Personal Home data'),
+                        cancelText: t('common.cancel'),
+                    },
+                );
+                await params.runner.respond(taskId, { confirmed: accepted });
+            })();
+            return;
+        }
 
         if (prompt.kind === 'ssh.trustHost' || prompt.kind === 'ssh.replaceHostKey') {
             void (async () => {

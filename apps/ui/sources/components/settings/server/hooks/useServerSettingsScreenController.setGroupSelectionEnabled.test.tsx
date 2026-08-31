@@ -10,6 +10,12 @@ import { installServerSettingsHooksCommonModuleMocks } from './serverSettingsHoo
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const storageState: Record<string, unknown> = {};
+const homeViewState = {
+    version: 1 as const,
+    get groups() { return storageState.serverSelectionGroups as any[]; },
+    get activeTargetKind() { return storageState.serverSelectionActiveTargetKind as 'server' | 'group' | null; },
+    get activeTargetId() { return storageState.serverSelectionActiveTargetId as string | null; },
+};
 const useSettingMutableMock = ((key: string) => [
     storageState[key],
     (value: unknown) => {
@@ -49,10 +55,22 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
         { id: 'server-a', name: 'A', serverUrl: 'https://a.example.test', lastUsedAt: 0, createdAt: 0, updatedAt: 0 },
         { id: 'server-b', name: 'B', serverUrl: 'https://b.example.test', lastUsedAt: 0, createdAt: 0, updatedAt: 0 },
     ]),
+    resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
     getActiveServerId: () => 'server-a',
     getDeviceDefaultServerId: () => 'server-a',
     getResetToDefaultServerId: () => 'server-a',
     subscribeActiveServer: vi.fn(() => () => {}),
+    getServerProfilesGeneration: () => 1,
+    subscribeServerProfiles: vi.fn(() => () => {}),
+    loadHomeViewState: () => homeViewState,
+    subscribeHomeViewState: () => () => {},
+    updateHomeViewState: vi.fn((update: (current: typeof homeViewState) => typeof homeViewState) => {
+        const next = update(homeViewState);
+        storageState.serverSelectionGroups = next.groups;
+        storageState.serverSelectionActiveTargetKind = next.activeTargetKind;
+        storageState.serverSelectionActiveTargetId = next.activeTargetId;
+        return next;
+    }),
     setActiveServerId: vi.fn(),
     upsertServerProfile: vi.fn(() => ({ id: 'server-a' })),
 }));

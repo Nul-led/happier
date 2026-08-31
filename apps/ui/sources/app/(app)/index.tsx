@@ -20,16 +20,16 @@ import {
 import { readJourneyReplayBeatId } from '@/components/onboarding/tour/state/journeyReplayIntent';
 import { SetupWizardSurface } from '@/components/onboarding/surfaces/SetupWizardSurface';
 import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
-import { useLocalDaemonControl } from '@/components/settings/machines/localControl/useLocalDaemonControl';
-import { useRelayDriftBanner } from '@/components/settings/server/useRelayDriftBanner';
 import { useApplyLocalSettings } from '@/sync/store/settingsWriters';
 import { isAuthenticatedRootDeepLinkRedirectAllowed } from '@/auth/routing/authenticatedRootDeepLinkRedirectAllowed';
 import { normalizeSessionId } from '@/sync/domains/session/normalizeSessionId';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { shouldHoldUnauthenticatedShellForWebServerOverride } from '@/sync/domains/server/url/shouldHoldUnauthenticatedShellForWebServerOverride';
 import { createSessionRouteServerScope } from '@/hooks/session/sessionRouteServerScope';
+import { resolveNewSessionAuthContinuation } from '@/components/sessions/new/navigation/newSessionAuthContinuation';
 import { useVoiceSurfaceE2eFixtureComposition } from '@/dev/testkit/harness/useVoiceSurfaceE2eFixtureComposition';
 import { t } from '@/text';
+import { shouldKeepDesktopPersonalHomeShell } from './personalHomeIndexRoutePolicy';
 
 const stylesheet = StyleSheet.create({
     root: {
@@ -74,7 +74,16 @@ export default function Home() {
     const hasExplicitJourneyReplayIntent =
         onboardingTourDecision?.state === 'enabled'
         && readJourneyReplayBeatId() != null;
-    if (!auth.isAuthenticated || onboardingJourneyActive || journeyOwnsSetupContinuation || hasExplicitJourneyReplayIntent) {
+    const keepDesktopPersonalHomeShell = shouldKeepDesktopPersonalHomeShell({
+        isAuthenticated: auth.isAuthenticated,
+        isDesktopHost: isDesktopHost(),
+    });
+    if (
+        (!auth.isAuthenticated && !keepDesktopPersonalHomeShell)
+        || onboardingJourneyActive
+        || journeyOwnsSetupContinuation
+        || hasExplicitJourneyReplayIntent
+    ) {
         // The URL override owns the real relay and must settle before first mount. Once the
         // journey has mounted, its demo world intentionally activates a temporary local
         // relay; treating that presentation-only server as override drift would unmount the
@@ -89,27 +98,35 @@ export default function Home() {
         ) {
             return null;
         }
+        // The provider-level Personal Home gate is the sole Desktop bootstrap-readiness owner.
+        // Once it releases this route, adoption/auth recovery stays in the real shell rather
+        // than re-entering the retired pre-auth setup journey.
         return (
-            <PreAuthOnboardingWizardEntry
-                enableFirstLaunchSetupRedirect={!auth.isAuthenticated && !voiceE2eFixture.shouldSuppressOnboarding}
-            />
+            <PreAuthOnboardingWizardEntry />
         );
     }
     return (
-        <Authenticated shouldSuppressAutoOpenSetupWizard={voiceE2eFixture.shouldSuppressOnboarding} />
+        <Authenticated
+            activeServerId={activeServerSnapshot.serverId}
+            shouldSuppressAutoOpenSetupWizard={voiceE2eFixture.shouldSuppressOnboarding}
+        />
     );
 }
 
-function Authenticated(props: Readonly<{ shouldSuppressAutoOpenSetupWizard: boolean }>) {
+function Authenticated(props: Readonly<{
+    activeServerId: string;
+    shouldSuppressAutoOpenSetupWizard: boolean;
+}>) {
     const params = useGlobalSearchParams<{
         id?: string | string[];
         messageId?: string | string[];
         jumpChildId?: string | string[];
         serverId?: string | string[];
+        newSessionAuthContinuation?: string | string[];
+        spawnServerId?: string | string[];
+        draftId?: string | string[];
     }>();
     const router = useRouter();
-    const localDaemonControl = useLocalDaemonControl();
-    const relayDriftBanner = useRelayDriftBanner();
     const applyLocalSettings = useApplyLocalSettings();
     const [setupWizardVisible, setSetupWizardVisible] = React.useState(false);
 
@@ -118,12 +135,12 @@ function Authenticated(props: Readonly<{ shouldSuppressAutoOpenSetupWizard: bool
     const jumpChildId = typeof params.jumpChildId === 'string' ? params.jumpChildId : Array.isArray(params.jumpChildId) ? (params.jumpChildId[0] ?? null) : null;
     const shouldSuppressAutoOpenSetupWizard = props.shouldSuppressAutoOpenSetupWizard;
     const sessionRouteServerScope = createSessionRouteServerScope(params);
-    const currentMachineIsConfiguredAndHealthy =
-        localDaemonControl.status?.serviceInstalled === true
-        && localDaemonControl.status?.daemonRunning === true
-        && localDaemonControl.status?.needsAuth !== true
-        && Boolean(localDaemonControl.status?.machineId);
-    const hasRelayDrift = relayDriftBanner != null;
+    const newSessionAuthContinuation = React.useMemo(() => {
+        return resolveNewSessionAuthContinuation({
+            activeServerId: props.activeServerId,
+            routeParams: params,
+        });
+    }, [params, props.activeServerId]);
     const pendingSetupIntent = usePendingSetupIntent();
     const pendingTerminalConnect = getPendingTerminalConnect();
     const pendingSetupIntentDismissed = pendingSetupIntent?.phase === 'dismissed';
@@ -137,11 +154,13 @@ function Authenticated(props: Readonly<{ shouldSuppressAutoOpenSetupWizard: bool
     // and a stale pending continuation is settled (cleared below when !needsSetupWizard).
     // Explicit entry points (sessions empty-state, settings, journey replay) are not gated.
     const machineSetupStepSatisfied = useMachineSetupStepSatisfied();
-    const shouldAutoOpenSetupWizard = shouldSuppressAutoOpenSetupWizard
-        ? false
-        : isDesktopHost()
-            ? (!currentMachineIsConfiguredAndHealthy || hasRelayDrift)
-            : true;
+    // Desktop main-window first-run setup is owned by `PersonalHomeBootstrapGate` (mounted in
+    // the Desktop provider tree). The route must not auto-open the initial setup wizard from
+    // local machine/relay health facts, must not seed a this-computer setup continuation, and
+    // must not run its own daemon/relay sequencing. Non-Desktop platforms keep the existing
+    // automatic first-run wizard; a pending continuation seeded by the optional onboarding
+    // journey (or an explicit entry point) still settles here on every platform.
+    const shouldAutoOpenSetupWizard = shouldSuppressAutoOpenSetupWizard ? false : !isDesktopHost();
     const needsSetupWizard =
         !hasPendingTerminalConnectApproval
         && shouldSuppressAutoOpenSetupWizard !== true
@@ -174,6 +193,11 @@ function Authenticated(props: Readonly<{ shouldSuppressAutoOpenSetupWizard: bool
         const snapshot = getActiveServerSnapshot();
         setPendingSetupIntent(buildDismissedThisComputerSetupIntent(snapshot.serverUrl));
     }, [pendingSetupIntent, shouldAutoOpenSetupWizard]);
+
+    React.useEffect(() => {
+        if (!newSessionAuthContinuation) return;
+        router.replace(newSessionAuthContinuation);
+    }, [newSessionAuthContinuation, router]);
 
     React.useEffect(() => {
         const sid = normalizeSessionId(sessionId);

@@ -1,4 +1,5 @@
-import { serverFetch } from '@/sync/http/client';
+import type { ServerFetch } from '@/sync/http/client';
+import type { HomeQrEnrollmentTarget } from '@/auth/flows/qrStart';
 
 export type PairingStartResponse = Readonly<{
     pairId: string;
@@ -17,12 +18,13 @@ export type PairingStatus =
         expiresAt: string;
         requestedPublicKey: string;
         requestedDeviceLabel: string | null;
-        confirmCode: string;
+        bindingProof: string;
+        homeServerIdentityId: string;
     }>;
 
-export type PairingRequestOk = Readonly<{ state: 'requested'; confirmCode: string }>;
+export type PairingRequestOk = Readonly<{ state: 'requested' }>;
 
-export type PairingRequestErrorReason = 'not_found' | 'already_requested' | 'invalid_public_key' | 'http_error';
+export type PairingRequestErrorReason = 'not_found' | 'already_requested' | 'invalid_public_key' | 'invalid_target' | 'http_error';
 
 export type PairingRequestResult =
     | Readonly<{ ok: true; data: PairingRequestOk }>
@@ -30,17 +32,24 @@ export type PairingRequestResult =
 
 export type PairingConsumeResult =
     | Readonly<{ ok: true }>
-    | Readonly<{ ok: false; reason: 'not_found' | 'http_error'; status: number }>;
+    | Readonly<{ ok: false; reason: 'not_found' | 'already_decided' | 'invalid_target' | 'http_error'; status: number }>;
 
 export type PairingStartResult =
     | Readonly<{ ok: true; data: PairingStartResponse }>
-    | Readonly<{ ok: false; reason: 'http_error'; status: number }>;
+    | Readonly<{ ok: false; reason: 'invalid_target' | 'http_error'; status: number }>;
 
 export type PairingStatusResult =
     | Readonly<{ ok: true; data: PairingStatus }>
-    | Readonly<{ ok: false; reason: 'not_found' | 'http_error'; status: number }>;
+    | Readonly<{ ok: false; reason: 'not_found' | 'invalid_target' | 'http_error'; status: number }>;
 
-async function safeReadJson(res: Response): Promise<any | null> {
+/**
+ * Explicit Home endpoint for pairing calls. When supplied, requests are bound to that
+ * endpoint; Home-authenticated calls use that Home's own stored credentials and the
+ * focused-Home wrapper is never consulted.
+ */
+export type PairingCallTarget = HomeQrEnrollmentTarget;
+
+async function safeReadJson(res: Response): Promise<unknown> {
     try {
         return await res.json();
     } catch {
@@ -48,8 +57,42 @@ async function safeReadJson(res: Response): Promise<any | null> {
     }
 }
 
-export async function pairingStart(params: { secretHash: string }): Promise<PairingStartResult> {
-    const res = await serverFetch(
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+    const actual = Object.keys(value).sort();
+    const expected = [...keys].sort();
+    return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+/**
+ * Resolve the request function for one pairing call. Explicit targets never fall back to
+ * the focused-Home selector; unauthenticated calls never attach credentials.
+ */
+function resolvePairingRequest(target: PairingCallTarget, authenticated = false): ServerFetch | null {
+    const endpointUrl = target.endpointUrl.trim().replace(/\/+$/, '');
+    try {
+        const parsed = new URL(endpointUrl);
+        if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.username || parsed.password) {
+            return null;
+        }
+    } catch {
+        return null;
+    }
+    return target.createRequest({
+        ...(target.serverId ? { serverId: target.serverId } : {}),
+        // Authenticated trusted-device calls resolve the target Home's stored credential;
+        // unauthenticated joining-device calls carry no bearer material at all.
+        ...(authenticated ? {} : { credentials: null }),
+    });
+}
+
+export async function pairingStart(params: { secretHash: string }, target: PairingCallTarget): Promise<PairingStartResult> {
+    const request = resolvePairingRequest(target, true);
+    if (!request) return { ok: false, reason: 'invalid_target', status: 0 };
+    const res = await request(
         '/v1/auth/pairing/start',
         {
             method: 'POST',
@@ -62,14 +105,21 @@ export async function pairingStart(params: { secretHash: string }): Promise<Pair
         return { ok: false, reason: 'http_error', status: res.status };
     }
     const json = await safeReadJson(res);
-    if (!json || typeof json.pairId !== 'string' || typeof json.expiresAt !== 'string') {
+    if (
+        !isRecord(json)
+        || typeof json.pairId !== 'string'
+        || typeof json.expiresAt !== 'string'
+        || !hasExactKeys(json, ['pairId', 'expiresAt'])
+    ) {
         return { ok: false, reason: 'http_error', status: 502 };
     }
     return { ok: true, data: { pairId: json.pairId, expiresAt: json.expiresAt } };
 }
 
-export async function pairingStatus(params: { pairId: string }): Promise<PairingStatusResult> {
-    const res = await serverFetch(`/v1/auth/pairing/status?pairId=${encodeURIComponent(params.pairId)}`, undefined, {
+export async function pairingStatus(params: { pairId: string }, target: PairingCallTarget): Promise<PairingStatusResult> {
+    const request = resolvePairingRequest(target, true);
+    if (!request) return { ok: false, reason: 'invalid_target', status: 0 };
+    const res = await request(`/v1/auth/pairing/status?pairId=${encodeURIComponent(params.pairId)}`, undefined, {
         includeAuth: true,
     });
     if (!res.ok) {
@@ -79,10 +129,47 @@ export async function pairingStatus(params: { pairId: string }): Promise<Pairing
         return { ok: false, reason: 'http_error', status: res.status };
     }
     const json = await safeReadJson(res);
-    if (!json || (json.state !== 'pending' && json.state !== 'requested') || typeof json.pairId !== 'string') {
+    if (!isRecord(json) || (json.state !== 'pending' && json.state !== 'requested') || typeof json.pairId !== 'string') {
         return { ok: false, reason: 'http_error', status: 502 };
     }
-    return { ok: true, data: json };
+    if (json.state === 'pending' && (
+        typeof json.expiresAt !== 'string'
+        || !hasExactKeys(json, ['state', 'pairId', 'expiresAt'])
+    )) return { ok: false, reason: 'http_error', status: 502 };
+    if (json.state === 'requested' && (
+        typeof json.expiresAt !== 'string'
+        || typeof json.requestedPublicKey !== 'string'
+        || typeof json.bindingProof !== 'string'
+        || typeof json.homeServerIdentityId !== 'string'
+        || (json.requestedDeviceLabel !== null && typeof json.requestedDeviceLabel !== 'string')
+        || !hasExactKeys(json, [
+            'state',
+            'pairId',
+            'expiresAt',
+            'homeServerIdentityId',
+            'requestedPublicKey',
+            'bindingProof',
+            'requestedDeviceLabel',
+        ])
+    )) return { ok: false, reason: 'http_error', status: 502 };
+    if (json.state === 'pending') {
+        return {
+            ok: true,
+            data: { state: 'pending', pairId: json.pairId, expiresAt: json.expiresAt as string },
+        };
+    }
+    return {
+        ok: true,
+        data: {
+            state: 'requested',
+            pairId: json.pairId,
+            expiresAt: json.expiresAt as string,
+            requestedPublicKey: json.requestedPublicKey as string,
+            requestedDeviceLabel: json.requestedDeviceLabel as string | null,
+            bindingProof: json.bindingProof as string,
+            homeServerIdentityId: json.homeServerIdentityId as string,
+        },
+    };
 }
 
 export async function pairingRequest(params: {
@@ -90,8 +177,14 @@ export async function pairingRequest(params: {
     secret: string;
     publicKey: string;
     deviceLabel?: string;
-}): Promise<PairingRequestResult> {
-    const res = await serverFetch(
+    homeServerIdentityId: string;
+    expiresAtMs: number;
+    bindingProof: string;
+}, target: PairingCallTarget, options: Readonly<{ signal?: AbortSignal }> = {}): Promise<PairingRequestResult> {
+    if (options.signal?.aborted) return { ok: false, reason: 'http_error', status: 0 };
+    const request = resolvePairingRequest(target);
+    if (!request) return { ok: false, reason: 'invalid_target', status: 0 };
+    const res = await request(
         '/v1/auth/pairing/request',
         {
             method: 'POST',
@@ -101,15 +194,19 @@ export async function pairingRequest(params: {
                 secret: params.secret,
                 publicKey: params.publicKey,
                 ...(params.deviceLabel ? { deviceLabel: params.deviceLabel } : null),
+                homeServerIdentityId: params.homeServerIdentityId,
+                expiresAtMs: params.expiresAtMs,
+                bindingProof: params.bindingProof,
             }),
+            ...(options.signal ? { signal: options.signal } : {}),
         },
         { includeAuth: false },
     );
 
     if (res.ok) {
         const json = await safeReadJson(res);
-        if (json && json.state === 'requested' && typeof json.confirmCode === 'string') {
-            return { ok: true, data: { state: 'requested', confirmCode: json.confirmCode } };
+        if (isRecord(json) && json.state === 'requested' && hasExactKeys(json, ['state'])) {
+            return { ok: true, data: { state: 'requested' } };
         }
         return { ok: false, reason: 'http_error', status: 502 };
     }
@@ -118,12 +215,24 @@ export async function pairingRequest(params: {
         return { ok: false, reason: 'not_found', status: 404 };
     }
 
-    if (res.status === 401) {
+    if (res.status === 403) {
         const json = await safeReadJson(res);
-        if (json?.error === 'already_requested') {
-            return { ok: false, reason: 'already_requested', status: 401 };
+        if (
+            isRecord(json)
+            && hasExactKeys(json, ['error'])
+            && (json.error === 'wrong_home' || json.error === 'wrong_expiry')
+        ) {
+            return { ok: false, reason: 'invalid_target', status: 403 };
         }
-        if (json?.error === 'Invalid public key') {
+        return { ok: false, reason: 'http_error', status: 403 };
+    }
+
+    if (res.status === 401 || res.status === 409) {
+        const json = await safeReadJson(res);
+        if (isRecord(json) && hasExactKeys(json, ['error']) && json.error === 'already_requested') {
+            return { ok: false, reason: 'already_requested', status: res.status };
+        }
+        if (isRecord(json) && hasExactKeys(json, ['error']) && json.error === 'Invalid public key') {
             return { ok: false, reason: 'invalid_public_key', status: 401 };
         }
         return { ok: false, reason: 'http_error', status: 401 };
@@ -132,21 +241,38 @@ export async function pairingRequest(params: {
     return { ok: false, reason: 'http_error', status: res.status };
 }
 
-export async function pairingConsume(params: { pairId: string }): Promise<PairingConsumeResult> {
-    const res = await serverFetch(
+export async function pairingConsume(
+    params: { pairId: string; intent?: 'reject' | 'cancel' },
+    target: PairingCallTarget,
+): Promise<PairingConsumeResult> {
+    const request = resolvePairingRequest(target, true);
+    if (!request) return { ok: false, reason: 'invalid_target', status: 0 };
+    const res = await request(
         '/v1/auth/pairing/consume',
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pairId: params.pairId }),
+            body: JSON.stringify({
+                pairId: params.pairId,
+                ...(params.intent ? { intent: params.intent } : null),
+            }),
         },
         { includeAuth: true },
     );
     if (res.ok) {
-        return { ok: true };
+        const json = await safeReadJson(res);
+        return isRecord(json) && json.success === true && hasExactKeys(json, ['success'])
+            ? { ok: true }
+            : { ok: false, reason: 'http_error', status: 502 };
     }
     if (res.status === 404) {
         return { ok: false, reason: 'not_found', status: 404 };
+    }
+    if (res.status === 409) {
+        const json = await safeReadJson(res);
+        if (isRecord(json) && json.error === 'already_decided' && hasExactKeys(json, ['error'])) {
+            return { ok: false, reason: 'already_decided', status: 409 };
+        }
     }
     return { ok: false, reason: 'http_error', status: res.status };
 }

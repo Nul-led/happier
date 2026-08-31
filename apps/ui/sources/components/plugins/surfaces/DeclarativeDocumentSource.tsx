@@ -405,7 +405,6 @@ function normalizeLiveDocument(input: Readonly<{
     return Object.freeze({
         ...input.staticModel,
         root: project(normalized.root),
-        nodes: Object.freeze(normalized.nodes.map(project)),
     });
 }
 

@@ -204,6 +204,7 @@ export function createDefaultVoiceHistoryConsumerFromRuntime(
         return {
           key: serverAccountScopeKeySuffix(scope),
           authority,
+          release: () => { void authority.release(); },
         };
       },
     ),

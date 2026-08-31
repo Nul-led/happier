@@ -301,7 +301,7 @@ function buildCanonicalDraftModelSelection(params: Readonly<{
     });
 }
 
-function rekeyCompatibilityModelSelection(
+export function rekeyCompatibilityModelSelection(
     selection: SessionModelSelectionV1 | null | undefined,
     agentTarget: AgentExecutionTargetV1 | null,
 ): SessionModelSelectionV1 | null | undefined {

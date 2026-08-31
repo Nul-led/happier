@@ -22,6 +22,8 @@ const upsertServerProfileMock = vi.fn((..._args: unknown[]): ServerProfile => ({
     updatedAt: 0,
     lastUsedAt: 0,
 }));
+const adoptHomeProfileMock = vi.fn(async (..._args: unknown[]): Promise<ServerProfile> =>
+    upsertServerProfileMock(..._args));
 const getServerProfileByIdMock = vi.fn((id: string) => {
     const profile = upsertServerProfileMock.mock.results
         .map((result) => result.value)
@@ -36,6 +38,7 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getServerProfileById: (...args: [string]) => getServerProfileByIdMock(...args),
     listServerProfiles: () => listServerProfilesMock(),
     upsertServerProfile: (...args: unknown[]) => upsertServerProfileMock(...args),
+    adoptHomeProfile: (...args: unknown[]) => adoptHomeProfileMock(...args),
     removeServerProfile: (...args: unknown[]) => removeServerProfileMock(...args),
     resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
 }));
@@ -57,6 +60,7 @@ vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
 describe('useServerAutoAddFromRoute (canonical URL adoption)', () => {
     beforeEach(() => {
         upsertServerProfileMock.mockReset();
+        adoptHomeProfileMock.mockClear();
         getServerProfileByIdMock.mockReset();
         removeServerProfileMock.mockReset();
         listServerProfilesMock.mockReset();
@@ -72,6 +76,57 @@ describe('useServerAutoAddFromRoute (canonical URL adoption)', () => {
                 },
             },
         });
+    });
+
+    it('adopts a route Home through the canonical owner without focusing it', async () => {
+        upsertServerProfileMock.mockReturnValueOnce({
+            id: 'p1',
+            serverUrl: 'https://route-home.example.test',
+            name: 'Route Home',
+            createdAt: 0,
+            updatedAt: 0,
+            lastUsedAt: 0,
+        });
+        getServerFeaturesSnapshotMock.mockResolvedValueOnce({
+            status: 'ready',
+            features: {
+                features: {},
+                capabilities: {
+                    server: { canonicalServerUrl: 'https://route-home.example.test' },
+                    serverIdentity: { serverIdentityId: 'route_home_identity' },
+                },
+            },
+        });
+        const onSwitchServerById = vi.fn(async () => {});
+        const onAfterSuccess = vi.fn();
+        const { useServerAutoAddFromRoute } = await import('./useServerAutoAddFromRoute');
+
+        function Probe() {
+            useServerAutoAddFromRoute({
+                enabled: true,
+                url: 'https://route-home.example.test',
+                validateServerReachable: async () => true,
+                setError: vi.fn(),
+                onSwitchServerById,
+                onAfterSuccess,
+                source: 'url',
+            });
+            return null;
+        }
+
+        await renderScreen(React.createElement(Probe));
+
+        expect(adoptHomeProfileMock).toHaveBeenCalledWith({
+            descriptor: expect.objectContaining({
+                serverUrl: 'https://route-home.example.test',
+                canonicalServerUrl: 'https://route-home.example.test',
+                homeServerIdentityId: 'route_home_identity',
+            }),
+            source: 'url',
+            preserveUserLabel: true,
+        });
+        expect(onSwitchServerById).not.toHaveBeenCalled();
+        expect(onAfterSuccess).toHaveBeenCalled();
     });
 
     it('adopts canonicalServerUrl from /v1/features without prompting', async () => {
@@ -101,7 +156,7 @@ describe('useServerAutoAddFromRoute (canonical URL adoption)', () => {
 
         expect(getServerFeaturesSnapshotMock).toHaveBeenCalledWith(expect.objectContaining({ serverId: 'p1' }));
         expect(removeServerProfileMock).toHaveBeenCalledWith('p1');
-        expect(onSwitchServerById).toHaveBeenCalledWith('p2', expect.anything());
+        expect(onSwitchServerById).not.toHaveBeenCalled();
         expect(onAfterSuccess).toHaveBeenCalled();
     });
 
@@ -181,11 +236,11 @@ describe('useServerAutoAddFromRoute (canonical URL adoption)', () => {
         await renderScreen(React.createElement(Probe));
 
         expect(removeServerProfileMock).not.toHaveBeenCalled();
-        expect(onSwitchServerById).toHaveBeenCalledWith('p1', expect.anything());
+        expect(onSwitchServerById).not.toHaveBeenCalled();
         expect(onAfterSuccess).toHaveBeenCalled();
     });
 
-    it('switches by server identity id when the features probe learns a stable identity', async () => {
+    it('adopts the learned stable identity without switching focus', async () => {
         upsertServerProfileMock.mockReturnValueOnce({
             id: 'p1',
             serverUrl: 'http://127.0.0.1:3005',
@@ -235,7 +290,10 @@ describe('useServerAutoAddFromRoute (canonical URL adoption)', () => {
 
         await renderScreen(React.createElement(Probe));
 
-        expect(onSwitchServerById).toHaveBeenCalledWith('srv_identity_route', expect.anything());
+        expect(adoptHomeProfileMock).toHaveBeenCalledWith(expect.objectContaining({
+            descriptor: expect.objectContaining({ homeServerIdentityId: 'srv_identity_route' }),
+        }));
+        expect(onSwitchServerById).not.toHaveBeenCalled();
         expect(onAfterSuccess).toHaveBeenCalled();
     });
 });

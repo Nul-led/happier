@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { derivePluginCollectionIdentityTagV1, normalizePluginAccountCollectionContractV1, PluginManifestV2Schema } from '@happier-dev/protocol';
+import type { JsonValue } from '@happier-dev/plugin-sdk';
 import { defineAccountCollection } from '@happier-dev/plugin-sdk/collections';
 import type { PluginUiDataClient } from '@happier-dev/plugin-ui/data';
 
@@ -68,6 +69,15 @@ const normalizedManifest = PluginManifestV2Schema.parse({
     engines: { happier: '^1.0.0' },
     runtime: { apiVersion: 1 },
     contributes: {},
+    hostAccess: {
+        required: [{
+            id: 'account-storage',
+            capability: 'storage.account',
+            reason: 'Persist Account-scoped plugin state.',
+            scope: { enabled: true },
+        }],
+        optional: [],
+    },
 });
 
 const firstPage = {
@@ -100,7 +110,7 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
-function createAvailabilityReader() {
+function createAvailabilityReader(input: Readonly<{ accountKv?: boolean }> = {}) {
     return createPluginAccountAvailabilityReader({
         scope: { serverId: 'server-a', accountId: 'account-a' },
         snapshot: {
@@ -127,7 +137,12 @@ function createAvailabilityReader() {
                     release: {
                         ref: { pluginId, version: '1.0.0' },
                         archiveDigestSha256: `sha256:${'a'.repeat(64)}`,
-                        normalizedManifest,
+                        normalizedManifest: input.accountKv === false
+                            ? PluginManifestV2Schema.parse({
+                                ...normalizedManifest,
+                                hostAccess: { required: [], optional: [] },
+                            })
+                            : normalizedManifest,
                         collectionContracts: [ref],
                         uiSlots: [],
                         packageAssetArchive: {
@@ -142,7 +157,9 @@ function createAvailabilityReader() {
     });
 }
 
-async function loadBridge() {
+async function loadBridge(input: Readonly<{
+    readAvailability?: () => ReturnType<typeof createAvailabilityReader>;
+}> = {}) {
     vi.resetModules();
     let current = true;
     const retireCallbacks = new Set<() => void>();
@@ -244,7 +261,7 @@ async function loadBridge() {
             dataClient: createPluginUiDataClient({
                 pluginId,
                 accountLifetime: lifetime,
-                availabilityReader: createAvailabilityReader(),
+                readAvailability: input.readAvailability ?? createAvailabilityReader,
             }),
             publish: (change) => { changes.push(change); },
         },
@@ -278,6 +295,25 @@ async function loadBridge() {
 }
 
 describe('hosted-web Account Data bridge adapter', () => {
+    it('fails Account KV closed before transport when the current release lacks storage.account', async () => {
+        const { bridge, transport } = await loadBridge({
+            readAvailability: () => createAvailabilityReader({ accountKv: false }),
+        });
+
+        await expect(bridge.handle({
+            kind: 'data',
+            operation: 'accountKv.get',
+            arguments: ['cursor'],
+        })).resolves.toMatchObject({
+            kind: 'error',
+            error: { code: 'plugin_account_storage_unavailable' },
+        });
+        expect(transport).not.toHaveBeenCalledWith(
+            `/v1/account/plugin-storage/${pluginId}`,
+            expect.anything(),
+        );
+    });
+
     it('does not publish a transaction when cancellation wins during begin settlement', async () => {
         const controller = new AbortController();
         let executionSettled = false;
@@ -362,6 +398,79 @@ describe('hosted-web Account Data bridge adapter', () => {
             arguments: [secondTransactionId],
         })).resolves.toEqual({ kind: 'data', value: null });
         expect(accountKvWrites).toHaveLength(1);
+    });
+
+    it('passes each hosted transaction request signal to the matching native transaction method', async () => {
+        const observed: Array<Readonly<{ method: string; signal?: AbortSignal }>> = [];
+        const accountKv = {
+            async transaction<T>(operation: (transaction: Readonly<{
+                get(key: string, options?: Readonly<{ signal?: AbortSignal }>): Promise<null>;
+                set(key: string, value: JsonValue, options: Readonly<{
+                    expectedVersion: number | 'absent';
+                    signal?: AbortSignal;
+                }>): Promise<Readonly<{ version: number }>>;
+                delete(key: string, options: Readonly<{
+                    expectedVersion: number;
+                    signal?: AbortSignal;
+                }>): Promise<Readonly<{ version: number; deleted: true }>>;
+            }>) => Promise<T>): Promise<T> {
+                return await operation({
+                    async get(_key, options) {
+                        observed.push({ method: 'get', ...(options?.signal ? { signal: options.signal } : {}) });
+                        return null;
+                    },
+                    async set(_key, _value, options) {
+                        observed.push({ method: 'set', ...(options.signal ? { signal: options.signal } : {}) });
+                        return { version: 0 };
+                    },
+                    async delete(_key, options) {
+                        observed.push({ method: 'delete', ...(options.signal ? { signal: options.signal } : {}) });
+                        return { version: 1, deleted: true };
+                    },
+                });
+            },
+        };
+        const { createHostedWebAccountDataBridge } = await import('./hostedWebAccountDataBridge');
+        const bridge = createHostedWebAccountDataBridge({
+            dataClient: { accountKv } as unknown as PluginUiDataClient,
+            publish: () => undefined,
+        });
+        const begun = await bridge.handle({
+            kind: 'data',
+            operation: 'accountKv.transaction.begin',
+            arguments: [],
+        });
+        const transactionId = (begun as { value: string }).value;
+        const getCancellation = new AbortController();
+        const setCancellation = new AbortController();
+        const deleteCancellation = new AbortController();
+
+        await bridge.handle({
+            kind: 'data',
+            operation: 'accountKv.transaction.get',
+            arguments: [transactionId, 'cursor'],
+        }, { signal: getCancellation.signal });
+        await bridge.handle({
+            kind: 'data',
+            operation: 'accountKv.transaction.set',
+            arguments: [transactionId, 'cursor', { value: 1, expectedVersion: 'absent' }],
+        }, { signal: setCancellation.signal });
+        await bridge.handle({
+            kind: 'data',
+            operation: 'accountKv.transaction.delete',
+            arguments: [transactionId, 'cursor', { expectedVersion: 0 }],
+        }, { signal: deleteCancellation.signal });
+        await bridge.handle({
+            kind: 'data',
+            operation: 'accountKv.transaction.commit',
+            arguments: [transactionId],
+        });
+
+        expect(observed).toEqual([
+            { method: 'get', signal: getCancellation.signal },
+            { method: 'set', signal: setCancellation.signal },
+            { method: 'delete', signal: deleteCancellation.signal },
+        ]);
     });
 
     it('rolls back an open transaction and fails later Data operations closed when retired', async () => {

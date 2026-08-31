@@ -239,7 +239,12 @@ function createProjection(): PluginProjectionV2 {
                         descriptorId: 'project-preview',
                         binding: projectPreviewBinding,
                         target: projectPreviewBinding.target,
-                        renderer: { kind: 'hostedWeb', contributionId: 'preview-web' },
+                        renderer: {
+                            kind: 'hostedWeb',
+                            contributionId: 'preview-web',
+                            source: { kind: 'artifact', artifact: 'preview-web' },
+                            requiredHostMethods: [],
+                        },
                         display: { titleKey: 'title' },
                         order: 10,
                         availability: {
@@ -565,10 +570,23 @@ describe('plugin UI projection normalization', () => {
             binding: settingsBinding,
             renderer: {
                 kind: 'declarative',
+                contributionId: 'settings-panel',
                 model: {
-                    identity: { pluginId: 'acme.preview', generation: '12' },
+                    identity: {
+                        pluginId: 'acme.preview',
+                        localId: 'settings-panel',
+                        qualifiedId: 'acme.preview/settings-panel',
+                        generation: '12',
+                    },
                     visible: true,
-                    root: { kind: 'text', text: 'Settings panel' },
+                    requiredHostMethods: [],
+                    declarativeInventory: {
+                        actions: [],
+                        destinations: [],
+                        settings: [],
+                        uiQueries: [],
+                    },
+                    root: { kind: 'text', path: 'root', order: 0, text: 'Settings panel' },
                 },
             },
             availability: { state: 'available', reason: 'available', diagnostics: [] },
@@ -616,7 +634,12 @@ describe('plugin UI projection normalization', () => {
             container: binding.container,
             target: binding.target,
             binding,
-            renderer: { kind: 'hostedWeb', contributionId: 'review-renderer' },
+            renderer: {
+                kind: 'hostedWeb',
+                contributionId: 'review-renderer',
+                source: { kind: 'artifact', artifact: 'review-renderer' },
+                requiredHostMethods: [],
+            },
             display: { developerFallback: 'Review' },
             availability: { state: 'available', reason: 'available', diagnostics: [] },
         });

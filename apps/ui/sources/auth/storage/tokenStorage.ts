@@ -10,7 +10,7 @@ import {
     listServerProfiles,
 } from '@/sync/domains/server/serverProfiles';
 import { digest } from '@/platform/digest';
-import { encodeBase64 } from '@/encryption/base64';
+import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import {
     readDeviceLocalStorageString,
     removeDeviceLocalStorageString,
@@ -30,6 +30,18 @@ const PENDING_EXTERNAL_CONNECT_GLOBAL_KEY = 'pending_external_connect__global';
 const AUTH_AUTO_REDIRECT_SUPPRESSED_UNTIL_KEY = 'auth_auto_redirect_suppressed_until';
 const AUTH_AUTO_REDIRECT_SUPPRESSED_UNTIL_GLOBAL_KEY = 'auth_auto_redirect_suppressed_until_global';
 const RECOVERY_KEY_REMINDER_DISMISSED_KEY = 'recovery_key_reminder_dismissed';
+const PENDING_PERSONAL_HOME_BOOTSTRAP_SEED_KEY = 'pending_personal_home_bootstrap_seed';
+
+/**
+ * Account Service credentials are deliberately kept outside the Home credential
+ * scope.  These names are persisted contracts: do not fold them into
+ * `auth_credentials` or `pending_external_auth`, since older Home readers may
+ * consume that data.
+ */
+export const ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY =
+    'account_directory_auth_credentials';
+export const PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY =
+    'pending_account_directory_auth';
 export const ACCOUNT_ENCRYPTION_FIRST_KEY_PENDING_TTL_MS =
     10 * 60 * 1000;
 
@@ -42,8 +54,52 @@ type ScopedStorageKeys = Readonly<{
     legacy: readonly string[];
 }>;
 
-type ServerCredentialLookupOptions = Readonly<{
+type PendingPersonalHomeBootstrapSeedRecord = Readonly<{
+    v: 1;
+    seedBase64Url: string;
+}>;
+
+export type ServerCredentialLookupOptions = Readonly<{
     serverId?: string | null;
+}>;
+
+/**
+ * Exact-scope rollback handle returned by
+ * `TokenStorage.setCredentialsForServerUrlWithRollback`. Composition owners
+ * that write Home credentials before a final profile adoption must call
+ * `rollback()` when that adoption fails. `serverId` is the canonical identity
+ * the write was keyed by (null for a legacy URL-scope write).
+ */
+export type HomeCredentialWriteRollback = Readonly<{
+    serverUrl: string;
+    serverId: string | null;
+    rollback(): Promise<boolean>;
+}>;
+
+export type HomeCredentialMutationEvent = Readonly<{
+    kind: 'credentials_set' | 'credentials_removed';
+    serverId: string;
+    serverUrl: string;
+}>;
+
+type HomeCredentialMutationListener = (event: HomeCredentialMutationEvent) => void;
+
+const homeCredentialMutationListeners = new Set<HomeCredentialMutationListener>();
+
+export function subscribeHomeCredentialMutations(
+    listener: HomeCredentialMutationListener,
+): () => void {
+    homeCredentialMutationListeners.add(listener);
+    return () => {
+        homeCredentialMutationListeners.delete(listener);
+    };
+}
+
+/** Explicit Account Service endpoint/identity key. */
+export type AccountDirectoryCredentialTarget = Readonly<{
+    endpoint: string;
+    /** Account Service/server identity returned by the OAuth audience. */
+    serverIdentityId?: string | null;
 }>;
 
 type PendingExternalServerContext = Readonly<{
@@ -136,6 +192,37 @@ function makeScopedKey(baseKey: string, scopeToken: string): string {
     return scopedStorageId(`${baseKey}__srv_${scopeToken}`, scope);
 }
 
+async function getPendingPersonalHomeBootstrapSeedStorageKey(
+    serverUrl: string,
+    options: ServerCredentialLookupOptions,
+): Promise<string | null> {
+    const normalizedServerUrl = normalizeUrl(serverUrl);
+    if (!normalizedServerUrl) return null;
+    const serverId = normalizeServerId(options.serverId);
+    const scopeHash = await getServerHashScopeForNormalizedUrl(
+        `${normalizedServerUrl}\u0000${serverId ?? ''}`,
+    );
+    return makeScopedKey(PENDING_PERSONAL_HOME_BOOTSTRAP_SEED_KEY, scopeHash);
+}
+
+function parsePendingPersonalHomeBootstrapSeedRecord(
+    value: unknown,
+): PendingPersonalHomeBootstrapSeedRecord | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    if (keys.length !== 2 || keys[0] !== 'seedBase64Url' || keys[1] !== 'v') return null;
+    if (record.v !== 1 || typeof record.seedBase64Url !== 'string') return null;
+    if (!/^[A-Za-z0-9_-]{43}$/u.test(record.seedBase64Url)) return null;
+    try {
+        const seed = decodeBase64(record.seedBase64Url, 'base64url');
+        if (seed.length !== 32 || encodeBase64(seed, 'base64url') !== record.seedBase64Url) return null;
+    } catch {
+        return null;
+    }
+    return { v: 1, seedBase64Url: record.seedBase64Url };
+}
+
 function resolveServerIdForUrl(serverUrl: string, preferredServerId?: string | null): string | null {
     const normalized = normalizeUrl(serverUrl);
     if (!normalized) return null;
@@ -166,6 +253,93 @@ function findServerProfileForIdentifier(serverId: string | null | undefined) {
     ) ?? null;
 }
 
+type HomeCredentialIdentityResolution = Readonly<{
+    /** Canonical stable identity that owns the credential scope; null when none resolves. */
+    serverId: string | null;
+    /** Explicit identity without a profile yet: a strict pre-adoption scope. */
+    preProfile: boolean;
+    /**
+     * The explicitly supplied identity belongs to a profile at a different URL.
+     * Callers must fail closed instead of deriving a URL-hash scope.
+     */
+    conflict: boolean;
+}>;
+
+/**
+ * Single canonical resolution of the stable Home identity behind an explicit
+ * credential target. Storage key derivation and mutation-event targeting must
+ * both consume this helper so the announced target can never diverge from the
+ * scope that actually receives the write.
+ *
+ * - Explicit identity without a profile: enrollment/adoption may persist
+ *   credentials before the profile exists only while no other profile owns the
+ *   URL, so the validated stable identity is the primary scope directly.
+ *   URL-hash scopes are excluded from this strict pre-adoption scope: anonymous
+ *   URL data belongs to no identity and must never be migrated into one (or
+ *   read as one). Profile-backed reads remain the only URL-hash migration input.
+ * - Explicit identity with a profile at the same URL: the profile's canonical
+ *   identity wins.
+ * - Explicit identity whose profile lives at a different URL: conflict; fail
+ *   closed rather than attributing credentials to the wrong identity.
+ * - No explicit identity: legacy/manual URL-only resolution is preserved.
+ */
+function resolveHomeCredentialIdentity(
+    normalizedServerUrl: string,
+    requestedServerId: string | null,
+): HomeCredentialIdentityResolution {
+    if (!requestedServerId) {
+        return { serverId: resolveServerIdForUrl(normalizedServerUrl), preProfile: false, conflict: false };
+    }
+    const requestedProfile = findServerProfileForIdentifier(requestedServerId);
+    if (!requestedProfile) {
+        const profileAtUrl = listServerProfiles().find(
+            (profile) => normalizeUrl(profile.serverUrl) === normalizedServerUrl,
+        );
+        if (profileAtUrl) {
+            return { serverId: null, preProfile: false, conflict: true };
+        }
+        return { serverId: requestedServerId, preProfile: true, conflict: false };
+    }
+    if (normalizeUrl(requestedProfile.serverUrl) === normalizedServerUrl) {
+        return {
+            serverId: normalizeServerId(requestedProfile.serverIdentityId) ?? requestedProfile.id,
+            preProfile: false,
+            conflict: false,
+        };
+    }
+    return { serverId: null, preProfile: false, conflict: true };
+}
+
+function resolveHomeCredentialMutationTarget(
+    serverUrl: string,
+    options: ServerCredentialLookupOptions,
+): Readonly<{ serverId: string; serverUrl: string }> | null {
+    const normalizedServerUrl = normalizeUrl(serverUrl);
+    if (!normalizedServerUrl) return null;
+
+    const resolution = resolveHomeCredentialIdentity(normalizedServerUrl, normalizeServerId(options.serverId));
+    if (resolution.conflict || !resolution.serverId) return null;
+    return { serverId: resolution.serverId, serverUrl: normalizedServerUrl };
+}
+
+function emitHomeCredentialMutation(
+    kind: HomeCredentialMutationEvent['kind'],
+    serverUrl: string,
+    options: ServerCredentialLookupOptions,
+): void {
+    const target = resolveHomeCredentialMutationTarget(serverUrl, options);
+    if (!target) return;
+    const event: HomeCredentialMutationEvent = { kind, ...target };
+    for (const listener of [...homeCredentialMutationListeners]) {
+        try {
+            listener(event);
+        } catch {
+            // Persistence success is authoritative; one observer cannot turn it
+            // into a failed credential operation or prevent other observers.
+        }
+    }
+}
+
 function listServerProfileCredentialScopeIds(serverId: string): string[] {
     const profile = findServerProfileForIdentifier(serverId);
     if (!profile) return [serverId];
@@ -176,11 +350,16 @@ function listServerProfileCredentialScopeIds(serverId: string): string[] {
     ]);
 }
 
+/**
+ * Resolves the storage scope layout for a server target. Returns null only when
+ * an explicitly supplied identity conflicts with the profile registry; such
+ * callers must fail closed instead of deriving a URL-hash scope.
+ */
 async function getServerScopedKeys(
     baseKey: string,
     serverUrlOverride?: string,
     options: ServerCredentialLookupOptions = {},
-): Promise<ScopedStorageKeys> {
+): Promise<ScopedStorageKeys | null> {
     const rawUrl = serverUrlOverride ?? getActiveServerUrl();
     const normalizedUrl = normalizeUrl(rawUrl);
     const legacyCandidates = new Set<string>();
@@ -202,17 +381,30 @@ async function getServerScopedKeys(
     const legacyNormalizedUrlForHash =
         [...legacyCandidates].find((candidate) => candidate && candidate !== normalizedUrl) ?? '';
     const activeServerId = serverUrlOverride ? null : getActiveServerId();
-    const preferredServerId = normalizeServerId(options.serverId) ?? normalizeServerId(activeServerId);
-    const resolvedServerId = resolveServerIdForUrl(normalizedUrl, preferredServerId);
-    const activeServerProfile = activeServerId ? findServerProfileForIdentifier(activeServerId) : null;
-    const activeServerUrl = activeServerProfile
-        ? normalizeUrl(activeServerProfile.serverUrl)
-        : '';
+    const requestedServerId = normalizeServerId(options.serverId);
+    let serverId: string | null;
+    let preAdoptionIdentityScope = false;
+    if (requestedServerId) {
+        // Explicit identity targets resolve through the canonical identity owner:
+        // the validated stable identity is the primary scope even before the
+        // profile exists, and a conflict with an existing profile fails closed.
+        const resolution = resolveHomeCredentialIdentity(normalizedUrl, requestedServerId);
+        if (resolution.conflict) return null;
+        serverId = resolution.serverId;
+        preAdoptionIdentityScope = resolution.preProfile;
+    } else {
+        const preferredServerId = normalizeServerId(activeServerId);
+        const resolvedServerId = resolveServerIdForUrl(normalizedUrl, preferredServerId);
+        const activeServerProfile = activeServerId ? findServerProfileForIdentifier(activeServerId) : null;
+        const activeServerUrl = activeServerProfile
+            ? normalizeUrl(activeServerProfile.serverUrl)
+            : '';
 
-    // If the active server URL is coming from env/same-origin fallback but the persisted active server id
-    // still points at a different profile, do NOT use the id scope. Fall back to a URL hash scope so
-    // credentials are never read from the wrong server.
-    const serverId = resolvedServerId ?? (activeServerUrl && activeServerUrl === normalizedUrl ? activeServerId : null);
+        // If the active server URL is coming from env/same-origin fallback but the persisted active server id
+        // still points at a different profile, do NOT use the id scope. Fall back to a URL hash scope so
+        // credentials are never read from the wrong server.
+        serverId = resolvedServerId ?? (activeServerUrl && activeServerUrl === normalizedUrl ? activeServerId : null);
+    }
 
     if (!serverId) {
         // Independent digests: the boot gate awaits this, so they run together rather than chained.
@@ -232,28 +424,50 @@ async function getServerScopedKeys(
     const profileIdScopes = listServerProfileCredentialScopeIds(serverId)
         .map((id) => sanitizeScopeToken(id))
         .filter((scope) => scope !== idScope);
-    const legacyUrlScope =
-        legacyNormalizedUrlForHash
-            ? await getServerHashScopeForNormalizedUrl(legacyNormalizedUrlForHash)
-            : await getServerHashScopeForNormalizedUrl(normalizedUrl);
+    // A strict pre-adoption identity scope is identity-keyed only. URL-hash data
+    // belongs to no identity; it must never migrate into (or be readable as) one.
+    const [canonicalUrlScope, legacyUrlScope] = preAdoptionIdentityScope
+        ? [null, null] as const
+        : await Promise.all([
+            getServerHashScopeForNormalizedUrl(normalizedUrl),
+            legacyNormalizedUrlForHash
+                ? getServerHashScopeForNormalizedUrl(legacyNormalizedUrlForHash)
+                : Promise.resolve(null),
+        ]);
     return {
         primary: makeScopedKey(baseKey, idScope),
-        legacy: uniqueStrings([
-            ...profileIdScopes.map((scope) => makeScopedKey(baseKey, scope)),
-            legacyUrlScope === idScope ? null : makeScopedKey(baseKey, legacyUrlScope),
-        ]),
+        legacy: preAdoptionIdentityScope
+            ? []
+            : uniqueStrings([
+                ...profileIdScopes.map((scope) => makeScopedKey(baseKey, scope)),
+                !canonicalUrlScope || canonicalUrlScope === idScope
+                    ? null
+                    : makeScopedKey(baseKey, canonicalUrlScope),
+                !legacyUrlScope || legacyUrlScope === idScope || legacyUrlScope === canonicalUrlScope
+                    ? null
+                    : makeScopedKey(baseKey, legacyUrlScope),
+            ]),
     };
 }
 
 async function getAuthKeys(
     serverUrlOverride?: string,
     options: ServerCredentialLookupOptions = {},
-): Promise<ScopedStorageKeys> {
+): Promise<ScopedStorageKeys | null> {
     return await getServerScopedKeys(AUTH_KEY, serverUrlOverride, options);
 }
 
+/**
+ * Active-server derivation never carries an explicit identity option, so it
+ * cannot produce an identity/URL conflict; the fallback only satisfies types
+ * for that structurally unreachable branch.
+ */
+async function getActiveServerScopedKeys(baseKey: string): Promise<ScopedStorageKeys> {
+    return (await getServerScopedKeys(baseKey)) ?? { primary: makeScopedKey(baseKey, 'default'), legacy: [] };
+}
+
 async function getPendingExternalAuthKeys(): Promise<ScopedStorageKeys> {
-    return await getServerScopedKeys(PENDING_EXTERNAL_AUTH_KEY);
+    return await getActiveServerScopedKeys(PENDING_EXTERNAL_AUTH_KEY);
 }
 
 function getPendingExternalAuthGlobalKey(): string {
@@ -262,7 +476,7 @@ function getPendingExternalAuthGlobalKey(): string {
 }
 
 async function getPendingExternalConnectKey(): Promise<string> {
-    return (await getServerScopedKeys(PENDING_EXTERNAL_CONNECT_KEY)).primary;
+    return (await getActiveServerScopedKeys(PENDING_EXTERNAL_CONNECT_KEY)).primary;
 }
 
 async function resolvePendingExternalScopedKeysForClear(
@@ -271,7 +485,7 @@ async function resolvePendingExternalScopedKeysForClear(
     validator: (value: unknown) => value is PendingExternalServerContext,
 ): Promise<ReadonlyArray<string>> {
     const scopedKeys = new Set<string>();
-    const activeKeys = await getServerScopedKeys(baseKey);
+    const activeKeys = await getActiveServerScopedKeys(baseKey);
     scopedKeys.add(activeKeys.primary);
     for (const legacyKey of activeKeys.legacy) {
         scopedKeys.add(legacyKey);
@@ -285,9 +499,11 @@ async function resolvePendingExternalScopedKeysForClear(
     const originalKeys = await getServerScopedKeys(baseKey, globalValue.serverUrl, {
         serverId: globalValue.serverId,
     });
-    scopedKeys.add(originalKeys.primary);
-    for (const legacyKey of originalKeys.legacy) {
-        scopedKeys.add(legacyKey);
+    if (originalKeys) {
+        scopedKeys.add(originalKeys.primary);
+        for (const legacyKey of originalKeys.legacy) {
+            scopedKeys.add(legacyKey);
+        }
     }
 
     return [...scopedKeys];
@@ -299,7 +515,7 @@ function getPendingExternalConnectGlobalKey(): string {
 }
 
 async function getAuthAutoRedirectSuppressedUntilKey(): Promise<string> {
-    return (await getServerScopedKeys(AUTH_AUTO_REDIRECT_SUPPRESSED_UNTIL_KEY)).primary;
+    return (await getActiveServerScopedKeys(AUTH_AUTO_REDIRECT_SUPPRESSED_UNTIL_KEY)).primary;
 }
 
 function getAuthAutoRedirectSuppressedUntilGlobalKey(): string {
@@ -308,7 +524,7 @@ function getAuthAutoRedirectSuppressedUntilGlobalKey(): string {
 }
 
 async function getRecoveryKeyReminderDismissedKey(): Promise<string> {
-    return (await getServerScopedKeys(RECOVERY_KEY_REMINDER_DISMISSED_KEY)).primary;
+    return (await getActiveServerScopedKeys(RECOVERY_KEY_REMINDER_DISMISSED_KEY)).primary;
 }
 
 function getRecoveryKeyReminderDismissedKeySync(): string | null {
@@ -353,8 +569,134 @@ export type AuthCredentials =
     | LegacyAuthCredentials
     | DataKeyAuthCredentials;
 
+/**
+ * Strict parser for credentials crossing an authentication/enrollment boundary.
+ * Persisted legacy readers remain tolerant at their storage envelope, but the
+ * credential value itself has exactly one ordinary AuthCredentials shape.
+ */
+export function parseAuthCredentials(value: unknown): AuthCredentials | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    const token = typeof record.token === 'string' && record.token.trim() === record.token && record.token.length > 0
+        ? record.token
+        : null;
+    if (!token) return null;
+
+    const keys = Object.keys(record).sort();
+    if (keys.length === 1 && keys[0] === 'token') return { token };
+
+    if (keys.length === 2 && keys[0] === 'secret' && keys[1] === 'token') {
+        const secret = typeof record.secret === 'string'
+            && record.secret.trim() === record.secret
+            && record.secret.length > 0
+            ? record.secret
+            : null;
+        return secret ? { token, secret } : null;
+    }
+
+    if (keys.length !== 2 || keys[0] !== 'encryption' || keys[1] !== 'token') return null;
+    const encryption = record.encryption;
+    if (!encryption || typeof encryption !== 'object' || Array.isArray(encryption)) return null;
+    const encryptionRecord = encryption as Record<string, unknown>;
+    const encryptionKeys = Object.keys(encryptionRecord).sort();
+    if (
+        encryptionKeys.length !== 2
+        || encryptionKeys[0] !== 'machineKey'
+        || encryptionKeys[1] !== 'publicKey'
+    ) return null;
+    const publicKey = typeof encryptionRecord.publicKey === 'string'
+        && encryptionRecord.publicKey.trim() === encryptionRecord.publicKey
+        && encryptionRecord.publicKey.length > 0
+        ? encryptionRecord.publicKey
+        : null;
+    const machineKey = typeof encryptionRecord.machineKey === 'string'
+        && encryptionRecord.machineKey.trim() === encryptionRecord.machineKey
+        && encryptionRecord.machineKey.length > 0
+        ? encryptionRecord.machineKey
+        : null;
+    return publicKey && machineKey
+        ? { token, encryption: { publicKey, machineKey } }
+        : null;
+}
+
+/**
+ * Short-lived Account Service OAuth continuation.  This type intentionally
+ * lives beside the dedicated storage owner rather than extending
+ * `PendingExternalAuth`; keeping the namespaces disjoint is part of the
+ * persistence compatibility contract.
+ */
+export type PendingAccountDirectoryAuth = Readonly<{
+    /** Normalized endpoint; always present on values returned by storage. */
+    endpoint: string;
+    serverIdentityId?: string;
+    /** Canonical callback spelling retained for the plan/API boundary. */
+    credentialTarget?: 'account_directory';
+    provider: string;
+    purpose: 'account_directory';
+    /** Server-generated post-provider handle; absent before the provider redirect completes. */
+    pending?: string;
+    createdAt: number;
+    expiresAt: number;
+    mode?: 'keyed' | 'keyless';
+    proof?: string;
+    secret?: string;
+    returnTo?: string;
+    /**
+     * Optional stable identity of the Home that was authenticated when this login started.
+     * Identity intent only — never Home credentials or a descriptor. Records without it are
+     * accepted and behave like fresh-device discovery.
+     */
+    homeServerIdentityId?: string;
+    /** Provider/state metadata is opaque to storage but retained for callback dispatch. */
+    state?: string;
+    nonce?: string;
+}>;
+
+export type PendingAccountDirectoryAuthInput = Readonly<{
+    endpoint: string;
+    serverIdentityId?: string | null;
+    credentialTarget?: 'account_directory';
+    provider: string;
+    purpose: 'account_directory';
+    pending?: string;
+    createdAt: number;
+    expiresAt: number;
+    mode?: 'keyed' | 'keyless';
+    proof?: string;
+    secret?: string;
+    returnTo?: string;
+    homeServerIdentityId?: string;
+    state?: string;
+    nonce?: string;
+}>;
+
+type NormalizedPendingAccountDirectoryAuth = Readonly<{
+    endpoint: string;
+    serverIdentityId?: string;
+    credentialTarget?: 'account_directory';
+    provider: string;
+    purpose: 'account_directory';
+    pending?: string;
+    createdAt: number;
+    expiresAt: number;
+    mode?: 'keyed' | 'keyless';
+    proof?: string;
+    secret?: string;
+    returnTo?: string;
+    homeServerIdentityId?: string;
+    state?: string;
+    nonce?: string;
+}>;
+
+export type PendingAccountDirectoryAuthTarget = Readonly<{
+    endpoint: string;
+    serverIdentityId?: string | null;
+}>;
+
 export function isLegacyAuthCredentials(credentials: AuthCredentials): credentials is LegacyAuthCredentials {
-    return typeof (credentials as any)?.secret === 'string' && (credentials as any).secret.trim().length > 0;
+    return 'secret' in credentials
+        && typeof credentials.secret === 'string'
+        && credentials.secret.trim().length > 0;
 }
 
 export function isDataKeyAuthCredentials(
@@ -436,6 +778,248 @@ function isInternalReturnTo(value: unknown): value is string {
     // Prevent protocol-relative URLs.
     if (trimmed.startsWith('//')) return false;
     return true;
+}
+
+/** Normalize a URL that is safe to use as an Account Service endpoint identity. */
+export function normalizeAccountDirectoryEndpoint(value: string): string | null {
+    const raw = String(value ?? '').trim();
+    if (!raw) return null;
+    try {
+        const url = new URL(raw);
+        if (
+            (url.protocol !== 'https:' && url.protocol !== 'http:')
+            || url.username
+            || url.password
+            || url.search
+            || url.hash
+        ) {
+            return null;
+        }
+        url.pathname = url.pathname.replace(/\/+$/, '');
+        return url.toString().replace(/\/$/, '');
+    } catch {
+        return null;
+    }
+}
+
+function normalizeAccountDirectoryIdentity(value: unknown): string | null {
+    const identity = String(value ?? '').trim();
+    return identity.length > 0 ? identity : null;
+}
+
+function normalizeAccountDirectoryTarget(
+    target: AccountDirectoryCredentialTarget,
+): Readonly<{ endpoint: string; serverIdentityId: string | null }> | null {
+    const endpoint = normalizeAccountDirectoryEndpoint(target.endpoint);
+    if (!endpoint) return null;
+    return {
+        endpoint,
+        serverIdentityId: normalizeAccountDirectoryIdentity(target.serverIdentityId),
+    };
+}
+
+type StoredAccountDirectoryCredentialRecord = Readonly<{
+    endpoint: string;
+    serverIdentityId?: string;
+    credentials: TokenOnlyAuthCredentials;
+    updatedAt: number;
+}>;
+
+function isStoredAccountDirectoryCredentialRecord(
+    value: unknown,
+): value is StoredAccountDirectoryCredentialRecord {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const row = value as Record<string, unknown>;
+    const endpoint = typeof row.endpoint === 'string'
+        ? normalizeAccountDirectoryEndpoint(row.endpoint)
+        : null;
+    const identity = row.serverIdentityId;
+    const credentials = row.credentials;
+    const updatedAt = row.updatedAt;
+    if (!endpoint || !isNonEmptyString((credentials as Record<string, unknown> | null)?.token)) {
+        return false;
+    }
+    if (
+        identity !== undefined
+        && !isNonEmptyString(identity)
+    ) {
+        return false;
+    }
+    if (
+        typeof updatedAt !== 'number'
+        || !Number.isFinite(updatedAt)
+        || !Number.isSafeInteger(updatedAt)
+    ) return false;
+    if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) return false;
+    const credentialKeys = Object.keys(credentials as object);
+    if (credentialKeys.some((key) => key !== 'token')) return false;
+    const rowKeys = Object.keys(row);
+    const expectedKeys = identity === undefined
+        ? new Set(['endpoint', 'credentials', 'updatedAt'])
+        : new Set(['endpoint', 'serverIdentityId', 'credentials', 'updatedAt']);
+    return rowKeys.length === expectedKeys.size && rowKeys.every((key) => expectedKeys.has(key));
+}
+
+function parseStoredAccountDirectoryCredentialRecords(value: unknown): StoredAccountDirectoryCredentialRecord[] {
+    if (!Array.isArray(value)) return [];
+    const records: StoredAccountDirectoryCredentialRecord[] = [];
+    for (const candidate of value) {
+        if (!isStoredAccountDirectoryCredentialRecord(candidate)) continue;
+        const row = candidate as Record<string, unknown>;
+        const endpoint = normalizeAccountDirectoryEndpoint(String(row.endpoint));
+        const identity = normalizeAccountDirectoryIdentity(row.serverIdentityId);
+        const credentials = row.credentials as Record<string, unknown>;
+        if (!endpoint || !isNonEmptyString(credentials.token)) continue;
+        records.push({
+            endpoint,
+            ...(identity ? { serverIdentityId: identity } : {}),
+            credentials: { token: credentials.token },
+            updatedAt: Number(row.updatedAt),
+        });
+    }
+    return records;
+}
+
+function accountDirectoryCredentialRecordMatchesTarget(
+    record: StoredAccountDirectoryCredentialRecord,
+    target: Readonly<{ endpoint: string; serverIdentityId: string | null }>,
+): boolean {
+    return record.endpoint === target.endpoint
+        && (
+            target.serverIdentityId === null
+            || (record.serverIdentityId ?? null) === target.serverIdentityId
+        );
+}
+
+function accountDirectoryCredentialExactKeyMatchesTarget(
+    record: StoredAccountDirectoryCredentialRecord,
+    target: Readonly<{ endpoint: string; serverIdentityId: string | null }>,
+): boolean {
+    return record.endpoint === target.endpoint
+        && (record.serverIdentityId ?? null) === target.serverIdentityId;
+}
+
+type PendingAccountDirectoryAuthStoredRecord = NormalizedPendingAccountDirectoryAuth;
+
+function isPendingAccountDirectoryAuthRecord(
+    value: unknown,
+): value is PendingAccountDirectoryAuthStoredRecord {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const row = value as Record<string, unknown>;
+    const endpointRaw = row.endpoint;
+    const endpoint = typeof endpointRaw === 'string'
+        ? normalizeAccountDirectoryEndpoint(endpointRaw)
+        : null;
+    const identity = row.serverIdentityId;
+    if (
+        !endpoint
+        || !isNonEmptyString(row.provider)
+        || row.purpose !== 'account_directory'
+        || (row.credentialTarget !== undefined && row.credentialTarget !== 'account_directory')
+        || (row.pending !== undefined && !isNonEmptyString(row.pending))
+        || !Number.isSafeInteger(row.createdAt)
+        || !Number.isSafeInteger(row.expiresAt)
+        || Number(row.createdAt) < 0
+        || Number(row.expiresAt) <= Number(row.createdAt)
+        || (row.mode !== undefined && row.mode !== 'keyed' && row.mode !== 'keyless')
+        || (row.serverIdentityId !== undefined && !isNonEmptyString(row.serverIdentityId))
+        || (row.proof !== undefined && !isNonEmptyString(row.proof))
+        || (row.secret !== undefined && !isNonEmptyString(row.secret))
+        || (row.mode === 'keyless' && row.secret !== undefined)
+        || (row.returnTo !== undefined && !isInternalReturnTo(row.returnTo))
+        || (row.homeServerIdentityId !== undefined && !isNonEmptyString(row.homeServerIdentityId))
+        || (row.state !== undefined && !isNonEmptyString(row.state))
+        || (row.nonce !== undefined && !isNonEmptyString(row.nonce))
+    ) {
+        return false;
+    }
+
+    // New pre-redirect records have no server pending handle yet. They must
+    // carry the explicit Directory target marker and endpoint identity, plus
+    // exactly one supported mode-dependent local binding: keyless uses the
+    // proof, while keyed binds the local signing secret and carries no proof.
+    if (
+        row.pending === undefined
+        && (
+            row.credentialTarget !== 'account_directory'
+            || !isNonEmptyString(identity)
+            || (
+                row.mode === 'keyless'
+                    ? !isNonEmptyString(row.proof)
+                    : row.mode === 'keyed'
+                        ? !isNonEmptyString(row.secret) || row.proof !== undefined
+                        : true
+            )
+        )
+    ) {
+        return false;
+    }
+
+    const allowedKeys = new Set([
+        'endpoint',
+        'serverIdentityId',
+        'credentialTarget',
+        'provider',
+        'purpose',
+        'pending',
+        'createdAt',
+        'expiresAt',
+        'mode',
+        'proof',
+        'secret',
+        'returnTo',
+        'homeServerIdentityId',
+        'state',
+        'nonce',
+    ]);
+    const keys = Object.keys(row);
+    if (!keys.every((key) => allowedKeys.has(key))) return false;
+    return identity === undefined || isNonEmptyString(identity);
+}
+
+function normalizePendingAccountDirectoryAuth(
+    value: PendingAccountDirectoryAuthInput | PendingAccountDirectoryAuth,
+    options: Readonly<{ includeExpired?: boolean }> = {},
+): NormalizedPendingAccountDirectoryAuth | null {
+    if (!isPendingAccountDirectoryAuthRecord(value)) return null;
+    const raw = value as Record<string, unknown>;
+    const endpoint = normalizeAccountDirectoryEndpoint(String(raw.endpoint ?? ''));
+    const identity = normalizeAccountDirectoryIdentity(raw.serverIdentityId);
+    if (
+        !endpoint
+        || (options.includeExpired !== true && Date.now() >= value.expiresAt)
+    ) return null;
+    return {
+        endpoint,
+        ...(identity ? { serverIdentityId: identity } : {}),
+        ...(raw.credentialTarget === 'account_directory'
+            ? { credentialTarget: 'account_directory' as const }
+            : {}),
+        provider: value.provider.trim(),
+        purpose: 'account_directory',
+        ...(value.pending ? { pending: value.pending.trim() } : {}),
+        createdAt: value.createdAt,
+        expiresAt: value.expiresAt,
+        ...(value.mode ? { mode: value.mode } : {}),
+        ...(value.proof ? { proof: value.proof.trim() } : {}),
+        ...(value.secret ? { secret: value.secret.trim() } : {}),
+        ...(value.returnTo ? { returnTo: value.returnTo.trim() } : {}),
+        ...(value.homeServerIdentityId ? { homeServerIdentityId: value.homeServerIdentityId.trim() } : {}),
+        ...(value.state ? { state: value.state.trim() } : {}),
+        ...(value.nonce ? { nonce: value.nonce.trim() } : {}),
+    };
+}
+
+function pendingAccountDirectoryAuthMatchesTarget(
+    value: NormalizedPendingAccountDirectoryAuth,
+    target: Readonly<{ endpoint: string; serverIdentityId: string | null }>,
+): boolean {
+    return normalizeAccountDirectoryEndpoint(value.endpoint) === target.endpoint
+        && (
+            target.serverIdentityId === null
+            || (normalizeAccountDirectoryIdentity(value.serverIdentityId) ?? null)
+                === target.serverIdentityId
+        );
 }
 
 function isPendingExternalAuthRecord(value: unknown): value is PendingExternalAuth {
@@ -790,26 +1374,82 @@ async function removeStoredValue(key: string, label: string): Promise<boolean> {
     }
 }
 
+async function readAccountDirectoryCredentialRecords(): Promise<StoredAccountDirectoryCredentialRecord[]> {
+    try {
+        const raw = await readDeviceLocalStorageString(
+            ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY,
+        );
+        if (!raw) return [];
+        return parseStoredAccountDirectoryCredentialRecords(safeParseJson(raw));
+    } catch {
+        return [];
+    }
+}
+
+async function writeAccountDirectoryCredentialRecords(
+    records: readonly StoredAccountDirectoryCredentialRecord[],
+): Promise<boolean> {
+    try {
+        if (records.length === 0) {
+            await removeDeviceLocalStorageString(
+                ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY,
+            );
+        } else {
+            await writeDeviceLocalStorageString(
+                ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY,
+                JSON.stringify(records),
+            );
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function readPendingAccountDirectoryAuthRecords(): Promise<NormalizedPendingAccountDirectoryAuth[]> {
+    try {
+        const raw = await readDeviceLocalStorageString(
+            PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY,
+        );
+        if (!raw) return [];
+        const parsed = safeParseJson(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.flatMap((candidate) => {
+            if (!isPendingAccountDirectoryAuthRecord(candidate)) return [];
+            const normalized = normalizePendingAccountDirectoryAuth(candidate, {
+                includeExpired: true,
+            });
+            return normalized ? [normalized] : [];
+        });
+    } catch {
+        return [];
+    }
+}
+
+async function writePendingAccountDirectoryAuthRecords(
+    records: readonly NormalizedPendingAccountDirectoryAuth[],
+): Promise<boolean> {
+    try {
+        if (records.length === 0) {
+            await removeDeviceLocalStorageString(
+                PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY,
+            );
+        } else {
+            await writeDeviceLocalStorageString(
+                PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY,
+                JSON.stringify(records),
+            );
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 function parseCredentialsRaw(raw: string | null): AuthCredentials | null {
     if (!raw) return null;
     try {
-        const parsed = safeParseJson(raw);
-        if (!parsed || typeof parsed !== 'object') return null;
-
-        const maybe = parsed as Record<string, unknown>;
-        if (!isNonEmptyString(maybe.token)) return null;
-
-        // Plain/keyless accounts intentionally persist only the bearer token. Account
-        // E2EE material exists only for legacy or data-key credentials.
-        const hasLegacySecret = isNonEmptyString(maybe.secret);
-        const hasEncryption =
-            !!maybe.encryption &&
-            typeof maybe.encryption === 'object' &&
-            isNonEmptyString((maybe.encryption as Record<string, unknown>).publicKey) &&
-            isNonEmptyString((maybe.encryption as Record<string, unknown>).machineKey);
-
-        if (hasLegacySecret || hasEncryption) return parsed as AuthCredentials;
-        return { token: maybe.token };
+        return parseAuthCredentials(safeParseJson(raw));
     } catch {
         return null;
     }
@@ -890,6 +1530,28 @@ async function readCredentialsForScopedKeys(keys: ScopedStorageKeys): Promise<Au
     return null;
 }
 
+async function removeCredentialKeysAtomically(targetKeys: readonly string[]): Promise<boolean> {
+    const keys = uniqueStrings(targetKeys);
+    const previousRawByKey = new Map<string, string>();
+    for (const key of keys) {
+        const previousRaw = await readCredentialRawByKey(key);
+        if (previousRaw !== null) {
+            previousRawByKey.set(key, previousRaw);
+        }
+    }
+
+    for (const key of keys) {
+        const removed = await removeCredentialByKey(key);
+        if (removed) continue;
+
+        for (const [previousKey, previousRaw] of previousRawByKey) {
+            await writeCredentialRawByKey(previousKey, previousRaw);
+        }
+        return false;
+    }
+    return true;
+}
+
 type CredentialCleanupTarget = Readonly<{
     serverUrl: string;
     serverId?: string | null;
@@ -903,19 +1565,25 @@ function listKnownServerCleanupTargets(): CredentialCleanupTarget[] {
         const serverUrl = normalizeUrl(String(serverUrlRaw ?? ''));
         if (!serverUrl) return;
         const serverId = normalizeServerId(typeof serverIdRaw === 'string' ? serverIdRaw : null);
-        const key = serverId ?? `url:${serverUrl}`;
+        const key = serverId ? `id:${serverId}` : `url:${serverUrl}`;
         if (seen.has(key)) return;
         seen.add(key);
         targets.push(serverId ? { serverUrl, serverId } : { serverUrl });
     };
 
-    append(getActiveServerUrl(), getActiveServerId());
     for (const profile of listServerProfiles()) {
-        append(profile.serverUrl, profile.id);
-        append(profile.serverUrl, profile.serverIdentityId);
-        for (const legacyServerId of profile.legacyServerIds ?? []) {
-            append(profile.serverUrl, legacyServerId);
-        }
+        append(profile.serverUrl, profile.serverIdentityId ?? profile.id);
+    }
+
+    const activeServerId = getActiveServerId();
+    const activeProfile = findServerProfileForIdentifier(activeServerId);
+    if (activeProfile) {
+        append(
+            activeProfile.serverUrl,
+            activeProfile.serverIdentityId ?? activeProfile.id,
+        );
+    } else {
+        append(getActiveServerUrl(), activeServerId);
     }
 
     return targets;
@@ -959,7 +1627,243 @@ async function serializePendingExternalAuthMutation<T>(
     return await result;
 }
 
+function parseDirectoryTokenCredentials(value: unknown): TokenOnlyAuthCredentials | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const token = (value as Record<string, unknown>).token;
+    return isNonEmptyString(token) ? { token: token.trim() } : null;
+}
+
+async function getAccountDirectoryCredentialsForTarget(
+    target: AccountDirectoryCredentialTarget,
+): Promise<AuthCredentials | null> {
+    const normalized = normalizeAccountDirectoryTarget(target);
+    if (!normalized) return null;
+    const records = await readAccountDirectoryCredentialRecords();
+    const matches = records
+        .filter((record) => accountDirectoryCredentialRecordMatchesTarget(record, normalized))
+        .sort((left, right) => right.updatedAt - left.updatedAt);
+    const record = normalized.serverIdentityId === null
+        ? matches[0]
+        : matches.find((candidate) => accountDirectoryCredentialExactKeyMatchesTarget(candidate, normalized));
+    return record ? { token: record.credentials.token } : null;
+}
+
+async function setAccountDirectoryCredentialsForTarget(
+    target: AccountDirectoryCredentialTarget,
+    credentials: AuthCredentials,
+): Promise<boolean> {
+    const normalized = normalizeAccountDirectoryTarget(target);
+    const parsedCredentials = parseDirectoryTokenCredentials(credentials);
+    if (!normalized || !parsedCredentials) return false;
+
+    return await serializePendingExternalAuthMutation(async () => {
+        const records = await readAccountDirectoryCredentialRecords();
+        const next = records.filter((record) => {
+            if (normalized.serverIdentityId === null) {
+                return record.endpoint !== normalized.endpoint;
+            }
+            return !accountDirectoryCredentialExactKeyMatchesTarget(record, normalized);
+        });
+        next.push({
+            endpoint: normalized.endpoint,
+            ...(normalized.serverIdentityId ? { serverIdentityId: normalized.serverIdentityId } : {}),
+            credentials: parsedCredentials,
+            updatedAt: Date.now(),
+        });
+        next.sort((left, right) => right.updatedAt - left.updatedAt);
+        return await writeAccountDirectoryCredentialRecords(next);
+    });
+}
+
+async function removeAccountDirectoryCredentialsForTarget(
+    target: AccountDirectoryCredentialTarget,
+): Promise<boolean> {
+    const normalized = normalizeAccountDirectoryTarget(target);
+    if (!normalized) return false;
+    return await serializePendingExternalAuthMutation(async () => {
+        const records = await readAccountDirectoryCredentialRecords();
+        const next = records.filter((record) => !accountDirectoryCredentialRecordMatchesTarget(record, normalized));
+        if (next.length === records.length) return true;
+        return await writeAccountDirectoryCredentialRecords(next);
+    });
+}
+
+async function clearAccountDirectoryCredentials(): Promise<boolean> {
+    return await serializePendingExternalAuthMutation(
+        async () => await writeAccountDirectoryCredentialRecords([]),
+    );
+}
+
+async function setPendingAccountDirectoryAuthValue(
+    value: PendingAccountDirectoryAuthInput,
+): Promise<boolean> {
+    const normalized = normalizePendingAccountDirectoryAuth(value);
+    if (!normalized) return false;
+
+    return await serializePendingExternalAuthMutation(async () => {
+        const records = await readPendingAccountDirectoryAuthRecords();
+        const next = records.filter((record) => !pendingAccountDirectoryAuthMatchesTarget(record, {
+            endpoint: normalized.endpoint,
+            serverIdentityId: normalizeAccountDirectoryIdentity(normalized.serverIdentityId),
+        }));
+        next.push(normalized);
+        return await writePendingAccountDirectoryAuthRecords(next);
+    });
+}
+
+async function getPendingAccountDirectoryAuthValue(
+    target: PendingAccountDirectoryAuthTarget,
+    options: Readonly<{ includeExpired?: boolean }> = {},
+): Promise<PendingAccountDirectoryAuth | null> {
+    const normalized = normalizeAccountDirectoryTarget(target);
+    if (!normalized) return null;
+    const records = await readPendingAccountDirectoryAuthRecords();
+    const matches = records
+        .filter((record) => pendingAccountDirectoryAuthMatchesTarget(record, normalized))
+        .filter((record) => options.includeExpired === true || Date.now() < record.expiresAt)
+        .sort((left, right) => right.createdAt - left.createdAt);
+    return matches[0] ?? null;
+}
+
+async function clearPendingAccountDirectoryAuthValue(
+    target?: PendingAccountDirectoryAuthTarget,
+): Promise<boolean> {
+    if (target === undefined) {
+        return await serializePendingExternalAuthMutation(
+            async () => await writePendingAccountDirectoryAuthRecords([]),
+        );
+    }
+    const normalized = normalizeAccountDirectoryTarget(target);
+    if (!normalized) return false;
+    return await serializePendingExternalAuthMutation(async () => {
+        const records = await readPendingAccountDirectoryAuthRecords();
+        const next = records.filter((record) => !pendingAccountDirectoryAuthMatchesTarget(record, normalized));
+        if (next.length === records.length) return true;
+        return await writePendingAccountDirectoryAuthRecords(next);
+    });
+}
+
+export interface AccountDirectoryAuthCredentialsFacade {
+    get(target: AccountDirectoryCredentialTarget): Promise<AuthCredentials | null>;
+    set(target: AccountDirectoryCredentialTarget, credentials: AuthCredentials): Promise<boolean>;
+    remove(target: AccountDirectoryCredentialTarget): Promise<boolean>;
+    clear(): Promise<boolean>;
+    logout(target: AccountDirectoryCredentialTarget): Promise<boolean>;
+}
+
+export const accountDirectoryAuthCredentials: AccountDirectoryAuthCredentialsFacade = {
+    async get(
+        target: AccountDirectoryCredentialTarget,
+    ): Promise<AuthCredentials | null> {
+        return await getAccountDirectoryCredentialsForTarget(target);
+    },
+
+    async set(
+        target: AccountDirectoryCredentialTarget,
+        credentials: AuthCredentials,
+    ): Promise<boolean> {
+        return await setAccountDirectoryCredentialsForTarget(
+            target,
+            credentials,
+        );
+    },
+
+    async remove(
+        target: AccountDirectoryCredentialTarget,
+    ): Promise<boolean> {
+        return await removeAccountDirectoryCredentialsForTarget(target);
+    },
+
+    async clear(): Promise<boolean> {
+        return await clearAccountDirectoryCredentials();
+    },
+
+    async logout(
+        target: AccountDirectoryCredentialTarget,
+    ): Promise<boolean> {
+        const removedCredentials = await removeAccountDirectoryCredentialsForTarget(target);
+        const clearedPending = await clearPendingAccountDirectoryAuthValue(target);
+        return removedCredentials && clearedPending;
+    },
+};
+
+type HomeCredentialWriteOutcome = Readonly<{
+    stored: boolean;
+    serverId: string | null;
+    /** Exact-scope rollback for the attempted write; null when nothing was written. */
+    rollback: (() => Promise<boolean>) | null;
+}>;
+
+/**
+ * Single canonical writer for explicit Home credential scopes. The write keys
+ * the primary scope by the canonical stable identity (which may precede profile
+ * adoption), keeps URL-hash scopes as reader-only migration inputs, and
+ * captures the exact pre-write snapshot so a failed final adoption can undo
+ * precisely this write without touching a concurrent winner's credentials.
+ */
+async function writeHomeCredentialsForServerScope(
+    serverUrl: string,
+    options: ServerCredentialLookupOptions,
+    credentials: AuthCredentials,
+): Promise<HomeCredentialWriteOutcome> {
+    if (!isNonEmptyString((credentials as Record<string, unknown>).token)) {
+        return { stored: false, serverId: null, rollback: null };
+    }
+    const normalizedServerUrl = normalizeUrl(serverUrl);
+    const identity = resolveHomeCredentialIdentity(
+        normalizedServerUrl,
+        normalizeServerId(options.serverId),
+    );
+    if (identity.conflict) {
+        return { stored: false, serverId: null, rollback: null };
+    }
+    const keys = await getAuthKeys(serverUrl, options);
+    // Identity/URL mismatch fails closed: never write credentials under a URL
+    // scope that an existing profile's identity does not own.
+    if (!keys) return { stored: false, serverId: null, rollback: null };
+
+    const json = JSON.stringify(credentials);
+    const previousPrimaryRaw = await readCredentialRawByKey(keys.primary);
+    const previousLegacyRaws = await Promise.all(keys.legacy.map((legacyKey) => readCredentialRawByKey(legacyKey)));
+
+    const written = await writeCredentialRawByKey(keys.primary, json);
+    if (!written) return { stored: false, serverId: identity.serverId, rollback: null };
+    for (const legacyKey of keys.legacy) {
+        await removeCredentialByKey(legacyKey);
+    }
+    emitHomeCredentialMutation('credentials_set', serverUrl, options);
+
+    const rollback = async (): Promise<boolean> => {
+        let restored = true;
+        // Remove what this write created only while its content is still ours;
+        // a key rewritten concurrently belongs to its new writer.
+        const currentPrimaryRaw = await readCredentialRawByKey(keys.primary);
+        if (currentPrimaryRaw === json) {
+            restored = previousPrimaryRaw !== null
+                ? await writeCredentialRawByKey(keys.primary, previousPrimaryRaw)
+                : await removeCredentialByKey(keys.primary);
+        }
+        for (let index = 0; index < keys.legacy.length; index += 1) {
+            const previousRaw = previousLegacyRaws[index] ?? null;
+            if (previousRaw === null) continue;
+            const legacyKey = keys.legacy[index]!;
+            // Restore only reader-only scopes this write emptied; new content
+            // written after the write is owned by its writer, not by this rollback.
+            if (await readCredentialRawByKey(legacyKey) !== null) continue;
+            restored = await writeCredentialRawByKey(legacyKey, previousRaw) && restored;
+        }
+        if (restored) {
+            emitHomeCredentialMutation('credentials_removed', serverUrl, options);
+        }
+        return restored;
+    };
+    return { stored: true, serverId: identity.serverId, rollback };
+}
+
 export const TokenStorage = {
+    /** Dedicated Account Service credential namespace (never the active Home). */
+    accountDirectoryAuthCredentials,
+
     async getAuthAutoRedirectSuppressedUntil(): Promise<number> {
         const key = await getAuthAutoRedirectSuppressedUntilKey();
         const globalKey = getAuthAutoRedirectSuppressedUntilGlobalKey();
@@ -1092,18 +1996,89 @@ export const TokenStorage = {
     },
 
     async getCredentials(): Promise<AuthCredentials | null> {
-        return await readCredentialsForScopedKeys(await getAuthKeys());
+        const keys = await getAuthKeys();
+        return keys ? await readCredentialsForScopedKeys(keys) : null;
     },
 
     async getCredentialsForServerUrl(
         serverUrl: string,
         options: ServerCredentialLookupOptions = {},
     ): Promise<AuthCredentials | null> {
-        return await readCredentialsForScopedKeys(await getAuthKeys(serverUrl, options));
+        const keys = await getAuthKeys(serverUrl, options);
+        return keys ? await readCredentialsForScopedKeys(keys) : null;
+    },
+
+    /**
+     * Pending account-creation custody for one exact Personal Home endpoint and optional
+     * stable identity. This is device-local signing material, not a Home credential.
+     */
+    async getPendingPersonalHomeBootstrapSeed(
+        serverUrl: string,
+        options: ServerCredentialLookupOptions = {},
+    ): Promise<Uint8Array | null> {
+        const key = await getPendingPersonalHomeBootstrapSeedStorageKey(serverUrl, options);
+        if (!key) return null;
+        let raw: string | null;
+        try {
+            raw = await readDeviceLocalStorageString(key);
+        } catch {
+            return null;
+        }
+        const parsed = parsePendingPersonalHomeBootstrapSeedRecord(safeParseJson(raw ?? ''));
+        if (!parsed) return null;
+        try {
+            const seed = decodeBase64(parsed.seedBase64Url, 'base64url');
+            return seed.length === 32 ? seed : null;
+        } catch {
+            return null;
+        }
+    },
+
+    async setPendingPersonalHomeBootstrapSeed(
+        serverUrl: string,
+        options: ServerCredentialLookupOptions,
+        seed: Uint8Array,
+    ): Promise<boolean> {
+        if (!(seed instanceof Uint8Array) || seed.length !== 32) return false;
+        const key = await getPendingPersonalHomeBootstrapSeedStorageKey(serverUrl, options);
+        if (!key) return false;
+        const seedBase64Url = encodeBase64(seed, 'base64url');
+        try {
+            // Never replace an existing unreadable or different seed. It may already identify
+            // a server-committed Account whose token response was lost.
+            const existingRaw = await readDeviceLocalStorageString(key);
+            if (existingRaw !== null) {
+                const existing = parsePendingPersonalHomeBootstrapSeedRecord(safeParseJson(existingRaw));
+                return existing?.seedBase64Url === seedBase64Url;
+            }
+            const record = JSON.stringify({
+                v: 1,
+                seedBase64Url,
+            } satisfies PendingPersonalHomeBootstrapSeedRecord);
+            await writeDeviceLocalStorageString(key, record);
+            return await readDeviceLocalStorageString(key) === record;
+        } catch {
+            return false;
+        }
+    },
+
+    async clearPendingPersonalHomeBootstrapSeed(
+        serverUrl: string,
+        options: ServerCredentialLookupOptions = {},
+    ): Promise<boolean> {
+        const key = await getPendingPersonalHomeBootstrapSeedStorageKey(serverUrl, options);
+        if (!key) return false;
+        try {
+            await removeDeviceLocalStorageString(key);
+            return true;
+        } catch {
+            return false;
+        }
     },
 
     async setCredentials(credentials: AuthCredentials): Promise<boolean> {
         const keys = await getAuthKeys();
+        if (!keys) return false;
         const json = JSON.stringify(credentials);
         const written = await writeCredentialRawByKey(keys.primary, json);
         if (!written) return false;
@@ -1117,17 +2092,34 @@ export const TokenStorage = {
     /** Persist credentials for an explicit Home without changing focused-server state. */
     async setCredentialsForServerUrl(
         serverUrl: string,
+        options: ServerCredentialLookupOptions,
         credentials: AuthCredentials,
-        options: ServerCredentialLookupOptions = {},
     ): Promise<boolean> {
-        const keys = await getAuthKeys(serverUrl, options);
-        const json = JSON.stringify(credentials);
-        const written = await writeCredentialRawByKey(keys.primary, json);
-        if (!written) return false;
-        for (const legacyKey of keys.legacy) {
-            await removeCredentialByKey(legacyKey);
-        }
-        return true;
+        return (await writeHomeCredentialsForServerScope(serverUrl, options, credentials)).stored;
+    },
+
+    /**
+     * Persist credentials for an explicit Home and return the exact-scope
+     * rollback for the attempted write. Composition owners that revalidate and
+     * commit a profile after the write (adoption) must call `rollback()` when
+     * that final adoption fails, so a losing adoption race never leaves its
+     * credentials readable by the winning identity or a URL-only lookup. The
+     * rollback removes/restores only the keys this write created or emptied;
+     * it never touches a concurrent winner's credentials and is idempotent.
+     * Returns null when the write was rejected or failed (nothing to undo).
+     */
+    async setCredentialsForServerUrlWithRollback(
+        serverUrl: string,
+        options: ServerCredentialLookupOptions,
+        credentials: AuthCredentials,
+    ): Promise<HomeCredentialWriteRollback | null> {
+        const outcome = await writeHomeCredentialsForServerScope(serverUrl, options, credentials);
+        if (!outcome.stored || !outcome.rollback) return null;
+        return {
+            serverUrl: normalizeUrl(serverUrl),
+            serverId: outcome.serverId,
+            rollback: outcome.rollback,
+        };
     },
 
     async removeCredentials(): Promise<boolean> {
@@ -1135,23 +2127,41 @@ export const TokenStorage = {
         // Reset any suppression so subsequent auth flows can run normally.
         await TokenStorage.setAuthAutoRedirectSuppressedUntil(0);
         let allRemoved = true;
+        const emittedMutationTargets = new Set<string>();
+        const knownTargetKeys = new Set<string>();
         const knownServerTargets = listKnownServerCleanupTargets();
         for (const target of knownServerTargets) {
+            const options = target.serverId ? { serverId: target.serverId } : {};
             const keys = await getAuthKeys(
                 target.serverUrl,
-                target.serverId ? { serverId: target.serverId } : {},
+                options,
             );
-            const primaryRemoved = await removeCredentialByKey(keys.primary);
-            allRemoved = allRemoved && primaryRemoved;
-            for (const legacyKey of keys.legacy) {
-                const legacyRemoved = await removeCredentialByKey(legacyKey);
-                allRemoved = allRemoved && legacyRemoved;
+            // A profile registry change between listing and scope resolution must
+            // not sweep credentials for a target that no longer resolves.
+            if (!keys) continue;
+            const targetKeys = uniqueStrings([keys.primary, ...keys.legacy]);
+            for (const key of targetKeys) {
+                knownTargetKeys.add(key);
+            }
+            const targetRemoved = await removeCredentialKeysAtomically(targetKeys);
+            allRemoved = allRemoved && targetRemoved;
+
+            if (targetRemoved) {
+                const mutationTarget = resolveHomeCredentialMutationTarget(target.serverUrl, options);
+                if (mutationTarget) {
+                    const mutationKey = `${mutationTarget.serverId}\u0000${mutationTarget.serverUrl}`;
+                    if (!emittedMutationTargets.has(mutationKey)) {
+                        emittedMutationTargets.add(mutationKey);
+                        emitHomeCredentialMutation('credentials_removed', target.serverUrl, options);
+                    }
+                }
             }
         }
 
         if (Platform.OS === 'web') {
             const webScopedKeys = listWebScopedCredentialKeysForCleanup();
             for (const key of webScopedKeys) {
+                if (knownTargetKeys.has(key)) continue;
                 const removed = await removeCredentialByKey(key);
                 allRemoved = allRemoved && removed;
             }
@@ -1165,33 +2175,16 @@ export const TokenStorage = {
         options: ServerCredentialLookupOptions = {},
     ): Promise<boolean> {
         const keys = await getAuthKeys(serverUrl, options);
+        if (!keys) return false;
         const targetKeys = uniqueStrings([
             keys.primary,
             ...keys.legacy,
         ]);
-        const previousRawByKey = new Map<string, string>();
-        for (const key of targetKeys) {
-            const previousRaw = await readCredentialRawByKey(key);
-            if (previousRaw !== null) {
-                previousRawByKey.set(key, previousRaw);
-            }
-        }
-
-        for (const key of targetKeys) {
-            const removed = await removeCredentialByKey(key);
-            if (removed) continue;
-
-            for (const [
-                previousKey,
-                previousRaw,
-            ] of previousRawByKey) {
-                await writeCredentialRawByKey(
-                    previousKey,
-                    previousRaw,
-                );
-            }
+        const removed = await removeCredentialKeysAtomically(targetKeys);
+        if (!removed) {
             return false;
         }
+        emitHomeCredentialMutation('credentials_removed', serverUrl, options);
         return true;
     },
 
@@ -1201,6 +2194,7 @@ export const TokenStorage = {
         options: ServerCredentialLookupOptions = {},
     ): Promise<boolean> {
         const keys = await getAuthKeys(serverUrl, options);
+        if (!keys) return false;
         const removeIfMatches = async (key: string): Promise<boolean> => {
             const raw = await readCredentialRawByKey(key);
             const parsed = parseCredentialsRaw(raw);
@@ -1211,12 +2205,45 @@ export const TokenStorage = {
         };
 
         const primaryRemoved = await removeIfMatches(keys.primary);
-        if (primaryRemoved) return true;
+        if (primaryRemoved) {
+            emitHomeCredentialMutation('credentials_removed', serverUrl, options);
+            return true;
+        }
         for (const legacyKey of keys.legacy) {
             const legacyRemoved = await removeIfMatches(legacyKey);
-            if (legacyRemoved) return true;
+            if (legacyRemoved) {
+                emitHomeCredentialMutation('credentials_removed', serverUrl, options);
+                return true;
+            }
         }
         return false;
+    },
+
+    /**
+     * Store a short-lived Account Service OAuth continuation.  This is kept
+     * separate from Home pending auth so a legacy Home reader can never
+     * consume a Directory callback.
+     */
+    async setPendingAccountDirectoryAuth(
+        value: PendingAccountDirectoryAuthInput,
+    ): Promise<boolean> {
+        return await setPendingAccountDirectoryAuthValue(value);
+    },
+
+    async getPendingAccountDirectoryAuth(
+        target: PendingAccountDirectoryAuthTarget,
+        // The OAuth callback may inspect an expired record only to classify
+        // the terminal UX. Admission still occurs in the callback finalizer,
+        // which rejects it before any request or credential write.
+        options: Readonly<{ includeExpired?: boolean }> = {},
+    ): Promise<PendingAccountDirectoryAuth | null> {
+        return await getPendingAccountDirectoryAuthValue(target, options);
+    },
+
+    async clearPendingAccountDirectoryAuth(
+        target?: PendingAccountDirectoryAuthTarget,
+    ): Promise<boolean> {
+        return await clearPendingAccountDirectoryAuthValue(target);
     },
 
     async readPendingExternalAuthState(): Promise<PendingExternalReadState<PendingExternalAuth>> {
@@ -1294,6 +2321,9 @@ export const TokenStorage = {
             serverUrl,
             options,
         );
+        if (!keys) {
+            return { value: null, serverMismatch: true };
+        }
         for (const key of [keys.primary, ...keys.legacy]) {
             const value = await readStoredJson(
                 key,
@@ -1438,6 +2468,11 @@ export const TokenStorage = {
                             }
                             : {},
                     );
+                if (!keys) {
+                    return {
+                        kind: 'not_current',
+                    };
+                }
                 let scoped:
                     | PendingExternalAuth
                     | null = null;
@@ -1667,10 +2702,13 @@ export const TokenStorage = {
                                 existingGlobal.serverUrl,
                                 {
                                     serverId:
-                                        existingGlobal.serverId,
+                                    existingGlobal.serverId,
                                 },
                             );
                         canReplaceGlobal = false;
+                        if (!originalKeys) {
+                            return ok;
+                        }
                         for (
                             const originalKey of [
                                 originalKeys.primary,
@@ -1726,10 +2764,7 @@ export const TokenStorage = {
                                             options.serverId,
                                     }
                                     : {},
-                            ).then((keys) => [
-                                keys.primary,
-                                ...keys.legacy,
-                            ])
+                            ).then((keys) => keys ? [keys.primary, ...keys.legacy] : [])
                         : resolvePendingExternalScopedKeysForClear(
                             PENDING_EXTERNAL_AUTH_KEY,
                             globalKey,

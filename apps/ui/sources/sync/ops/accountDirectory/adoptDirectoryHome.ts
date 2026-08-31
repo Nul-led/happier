@@ -7,5 +7,6 @@ export async function adoptDirectoryHome(entry: AccountDirectoryHomeEntryV1): Pr
         descriptor: entry.connectionDescriptor,
         source: 'account-directory',
         preserveUserLabel: true,
+        suggestedName: entry.label,
     });
 }

@@ -274,3 +274,42 @@ export function createSystemTaskRunner(options: Readonly<{
 }
 
 export const createSystemTasksRunner = createSystemTaskRunner;
+
+/**
+ * Await the terminal result for a task that was started through this runner.
+ * System-task failures remain data (`ok: false`) so callers can preserve the
+ * canonical error code and retry semantics; only an unknown task id rejects.
+ */
+export function waitForSystemTaskResult(
+    runner: SystemTaskRunner,
+    taskId: string,
+): Promise<SystemTaskResult> {
+    const normalizedTaskId = String(taskId ?? '').trim();
+    if (!normalizedTaskId) return Promise.reject(new Error('System task id is required.'));
+
+    return new Promise<SystemTaskResult>((resolve, reject) => {
+        let settled = false;
+        let unsubscribe: (() => void) | null = null;
+        const settle = (result: SystemTaskResult | null): void => {
+            if (settled) return;
+            if (!result) return;
+            settled = true;
+            unsubscribe?.();
+            resolve(result);
+        };
+        const inspect = (): void => {
+            const snapshot = runner.getSnapshot(normalizedTaskId);
+            if (!snapshot) {
+                if (!unsubscribe) return;
+                settled = true;
+                unsubscribe();
+                reject(new Error(`Unknown system task: ${normalizedTaskId}`));
+                return;
+            }
+            settle(snapshot.result);
+        };
+
+        unsubscribe = runner.subscribe(normalizedTaskId, inspect);
+        inspect();
+    });
+}

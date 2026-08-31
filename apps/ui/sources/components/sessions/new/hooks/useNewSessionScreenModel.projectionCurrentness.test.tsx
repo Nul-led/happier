@@ -382,6 +382,7 @@ vi.mock('@/sync/sync', () => ({
 
 vi.mock('@/sync/store/settingsWriters', () => ({
     useApplySettings: () => applySettingsMock,
+    useDeleteAiLaunchProfile: () => vi.fn(async () => {}),
 }));
 
 vi.mock('@/agents/hooks/useEnabledAgentIds', () => ({

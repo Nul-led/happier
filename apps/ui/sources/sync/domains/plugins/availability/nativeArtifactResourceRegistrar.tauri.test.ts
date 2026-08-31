@@ -19,11 +19,13 @@ const registration = {
 } satisfies Parameters<PluginNativeArtifactResourceRegistrar['register']>[0];
 
 describe('Tauri desktop Artifact registrar', () => {
-    it('removes the JS-visible token synchronously after registration while native teardown stays fire-and-forget', async () => {
-        let rejectNativeTeardown: ((error: Error) => void) | undefined;
-        const nativeTeardown = new Promise<never>((_resolve, reject) => {
-            rejectNativeTeardown = reject;
+    it('settles the native acknowledgement the canonical registry keeps its registration for', async () => {
+        const deferredAcknowledgements: Array<Promise<boolean>> = [];
+        let nextAcknowledgement: ((value: boolean | PromiseLike<boolean>) => void) | undefined;
+        const pendingAcknowledgement = new Promise<boolean>((resolve) => {
+            nextAcknowledgement = resolve;
         });
+        deferredAcknowledgements.push(pendingAcknowledgement);
         const calls: Array<readonly [string, Record<string, unknown> | undefined]> = [];
         const invoke: TauriHostedArtifactCommandInvoke = async <T>(
             command: string,
@@ -36,27 +38,47 @@ describe('Tauri desktop Artifact registrar', () => {
                 return { kind: 'registered' } as unknown as T;
             }
             if (command === 'desktop_hosted_artifact_unregister') {
-                return nativeTeardown;
+                const queued = deferredAcknowledgements.shift();
+                return (queued ?? Promise.resolve(false)) as unknown as T;
             }
             return undefined as T;
         };
         const registrar = createTauriPluginNativeArtifactResourceRegistrar({ invoke });
 
         await expect(registrar.register(registration)).resolves.toEqual({ kind: 'registered' });
-        expect(registrar.unregister(registration.token)).toBe(true);
+        const firstAcknowledgement = registrar.unregister(registration.token);
         expect(calls[0]).toEqual(['desktop_hosted_artifact_register', {
             input: registration,
         }]);
         expect(calls[1]).toEqual(['desktop_hosted_artifact_unregister', {
             token: registration.token,
         }]);
+        nextAcknowledgement?.(true);
+        await expect(firstAcknowledgement).resolves.toBe(true);
 
-        // Physical teardown is deliberately not awaited by Account/currentness
-        // retirement. A late native failure is observed only at the native
-        // handler, while the canonical Artifact registry has already made the
-        // token unavailable to every JS consumer.
-        rejectNativeTeardown?.(new Error('native view already gone'));
-        await Promise.resolve();
+        // A resolved false is a real native fact, not a swallowed one: the
+        // adapter must surface it so the canonical registry keeps the stale
+        // token indexed for its diagnostics/retry owner.
+        const refusedAcknowledgement = new Promise<boolean>((resolve) => {
+            nextAcknowledgement = resolve;
+        });
+        deferredAcknowledgements.push(refusedAcknowledgement);
+        const secondAcknowledgement = registrar.unregister(registration.token);
+        nextAcknowledgement?.(false);
+        await expect(secondAcknowledgement).resolves.toBe(false);
+    });
+
+    it('settles a rejected native teardown to an unacknowledged result', async () => {
+        const registrar = createTauriPluginNativeArtifactResourceRegistrar({
+            invoke: async <T>(command: string): Promise<T> => {
+                if (command === 'desktop_hosted_artifact_unregister') {
+                    throw new Error('native view already gone');
+                }
+                return undefined as T;
+            },
+        });
+
+        await expect(registrar.unregister(registration.token)).resolves.toBe(false);
     });
 
     it('fails closed when the native registrar does not return its strict result shape', async () => {

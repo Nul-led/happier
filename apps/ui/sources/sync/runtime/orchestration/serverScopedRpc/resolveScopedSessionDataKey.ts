@@ -56,6 +56,7 @@ function setSessionCryptoContextCache(cacheKey: string, value: ScopedSessionCryp
 
 async function fetchSessionCryptoContext(params: Readonly<{
   serverUrl: string;
+  runtimeOrigin?: string;
   token: string;
   sessionId: string;
   decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
@@ -68,7 +69,8 @@ async function fetchSessionCryptoContext(params: Readonly<{
     const response = await runtimeFetchWithServerReachability({
       serverUrl: params.serverUrl,
       token: params.token,
-      url: `${params.serverUrl}/v2/sessions/${encodeURIComponent(params.sessionId)}`,
+      url: `${params.runtimeOrigin ?? params.serverUrl}/v2/sessions/${encodeURIComponent(params.sessionId)}`,
+      ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
       init: {
         method: 'GET',
         headers: {
@@ -119,6 +121,7 @@ async function fetchSessionCryptoContext(params: Readonly<{
 export async function resolveScopedSessionCryptoContext(params: Readonly<{
   serverId: string;
   serverUrl: string;
+  runtimeOrigin?: string;
   token: string;
   sessionId: string;
   decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
@@ -143,6 +146,7 @@ export async function resolveScopedSessionCryptoContext(params: Readonly<{
   return await sessionCryptoContextResolutions.run(keyCacheKey, async () => {
     const context = await fetchSessionCryptoContext({
       serverUrl: params.serverUrl,
+      ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
       token,
       sessionId,
       decryptEncryptionKey: params.decryptEncryptionKey,

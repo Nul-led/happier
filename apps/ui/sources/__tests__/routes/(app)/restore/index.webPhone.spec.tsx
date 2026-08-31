@@ -3,13 +3,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import {
     installRestoreRouteCommonModuleMocks,
-    resetRestoreRouteTestState,
 } from './restoreRouteTestHelpers';
 
 type ReactActEnvironmentGlobal = typeof globalThis & {
     IS_REACT_ACT_ENVIRONMENT?: boolean;
 };
 (globalThis as ReactActEnvironmentGlobal).IS_REACT_ACT_ENVIRONMENT = true;
+
+const restoreRouteIngressState = vi.hoisted(() => ({
+    pairingLink: null as string | null,
+    scannerProps: null as Record<string, unknown> | null,
+}));
 
 installRestoreRouteCommonModuleMocks({
     reactNative: async () => {
@@ -29,6 +33,14 @@ installRestoreRouteCommonModuleMocks({
             },
             useWindowDimensions: () => ({ width: 360, height: 800, scale: 2, fontScale: 1 }),
         });
+    },
+    router: async () => {
+        const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+        return createExpoRouterMock({
+            params: restoreRouteIngressState.pairingLink
+                ? { pairingLink: restoreRouteIngressState.pairingLink }
+                : {},
+        }).module;
     },
 });
 
@@ -54,13 +66,17 @@ vi.mock('@/components/account/restore/RestoreQrView', () => ({
 }));
 
 vi.mock('@/components/account/restore/RestoreScanComputerQrView', () => ({
-    RestoreScanComputerQrView: () => React.createElement('div', { 'data-testid': 'RestoreScanComputerQrView' }),
+    RestoreScanComputerQrView: (props: Record<string, unknown>) => {
+        restoreRouteIngressState.scannerProps = props;
+        return React.createElement('div', { 'data-testid': 'RestoreScanComputerQrView' });
+    },
 }));
 
 afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    resetRestoreRouteTestState();
+    restoreRouteIngressState.pairingLink = null;
+    restoreRouteIngressState.scannerProps = null;
 });
 
 describe('/restore (web phone)', () => {
@@ -74,5 +90,23 @@ describe('/restore (web phone)', () => {
         await flushHookEffects();
         const scanner = screen.findAllByProps({ 'data-testid': 'RestoreScanComputerQrView' });
         expect(scanner).toHaveLength(1);
+    });
+
+    it('passes a routed V2 link unchanged to the embedded restore owner', async () => {
+        restoreRouteIngressState.pairingLink = 'happier:///pair?v=2&payload=opaque';
+        vi.doMock('expo-router', async () => {
+            const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+            return createExpoRouterMock({
+                params: { pairingLink: restoreRouteIngressState.pairingLink! },
+            }).module;
+        });
+        vi.resetModules();
+        const { default: Screen } = await import('@/app/(app)/restore/index');
+
+        await renderScreen(<Screen />);
+
+        expect(restoreRouteIngressState.scannerProps?.initialPairingLink).toBe(
+            restoreRouteIngressState.pairingLink,
+        );
     });
 });

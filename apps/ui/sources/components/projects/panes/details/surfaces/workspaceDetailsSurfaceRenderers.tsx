@@ -25,6 +25,10 @@ import { resolveLocalServicePreviewPlatform } from '@/sync/domains/local/service
 import type { WorkspaceScopeBase } from '@/sync/domains/workspaces/workspaceScope';
 import type { PluginUiDestinationRuntimeFormFactorV1 } from '@happier-dev/protocol/plugins/ui';
 import type { PluginUiProjectionPhase } from '@/sync/domains/plugins/ui/usePluginUiProjectionCurrentness';
+import {
+    readWorkspaceSyncConflictDetailsResource,
+    WorkspaceSyncConflictDetailsView,
+} from '@/components/workspaces/sync/WorkspaceSyncConflictDetailsView';
 
 type WorkspaceDetailsOpenFile = (path: string, intent?: 'default' | 'pinned') => void;
 
@@ -121,6 +125,16 @@ export function createWorkspaceDetailsSurfaceRenderers(
         mount: pluginDetailsDestinationMount,
     });
     return [
+        {
+            id: 'workspace-sync-conflicts',
+            owner: 'workspace-sync',
+            order: -10,
+            canRender: (input) => readWorkspaceSyncConflictDetailsResource(input.tab.resource) !== null,
+            render: (input) => {
+                const resource = readWorkspaceSyncConflictDetailsResource(input.tab.resource);
+                return resource ? <WorkspaceSyncConflictDetailsView resource={resource} /> : null;
+            },
+        },
         {
             id: 'workspace-info',
             owner: 'workspace',

@@ -244,7 +244,6 @@ import { migratePendingNotificationNavScopes } from './domains/pending/pendingNo
 import { migratePendingSetupIntentScopes } from './domains/pending/pendingSetupIntent';
 import { migratePendingTerminalConnectScopes } from './domains/pending/pendingTerminalConnect';
 import type { SettingsAnalyticsSource } from '@/track/settingsAnalytics/types';
-import { config } from '@/config';
 import { log } from '@/log';
 import { scmStatusSync } from '@/scm/scmStatusSync';
 import { ingestWorkspaceMutationMessages } from '@/scm/refresh/workspaceMutationIngestionRuntime';
@@ -420,7 +419,7 @@ import {
     type ServerAccountSessionRequestAuthority,
     createSessionRequestForResolvedServerScope,
     createSessionRequestWithServerScope,
-    resolveSessionRequestForServerAccountScope,
+    runWithSessionRequestAuthorityForServerAccountScope,
 } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
 import { resolveServerScopedSessionContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedSessionContext';
 import { sessionRpcWithPreferredSessionScope } from '@/sync/runtime/orchestration/serverScopedRpc/sessionRpcWithPreferredSessionScope';
@@ -444,7 +443,11 @@ import {
 } from './engine/artifacts/syncArtifacts';
 import { fetchAndApplyFeed, handleNewFeedPostUpdate, handleRelationshipUpdatedSocketUpdate, handleTodoKvBatchUpdate } from './engine/social/syncFeed';
 import { fetchAndApplyFriends } from './engine/social/syncFriends';
-import { fetchAndApplyProfile, fetchHomeNotificationSettings, handleUpdateAccountSocketUpdate, registerPushTokenIfAvailable } from './engine/account/syncAccount';
+import {
+    fetchAndApplyProfile,
+    handleUpdateAccountSocketUpdate,
+    schedulePushTokenReconciliation,
+} from './engine/account/syncAccount';
 import { buildMachineFromMachineActivityEphemeralUpdate, buildUpdatedMachineFromSocketUpdate, fetchAndApplyMachines, type MachineDataKeyCacheEntry } from './engine/machines/syncMachines';
 import { fetchAndApplyAutomationRuns, fetchAndApplyAutomations } from './engine/automations/syncAutomations';
 import {
@@ -507,6 +510,7 @@ import {
     type SessionMetadataInactiveModelIntentExpectationV1,
     type AutomationV3ClearRunHistoryResponse,
     type AutomationV3Settings,
+    type AccountSettingMutationV1,
 } from '@happier-dev/protocol';
 import { serverFetch } from './http/client';
 import {
@@ -1209,7 +1213,6 @@ class Sync {
     private profileSync: InvalidateSync;
     private purchasesSync: InvalidateSync;
     private machinesSync: InvalidateSync;
-    private pushTokenSync: InvalidateSync;
     private nativeUpdateSync: InvalidateSync;
     private artifactsSync: InvalidateSync;
     private friendsSync: InvalidateSync;
@@ -1219,6 +1222,11 @@ class Sync {
     private pendingOutboxOperationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
     private todosSync: InvalidateSync;
     private automationsSync: InvalidateSync;
+    // Traversal identity is only an in-process write fence. The store owns the
+    // corresponding acceptance check; this owner keeps the token alongside
+    // each in-flight reader so an older response cannot overwrite it later.
+    private automationDefinitionTraversalToken: number | null = null;
+    private automationRunTraversalTokensByAutomationId = new Map<string, number>();
     private accountPetsSync: InvalidateSync;
     private pluginAvailabilitySync: InvalidateSync;
     private readonly pluginAvailabilityProjectionHydrator =
@@ -1424,13 +1432,6 @@ class Sync {
                 replacePluginAccountAvailabilityProjection(projection);
             }, { onError, onSuccess, onRetry, pause, backoff, shouldRetry });
 
-          const registerPushToken = async () => {
-              if (__DEV__ && config.enableDevPushTokenRegistration !== true) {
-                  return;
-              }
-              await this.registerPushToken();
-          }
-            this.pushTokenSync = new InvalidateSync(registerPushToken, { pause, backoff, shouldRetry });
             this.activityAccumulator = new ActivityUpdateAccumulator(
                 this.flushActivityUpdates.bind(this),
                 this.syncTuning.activityUpdateDebounceMs,
@@ -2519,6 +2520,7 @@ class Sync {
                     tag: 'Sync.onSessionVisible.deferredSessionStateHydration',
                 });
             }
+            this.replayDeferredMessagesFetch(sessionId);
             this.getOrCreateMessagesSync(sessionId).invalidateCoalesced();
 
             // C6/D3: reopening a session is a reactive, list-independent bottom arrival. Drain any
@@ -2646,6 +2648,7 @@ class Sync {
                 scope,
                 activeRequest: (path, init) => apiSocket.request(path, init),
             });
+            try {
             if (
                 authority.context.token !== credentials.token
                 || !areServerAccountScopesEqual(getActiveServerAccountScope(), scope)
@@ -2663,6 +2666,9 @@ class Sync {
                 },
                 authority,
             });
+            } finally {
+                await authority.release?.();
+            }
         };
 
         ensureSessionVisibleForMessageRoute = async (
@@ -2861,6 +2867,7 @@ class Sync {
 
             const result = await inFlight;
             if (result.kind === 'available' && !options?.authority) {
+                this.replayDeferredMessagesFetch(normalized);
                 this.getOrCreateMessagesSync(normalized).invalidateCoalesced();
             }
             return result;
@@ -3547,17 +3554,17 @@ class Sync {
 
         const run = async (attempt: number): Promise<void> => {
             try {
-                const request = await resolveSessionRequestForServerAccountScope({
+                await runWithSessionRequestAuthorityForServerAccountScope({
                     scope: params.outboxScope,
                     activeRequest: this.createSessionRequest(params.sessionId),
-                });
+                }, async (authority) => {
                 const serverWireMode = resolvePendingInputServerWireMode(
                     await getServerFeaturesSnapshot({ serverId: params.outboxScope.serverId }),
                 );
                 const result = await retryPendingOutboxOperationV2({
                     sessionId: params.sessionId,
                     localId: params.localId,
-                    request,
+                    request: authority.request,
                     outboxScope: params.outboxScope,
                     serverWireMode,
                 });
@@ -3570,6 +3577,7 @@ class Sync {
                     return;
                 }
                 scheduleRetryWithBackoff(attempt);
+                });
             } catch (error) {
                 if (isTerminalAuthError(error)) {
                     recordTerminalAuthSyncError(error);
@@ -3601,7 +3609,7 @@ class Sync {
         requestedAction: PendingRequestedActionV1,
     ): Promise<void> {
         assertValidPendingMessageId(localId);
-        const { outboxScope, request } = await this.resolvePendingQueueOwnerContext(sessionId);
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request }) => {
         await updatePendingRequestedActionV2({
             sessionId,
             localId,
@@ -3609,9 +3617,10 @@ class Sync {
             request,
             outboxScope,
         });
+        });
     }
 
-    isSessionTargetRemoteToActiveServer(sessionId: string): boolean {
+    isSessionTargetRemoteToActiveServer = (sessionId: string): boolean => {
         const preferredServerId = resolvePreferredServerIdForSessionId(sessionId);
         const activeServerId = getActiveServerSnapshot().serverId;
         return Boolean(preferredServerId && !areServerProfileIdentifiersEquivalent(preferredServerId, activeServerId));
@@ -4233,10 +4242,7 @@ class Sync {
         ) {
             return;
         }
-        const { outboxScope, request, isCurrent, serverWireMode } = await this.resolvePendingQueueOwnerContext(
-            sessionId,
-            expectedOutboxScope,
-        );
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, isCurrent, serverWireMode }) => {
         if (
             expectedOutboxScope
             && !areServerAccountScopesEqual(outboxScope, expectedOutboxScope)
@@ -4255,6 +4261,7 @@ class Sync {
             outboxScope,
             isOutboxScopeCurrent: isCurrent,
         });
+        }, expectedOutboxScope);
     }
 
     private rearmPendingOutboxForActiveScope = (): Promise<void> => {
@@ -4312,7 +4319,7 @@ class Sync {
         terminal?: true;
         externalHandoffClaimed?: true;
     }>> {
-        const { outboxScope, request, serverWireMode } = await this.resolvePendingQueueOwnerContext(sessionId);
+        return await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, serverWireMode }) => {
         if (options?.localId != null && readPendingLocalId(options.localId) === null) {
             throw new Error('Pending localId must not be blank');
         }
@@ -4344,6 +4351,7 @@ class Sync {
             this.schedulePendingOutboxOperationRetry({ sessionId, localId: result.localId, outboxScope });
         }
         return result;
+        });
     }
 
     private async resolvePendingQueueOwnerContext(
@@ -4354,20 +4362,29 @@ class Sync {
         request: (path: string, init?: RequestInit) => Promise<Response>;
         isCurrent: () => boolean | Promise<boolean>;
         serverWireMode: PendingInputServerWireMode;
+        release: () => Promise<void>;
     }>> {
         type PendingQueueOwner = Readonly<{
             outboxScope: ServerAccountScope;
             request: (path: string, init?: RequestInit) => Promise<Response>;
             isCurrent: () => boolean | Promise<boolean>;
+            release: () => Promise<void>;
         }>;
         const withServerWireMode = async (
             owner: PendingQueueOwner,
-        ): Promise<PendingQueueOwner & Readonly<{ serverWireMode: PendingInputServerWireMode }>> => ({
-            ...owner,
-            serverWireMode: resolvePendingInputServerWireMode(
-                await getServerFeaturesSnapshot({ serverId: owner.outboxScope.serverId }),
-            ),
-        });
+        ): Promise<PendingQueueOwner & Readonly<{ serverWireMode: PendingInputServerWireMode }>> => {
+            try {
+                return {
+                    ...owner,
+                    serverWireMode: resolvePendingInputServerWireMode(
+                        await getServerFeaturesSnapshot({ serverId: owner.outboxScope.serverId }),
+                    ),
+                };
+            } catch (error) {
+                await owner.release();
+                throw error;
+            }
+        };
         if (expectedActiveScope) {
             const assertCapturedActiveScope = (): void => {
                 if (!areServerAccountScopesEqual(getActiveServerAccountScope(), expectedActiveScope)) {
@@ -4386,6 +4403,7 @@ class Sync {
                     getActiveServerAccountScope(),
                     expectedActiveScope,
                 ),
+                release: async () => undefined,
             });
         }
         const activeRequest = this.createSessionRequest(sessionId);
@@ -4416,6 +4434,7 @@ class Sync {
                 outboxScope: activeOutboxScope,
                 request: fenceActiveRequest(activeOutboxScope),
                 isCurrent: () => areServerAccountScopesEqual(getActiveServerAccountScope(), activeOutboxScope),
+                release: async () => undefined,
             });
         }
         const context = await resolveServerScopedSessionContext({
@@ -4427,6 +4446,7 @@ class Sync {
                 outboxScope,
                 request: fenceActiveRequest(outboxScope),
                 isCurrent: () => areServerAccountScopesEqual(getActiveServerAccountScope(), outboxScope),
+                release: async () => undefined,
             });
         }
         const outboxScope = createServerAccountScope(context.targetServerId, context.targetAccountId);
@@ -4436,6 +4456,7 @@ class Sync {
         return await withServerWireMode({
             outboxScope,
             request: createSessionRequestForResolvedServerScope({ context, activeRequest }),
+            release: context.release ?? (async () => undefined),
             isCurrent: async () => {
                 const currentPreferredServerId = resolvePreferredServerIdForSessionId(sessionId);
                 if (
@@ -4443,16 +4464,35 @@ class Sync {
                     || !areServerProfileIdentifiersEquivalent(currentPreferredServerId, outboxScope.serverId)
                 ) return false;
                 const currentContext = await resolveServerScopedSessionContext({ serverId: currentPreferredServerId });
+                try {
                 const currentScope = currentContext.scope === 'active'
                     ? getActiveServerAccountScope()
                     : createServerAccountScope(currentContext.targetServerId, currentContext.targetAccountId);
                 return areServerAccountScopesEqual(currentScope, outboxScope);
+                } finally {
+                    if (currentContext.scope === 'scoped') await currentContext.release?.();
+                }
             },
         });
     }
 
+    private async withPendingQueueOwnerContext<TResult>(
+        sessionId: string,
+        operation: (
+            owner: Awaited<ReturnType<Sync['resolvePendingQueueOwnerContext']>>,
+        ) => Promise<TResult>,
+        expectedActiveScope?: ServerAccountScope,
+    ): Promise<TResult> {
+        const owner = await this.resolvePendingQueueOwnerContext(sessionId, expectedActiveScope);
+        try {
+            return await operation(owner);
+        } finally {
+            await owner.release();
+        }
+    }
+
     async retryPendingMessageSend(sessionId: string, localId: string): Promise<void> {
-        const { outboxScope, request, serverWireMode } = await this.resolvePendingQueueOwnerContext(sessionId);
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, serverWireMode }) => {
         const pending = storage.getState().sessionPending[sessionId]?.messages?.find((message) =>
             isPendingOutboxProjectionForIdentity(message, { sessionId, localId, outboxScope })
         );
@@ -4474,6 +4514,7 @@ class Sync {
             if (isTerminalAuthError(error)) recordTerminalAuthSyncError(error);
             setPendingMessageSendState(sessionId, localId, 'failed', outboxScope);
         }
+        });
     }
 
     async updatePendingMessage(
@@ -4492,8 +4533,7 @@ class Sync {
             }>;
         }>,
     ): Promise<PendingMessageComposerAdmissionAcceptedFactV1 | undefined> {
-        const { outboxScope, request } = await this.resolvePendingQueueOwnerContext(sessionId);
-        return await updatePendingMessageV2({
+        return await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request }) => await updatePendingMessageV2({
             sessionId,
             pendingId,
             text,
@@ -4505,16 +4545,17 @@ class Sync {
             updateArtifact: (artifact) => storage.getState().updateArtifact(artifact),
             request,
             outboxScope,
-        });
+        }));
     }
 
     async deletePendingMessage(sessionId: string, pendingId: string): Promise<void> {
-        const { outboxScope, request } = await this.resolvePendingQueueOwnerContext(sessionId);
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request }) => {
         await deletePendingMessageV2({
             sessionId,
             pendingId,
             request,
             outboxScope,
+        });
         });
     }
 
@@ -4523,7 +4564,7 @@ class Sync {
         pendingId: string,
         opts?: { reason?: 'switch_to_local' | 'manual' }
     ): Promise<void> {
-        const { outboxScope, request, isCurrent } = await this.resolvePendingQueueOwnerContext(sessionId);
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, isCurrent }) => {
         await discardPendingMessageV2({
             sessionId,
             pendingId,
@@ -4533,10 +4574,11 @@ class Sync {
             outboxScope,
             isOutboxScopeCurrent: isCurrent,
         });
+        });
     }
 
     async dismissPendingDelivery(sessionId: string, pendingId: string): Promise<void> {
-        const { outboxScope, request, isCurrent } = await this.resolvePendingQueueOwnerContext(sessionId);
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, isCurrent }) => {
         await dismissPendingDeliveryV2({
             sessionId,
             pendingId,
@@ -4545,6 +4587,7 @@ class Sync {
             outboxScope,
             isOutboxScopeCurrent: isCurrent,
         });
+        });
     }
 
     async blockPendingDelivery(
@@ -4552,7 +4595,7 @@ class Sync {
         pendingId: string,
         reason: PendingDeliveryBlockedReason,
     ): Promise<void> {
-        const { outboxScope, request, isCurrent } = await this.resolvePendingQueueOwnerContext(sessionId);
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, isCurrent }) => {
         await blockPendingDeliveryV2({
             sessionId,
             pendingId,
@@ -4562,10 +4605,11 @@ class Sync {
             outboxScope,
             isOutboxScopeCurrent: isCurrent,
         });
+        });
     }
 
     async restoreDiscardedPendingMessage(sessionId: string, pendingId: string): Promise<void> {
-        const { outboxScope, request, isCurrent } = await this.resolvePendingQueueOwnerContext(sessionId);
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, isCurrent }) => {
         await restoreDiscardedPendingMessageV2({
             sessionId,
             pendingId,
@@ -4574,22 +4618,22 @@ class Sync {
             outboxScope,
             isOutboxScopeCurrent: isCurrent,
         });
+        });
     }
 
     async sendPendingDeliveryAsNew(sessionId: string, pendingId: string): Promise<string> {
-        const { outboxScope, request, isCurrent } = await this.resolvePendingQueueOwnerContext(sessionId);
-        return await sendPendingDeliveryAsNewV2({
+        return await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, isCurrent }) => await sendPendingDeliveryAsNewV2({
             sessionId,
             pendingId,
             encryption: this.encryption,
             request,
             outboxScope,
             isOutboxScopeCurrent: isCurrent,
-        });
+        }));
     }
 
     async markPendingDeliveryHandled(sessionId: string, pendingId: string): Promise<void> {
-        const { outboxScope, request, isCurrent } = await this.resolvePendingQueueOwnerContext(sessionId);
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, isCurrent }) => {
         await markPendingDeliveryHandledV2({
             sessionId,
             pendingId,
@@ -4598,10 +4642,11 @@ class Sync {
             outboxScope,
             isOutboxScopeCurrent: isCurrent,
         });
+        });
     }
 
     async deleteDiscardedPendingMessage(sessionId: string, pendingId: string): Promise<void> {
-        const { outboxScope, request, isCurrent } = await this.resolvePendingQueueOwnerContext(sessionId);
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, isCurrent }) => {
         await deleteDiscardedPendingMessageV2({
             sessionId,
             pendingId,
@@ -4610,10 +4655,11 @@ class Sync {
             outboxScope,
             isOutboxScopeCurrent: isCurrent,
         });
+        });
     }
 
     async reorderPendingMessages(sessionId: string, orderedLocalIds: string[]): Promise<void> {
-        const { outboxScope, request, isCurrent } = await this.resolvePendingQueueOwnerContext(sessionId);
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, isCurrent }) => {
         const canonicalOrderedLocalIds = orderedLocalIds.map((pendingId) =>
             resolvePendingMessageProjectionLocalIdV2(sessionId, pendingId, outboxScope)
         );
@@ -4624,6 +4670,7 @@ class Sync {
             request,
             outboxScope,
             isOutboxScopeCurrent: isCurrent,
+        });
         });
     }
 
@@ -4649,7 +4696,7 @@ class Sync {
      * must re-run it immediately instead of waiting for the next bootstrap or resume.
      */
     onPushPermissionGranted = () => {
-        this.pushTokenSync.invalidate();
+        schedulePushTokenReconciliation();
     }
 
     refreshProfile = async () => {
@@ -5417,7 +5464,6 @@ class Sync {
                     await runTasksWithLimit(
                         [
                             () => invalidateBounded(this.purchasesSync, this.syncTuning.resumeQuickInvalidateTimeoutMs),
-                            () => invalidateBounded(this.pushTokenSync, this.syncTuning.resumeQuickInvalidateTimeoutMs),
                             () => invalidateBounded(this.nativeUpdateSync, this.syncTuning.resumeQuickInvalidateTimeoutMs),
                         ],
                         this.syncTuning.resumeConcurrencyLimit
@@ -5482,7 +5528,6 @@ class Sync {
                   () => invalidateBounded(this.friendsSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
                   () => invalidateBounded(this.friendRequestsSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
                   () => invalidateBounded(this.feedSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
-                  () => invalidateBounded(this.pushTokenSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
                   () => invalidateBounded(this.nativeUpdateSync, this.syncTuning.invalidateSyncAwaitTimeoutMs),
               ],
               this.syncTuning.resumeConcurrencyLimit
@@ -5616,20 +5661,27 @@ class Sync {
 
     /**
      * Continue the one Account-scoped Automation definition window. The
-     * store's exact-cursor writer rejects a response if refresh/account
-     * movement replaced that continuation while this request was in flight.
+     * store's exact-cursor-and-traversal writer rejects a response if
+     * refresh/account movement replaced that continuation while this request
+     * was in flight.
      */
     public loadMoreAutomations = async (expectedCursor: string): Promise<{ nextCursor: string | null }> => {
         const shouldContinue = this.createServerScopeGuard();
-        return await fetchAndApplyAutomations({
+        const expectedTraversalToken = this.automationDefinitionTraversalToken;
+        const result = await fetchAndApplyAutomations({
             credentials: this.credentials,
             cursor: expectedCursor,
+            traversalToken: expectedTraversalToken ?? undefined,
             shouldContinue,
             applyAutomations: (automations, nextCursor) =>
                 storage.getState().applyAutomations(automations, nextCursor),
-            appendAutomations: (cursor, automations, nextCursor) =>
-                storage.getState().appendAutomations(cursor, automations, nextCursor),
+            appendAutomations: (cursor, traversalToken, automations, nextCursor) =>
+                storage.getState().appendAutomations(cursor, traversalToken, automations, nextCursor),
         });
+        if (this.automationDefinitionTraversalToken === expectedTraversalToken) {
+            this.automationDefinitionTraversalToken = result.traversalToken;
+        }
+        return { nextCursor: result.nextCursor };
     }
 
     /** Account-scoped Automation settings stay direct: their server owner is not another UI cache. */
@@ -5690,17 +5742,29 @@ class Sync {
             throw new Error('Not authenticated');
         }
         const shouldContinue = this.createServerScopeGuard();
-
-        return await fetchAndApplyAutomationRuns({
+        const expectedTraversalToken = cursor
+            ? this.automationRunTraversalTokensByAutomationId.get(automationId) ?? null
+            : null;
+        const result = await fetchAndApplyAutomationRuns({
             credentials: this.credentials,
             automationId,
             limit,
             cursor,
+            traversalToken: expectedTraversalToken ?? undefined,
             shouldContinue,
             setAutomationRuns: (id, runs, nextCursor) => storage.getState().setAutomationRuns(id, runs, nextCursor),
-            appendAutomationRuns: (id, expectedCursor, runs, nextCursor) =>
-                storage.getState().appendAutomationRuns(id, expectedCursor, runs, nextCursor),
+            appendAutomationRuns: (id, expectedCursor, traversalToken, runs, nextCursor) =>
+                storage.getState().appendAutomationRuns(id, expectedCursor, traversalToken, runs, nextCursor),
         });
+        if (cursor && this.automationRunTraversalTokensByAutomationId.get(automationId) !== expectedTraversalToken) {
+            return { nextCursor: result.nextCursor };
+        }
+        if (result.traversalToken === null) {
+            this.automationRunTraversalTokensByAutomationId.delete(automationId);
+        } else {
+            this.automationRunTraversalTokensByAutomationId.set(automationId, result.traversalToken);
+        }
+        return { nextCursor: result.nextCursor };
     }
 
     /** One plural writer serves every Automation and Session authoring surface. */
@@ -6091,17 +6155,18 @@ class Sync {
 
     private fetchAutomations = async () => {
         const shouldContinue = this.createServerScopeGuard();
-        await fetchAndApplyAutomations({
+        const result = await fetchAndApplyAutomations({
             credentials: this.credentials,
             shouldContinue,
             applyAutomations: (automations, nextCursor) =>
                 storage.getState().applyAutomations(automations, nextCursor),
-            appendAutomations: (cursor, automations, nextCursor) =>
-                storage.getState().appendAutomations(cursor, automations, nextCursor),
+            appendAutomations: (cursor, traversalToken, automations, nextCursor) =>
+                storage.getState().appendAutomations(cursor, traversalToken, automations, nextCursor),
             loadedAutomationRunIds: Object.keys(storage.getState().automationRunsByAutomationId),
             refreshAutomationRunsWindow: (automationId, runs, nextCursor) =>
                 storage.getState().refreshAutomationRunsWindow(automationId, runs, nextCursor),
         });
+        this.automationDefinitionTraversalToken = result.traversalToken;
     }
 
     private fetchAccountPets = async () => {
@@ -6200,12 +6265,9 @@ class Sync {
         });
     }
 
-    /**
-     * Applies a functional account-settings update against every canonical CAS
-     * winner. Unlike applySettings, this never replays a stale whole subtree.
-     */
-    public mutateAccountSettings = async (
-        mutate: (raw: Readonly<Record<string, unknown>>) => Record<string, unknown>,
+    /** Applies immutable top-level set/reset operations across CAS conflicts. */
+    public applyAccountSettingsMutation = async (
+        mutation: AccountSettingMutationV1,
     ): Promise<void> => {
         const credentials = this.credentials;
         if (!credentials) throw new Error('Account settings mutation requires an authenticated account');
@@ -6229,7 +6291,7 @@ class Sync {
             settingsSecretsKey,
             settingsSecretsReadKeys,
             clearPendingSettings: () => {},
-            serverSettingsMutation: mutate,
+            accountSettingsMutation: mutation,
         });
     }
 
@@ -6423,7 +6485,14 @@ class Sync {
 
     private replayDeferredMessagesFetch(sessionId: string): void {
         if (this.deferredMessagesFetchSessionIds.delete(sessionId)) {
-            this.getOrCreateMessagesSync(sessionId).invalidateCoalesced();
+            // A deferred fetch may have been discovered by the currently running
+            // invalidation cycle (for example while route hydration resolves the
+            // session's owner server). `invalidateCoalesced()` intentionally does
+            // nothing while a cycle is already active, so it can strand the deferred
+            // transcript forever. Use the normal invalidation entry point here: it
+            // schedules the required post-run cycle when the first attempt is active,
+            // while retaining coalescing when no attempt has started yet.
+            this.getOrCreateMessagesSync(sessionId).invalidate();
         }
     }
 
@@ -6537,11 +6606,10 @@ class Sync {
         );
         if (!externalSessionLink && this.hasFetchedSessionsSnapshotForActiveServer && !this.isSessionKnownOnResolvedOwnerServer(sessionId)) {
             // Do not fetch messages when we cannot resolve the session to either the active server
-            // or a locally known owner server. This avoids cross-server message fetches while keeping
-            // the UI state non-destructive during server-switch races.
-            if (storage.getState().sessionMessages[sessionId]?.isLoaded !== true) {
-                storage.getState().applyMessagesLoaded(sessionId);
-            }
+            // or a locally known owner server. This avoids cross-server message fetches. A
+            // deep-link session can be transiently unresolved while its route row is committed;
+            // defer that attempt instead of publishing a successful empty transcript.
+            this.deferredMessagesFetchSessionIds.add(sessionId);
             return;
         }
 
@@ -6573,9 +6641,11 @@ class Sync {
           const requestMessages = this.createSessionMessagesRequest(sessionId);
           const sessionEncryptionMode = session?.encryptionMode === 'plain' ? 'plain' : 'e2ee';
 
-          const transcriptAuthority = this.resolveTranscriptAuthority(session, externalSessionLink);
+        const transcriptAuthority = this.resolveTranscriptAuthority(session, externalSessionLink);
           const authorityKey = externalSessionTranscriptAuthorityKey(transcriptAuthority);
           const previousAuthorityKey = this.transcriptAuthorityKeyBySessionId.get(sessionId) ?? null;
+          const loadedTranscript = storage.getState().sessionMessages[sessionId];
+          const hasMaterializedMessages = Object.keys(loadedTranscript?.messagesById ?? {}).length > 0;
 
           if (this.isExternalSessionTranscriptAuthorityFenced(sessionId, authorityKey)) {
               storage.getState().setSessionTranscriptLoadIssue(sessionId, {
@@ -6594,7 +6664,11 @@ class Sync {
           }
 
           if (transcriptAuthority.kind === 'live_agent' && externalSessionLink) {
-              if (!hasLoadedMessages) {
+              // A prior interrupted/legacy open can leave the store marked loaded while
+              // materializing zero rows. Treat that state as cold for external transcripts:
+              // catch-up reads only deltas and cannot recover the initial window, leaving the
+              // reader with the blank list that a target jump appears to fix.
+              if (!hasLoadedMessages || !hasMaterializedMessages) {
                   const didApplyCurrentAuthority = await this.fetchExternalSessionMessages(sessionId, externalSessionLink);
                   if (didApplyCurrentAuthority) {
                       this.transcriptAuthorityKeyBySessionId.set(sessionId, authorityKey);
@@ -6634,7 +6708,7 @@ class Sync {
                   )
               )
           ) {
-              if (!hasLoadedMessages || previousAuthorityKey !== authorityKey) {
+              if (!hasLoadedMessages || !hasMaterializedMessages || previousAuthorityKey !== authorityKey) {
                   const didCommit = await this.replaceWithServerTranscript(session, transcriptAuthority);
                   if (didCommit) {
                       storage.getState().setSessionTranscriptLoadIssue(sessionId, null);
@@ -6644,7 +6718,9 @@ class Sync {
               return;
           }
 
-          if (!hasLoadedMessages) {
+          // A previous interrupted open can leave a non-empty session hint with a loaded,
+          // zero-row cache. Treat that as cold so catch-up does not preserve the blank projection.
+          if (!hasLoadedMessages || (!hasMaterializedMessages && sessionSeqHint > 0)) {
               this.deferredForwardLoadingSessions.delete(sessionId);
               await fetchAndApplyMessages({
                   sessionId,
@@ -8242,15 +8318,6 @@ class Sync {
           }
       }
 
-      private registerPushToken = async () => {
-          log.log('registerPushToken');
-          await registerPushTokenIfAvailable({
-              credentials: this.credentials,
-              log,
-              getHomeAccountSettings: fetchHomeNotificationSettings,
-          });
-    }
-
     private subscribeToUpdates = () => {
         // Subscribe to message updates
         apiSocket.onMessage('update', this.handleUpdate.bind(this));
@@ -9377,6 +9444,7 @@ class Sync {
             scope,
             activeRequest: (path, init) => apiSocket.request(path, init),
         });
+        try {
         if (resolvedAuthority.context.token !== activeCredentials.token) {
             throw new Error('Voice transcript persistence server-account credentials changed');
         }
@@ -9478,6 +9546,9 @@ class Sync {
         this.commitAckedSessionMessage(input.sessionId, persisted.message, {
             advanceReadCursor: isTranscriptHistorySession,
         });
+        } finally {
+            await resolvedAuthority.release?.();
+        }
     };
 
     private commitAckedSessionMessage(

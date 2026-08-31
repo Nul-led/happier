@@ -44,6 +44,10 @@ import {
     SessionSubagentDetailsViewForPanel,
 } from '../SessionDetailsPanelDetailViews';
 import { renderSessionSurfaceTab } from '../registry/sessionSurfaces';
+import {
+    readWorkspaceSyncConflictDetailsResource,
+    WorkspaceSyncConflictDetailsView,
+} from '@/components/workspaces/sync/WorkspaceSyncConflictDetailsView';
 
 type SessionDetailsOpenFile = (path: string, intent?: 'default' | 'pinned') => void;
 
@@ -167,6 +171,16 @@ export function createSessionDetailsSurfaceRenderers(
     });
 
     return [
+        {
+            id: 'session-workspace-sync-conflicts',
+            owner: 'workspace-sync',
+            order: -10,
+            canRender: (input) => readWorkspaceSyncConflictDetailsResource(input.tab.resource) !== null,
+            render: (input) => {
+                const resource = readWorkspaceSyncConflictDetailsResource(input.tab.resource);
+                return resource ? <WorkspaceSyncConflictDetailsView resource={resource} /> : null;
+            },
+        },
         {
             id: 'session-surface-registry',
             owner: 'session',

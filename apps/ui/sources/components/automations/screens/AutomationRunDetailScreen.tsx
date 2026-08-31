@@ -383,6 +383,8 @@ const automationRunHistoryEventLabels: Readonly<Record<string, () => string>> = 
 const automationRunHistoryReasonLabels: Readonly<Record<string, () => string>> = {
     cancelled_after_dispatch_permitted: () =>
         t('automations.detail.runMeta.historyReason.cancelled_after_dispatch_permitted'),
+    cancelled_while_running: () =>
+        t('automations.detail.runMeta.historyReason.cancelled_while_running'),
     dispatch_result_missing_after_lease_expiry: () =>
         t('automations.detail.runMeta.historyReason.dispatch_result_missing_after_lease_expiry'),
     automation_retired_after_lease_expiry: () =>
@@ -609,6 +611,12 @@ export function AutomationRunDetailScreen(): React.ReactElement {
     const handleCancel = React.useCallback(async () => {
         if (!runId) return;
         const request = { automationId, runId, generation: routeGeneration };
+        const confirmed = await Modal.confirm(
+            t('automations.detail.cancelRunConfirmTitle'),
+            t('automations.detail.cancelRunConfirmMessage'),
+            { cancelText: t('common.keepEditing'), confirmText: t('automations.detail.cancelRunConfirmButton'), destructive: true },
+        );
+        if (!confirmed || !isCurrentRoute(request.automationId, request.runId, request.generation)) return;
         try {
             setCancellingState({ generation: request.generation, value: true });
             await sync.cancelAutomationRun(request.runId);

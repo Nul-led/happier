@@ -137,6 +137,7 @@ vi.mock('@/components/sessions/transcript/transcriptRowActionVisibility', () => 
 }));
 
 vi.mock('@/agents/catalog/catalog', () => ({
+    AGENT_IDS: ['codex'],
     DEFAULT_AGENT_ID: 'codex',
     getAgentBehavior: () => ({ permissions: { footer: {} } }),
     getAgentCore: () => ({
@@ -724,6 +725,62 @@ describe('MessageView (structured meta)', { timeout: 60_000 }, () => {
         // This should fail until MessageView wires StructuredMessageBlock into its rendering.
         expect(screen.findAllByType(ReviewCommentsMessageCard as any)).toHaveLength(1);
     });
+
+    it.each(['user-text', 'agent-text'] as const)(
+        'renders persisted file and session references beside a structured-only %s message',
+        async (kind) => {
+            const { MessageView } = await import('./MessageView');
+            const message: any = {
+                kind,
+                id: `structured-references-${kind}`,
+                localId: `structured-references-${kind}`,
+                text: '@Checkout @src/foo.ts',
+                displayText: 'Review comments (1)',
+                isThinking: false,
+                meta: {
+                    happier: {
+                        kind: 'review_comments.v1',
+                        payload: {
+                            sessionId: 's1',
+                            comments: [{
+                                id: 'c1',
+                                filePath: 'src/foo.ts',
+                                source: 'file',
+                                body: 'Please refactor',
+                                createdAt: 1,
+                                anchor: { kind: 'fileLine', startLine: 12 },
+                                snapshot: {
+                                    selectedLines: ['const x = 1;'],
+                                    beforeContext: [],
+                                    afterContext: [],
+                                },
+                            }],
+                        },
+                    },
+                    happierStructuredInputV1: {
+                        v: 1,
+                        mentions: [{
+                            kind: 'happier.session',
+                            ref: 'session:sess-42',
+                            token: '@Checkout',
+                            label: 'Checkout',
+                        }, {
+                            kind: 'happier.file',
+                            ref: 'file:src/foo.ts',
+                            token: '@src/foo.ts',
+                        }],
+                    },
+                },
+            };
+
+            const screen = await renderScreen(
+                <MessageView message={message} metadata={null} sessionId="s1" />,
+            );
+
+            expect(screen.findByTestId('transcript-session-reference:sess-42')).not.toBeNull();
+            expect(screen.findByTestId('linked-workspace-file:src/foo.ts')).not.toBeNull();
+        },
+    );
 
     it('keeps structured review jump handlers stable across equivalent parent renders', async () => {
         const { MessageView } = await import('./MessageView');

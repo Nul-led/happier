@@ -116,12 +116,13 @@ export class RepoScmWorktreeService {
     async createWorktreeForMachinePath(input: Readonly<{
         machineId: string;
         path: string;
+        homeDir?: string | null;
         displayName?: string | null;
         baseRef?: string | null;
         branchMode?: 'new' | 'existing';
         serverId?: string | null;
     }>): Promise<ScmWorktreeCreateResponse> {
-        const request = resolveRepoScmMachinePathRequest({ machineId: input.machineId, path: input.path });
+        const request = resolveRepoScmMachinePathRequest(input);
         if (!request) {
             return {
                 success: false,
@@ -148,9 +149,10 @@ export class RepoScmWorktreeService {
         serverId?: string | null;
         machineId: string;
         path: string;
+        homeDir?: string | null;
         worktreePath: string;
     }>): Promise<ScmWorktreeRemoveResponse> {
-        const request = resolveRepoScmMachinePathRequest({ machineId: input.machineId, path: input.path });
+        const request = resolveRepoScmMachinePathRequest(input);
         if (!request) {
             return {
                 success: false,
@@ -175,8 +177,9 @@ export class RepoScmWorktreeService {
         serverId?: string | null;
         machineId: string;
         path: string;
+        homeDir?: string | null;
     }>): Promise<ScmWorktreePruneResponse> {
-        const request = resolveRepoScmMachinePathRequest({ machineId: input.machineId, path: input.path });
+        const request = resolveRepoScmMachinePathRequest(input);
         if (!request) {
             return {
                 success: false,

@@ -83,6 +83,74 @@ test('tauri MCP QA can switch the one-shot capture scenario to desktop-sidebar-c
     assert.equal(payload.plan.qaScenario?.script, 'scripts/qa/tauriDesktopSidebarChromeMcpQa.mjs');
 });
 
+test('tauri MCP QA can switch the one-shot loaded scenario to personal-home without inventing a default shared target', async () => {
+    const scriptsDir = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = join(scriptsDir, 'tauriMcpQa.mjs');
+
+    const { stdout } = await execFileAsync(process.execPath, [scriptPath, '--json', '--personal-home'], {
+        cwd: dirname(scriptsDir),
+        env: { ...process.env },
+        encoding: 'utf8',
+    });
+
+    const payload = JSON.parse(stdout);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.plan.keepRunning, false);
+    assert.equal(payload.plan.runWizard, false);
+    assert.equal(payload.plan.qaScenario?.id, 'personal-home');
+    assert.equal(payload.plan.qaScenario?.script, 'scripts/qa/tauriPersonalHomeMcpQa.mjs');
+    assert.equal(payload.plan.qaScenario?.envOverrides?.HAPPIER_STACK_STACK, undefined);
+    assert.equal(payload.plan.qaScenario?.envOverrides?.HAPPIER_STACK_TAURI_IDENTIFIER, undefined);
+});
+
+test('tauri MCP QA personal-home execution fails closed before launch without a dedicated runtime attestation', async () => {
+    const scriptsDir = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = join(scriptsDir, 'tauriMcpQa.mjs');
+    const module = await import(pathToFileURL(scriptPath).href);
+    const plan = await module.resolveTauriMcpQaPlan({ argv: ['--personal-home'], env: { ...process.env } });
+
+    assert.throws(
+        () => module.assertPersonalHomeQaLaunchIsolation({ plan, env: { ...process.env } }),
+        /dedicated OS user or VM/i,
+    );
+});
+
+test('tauri MCP QA personal-home execution accepts an exact stack-owned target only with explicit dedicated-runtime isolation', async () => {
+    const scriptsDir = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = join(scriptsDir, 'tauriMcpQa.mjs');
+    const module = await import(pathToFileURL(scriptPath).href);
+    const env = {
+        ...process.env,
+        HAPPIER_STACK_STACK: 'lane03-personal-home-qa',
+        HAPPIER_STACK_TAURI_IDENTIFIER: 'com.happier.stack.lane03-personal-home-qa',
+        HAPPIER_TAURI_PERSONAL_HOME_QA_DEDICATED_RUNTIME: '1',
+    };
+    const plan = await module.resolveTauriMcpQaPlan({ argv: ['--personal-home'], env });
+
+    assert.doesNotThrow(() => module.assertPersonalHomeQaLaunchIsolation({ plan, env }));
+});
+
+test('tauri MCP QA personal-home launch never reuses another attachable app and never injects a stack server', async () => {
+    const scriptsDir = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = join(scriptsDir, 'tauriMcpQa.mjs');
+    const module = await import(pathToFileURL(scriptPath).href);
+    const env = {
+        ...process.env,
+        HAPPIER_STACK_STACK: 'lane03-personal-home-qa',
+        HAPPIER_STACK_TAURI_IDENTIFIER: 'com.happier.stack.lane03-personal-home-qa',
+        HAPPIER_STACK_SERVER_PORT: '24610',
+    };
+    const plan = await module.resolveTauriMcpQaPlan({
+        argv: ['--personal-home'],
+        env,
+        runtimeStateOverride: { ports: { server: 24610 }, expo: { port: 8081, webPort: 8081 } },
+    });
+
+    assert.equal(module.shouldReuseAttachableTauriApp({ plan }), false);
+    assert.doesNotMatch(plan.devUrl, /[?&]server=/u);
+    assert.equal(plan.tauriDev.env?.HAPPIER_TAURI_WEB_RUNTIME_SERVER_URL, undefined);
+});
+
 test('tauri MCP QA desktop-sidebar-chrome scenario defaults to the canonical stack-owned desktop QA target when no stack env is provided', async () => {
     const scriptsDir = dirname(fileURLToPath(import.meta.url));
     const scriptPath = join(scriptsDir, 'tauriMcpQa.mjs');

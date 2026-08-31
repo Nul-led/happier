@@ -1,0 +1,490 @@
+import type { HomeConnectionDescriptorV1, SystemTaskResult } from '@happier-dev/protocol';
+import {
+    PersonalHomeCredentialsUnverifiedError,
+    PersonalHomeSignupClosureError,
+    runPersonalHomeBootstrap,
+    type PersonalHomeBootstrapDeps,
+    type PersonalHomeBootstrapResult,
+    type PersonalHomeSignupPolicyState,
+} from '@happier-dev/cli-common/firstPartyRuntime';
+import { readRelayRuntimeStatusData } from '@/components/settings/server/localControl/relayRuntimeStatus';
+
+export type PersonalHomeBootstrapTaskKind =
+    | 'relay.runtime.status.v1'
+    | 'relay.runtime.installOrUpdate.v1'
+    | 'relay.runtime.start.v1'
+    | 'relay.runtime.restart.v1';
+
+export type PersonalHomeBootstrapTaskOptions = Readonly<{
+    purpose?: Readonly<{
+        kind: 'personal-home';
+        canonicalServerUrl: string;
+    }>;
+    anonymousSignupEnabled?: boolean;
+}>;
+
+export type PersonalHomeEndpointSnapshot =
+    | Readonly<{
+        status: 'ready';
+        serverIdentityId: string;
+        storagePolicy: 'required_e2ee' | 'optional' | 'plaintext_only';
+        anonymousSignup: 'enabled' | 'disabled' | 'unknown';
+        /**
+         * Canonical Home descriptor observed at /v1/features. The probe owner
+         * already fail-closes on a descriptor whose homeServerIdentityId
+         * disagrees with the independently observed server identity.
+         */
+        homeConnectionDescriptor?: HomeConnectionDescriptorV1;
+    }>
+    | Readonly<{ status: 'unreachable' | 'unknown' }>;
+
+type TokenOnlyCredentials = Readonly<{ token: string }>;
+
+/**
+ * Explicit "Use this local Home" disposition for the existing-runtime decision. Recovery keeps
+ * the runtime's current storage policy and existing credentials; it never creates an account,
+ * fabricates secret material, or changes the focused Home.
+ */
+export type PersonalHomeExistingRuntimeDisposition = 'use-this-local-home';
+
+export type PersonalHomeBootstrapSystemTaskDeps = Readonly<{
+    runRelayTask: (
+        kind: PersonalHomeBootstrapTaskKind,
+        options: PersonalHomeBootstrapTaskOptions,
+    ) => Promise<SystemTaskResult | null>;
+    probeEndpoint: (endpoint: string) => Promise<PersonalHomeEndpointSnapshot>;
+    readCredentials: (input: Readonly<{
+        serverUrl: string;
+        serverIdentityId: string;
+    }>) => Promise<Readonly<{ token: string; secret?: string }> | null>;
+    createLocalAccount: (input: Readonly<{
+        endpoint: string;
+        canonicalServerUrl: string;
+        serverIdentityId: string;
+        /** Retained Home data permits only idempotent reuse of existing pending custody. */
+        resumePendingSeedOnly: boolean;
+    }>) => Promise<Readonly<{ token: string; secret?: string }>>;
+    hasPendingBootstrapSeed: (input: Readonly<{
+        serverUrl: string;
+        serverIdentityId: string;
+    }>) => Promise<boolean>;
+    persistCredentials: (input: Readonly<{
+        serverUrl: string;
+        serverIdentityId: string;
+        credentials: TokenOnlyCredentials;
+    }>) => Promise<boolean>;
+    verifyAuthenticatedAccess: (input: Readonly<{
+        endpoint: string;
+        token: string;
+    }>) => Promise<boolean>;
+    clearPendingBootstrapSeed: (input: Readonly<{
+        serverUrl: string;
+        serverIdentityId: string;
+    }>) => Promise<boolean>;
+    preflightCompletedProfile: (input: Readonly<{
+        canonicalServerUrl: string;
+        localServerUrl: string;
+        serverIdentityId: string;
+        source: 'desktop-personal-home';
+    }>) => void;
+    probeAnonymousSignupRefused: (input: Readonly<{
+        endpoint: string;
+    }>) => Promise<boolean>;
+    adoptCompletedProfile: (input: Readonly<{
+        canonicalServerUrl: string;
+        localServerUrl: string;
+        serverIdentityId: string;
+        /** Canonical descriptor from /v1/features; present only when identity-verified at completion. */
+        connectionDescriptor?: HomeConnectionDescriptorV1;
+        source: 'desktop-personal-home';
+    }>) => Promise<Readonly<{ id: string }>>;
+}>;
+
+export class PersonalHomeExistingRuntimeConflictError extends Error {
+    readonly code = 'personal_home_existing_runtime_conflict';
+
+    constructor() {
+        super('An existing local Home must be handled explicitly before Personal Home setup can continue.');
+        this.name = 'PersonalHomeExistingRuntimeConflictError';
+    }
+}
+
+class PersonalHomeSystemTaskError extends Error {
+    readonly code: string;
+
+    constructor(code: string, message: string) {
+        super(message);
+        this.name = 'PersonalHomeSystemTaskError';
+        this.code = code;
+    }
+}
+
+function normalizeUrl(value: unknown): string {
+    return String(value ?? '').trim().replace(/\/+$/u, '');
+}
+
+function readRelayStatusData(result: SystemTaskResult, fallbackUrl: string) {
+    if (!result.ok) {
+        throw new PersonalHomeSystemTaskError(result.error.code, result.error.message);
+    }
+    const decoded = readRelayRuntimeStatusData(result, { fallbackRelayUrl: fallbackUrl });
+    if (!decoded) {
+        throw new PersonalHomeSystemTaskError(
+            'invalid_relay_runtime_status',
+            'Personal Home runtime status returned an invalid result.',
+        );
+    }
+    return decoded;
+}
+
+function requireSuccessfulTask(result: SystemTaskResult | null, operation: string): SystemTaskResult {
+    if (!result) {
+        throw new PersonalHomeSystemTaskError(
+            'system_task_unavailable',
+            `${operation} is unavailable.`,
+        );
+    }
+    if (!result.ok) {
+        throw new PersonalHomeSystemTaskError(result.error.code, result.error.message);
+    }
+    return result;
+}
+
+function requireLoopbackPort(value: string): number {
+    let parsed: URL;
+    try {
+        parsed = new URL(value);
+    } catch {
+        throw new Error('Personal Home runtime did not provide a valid local origin.');
+    }
+    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/gu, '');
+    const port = Number(parsed.port);
+    if (
+        parsed.protocol !== 'http:'
+        || (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '::1')
+        || !Number.isInteger(port)
+        || port < 1
+        || port > 65_535
+        || parsed.username
+        || parsed.password
+        || parsed.pathname !== '/'
+        || parsed.search
+        || parsed.hash
+    ) {
+        throw new Error('Personal Home runtime must use a loopback HTTP origin with an explicit port.');
+    }
+    return port;
+}
+
+function observedPolicy(enabled: boolean | null): PersonalHomeSignupPolicyState {
+    return enabled === true ? 'enabled' : enabled === false ? 'disabled' : 'unknown';
+}
+
+function normalizeTokenOnlyCredentials(value: Readonly<{ token: string; secret?: string }> | null): TokenOnlyCredentials | null {
+    const token = String(value?.token ?? '').trim();
+    return token ? { token } : null;
+}
+
+async function requirePlainEndpoint(
+    deps: PersonalHomeBootstrapSystemTaskDeps,
+    endpoint: string,
+): Promise<Extract<PersonalHomeEndpointSnapshot, { status: 'ready' }>> {
+    const snapshot = await deps.probeEndpoint(endpoint);
+    if (snapshot.status !== 'ready') {
+        throw new Error('Personal Home endpoint is not ready yet.');
+    }
+    if (snapshot.storagePolicy !== 'plaintext_only') {
+        throw new PersonalHomeExistingRuntimeConflictError();
+    }
+    const serverIdentityId = String(snapshot.serverIdentityId ?? '').trim();
+    if (!serverIdentityId) {
+        throw new Error('Personal Home identity is unavailable.');
+    }
+    return snapshot;
+}
+
+/**
+ * The production composition caller. UI state invokes this one owner; every runtime mutation
+ * crosses the existing system-task boundary, while auth/storage/profile work is explicitly
+ * endpoint-scoped and never changes the focused Home.
+ */
+export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
+    deps: PersonalHomeBootstrapSystemTaskDeps;
+    initialServerUrl: string;
+    /** Pass 'use-this-local-home' only from the explicit existing-runtime decision action. */
+    existingRuntimeDisposition?: PersonalHomeExistingRuntimeDisposition;
+}>): Promise<PersonalHomeBootstrapResult> {
+    const initialTask = requireSuccessfulTask(
+        await input.deps.runRelayTask('relay.runtime.status.v1', {}),
+        'Personal Home runtime status',
+    );
+    const initialStatus = readRelayStatusData(initialTask, input.initialServerUrl);
+    const persistedPersonalHomeOrigin = initialStatus.purpose?.kind === 'personal-home'
+        ? normalizeUrl(initialStatus.purpose.canonicalServerUrl)
+        : null;
+    const retainedClassifiedPersonalHome = initialStatus.dataPresent
+        && !initialStatus.installed
+        && persistedPersonalHomeOrigin != null;
+    const selectedPort = requireLoopbackPort(
+        retainedClassifiedPersonalHome ? persistedPersonalHomeOrigin : initialStatus.relayUrl,
+    );
+    const selectedCanonicalServerUrl = `http://127.0.0.1:${selectedPort}`;
+
+    const existingRuntimeRecovery = input.existingRuntimeDisposition === 'use-this-local-home';
+
+    // An uninstalled runtime can still have a retained Personal Home database, files, or master
+    // secret. Never run the fresh install/account path over that data. Reuse the existing-runtime
+    // decision and generic Home recovery route instead of introducing another recovery state.
+    if (initialStatus.dataPresent && !initialStatus.installed && !retainedClassifiedPersonalHome) {
+        throw new PersonalHomeExistingRuntimeConflictError();
+    }
+    if (existingRuntimeRecovery && !initialStatus.installed && !retainedClassifiedPersonalHome) {
+        throw new PersonalHomeExistingRuntimeConflictError();
+    }
+
+    // Existing-runtime recovery validates the live runtime through read-only and lifecycle-only
+    // steps before any reclassification. Every failure below happens before install/update, so an
+    // unclassified runtime keeps its current purpose and no account/profile work ever starts.
+    let recoveryCredentials: TokenOnlyCredentials | null = null;
+    if (existingRuntimeRecovery && initialStatus.installed) {
+        const classifiedOrigin = initialStatus.purpose?.kind === 'personal-home'
+            ? normalizeUrl(initialStatus.purpose.canonicalServerUrl)
+            : null;
+        if (classifiedOrigin != null && classifiedOrigin !== selectedCanonicalServerUrl) {
+            // A classified Personal Home pointing at a different canonical origin is a different
+            // Home; adopting it here would move its authentication audience.
+            throw new PersonalHomeExistingRuntimeConflictError();
+        }
+        if (!initialStatus.healthy) {
+            // Lifecycle-only start for preflight. No purpose/signup options are sent, so an
+            // unclassified runtime stays unclassified even when the later preflight fails.
+            requireSuccessfulTask(
+                await input.deps.runRelayTask('relay.runtime.start.v1', {}),
+                'Personal Home runtime start',
+            );
+        }
+        const preflightEndpoint = await requirePlainEndpoint(input.deps, selectedCanonicalServerUrl);
+        recoveryCredentials = normalizeTokenOnlyCredentials(await input.deps.readCredentials({
+            serverUrl: selectedCanonicalServerUrl,
+            serverIdentityId: preflightEndpoint.serverIdentityId,
+        }));
+        if (!recoveryCredentials) throw new PersonalHomeCredentialsUnverifiedError();
+        if (!(await input.deps.verifyAuthenticatedAccess({
+            endpoint: selectedCanonicalServerUrl,
+            token: recoveryCredentials.token,
+        }))) {
+            throw new PersonalHomeCredentialsUnverifiedError();
+        }
+        try {
+            input.deps.preflightCompletedProfile({
+                canonicalServerUrl: selectedCanonicalServerUrl,
+                localServerUrl: selectedCanonicalServerUrl,
+                serverIdentityId: preflightEndpoint.serverIdentityId,
+                source: 'desktop-personal-home',
+            });
+        } catch {
+            // Profile identity/origin conflicts must be decided by the generic Home flow before
+            // the runtime purpose or signup policy is mutated.
+            throw new PersonalHomeExistingRuntimeConflictError();
+        }
+    } else {
+        if (
+            initialStatus.installed
+            && (
+                initialStatus.purpose?.kind !== 'personal-home'
+                || normalizeUrl(initialStatus.purpose.canonicalServerUrl) !== selectedCanonicalServerUrl
+            )
+        ) {
+            throw new PersonalHomeExistingRuntimeConflictError();
+        }
+        if (initialStatus.installed && initialStatus.anonymousSignupEnabled === null) {
+            throw new PersonalHomeExistingRuntimeConflictError();
+        }
+    }
+
+    let observedIdentityId: string | null = null;
+    // Authoritative initial-status facts that make the adapter callbacks below idempotent: an
+    // already-classified healthy Personal Home at the exact canonical origin must not be
+    // reinstalled or restarted; every read-only verification still runs through the canonical
+    // helper and fails closed.
+    const classifiedPersonalHomeAtCanonicalOrigin = initialStatus.installed
+        && initialStatus.purpose?.kind === 'personal-home'
+        && normalizeUrl(initialStatus.purpose.canonicalServerUrl) === selectedCanonicalServerUrl;
+    const managedSignupClosureAlreadyLive = classifiedPersonalHomeAtCanonicalOrigin
+        && initialStatus.anonymousSignupEnabled === false;
+
+    const runConfiguredTask = async (
+        kind: Exclude<PersonalHomeBootstrapTaskKind, 'relay.runtime.status.v1'>,
+        anonymousSignupEnabled: boolean,
+        purpose: NonNullable<PersonalHomeBootstrapTaskOptions['purpose']>,
+    ): Promise<SystemTaskResult> => requireSuccessfulTask(
+        await input.deps.runRelayTask(kind, { purpose, anonymousSignupEnabled }),
+        kind,
+    );
+
+    const purposeForDesiredState = (desired: Readonly<{ spec: { canonicalServerUrl: string }; port: number }>) => {
+        const canonicalServerUrl = normalizeUrl(desired.spec.canonicalServerUrl);
+        if (requireLoopbackPort(canonicalServerUrl) !== desired.port || canonicalServerUrl !== selectedCanonicalServerUrl) {
+            throw new Error('Personal Home desired runtime state drifted from the selected canonical origin.');
+        }
+        return { kind: 'personal-home' as const, canonicalServerUrl };
+    };
+
+    const bootstrapDeps: PersonalHomeBootstrapDeps = {
+        bindLoopback: async () => {
+            requireLoopbackPort(selectedCanonicalServerUrl);
+        },
+        readPersistedPort: async () => initialStatus.installed ? selectedPort : null,
+        resolveNonCollidingPort: async () => selectedPort,
+        readPersistedPolicy: async () => observedPolicy(
+            existingRuntimeRecovery || retainedClassifiedPersonalHome
+                ? false
+                : initialStatus.anonymousSignupEnabled,
+        ),
+        ensureRuntimeStarted: async (desired) => {
+            const purpose = purposeForDesiredState(desired);
+            if (classifiedPersonalHomeAtCanonicalOrigin) {
+                if (!initialStatus.healthy) {
+                    // Installed but stopped/unhealthy: the smallest lifecycle action only. A
+                    // stopped runtime is never a reason to reinstall or rewrite the managed env.
+                    requireSuccessfulTask(
+                        await input.deps.runRelayTask('relay.runtime.start.v1', {}),
+                        'Personal Home runtime start',
+                    );
+                }
+            } else {
+                await runConfiguredTask('relay.runtime.installOrUpdate.v1', desired.anonymousSignupEnabled, purpose);
+                await runConfiguredTask('relay.runtime.start.v1', desired.anonymousSignupEnabled, purpose);
+            }
+            const endpoint = await requirePlainEndpoint(input.deps, selectedCanonicalServerUrl);
+            observedIdentityId = endpoint.serverIdentityId;
+        },
+        readPersistedCredentials: async () => {
+            const endpoint = await requirePlainEndpoint(input.deps, selectedCanonicalServerUrl);
+            observedIdentityId = endpoint.serverIdentityId;
+            if (recoveryCredentials) return recoveryCredentials;
+            return normalizeTokenOnlyCredentials(await input.deps.readCredentials({
+                serverUrl: selectedCanonicalServerUrl,
+                serverIdentityId: endpoint.serverIdentityId,
+            }));
+        },
+        createLocalAccount: async ({ endpoint }) => {
+            if (existingRuntimeRecovery) {
+                throw new Error('Personal Home existing-runtime recovery must not create a new local account.');
+            }
+            const snapshot = await requirePlainEndpoint(input.deps, endpoint);
+            observedIdentityId = snapshot.serverIdentityId;
+            const resumePendingSeedOnly = initialStatus.dataPresent === true;
+            if (
+                resumePendingSeedOnly
+                && !(await input.deps.hasPendingBootstrapSeed({
+                    serverUrl: selectedCanonicalServerUrl,
+                    serverIdentityId: snapshot.serverIdentityId,
+                }))
+            ) {
+                // Retained Home data may resume only the exact endpoint-and-identity-scoped seed
+                // whose public key can already name a server-committed Account.
+                throw new PersonalHomeCredentialsUnverifiedError();
+            }
+            const credentials = normalizeTokenOnlyCredentials(await input.deps.createLocalAccount({
+                endpoint,
+                canonicalServerUrl: selectedCanonicalServerUrl,
+                serverIdentityId: snapshot.serverIdentityId,
+                resumePendingSeedOnly,
+            }));
+            if (!credentials) throw new Error('Personal Home account creation returned no token.');
+            return credentials;
+        },
+        persistCredentials: async (credentials) => {
+            const serverIdentityId = observedIdentityId;
+            if (!serverIdentityId) throw new Error('Personal Home identity is unavailable for credential persistence.');
+            const tokenOnly = normalizeTokenOnlyCredentials(credentials);
+            if (!tokenOnly) throw new Error('Personal Home credentials are unavailable.');
+            const persisted = await input.deps.persistCredentials({
+                serverUrl: selectedCanonicalServerUrl,
+                serverIdentityId,
+                credentials: tokenOnly,
+            });
+            if (!persisted) throw new Error('Failed to save Personal Home credentials.');
+        },
+        verifyAuthenticatedAccess: async (credentials) => {
+            const tokenOnly = normalizeTokenOnlyCredentials(credentials);
+            return tokenOnly != null && await input.deps.verifyAuthenticatedAccess({
+                endpoint: selectedCanonicalServerUrl,
+                token: tokenOnly.token,
+            });
+        },
+        restartHome: async (desired) => {
+            if (managedSignupClosureAlreadyLive) {
+                // The authoritative initial status proved the managed policy already closed at
+                // this exact origin; a restart would only re-apply an unchanged environment. The
+                // live refusal/policy/listener-origin readbacks below still fail closed.
+                return;
+            }
+            const purpose = purposeForDesiredState(desired);
+            await runConfiguredTask('relay.runtime.installOrUpdate.v1', desired.anonymousSignupEnabled, purpose);
+            await runConfiguredTask('relay.runtime.restart.v1', desired.anonymousSignupEnabled, purpose);
+        },
+        readEffectivePolicy: async () => {
+            const endpoint = await requirePlainEndpoint(input.deps, selectedCanonicalServerUrl);
+            observedIdentityId = endpoint.serverIdentityId;
+            return endpoint.anonymousSignup;
+        },
+        probeAnonymousSignupRefused: async () => await input.deps.probeAnonymousSignupRefused({
+            endpoint: selectedCanonicalServerUrl,
+        }),
+        readListenerOrigin: async () => {
+            const statusTask = requireSuccessfulTask(
+                await input.deps.runRelayTask('relay.runtime.status.v1', {}),
+                'Personal Home runtime status readback',
+            );
+            const status = readRelayStatusData(statusTask, selectedCanonicalServerUrl);
+            if (!status.installed || !status.healthy) {
+                throw new Error('Personal Home runtime is not healthy after restart.');
+            }
+            if (status.anonymousSignupEnabled !== false) {
+                throw new PersonalHomeSignupClosureError();
+            }
+            if (
+                status.purpose?.kind !== 'personal-home'
+                || normalizeUrl(status.purpose.canonicalServerUrl) !== selectedCanonicalServerUrl
+            ) {
+                throw new PersonalHomeExistingRuntimeConflictError();
+            }
+            return status.relayUrl;
+        },
+        persistCompletionReceipt: async (receipt) => {
+            const endpoint = await requirePlainEndpoint(input.deps, receipt.localServerUrl);
+            const serverIdentityId = observedIdentityId ?? endpoint.serverIdentityId;
+            if (serverIdentityId !== endpoint.serverIdentityId) {
+                throw new Error('Personal Home identity changed during bootstrap.');
+            }
+            // Fail closed: a completion-time /v1/features descriptor is adopted
+            // only when its Home identity matches the independently verified
+            // server identity; otherwise the exact legacy HTTPS adoption runs.
+            const connectionDescriptor = endpoint.homeConnectionDescriptor?.homeServerIdentityId === serverIdentityId
+                ? endpoint.homeConnectionDescriptor
+                : undefined;
+            // The canonical runner reaches completion persistence only after the token-only
+            // credential has survived restart and passed an authenticated endpoint readback.
+            // Release account-creation custody before adoption so a clear failure remains
+            // retryable and cannot leave an unreachable completed-profile receipt.
+            if (!(await input.deps.clearPendingBootstrapSeed({
+                serverUrl: receipt.canonicalServerUrl,
+                serverIdentityId,
+            }))) {
+                throw new Error('Failed to release Personal Home account-creation custody.');
+            }
+            const profile = await input.deps.adoptCompletedProfile({
+                canonicalServerUrl: receipt.canonicalServerUrl,
+                localServerUrl: receipt.localServerUrl,
+                serverIdentityId,
+                ...(connectionDescriptor ? { connectionDescriptor } : {}),
+                source: 'desktop-personal-home',
+            });
+            return { profileId: profile.id };
+        },
+    };
+
+    return await runPersonalHomeBootstrap(bootstrapDeps);
+}

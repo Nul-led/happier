@@ -1,7 +1,5 @@
 import { vi } from 'vitest';
 
-type LocalStorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
-
 export type LocalStorageMockHandle = {
     store: Map<string, string>;
     getItemMock: ReturnType<typeof vi.fn<(key: string) => string | null>>;
@@ -21,8 +19,15 @@ export function installLocalStorageMock(): LocalStorageMockHandle {
         store.delete(key);
     });
 
-    const localStorageMock: LocalStorageLike = {
+    const localStorageMock: Storage = {
+        get length() {
+            return store.size;
+        },
+        clear: vi.fn(() => {
+            store.clear();
+        }),
         getItem: getItemMock,
+        key: vi.fn((index: number) => [...store.keys()][index] ?? null),
         setItem: setItemMock,
         removeItem: removeItemMock,
     };

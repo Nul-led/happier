@@ -1163,6 +1163,63 @@ describe('sessionDraftRepository', () => {
         });
     });
 
+    it.each([
+        { failureBoundary: 'cipher', expectedStatus: 'error' },
+        { failureBoundary: 'transport', expectedStatus: 'offline' },
+    ] as const)('preserves newer local edits when an in-flight $failureBoundary operation fails', async ({ failureBoundary, expectedStatus }) => {
+        const operationStarted = createDeferred<void>();
+        const operationReleased = createDeferred<void>();
+        const baseCipher = plainCipher();
+        const cipher: SessionDraftRepositoryCipher = {
+            open: baseCipher.open,
+            seal: failureBoundary === 'cipher'
+                ? vi.fn(async () => {
+                    operationStarted.resolve();
+                    await operationReleased.promise;
+                    throw new Error('cipher unavailable');
+                })
+                : baseCipher.seal,
+        };
+        const transport: SessionDraftRepositoryTransport = {
+            read: vi.fn(async () => ({ status: 'absent' as const })),
+            list: vi.fn(async () => ({ items: [], nextAfter: undefined })),
+            mutate: vi.fn(async () => {
+                if (failureBoundary !== 'transport') throw new Error('transport must not run after cipher failure');
+                operationStarted.resolve();
+                await operationReleased.promise;
+                throw new Error('server unavailable');
+            }),
+        };
+        let nextUuid = 350;
+        const repository = createSessionDraftRepository({
+            storage: createMemoryStorage(),
+            transport,
+            syncEnabled: true,
+            cipher,
+            randomUUID: () => uuid(nextUuid++),
+            now: () => 3,
+        });
+        const observedTexts: string[] = [];
+        repository.subscribeSessionDraft(scope, sessionAddress, () => {
+            const text = repository.getSessionDraftSnapshot(scope, sessionAddress)?.document.composer.text.value;
+            if (typeof text === 'string') observedTexts.push(text);
+        });
+
+        repository.writeExistingSessionDraft({ scope, sessionId: 'session-a', patch: { text: 'h' } });
+        const flush = repository.flushSessionDraft({ scope, address: sessionAddress });
+        await operationStarted.promise;
+        repository.writeExistingSessionDraft({ scope, sessionId: 'session-a', patch: { text: 'hello world' } });
+        operationReleased.resolve();
+
+        expect(await flush).toEqual({ status: expectedStatus });
+        expect(repository.getSessionDraftSnapshot(scope, sessionAddress)).toMatchObject({
+            status: expectedStatus,
+            conflict: null,
+            document: { composer: { text: { value: 'hello world' } } },
+        });
+        expect(observedTexts.at(-1)).toBe('hello world');
+    });
+
     it('rebases a newer pending edit onto its acknowledged field token before a later CAS conflict', async () => {
         const cipher = plainCipher();
         const baseDocument = createSessionDocument('base', uuid(294));

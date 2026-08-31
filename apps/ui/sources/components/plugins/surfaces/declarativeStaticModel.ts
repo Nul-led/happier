@@ -2,6 +2,7 @@ import {
     buildQualifiedPluginContributionKey,
     NormalizedPluginCollectionUiQueryDescriptorV1Schema,
     PluginContributionIdentityV1Schema,
+    PluginDeclarativeProjectedModelV1Schema,
     PluginDeclarativeSettingsInventoryEntryV1Schema,
     sameStrictJsonValue,
     type NormalizedPluginCollectionUiQueryDescriptorV1,
@@ -84,7 +85,13 @@ export function admitDeclarativeStaticModel(input: Readonly<{
     model: unknown;
     expectedPluginId: string;
 }>): AdmittedDeclarativeStaticModel | null {
-    const model = record(input.model);
+    // Structural admission belongs to the one strict Protocol-owned projected
+    // model contract — the same schema the daemon wire enforces. This UI
+    // admission keeps only the relational/currentness checks that own the
+    // mounted plugin/generation/Settings lifetimes.
+    const structural = PluginDeclarativeProjectedModelV1Schema.safeParse(input.model);
+    if (!structural.success) return null;
+    const model = record(structural.data);
     const identity = record(model?.identity);
     const contributionIdentity = PluginContributionIdentityV1Schema.safeParse({
         pluginId: identity?.pluginId,

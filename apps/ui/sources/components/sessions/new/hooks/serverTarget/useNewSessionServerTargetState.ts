@@ -27,7 +27,8 @@ export type NewSessionServerTargetState = Readonly<{
     selectedServerTarget: ServerSelectionTarget | null;
     resolvedSettingsTarget: ResolvedActiveServerSelection;
     allowedTargetServerIds: string[];
-    targetServerId: string;
+    targetServerId: string | null;
+    rejectedRequestedServerId: string | null;
     targetServerProfile: ServerProfile | null;
     targetServerName: string;
     showServerPickerChip: boolean;
@@ -103,24 +104,28 @@ export function useNewSessionServerTargetState(params: Readonly<{
         serverProfiles,
     ]);
 
-    const explicitServerTargetId = React.useMemo(() => {
+    const explicitSettingsServerId = React.useMemo(() => {
         if (params.settings.serverSelectionActiveTargetKind !== 'server') return null;
         const id = String(params.settings.serverSelectionActiveTargetId ?? '').trim();
-        if (!id) return null;
+        return id || null;
+    }, [params.settings.serverSelectionActiveTargetId, params.settings.serverSelectionActiveTargetKind]);
+    const explicitServerTargetId = React.useMemo(() => {
+        if (!explicitSettingsServerId) return null;
         const mappedId = normalizeServerSelectionSettingsForProfileScopeIds({
             serverSelectionGroups: [],
             serverSelectionActiveTargetKind: 'server',
-            serverSelectionActiveTargetId: id,
+            serverSelectionActiveTargetId: explicitSettingsServerId,
         }, serverProfiles).serverSelectionActiveTargetId;
         return typeof mappedId === 'string' && availableServerIds.includes(mappedId) ? mappedId : null;
     }, [
         availableServerIds,
-        params.settings.serverSelectionActiveTargetId,
-        params.settings.serverSelectionActiveTargetKind,
+        explicitSettingsServerId,
         serverProfiles,
     ]);
+    const explicitSettingsServerRejected = explicitSettingsServerId !== null && explicitServerTargetId === null;
 
     const selectedServerTarget = React.useMemo(() => {
+        if (explicitSettingsServerRejected) return null;
         if (explicitServerTargetId) {
             const target = serverTargets.find((candidate) => candidate.kind === 'server' && candidate.id === explicitServerTargetId);
             if (target) return target;
@@ -130,6 +135,7 @@ export function useNewSessionServerTargetState(params: Readonly<{
             ?? serverTargets.find((target) => target.kind === 'server')
             ?? null;
     }, [
+        explicitSettingsServerRejected,
         explicitServerTargetId,
         resolvedSettingsTarget.activeTarget.id,
         resolvedSettingsTarget.activeTarget.kind,
@@ -137,6 +143,7 @@ export function useNewSessionServerTargetState(params: Readonly<{
     ]);
 
     const allowedTargetServerIds = React.useMemo(() => {
+        if (explicitSettingsServerRejected) return [];
         if (!selectedServerTarget) {
             return resolvedSettingsTarget.allowedServerIds;
         }
@@ -144,7 +151,7 @@ export function useNewSessionServerTargetState(params: Readonly<{
             return selectedServerTarget.serverIds;
         }
         return [selectedServerTarget.serverId];
-    }, [resolvedSettingsTarget.allowedServerIds, selectedServerTarget]);
+    }, [explicitSettingsServerRejected, resolvedSettingsTarget.allowedServerIds, selectedServerTarget]);
 
     const routeRequestedServerId = typeof params.request.spawnServerIdParam === 'string'
         ? params.request.spawnServerIdParam.trim() || null
@@ -152,23 +159,22 @@ export function useNewSessionServerTargetState(params: Readonly<{
     const persistedRequestedServerId = typeof params.request.persistedTargetServerId === 'string'
         ? params.request.persistedTargetServerId.trim() || null
         : null;
-    const requestedServerId = routeRequestedServerId ?? persistedRequestedServerId;
+    const requestedServerId = routeRequestedServerId
+        ?? persistedRequestedServerId
+        ?? (explicitSettingsServerRejected ? explicitSettingsServerId : null);
     const newSessionServerTarget = React.useMemo(() => {
         return resolveNewSessionServerTarget({
             requestedServerId,
             activeServerId,
-            allowedServerIds: allowedTargetServerIds.length > 0 ? allowedTargetServerIds : resolvedSettingsTarget.allowedServerIds,
+            allowedServerIds: allowedTargetServerIds,
         });
     }, [
         activeServerId,
         allowedTargetServerIds,
         requestedServerId,
-        resolvedSettingsTarget.allowedServerIds,
     ]);
 
-    const targetServerId = newSessionServerTarget.targetServerId
-        ?? resolvedSettingsTarget.activeServerId
-        ?? activeServerId;
+    const targetServerId = newSessionServerTarget.targetServerId;
     const targetServerProfile = React.useMemo(() => {
         return serverProfiles.find((profile) => resolveServerProfileScopeId(profile) === targetServerId || profile.id === targetServerId) ?? null;
     }, [serverProfiles, targetServerId]);
@@ -180,8 +186,9 @@ export function useNewSessionServerTargetState(params: Readonly<{
         resolvedSettingsTarget,
         allowedTargetServerIds,
         targetServerId,
+        rejectedRequestedServerId: newSessionServerTarget.rejectedRequestedServerId,
         targetServerProfile,
-        targetServerName: targetServerProfile?.name ?? targetServerId,
+        targetServerName: targetServerProfile?.name ?? targetServerId ?? '',
         showServerPickerChip: allowedTargetServerIds.length > 1,
     };
 }

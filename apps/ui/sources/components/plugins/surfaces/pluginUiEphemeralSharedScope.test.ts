@@ -38,6 +38,17 @@ function createAccountLifetime(): TestAccountLifetime {
     });
 }
 
+function executionOrigin(machineId: string) {
+    return Object.freeze({
+        serverIdentityId: 'server-identity-a',
+        materializationRef: Object.freeze({
+            pluginId: 'acme.triage',
+            machineId,
+            materializationId: `materialization-${machineId}`,
+        }),
+    });
+}
+
 describe('plugin UI ephemeral shared scope', () => {
     it('shares one value within an Account, plugin, and immutable generation until the final lease releases', () => {
         const accountLifetime = createAccountLifetime();
@@ -68,6 +79,84 @@ describe('plugin UI ephemeral shared scope', () => {
         expect(dispose).toHaveBeenCalledTimes(1);
         expect(scopeA?.acquire('mounted-window', create)?.value).not.toBe(first?.value);
         expect(create).toHaveBeenCalledTimes(2);
+    });
+
+    it('shares one generation value across execution origins and notifies only when its active origin changes', () => {
+        const accountLifetime = createAccountLifetime();
+        const scopeA1 = getPluginUiEphemeralSharedScope({
+            accountLifetime,
+            pluginId: 'acme.triage',
+            immutableGenerationId: 'generation-a',
+            executionOrigin: executionOrigin('machine-a'),
+            isCurrent: () => true,
+        });
+        const scopeA2 = getPluginUiEphemeralSharedScope({
+            accountLifetime,
+            pluginId: 'acme.triage',
+            immutableGenerationId: 'generation-a',
+            executionOrigin: executionOrigin('machine-a'),
+            isCurrent: () => true,
+        });
+        const scopeB = getPluginUiEphemeralSharedScope({
+            accountLifetime,
+            pluginId: 'acme.triage',
+            immutableGenerationId: 'generation-a',
+            executionOrigin: executionOrigin('machine-b'),
+            isCurrent: () => true,
+        });
+        const dispose = vi.fn();
+        const onExecutionOriginChange = vi.fn();
+        const createShared = vi.fn(() => Object.freeze({
+            value: { window: 'shared' },
+            dispose,
+            onExecutionOriginChange,
+        }));
+
+        const leaseA1 = scopeA1?.acquire('mounted-window', createShared);
+        const leaseA2 = scopeA2?.acquire('mounted-window', createShared);
+        const leaseB = scopeB?.acquire('mounted-window', createShared);
+
+        expect(leaseA1?.value).toBe(leaseA2?.value);
+        expect(leaseA1?.value).toBe(leaseB?.value);
+        expect(createShared).toHaveBeenCalledTimes(1);
+
+        leaseA1?.release();
+        expect(onExecutionOriginChange).not.toHaveBeenCalled();
+        leaseA2?.release();
+        expect(onExecutionOriginChange).toHaveBeenCalledTimes(1);
+        expect(dispose).not.toHaveBeenCalled();
+
+        leaseB?.release();
+        expect(dispose).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives unqualified and materialized mounts equal access to the same generation value', () => {
+        const accountLifetime = createAccountLifetime();
+        const local = getPluginUiEphemeralSharedScope({
+            accountLifetime,
+            pluginId: 'acme.triage',
+            immutableGenerationId: 'generation-a',
+            isCurrent: () => true,
+        });
+        const materialized = getPluginUiEphemeralSharedScope({
+            accountLifetime,
+            pluginId: 'acme.triage',
+            immutableGenerationId: 'generation-a',
+            executionOrigin: executionOrigin('machine-a'),
+            isCurrent: () => true,
+        });
+        const createShared = vi.fn(() => Object.freeze({
+            value: { window: 'shared' },
+            dispose(): void {},
+        }));
+
+        const localLease = local?.acquire('mounted-window', createShared);
+        const materializedLease = materialized?.acquire('mounted-window', createShared);
+
+        expect(materializedLease?.value).toBe(localLease?.value);
+        expect(createShared).toHaveBeenCalledTimes(1);
+        localLease?.release();
+        materializedLease?.release();
     });
 
     it('retires an older generation and refuses a stale overlapping request after the successor exists', () => {
@@ -123,21 +212,13 @@ describe('plugin UI ephemeral shared scope', () => {
 
     it('keeps independently current materialization origins alive for one Account and plugin', () => {
         const accountLifetime = createAccountLifetime();
-        const origin = (machineId: string) => ({
-            serverIdentityId: 'server-identity-a',
-            materializationRef: {
-                pluginId: 'acme.triage',
-                machineId,
-                materializationId: `materialization-${machineId}`,
-            },
-        });
         const disposeA = vi.fn();
         const disposeB = vi.fn();
         const scopeA = getPluginUiEphemeralSharedScope({
             accountLifetime,
             pluginId: 'acme.triage',
             immutableGenerationId: 'generation-a',
-            executionOrigin: origin('machine-a'),
+            executionOrigin: executionOrigin('machine-a'),
             isCurrent: () => true,
         });
         scopeA?.acquire('mounted-window', () => Object.freeze({ value: 'a', dispose: disposeA }));
@@ -145,7 +226,7 @@ describe('plugin UI ephemeral shared scope', () => {
             accountLifetime,
             pluginId: 'acme.triage',
             immutableGenerationId: 'generation-b',
-            executionOrigin: origin('machine-b'),
+            executionOrigin: executionOrigin('machine-b'),
             isCurrent: () => true,
         });
         const leaseB = scopeB?.acquire('mounted-window', () => Object.freeze({ value: 'b', dispose: disposeB }));
@@ -156,7 +237,7 @@ describe('plugin UI ephemeral shared scope', () => {
             accountLifetime,
             pluginId: 'acme.triage',
             immutableGenerationId: 'generation-a-next',
-            executionOrigin: origin('machine-a'),
+            executionOrigin: executionOrigin('machine-a'),
             isCurrent: () => true,
         });
         expect(replacementA).not.toBeNull();

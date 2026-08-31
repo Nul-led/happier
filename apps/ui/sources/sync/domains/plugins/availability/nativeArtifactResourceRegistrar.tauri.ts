@@ -73,11 +73,13 @@ function readRegistrationResult(
 /**
  * The desktop transport is intentionally a narrow Tauri-command adapter, not
  * an Artifact/currentness owner. Registration first loads the official Tauri
- * API module, so the synchronous `unregister` shape can dispatch its native
- * tombstone without reaching for an ambient guest global. The canonical JS
- * registry remains the immediate logical-retirement owner; physical Wry
- * teardown is best-effort and the Rust protocol handler denies a token once
- * its command has been observed.
+ * API module, so `unregister` can dispatch its native tombstone without
+ * reaching for an ambient guest global and settle the acknowledgement the
+ * canonical registry now waits for. The registry still makes the token
+ * unavailable to JS immediately on revocation; this command's settled result
+ * only decides when the canonical registry drops its bookkeeping, and a
+ * resolved false or rejected command re-enters its existing
+ * diagnostics/retry owner instead of being swallowed.
  */
 export function createTauriPluginNativeArtifactResourceRegistrar(input: Readonly<{
     invoke?: TauriHostedArtifactCommandInvoke;
@@ -112,19 +114,14 @@ export function createTauriPluginNativeArtifactResourceRegistrar(input: Readonly
         unregister: (token) => {
             const dispatch = invoke;
             if (!dispatch) return false;
-            try {
-                // REQ14 deliberately does not await guest/native teardown.
-                // `registration.revoked` becomes false-before-return in the
-                // canonical Artifact registry; this command only lets Rust
-                // remove its per-view protocol registration when it arrives.
-                void Promise.resolve(dispatch(
-                    'desktop_hosted_artifact_unregister',
-                    { token },
-                )).catch(() => undefined);
-                return true;
-            } catch {
-                return false;
-            }
+            // The command result is the acknowledgement the canonical registry
+            // keeps its registration indexed for; it is deliberately not
+            // swallowed here. Account/currentness retirement still does not
+            // await it (REQ14): revocation is synchronous, only the
+            // bookkeeping drop follows the settled native fact.
+            return dispatch('desktop_hosted_artifact_unregister', { token })
+                .then((acknowledged) => acknowledged === true)
+                .catch(() => false);
         },
     });
 }

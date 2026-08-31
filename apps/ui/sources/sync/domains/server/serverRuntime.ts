@@ -1,4 +1,5 @@
 import {
+    activateServerProfileIfSelectionImplicit as activateIfImplicitFromProfiles,
     clearTabActiveServerId,
     getDeviceDefaultServerId,
     getTabActiveServerId,
@@ -13,9 +14,13 @@ import {
 } from './serverProfiles';
 
 export type { ActiveServerSnapshot } from './serverProfiles';
+export type { ActiveServerRuntimeTarget } from './serverProfiles';
 export type { AccountServiceEndpointV1 } from './serverProfiles';
 export {
-    updateActiveServerRuntimeOrigin,
+    areServerProfileIdentifiersEquivalent,
+    captureActiveServerRuntimeTarget,
+    publishActiveServerRuntimeOrigin,
+    releaseActiveServerRuntimeOrigin,
     subscribeActiveServerRuntimeOrigin,
     getAccountServiceEndpointSnapshot,
     setAccountServiceEndpoint,
@@ -33,6 +38,10 @@ export function subscribeActiveServer(listener: (snapshot: ActiveServerSnapshot)
 
 export function isActiveServerSelectionExplicit(): boolean {
     return isExplicitFromProfiles();
+}
+
+export function activateServerProfileIfSelectionImplicit(serverId: string): boolean {
+    return activateIfImplicitFromProfiles(serverId);
 }
 
 export function setActiveServer(params: Readonly<{ serverId: string; scope?: 'device' | 'tab' }>): void {

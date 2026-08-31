@@ -38,7 +38,7 @@ import {
     rollbackSessionConversation as rollbackSessionConversationOp,
     sessionStopWithServerScope,
 } from '@/sync/ops/sessions';
-import { completeSessionHandoff as completeSessionHandoffOp } from '@/sync/ops/sessionHandoffs';
+import { startSessionHandoff as startSessionHandoffOp } from '@/sync/ops/sessionHandoffs';
 import { sessionRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc';
 import { sendSessionMessageWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionSendMessage';
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
@@ -382,7 +382,17 @@ export async function replayApprovalRequestAtExactDaemon(input: Readonly<{
     checkpointCodeRollback: async ({ request, serverId }) =>
       await rollbackSessionCheckpointCodeOp({ request, serverId }),
 
-    sessionHandoffStart: async ({ sessionId, targetMachineId, targetPath, targetSessionStorageMode, workspaceTransfer, serverId }) => {
+    sessionHandoffStart: async ({
+      sessionId,
+      targetMachineId,
+      targetPath,
+      targetSessionStorageMode,
+      workspaceAction,
+      workspaceSyncSourceWorkspaceRefId,
+      workspaceSyncTargetWorkspaceRefId,
+      workspaceSyncSettingsVersion,
+      serverId,
+    }) => {
       const sid = String(sessionId ?? '').trim();
       const tid = String(targetMachineId ?? '').trim();
       if (!sid || !tid) return { ok: false, errorCode: 'invalid_parameters', errorMessage: 'invalid_parameters' };
@@ -405,7 +415,7 @@ export async function replayApprovalRequestAtExactDaemon(input: Readonly<{
       }
       const sessionStorageMode = storageAuthority.storageKind;
 
-      return await completeSessionHandoffOp({
+      return await startSessionHandoffOp({
         sessionId: sid,
         sourceMachineId: sourceMachineId || undefined,
         targetMachineId: tid,
@@ -413,13 +423,10 @@ export async function replayApprovalRequestAtExactDaemon(input: Readonly<{
         sessionStorageMode,
         ...(targetSessionStorageMode ? { targetSessionStorageMode } : {}),
         preferredTransportStrategies: ['direct_peer', 'server_routed_stream'],
-        ...(workspaceTransfer ? {
-          workspaceTransfer: {
-            ...workspaceTransfer,
-            ignoredIncludeGlobs: [...workspaceTransfer.ignoredIncludeGlobs],
-          },
-        } : {}),
-        sourceMetadata: metadata ?? { path: '', host: '' },
+        ...(workspaceAction ? { workspaceAction } : {}),
+        ...(workspaceSyncSourceWorkspaceRefId ? { workspaceSyncSourceWorkspaceRefId } : {}),
+        ...(workspaceSyncTargetWorkspaceRefId ? { workspaceSyncTargetWorkspaceRefId } : {}),
+        ...(workspaceSyncSettingsVersion === undefined ? {} : { workspaceSyncSettingsVersion }),
         serverId,
       });
     },

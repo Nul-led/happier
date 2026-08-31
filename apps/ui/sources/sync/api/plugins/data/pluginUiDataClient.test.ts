@@ -5,6 +5,7 @@ import {
     measurePluginCollectionMutationRequestEncodedBytesV1,
     normalizePluginAccountCollectionContractV1,
     PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1,
+    PluginAccountStorageMutationRequestV1Schema,
     PluginAccountCollectionContributionV1Schema,
     PluginCollectionMutationRequestV1Schema,
     PluginManifestV2Schema,
@@ -109,6 +110,15 @@ const normalizedManifest = PluginManifestV2Schema.parse({
     engines: { happier: '^1.0.0' },
     runtime: { apiVersion: 1 },
     contributes: {},
+    hostAccess: {
+        required: [{
+            id: 'account-storage',
+            capability: 'storage.account',
+            reason: 'Persist Account-scoped plugin state.',
+            scope: { enabled: true },
+        }],
+        optional: [],
+    },
 });
 
 afterEach(() => {
@@ -162,8 +172,10 @@ function createAvailabilityReader() {
 
 async function loadClient(options: Readonly<{
     mutationResponse?: () => Response;
-    accountKvRead?: () => Response;
-    accountKvWrite?: (body: unknown) => Response;
+    accountKvRead?: () => Response | Promise<Response>;
+    accountKvWrite?: (body: unknown) => Response | Promise<Response>;
+    availabilityReader?: ReturnType<typeof createAvailabilityReader>;
+    readAvailability?: () => ReturnType<typeof createAvailabilityReader>;
 }> = {}) {
     vi.resetModules();
     let current = true;
@@ -195,17 +207,17 @@ async function loadClient(options: Readonly<{
         }
         if (path === `/v1/account/plugin-storage/${pluginId}`) {
             if ((_init?.method ?? 'GET') === 'GET') {
-                return options.accountKvRead?.() ?? new Response(
+                return await (options.accountKvRead?.() ?? new Response(
                     JSON.stringify({ status: 'absent' }),
                     { status: 200, headers: { 'Content-Type': 'application/json' } },
-                );
+                ));
             }
             const parsedBody = JSON.parse(String(_init?.body ?? 'null')) as unknown;
             accountKvWrites.push(parsedBody);
-            return options.accountKvWrite?.(parsedBody) ?? new Response(
+            return await (options.accountKvWrite?.(parsedBody) ?? new Response(
                 JSON.stringify({ status: 'updated', revision: 3 }),
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
-            );
+            ));
         }
         if (path === '/v1/plugins/data/mutate') {
             if (options.mutationResponse) return options.mutationResponse();
@@ -234,6 +246,7 @@ async function loadClient(options: Readonly<{
             scope: lifetime.scope,
             context: { token: 'account-token' },
             request: transport,
+            release: async () => undefined,
         }),
     }));
 
@@ -254,7 +267,8 @@ async function loadClient(options: Readonly<{
         client: createPluginUiDataClient({
             pluginId,
             accountLifetime: lifetime,
-            availabilityReader: createAvailabilityReader(),
+            readAvailability: options.readAvailability
+                ?? (() => options.availabilityReader ?? createAvailabilityReader()),
         }),
         transport,
         accountKvWrites,
@@ -266,6 +280,67 @@ async function loadClient(options: Readonly<{
 }
 
 describe('Plugin UI Data client', () => {
+    it('rejects Account KV before transport when the exact current release lacks storage.account', async () => {
+        const admitted = createAvailabilityReader();
+        const currentRelease = admitted.readCurrentReleaseSelection({ pluginId });
+        if (currentRelease.kind !== 'available') throw new Error('Fixture requires a current release.');
+        const availabilityReader = createPluginAccountAvailabilityReader({
+            scope: { serverId: 'server-a', accountId: 'account-a' },
+            snapshot: {
+                availabilityCursor: 8,
+                materializations: [],
+                snapshots: [],
+                intentReads: [{
+                    pluginId,
+                    response: {
+                        availabilityCursor: 8,
+                        hostingCapability: {
+                            enabled: true,
+                            maxArtifactBytes: 1024,
+                            maxAccountBytes: 2048,
+                        },
+                        intent: {
+                            pluginId,
+                            desiredVersion: '1.0.0',
+                            enabled: true,
+                            offlineUiHosting: 'enabled',
+                            writableCollections: [ref],
+                            revision: 'intent-8',
+                        },
+                        release: {
+                            ref: currentRelease.release.ref,
+                            archiveDigestSha256: `sha256:${'a'.repeat(64)}`,
+                            normalizedManifest: PluginManifestV2Schema.parse({
+                                ...normalizedManifest,
+                                hostAccess: { required: [], optional: [] },
+                            }),
+                            collectionContracts: [ref],
+                            uiSlots: [],
+                            packageAssetArchive: {
+                                archiveDigestSha256: `sha256:${'d'.repeat(64)}`,
+                                resources: [],
+                            },
+                        },
+                        uiArtifacts: [],
+                    },
+                }],
+            } satisfies PluginAccountAvailabilitySnapshot,
+        });
+        let currentAvailabilityReader = createAvailabilityReader();
+        const { client, transport } = await loadClient({
+            readAvailability: () => currentAvailabilityReader,
+        });
+        currentAvailabilityReader = availabilityReader;
+
+        await expect(client.accountKv.get('theme')).rejects.toMatchObject({
+            code: 'plugin_account_storage_unavailable',
+        });
+        expect(transport).not.toHaveBeenCalledWith(
+            `/v1/account/plugin-storage/${pluginId}`,
+            expect.anything(),
+        );
+    });
+
     it('reaches the plugin\'s own Account KV row from a surface with no daemon in the path', async () => {
         const { client, accountKvWrites, transport } = await loadClient();
 
@@ -322,8 +397,289 @@ describe('Plugin UI Data client', () => {
             .rejects.toMatchObject({ code: 'plugin_account_kv_invalid' });
     });
 
-    it('writes one atomic row for a transaction and reports a row-CAS conflict to the author', async () => {
+    it('rebases a per-key mutation when only another key changed in the aggregate row', async () => {
+        let readCount = 0;
+        let writeCount = 0;
         const { client, accountKvWrites } = await loadClient({
+            accountKvRead: () => {
+                readCount += 1;
+                return new Response(JSON.stringify({
+                    status: 'present',
+                    revision: readCount === 1 ? 4 : 5,
+                    content: {
+                        t: 'plain',
+                        v: {
+                            v: 1,
+                            values: {
+                                other: readCount === 1
+                                    ? { version: 0, value: 'before' }
+                                    : { version: 1, value: 'after' },
+                            },
+                        },
+                    },
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            },
+            accountKvWrite: () => {
+                writeCount += 1;
+                return new Response(JSON.stringify(
+                    writeCount === 1
+                        ? { status: 'conflict', revision: 5 }
+                        : { status: 'updated', revision: 6 },
+                ), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            },
+        });
+
+        await expect(client.accountKv.set('target', 'mine', {
+            expectedVersion: 'absent',
+        })).resolves.toEqual({ version: 0 });
+
+        expect(accountKvWrites).toEqual([
+            {
+                expectedRevision: 4,
+                content: {
+                    t: 'plain',
+                    v: {
+                        v: 1,
+                        values: {
+                            other: { version: 0, value: 'before' },
+                            target: { version: 0, value: 'mine' },
+                        },
+                    },
+                },
+            },
+            {
+                expectedRevision: 5,
+                content: {
+                    t: 'plain',
+                    v: {
+                        v: 1,
+                        values: {
+                            other: { version: 1, value: 'after' },
+                            target: { version: 0, value: 'mine' },
+                        },
+                    },
+                },
+            },
+        ]);
+    });
+
+    it('allows independent service mutations to overlap without treating them as nested transaction writes', async () => {
+        let releaseInitialReads!: () => void;
+        const initialReadsStarted = new Promise<void>((resolve) => {
+            releaseInitialReads = resolve;
+        });
+        let readCount = 0;
+        let writeCount = 0;
+        let persisted: unknown = null;
+        const { client, accountKvWrites } = await loadClient({
+            accountKvRead: async () => {
+                readCount += 1;
+                if (readCount <= 2) {
+                    if (readCount === 2) releaseInitialReads();
+                    await initialReadsStarted;
+                    return new Response(JSON.stringify({ status: 'absent' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                return new Response(JSON.stringify({
+                    status: 'present',
+                    revision: 0,
+                    content: persisted,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            },
+            accountKvWrite: (body) => {
+                writeCount += 1;
+                const request = PluginAccountStorageMutationRequestV1Schema.parse(body);
+                if (writeCount === 1) {
+                    persisted = request.content;
+                    return new Response(JSON.stringify({ status: 'updated', revision: 0 }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                if (writeCount === 2) {
+                    return new Response(JSON.stringify({ status: 'conflict', revision: 0 }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                persisted = request.content;
+                return new Response(JSON.stringify({ status: 'updated', revision: 1 }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            },
+        });
+
+        await expect(Promise.all([
+            client.accountKv.set('first', 1, { expectedVersion: 'absent' }),
+            client.accountKv.set('second', 2, { expectedVersion: 'absent' }),
+        ])).resolves.toEqual([{ version: 0 }, { version: 0 }]);
+
+        expect(accountKvWrites).toHaveLength(3);
+        expect(persisted).toEqual({
+            t: 'plain',
+            v: {
+                v: 1,
+                values: {
+                    first: { version: 0, value: 1 },
+                    second: { version: 0, value: 2 },
+                },
+            },
+        });
+    });
+
+    it('treats service writes during an awaiting transaction as separate mutations while rejecting a nested transaction', async () => {
+        let revision: number | 'absent' = 'absent';
+        let persistedContent: unknown = null;
+        const { client } = await loadClient({
+            accountKvRead: () => revision === 'absent'
+                ? new Response(JSON.stringify({ status: 'absent' }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+                : new Response(JSON.stringify({
+                    status: 'present',
+                    revision,
+                    content: persistedContent,
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                }),
+            accountKvWrite: (body) => {
+                const request = PluginAccountStorageMutationRequestV1Schema.parse(body);
+                if (request.expectedRevision !== revision) {
+                    return new Response(JSON.stringify({ status: 'conflict', revision }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                revision = revision === 'absent' ? 0 : revision + 1;
+                persistedContent = request.content;
+                return new Response(JSON.stringify({ status: 'updated', revision }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            },
+        });
+        let markTransactionPaused!: () => void;
+        const transactionPaused = new Promise<void>((resolve) => {
+            markTransactionPaused = resolve;
+        });
+        let resumeTransaction!: () => void;
+        const transactionResume = new Promise<void>((resolve) => {
+            resumeTransaction = resolve;
+        });
+
+        const explicitTransaction = client.accountKv.transaction(async (transaction) => {
+            await transaction.set('transaction-write', 1, { expectedVersion: 'absent' });
+            markTransactionPaused();
+            await transactionResume;
+            await expect(client.accountKv.transaction(async (nested) => await nested.set(
+                'nested-transaction-write',
+                4,
+                { expectedVersion: 'absent' },
+            )))
+                .rejects.toMatchObject({ code: 'plugin_account_kv_invalid' });
+            await expect(client.accountKv.delete(
+                'independent-write',
+                { expectedVersion: 0 },
+            )).resolves.toEqual({ version: 1, deleted: true });
+            await expect(client.accountKv.set(
+                'callback-service-write',
+                3,
+                { expectedVersion: 'absent' },
+            )).resolves.toEqual({ version: 0 });
+        });
+        await transactionPaused;
+        const independentWrite = client.accountKv.set('independent-write', 2, {
+            expectedVersion: 'absent',
+        });
+        const [independentOutcome] = await Promise.allSettled([independentWrite]);
+        resumeTransaction();
+
+        const [transactionOutcome] = await Promise.allSettled([explicitTransaction]);
+        expect(transactionOutcome).toEqual({ status: 'fulfilled', value: undefined });
+        expect(independentOutcome).toEqual({ status: 'fulfilled', value: { version: 0 } });
+        expect(persistedContent).toEqual({
+            t: 'plain',
+            v: {
+                v: 1,
+                values: {
+                    'callback-service-write': { version: 0, value: 3 },
+                    'independent-write': { version: 1, deleted: true },
+                    'transaction-write': { version: 0, value: 1 },
+                },
+            },
+        });
+    });
+
+    it('honors cancellation supplied to an individual direct transaction method', async () => {
+        const { client, accountKvWrites } = await loadClient();
+        const cancellation = new AbortController();
+        cancellation.abort();
+
+        await expect(client.accountKv.transaction(async (transaction) => {
+            return await transaction.set('cancelled', true, {
+                expectedVersion: 'absent',
+                signal: cancellation.signal,
+            });
+        })).rejects.toMatchObject({ code: 'plugin_collection_cancelled' });
+        expect(accountKvWrites).toEqual([]);
+    });
+
+    it('does not reread a direct Account KV row after cancellation wins a physical conflict', async () => {
+        const cancellation = new AbortController();
+        let reads = 0;
+        const { client, accountKvWrites } = await loadClient({
+            accountKvRead: () => {
+                reads += 1;
+                return new Response(JSON.stringify({ status: 'absent' }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            },
+            accountKvWrite: () => {
+                cancellation.abort();
+                return new Response(JSON.stringify({ status: 'conflict', revision: 0 }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            },
+        });
+
+        await expect(client.accountKv.set('target', 'mine', {
+            expectedVersion: 'absent',
+            signal: cancellation.signal,
+        })).rejects.toMatchObject({ code: 'plugin_collection_cancelled' });
+
+        expect(accountKvWrites).toHaveLength(1);
+        expect(reads).toBe(1);
+    });
+
+    it('writes one atomic row for a transaction and rejects when a touched key changed', async () => {
+        let readCount = 0;
+        const { client, accountKvWrites } = await loadClient({
+            accountKvRead: () => {
+                readCount += 1;
+                return readCount === 1
+                    ? new Response(JSON.stringify({ status: 'absent' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    })
+                    : new Response(JSON.stringify({
+                        status: 'present',
+                        revision: 12,
+                        content: {
+                            t: 'plain',
+                            v: {
+                                v: 1,
+                                values: { one: { version: 0, value: 'external' } },
+                            },
+                        },
+                    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            },
             accountKvWrite: () => new Response(
                 JSON.stringify({ status: 'conflict', revision: 12 }),
                 { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -338,6 +694,7 @@ describe('Plugin UI Data client', () => {
         })).rejects.toMatchObject({ code: 'plugin_account_kv_conflict' });
 
         expect(accountKvWrites).toHaveLength(1);
+        expect(readCount).toBe(2);
         expect(accountKvWrites[0]).toMatchObject({
             expectedRevision: 'absent',
             content: {

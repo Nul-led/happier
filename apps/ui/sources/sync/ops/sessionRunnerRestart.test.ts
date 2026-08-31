@@ -79,6 +79,32 @@ describe('session runner restart op', () => {
         });
     });
 
+    it('forces the attested current runner to restart for a configuration change', async () => {
+        machineRpcWithServerScopeMock.mockResolvedValueOnce({
+            ok: true,
+            status: 'restarted',
+            sessionId: 's1',
+        });
+
+        const { restartSessionRunnerForConfigurationChange } = await import('./sessionRunnerRestart');
+        await expect(restartSessionRunnerForConfigurationChange({
+            runtimeState,
+            serverId: 'server-1',
+        })).resolves.toMatchObject({ status: 'restarted' });
+
+        expect(machineRpcWithServerScopeMock).toHaveBeenCalledWith(expect.objectContaining({
+            method: RPC_METHODS.DAEMON_SESSION_RUNNER_RESTART,
+            payload: {
+                sessionId: 's1',
+                mode: 'force_current_cli',
+                reason: 'ui_stale_runner_banner',
+                expectedRunnerPid: 123,
+                expectedProcessCommandHash: 'hash-old',
+                expectedRunnerEntrypointIdentity: 'runner-runtime-old',
+            },
+        }));
+    });
+
     it('forces one Provider binding recovery through attested V2 without widening V1', async () => {
         machineRpcWithServerScopeMock.mockResolvedValueOnce({
             ok: true,

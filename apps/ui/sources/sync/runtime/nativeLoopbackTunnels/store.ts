@@ -1,28 +1,36 @@
 import type {
     LoopbackTunnelLease,
     LoopbackTunnelLimitation,
+    LoopbackTunnelRequest,
     LoopbackTunnelSnapshot,
     LoopbackTunnelStatus,
 } from './types';
 
-export type StoredLoopbackTunnel<Lease extends LoopbackTunnelLease, Limitation extends LoopbackTunnelLimitation> = Readonly<{
+export type StoredLoopbackTunnel<
+    Lease extends LoopbackTunnelLease,
+    Limitation extends LoopbackTunnelLimitation,
+    Request extends LoopbackTunnelRequest = LoopbackTunnelRequest,
+> = Readonly<{
     lease: Lease;
     nativeTunnelId: string | null;
     referenceCount: number;
+    /** Request retained so foreground re-probes can re-verify with the original facts. */
+    request: Request;
 }>;
 
 export function createLoopbackTunnelStore<
     Lease extends LoopbackTunnelLease,
     Limitation extends LoopbackTunnelLimitation,
+    Request extends LoopbackTunnelRequest = LoopbackTunnelRequest,
 >(params: Readonly<{ foregroundLimitation?: Limitation | null; suspendedLimitation?: Limitation | null }>) {
-    const leasesByKey = new Map<string, StoredLoopbackTunnel<Lease, Limitation>>();
+    const leasesByKey = new Map<string, StoredLoopbackTunnel<Lease, Limitation, Request>>();
     const runtimeLimitationsByReason = new Map<string, Limitation>();
     let suspended = false;
     return {
         getByKey(key: string) {
             return leasesByKey.get(key) ?? null;
         },
-        put(key: string, stored: StoredLoopbackTunnel<Lease, Limitation>): void {
+        put(key: string, stored: StoredLoopbackTunnel<Lease, Limitation, Request>): void {
             leasesByKey.set(key, stored);
         },
         retain(key: string) {
@@ -66,6 +74,7 @@ export function createLoopbackTunnelStore<
         isSuspended(): boolean { return suspended; },
         setRuntimeLimitation(limitation: Limitation): void { runtimeLimitationsByReason.set(limitation.reason, limitation); },
         clearRuntimeLimitation(reason: string): void { runtimeLimitationsByReason.delete(reason); },
+        clearRuntimeLimitations(): void { runtimeLimitationsByReason.clear(); },
         snapshot(): LoopbackTunnelSnapshot<Lease, Limitation> {
             return {
                 leases: [...leasesByKey.values()].map((stored) => stored.lease),

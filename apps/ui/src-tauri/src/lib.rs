@@ -25,6 +25,12 @@ mod web_runtime_config;
 #[cfg(desktop)]
 mod desktop_boot_credentials;
 
+#[cfg(desktop)]
+mod iroh;
+
+#[cfg(any(desktop, test))]
+mod secure_storage;
+
 #[cfg(any(desktop, test))]
 mod browser;
 
@@ -101,6 +107,12 @@ pub fn run() {
                 window_chrome::desktop_start_window_dragging,
                 window_sizing::desktop_set_window_mode,
                 desktop_boot_credentials::desktop_read_stack_boot_credentials,
+                iroh::iroh_start_home_tunnel,
+                iroh::iroh_stop_home_tunnel,
+                iroh::iroh_get_home_tunnel_status,
+                secure_storage::desktop_secure_storage_read,
+                secure_storage::desktop_secure_storage_write,
+                secure_storage::desktop_secure_storage_remove,
                 browser::desktop_browser_get_availability,
                 browser::desktop_browser_open_view,
                 browser::desktop_browser_navigate,
@@ -187,6 +199,12 @@ pub fn run() {
                             has_visible_windows,
                         },
                     );
+                }
+                // Best-effort teardown of the shared Iroh process endpoint on
+                // final application shutdown; the persistent identity key is
+                // retained so restarts reuse the same endpoint identity.
+                tauri::RunEvent::Exit => {
+                    iroh::shutdown_process_endpoint(app_handle);
                 }
                 _ => {}
             }

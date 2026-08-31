@@ -114,6 +114,11 @@ const restartProviderBindingSessionRunnerSpy = vi.hoisted(() =>
     async (_request: unknown) => ({ ok: true, status: 'restarted', sessionId: 's1' }),
   ),
 );
+const restartConfigurationSessionRunnerSpy = vi.hoisted(() =>
+  vi.fn<(_request: unknown) => Promise<RestartStaleSessionRunnerResult>>(
+    async (_request: unknown) => ({ ok: true, status: 'restarted', sessionId: 's1' }),
+  ),
+);
 const getSessionRunnerRuntimeStatusSpy = vi.hoisted(() =>
   vi.fn<(_request: unknown) => Promise<unknown>>(async () => null),
 );
@@ -668,6 +673,8 @@ vi.mock('@/sync/ops/sessionRunnerRestart', () => ({
   },
   restartSessionRunnerForProviderBindingChange: (request: unknown) =>
     restartProviderBindingSessionRunnerSpy(request),
+  restartSessionRunnerForConfigurationChange: (request: unknown) =>
+    restartConfigurationSessionRunnerSpy(request),
   restartSessionRunnerOnCurrentRuntime: (request: unknown) => restartStaleSessionRunnerSpy(request),
 }));
 vi.mock('@/sync/ops/connectedServiceQuotaRecoveryCredits', () => ({
@@ -856,6 +863,11 @@ describe('SessionView (direct sessions)', () => {
       badge.key === 'stale-session-runner');
   }
 
+  function findMcpSelectionRestartStatusBadge(screen: Awaited<ReturnType<typeof renderSessionView>>) {
+    return findAgentInput(screen).props.statusBadges.find((badge: { key?: string }) =>
+      badge.key === 'session-mcp-selection-restart-required');
+  }
+
   function findProviderUsageGauge(screen: Awaited<ReturnType<typeof renderSessionView>>) {
     return findAgentInput(screen).props.instrumentQuota?.viewModel;
   }
@@ -914,6 +926,41 @@ describe('SessionView (direct sessions)', () => {
           sessionId: 's1',
           machineId: 'machine-1',
           versionState: 'stale',
+        }),
+      },
+    };
+  }
+
+  function installMcpSelectionRestartRequired() {
+    storageState.machines['machine-1'] = {
+      id: 'machine-1',
+      active: true,
+      metadata: { host: 'happy-host', homeDir: '/tmp' },
+    } as any;
+    storageState.sessions.s1 = {
+      ...storageState.sessions.s1,
+      active: true,
+      metadata: {
+        ...storageState.sessions.s1.metadata,
+        mcpSelectionV1: {
+          v: 1,
+          managedServersEnabled: true,
+          forceIncludeServerIds: ['server-new'],
+          forceExcludeServerIds: [],
+        },
+        mcpSelectionRestartRequiredV1: {
+          v: 1,
+          appliedSelection: {
+            v: 1,
+            managedServersEnabled: true,
+            forceIncludeServerIds: [],
+            forceExcludeServerIds: [],
+          },
+        },
+        [SESSION_RUNNER_RUNTIME_METADATA_KEY]: buildSessionRunnerRuntimeStatus({
+          sessionId: 's1',
+          machineId: 'machine-1',
+          versionState: 'current',
         }),
       },
     };
@@ -1156,6 +1203,8 @@ describe('SessionView (direct sessions)', () => {
     restartStaleSessionRunnerSpy.mockResolvedValue({ ok: true, status: 'restarted', sessionId: 's1' });
     restartProviderBindingSessionRunnerSpy.mockReset();
     restartProviderBindingSessionRunnerSpy.mockResolvedValue({ ok: true, status: 'restarted', sessionId: 's1' });
+    restartConfigurationSessionRunnerSpy.mockReset();
+    restartConfigurationSessionRunnerSpy.mockResolvedValue({ ok: true, status: 'restarted', sessionId: 's1' });
     getSessionRunnerRuntimeStatusSpy.mockReset();
     getSessionRunnerRuntimeStatusSpy.mockResolvedValue(null);
     sessionRunnerRuntimeStatusRetention.clearForTests();
@@ -1340,6 +1389,25 @@ describe('SessionView (direct sessions)', () => {
       testID: 'session-staleRunner-status-badge',
       tone: 'warning',
     }));
+  });
+
+  it('renders and applies the active-session MCP restart notice through the current runner owner', async () => {
+    installMcpSelectionRestartRequired();
+
+    const screen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
+    expect(screen.findByTestId('session.mcpSelectionRestartRequired.banner')).toBeTruthy();
+    expect(findMcpSelectionRestartStatusBadge(screen)).toEqual(expect.objectContaining({
+      testID: 'session.mcpSelectionRestartRequired.badge',
+      tone: 'warning',
+    }));
+
+    await pressTestInstanceAsync(screen.findByTestId('session.mcpSelectionRestartRequired.restart'));
+    await settleDirectSessionView();
+    expect(restartConfigurationSessionRunnerSpy).toHaveBeenCalledWith({
+      runtimeState: expect.objectContaining({ sessionId: 's1', machineId: 'machine-1' }),
+      serverId: 'server-route-1',
+    });
+    expect(screen.findByTestId('session.mcpSelectionRestartRequired.banner')).toBeNull();
   });
 
   it('keeps the stale-runner notice visible while restart is blocked by runtime activity', async () => {

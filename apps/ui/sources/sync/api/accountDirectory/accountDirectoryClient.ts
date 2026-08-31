@@ -1,12 +1,19 @@
 import { z } from 'zod';
 import {
     AccountDirectoryHomeDeleteResponseV1Schema,
+    AccountDirectoryHomeDeleteRequestV1Schema,
     AccountDirectoryHomePutRequestV1Schema,
     AccountDirectoryHomePutResponseV1Schema,
     AccountDirectoryHomesResponseV1Schema,
     AccountDirectoryMeResponseV1Schema,
     AccountDirectoryPreferredHomePatchResponseV1Schema,
+    AccountDirectoryPreferredHomePatchRequestV1Schema,
+    AccountDirectoryLinkPutRequestV1Schema,
+    AccountDirectoryLinkPutResponseV1Schema,
+    AccountDirectoryRouteErrorResponseV1Schema,
+    ACCOUNT_DIRECTORY_ERROR_CODES_V1,
     HomeConnectionDescriptorV1Schema,
+    HomeLoginAssertionRequestV1Schema,
     HomeLoginAssertionResponseV1Schema,
     HomeLoginRedemptionRequestV1Schema,
     HomeLoginRedemptionResultV1Schema,
@@ -16,15 +23,20 @@ import {
     type HomeConnectionDescriptorV1,
     type HomeLoginAssertionV1,
     type HomeLoginRedemptionResponseV1,
+    type HomeLoginRedemptionResultV1,
+    type AccountDirectoryLinkPutResponseV1,
+    type AccountDirectoryErrorCodeV1,
 } from '@happier-dev/protocol';
-import { runtimeFetch } from '@/utils/system/runtimeFetch';
+import { createServerFetchAtEndpoint } from '@/sync/http/client';
 import {
     accountDirectoryCredentialStorage,
     normalizeAccountDirectoryEndpoint,
 } from '@/auth/accountDirectory/accountDirectoryCredentialStorage';
+import type { AccountDirectoryCredentialTarget, AuthCredentials } from '@/auth/storage/tokenStorage';
+import type { HomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
 
 export const HomeLoginAssertionV1Schema = HomeLoginAssertionResponseV1Schema;
-export const HomeLoginRedemptionResponseV1Schema = HomeLoginRedemptionResultV1Schema;
+export { HomeConnectionDescriptorV1Schema, HomeLoginAssertionResponseV1Schema as HomeLoginAssertionSchema };
 export type {
     AccountDirectoryHomeEntryV1,
     AccountDirectoryHomesResponseV1,
@@ -32,32 +44,54 @@ export type {
     HomeConnectionDescriptorV1,
     HomeLoginAssertionV1,
     HomeLoginRedemptionResponseV1,
+    HomeLoginRedemptionResultV1,
 };
 
 export class AccountDirectoryRequestError extends Error {
     readonly status: number;
-    readonly code?: string;
+    readonly code?: AccountDirectoryErrorCodeV1;
+    readonly transient: boolean;
 
-    constructor(status: number, code?: string) {
+    constructor(status: number, code?: AccountDirectoryErrorCodeV1) {
         super(`Account Service request failed (${status}${code ? `: ${code}` : ''})`);
         this.name = 'AccountDirectoryRequestError';
         this.status = status;
         this.code = code;
+        this.transient = status === 408 || status === 429 || status >= 500;
     }
 }
 
-function normalizeEndpoint(endpoint: string): string {
-    const normalized = normalizeAccountDirectoryEndpoint(endpoint);
-    if (!normalized) throw new Error('Invalid Account Service endpoint');
-    return normalized;
+export class AccountDirectoryResponseError extends Error {
+    constructor(readonly operation: string) {
+        super(`Invalid Account Directory response (${operation})`);
+        this.name = 'AccountDirectoryResponseError';
+    }
 }
 
-async function readErrorCode(response: Response): Promise<string | undefined> {
+export function isAccountDirectoryRelinkConflict(error: unknown): boolean {
+    return error instanceof AccountDirectoryRequestError
+        && error.status === 409
+        && error.code === ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidRequest;
+}
+
+function normalizeTarget(target: AccountDirectoryCredentialTarget): Readonly<{
+    endpoint: string;
+    serverIdentityId: string | null;
+}> {
+    const normalized = normalizeAccountDirectoryEndpoint(target.endpoint);
+    if (!normalized) throw new Error('Invalid Account Service endpoint');
+    const identityRaw = target.serverIdentityId ?? null;
+    const serverIdentityId = typeof identityRaw === 'string' && identityRaw.trim()
+        ? identityRaw.trim()
+        : null;
+    return { endpoint: normalized, serverIdentityId };
+}
+
+async function readErrorCode(response: Response): Promise<AccountDirectoryErrorCodeV1 | undefined> {
     try {
         const payload: unknown = await response.json();
-        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
-        const code = (payload as Record<string, unknown>).error;
-        return typeof code === 'string' ? code : undefined;
+        const parsed = AccountDirectoryRouteErrorResponseV1Schema.safeParse(payload);
+        return parsed.success ? parsed.data.error : undefined;
     } catch {
         return undefined;
     }
@@ -65,17 +99,20 @@ async function readErrorCode(response: Response): Promise<string | undefined> {
 
 export type AccountDirectoryClient = ReturnType<typeof createAccountDirectoryClient>;
 
-export function createAccountDirectoryClient(endpoint: string, options: Readonly<{ token?: string }> = {}) {
-    const baseUrl = normalizeEndpoint(endpoint);
+export function createAccountDirectoryClient(target: AccountDirectoryCredentialTarget) {
+    const { endpoint: baseUrl, serverIdentityId } = normalizeTarget(target);
+    const credentialTarget = { endpoint: baseUrl, ...(serverIdentityId ? { serverIdentityId } : {}) };
     const request = async <T>(path: string, init: RequestInit | undefined, schema: z.ZodType<T>): Promise<T> => {
         if (!path.startsWith('/v1/account-directory/')) throw new Error('Account Service path is not an Account Directory route');
-        const credentials = options.token
-            ? { token: options.token }
-            : await accountDirectoryCredentialStorage.get(baseUrl);
+        const credentials = await accountDirectoryCredentialStorage.get(credentialTarget);
         const headers = new Headers(init?.headers);
         headers.set('Accept', 'application/json');
-        if (credentials?.token) headers.set('Authorization', `Bearer ${credentials.token}`);
-        const response = await runtimeFetch(`${baseUrl}${path}`, { ...init, headers });
+        const fetchAtEndpoint = createServerFetchAtEndpoint({
+            endpointUrl: baseUrl,
+            ...(serverIdentityId ? { serverId: serverIdentityId } : {}),
+            credentials,
+        });
+        const response = await fetchAtEndpoint(path, { ...init, headers }, { includeAuth: Boolean(credentials), retry: 'none' });
         if (!response.ok) throw new AccountDirectoryRequestError(response.status, await readErrorCode(response));
         const payload: unknown = await response.json();
         const parsed = schema.safeParse(payload);
@@ -85,6 +122,7 @@ export function createAccountDirectoryClient(endpoint: string, options: Readonly
 
     return {
         endpoint: baseUrl,
+        serverIdentityId,
         request,
         getMe: () => request('/v1/account-directory/me', undefined, AccountDirectoryMeResponseV1Schema),
         listHomes: () => request('/v1/account-directory/homes', undefined, AccountDirectoryHomesResponseV1Schema),
@@ -95,7 +133,11 @@ export function createAccountDirectoryClient(endpoint: string, options: Readonly
         ),
         deleteHome: (homeServerIdentityId: string) => request(
             `/v1/account-directory/homes/${encodeURIComponent(homeServerIdentityId)}`,
-            { method: 'DELETE' },
+            {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(AccountDirectoryHomeDeleteRequestV1Schema.parse({ v: 1 })),
+            },
             AccountDirectoryHomeDeleteResponseV1Schema,
         ),
         setPreferredHome: (homeServerIdentityId: string | null) => request(
@@ -112,23 +154,61 @@ export function createAccountDirectoryClient(endpoint: string, options: Readonly
 }
 
 export async function redeemHomeLoginAssertion(
-    endpoint: string,
+    target: HomeEnrollmentTransport,
     assertion: HomeLoginAssertionV1,
-): Promise<HomeLoginRedemptionResponseV1> {
-    const baseUrl = normalizeEndpoint(endpoint);
-    const request = HomeLoginRedemptionRequestV1Schema.parse({ v: 1, assertion });
-    const response = await runtimeFetch(`${baseUrl}/v1/auth/home-login`, {
+    options: Readonly<{ approvalId?: string }> = {},
+): Promise<HomeLoginRedemptionResultV1> {
+    const request = HomeLoginRedemptionRequestV1Schema.parse({
+        v: 1,
+        assertion,
+        ...(options.approvalId ? { approvalId: options.approvalId } : null),
+    });
+    const response = await target.createRequest({
+        serverId: target.homeServerIdentityId,
+        credentials: null,
+    })('/v1/auth/home-login', {
         method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
-    });
+    }, { includeAuth: false, retry: 'none' });
     if (!response.ok) throw new AccountDirectoryRequestError(response.status, await readErrorCode(response));
     const parsed = HomeLoginRedemptionResultV1Schema.safeParse(await response.json());
-    if (!parsed.success || parsed.data.outcome !== 'authorized') {
-        if (parsed.success && parsed.data.outcome === 'approval_required') {
-            throw new AccountDirectoryRequestError(202, 'approval_required');
-        }
-        throw new Error('Invalid Home login redemption response');
-    }
+    if (!parsed.success) throw new AccountDirectoryResponseError('home_login_redemption');
+    return parsed.data;
+}
+
+/**
+ * Home-targeted Account Directory link PUT. The request always targets the exact Home through
+ * the canonical enrollment transport and authenticates with that Home's own full credential —
+ * never an Account Service credential. Callers must opt into `relink`: a changed issuer key is a
+ * trust change that automatic provisioning must not apply silently.
+ */
+export async function putHomeDirectoryLink(
+    target: HomeEnrollmentTransport,
+    link: Readonly<{
+        issuerServerIdentityId: string;
+        issuerSubjectId: string;
+        issuerSigningKeyId: string;
+        issuerSigningPublicKeyBase64Url: string;
+    }>,
+    options: Readonly<{ credentials: AuthCredentials; relink?: boolean }>,
+): Promise<AccountDirectoryLinkPutResponseV1> {
+    const request = AccountDirectoryLinkPutRequestV1Schema.parse({
+        v: 1,
+        ...link,
+        relink: options.relink ?? false,
+    });
+    const path = `/v1/account/directory-links/${encodeURIComponent(request.issuerServerIdentityId)}`;
+    const response = await target.createRequest({
+        serverId: target.homeServerIdentityId,
+        credentials: options.credentials,
+    })(path, {
+        method: 'PUT',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+    }, { includeAuth: true, retry: 'none' });
+    if (!response.ok) throw new AccountDirectoryRequestError(response.status, await readErrorCode(response));
+    const parsed = AccountDirectoryLinkPutResponseV1Schema.safeParse(await response.json());
+    if (!parsed.success) throw new AccountDirectoryResponseError('home_directory_link_put');
     return parsed.data;
 }

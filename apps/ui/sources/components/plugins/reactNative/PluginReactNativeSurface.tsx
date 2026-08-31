@@ -44,6 +44,7 @@ import {
 } from './watchdog';
 import { createDefaultPluginReactNativeWatchdogPersistence } from './watchdogPersistence';
 import type { ReactNativeCrashReportResult } from '@/sync/domains/plugins/ui/reactNativeCrashReports';
+import { PLUGIN_UI_PRIVATE_SURFACE_ENTRY_PROVIDER_KEY } from '@/components/plugins/pluginUiPrivateCarrierKeys';
 
 /**
  * Cooperative host-private carrier bindings for the bundled `defineUiSurface`
@@ -359,9 +360,8 @@ type PluginReactNativeSurfaceRendererProps = Readonly<{
  * It selects the conventional injection target; it is not unforgeable
  * provenance or an authority grant.
  */
-const PLUGIN_UI_COOPERATIVE_HOST_PRIVATE_ENTRY_PROVIDER_KEY = Symbol.for(
-    'happier.pluginUi.privateSurfaceEntryProvider.v1',
-);
+const PLUGIN_UI_COOPERATIVE_HOST_PRIVATE_ENTRY_PROVIDER_KEY =
+    PLUGIN_UI_PRIVATE_SURFACE_ENTRY_PROVIDER_KEY;
 
 function isPluginUiCooperativeHostPrivateEntryProviderElement(element: React.ReactElement): boolean {
     const type = element.type;

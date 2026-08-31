@@ -7,6 +7,7 @@ import {
     type BackendTargetRefV2Input,
 } from '@happier-dev/protocol';
 import { resolveBackendTargetKeyV2 } from '@/agents/backendCatalog/backendTargetKeyV2';
+import { resolveBundledAgentIdFromContributionIdentity } from '@/agents/catalog/catalog';
 import type { AgentId } from '@/agents/registry/registryCore';
 
 export {
@@ -36,6 +37,15 @@ export function isProfileCompatibleWithBackendTarget(
     const explicitCanonical = profile.compatibilityByTargetKey?.[canonicalTargetKey];
     if (typeof explicitCanonical === 'boolean') return explicitCanonical;
     if (typeof target !== 'string' && target.kind === 'agent') {
+        const bundledAgentId = resolveBundledAgentIdFromContributionIdentity(target.identity);
+        if (bundledAgentId !== null) {
+            return isProfileCompatibleWithBackendTargetProtocol(
+                normalizeCompatibilityProfile(profile),
+                { kind: 'builtInAgent', agentId: bundledAgentId },
+            );
+        }
+        // An external qualified Agent has no legacy flat Agent id. Preserve the
+        // canonical profile default instead of guessing one from its identity.
         return profile.isBuiltIn ? false : true;
     }
     const normalizedTargetV1 = convertBackendTargetRefV2ToV1(readBackendTargetRefV2(target));

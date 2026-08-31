@@ -89,6 +89,67 @@ afterEach(() => {
 });
 
 describe('useSshSystemTaskPromptModals', () => {
+    it('shows exact inspected Personal Home erase facts and forwards the destructive decision', async () => {
+        modalSpies.confirm.mockResolvedValueOnce(true);
+
+        const { taskId, respond } = await renderPrompt({
+            kind: 'personal_home.confirm_remote_erase.v1',
+            message: 'Erase this remote Personal Home?',
+            data: {
+                promptId: 'erase-task-1',
+                canonicalServerUrl: 'https://home.example.test',
+                homeServerIdentityId: 'home_1',
+                paths: ['/srv/happier/home.db', '/srv/happier/uploads'],
+                estimatedBytes: 4096,
+            },
+        });
+
+        expect(modalSpies.confirm).toHaveBeenCalledWith(
+            'Erase this remote Personal Home?',
+            expect.stringContaining('/srv/happier/home.db'),
+            expect.objectContaining({ destructive: true }),
+        );
+        expect(modalSpies.confirm).toHaveBeenCalledWith(
+            'Erase this remote Personal Home?',
+            expect.stringContaining('home_1'),
+            expect.any(Object),
+        );
+        expect(respond).toHaveBeenCalledWith(taskId, { confirmed: true });
+    });
+
+    it('declines remote Personal Home erase without cancelling the transport task', async () => {
+        modalSpies.confirm.mockResolvedValueOnce(false);
+        const { taskId, respond, cancel } = await renderPrompt({
+            kind: 'personal_home.confirm_remote_erase.v1',
+            message: 'Erase this remote Personal Home?',
+            data: {
+                canonicalServerUrl: 'https://home.example.test',
+                homeServerIdentityId: 'home_1',
+                paths: ['/srv/happier/home.db'],
+                estimatedBytes: null,
+            },
+        });
+
+        expect(respond).toHaveBeenCalledWith(taskId, { confirmed: false });
+        expect(cancel).not.toHaveBeenCalled();
+    });
+
+    it('fails a malformed remote Personal Home ownership prompt closed without showing approval UI', async () => {
+        const { taskId, respond } = await renderPrompt({
+            kind: 'personal_home.confirm_remote_erase.v1',
+            message: 'Erase this remote Personal Home?',
+            data: {
+                canonicalServerUrl: 'https://home.example.test',
+                homeServerIdentityId: '',
+                paths: ['/srv/happier/home.db'],
+                estimatedBytes: 1,
+            },
+        });
+
+        expect(modalSpies.confirm).not.toHaveBeenCalled();
+        expect(respond).toHaveBeenCalledWith(taskId, { confirmed: false });
+    });
+
     it('remembers accepted SSH host keys when the user opts into persistent trust', async () => {
         modalSpies.confirm
             .mockResolvedValueOnce(true)

@@ -257,17 +257,16 @@ export function resolveNewSessionServerTarget(params: Readonly<{
     allowedServerIds: ReadonlyArray<string>;
 }>): ResolvedNewSessionServerTarget {
     const allowedServerIds = normalizeResolvedServerIds(params.allowedServerIds);
+    const requestedServerId = normalizeId(params.requestedServerId);
     if (allowedServerIds.length === 0) {
         return {
             targetServerId: null,
-            rejectedRequestedServerId: null,
+            rejectedRequestedServerId: requestedServerId || null,
         };
     }
 
     const activeServerId = normalizeId(params.activeServerId);
     const fallbackServerId = allowedServerIds.includes(activeServerId) ? activeServerId : (allowedServerIds[0] ?? null);
-    const requestedServerId = normalizeId(params.requestedServerId);
-
     if (!requestedServerId) {
         return {
             targetServerId: fallbackServerId,
@@ -283,7 +282,7 @@ export function resolveNewSessionServerTarget(params: Readonly<{
     }
 
     return {
-        targetServerId: fallbackServerId,
+        targetServerId: null,
         rejectedRequestedServerId: requestedServerId,
     };
 }

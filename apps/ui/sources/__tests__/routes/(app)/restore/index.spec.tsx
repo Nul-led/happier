@@ -89,6 +89,11 @@ vi.mock('@/auth/flows/qrStart', () => ({
     authQRStart: vi.fn(async () => false),
 }));
 
+vi.mock('@/sync/domains/server/serverProfiles', () => ({
+    getActiveServerUrl: () => 'https://stack.example.test',
+    adoptHomeProfile: vi.fn(async () => ({ id: 'srv', serverUrl: 'https://stack.example.test' })),
+}));
+
 vi.mock('@/auth/flows/qrWait', () => ({
     authQRWait: vi.fn(async () => null),
 }));

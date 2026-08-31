@@ -251,7 +251,7 @@ export function createActivePluginCollectionCandidatePreparation(input: Readonly
             }
             const after = currentness(prepared.operation);
             if (after) {
-                prepared.operation.release();
+                await prepared.operation.release();
                 return { kind: 'failed', outcome: unavailable(after) };
             }
             const accountRetirement = input.candidate.accountLifetime.onRetire(() => {
@@ -462,7 +462,7 @@ export function createActivePluginCollectionCandidatePreparation(input: Readonly
                 return unavailable('retire_transport_unavailable');
             } finally {
                 accountRetirement.dispose();
-                operation.release();
+                await operation.release();
             }
         })();
         return await retirement;

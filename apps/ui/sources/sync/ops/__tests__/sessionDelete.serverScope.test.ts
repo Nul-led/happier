@@ -138,17 +138,20 @@ describe('sessionDeleteWithServerScope', () => {
       timeoutMs: 1000,
       encryption: null,
     });
-    mockRuntimeFetch.mockResolvedValueOnce(makeResponse({
+    const scopedDeleteResponses = [makeResponse({
       ok: false,
       status: 404,
       text: 'Session not found or not owned by user',
-    }));
-    const absentOverFetch = await sessionDeleteWithServerScope('sid-2', { serverId: 'server-b' });
-    mockRuntimeFetch.mockResolvedValueOnce(makeResponse({
+    }), makeResponse({
       ok: false,
       status: 409,
       text: 'Session delete condition was lost',
-    }));
+    })];
+    mockRuntimeFetch.mockImplementation(async (_url: string, init?: RequestInit) =>
+      init?.method === 'DELETE'
+        ? scopedDeleteResponses.shift()
+        : makeResponse({ ok: true }));
+    const absentOverFetch = await sessionDeleteWithServerScope('sid-2', { serverId: 'server-b' });
     const conflictOverFetch = await sessionDeleteWithServerScope('sid-2', { serverId: 'server-b' });
 
     const authorityRequest = vi.fn()

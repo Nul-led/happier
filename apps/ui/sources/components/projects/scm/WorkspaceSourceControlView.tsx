@@ -16,7 +16,7 @@ import { ScmChangeRow } from '@/components/workspaces/scm/changes/ScmChangeRow';
 import { ScmChangeOverflowMenu } from '@/components/workspaces/scm/changes/ScmChangeOverflowMenu';
 import { ScmCommitComposerCard } from '@/components/workspaces/scm/commitComposer/ScmCommitComposerCard';
 import { SCM_COMMIT_STRATEGIES, type ScmCommitStrategy } from '@/scm/settings/commitStrategy';
-import { countCommitSelectionItems } from '@/scm/operations/commitSelectionHints';
+import { countCommitSelectionItems, isFileSelectedForCommit as resolveFileSelectedForCommit } from '@/scm/operations/commitSelectionHints';
 import { isAtomicCommitStrategy } from '@/scm/settings/commitStrategy';
 import { resolveChangedFilesViewMode, type ChangedFilesViewMode } from '@/scm/scmAttribution';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
@@ -136,7 +136,11 @@ export const WorkspaceSourceControlView = React.memo((props: WorkspaceSourceCont
     }, [commitSelectionPatches, commitSelectionPaths]);
 
     const isSelectedForCommit = React.useCallback((file: ScmFileStatus) => {
-        return isAtomicCommitStrategy(scmCommitStrategy) ? commitSelectionSet.has(file.fullPath) : file.isIncluded === true;
+        return resolveFileSelectedForCommit({
+            commitStrategy: scmCommitStrategy,
+            file,
+            atomicSelectionPaths: commitSelectionSet,
+        });
     }, [commitSelectionSet, scmCommitStrategy]);
 
     const selectedRepositoryChangedFiles = React.useMemo(() => {

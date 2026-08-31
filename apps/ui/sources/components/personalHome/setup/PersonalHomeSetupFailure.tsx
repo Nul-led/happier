@@ -6,8 +6,6 @@ import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 
-import type { NormalizedSetupDetail } from '../bootstrap/personalHomeBootstrapTypes';
-
 const styles = StyleSheet.create((theme) => ({
     root: { gap: 14, marginTop: 20 },
     message: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 14, lineHeight: 21 },
@@ -19,12 +17,12 @@ const styles = StyleSheet.create((theme) => ({
 }));
 
 export const PersonalHomeSetupFailure = React.memo(function PersonalHomeSetupFailure(props: Readonly<{
-    detail?: NormalizedSetupDetail;
+    retryRef?: React.Ref<React.ElementRef<typeof Pressable>>;
+    detailsRef?: React.Ref<React.ElementRef<typeof Pressable>>;
     onRetry?: () => void;
     onOpenDetails?: () => void;
 }>) {
     const { theme } = useUnistyles();
-    const message = props.detail?.message ?? t('common.error');
     return (
         <View
             testID="personal-home-bootstrap-failure"
@@ -32,10 +30,11 @@ export const PersonalHomeSetupFailure = React.memo(function PersonalHomeSetupFai
             accessibilityRole="alert"
             style={styles.root}
         >
-            <Text style={styles.message}>{message}</Text>
+            <Text style={styles.message}>{t('personalHome.bootstrap.failureBody')}</Text>
             <View style={styles.actions}>
                 {props.onRetry ? (
                     <Pressable
+                        ref={props.retryRef}
                         testID="personal-home-bootstrap-retry"
                         accessibilityRole="button"
                         accessibilityLabel={t('common.retry')}
@@ -47,6 +46,7 @@ export const PersonalHomeSetupFailure = React.memo(function PersonalHomeSetupFai
                 ) : null}
                 {props.onOpenDetails ? (
                     <Pressable
+                        ref={props.detailsRef}
                         testID="personal-home-bootstrap-details"
                         accessibilityRole="button"
                         accessibilityLabel={t('common.details')}

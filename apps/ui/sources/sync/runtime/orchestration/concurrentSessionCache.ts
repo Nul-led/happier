@@ -4,16 +4,24 @@ import {
     isDataKeyAuthCredentials,
     isLegacyAuthCredentials,
     isTokenOnlyAuthCredentials,
+    subscribeHomeCredentialMutations,
 } from '@/auth/storage/tokenStorage';
 import { Encryption } from '@/sync/encryption/encryption';
 import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
 import { fetchAndApplyMachines, type MachineDataKeyCacheEntry } from '@/sync/engine/machines/syncMachines';
 import { fetchAndApplySessions } from '@/sync/engine/sessions/sessionSnapshot';
-import { getEffectiveServerSelectionFromRawSettings } from '@/sync/domains/server/selection/serverSelectionResolution';
+import {
+    getEffectiveServerSelectionFromRawSettings,
+    type RawServerSelectionSettings,
+} from '@/sync/domains/server/selection/serverSelectionResolution';
+import type { ServerSelectionSettingsLike } from '@/sync/domains/server/selection/serverSelectionTypes';
 import {
     areServerProfileIdentifiersEquivalent,
     listServerProfiles,
+    loadHomeViewState,
     resolveServerProfileScopeId,
+    subscribeHomeViewState,
+    subscribeServerProfiles,
 } from '@/sync/domains/server/serverProfiles';
 import {
     listServerProfileScopeIds,
@@ -22,7 +30,6 @@ import {
 import { getActiveServerSnapshot, subscribeActiveServer } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storageStore';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
-import type { Settings } from '@/sync/domains/settings/settings';
 import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
 import {
     invalidateCachedTransferRoutesForMachine,
@@ -45,14 +52,19 @@ import {
     type ManagedConnectionTransport,
     type TransportDisconnectEvent,
 } from '@happier-dev/connection-supervisor';
+import type { IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
 import {
     reportServerUnreachable,
-    startServerReachabilitySupervisor,
-    stopServerReachabilitySupervisor,
+    acquireServerReachabilitySupervisor,
     subscribeServerReachabilityNetworkAllowed,
     subscribeServerReachabilityState,
 } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
-import { createSessionRequestForExplicitServerScope } from './serverScopedRpc/createSessionRequestWithServerScope';
+import { createServerFetchAtEndpoint } from '@/sync/http/client';
+import {
+    resolveServerScopedTransport,
+    type ResolvedServerScopedTransport,
+} from './serverScopedRpc/resolveServerScopedTransport';
+import { startNativeSshTunnelRuntimeAppStateLifecycle } from '@/sync/runtime/nativeSshTunnels/runtime';
 import {
     createConcurrentServerSocketTransport,
     type ConcurrentServerSocket,
@@ -60,21 +72,35 @@ import {
 import { shouldRefreshConcurrentSessionCacheForUpdate } from './concurrentSessionCacheUpdateClassifier';
 import { startRuntimeActiveGatedInterval } from '@/utils/runtime/isRuntimeActive';
 import { areStoredMachinesEqual, hasMachineDaemonStateAdvanced } from '@/sync/store/domains/areStoredMachinesEqual';
-import { scheduleMachineListDisplayWarmCacheSave } from '@/sync/domains/state/machineDisplayWarmCacheWriter';
 import { registerExternalSessionStatusDemandTransport } from './externalSessions/externalSessionStatusDemandCoordinator';
+import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
+import {
+    schedulePushTokenReconciliation,
+    startPushTokenReconciliation,
+    stopPushTokenReconciliation,
+} from '@/sync/engine/account/syncAccount';
 
 type ConcurrentTarget = Readonly<{
     id: string;
     serverUrl: string;
     serverName: string;
+    homeServerIdentityId?: string;
+    irohEndpoint?: IrohEndpointDescriptorV1;
+    irohDescriptorRevision?: number;
+    irohConfigKey?: string;
+    canonicalServerUrl?: string;
+    publicServerUrl?: string | null;
 }>;
 
-type ConcurrentSelectionSettings = Pick<
-    Settings,
-    | 'serverSelectionGroups'
-    | 'serverSelectionActiveTargetKind'
-    | 'serverSelectionActiveTargetId'
->;
+type ConcurrentSelectionSettings = ServerSelectionSettingsLike;
+
+function toRawConcurrentSelectionSettings(settings: ConcurrentSelectionSettings): RawServerSelectionSettings {
+    return {
+        serverSelectionGroups: settings.serverSelectionGroups ?? null,
+        serverSelectionActiveTargetKind: settings.serverSelectionActiveTargetKind ?? null,
+        serverSelectionActiveTargetId: settings.serverSelectionActiveTargetId ?? null,
+    };
+}
 
 type ManagedConcurrentServer = {
     id: string;
@@ -84,12 +110,16 @@ type ManagedConcurrentServer = {
     socket: ConcurrentServerSocket | null;
     socketTransport: ManagedConnectionTransport | null;
     reachabilityUnsubscribe: (() => void) | null;
+    reachabilityRelease: (() => Promise<void>) | null;
+    reachabilityAcquireGeneration: number;
     reachabilityState: ManagedConnectionState;
     detachSocketTransportListeners: Array<() => void>;
     encryption: Encryption | null;
     sessionDataKeys: Map<string, Uint8Array>;
     sessionDataKeyEnvelopes: Map<string, string>;
     machineDataKeys: Map<string, MachineDataKeyCacheEntry>;
+    irohLease: ResolvedServerScopedTransport | null;
+    irohConfigKey: string | null;
     refreshQueued: boolean;
     refreshInFlight: Promise<void> | null;
     refreshTimer: ReturnType<typeof setTimeout> | null;
@@ -127,9 +157,13 @@ function areAuthCredentialsEquivalent(a: AuthCredentials, b: AuthCredentials): b
 let started = false;
 let storageUnsubscribe: (() => void) | null = null;
 let activeServerUnsubscribe: (() => void) | null = null;
+let serverProfilesUnsubscribe: (() => void) | null = null;
+let homeViewStateUnsubscribe: (() => void) | null = null;
+let homeCredentialMutationsUnsubscribe: (() => void) | null = null;
 let networkAllowedUnsubscribe: (() => void) | null = null;
 let periodicRefreshStop: (() => void) | null = null;
 let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
+let reconcileRequestRevision = 0;
 
 function normalizeServerUrl(url: string): string {
     return canonicalizeServerUrl(String(url ?? ''));
@@ -139,15 +173,46 @@ function normalizeServerId(value: unknown): string {
     return String(value ?? '').trim();
 }
 
-function createServerRequest(serverUrl: string, token: string): (path: string, init: RequestInit) => Promise<Response> {
-    const normalized = normalizeServerUrl(serverUrl);
-    const request = createSessionRequestForExplicitServerScope({
-        serverUrl: normalized,
-        token,
+function readConcurrentSelectionSettings(): ConcurrentSelectionSettings {
+    const homeViewState = loadHomeViewState();
+    if (homeViewState) {
+        return {
+            serverSelectionGroups: homeViewState.groups,
+            serverSelectionActiveTargetKind: homeViewState.activeTargetKind,
+            serverSelectionActiveTargetId: homeViewState.activeTargetId,
+        };
+    }
+    const settings = storage.getState().settings;
+    return {
+        serverSelectionGroups: Array.isArray(settings.serverSelectionGroups)
+            ? settings.serverSelectionGroups
+            : [],
+        serverSelectionActiveTargetKind:
+            settings.serverSelectionActiveTargetKind === 'server'
+            || settings.serverSelectionActiveTargetKind === 'group'
+                ? settings.serverSelectionActiveTargetKind
+                : null,
+        serverSelectionActiveTargetId: typeof settings.serverSelectionActiveTargetId === 'string'
+            ? settings.serverSelectionActiveTargetId
+            : null,
+    };
+}
+
+function createServerRequest(
+    entry: ManagedConcurrentServer,
+    observeResponse: (response: Response) => void,
+): (path: string, init: RequestInit) => Promise<Response> {
+    const request = createServerFetchAtEndpoint({
+        endpointUrl: entry.serverUrl,
+        ...(entry.irohLease ? { runtimeOrigin: entry.irohLease.runtimeOrigin } : {}),
+        credentials: entry.credentials,
+        serverId: entry.id,
     });
     return async (path: string, init: RequestInit) => {
         const requestPath = String(path ?? '').startsWith('/') ? String(path) : `/${String(path ?? '')}`;
-        return await request(requestPath, init);
+        const response = await request(requestPath, init);
+        observeResponse(response);
+        return response;
     };
 }
 
@@ -159,13 +224,20 @@ export function resolveConcurrentTargets(params: Readonly<{
         name: string;
         serverIdentityId?: string | null;
         legacyServerIds?: readonly string[];
+        irohEndpoint?: IrohEndpointDescriptorV1;
+        connectionDescriptorRevision?: number;
+        canonicalServerUrl?: string | null;
+        publicServerUrl?: string | null;
     }>>;
     settings: ConcurrentSelectionSettings;
 }>): ConcurrentTarget[] {
     const selection = getEffectiveServerSelectionFromRawSettings({
         activeServerId: params.activeServerId,
         availableServerIds: listServerProfileScopeIds(params.profiles),
-        settings: normalizeServerSelectionSettingsForProfileScopeIds(params.settings, params.profiles),
+        settings: normalizeServerSelectionSettingsForProfileScopeIds(
+            toRawConcurrentSelectionSettings(params.settings),
+            params.profiles,
+        ),
     });
     if (!selection.enabled) {
         return [];
@@ -185,6 +257,22 @@ export function resolveConcurrentTargets(params: Readonly<{
             id: scopeId,
             serverUrl,
             serverName: String(profile.name ?? scopeId).trim() || scopeId,
+            ...(profile.serverIdentityId?.trim() && profile.irohEndpoint
+                ? {
+                    homeServerIdentityId: profile.serverIdentityId.trim(),
+                    irohEndpoint: profile.irohEndpoint,
+                    ...(profile.connectionDescriptorRevision === undefined
+                        ? {}
+                        : { irohDescriptorRevision: profile.connectionDescriptorRevision }),
+                    irohConfigKey: JSON.stringify({
+                    homeServerIdentityId: profile.serverIdentityId.trim(),
+                    endpoint: profile.irohEndpoint,
+                    descriptorRevision: profile.connectionDescriptorRevision ?? null,
+                    }),
+                    canonicalServerUrl: profile.canonicalServerUrl ?? profile.serverUrl,
+                    publicServerUrl: profile.publicServerUrl ?? null,
+                }
+                : {}),
         });
     }
     return targets;
@@ -414,15 +502,6 @@ function updateConcurrentMachineListCache(input: {
                 [serverId]: nextMachines,
             };
         })();
-        const nextMachinesForServer = nextMachineListByServerId?.[serverId];
-        if (Array.isArray(nextMachinesForServer)) {
-            scheduleMachineListDisplayWarmCacheSave({
-                serverId,
-                accountId: state.profile.id,
-                machines: nextMachinesForServer,
-            });
-        }
-
         const nextMachineListStatusByServerId = state.machineListStatusByServerId?.[serverId] === input.status
             ? state.machineListStatusByServerId
             : {
@@ -498,17 +577,15 @@ function clearConcurrentSessionListCache(serverIdRaw: string): void {
 
         const nextRowStateByServerId = shouldPruneCanonicalState && state.sessionListRowStateByServerId && (serverId in state.sessionListRowStateByServerId)
             ? (() => {
-                const next = { ...state.sessionListRowStateByServerId };
-                delete (next as any)[serverId];
-                return next;
+                const { [serverId]: _removed, ...rest } = state.sessionListRowStateByServerId;
+                return rest;
             })()
             : state.sessionListRowStateByServerId;
 
         const nextIndexByServerId = shouldPruneCanonicalState && state.sessionListIndexByServerId && (serverId in state.sessionListIndexByServerId)
             ? (() => {
-                const next = { ...state.sessionListIndexByServerId };
-                delete (next as any)[serverId];
-                return next;
+                const { [serverId]: _removed, ...rest } = state.sessionListIndexByServerId;
+                return rest;
             })()
             : state.sessionListIndexByServerId;
 
@@ -543,87 +620,113 @@ function clearConcurrentMachineListCache(serverIdRaw: string): void {
 }
 
 async function refreshServerSnapshot(entry: ManagedConcurrentServer): Promise<void> {
+    const startedAt = Date.now();
+    let responseBytes = 0;
     const encryption = await getOrCreateEncryption(entry);
-    const request = createServerRequest(entry.serverUrl, entry.credentials.token);
+    const request = createServerRequest(entry, (response) => {
+        const contentLength = Number(response.headers.get('content-length'));
+        if (Number.isFinite(contentLength) && contentLength > 0) {
+            responseBytes += contentLength;
+        }
+    });
     let sessions: Session[] = [];
     let machines: Machine[] = [];
-    await fetchAndApplySessions({
-        serverId: entry.id,
-        credentials: entry.credentials,
-        encryption,
-        sessionDataKeys: entry.sessionDataKeys,
-        sessionDataKeyEnvelopes: entry.sessionDataKeyEnvelopes,
-        request,
-        getExistingSession: () => null,
-        applySessions: (nextSessions) => {
-            sessions = nextSessions as Session[];
-        },
-        repairInvalidReadStateV1: async () => {},
-        log: { log: () => {} },
-    });
+    try {
+        await fetchAndApplySessions({
+            serverId: entry.id,
+            credentials: entry.credentials,
+            encryption,
+            sessionDataKeys: entry.sessionDataKeys,
+            sessionDataKeyEnvelopes: entry.sessionDataKeyEnvelopes,
+            request,
+            getExistingSession: () => null,
+            applySessions: (nextSessions) => {
+                sessions = nextSessions as Session[];
+            },
+            repairInvalidReadStateV1: async () => {},
+            log: { log: () => {} },
+        });
 
-    await fetchAndApplyMachines({
-        credentials: entry.credentials,
-        encryption,
-        machineDataKeys: entry.machineDataKeys,
-        request,
-        throwOnError: false,
-        applyMachines: (nextMachines) => {
-            machines = nextMachines;
-        },
-    });
+        await fetchAndApplyMachines({
+            credentials: entry.credentials,
+            encryption,
+            machineDataKeys: entry.machineDataKeys,
+            request,
+            throwOnError: false,
+            applyMachines: (nextMachines) => {
+                machines = nextMachines;
+            },
+        });
 
-    // Guard against late async writes: a refresh can finish after this server is removed.
-    if (managedServers.get(entry.id) !== entry) {
-        return;
-    }
+        // Guard against late async writes: a refresh can finish after this server is removed.
+        if (managedServers.get(entry.id) !== entry || entry.reachabilityState.phase !== 'online') {
+            return;
+        }
 
-    const previousCacheEntry = storage.getState().concurrentSessionListCacheByServerId?.[entry.id] ?? null;
-    const previousSessions = previousCacheEntry && typeof previousCacheEntry === 'object'
-        ? previousCacheEntry.sessions
-        : null;
-    const nextSessions: Record<string, SessionListRenderableSession> = {};
-    for (const session of sessions) {
-        nextSessions[session.id] = buildSessionListRenderableFromSession(
-            session,
-            previousSessions && typeof previousSessions === 'object' ? previousSessions[session.id] : undefined,
+        const previousCacheEntry = storage.getState().concurrentSessionListCacheByServerId?.[entry.id] ?? null;
+        const previousSessions = previousCacheEntry && typeof previousCacheEntry === 'object'
+            ? previousCacheEntry.sessions
+            : null;
+        const nextSessions: Record<string, SessionListRenderableSession> = {};
+        for (const session of sessions) {
+            nextSessions[session.id] = buildSessionListRenderableFromSession(
+                session,
+                previousSessions && typeof previousSessions === 'object' ? previousSessions[session.id] : undefined,
+            );
+        }
+
+        updateConcurrentMachineListCache({
+            serverId: entry.id,
+            machines,
+            status: 'idle',
+            authoritative: true,
+        });
+        updateConcurrentSessionListCache({
+            serverId: entry.id,
+            entry: {
+                serverName: String(entry.serverName ?? '').trim() || null,
+                sessions: nextSessions,
+            },
+        });
+    } finally {
+        syncPerformanceTelemetry.recordDuration(
+            'sync.concurrent.refresh',
+            Date.now() - startedAt,
+            { responseBytes },
         );
     }
-
-    updateConcurrentMachineListCache({
-        serverId: entry.id,
-        machines,
-        status: 'idle',
-        authoritative: true,
-    });
-    updateConcurrentSessionListCache({
-        serverId: entry.id,
-        entry: {
-            serverName: String(entry.serverName ?? '').trim() || null,
-            sessions: nextSessions,
-        },
-    });
 }
 
 function isManagedServerActive(entry: ManagedConcurrentServer): boolean {
     return managedServers.get(entry.id) === entry;
 }
 
-function queueRefresh(entry: ManagedConcurrentServer): void {
+function queueRefresh(entry: ManagedConcurrentServer, source: 'socket' | 'other' = 'other'): void {
     if (!isManagedServerActive(entry)) return;
     if (entry.reachabilityState.phase !== 'online') return;
-    if (entry.refreshTimer) return;
+    if (entry.refreshTimer) {
+        if (source === 'socket') {
+            syncPerformanceTelemetry.count('sync.concurrent.refresh.socket', { coalesced: 1 });
+        }
+        return;
+    }
+    if (source === 'socket') {
+        syncPerformanceTelemetry.count('sync.concurrent.refresh.socket', { enqueued: 1 });
+    }
     entry.refreshTimer = setTimeout(() => {
         entry.refreshTimer = null;
-        void runRefresh(entry);
+        void runRefresh(entry, source);
     }, REFRESH_DEBOUNCE_MS);
 }
 
-async function runRefresh(entry: ManagedConcurrentServer): Promise<void> {
+async function runRefresh(entry: ManagedConcurrentServer, source: 'socket' | 'other'): Promise<void> {
     if (!isManagedServerActive(entry)) return;
     if (entry.reachabilityState.phase !== 'online') return;
     if (entry.refreshInFlight) {
         entry.refreshQueued = true;
+        if (source === 'socket') {
+            syncPerformanceTelemetry.count('sync.concurrent.refresh.socket', { inFlightQueued: 1 });
+        }
         return;
     }
     entry.refreshInFlight = (async () => {
@@ -647,25 +750,34 @@ async function runRefresh(entry: ManagedConcurrentServer): Promise<void> {
 function stopManagedServer(serverId: string): void {
     const entry = managedServers.get(serverId);
     if (!entry) return;
+    entry.reachabilityAcquireGeneration += 1;
     if (entry.refreshTimer) {
         clearTimeout(entry.refreshTimer);
     }
     entry.reachabilityUnsubscribe?.();
     entry.reachabilityUnsubscribe = null;
-    void stopServerReachabilitySupervisor(entry.serverUrl);
+    void entry.reachabilityRelease?.();
+    entry.reachabilityRelease = null;
     entry.socket = null;
     for (const detach of entry.detachSocketTransportListeners.splice(0)) {
         detach();
     }
     const transport = entry.socketTransport;
     entry.socketTransport = null;
+    const irohLease = entry.irohLease;
+    entry.irohLease = null;
     invalidateCachedTransferRoutesForServer({ serverId: entry.id });
     void transport?.disconnect({ intentional: true });
     void transport?.destroy();
+    void irohLease?.release().catch(() => undefined);
     managedServers.delete(serverId);
 }
 
-function createManagedServer(target: ConcurrentTarget, credentials: AuthCredentials): ManagedConcurrentServer {
+async function createManagedServer(
+    target: ConcurrentTarget,
+    credentials: AuthCredentials,
+    irohLease: ResolvedServerScopedTransport | null,
+): Promise<ManagedConcurrentServer> {
     const normalizedServerUrl = normalizeServerUrl(target.serverUrl) || target.serverUrl;
     const entry: ManagedConcurrentServer = {
         id: target.id,
@@ -675,6 +787,8 @@ function createManagedServer(target: ConcurrentTarget, credentials: AuthCredenti
         socket: null,
         socketTransport: null,
         reachabilityUnsubscribe: null,
+        reachabilityRelease: null,
+        reachabilityAcquireGeneration: 0,
         reachabilityState: {
             phase: 'idle',
             reason: null,
@@ -689,11 +803,17 @@ function createManagedServer(target: ConcurrentTarget, credentials: AuthCredenti
         sessionDataKeys: new Map<string, Uint8Array>(),
         sessionDataKeyEnvelopes: new Map<string, string>(),
         machineDataKeys: new Map<string, MachineDataKeyCacheEntry>(),
+        irohLease,
+        irohConfigKey: target.irohConfigKey ?? null,
         refreshQueued: false,
         refreshInFlight: null,
         refreshTimer: null,
     };
 
+    // The reachability subscription emits synchronously. Publish the exact
+    // entry first so an already-online shared supervisor can initialize it.
+    managedServers.set(entry.id, entry);
+    try {
     entry.reachabilityUnsubscribe = subscribeServerReachabilityState(normalizedServerUrl, (state) => {
         if (!isManagedServerActive(entry)) return;
         entry.reachabilityState = state;
@@ -710,6 +830,14 @@ function createManagedServer(target: ConcurrentTarget, credentials: AuthCredenti
         }
 
         if (state.phase !== 'online') {
+            const cachedMachines = storage.getState().machineListByServerId?.[entry.id];
+            if (Array.isArray(cachedMachines)) {
+                updateConcurrentMachineListCache({
+                    serverId: entry.id,
+                    machines: cachedMachines,
+                    status: 'error',
+                });
+            }
             void entry.socketTransport?.disconnect({ intentional: true });
             return;
         }
@@ -718,12 +846,9 @@ function createManagedServer(target: ConcurrentTarget, credentials: AuthCredenti
             const { socket, transport } = createConcurrentServerSocketTransport({
                 serverUrl: normalizedServerUrl,
                 token: credentials.token,
-                ...(() => {
-                    const active = getActiveServerSnapshot();
-                    return areServerProfileIdentifiersEquivalent(active.serverId, entry.id)
-                        ? { runtimeOrigin: active.runtimeOrigin, carrier: active.carrier }
-                        : {};
-                })(),
+                ...(entry.irohLease
+                    ? { runtimeOrigin: entry.irohLease.runtimeOrigin, carrier: entry.irohLease.carrier }
+                    : {}),
             });
             entry.socket = socket;
             entry.socketTransport = transport;
@@ -739,7 +864,7 @@ function createManagedServer(target: ConcurrentTarget, credentials: AuthCredenti
                 if (!shouldRefreshConcurrentSessionCacheForUpdate(raw)) {
                     return;
                 }
-                queueRefresh(entry);
+                queueRefresh(entry, 'socket');
             });
             socket.on('ephemeral', (raw: unknown) => {
                 statusDemandTransport.observeEphemeral(raw);
@@ -766,15 +891,69 @@ function createManagedServer(target: ConcurrentTarget, credentials: AuthCredenti
         }
     });
 
-    void startServerReachabilitySupervisor({ serverUrl: normalizedServerUrl, token: credentials.token });
+    await acquireManagedServerReachability(entry);
     return entry;
+    } catch (error) {
+        entry.reachabilityUnsubscribe?.();
+        entry.reachabilityUnsubscribe = null;
+        await entry.reachabilityRelease?.().catch(() => undefined);
+        entry.reachabilityRelease = null;
+        if (managedServers.get(entry.id) === entry) managedServers.delete(entry.id);
+        await entry.irohLease?.release().catch(() => undefined);
+        throw error;
+    }
 }
 
-async function reconcileConcurrentServers(): Promise<void> {
-    if (!started) return;
+async function acquireManagedServerReachability(entry: ManagedConcurrentServer): Promise<void> {
+    const acquireGeneration = entry.reachabilityAcquireGeneration + 1;
+    entry.reachabilityAcquireGeneration = acquireGeneration;
+    const lease = await acquireServerReachabilitySupervisor({
+        serverUrl: entry.serverUrl,
+        token: entry.credentials.token,
+        ...(entry.irohLease && normalizeServerUrl(entry.irohLease.runtimeOrigin) !== entry.serverUrl
+            ? { runtimeOrigin: entry.irohLease.runtimeOrigin }
+            : {}),
+    });
+
+    if (
+        !started
+        || managedServers.get(entry.id) !== entry
+        || entry.reachabilityAcquireGeneration !== acquireGeneration
+    ) {
+        await lease.release().catch(() => undefined);
+        return;
+    }
+
+    const previousRelease = entry.reachabilityRelease;
+    entry.reachabilityRelease = lease.release;
+    await previousRelease?.().catch(() => undefined);
+}
+
+async function acquireConcurrentHomeTransport(
+    target: ConcurrentTarget,
+    credentials: AuthCredentials,
+): Promise<ResolvedServerScopedTransport> {
+    // Reuse the existing single AppState owner for every native loopback
+    // carrier; concurrent Homes do not create a second lifecycle mount.
+    if (target.irohEndpoint) startNativeSshTunnelRuntimeAppStateLifecycle();
+    return await resolveServerScopedTransport({
+        profile: {
+            serverUrl: target.serverUrl,
+            canonicalServerUrl: target.canonicalServerUrl ?? target.serverUrl,
+            publicServerUrl: target.publicServerUrl ?? null,
+            serverIdentityId: target.homeServerIdentityId,
+            irohEndpoint: target.irohEndpoint,
+            connectionDescriptorRevision: target.irohDescriptorRevision,
+        },
+        credentials,
+    });
+}
+
+async function reconcileConcurrentServers(requestRevision: number): Promise<void> {
+    if (!started || requestRevision !== reconcileRequestRevision) return;
     const profiles = listServerProfiles();
     const activeServerId = getActiveServerSnapshot().serverId;
-    const settings = storage.getState().settings;
+    const selectionSettings = readConcurrentSelectionSettings();
     const targets = resolveConcurrentTargets({
         activeServerId,
         profiles: profiles.map((profile) => ({
@@ -783,20 +962,12 @@ async function reconcileConcurrentServers(): Promise<void> {
             name: profile.name,
             serverIdentityId: profile.serverIdentityId,
             legacyServerIds: profile.legacyServerIds,
+            irohEndpoint: profile.irohEndpoint,
+            connectionDescriptorRevision: profile.connectionDescriptorRevision,
+            canonicalServerUrl: profile.canonicalServerUrl,
+            publicServerUrl: profile.publicServerUrl,
         })),
-        settings: {
-            serverSelectionGroups: Array.isArray(settings.serverSelectionGroups)
-                ? (settings.serverSelectionGroups as any)
-                : [],
-            serverSelectionActiveTargetKind:
-                settings.serverSelectionActiveTargetKind === 'server'
-                || settings.serverSelectionActiveTargetKind === 'group'
-                    ? settings.serverSelectionActiveTargetKind
-                    : null,
-            serverSelectionActiveTargetId: typeof settings.serverSelectionActiveTargetId === 'string'
-                ? settings.serverSelectionActiveTargetId
-                : null,
-        },
+        settings: selectionSettings,
     });
 
     const desiredById = new Map(targets.map((target) => [target.id, target]));
@@ -811,6 +982,9 @@ async function reconcileConcurrentServers(): Promise<void> {
 
     for (const target of targets) {
         const credentials = await TokenStorage.getCredentialsForServerUrl(target.serverUrl, { serverId: target.id });
+        if (!started || requestRevision !== reconcileRequestRevision) {
+            return;
+        }
         if (!credentials) {
             stopManagedServer(target.id);
             updateConcurrentSessionListCache({ serverId: target.id, entry: null });
@@ -827,26 +1001,61 @@ async function reconcileConcurrentServers(): Promise<void> {
             existing
             && existing.serverUrl === target.serverUrl
             && areAuthCredentialsEquivalent(existing.credentials, credentials)
+            && existing.irohConfigKey === (target.irohConfigKey ?? null)
+            && (target.irohConfigKey === undefined || existing.irohLease !== null)
         ) {
-            existing.serverName = target.serverName;
+            if (existing.serverName !== target.serverName) {
+                existing.serverName = target.serverName;
+                const cached = storage.getState().concurrentSessionListCacheByServerId?.[target.id] ?? null;
+                if (cached) {
+                    updateConcurrentSessionListCache({
+                        serverId: target.id,
+                        entry: {
+                            ...cached,
+                            serverName: target.serverName,
+                        },
+                    });
+                }
+            }
             continue;
         }
 
         if (existing) {
             stopManagedServer(target.id);
         }
-        const next = createManagedServer(target, credentials);
-        managedServers.set(target.id, next);
+        let irohLease: ResolvedServerScopedTransport | null;
+        try {
+            irohLease = await acquireConcurrentHomeTransport(target, credentials);
+        } catch {
+            // Unsafe Iroh verification failures fail this Home closed. Do not
+            // create the ordinary HTTPS reachability/socket/refresh bypass.
+            clearConcurrentSessionListCache(target.id);
+            clearConcurrentMachineListCache(target.id);
+            continue;
+        }
+        if (!started || requestRevision !== reconcileRequestRevision) {
+            await irohLease?.release().catch(() => undefined);
+            return;
+        }
+        let next: ManagedConcurrentServer;
+        try {
+            next = await createManagedServer(target, credentials, irohLease);
+        } catch {
+            // Construction rollback is exact and local; a later reconciliation
+            // retries this Home without poisoning other secondary runtimes.
+            continue;
+        }
         queueRefresh(next);
     }
 }
 
 function scheduleReconcile(): void {
     if (!started) return;
+    reconcileRequestRevision += 1;
     if (reconcileTimer) return;
     reconcileTimer = setTimeout(() => {
         reconcileTimer = null;
-        void reconcileConcurrentServers();
+        void reconcileConcurrentServers(reconcileRequestRevision);
     }, 0);
 }
 
@@ -862,22 +1071,25 @@ function pauseManagedServersForNetworkDisallowed(): void {
 
 function resumeManagedServersForNetworkAllowed(): void {
     for (const entry of managedServers.values()) {
-        void startServerReachabilitySupervisor({ serverUrl: entry.serverUrl, token: entry.credentials.token });
+        void acquireManagedServerReachability(entry).catch(() => undefined);
         if (entry.reachabilityState.phase === 'online' && entry.socketTransport?.isConnected() !== true) {
             void entry.socketTransport?.connect();
         }
         queueRefresh(entry);
     }
     scheduleReconcile();
+    schedulePushTokenReconciliation();
 }
 
 export function startConcurrentSessionCacheSync(): void {
     if (started) return;
     started = true;
+    startPushTokenReconciliation();
     let lastActiveServerSnapshot = getActiveServerSnapshot();
 
     let lastConfigKey = '';
     storageUnsubscribe = storage.subscribe((state) => {
+        if (loadHomeViewState()) return;
         const key = JSON.stringify({
             serverSelectionGroups: Array.isArray(state.settings.serverSelectionGroups)
                 ? state.settings.serverSelectionGroups
@@ -909,6 +1121,18 @@ export function startConcurrentSessionCacheSync(): void {
         scheduleReconcile();
     });
 
+    serverProfilesUnsubscribe = subscribeServerProfiles(() => {
+        scheduleReconcile();
+        schedulePushTokenReconciliation();
+    });
+    homeViewStateUnsubscribe = subscribeHomeViewState(() => {
+        scheduleReconcile();
+    });
+    homeCredentialMutationsUnsubscribe = subscribeHomeCredentialMutations(() => {
+        scheduleReconcile();
+        schedulePushTokenReconciliation();
+    });
+
     networkAllowedUnsubscribe = subscribeServerReachabilityNetworkAllowed((allowed) => {
         if (allowed) {
             resumeManagedServersForNetworkAllowed();
@@ -925,11 +1149,14 @@ export function startConcurrentSessionCacheSync(): void {
     }, readRefreshIntervalMs());
 
     scheduleReconcile();
+    schedulePushTokenReconciliation();
 }
 
 export function stopConcurrentSessionCacheSync(): void {
     if (!started) return;
     started = false;
+    stopPushTokenReconciliation();
+    reconcileRequestRevision += 1;
 
     if (reconcileTimer) {
         clearTimeout(reconcileTimer);
@@ -946,6 +1173,18 @@ export function stopConcurrentSessionCacheSync(): void {
     if (activeServerUnsubscribe) {
         activeServerUnsubscribe();
         activeServerUnsubscribe = null;
+    }
+    if (serverProfilesUnsubscribe) {
+        serverProfilesUnsubscribe();
+        serverProfilesUnsubscribe = null;
+    }
+    if (homeViewStateUnsubscribe) {
+        homeViewStateUnsubscribe();
+        homeViewStateUnsubscribe = null;
+    }
+    if (homeCredentialMutationsUnsubscribe) {
+        homeCredentialMutationsUnsubscribe();
+        homeCredentialMutationsUnsubscribe = null;
     }
     if (networkAllowedUnsubscribe) {
         networkAllowedUnsubscribe();

@@ -8,7 +8,7 @@
       "node": "22.14.0",
       "env": {
       "HAPPIER_EAS_ENSURE_UI_WORKSPACES_BUILT": "1",
-      "HAPPIER_INSTALL_SCOPE": "ui,protocol,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,sherpa-native,terminal-native",
+      "HAPPIER_INSTALL_SCOPE": "ui,protocol,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,terminal-native",
       "HAPPIER_ENABLE_NATIVE_SSH": "0",
       "HAPPIER_ENABLE_TERMINAL_NATIVE": "1",
       "HAPPIER_TERMINAL_NATIVE_IOS_PACKAGE_PROOF_ACCEPTED": "1",
@@ -67,7 +67,7 @@
       "extends": "internaldev-dev-client",
       "env": {
         "HAPPIER_ENABLE_NATIVE_SSH": "1",
-        "HAPPIER_INSTALL_SCOPE": "ui,protocol,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,sherpa-native,ssh-native,terminal-native"
+        "HAPPIER_INSTALL_SCOPE": "ui,protocol,agents,cli-common,peer-mediation,release-runtime,transfers,connection-supervisor,audio-stream-native,iroh-native,sherpa-native,ssh-native,terminal-native"
       }
     },
     "internaldev-store": {

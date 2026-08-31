@@ -24,10 +24,27 @@ const tauriDesktopState = vi.hoisted(() => ({
 
 const applySettingsMock = vi.fn();
 const applyLocalSettingsMock = vi.fn();
+const pushReconcilerMocks = vi.hoisted(() => ({
+    schedulePushTokenReconciliation: vi.fn(),
+    registerPushTokenIfAvailable: vi.fn(),
+}));
+const activeHomeState = vi.hoisted(() => ({
+    generation: 1,
+    snapshot: {
+        serverId: 'home-studio',
+        serverUrl: 'https://studio-home.example.test',
+        generation: 1,
+    },
+    profiles: {
+        'home-studio': { id: 'home-studio', name: 'Studio Home' },
+        'home-travel': { id: 'home-travel', name: 'Travel Home' },
+    } as Record<string, Readonly<{ id: string; name: string }>>,
+}));
 const modalPromptMock = vi.fn();
 const modalConfirmMock = vi.fn();
 const modalAlertMock = vi.fn();
 const routerPushMock = vi.fn();
+const translateMock = vi.fn((key: string) => key);
 const sendExpoLocalNotificationMock = vi.fn();
 const tauriIsPermissionGrantedMock = vi.hoisted(() => vi.fn(async () => true));
 const tauriRequestPermissionMock = vi.hoisted(() => vi.fn(async () => 'granted'));
@@ -214,7 +231,7 @@ installSettingsViewCommonModuleMocks({
     },
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
-        return createTextModuleMock({ translate: (key: string) => key });
+        return createTextModuleMock({ translate: translateMock });
     },
     storage: async () => {
         const { createStorageModuleStub } = await import('@/dev/testkit/mocks/storage');
@@ -260,8 +277,26 @@ vi.mock('@/sync/store/settingsWriters', () => ({
     useApplyLocalSettings: () => applyLocalSettingsMock,
 }));
 
+vi.mock('@/sync/engine/account/syncAccount', () => ({
+    schedulePushTokenReconciliation: pushReconcilerMocks.schedulePushTokenReconciliation,
+    registerPushTokenIfAvailable: pushReconcilerMocks.registerPushTokenIfAvailable,
+}));
+
 vi.mock('@/hooks/server/useFeatureDetails', () => ({
     useFeatureDetails: () => liveActivityRemoteDiagnosticsState.value,
+}));
+
+vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
+    useActiveServerSnapshot: () => activeHomeState.snapshot,
+}));
+
+vi.mock('@/hooks/server/useServerProfilesGeneration', () => ({
+    useServerProfilesGeneration: () => activeHomeState.generation,
+}));
+
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    getServerProfileById: (serverId: string) => activeHomeState.profiles[serverId] ?? null,
 }));
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
@@ -286,14 +321,23 @@ vi.mock('@/components/ui/forms/Switch', () => ({
 
 describe('NotificationsSettingsView', () => {
     beforeEach(() => {
+        activeHomeState.generation = 1;
+        activeHomeState.snapshot = {
+            serverId: 'home-studio',
+            serverUrl: 'https://studio-home.example.test',
+            generation: 1,
+        };
         platformState.os = 'ios';
         tauriDesktopState.value = false;
         applySettingsMock.mockReset();
         applyLocalSettingsMock.mockReset();
+        pushReconcilerMocks.schedulePushTokenReconciliation.mockReset();
+        pushReconcilerMocks.registerPushTokenIfAvailable.mockReset();
         modalPromptMock.mockReset();
         modalConfirmMock.mockReset();
         modalAlertMock.mockReset();
         routerPushMock.mockReset();
+        translateMock.mockClear();
         sendExpoLocalNotificationMock.mockReset();
         sendExpoLocalNotificationMock.mockResolvedValue('preview-notification-id');
         tauriIsPermissionGrantedMock.mockReset();
@@ -352,6 +396,23 @@ describe('NotificationsSettingsView', () => {
         screen.pressRow('settings-notifications-push-troubleshoot');
 
         expect(routerPushMock).toHaveBeenCalledWith('/settings/notifications/push');
+    });
+
+    it('names the focused Home for synced push consent', async () => {
+        const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
+        const screen = await renderSettingsView(<NotificationsSettingsView />);
+
+        expect(translateMock).toHaveBeenCalledWith(
+            'settingsNotifications.push.footer',
+            { home: 'Studio Home' },
+        );
+        expect(translateMock).toHaveBeenCalledWith(
+            'settingsNotifications.push.enabledSubtitle',
+            { home: 'Studio Home' },
+        );
+        expect(screen.findRow('settings-notifications-sounds-device-enabled')?.props.subtitle).toBe(
+            'settingsNotifications.sounds.deviceEnabledSubtitle',
+        );
     });
 
     it('renders the activity-surface section alongside the badge and notification sections', async () => {
@@ -867,6 +928,21 @@ describe('NotificationsSettingsView', () => {
         }));
         expect(delta).not.toHaveProperty('notificationsSettingsV1');
         expect(delta).not.toHaveProperty('notificationChannelsV1');
+    });
+
+    it('schedules device reconciliation after the durable settings write and never registers directly', async () => {
+        const { NotificationsSettingsView } = await import('./NotificationsSettingsView');
+
+        const screen = await renderSettingsView(<NotificationsSettingsView />);
+        const pushItem = requireRow(screen, 'settings-notifications-push-enabled');
+
+        await act(async () => {
+            pushItem.props.rightElement.props.onValueChange(false);
+        });
+
+        expect(applySettingsMock).toHaveBeenCalled();
+        expect(pushReconcilerMocks.schedulePushTokenReconciliation).toHaveBeenCalledTimes(1);
+        expect(pushReconcilerMocks.registerPushTokenIfAvailable).not.toHaveBeenCalled();
     });
 
     it('backfills remote push state from legacy notification settings when canonical policy is absent', async () => {

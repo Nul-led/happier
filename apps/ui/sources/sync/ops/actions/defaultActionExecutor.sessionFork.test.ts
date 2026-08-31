@@ -18,7 +18,7 @@ vi.mock('@/sync/ops/sessions', () => ({
 }));
 
 vi.mock('@/sync/ops/sessionHandoffs', () => ({
-  completeSessionHandoff: startSessionHandoffOpMock,
+  startSessionHandoff: startSessionHandoffOpMock,
 }));
 
 vi.mock('@/sync/ops/sessionMachineTarget', () => ({

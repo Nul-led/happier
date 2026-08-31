@@ -12,6 +12,7 @@ let mockSnapshot: any = null;
 let mockProject: Readonly<{ id: string }> | null = null;
 let reviewCommentsFeatureEnabled = false;
 let scmWriteOperationsFeatureEnabled = false;
+let mockScmCommitStrategy: 'atomic' | 'git_staging' = 'atomic';
 const changedFilesReviewSpy = vi.fn();
 const useSessionRealtimeScmTranscriptConsumerMock = vi.hoisted(() => vi.fn());
 const invalidateFromAutoRefreshSpy = vi.hoisted(() => vi.fn());
@@ -42,15 +43,18 @@ installSessionFilesViewCommonModuleMocks({
     storage: async (importOriginal) =>
         createPartialStorageModuleMock(importOriginal, {
             useSession: (_id: string) => mockSession,
+            useSessionWorkspacePath: () => '/tmp/repo',
             useSessionMessages: () => ({ messages: [], isLoaded: true }),
             useSessionProjectScmSnapshot: () => mockSnapshot,
             useSessionProjectScmSnapshotError: () => null,
             useSessionRealtimeScmTranscriptConsumer: useSessionRealtimeScmTranscriptConsumerMock,
             useSessionProjectScmTouchedPaths: () => [],
             useSessionProjectScmOperationLog: () => [],
+            useSessionProjectScmCommitSelectionPaths: () => [],
+            useSessionProjectScmCommitSelectionPatches: () => [],
             useProjectForSession: () => mockProject,
             useProjectSessions: () => [],
-            useSetting: () => 25,
+            useSetting: (key: string) => key === 'scmCommitStrategy' ? mockScmCommitStrategy : 25,
             useWorkspaceReviewCommentsDrafts: () => [{ id: 'draft-1' }],
         }),
 });
@@ -230,6 +234,7 @@ describe('SessionScmReviewDetailsView (snapshot SWR)', () => {
         mockProject = null;
         reviewCommentsFeatureEnabled = false;
         scmWriteOperationsFeatureEnabled = false;
+        mockScmCommitStrategy = 'atomic';
         changedFilesReviewSpy.mockClear();
         mockPaneScope.openDetailsTab.mockClear();
         mockPaneScope.setDetailsTabState.mockClear();
@@ -463,6 +468,55 @@ describe('SessionScmReviewDetailsView (snapshot SWR)', () => {
         expect(nextProps.onFilePress).toBe(firstProps.onFilePress);
         expect(nextProps.onFilePressPinned).toBe(firstProps.onFilePressPinned);
         expect(nextProps.renderFileTrailingActions).toBe(firstProps.renderFileTrailingActions);
+    });
+
+    it('offers the canonical per-file staging action directly in the session review list', async () => {
+        scmWriteOperationsFeatureEnabled = true;
+        mockScmCommitStrategy = 'git_staging';
+        const { SessionScmReviewDetailsView } = await import('./SessionScmReviewDetailsView');
+        const { ScmCommitSelectionToggleButton } = await import('@/components/sessions/sourceControl/commitSelection/ScmCommitSelectionToggleButton');
+
+        mockSnapshot = {
+            fetchedAt: 1,
+            projectKey: 'm1:/repo',
+            repo: { isRepo: true, rootPath: '/tmp/repo', backendId: 'git', mode: '.git' },
+            capabilities: { readLog: true, writeCommit: true, writeInclude: true, writeExclude: true },
+            branch: { head: 'main', upstream: null, ahead: 0, behind: 0, detached: false },
+            stashCount: 0,
+            hasConflicts: false,
+            entries: [],
+            totals: {
+                includedFiles: 1,
+                pendingFiles: 0,
+                untrackedFiles: 0,
+                includedAdded: 1,
+                includedRemoved: 0,
+                pendingAdded: 0,
+                pendingRemoved: 0,
+            },
+        };
+        const file = {
+            fullPath: 'src/staged.ts',
+            fileName: 'staged.ts',
+            isIncluded: true,
+        } as any;
+
+        await renderScreen(<SessionScmReviewDetailsView sessionId="s1" scopeId="session:s1" />);
+
+        const reviewProps = changedFilesReviewSpy.mock.calls.at(-1)?.[0];
+        expect(typeof reviewProps.renderFileActions).toBe('function');
+        const action = reviewProps.renderFileActions(file);
+        expect(action.type).toBe(ScmCommitSelectionToggleButton);
+        expect(action.props).toEqual(expect.objectContaining({
+            sessionId: 's1',
+            sessionPath: '/tmp/repo',
+            snapshot: mockSnapshot,
+            scmWriteEnabled: true,
+            commitStrategy: 'git_staging',
+            file,
+            selectedForCommit: true,
+            surface: 'files',
+        }));
     });
 
     it('debounces review scroll persistence while scrolling', async () => {

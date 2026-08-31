@@ -50,8 +50,6 @@ const CACHE_DIRECTORY: &str = "hosted-artifacts-v1";
 const ARTIFACT_SCHEME: &str = "happier-hosted-artifact";
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const HOST_EVENT: &str = "desktop-hosted-artifact-event";
-#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-const MAX_IPC_MESSAGE_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1391,18 +1389,7 @@ pub fn desktop_hosted_artifact_unregister(
             Ok(inner) => inner,
             Err(_) => return false,
         };
-        if inner.registrations.remove(&token).is_none() {
-            return false;
-        }
-        let view_ids = inner
-            .views
-            .iter()
-            .filter_map(|(view_id, view)| (view.token == token).then(|| view_id.clone()))
-            .collect::<Vec<_>>();
-        for view_id in &view_ids {
-            inner.views.remove(view_id);
-        }
-        view_ids
+        retire_hosted_artifact_registration(&mut inner, &token)
     };
     // Physical child destruction is intentionally a native best effort after
     // the registration is removed. Artifact currentness has already retired
@@ -1411,6 +1398,26 @@ pub fn desktop_hosted_artifact_unregister(
         remove_native_view(&view_id);
     }
     true
+}
+
+fn retire_hosted_artifact_registration(
+    inner: &mut HostedArtifactInner,
+    token: &str,
+) -> Vec<String> {
+    // Unregistration is an idempotent retirement acknowledgement. If native
+    // cleanup committed but its response was lost, the JS registry retries the
+    // same opaque token; absence then proves the desired retired state rather
+    // than a failure requiring another cleanup controller.
+    inner.registrations.remove(token);
+    let view_ids = inner
+        .views
+        .iter()
+        .filter_map(|(view_id, view)| (view.token == token).then(|| view_id.clone()))
+        .collect::<Vec<_>>();
+    for view_id in &view_ids {
+        inner.views.remove(view_id);
+    }
+    view_ids
 }
 
 fn view_is_active(inner: &HostedArtifactInner, view_id: &str, token: &str) -> bool {
@@ -1581,8 +1588,187 @@ struct HostedArtifactHostEvent {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn hosted_artifact_history_state_event(
+    view_id: impl Into<String>,
+    can_go_back: bool,
+) -> HostedArtifactHostEvent {
+    HostedArtifactHostEvent {
+        view_id: view_id.into(),
+        kind: "historyState",
+        can_go_back: Some(can_go_back),
+        message: None,
+        code: None,
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn hosted_artifact_process_terminated_event(view_id: impl Into<String>) -> HostedArtifactHostEvent {
+    HostedArtifactHostEvent {
+        view_id: view_id.into(),
+        kind: "error",
+        can_go_back: None,
+        message: None,
+        code: Some("hosted_web_content_process_terminated"),
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn emit_hosted_artifact_event<R: Runtime>(window: &Window<R>, event: HostedArtifactHostEvent) {
     let _ = window.emit(HOST_EVENT, event);
+}
+
+#[cfg(target_os = "windows")]
+fn configure_windows_hosted_artifact_view<R: Runtime>(
+    webview: &wry::WebView,
+    window: &Window<R>,
+    view_id: &str,
+) -> Result<(), String> {
+    use webview2_com::{
+        callback::{HistoryChangedEventHandler, ProcessFailedEventHandler},
+        Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+            COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+        },
+    };
+    use wry::WebViewExtWindows;
+
+    let native_webview = webview.webview();
+    let window_for_history = window.clone();
+    let view_id_for_history = view_id.to_owned();
+    let history_handler = HistoryChangedEventHandler::create(Box::new(move |webview, _| {
+        if let Some(webview) = webview {
+            let mut can_go_back = Default::default();
+            if unsafe { webview.CanGoBack(&mut can_go_back) }.is_ok() {
+                emit_hosted_artifact_event(
+                    &window_for_history,
+                    hosted_artifact_history_state_event(
+                        view_id_for_history.clone(),
+                        can_go_back.as_bool(),
+                    ),
+                );
+            }
+        }
+        Ok(())
+    }));
+    let mut history_token = 0;
+    unsafe {
+        native_webview
+            .add_HistoryChanged(&history_handler, &mut history_token)
+            .map_err(|error| error.to_string())?;
+    }
+
+    let window_for_crash = window.clone();
+    let view_id_for_crash = view_id.to_owned();
+    let process_failed_handler = ProcessFailedEventHandler::create(Box::new(move |_, args| {
+        let Some(args) = args else {
+            return Ok(());
+        };
+        let mut kind = Default::default();
+        unsafe { args.ProcessFailedKind(&mut kind)? };
+        // WebView2 also reports subordinate-frame, utility, GPU, and temporary
+        // unresponsive episodes. Only loss of the browser or the renderer that
+        // owns this top-level child is equivalent to WKWebView/WebKitGTK's
+        // content-process termination contract.
+        if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED
+            || kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
+        {
+            emit_hosted_artifact_event(
+                &window_for_crash,
+                hosted_artifact_process_terminated_event(view_id_for_crash.clone()),
+            );
+        }
+        Ok(())
+    }));
+    let mut process_failed_token = 0;
+    unsafe {
+        native_webview
+            .add_ProcessFailed(&process_failed_handler, &mut process_failed_token)
+            .map_err(|error| error.to_string())?;
+    }
+
+    let mut can_go_back = Default::default();
+    unsafe {
+        native_webview
+            .CanGoBack(&mut can_go_back)
+            .map_err(|error| error.to_string())?;
+    }
+    emit_hosted_artifact_event(
+        window,
+        hosted_artifact_history_state_event(view_id, can_go_back.as_bool()),
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn configure_linux_hosted_artifact_view<R: Runtime>(
+    webview: &wry::WebView,
+    window: &Window<R>,
+    view_id: &str,
+    title: &str,
+) -> Result<(), String> {
+    use gtk::prelude::*;
+    use webkit2gtk::WebViewExt as _;
+    use wry::WebViewExtUnix;
+
+    let native_webview = webview.webview();
+    let accessible = native_webview.accessible().ok_or_else(|| {
+        "desktop hosted Artifact child accessibility boundary is unavailable".to_owned()
+    })?;
+    // The guest may change its document title. Name the native WebKitGTK
+    // boundary itself so the host-owned plugin/surface identity remains the
+    // accessible identity of the embedded content.
+    accessible.set_name(title);
+
+    let window_for_history = window.clone();
+    let view_id_for_history = view_id.to_owned();
+    native_webview.connect_notify_local(Some("can-go-back"), move |webview, _| {
+        emit_hosted_artifact_event(
+            &window_for_history,
+            hosted_artifact_history_state_event(view_id_for_history.clone(), webview.can_go_back()),
+        );
+    });
+
+    let window_for_crash = window.clone();
+    let view_id_for_crash = view_id.to_owned();
+    native_webview.connect_web_process_terminated(move |_, _| {
+        emit_hosted_artifact_event(
+            &window_for_crash,
+            hosted_artifact_process_terminated_event(view_id_for_crash.clone()),
+        );
+    });
+
+    emit_hosted_artifact_event(
+        window,
+        hosted_artifact_history_state_event(view_id, native_webview.can_go_back()),
+    );
+    Ok(())
+}
+
+/// The typed fatal code for guest traffic that cannot ride the negotiated
+/// bridge at all.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+const HOSTED_WEB_BRIDGE_IPC_INVALID: &str = "hosted_web_bridge_ipc_invalid";
+
+/// Transport-level classification of one inbound guest IPC body. There is
+/// deliberately no size gate: no backend in the vendored Wry imposes an
+/// inbound IPC ceiling, so a private one could only silently strand a
+/// negotiated Host API request whose promise then never settles. A body that
+/// is not a JSON object can never be a bridge envelope, so it takes the
+/// existing fatal host path (error event -> pane disposal) instead of being
+/// swallowed.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[derive(Debug, PartialEq, Eq)]
+enum InboundHostApiIpc {
+    Deliver,
+    FatalBridgeInvalid,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn classify_inbound_host_api_ipc(message: &str) -> InboundHostApiIpc {
+    match serde_json::from_str::<serde_json::Value>(message) {
+        Ok(value) if value.is_object() => InboundHostApiIpc::Deliver,
+        _ => InboundHostApiIpc::FatalBridgeInvalid,
+    }
 }
 
 fn hosted_artifact_host_message_delivery_script(
@@ -1795,24 +1981,29 @@ impl WryHostedArtifactView {
                 let window_for_ipc = window.clone();
                 move |request| {
                     let message = request.into_body();
-                    if message.len() > MAX_IPC_MESSAGE_BYTES
-                        || serde_json::from_str::<serde_json::Value>(&message)
-                            .ok()
-                            .filter(serde_json::Value::is_object)
-                            .is_none()
-                    {
-                        return;
-                    }
-                    emit_hosted_artifact_event(
-                        &window_for_ipc,
-                        HostedArtifactHostEvent {
+                    let event = match classify_inbound_host_api_ipc(&message) {
+                        // Existing response path: the JS bridge validates the
+                        // envelope and settles any active request.
+                        InboundHostApiIpc::Deliver => HostedArtifactHostEvent {
                             view_id: view_id_for_ipc.clone(),
                             kind: "message",
                             can_go_back: None,
                             message: Some(message),
                             code: None,
                         },
-                    );
+                        // Existing fatal host path: traffic outside the
+                        // negotiated bridge grammar is surfaced to the pane's
+                        // disposal owner instead of being swallowed, so no
+                        // negotiated promise is stranded by this transport.
+                        InboundHostApiIpc::FatalBridgeInvalid => HostedArtifactHostEvent {
+                            view_id: view_id_for_ipc.clone(),
+                            kind: "error",
+                            can_go_back: None,
+                            message: None,
+                            code: Some(HOSTED_WEB_BRIDGE_IPC_INVALID),
+                        },
+                    };
+                    emit_hosted_artifact_event(&window_for_ipc, event);
                 }
             });
         #[cfg(target_os = "windows")]
@@ -1830,13 +2021,7 @@ impl WryHostedArtifactView {
             builder.with_on_web_content_process_terminate_handler(move || {
                 emit_hosted_artifact_event(
                     &window_for_crash,
-                    HostedArtifactHostEvent {
-                        view_id: view_id_for_crash.clone(),
-                        kind: "error",
-                        can_go_back: None,
-                        message: None,
-                        code: Some("hosted_web_content_process_terminated"),
-                    },
+                    hosted_artifact_process_terminated_event(view_id_for_crash.clone()),
                 );
             })
         };
@@ -1868,26 +2053,17 @@ impl WryHostedArtifactView {
                 Box::new(move |can_go_back| {
                     emit_hosted_artifact_event(
                         &window_for_history,
-                        HostedArtifactHostEvent {
-                            view_id: view_id_for_history.clone(),
-                            kind: "historyState",
-                            can_go_back: Some(can_go_back),
-                            message: None,
-                            code: None,
-                        },
+                        hosted_artifact_history_state_event(
+                            view_id_for_history.clone(),
+                            can_go_back,
+                        ),
                     );
                 }),
             );
             let can_go_back = unsafe { native_webview.as_super().canGoBack() };
             emit_hosted_artifact_event(
                 window,
-                HostedArtifactHostEvent {
-                    view_id: request.view_id.clone(),
-                    kind: "historyState",
-                    can_go_back: Some(can_go_back),
-                    message: None,
-                    code: None,
-                },
+                hosted_artifact_history_state_event(request.view_id.clone(), can_go_back),
             );
             return Ok(Self {
                 _context: context,
@@ -1895,6 +2071,12 @@ impl WryHostedArtifactView {
                 webview,
             });
         }
+
+        #[cfg(target_os = "windows")]
+        configure_windows_hosted_artifact_view(&webview, window, &request.view_id)?;
+
+        #[cfg(target_os = "linux")]
+        configure_linux_hosted_artifact_view(&webview, window, &request.view_id, &request.title)?;
 
         #[cfg(not(target_os = "macos"))]
         Ok(Self {
@@ -2237,6 +2419,24 @@ mod tests {
         "desktop_hosted_artifact_close_view",
     ];
 
+    #[test]
+    fn unregister_retries_acknowledge_an_already_retired_token() {
+        let token = "hpat_retry";
+        let mut inner = HostedArtifactInner::default();
+        inner.views.insert(
+            "view-retry".to_owned(),
+            HostedArtifactView {
+                token: token.to_owned(),
+            },
+        );
+
+        assert_eq!(
+            retire_hosted_artifact_registration(&mut inner, token),
+            vec!["view-retry".to_owned()],
+        );
+        assert!(retire_hosted_artifact_registration(&mut inner, token).is_empty());
+    }
+
     fn manifest_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
     }
@@ -2328,7 +2528,10 @@ mod tests {
         for (relative_path, required_fragments) in backend_contracts {
             let path = wry_source.join(relative_path);
             let source = fs::read_to_string(&path).unwrap_or_else(|error| {
-                panic!("failed to read vendored Wry backend {}: {error}", path.display())
+                panic!(
+                    "failed to read vendored Wry backend {}: {error}",
+                    path.display()
+                )
             });
             for fragment in required_fragments {
                 assert!(
@@ -2413,12 +2616,14 @@ mod tests {
         .expect("hosted Artifact open request should admit its resolved title");
         assert_eq!(request.title, "Plugin preview");
 
-        assert!(serde_json::from_value::<HostedArtifactOpenViewRequest>(json!({
-            "viewId": "hpa_view_test",
-            "token": "hpat_test_token",
-            "initialPathAndQuery": "/"
-        }))
-        .is_err());
+        assert!(
+            serde_json::from_value::<HostedArtifactOpenViewRequest>(json!({
+                "viewId": "hpa_view_test",
+                "token": "hpat_test_token",
+                "initialPathAndQuery": "/"
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -2631,8 +2836,14 @@ mod tests {
         // that still advertises a withdrawn capability.
         for (platform, row_label) in [
             (DesktopBrowserPlatform::MacOs, "Packaged desktop — macOS"),
-            (DesktopBrowserPlatform::Windows, "Packaged desktop — Windows"),
-            (DesktopBrowserPlatform::LinuxX11, "Packaged desktop — Linux/X11"),
+            (
+                DesktopBrowserPlatform::Windows,
+                "Packaged desktop — Windows",
+            ),
+            (
+                DesktopBrowserPlatform::LinuxX11,
+                "Packaged desktop — Linux/X11",
+            ),
             (
                 DesktopBrowserPlatform::LinuxWayland,
                 "Packaged desktop — Linux/Wayland",
@@ -2663,6 +2874,55 @@ mod tests {
         }
     }
 
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn inbound_host_api_ipc_delivers_valid_envelopes_at_any_size() {
+        // Vendored Wry imposes no inbound IPC ceiling on any desktop backend
+        // (wkwebview delegate, WebView2 WebMessageReceived, WebKitGTK script
+        // handler all hand the full body to the handler), so a large
+        // negotiated envelope must ride the existing response path.
+        let payload = "a".repeat(300 * 1024);
+        let oversized = format!("{{\"kind\":\"request\",\"payload\":\"{payload}\"}}");
+        assert_eq!(
+            classify_inbound_host_api_ipc(&oversized),
+            InboundHostApiIpc::Deliver,
+        );
+        assert_eq!(
+            classify_inbound_host_api_ipc("{\"kind\":\"ready\"}"),
+            InboundHostApiIpc::Deliver,
+        );
+        assert_eq!(
+            classify_inbound_host_api_ipc("{}"),
+            InboundHostApiIpc::Deliver
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn inbound_host_api_ipc_routes_non_object_traffic_to_the_fatal_host_path() {
+        // Non-object traffic cannot be a negotiated envelope. It must settle
+        // through the existing fatal host/disposal path, never a silent drop.
+        assert_eq!(
+            classify_inbound_host_api_ipc("not json"),
+            InboundHostApiIpc::FatalBridgeInvalid,
+        );
+        assert_eq!(
+            classify_inbound_host_api_ipc("[1,2,3]"),
+            InboundHostApiIpc::FatalBridgeInvalid,
+        );
+        assert_eq!(
+            classify_inbound_host_api_ipc("\"text\""),
+            InboundHostApiIpc::FatalBridgeInvalid,
+        );
+        // serde_json's default recursion limit must not turn a
+        // parse-refused body into a silently swallowed one either.
+        let deep = format!("{}{}", "[".repeat(10_000), "]".repeat(10_000));
+        assert_eq!(
+            classify_inbound_host_api_ipc(&deep),
+            InboundHostApiIpc::FatalBridgeInvalid,
+        );
+    }
+
     #[test]
     fn hosted_artifact_host_delivery_uses_a_fixed_message_event_template_with_json_payload() {
         let message = json!({
@@ -2683,13 +2943,7 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[test]
     fn hosted_artifact_host_events_keep_history_and_failure_payloads_exact() {
-        let history = HostedArtifactHostEvent {
-            view_id: "hpa_view_test".to_string(),
-            kind: "historyState",
-            can_go_back: Some(true),
-            message: None,
-            code: None,
-        };
+        let history = hosted_artifact_history_state_event("hpa_view_test", true);
         assert_eq!(
             serde_json::to_value(history).expect("history event should serialize"),
             json!({
@@ -2699,13 +2953,7 @@ mod tests {
             }),
         );
 
-        let failure = HostedArtifactHostEvent {
-            view_id: "hpa_view_test".to_string(),
-            kind: "error",
-            can_go_back: None,
-            message: None,
-            code: Some("hosted_web_content_process_terminated"),
-        };
+        let failure = hosted_artifact_process_terminated_event("hpa_view_test");
         assert_eq!(
             serde_json::to_value(failure).expect("failure event should serialize"),
             json!({
@@ -3063,7 +3311,9 @@ mod tests {
             .expect("fixture should be an object")
             .clone();
         entryless.remove("entryRelativePath");
-        assert!(serde_json::from_value::<CacheManifest>(serde_json::Value::Object(entryless)).is_err());
+        assert!(
+            serde_json::from_value::<CacheManifest>(serde_json::Value::Object(entryless)).is_err()
+        );
 
         let mut undeclared = complete
             .as_object()
@@ -3073,8 +3323,9 @@ mod tests {
             "entryRelativePath".to_string(),
             serde_json::Value::String("missing.html".to_string()),
         );
-        let manifest = serde_json::from_value::<CacheManifest>(serde_json::Value::Object(undeclared))
-            .expect("an undeclared entry is a validation failure, not a decode failure");
+        let manifest =
+            serde_json::from_value::<CacheManifest>(serde_json::Value::Object(undeclared))
+                .expect("an undeclared entry is a validation failure, not a decode failure");
         assert!(validate_manifest(&manifest, &locator).is_err());
     }
 

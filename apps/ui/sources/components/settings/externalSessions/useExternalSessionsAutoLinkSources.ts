@@ -5,6 +5,8 @@ import {
 } from '@happier-dev/protocol';
 
 import { sync } from '@/sync/sync';
+import { useSettingsVersion } from '@/sync/store/hooks';
+import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
 
 import type {
     ExternalSessionsAutoLinkSourceDescriptor,
@@ -41,6 +43,7 @@ export function useExternalSessionsAutoLinkSources(params: Readonly<{
     const scopedMachineId = params.scope?.machineId;
     const scopedAgentPluginId = params.scope?.agent.pluginId;
     const scopedAgentLocalId = params.scope?.agent.localId;
+    const settingsVersion = useSettingsVersion();
     const agentTitleByKey = React.useMemo(
         () => new Map(params.knownAgents.map((knownAgent) => [
             agentKey(knownAgent.agent),
@@ -77,18 +80,27 @@ export function useExternalSessionsAutoLinkSources(params: Readonly<{
                 canChange: true,
                 setEnabled: async (enabled: boolean) => {
                     if (enabled) return;
-                    await sync.mutateAccountSettings((raw) => ({
-                        ...raw,
-                        externalSessionsSettingsV1:
-                            removeExternalSessionsAutoLinkSourcePolicyV1(
-                                raw.externalSessionsSettingsV1,
-                                {
-                                    machineId: policy.machineId,
-                                    qualifiedIdentity: policy.qualifiedIdentity,
-                                    sourcePolicyId: policy.sourcePolicyId,
+                    if (settingsVersion === null) throw new Error('Account settings version is unavailable');
+                    requireOneShotAccountSettingsMutationApplied(
+                        await sync.mutateAccountSettingsOnce({
+                            expectedSettingsVersion: settingsVersion,
+                            mutate: (raw) => ({
+                                settings: {
+                                    ...raw,
+                                    externalSessionsSettingsV1:
+                                        removeExternalSessionsAutoLinkSourcePolicyV1(
+                                            raw.externalSessionsSettingsV1,
+                                            {
+                                                machineId: policy.machineId,
+                                                qualifiedIdentity: policy.qualifiedIdentity,
+                                                sourcePolicyId: policy.sourcePolicyId,
+                                            },
+                                        ),
                                 },
-                            ),
-                    }));
+                                value: undefined,
+                            }),
+                        }),
+                    );
                 },
             }));
     }, [
@@ -98,5 +110,6 @@ export function useExternalSessionsAutoLinkSources(params: Readonly<{
         scopedAgentLocalId,
         scopedAgentPluginId,
         scopedMachineId,
+        settingsVersion,
     ]);
 }

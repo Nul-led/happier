@@ -50,6 +50,7 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
   const cryptoContext = await resolveScopedSessionCryptoContext({
     serverId: params.context.targetServerId,
     serverUrl: params.context.targetServerUrl,
+    ...(params.context.runtimeOrigin ? { runtimeOrigin: params.context.runtimeOrigin } : {}),
     token: params.context.token,
     sessionId: params.sessionId,
     timeoutMs: params.context.timeoutMs,
@@ -63,7 +64,9 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
   if (params.signal?.aborted) throw createSocketRpcAbortError();
 
   const socket = await createEphemeralServerSocketClient({
-    serverUrl: params.context.targetServerUrl,
+    serverUrl: params.context.runtimeOrigin ?? params.context.targetServerUrl,
+    reachabilityServerUrl: params.context.targetServerUrl,
+    ...(params.context.carrier ? { carrier: params.context.carrier } : {}),
     token: params.context.token,
     timeoutMs: params.context.timeoutMs,
   });
@@ -153,6 +156,7 @@ async function callScopedSessionRpc<R, A>(params: Readonly<{
     });
   } finally {
     socket.disconnect();
+    await params.context.release?.();
   }
 }
 
@@ -197,7 +201,8 @@ export async function sessionRpcWithServerScope<R, A>(params: Readonly<{
         preferScoped: true,
       });
       if (retryContext.scope !== 'scoped') throw error;
-      return await callScopedSessionRpc({
+      try {
+        return await callScopedSessionRpc({
         sessionId,
         method: params.method,
         payload: params.payload,
@@ -205,10 +210,14 @@ export async function sessionRpcWithServerScope<R, A>(params: Readonly<{
         operationTimeoutMs,
         onIssued,
         signal: params.signal,
-      });
+        });
+      } finally {
+        await retryContext.release?.();
+      }
     }
   }
-  return await callScopedSessionRpc({
+  try {
+    return await callScopedSessionRpc({
     sessionId,
     method: params.method,
     payload: params.payload,
@@ -216,7 +225,10 @@ export async function sessionRpcWithServerScope<R, A>(params: Readonly<{
     operationTimeoutMs,
     onIssued,
     signal: params.signal,
-  });
+    });
+  } finally {
+    await context.release?.();
+  }
 }
 
 export async function sessionRpcWithServerAccountScope<R, A>(params: Readonly<{
@@ -239,9 +251,11 @@ export async function sessionRpcWithServerAccountScope<R, A>(params: Readonly<{
   }
   const resolvedScope = createServerAccountScope(context.targetServerId, context.targetAccountId);
   if (!areServerAccountScopesEqual(resolvedScope, params.scope)) {
+    await context.release?.();
     throw new Error('Exact pending dispatch authenticated account does not match persisted scope');
   }
-  return await callScopedSessionRpc({
+  try {
+    return await callScopedSessionRpc({
     sessionId: normalizeId(params.sessionId),
     method: params.method,
     payload: params.payload,
@@ -249,5 +263,8 @@ export async function sessionRpcWithServerAccountScope<R, A>(params: Readonly<{
     operationTimeoutMs: context.timeoutMs,
     onIssued: params.onIssued,
     signal: params.signal,
-  });
+    });
+  } finally {
+    await context.release?.();
+  }
 }

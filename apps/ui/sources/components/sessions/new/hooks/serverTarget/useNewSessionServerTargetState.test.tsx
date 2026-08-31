@@ -141,7 +141,7 @@ describe('useNewSessionServerTargetState', () => {
         expect(latest.showServerPickerChip).toBe(true);
     });
 
-    it('falls back to the first allowed group server when requested server is outside current active target scope', async () => {
+    it('rejects an explicit route target outside the current active target scope without falling back', async () => {
         const captured: Array<ReturnType<typeof useNewSessionServerTargetState>> = [];
 
         await renderScreen(<Probe
@@ -153,8 +153,9 @@ describe('useNewSessionServerTargetState', () => {
 
         const latest = captured.at(-1)!;
         expect(latest.allowedTargetServerIds).toEqual(['server-b', 'server-c']);
-        expect(latest.targetServerId).toBe('server-b');
-        expect(latest.targetServerName).toBe('Server B');
+        expect(latest.targetServerId).toBeNull();
+        expect(latest.rejectedRequestedServerId).toBe('server-a');
+        expect(latest.targetServerProfile).toBeNull();
         expect(latest.showServerPickerChip).toBe(true);
     });
 
@@ -215,6 +216,30 @@ describe('useNewSessionServerTargetState', () => {
         expect(latest.targetServerId).toBe('server-b');
         expect(latest.targetServerName).toBe('Server B');
         expect(latest.showServerPickerChip).toBe(false);
+    });
+
+    it('fails closed when device-global settings explicitly target a missing Home', async () => {
+        serverProfilesState.value = [
+            { id: 'server-a', name: 'Server A', serverUrl: 'https://a.example.test', lastUsedAt: 1000 },
+            { id: 'server-b', name: 'Server B', serverUrl: 'https://b.example.test', lastUsedAt: 900 },
+        ];
+        const captured: Array<ReturnType<typeof useNewSessionServerTargetState>> = [];
+
+        await renderScreen(<Probe
+                    settings={{
+                        serverSelectionGroups: [],
+                        serverSelectionActiveTargetKind: 'server',
+                        serverSelectionActiveTargetId: 'server-c',
+                    }}
+                    request={{}}
+                    onState={(state) => captured.push(state)}
+                />);
+
+        const latest = captured.at(-1)!;
+        expect(latest.selectedServerTarget).toBeNull();
+        expect(latest.allowedTargetServerIds).toEqual([]);
+        expect(latest.targetServerId).toBeNull();
+        expect(latest.rejectedRequestedServerId).toBe('server-c');
     });
 
     it('targets identity-backed server ids while resolving the profile by its stable profile record', async () => {

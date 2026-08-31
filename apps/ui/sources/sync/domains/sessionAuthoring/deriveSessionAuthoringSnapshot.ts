@@ -3,7 +3,7 @@ import {
     buildBackendTargetKeyV2,
     parseBackendTargetKeyV2,
     readRuntimeDescriptorV1FromMetadata,
-    SessionMcpSelectionV1Schema,
+    readSessionMcpSelectionV1FromMetadata,
 } from '@happier-dev/protocol';
 
 import { getModelOverrideForSpawn } from '@/sync/domains/models/modelOverride';
@@ -78,12 +78,7 @@ export function deriveSessionAuthoringSnapshot(params: Readonly<{
     const modelSelection = agentTargetKey
         ? getModelOverrideForSpawn(params.session as Session, agentTargetKey)?.modelSelection ?? null
         : null;
-    const rawMcpSelection = metadata && Object.prototype.hasOwnProperty.call(metadata, 'mcpSelection')
-        ? (metadata as Record<string, unknown>).mcpSelection
-        : undefined;
-    const parsedMcpSelection = rawMcpSelection === undefined
-        ? null
-        : SessionMcpSelectionV1Schema.safeParse(rawMcpSelection);
+    const mcpSelection = readSessionMcpSelectionV1FromMetadata(metadata);
 
     return {
         directory: normalizeRequiredString(
@@ -101,7 +96,7 @@ export function deriveSessionAuthoringSnapshot(params: Readonly<{
         modelSelection,
         modelId: modelSelection?.ref.modelId ?? null,
         modelUpdatedAt: modelSelection?.updatedAt ?? metadataModelIntent?.updatedAt ?? null,
-        mcpSelection: parsedMcpSelection?.success ? parsedMcpSelection.data : null,
+        mcpSelection,
         connectedServices: normalizeSessionAuthoringConnectedServices(
             metadata && Object.prototype.hasOwnProperty.call(metadata, 'connectedServices')
                 ? (metadata as Record<string, unknown>).connectedServices

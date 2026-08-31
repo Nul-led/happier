@@ -19,8 +19,8 @@ import { assertNoUnsealedSettingsSecretValues } from '@/sync/encryption/secretSe
 import { loadPendingSettings, parsePendingSettings } from './persistence';
 import { getPersistenceStorage } from './persistenceStorage';
 import { loadSettings } from './settingsPersistence';
-import { loadHomeViewState, migrateHomeViewStateFromSettings, saveHomeViewState } from '@/sync/domains/server/serverProfiles';
-import { normalizeStoredServerSelectionGroups } from '@/sync/domains/server/selection/serverSelectionMutations';
+import { loadHomeViewState, migrateHomeViewStateFromSettings } from '@/sync/domains/server/serverProfiles';
+import { stripServerSelectionSettingsProjection } from '@/sync/domains/server/selection/serverSelectionSettingsAdapter';
 
 function accountSettingsKey(scope: AccountSettingsScope): string {
     return `account-settings:v2:${accountSettingsScopeKeySuffix(scope)}`;
@@ -179,9 +179,13 @@ function saveAccountSettingsEnvelope(
     version: number | null,
 ): void {
     assertNoUnsealedSettingsSecretValues(settings);
-    const sanitizedSettings =
-        stripMigratedSessionOrganizationSettings(settings as Record<string, unknown>) as Settings;
-    getPersistenceStorage().set(accountSettingsKey(scope), JSON.stringify({ settings: sanitizedSettings, version }));
+    const sanitizedSettings = stripMigratedSessionOrganizationSettings(
+        settings as Record<string, unknown>,
+    ) as Settings;
+    const persistedSettings = loadHomeViewState()
+        ? stripServerSelectionSettingsProjection(sanitizedSettings)
+        : sanitizedSettings;
+    getPersistenceStorage().set(accountSettingsKey(scope), JSON.stringify({ settings: persistedSettings, version }));
 }
 
 export function loadAccountSettings(scope: AccountSettingsScope): { settings: unknown; version: number | null } {
@@ -214,20 +218,6 @@ export function loadAccountSettings(scope: AccountSettingsScope): { settings: un
 
 export function saveAccountSettings(scope: AccountSettingsScope, settings: Settings, version: number): void {
     saveAccountSettingsEnvelope(scope, settings, version);
-    const global = loadHomeViewState();
-    if (global) {
-        migrateHomeViewStateFromSettings(settings as Record<string, unknown>);
-        saveHomeViewState({
-            ...global,
-            groups: normalizeStoredServerSelectionGroups(settings.serverSelectionGroups),
-            activeTargetKind:
-                settings.serverSelectionActiveTargetKind === 'server' || settings.serverSelectionActiveTargetKind === 'group'
-                    ? settings.serverSelectionActiveTargetKind : global.activeTargetKind,
-            activeTargetId:
-                typeof settings.serverSelectionActiveTargetId === 'string'
-                    ? settings.serverSelectionActiveTargetId : global.activeTargetId,
-        });
-    }
 }
 
 export function prepareAccountSettingsScopeForActivation(

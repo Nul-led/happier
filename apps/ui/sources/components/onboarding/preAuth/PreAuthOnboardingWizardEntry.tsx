@@ -25,13 +25,12 @@ import { trackAccountCreated } from '@/track';
 import { t } from '@/text';
 import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
 
-import { getPendingSetupIntent, clearPendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent';
+import { clearPendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent';
 import { usePendingSetupIntent } from '@/components/onboarding/state/usePendingSetupIntent';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { readConfiguredServerUrlEnv } from '@/sync/domains/server/readConfiguredServerUrlEnv';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
 
-import { shouldAutoRedirectToSetupOnFirstLaunch } from '@/utils/platform/firstLaunchSetupRedirectPolicy';
 import { OnboardingWizardSurfacePresentation } from '@/components/onboarding/surfaces/OnboardingWizardSurface';
 import { useOnboardingWizardController } from '@/components/onboarding/surfaces/useOnboardingWizardController';
 import { UnauthenticatedSplitShell, useApplyBrandHeroSeen } from '@/components/onboarding/unauthShell';
@@ -41,7 +40,7 @@ import { useResolvedDesktopWindowControls } from '@/components/navigation/shell/
 import { AppUpdateStatusTag } from '@/components/ui/feedback/AppUpdateStatusTag';
 import { runtimeFetch } from '@/utils/system/runtimeFetch';
 import { resolveAppShellChromeHost } from '@/components/appShell/resolveAppShellChromeHost';
-import { setOnboardingWizardPreAuthResumeIntent, resolveWizardAuthReturnToRoute } from '@/components/onboarding/state/wizardResume';
+import { resolveWizardAuthReturnToRoute } from '@/components/onboarding/state/wizardResume';
 import { getWizardStepDefinition } from '@/components/onboarding/state/wizardStepRegistry';
 import type { WizardStepId } from '@/components/onboarding/state/wizardTypes';
 import { type JourneyBeatId, type JourneySurface } from '@/components/onboarding/tour/state/journeyBeats';
@@ -155,7 +154,6 @@ class JourneyHostErrorBoundary extends React.Component<JourneyHostErrorBoundaryP
 export type PreAuthOnboardingWizardEntryProps = Readonly<{
     testID?: string;
     clearPendingSetupIntentOnMount?: boolean;
-    enableFirstLaunchSetupRedirect?: boolean;
     initialStepId?: WizardStepId;
 }>;
 
@@ -204,7 +202,6 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
     const authEntryOptions = useAuthEntryOptions();
     const applyBrandHeroSeen = useApplyBrandHeroSeen();
     const autoRedirectAttemptedRef = React.useRef(false);
-    const firstLaunchSetupRedirectedRef = React.useRef(false);
     const shellChromeHost = resolveAppShellChromeHost({
         isAuthenticated: false,
         isWeb: Platform.OS === 'web',
@@ -222,27 +219,6 @@ export const PreAuthOnboardingWizardEntry = React.memo(function PreAuthOnboardin
         }
         clearPendingSetupIntent();
     }, [props.clearPendingSetupIntentOnMount]);
-
-    React.useEffect(() => {
-        if (!props.enableFirstLaunchSetupRedirect) {
-            return;
-        }
-        if (firstLaunchSetupRedirectedRef.current) {
-            return;
-        }
-        if (!shouldAutoRedirectToSetupOnFirstLaunch({ platformOs: Platform.OS, isDesktopHost: isDesktopHost() })) {
-            return;
-        }
-        const pendingSetupIntent = getPendingSetupIntent();
-        if (pendingSetupIntent) {
-            return;
-        }
-
-        firstLaunchSetupRedirectedRef.current = true;
-        const snapshot = getActiveServerSnapshot();
-        const relayUrl = snapshot.serverUrl ? String(snapshot.serverUrl).trim().replace(/\/+$/, '') : null;
-        setOnboardingWizardPreAuthResumeIntent(relayUrl || null);
-    }, [props.enableFirstLaunchSetupRedirect]);
 
     const createAccount = React.useCallback(async () => {
         try {

@@ -154,8 +154,19 @@ describe('serverSelectionResolver', () => {
         });
 
         expect(resolved).toEqual({
-            targetServerId: 'server-a',
+            targetServerId: null,
             rejectedRequestedServerId: 'server-c',
+        });
+    });
+
+    it('preserves the rejected explicit target when no Home is currently available', () => {
+        expect(resolveNewSessionServerTarget({
+            requestedServerId: 'removed-home',
+            activeServerId: 'server-a',
+            allowedServerIds: [],
+        })).toEqual({
+            targetServerId: null,
+            rejectedRequestedServerId: 'removed-home',
         });
     });
 });

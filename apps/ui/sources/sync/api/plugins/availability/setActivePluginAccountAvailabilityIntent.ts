@@ -22,6 +22,7 @@ type AvailabilityIntentSetServerSnapshot = Readonly<{
 
 type AvailabilityIntentSetRequestAuthority = Readonly<{
     request: (path: string, init?: RequestInit) => Promise<Response>;
+    release?: () => Promise<void>;
 }>;
 
 export type ActivePluginAccountAvailabilityIntentSetterDependencies = Readonly<{
@@ -55,7 +56,7 @@ function defaultDependencies(): ActivePluginAccountAvailabilityIntentSetterDepen
                 scope,
                 activeRequest: (path, init) => apiSocket.request(path, init),
             });
-            return Object.freeze({ request: authority.request });
+            return Object.freeze({ request: authority.request, release: authority.release });
         },
     };
 }
@@ -127,6 +128,7 @@ export function createActivePluginAccountAvailabilityIntentSetter(
             }
             const controller = new AbortController();
             const retirement = lifetime.onRetire(() => controller.abort());
+            let authority: AvailabilityIntentSetRequestAuthority | null = null;
             try {
                 const beforeAuthority = isCurrent({
                     lifetime,
@@ -136,7 +138,7 @@ export function createActivePluginAccountAvailabilityIntentSetter(
                 if (beforeAuthority || controller.signal.aborted) {
                     return Object.freeze({ kind: 'unavailable', code: beforeAuthority ?? 'account_scope_changed' });
                 }
-                const authority = await dependencies.captureRequestAuthority(lifetime.scope);
+                authority = await dependencies.captureRequestAuthority(lifetime.scope);
                 const afterAuthority = isCurrent({
                     lifetime,
                     snapshot,
@@ -202,6 +204,7 @@ export function createActivePluginAccountAvailabilityIntentSetter(
                 }
                 return Object.freeze({ kind: 'updated', intent: output.data.intent });
             } finally {
+                await authority?.release?.();
                 retirement.dispose();
             }
         },

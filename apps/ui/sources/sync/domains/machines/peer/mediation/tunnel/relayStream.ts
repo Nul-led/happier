@@ -7,16 +7,17 @@ import {
     type PeerTcpTunnelOpenV1,
     type PeerTcpTunnelRelayEnvelope,
 } from '@happier-dev/protocol';
+import {
+    decodePeerTcpTunnelBinaryFrameForSession,
+    decodePeerTcpTunnelBinarySubstreamFrame,
+    encodePeerTcpTunnelBinaryFrameForSession,
+    encodePeerTcpTunnelBinaryFrameForSubstream,
+    encodePeerTcpTunnelBinarySubstreamOpen,
+    type PeerTcpTunnelFrame,
+} from '@happier-dev/peer-transport/duplexFrames';
 
 import type { PeerTcpTunnelClientStream } from './client';
-import {
-    decodePeerTcpTunnelFrameForEncoding,
-    decodePeerTcpTunnelSubstreamFrameV2,
-    encodePeerTcpTunnelFrameForEncoding,
-    encodePeerTcpTunnelSubstreamDataFrameV2,
-    encodePeerTcpTunnelSubstreamFrameV2,
-    encodePeerTcpTunnelSubstreamOpenFrameV2,
-} from './frameEncoding';
+import { decodeLegacyJsonPeerTcpTunnelFrame, toLegacyJsonPeerTcpTunnelFrame } from './legacyJsonFrameAdapter';
 
 type SendPeerTcpTunnelRelayEnvelope = (
     event: typeof PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
@@ -50,10 +51,10 @@ export async function openPeerTcpTunnelRelayStream(input: Readonly<{
         throw Object.assign(new Error('Peer TCP tunnel relay stream open aborted'), { name: 'AbortError' });
     }
     const encoding = input.open.selectedEncoding ?? PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1;
-    const handlers = new Set<(frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>) => void>();
+    const handlers = new Set<(frame: PeerTcpTunnelFrame) => void>();
     const substreamHandlers = new Set<(event: Readonly<{
         substreamId: string;
-        frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>;
+        frame: PeerTcpTunnelFrame;
     }>) => void>();
     let closed = false;
     const abort = (): void => {
@@ -64,7 +65,7 @@ export async function openPeerTcpTunnelRelayStream(input: Readonly<{
         }
     };
 
-    function sendRelayFrame(frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>): void {
+    function sendRelayFrame(frame: PeerTcpTunnelFrame): void {
         const envelope: PeerTcpTunnelRelayEnvelope = encoding === PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2
             ? {
                 v: 2,
@@ -72,13 +73,13 @@ export async function openPeerTcpTunnelRelayStream(input: Readonly<{
                 sender: { kind: 'user', socketId: input.relaySocketId },
                 recipient: { kind: 'machine', machineId: input.open.targetMachineId },
                 encoding,
-                frame: encodePeerTcpTunnelFrameForEncoding({ encoding, frame }) as Uint8Array,
+                frame: encodePeerTcpTunnelBinaryFrameForSession(frame),
             }
             : userToMachineEnvelope({
                 scopeUserId: input.scopeUserId,
                 relaySocketId: input.relaySocketId,
                 open: input.open,
-                frame,
+                frame: toLegacyJsonPeerTcpTunnelFrame(frame),
             });
         input.send(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, envelope);
     }
@@ -103,9 +104,10 @@ export async function openPeerTcpTunnelRelayStream(input: Readonly<{
         if (envelope.recipient.kind !== 'user') return;
 
         if (envelope.v === 2) {
-            const decodedSubstream = decodePeerTcpTunnelSubstreamFrameV2({
-                payload: envelope.frame,
-                maxFrameBytes: input.open.relayAuthorization?.payload.maxFrameBytes ?? Number.MAX_SAFE_INTEGER,
+            const decodedSubstream = decodePeerTcpTunnelBinarySubstreamFrame({
+                frame: envelope.frame,
+                maxBinaryHeaderBytes: input.open.relayAuthorization?.payload.maxFrameBytes ?? Number.MAX_SAFE_INTEGER,
+                maxRawPayloadBytes: input.open.relayAuthorization?.payload.maxFrameBytes ?? Number.MAX_SAFE_INTEGER,
             });
             if (decodedSubstream.ok && decodedSubstream.frame.tunnelId === input.open.tunnelId) {
                 for (const handler of substreamHandlers) handler({
@@ -117,15 +119,13 @@ export async function openPeerTcpTunnelRelayStream(input: Readonly<{
         }
 
         const decoded = envelope.v === 1
-            ? envelope.frame.kind === 'open'
-                ? null
-                : { ok: true as const, frame: envelope.frame }
-            : decodePeerTcpTunnelFrameForEncoding({
-                encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-                payload: envelope.frame,
-                maxFrameBytes: input.open.relayAuthorization?.payload.maxFrameBytes ?? Number.MAX_SAFE_INTEGER,
+            ? { ok: true as const, frame: decodeLegacyJsonPeerTcpTunnelFrame(envelope.frame) }
+            : decodePeerTcpTunnelBinaryFrameForSession({
+                frame: envelope.frame,
+                maxBinaryHeaderBytes: input.open.relayAuthorization?.payload.maxFrameBytes ?? Number.MAX_SAFE_INTEGER,
+                maxRawPayloadBytes: input.open.relayAuthorization?.payload.maxFrameBytes ?? Number.MAX_SAFE_INTEGER,
             });
-        if (!decoded?.ok || decoded.frame.tunnelId !== input.open.tunnelId) return;
+        if (!decoded?.ok || !decoded.frame || decoded.frame.tunnelId !== input.open.tunnelId) return;
         for (const handler of handlers) handler(decoded.frame);
     });
 
@@ -207,21 +207,25 @@ export async function openPeerTcpTunnelRelayStream(input: Readonly<{
         },
         sendSubstreamOpen: (substreamId) => {
             if (closed || encoding !== PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2) return;
-            sendRelayBinaryFrame(encodePeerTcpTunnelSubstreamOpenFrameV2({
+            sendRelayBinaryFrame(encodePeerTcpTunnelBinarySubstreamOpen({
                 tunnelId: input.open.tunnelId,
                 substreamId,
             }));
         },
         sendSubstreamDataFrame: (substreamId, frame) => {
             if (closed || encoding !== PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2) return;
-            sendRelayBinaryFrame(encodePeerTcpTunnelSubstreamDataFrameV2({
-                substreamId,
-                frame,
-            }));
+            sendRelayBinaryFrame(encodePeerTcpTunnelBinaryFrameForSubstream({ substreamId, frame: {
+                v: 1,
+                kind: 'data',
+                tunnelId: frame.tunnelId,
+                direction: frame.direction,
+                sequence: frame.sequence,
+                payload: frame.payloadBytes,
+            } }));
         },
         sendSubstreamFrame: (substreamId, frame) => {
             if (closed || encoding !== PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2) return;
-            sendRelayBinaryFrame(encodePeerTcpTunnelSubstreamFrameV2({
+            sendRelayBinaryFrame(encodePeerTcpTunnelBinaryFrameForSubstream({
                 substreamId,
                 frame,
             }));

@@ -1,8 +1,10 @@
 import { isAcceptedHappierUrlProtocol, resolveAppUrlScheme } from '@/utils/url/appScheme';
+import { normalizeServerIdentityIdCapability } from '@happier-dev/protocol';
 
 export type ParsedTerminalConnectUrl = Readonly<{
     publicKeyB64Url: string;
     serverUrl: string | null;
+    serverIdentityId?: string;
     pairing?: Readonly<{
         secretB64Url: string;
         createdAtMs: number;
@@ -76,13 +78,18 @@ function parsePairingContext(params: URLSearchParams): ParsedTerminalConnectUrl[
 }
 
 function withPairingContext(
-    base: Omit<ParsedTerminalConnectUrl, 'pairing' | 'supportsTokenOnly'>,
+    base: Omit<ParsedTerminalConnectUrl, 'pairing' | 'supportsTokenOnly' | 'serverIdentityId'>,
     params: URLSearchParams,
-): ParsedTerminalConnectUrl {
+): ParsedTerminalConnectUrl | null {
     const pairing = parsePairingContext(params);
-    if (!pairing) return base;
+    const hasPairingInput = ['pairingSecret', 'createdAt', 'expiresAt', 'supportsTokenOnly']
+        .some((key) => params.has(key));
+    if (!pairing) return hasPairingInput ? null : base;
+    const serverIdentityId = normalizeServerIdentityIdCapability(params.get('serverIdentityId'));
+    if (!serverIdentityId) return null;
     return {
         ...base,
+        serverIdentityId,
         pairing,
         ...(params.get('supportsTokenOnly') === '1' ? { supportsTokenOnly: true } : {}),
     };
@@ -91,11 +98,17 @@ function withPairingContext(
 function buildPairingQuerySuffix(
     pairing: ParsedTerminalConnectUrl['pairing'],
     supportsTokenOnly: boolean,
+    serverIdentityId: string | null | undefined,
 ): string {
     if (!pairing) return '';
+    const normalizedServerIdentityId = normalizeServerIdentityIdCapability(serverIdentityId);
+    if (!normalizedServerIdentityId) {
+        throw new Error('Authenticated terminal pairing requires a stable Home identity');
+    }
     return `&pairingSecret=${encodeURIComponent(pairing.secretB64Url)}`
         + `&createdAt=${pairing.createdAtMs}`
         + `&expiresAt=${pairing.expiresAtMs}`
+        + `&serverIdentityId=${encodeURIComponent(normalizedServerIdentityId)}`
         + (supportsTokenOnly ? '&supportsTokenOnly=1' : '');
 }
 
@@ -104,11 +117,12 @@ export function buildTerminalConnectDeepLink(params: Readonly<{
     serverUrl: string | null | undefined;
     pairing?: ParsedTerminalConnectUrl['pairing'];
     supportsTokenOnly?: boolean;
+    serverIdentityId?: string;
 }>): string {
     const terminalPrefix = `${resolveAppUrlScheme()}://terminal?`;
     const publicKeyB64Url = String(params.publicKeyB64Url ?? '').trim();
     const safeServerUrl = normalizeServerUrl(params.serverUrl ?? '');
-    const pairingSuffix = buildPairingQuerySuffix(params.pairing, params.supportsTokenOnly === true);
+    const pairingSuffix = buildPairingQuerySuffix(params.pairing, params.supportsTokenOnly === true, params.serverIdentityId);
     if (!safeServerUrl && !pairingSuffix) {
         return `${terminalPrefix}${publicKeyB64Url}`;
     }
@@ -121,6 +135,7 @@ export function buildTerminalConnectWebHref(params: Readonly<{
     serverUrl: string | null | undefined;
     pairing?: ParsedTerminalConnectUrl['pairing'];
     supportsTokenOnly?: boolean;
+    serverIdentityId?: string;
 }>): string {
     const publicKeyB64Url = String(params.publicKeyB64Url ?? '').trim();
     const safeServerUrl = normalizeServerUrl(params.serverUrl ?? '');
@@ -128,7 +143,7 @@ export function buildTerminalConnectWebHref(params: Readonly<{
     const serverSuffix = safeServerUrl ? `&server=${encodeURIComponent(safeServerUrl)}` : '';
     const hash =
         `#key=${encodeURIComponent(publicKeyB64Url)}${serverSuffix}`
-        + `${buildPairingQuerySuffix(params.pairing, params.supportsTokenOnly === true)}`;
+        + `${buildPairingQuerySuffix(params.pairing, params.supportsTokenOnly === true, params.serverIdentityId)}`;
 
     return `${TERMINAL_CONNECT_WEB_PATH}${hash}`;
 }

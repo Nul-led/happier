@@ -4,8 +4,10 @@ import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch'
 
 import {
     invalidateServerReachabilitySupervisor,
+    peekServerReachabilityState,
     resetServerReachabilitySupervisors,
     startServerReachabilitySupervisor,
+    stopServerReachabilitySupervisor,
     subscribeServerReachabilityState,
 } from './serverReachabilitySupervisorPool';
 
@@ -60,6 +62,29 @@ describe('serverReachabilitySupervisorPool (invalidate)', () => {
         expect(healthCalls.length).toBeGreaterThanOrEqual(2);
 
         unsubscribe();
+    });
+
+    it('keeps a shared supervisor active until its last subscriber is removed', async () => {
+        setRuntimeFetch(async () => new Response(null, { status: 200, headers: new Headers() }));
+        const serverUrl = 'https://example.test';
+        const unsubscribeA = subscribeServerReachabilityState(serverUrl, () => {});
+        const unsubscribeB = subscribeServerReachabilityState(`${serverUrl}/`, () => {});
+
+        try {
+            await startServerReachabilitySupervisor({ serverUrl, token: null });
+            expect(peekServerReachabilityState(serverUrl)?.phase).toBe('online');
+
+            unsubscribeA();
+            await stopServerReachabilitySupervisor(serverUrl);
+            expect(peekServerReachabilityState(serverUrl)?.phase).toBe('online');
+
+            unsubscribeB();
+            await stopServerReachabilitySupervisor(serverUrl);
+            expect(peekServerReachabilityState(serverUrl)?.phase).toBe('shutting_down');
+        } finally {
+            unsubscribeA();
+            unsubscribeB();
+        }
     });
 
     it('allows callers to force a re-probe while the supervisor still thinks the endpoint is online', async () => {

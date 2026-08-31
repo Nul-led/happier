@@ -23,6 +23,7 @@ type ProjectionServerSnapshot = Readonly<{
 
 type ProjectionRequestAuthority = Readonly<{
     request: (path: string, init?: RequestInit) => Promise<Response>;
+    release?: () => Promise<void>;
 }>;
 
 type IntentListReadResult =
@@ -91,7 +92,7 @@ function defaultDependencies(): ActivePluginAccountAvailabilityProjectionHydrato
                 scope,
                 activeRequest: (path, init) => apiSocket.request(path, init),
             });
-            return { request: authority.request };
+            return { request: authority.request, release: authority.release };
         },
     };
 }
@@ -228,8 +229,10 @@ export function createActivePluginAccountAvailabilityProjectionHydrator(
         const epoch = ++requestEpoch;
         const controller = new AbortController();
         const retirement = lifetime.onRetire(() => controller.abort());
+        let authority: ProjectionRequestAuthority | null = null;
         try {
-            const authority = await dependencies.captureRequestAuthority(lifetime.scope);
+            authority = await dependencies.captureRequestAuthority(lifetime.scope);
+            const capturedAuthority = authority;
             if (!isCurrent(lifetime, serverSnapshot, epoch)) return null;
 
             // A concurrent Account mutation can straddle the two operation
@@ -239,7 +242,7 @@ export function createActivePluginAccountAvailabilityProjectionHydrator(
             for (let attempt = 0; attempt < 2; attempt += 1) {
                 const materializations = PluginAvailabilityMaterializationsReadActionOutputV1Schema.parse(
                     await postJson(
-                        authority,
+                        capturedAuthority,
                         PluginAvailabilityActionHttpPathsV1['account.plugins.availability.materializations.read'],
                         {},
                         controller.signal,
@@ -247,7 +250,7 @@ export function createActivePluginAccountAvailabilityProjectionHydrator(
                 );
                 if (!isCurrent(lifetime, serverSnapshot, epoch)) return null;
 
-                const intentList = await postIntentList(authority, controller.signal);
+                const intentList = await postIntentList(capturedAuthority, controller.signal);
                 if (!isCurrent(lifetime, serverSnapshot, epoch)) return null;
 
                 const pluginIds = new Set(knownPluginIds);
@@ -265,7 +268,7 @@ export function createActivePluginAccountAvailabilityProjectionHydrator(
                 const intentReads = await Promise.all(sortedPluginIds.map(async (pluginId) => {
                     const response = PluginAvailabilityIntentReadActionOutputV1Schema.parse(
                         await postJson(
-                            authority,
+                            capturedAuthority,
                             PluginAvailabilityActionHttpPathsV1['account.plugins.availability.intent.read'],
                             { pluginId },
                             controller.signal,
@@ -304,6 +307,7 @@ export function createActivePluginAccountAvailabilityProjectionHydrator(
             if (!isCurrent(lifetime, serverSnapshot, epoch)) return null;
             throw error;
         } finally {
+            await authority?.release?.();
             retirement.dispose();
         }
     };

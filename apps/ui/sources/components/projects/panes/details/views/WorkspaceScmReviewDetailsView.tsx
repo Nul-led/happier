@@ -10,8 +10,7 @@ import { buildWorkspaceChangedFilesData } from '@/hooks/workspaces/scm/buildWork
 import { useWorkspaceScmSnapshotController } from '@/hooks/workspaces/scm/useWorkspaceScmSnapshotController';
 import { NotSourceControlRepositoryState } from '@/components/workspaces/scm/states/NotSourceControlRepositoryState';
 import { SourceControlUnavailableState } from '@/components/workspaces/scm/states/SourceControlUnavailableState';
-import { useSetting } from '@/sync/domains/state/storage';
-import { useWorkspaceReviewCommentsDrafts } from '@/sync/domains/state/storage';
+import { useSetting, useWorkspaceReviewCommentsDrafts, useWorkspaceScmCommitSelectionPatches, useWorkspaceScmCommitSelectionPaths } from '@/sync/domains/state/storage';
 import { ChangedFilesReview } from '@/components/workspaces/scm/review/ChangedFilesReview';
 import { fetchWorkspaceUnifiedDiffForPath } from '@/scm/diff/fetchWorkspaceUnifiedDiffForPath';
 import type { ScmReviewUnifiedDiffFetcher } from '@/components/workspaces/scm/review/scmReviewDiffFetcher';
@@ -30,6 +29,11 @@ import {
     type PluginPermissionGrantListInput,
     type PluginPermissionGrantTargetScope,
 } from '@/sync/domains/plugins/permissions/types';
+import type { ScmFileStatus } from '@/scm/scmStatusFiles';
+import { SCM_COMMIT_STRATEGIES, type ScmCommitStrategy } from '@/scm/settings/commitStrategy';
+import { buildCommitSelectionPathHints, isFileSelectedForCommit } from '@/scm/operations/commitSelectionHints';
+import { isDirectoryLikeScmFileStatus } from '@/scm/isDirectoryLikeScmFileStatus';
+import { WorkspaceScmCommitSelectionToggleButton } from '@/components/projects/scm/WorkspaceScmCommitSelectionToggleButton';
 
 export type WorkspaceScmReviewDetailsViewProps = Readonly<{
     scopeId: string;
@@ -46,12 +50,20 @@ export const WorkspaceScmReviewDetailsView = React.memo((props: WorkspaceScmRevi
     const { theme } = useUnistyles();
     const scmReviewMaxFilesSetting = useSetting('scmReviewMaxFiles');
     const scmReviewMaxChangedLinesSetting = useSetting('scmReviewMaxChangedLines');
+    const scmCommitStrategySetting = useSetting('scmCommitStrategy');
+    const scmCommitStrategy: ScmCommitStrategy = React.useMemo(() => {
+        if (typeof scmCommitStrategySetting !== 'string') return 'atomic';
+        return SCM_COMMIT_STRATEGIES.includes(scmCommitStrategySetting as ScmCommitStrategy)
+            ? (scmCommitStrategySetting as ScmCommitStrategy)
+            : 'atomic';
+    }, [scmCommitStrategySetting]);
     const scope = React.useMemo(() => ({
         serverId: props.serverId,
         machineId: props.machineId,
         rootPath: props.rootPath,
     }), [props.machineId, props.rootPath, props.serverId]);
     const reviewCommentsEnabled = useFeatureEnabled('files.reviewComments') === true;
+    const scmWriteEnabled = useFeatureEnabled('scm.writeOperations') === true;
     const reviewCommentDrafts = useWorkspaceReviewCommentsDrafts(scope);
     const reviewDraftHandlers = useWorkspaceReviewCommentDraftHandlers(scope);
     const frontDoorActionExecutor = React.useMemo(() => createFrontDoorUiActionExecutor(), []);
@@ -60,6 +72,8 @@ export const WorkspaceScmReviewDetailsView = React.memo((props: WorkspaceScmRevi
         [frontDoorActionExecutor],
     );
     const { snapshot, loading, error, refresh } = useWorkspaceScmSnapshotController(scope);
+    const commitSelectionPaths = useWorkspaceScmCommitSelectionPaths(scope);
+    const commitSelectionPatches = useWorkspaceScmCommitSelectionPatches(scope);
     const directWriteGrantScope = React.useMemo<PluginPermissionGrantTargetScope>(() => ({
         kind: 'project',
         projectId: props.workspaceRefId,
@@ -104,6 +118,46 @@ export const WorkspaceScmReviewDetailsView = React.memo((props: WorkspaceScmRevi
             ...input,
         });
     }, [scope]);
+    const atomicSelectionPathSet = React.useMemo(() => new Set(buildCommitSelectionPathHints({
+        commitSelectionPaths,
+        commitSelectionPatches,
+    })), [commitSelectionPatches, commitSelectionPaths]);
+    const renderReviewFileActions = React.useMemo(() => {
+        if (!scmWriteEnabled) return undefined;
+        return (file: ScmFileStatus) => {
+            if (isDirectoryLikeScmFileStatus(file)) return null;
+            const selectedForCommit = isFileSelectedForCommit({
+                commitStrategy: scmCommitStrategy,
+                file,
+                atomicSelectionPaths: atomicSelectionPathSet,
+            });
+            const capability = selectedForCommit
+                ? snapshot?.capabilities?.writeExclude
+                : snapshot?.capabilities?.writeInclude;
+            const actionSupported = scmCommitStrategy === 'atomic'
+                ? snapshot?.capabilities?.writeCommit === true
+                : capability === true;
+            if (!actionSupported) return null;
+            return (
+                <WorkspaceScmCommitSelectionToggleButton
+                    scope={scope}
+                    snapshot={snapshot ?? null}
+                    scmWriteEnabled={scmWriteEnabled}
+                    commitStrategy={scmCommitStrategy}
+                    file={file}
+                    selectedForCommit={selectedForCommit}
+                    onAfterToggle={refresh}
+                />
+            );
+        };
+    }, [
+        atomicSelectionPathSet,
+        refresh,
+        scmCommitStrategy,
+        scmWriteEnabled,
+        scope,
+        snapshot,
+    ]);
 
     if (loading && !snapshot) {
         return (
@@ -166,6 +220,7 @@ export const WorkspaceScmReviewDetailsView = React.memo((props: WorkspaceScmRevi
                 maxChangedLines={maxChangedLines}
                 onFilePress={(file) => props.onOpenFile?.(file.fullPath)}
                 onFilePressPinned={(file) => props.onOpenFilePinned?.(file.fullPath)}
+                renderFileActions={renderReviewFileActions}
                 rowDensity="compact"
                 reviewCommentsEnabled={reviewCommentsEnabled}
                 reviewCommentDrafts={reviewCommentDrafts}

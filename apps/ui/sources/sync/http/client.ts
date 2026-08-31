@@ -1,4 +1,4 @@
-import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import { isLoopbackHostname, redactPublicShareCapabilityUrl } from '@happier-dev/protocol';
@@ -65,7 +65,7 @@ export type ExpectedActiveServerFetchBasis = Readonly<{
     generation: number;
 }>;
 
-type ServerFetchOptions = Readonly<{
+export type ServerFetchOptions = Readonly<{
     includeAuth?: boolean;
     expectedActiveServer?: ExpectedActiveServerFetchBasis;
     /**
@@ -76,6 +76,32 @@ type ServerFetchOptions = Readonly<{
     retry?: 'default' | 'none';
     /** Override the request bound. Zero disables it for this request. */
     timeoutMs?: number;
+}>;
+
+/**
+ * The request function shared by focused-Home compatibility callers and explicit Home/Account
+ * Service callers.  The third argument intentionally stays optional so existing call sites keep
+ * their established retry/auth options while target callers can use the same lifecycle owner.
+ */
+export type ServerFetch = (
+    path: string,
+    init?: RequestInit,
+    options?: ServerFetchOptions,
+) => Promise<Response>;
+
+type EndpointRequestContext = Readonly<{
+    /** Stable logical URL used for identity, reachability, compatibility, and storage scope. */
+    endpointUrl: string;
+    /** Actual request origin. For Iroh this may be an ephemeral loopback origin. */
+    runtimeOrigin: string;
+    serverId: string;
+    generation?: number;
+    /** Active requests retain switch currentness/abort semantics; explicit requests do not. */
+    active: boolean;
+    /** `true` means credentials are resolved from the target's scoped storage. */
+    useStoredCredentials: boolean;
+    credentials?: AuthCredentials | null;
+    signal?: AbortSignal;
 }>;
 
 const MUTATING_HTTP_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -187,34 +213,44 @@ function maybeLogRuntimeFetchFailure(params: {
     }
 }
 
-export async function serverFetch(
+async function requestAtEndpoint(
+    context: EndpointRequestContext,
     path: string,
     init?: RequestInit,
     options: ServerFetchOptions = {},
 ): Promise<Response> {
-    const localAbortSequence = abortSequence;
-    const snapshot = getActiveServerSnapshot();
+    const localAbortSequence = context.active ? abortSequence : null;
+    if (!context.active) {
+        const targetOrigin = tryParseUrl(context.runtimeOrigin);
+        if (
+            !targetOrigin
+            || (targetOrigin.protocol !== 'http:' && targetOrigin.protocol !== 'https:')
+        ) {
+            throw new Error('Invalid explicit endpoint URL');
+        }
+    }
     if (
-        options.expectedActiveServer
+        context.active
+        && options.expectedActiveServer
         && (
-            snapshot.serverId !== options.expectedActiveServer.serverId
-            || snapshot.generation !== options.expectedActiveServer.generation
+            context.serverId !== options.expectedActiveServer.serverId
+            || context.generation !== options.expectedActiveServer.generation
         )
     ) {
         throw new StaleServerGenerationError();
     }
     const normalizedPath = normalizePath(path);
-    const transportOrigin = resolveActiveServerRuntimeOrigin(snapshot);
+    const transportOrigin = context.runtimeOrigin;
     const requestUrl = normalizedPath.startsWith('http://') || normalizedPath.startsWith('https://')
         ? normalizedPath
         : `${transportOrigin}${normalizedPath}`;
 
-    if (isDebugEnabled() && !didLogActiveServerSnapshot) {
+    if (context.active && isDebugEnabled() && !didLogActiveServerSnapshot) {
         didLogActiveServerSnapshot = true;
-        const logSafeServerUrl = redactUrlForLogs(snapshot.serverUrl);
+        const logSafeServerUrl = redactUrlForLogs(context.endpointUrl);
         // eslint-disable-next-line no-console
         console.log(
-            `[serverFetch] active server snapshot: serverId=${snapshot.serverId}, serverUrl=${logSafeServerUrl}, generation=${snapshot.generation}`,
+            `[serverFetch] active server snapshot: serverId=${context.serverId}, serverUrl=${logSafeServerUrl}, generation=${context.generation ?? 0}`,
         );
     }
 
@@ -232,7 +268,7 @@ export async function serverFetch(
         : resolveAccountStoredContentCompatibilityHeaders(
             init?.headers,
             {
-                serverUrl: snapshot.serverUrl,
+                serverUrl: context.endpointUrl,
                 ...(requestedCompatibilityDeclaration
                     ? { declaration: requestedCompatibilityDeclaration }
                     : {}),
@@ -250,14 +286,26 @@ export async function serverFetch(
         ? compatibility.headers
         : stripAccountStoredContentCompatibilityHeader(init?.headers);
     const rejectedFirstKeyBearerKey =
-        resolveRejectedFirstKeyBearerKey(snapshot);
+        resolveRejectedFirstKeyBearerKey({
+            serverId: context.serverId,
+            serverUrl: context.endpointUrl,
+        });
     let rejectedFirstKeyBearer =
         rejectedFirstKeyBearerByServer.get(
             rejectedFirstKeyBearerKey,
         ) ?? null;
     let usedToken: string | null = null;
     if (options.includeAuth !== false) {
-        const credentials = await TokenStorage.getCredentials();
+        const credentials = context.credentials !== undefined
+            ? context.credentials
+            : context.useStoredCredentials
+                ? context.active
+                    ? await TokenStorage.getCredentials()
+                    : await TokenStorage.getCredentialsForServerUrl(
+                        context.endpointUrl,
+                        context.serverId ? { serverId: context.serverId } : {},
+                    )
+                : null;
         if (!credentials?.token) {
             rejectedFirstKeyBearerByServer.delete(
                 rejectedFirstKeyBearerKey,
@@ -281,7 +329,9 @@ export async function serverFetch(
             rejectedFirstKeyBearer = null;
         }
         if (
-            credentials?.token
+            context.active
+            && context.useStoredCredentials
+            && credentials?.token
             && (
                 rejectedFirstKeyBearer
                 === credentials.token
@@ -296,9 +346,9 @@ export async function serverFetch(
                 await TokenStorage
                     .classifyPendingExternalAuthFirstKeyRejectedCredential({
                         serverId:
-                            snapshot.serverId,
+                            context.serverId,
                         serverUrl:
-                            snapshot.serverUrl,
+                            context.endpointUrl,
                         token:
                             credentials.token,
                     });
@@ -318,7 +368,7 @@ export async function serverFetch(
                 fireAndForget(
                     invalidateServerReachabilitySupervisor({
                         serverUrl:
-                            snapshot.serverUrl,
+                            context.endpointUrl,
                         token: null,
                     }),
                     {
@@ -362,7 +412,7 @@ export async function serverFetch(
     const hasAuthorization = explicitAuthHeader.trim().length > 0;
     if (hasAuthorization) {
         const logSafeRequestUrl = redactUrlForLogs(requestUrl);
-        const logSafeActiveServerUrl = redactUrlForLogs(snapshot.serverUrl);
+        const logSafeActiveServerUrl = redactUrlForLogs(context.endpointUrl);
         // Fail-closed: if we have any Authorization header, we must be able to validate same-origin
         // to avoid accidentally sending credentials to an unexpected host (or the current web origin).
         if (!absoluteRequestUrl || !activeServerUrl) {
@@ -385,21 +435,25 @@ export async function serverFetch(
     }
 
     const requestController = new AbortController();
-    inFlightControllers.add(requestController);
-    if (abortSequence !== localAbortSequence) {
+    if (context.active) inFlightControllers.add(requestController);
+    if (context.active && localAbortSequence !== null && abortSequence !== localAbortSequence) {
         requestController.abort('server-switch');
     }
 
-    const upstreamSignal = init?.signal;
-    let removeUpstreamListener = () => {};
-    if (upstreamSignal) {
+    const upstreamSignals = [context.signal, init?.signal].filter(
+        (signal): signal is AbortSignal => Boolean(signal),
+    );
+    const removeUpstreamListeners: Array<() => void> = [];
+    for (const upstreamSignal of upstreamSignals) {
         if (upstreamSignal.aborted) {
-            requestController.abort();
-        } else {
-            const onAbort = () => requestController.abort();
-            upstreamSignal.addEventListener('abort', onAbort, { once: true });
-            removeUpstreamListener = () => upstreamSignal.removeEventListener('abort', onAbort);
+            requestController.abort((upstreamSignal as AbortSignal & { reason?: unknown }).reason);
+            continue;
         }
+        const onAbort = () => requestController.abort(
+            (upstreamSignal as AbortSignal & { reason?: unknown }).reason,
+        );
+        upstreamSignal.addEventListener('abort', onAbort, { once: true });
+        removeUpstreamListeners.push(() => upstreamSignal.removeEventListener('abort', onAbort));
     }
 
     const method = String(init?.method ?? 'GET').toUpperCase();
@@ -419,7 +473,7 @@ export async function serverFetch(
         && !!activeServerUrl;
     const endpointSupervisor =
         isActiveOrigin
-            ? getEndpointSupervisorForServer({ serverId: snapshot.serverId, serverUrl: transportOrigin })
+            ? getEndpointSupervisorForServer({ serverId: context.serverId, serverUrl: context.endpointUrl })
             : null;
 
     let response: Response | null = null;
@@ -429,7 +483,7 @@ export async function serverFetch(
                 if (isActiveOrigin && retryMode !== 'none') {
                     const reachabilityToken =
                         peekServerReachabilityToken(
-                            transportOrigin,
+                            context.endpointUrl,
                         ) ?? null;
                     const tokenForReachability =
                         usedToken
@@ -441,7 +495,7 @@ export async function serverFetch(
                         );
                     try {
                         await waitForServerReachable({
-                            serverUrl: transportOrigin,
+                            serverUrl: context.endpointUrl,
                             token: tokenForReachability,
                             signal: requestController.signal,
                             timeoutMs: readServerReachabilityWaitTimeoutMs(),
@@ -452,12 +506,13 @@ export async function serverFetch(
                             requestController.signal.aborted || (error instanceof Error && error.name === 'AbortError');
                         if (aborted) {
                             const reason = (requestController.signal as unknown as { reason?: unknown }).reason;
-                            const serverSwitchAbort = reason === 'server-switch' || abortSequence !== localAbortSequence;
+                            const serverSwitchAbort = context.active
+                                && (reason === 'server-switch' || abortSequence !== localAbortSequence);
                             if (serverSwitchAbort) {
                                 throw new ServerFetchAbortedForServerSwitchError();
                             }
                             if (didWriteTimeout) {
-                                reportServerUnreachable(snapshot.serverUrl, error);
+                                reportServerUnreachable(context.endpointUrl, error);
                                 throw new ServerFetchWriteTimeoutError();
                             }
                             throw error;
@@ -471,8 +526,8 @@ export async function serverFetch(
 
                 if (endpointSupervisor && retryMode !== 'none') {
                     const supervisedFetch = createEndpointSupervisedRequest({
-                        serverId: snapshot.serverId,
-                        serverUrl: snapshot.serverUrl,
+                        serverId: context.serverId,
+                        serverUrl: transportOrigin,
                         token: usedToken,
                         endpointSupervisor,
                     });
@@ -492,20 +547,21 @@ export async function serverFetch(
                 maybeLogRuntimeFetchFailure({
                     method,
                     requestUrl,
-                    activeServerUrl: snapshot.serverUrl,
-                    activeServerId: snapshot.serverId,
+                    activeServerUrl: context.endpointUrl,
+                    activeServerId: context.serverId,
                     error,
                 });
                 const aborted =
                     requestController.signal.aborted || (error instanceof Error && error.name === 'AbortError');
                 if (aborted) {
                     const reason = (requestController.signal as unknown as { reason?: unknown }).reason;
-                    const serverSwitchAbort = reason === 'server-switch' || abortSequence !== localAbortSequence;
+                    const serverSwitchAbort = context.active
+                        && (reason === 'server-switch' || abortSequence !== localAbortSequence);
                     if (serverSwitchAbort) {
                         throw new ServerFetchAbortedForServerSwitchError();
                     }
                     if (didWriteTimeout) {
-                        reportServerUnreachable(snapshot.serverUrl, error);
+                        reportServerUnreachable(context.endpointUrl, error);
                         throw new ServerFetchWriteTimeoutError();
                     }
                     // Caller aborts should not poison reachability state.
@@ -516,13 +572,18 @@ export async function serverFetch(
                     // transport failure which can reset backoff scheduling.
                     throw error;
                 }
-                reportServerUnreachable(snapshot.serverUrl, error);
+                reportServerUnreachable(context.endpointUrl, error);
                 throw error;
             }
 
-            const current = getActiveServerSnapshot();
-            if (current.generation !== snapshot.generation || current.serverId !== snapshot.serverId) {
-                throw new StaleServerGenerationError();
+            if (context.active) {
+                const current = getActiveServerSnapshot();
+                if (
+                    current.generation !== context.generation
+                    || current.serverId !== context.serverId
+                ) {
+                    throw new StaleServerGenerationError();
+                }
             }
 
             if (!usedToken || response.status !== 401 || !isActiveOrigin) {
@@ -534,83 +595,90 @@ export async function serverFetch(
             // prevents a persistent 401 loop and permits a refreshed token.
             let invalidatedStoredCredentials = false;
             try {
-                // Load the first-key owner lazily: it uses serverFetch for recovery
-                // requests, so a static import here would create a module cycle.
-                const {
-                    guardAccountEncryptionFirstKeyCredentialMutation,
-                    markAccountEncryptionFirstKeyRejectedCredential,
-                } = await import(
-                    '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth'
-                );
-                const guard =
-                    await guardAccountEncryptionFirstKeyCredentialMutation({
-                        serverId: snapshot.serverId,
-                        serverUrl: snapshot.serverUrl,
-                    });
-                if (guard.kind !== 'allowed') {
-                    const marked =
-                        await markAccountEncryptionFirstKeyRejectedCredential({
-                            recovery:
-                                guard.recovery,
-                            token: usedToken,
+                if (context.active && context.useStoredCredentials) {
+                    // Load the first-key owner lazily: it uses serverFetch for recovery
+                    // requests, so a static import here would create a module cycle.
+                    const {
+                        guardAccountEncryptionFirstKeyCredentialMutation,
+                        markAccountEncryptionFirstKeyRejectedCredential,
+                    } = await import(
+                        '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth'
+                    );
+                    const guard =
+                        await guardAccountEncryptionFirstKeyCredentialMutation({
+                            serverId: context.serverId,
+                            serverUrl: context.endpointUrl,
                         });
-                    if (
-                        marked.kind
-                        !== 'recorded'
-                    ) {
+                    if (guard.kind !== 'allowed') {
+                        const marked =
+                            await markAccountEncryptionFirstKeyRejectedCredential({
+                                recovery:
+                                    guard.recovery,
+                                token: usedToken,
+                            });
+                        if (
+                            marked.kind
+                            !== 'recorded'
+                        ) {
+                            break;
+                        }
+                        const alreadyFenced =
+                            rejectedFirstKeyBearerByServer
+                                .get(
+                                    rejectedFirstKeyBearerKey,
+                                )
+                            === usedToken;
+                        rejectedFirstKeyBearerByServer.set(
+                            rejectedFirstKeyBearerKey,
+                            usedToken,
+                        );
+                        classifiedAllowedBearerByServer.delete(
+                            rejectedFirstKeyBearerKey,
+                        );
+                        fireAndForget(
+                            invalidateServerReachabilitySupervisor({
+                                serverUrl:
+                                    context.endpointUrl,
+                                token: null,
+                            }),
+                            {
+                                tag:
+                                    'serverFetch.firstKeyRejectedBearerReachability',
+                            },
+                        );
+                        if (!alreadyFenced) {
+                            notifyAuthCredentialsInvalidated({
+                                kind:
+                                    'first_key_recovery_required',
+                                serverId:
+                                    context.serverId,
+                                serverUrl:
+                                    context.endpointUrl,
+                                recovery:
+                                    marked.recovery,
+                            });
+                        }
+                        // The rejected bearer is retained only as exact first-key
+                        // recovery custody. It must not be retried as normal auth.
                         break;
                     }
-                    const alreadyFenced =
-                        rejectedFirstKeyBearerByServer
-                            .get(
-                                rejectedFirstKeyBearerKey,
-                            )
-                        === usedToken;
-                    rejectedFirstKeyBearerByServer.set(
-                        rejectedFirstKeyBearerKey,
-                        usedToken,
-                    );
-                    classifiedAllowedBearerByServer.delete(
-                        rejectedFirstKeyBearerKey,
-                    );
-                    fireAndForget(
-                        invalidateServerReachabilitySupervisor({
-                            serverUrl:
-                                snapshot.serverUrl,
-                            token: null,
-                        }),
-                        {
-                            tag:
-                                'serverFetch.firstKeyRejectedBearerReachability',
-                        },
-                    );
-                    if (!alreadyFenced) {
-                        notifyAuthCredentialsInvalidated({
-                            kind:
-                                'first_key_recovery_required',
-                            serverId:
-                                snapshot.serverId,
-                            serverUrl:
-                                snapshot.serverUrl,
-                            recovery:
-                                marked.recovery,
-                        });
-                    }
-                    // The rejected bearer is retained only as exact first-key
-                    // recovery custody. It must not be retried as normal auth.
-                    break;
                 }
-                invalidatedStoredCredentials = await TokenStorage.invalidateCredentialsTokenForServerUrl(snapshot.serverUrl, usedToken, {
-                    serverId: snapshot.serverId,
-                });
+                if (context.useStoredCredentials) {
+                    invalidatedStoredCredentials =
+                        await TokenStorage.invalidateCredentialsTokenForServerUrl(
+                            context.endpointUrl,
+                            usedToken,
+                            { serverId: context.serverId },
+                        );
+                }
             } catch {
                 // ignore
             }
             if (invalidatedStoredCredentials) {
                 notifyAuthCredentialsInvalidated({
                     kind: 'credentials_removed',
-                    serverId: snapshot.serverId,
-                    serverUrl: snapshot.serverUrl,
+                    serverId: context.serverId,
+                    serverUrl: context.endpointUrl,
                 });
             }
 
@@ -619,9 +687,17 @@ export async function serverFetch(
                 break;
             }
 
-            // Re-read credentials and retry once if we found a different token.
+            // Re-read target-scoped credentials and retry once if we found a
+            // different token. Explicit caller credentials are immutable for the
+            // request and must not be replaced from storage.
+            if (!context.useStoredCredentials) break;
             try {
-                const fresh = await TokenStorage.getCredentials();
+                const fresh = context.active
+                    ? await TokenStorage.getCredentials()
+                    : await TokenStorage.getCredentialsForServerUrl(
+                        context.endpointUrl,
+                        context.serverId ? { serverId: context.serverId } : {},
+                    );
                 const freshToken = fresh?.token ?? null;
                 if (freshToken && freshToken !== usedToken) {
                     usedToken = freshToken;
@@ -638,8 +714,10 @@ export async function serverFetch(
         if (writeTimeoutHandle) {
             clearTimeout(writeTimeoutHandle);
         }
-        removeUpstreamListener();
-        inFlightControllers.delete(requestController);
+        for (const removeUpstreamListener of removeUpstreamListeners) {
+            removeUpstreamListener();
+        }
+        if (context.active) inFlightControllers.delete(requestController);
     }
 
     if (!response) {
@@ -647,4 +725,94 @@ export async function serverFetch(
         throw new Error('serverFetch did not attempt the request');
     }
     return response;
+}
+
+function normalizeEndpointBase(raw: string): string {
+    const value = String(raw ?? '').trim();
+    if (!value) return '';
+    try {
+        const parsed = new URL(value);
+        // Endpoint identity is an origin/base, never a caller-supplied query or fragment. This
+        // also prevents credentials from being accidentally attached to an inherited URL query.
+        parsed.search = '';
+        parsed.hash = '';
+        parsed.username = '';
+        parsed.password = '';
+        return parsed.toString().replace(/\/+$/, '');
+    } catch {
+        return value.replace(/\/+$/, '');
+    }
+}
+
+function resolveEndpointRuntimeOrigin(endpointUrl: string, runtimeOrigin?: string): string {
+    const candidate = String(runtimeOrigin ?? '').trim();
+    if (candidate) {
+        try {
+            const parsed = new URL(candidate);
+            if (
+                (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+                && !parsed.username
+                && !parsed.password
+                && !parsed.search
+                && !parsed.hash
+            ) {
+                return parsed.toString().replace(/\/+$/, '');
+            }
+        } catch {
+            // Invalid runtime origins fail closed to the stable endpoint below.
+        }
+    }
+    return endpointUrl;
+}
+
+/**
+ * Build a request function for a specific Home/Account Service endpoint. The target is captured
+ * once and never resolved through the active-server selector, so changing focus cannot retarget
+ * an in-flight or subsequent request made by this function.
+ */
+export function createServerFetchAtEndpoint(
+    params: Readonly<{
+        endpointUrl: string;
+        runtimeOrigin?: string;
+        credentials?: AuthCredentials | null;
+        serverId?: string;
+        signal?: AbortSignal;
+    }>,
+): ServerFetch {
+    const endpointUrl = normalizeEndpointBase(params.endpointUrl);
+    const runtimeOrigin = resolveEndpointRuntimeOrigin(endpointUrl, params.runtimeOrigin);
+    const serverId = String(params.serverId ?? '').trim();
+    const context: EndpointRequestContext = {
+        endpointUrl,
+        runtimeOrigin,
+        serverId,
+        active: false,
+        useStoredCredentials: params.credentials === undefined,
+        ...(params.credentials !== undefined ? { credentials: params.credentials } : {}),
+        ...(params.signal ? { signal: params.signal } : {}),
+    };
+
+    return async (path, init, options) => await requestAtEndpoint(context, path, init, options);
+}
+
+/** Focused-Home compatibility wrapper. All request policy remains in `requestAtEndpoint`. */
+export async function serverFetch(
+    path: string,
+    init?: RequestInit,
+    options: ServerFetchOptions = {},
+): Promise<Response> {
+    const snapshot = getActiveServerSnapshot();
+    return await requestAtEndpoint(
+        {
+            endpointUrl: snapshot.serverUrl,
+            runtimeOrigin: resolveActiveServerRuntimeOrigin(snapshot),
+            serverId: snapshot.serverId,
+            generation: snapshot.generation,
+            active: true,
+            useStoredCredentials: true,
+        },
+        path,
+        init,
+        options,
+    );
 }

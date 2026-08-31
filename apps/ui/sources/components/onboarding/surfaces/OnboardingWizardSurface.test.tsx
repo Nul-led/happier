@@ -9,6 +9,7 @@ import type { AuthCredentialLifecycleResult } from '@/auth/context/AuthContext';
 import type { AccountEncryptionFirstKeyRecoveryHandle } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
 import type { PendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent.shared';
 import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
+import { buildHomeQrInviteDeepLink } from '@/auth/pairing/pairingUrl';
 
 import { WizardModalShell } from '../ui/WizardModalShell';
 import { WizardChoiceRow } from '../ui/WizardChoiceRow';
@@ -318,6 +319,7 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 }));
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     HAPPIER_CLOUD_SERVER_URL: 'https://api.happier.dev',
+    loadHomeViewState: () => null,
     getResetToDefaultServerId: () => getResetToDefaultServerIdMock(),
     getServerProfileById: (serverId: string) => getServerProfileByIdMock(serverId),
     listServerProfiles: () => listServerProfilesMock(),
@@ -4521,6 +4523,59 @@ describe('OnboardingWizardSurface', () => {
         await flushHookEffects({ cycles: 1, turns: 1 });
 
         expect(screen.findByTestId('onboarding-wizard-relay-url-input')).not.toBeNull();
+    });
+
+    it('forwards a scanned V2 Home invite to the restore owner without switching the active server', async () => {
+        webQrScannerSupportedMock.value = true;
+        webMobileLikeQrScannerHostMock.value = true;
+        const rawLink = buildHomeQrInviteDeepLink({
+            invite: {
+                v: 2,
+                intent: 'home_device',
+                pairId: 'pair-onboarding-v2',
+                home: {
+                    v: 1,
+                    homeServerIdentityId: 'srv_home_b',
+                    canonicalServerUrl: 'https://home-b.test',
+                    revision: 1,
+                    endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+                },
+                qrSecretBase64Url: 'CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk',
+                issuedAtMs: Date.now(),
+                expiresAtMs: Date.now() + 60_000,
+            },
+        });
+
+        const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
+        const screen = await renderScreen(
+            React.createElement(OnboardingWizardSurface, {
+                layout: 'portrait',
+                isDesktopShell: true,
+                authEntryOptions: baseAuthOptions,
+                onCreateAccount: vi.fn(),
+                onCreateAccountViaProvider: vi.fn(),
+                onLoginWithKeylessProvider: vi.fn(),
+                onLoginWithMtls: vi.fn(),
+            }),
+        );
+
+        await act(async () => {
+            await screen.findByTestId('welcome-secondary-login')?.props.onPress?.();
+        });
+        await flushHookEffects({ cycles: 1, turns: 1 });
+        const scanner = screen.findByType('QrCodeScannerView')!;
+        setActiveServerAndSwitchMock.mockClear();
+        upsertActivateAndSwitchServerMock.mockClear();
+
+        await act(async () => {
+            await scanner.props.onScan?.(rawLink);
+        });
+        await flushHookEffects({ cycles: 1, turns: 1 });
+
+        const restore = findAllInCurrentWizardBodyByType(screen, 'RestoreIndexEmbedded' as never)[0] as unknown as ReactTestInstance;
+        expect(restore.props.initialPairingLink).toBe(rawLink);
+        expect(setActiveServerAndSwitchMock).not.toHaveBeenCalled();
+        expect(upsertActivateAndSwitchServerMock).not.toHaveBeenCalled();
     });
 
     it('clears scan-step opt-in after backing out of the QR scanner', async () => {

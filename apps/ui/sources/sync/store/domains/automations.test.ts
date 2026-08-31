@@ -20,21 +20,12 @@ import { createAutomationsDomain } from './automations';
 
 type State = ReturnType<typeof createAutomationsDomain>;
 
-type PaginatedRunsState = State & {
-    automationRunNextCursorByAutomationId: Record<string, string | null>;
-    setAutomationRuns: (automationId: string, runs: AutomationDefinitionRun[], nextCursor: string | null) => void;
-    appendAutomationRuns: (
-        automationId: string,
-        expectedCursor: string,
-        runs: AutomationDefinitionRun[],
-        nextCursor: string | null,
-    ) => void;
-    refreshAutomationRunsWindow: (
-        automationId: string,
-        runs: AutomationDefinitionRun[],
-        nextCursor: string | null,
-    ) => void;
-};
+type PaginatedRunsState = State;
+
+function traversalToken(token: number | null): number {
+    expect(token).not.toBeNull();
+    return token!;
+}
 
 const eventDefinitionSummary = AutomationDefinitionListItemSchema.parse({
     id: 'event-1',
@@ -198,17 +189,17 @@ describe('createAutomationsDomain', () => {
 
     it('preserves an extended Automation window while restarting its fresh continuation on refresh', () => {
         const harness = createHarness();
-        harness.get().applyAutomations([automation({ id: 'a2', updatedAt: 2 })], 'cursor-1');
+        let token = traversalToken(harness.get().applyAutomations([automation({ id: 'a2', updatedAt: 2 })], 'cursor-1'));
 
-        harness.get().appendAutomations('stale-cursor', [automation({ id: 'a1' })], null);
+        harness.get().appendAutomations('stale-cursor', token, [automation({ id: 'a1' })], null);
         expect(Object.keys(harness.get().automations)).toEqual(['a2']);
         expect(harness.get().automationDefinitionNextCursor).toBe('cursor-1');
 
-        harness.get().appendAutomations('cursor-1', [automation({ id: 'a1' })], null);
+        harness.get().appendAutomations('cursor-1', token, [automation({ id: 'a1' })], null);
         expect(Object.keys(harness.get().automations).sort()).toEqual(['a1', 'a2']);
         expect(harness.get().automationDefinitionNextCursor).toBeNull();
 
-        harness.get().applyAutomations([automation({ id: 'a2', name: 'refreshed', updatedAt: 3 })], 'cursor-new');
+        token = traversalToken(harness.get().applyAutomations([automation({ id: 'a2', name: 'refreshed', updatedAt: 3 })], 'cursor-new'));
         expect(Object.keys(harness.get().automations).sort()).toEqual(['a1', 'a2']);
         expect(harness.get().automations.a2?.name).toBe('refreshed');
         expect(harness.get().automationDefinitionNextCursor).toBe('cursor-new');
@@ -216,9 +207,9 @@ describe('createAutomationsDomain', () => {
         // The fresh cursor may replay an already-retained row before it
         // reaches definitions inserted while this client was offline. The
         // identity-keyed merge keeps the old tail without duplicating it.
-        harness.get().appendAutomations('cursor-new', [
+        harness.get().appendAutomations('cursor-new', token, [
             automation({ id: 'a1', updatedAt: 2 }),
-            automation({ id: 'a-new', updatedAt: 2.5 }),
+            automation({ id: 'a-new', updatedAt: 25 }),
         ], null);
         expect(Object.keys(harness.get().automations).sort()).toEqual(['a-new', 'a1', 'a2']);
         expect(harness.get().automationDefinitionNextCursor).toBeNull();
@@ -228,6 +219,59 @@ describe('createAutomationsDomain', () => {
         harness.get().applyAutomations([automation({ id: 'a2', updatedAt: 4 })], null);
         expect(Object.keys(harness.get().automations)).toEqual(['a2']);
         expect(harness.get().automationDefinitionWindowExtended).toBe(false);
+    });
+
+    it('rejects an older definition continuation when a fresh traversal reuses its cursor', () => {
+        const harness = createHarness();
+        const olderToken = traversalToken(harness.get().applyAutomations(
+            [automation({ id: 'older-first-page' })],
+            'shared-page-2',
+        ));
+        const freshToken = traversalToken(harness.get().applyAutomations(
+            [automation({ id: 'fresh-first-page' })],
+            'shared-page-2',
+        ));
+
+        expect(freshToken).not.toBe(olderToken);
+        expect(harness.get().appendAutomations(
+            'shared-page-2',
+            olderToken,
+            [automation({ id: 'older-tail' })],
+            null,
+        )).toBe(false);
+        expect(harness.get().automations['older-tail']).toBeUndefined();
+        expect(harness.get().automationDefinitionNextCursor).toBe('shared-page-2');
+
+        expect(harness.get().appendAutomations(
+            'shared-page-2',
+            freshToken,
+            [automation({ id: 'fresh-tail' })],
+            null,
+        )).toBe(true);
+        expect(Object.keys(harness.get().automations).sort()).toEqual(['fresh-first-page', 'fresh-tail']);
+    });
+
+    it('replaces an extended definition window only after a fresh traversal reaches its terminal page', () => {
+        const harness = createHarness();
+
+        let token = traversalToken(harness.get().applyAutomations([
+            automation({ id: 'a1', updatedAt: 1 }),
+            automation({ id: 'a2', updatedAt: 1 }),
+        ], 'old-page-2'));
+        harness.get().appendAutomations('old-page-2', token, [automation({ id: 'a3', updatedAt: 1 })], null);
+        expect(Object.keys(harness.get().automations).sort()).toEqual(['a1', 'a2', 'a3']);
+        harness.get().setAutomationRuns('a3', [run({ id: 'r3', automationId: 'a3' })], null);
+
+        // The remote Account removed a3 while this client was offline. The
+        // fresh first page keeps the last-known-good window visible while its
+        // replacement snapshot is still incomplete.
+        token = traversalToken(harness.get().applyAutomations([automation({ id: 'a1', updatedAt: 2 })], 'fresh-page-2'));
+        expect(Object.keys(harness.get().automations).sort()).toEqual(['a1', 'a2', 'a3']);
+
+        harness.get().appendAutomations('fresh-page-2', token, [automation({ id: 'a2', updatedAt: 2 })], null);
+        expect(Object.keys(harness.get().automations).sort()).toEqual(['a1', 'a2']);
+        expect(harness.get().automationDefinitionNextCursor).toBeNull();
+        expect(harness.get().automationRunsByAutomationId.a3).toBeUndefined();
     });
 
     it('retains current private definition content across a same-version summary refresh and drops it on a revision change', () => {
@@ -392,18 +436,18 @@ describe('createAutomationsDomain', () => {
     it('continues only the current opaque run-history cursor and deduplicates an overlapping page', () => {
         const harness = createHarness();
         const domain = harness.get() as PaginatedRunsState;
-        domain.setAutomationRuns('a1', [
+        const token = traversalToken(domain.setAutomationRuns('a1', [
             run({ id: 'r3', automationId: 'a1', dueAt: 30, state: 'running' }),
             run({ id: 'r2', automationId: 'a1', dueAt: 20 }),
-        ], 'cursor-1');
+        ], 'cursor-1'));
 
-        domain.appendAutomationRuns('a1', 'stale-cursor', [
+        domain.appendAutomationRuns('a1', 'stale-cursor', token, [
             run({ id: 'r1', automationId: 'a1', dueAt: 10 }),
         ], 'cursor-2');
         expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id)).toEqual(['r3', 'r2']);
         expect((harness.get() as PaginatedRunsState).automationRunNextCursorByAutomationId.a1).toBe('cursor-1');
 
-        domain.appendAutomationRuns('a1', 'cursor-1', [
+        domain.appendAutomationRuns('a1', 'cursor-1', token, [
             run({ id: 'r2', automationId: 'a1', dueAt: 20, state: 'succeeded', updatedAt: 2 }),
             run({ id: 'r1', automationId: 'a1', dueAt: 10 }),
         ], null);
@@ -411,6 +455,42 @@ describe('createAutomationsDomain', () => {
         expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id)).toEqual(['r3', 'r2', 'r1']);
         expect(harness.get().automationRunsByAutomationId.a1?.[1]?.state).toBe('succeeded');
         expect((harness.get() as PaginatedRunsState).automationRunNextCursorByAutomationId.a1).toBeNull();
+    });
+
+    it('rejects an older Run continuation when a fresh traversal reuses its cursor', () => {
+        const harness = createHarness();
+        const domain = harness.get() as PaginatedRunsState;
+        const olderToken = traversalToken(domain.setAutomationRuns(
+            'a1',
+            [run({ id: 'older-first-page', automationId: 'a1', dueAt: 20 })],
+            'shared-page-2',
+        ));
+        const freshToken = traversalToken(domain.setAutomationRuns(
+            'a1',
+            [run({ id: 'fresh-first-page', automationId: 'a1', dueAt: 20 })],
+            'shared-page-2',
+        ));
+
+        expect(freshToken).not.toBe(olderToken);
+        expect(domain.appendAutomationRuns(
+            'a1',
+            'shared-page-2',
+            olderToken,
+            [run({ id: 'older-tail', automationId: 'a1', dueAt: 10 })],
+            null,
+        )).toBe(false);
+        expect(harness.get().automationRunsByAutomationId.a1?.some((entry) => entry.id === 'older-tail')).toBe(false);
+        expect(harness.get().automationRunNextCursorByAutomationId.a1).toBe('shared-page-2');
+
+        expect(domain.appendAutomationRuns(
+            'a1',
+            'shared-page-2',
+            freshToken,
+            [run({ id: 'fresh-tail', automationId: 'a1', dueAt: 10 })],
+            null,
+        )).toBe(true);
+        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id))
+            .toEqual(['fresh-first-page', 'fresh-tail']);
     });
 
     it('removes run cache when automation is removed', () => {
@@ -429,19 +509,20 @@ describe('createAutomationsDomain', () => {
         const domain = harness.get() as PaginatedRunsState;
         const max = loadSyncTuning().automationRunsMaxEntriesPerAutomation;
 
-        domain.setAutomationRuns(
+        const token = traversalToken(domain.setAutomationRuns(
             'a1',
             Array.from({ length: max }, (_, index) =>
                 run({ id: `r${index + 1}`, automationId: 'a1', dueAt: max - index }),
             ),
             'cursor-1',
-        );
+        ));
         // The page the reader explicitly asked for is older than everything
         // already retained. The passive newest-first ceiling must not decide
         // that the server ran out of history.
         domain.appendAutomationRuns(
             'a1',
             'cursor-1',
+            token,
             [run({ id: 'older-1', automationId: 'a1', dueAt: 0 })],
             'cursor-2',
         );
@@ -455,6 +536,7 @@ describe('createAutomationsDomain', () => {
         domain.appendAutomationRuns(
             'a1',
             'cursor-2',
+            token,
             [run({ id: 'older-2', automationId: 'a1', dueAt: 0 })],
             null,
         );
@@ -466,16 +548,17 @@ describe('createAutomationsDomain', () => {
         const domain = harness.get() as PaginatedRunsState;
         const max = loadSyncTuning().automationRunsMaxEntriesPerAutomation;
 
-        domain.setAutomationRuns(
+        const token = traversalToken(domain.setAutomationRuns(
             'a1',
             Array.from({ length: max }, (_, index) =>
                 run({ id: `r${index + 1}`, automationId: 'a1', dueAt: max - index }),
             ),
             'cursor-1',
-        );
+        ));
         domain.appendAutomationRuns(
             'a1',
             'cursor-1',
+            token,
             [run({ id: 'older-1', automationId: 'a1', dueAt: 0 })],
             'cursor-2',
         );
@@ -495,14 +578,15 @@ describe('createAutomationsDomain', () => {
         const harness = createHarness();
         const domain = harness.get() as PaginatedRunsState;
 
-        domain.setAutomationRuns(
+        const token = traversalToken(domain.setAutomationRuns(
             'a1',
             [run({ id: 'r1', automationId: 'a1', dueAt: 10 })],
             'cursor-1',
-        );
+        ));
         domain.appendAutomationRuns(
             'a1',
             'cursor-1',
+            token,
             [run({ id: 'older-1', automationId: 'a1', dueAt: 5 })],
             'cursor-2',
         );
@@ -518,16 +602,17 @@ describe('createAutomationsDomain', () => {
         const domain = harness.get() as PaginatedRunsState;
 
         // The reader opened the Automation (one server page) and then paged.
-        domain.setAutomationRuns(
+        const token = traversalToken(domain.setAutomationRuns(
             'a1',
             Array.from({ length: 20 }, (_unused, index) =>
                 run({ id: `r${index + 1}`, automationId: 'a1', dueAt: 1000 - index }),
             ),
             'cursor-page-1',
-        );
+        ));
         domain.appendAutomationRuns(
             'a1',
             'cursor-page-1',
+            token,
             Array.from({ length: 20 }, (_unused, index) =>
                 run({ id: `r${index + 21}`, automationId: 'a1', dueAt: 980 - index }),
             ),
@@ -554,6 +639,46 @@ describe('createAutomationsDomain', () => {
         expect(traversed.at(-1)?.id).toBe('r40');
         expect((harness.get() as PaginatedRunsState).automationRunNextCursorByAutomationId.a1)
             .toBe('cursor-page-2');
+    });
+
+    it('replaces an extended Run history only after a fresh traversal reaches its terminal page', () => {
+        const harness = createHarness();
+        const domain = harness.get() as PaginatedRunsState;
+
+        let token = traversalToken(domain.setAutomationRuns('a1', [
+            run({ id: 'r1', automationId: 'a1', dueAt: 30 }),
+            run({ id: 'r2', automationId: 'a1', dueAt: 20 }),
+        ], 'old-page-2'));
+        domain.appendAutomationRuns('a1', 'old-page-2', token, [
+            run({ id: 'r3', automationId: 'a1', dueAt: 10 }),
+        ], null);
+        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id))
+            .toEqual(['r1', 'r2', 'r3']);
+
+        // Clearing history remotely removed r3. A partial fresh traversal is
+        // not membership truth until its final page arrives.
+        token = traversalToken(domain.setAutomationRuns('a1', [
+            run({ id: 'r1', automationId: 'a1', dueAt: 30, updatedAt: 2 }),
+        ], 'fresh-page-2'));
+        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id))
+            .toEqual(['r1', 'r2', 'r3']);
+
+        domain.appendAutomationRuns('a1', 'fresh-page-2', token, [
+            run({ id: 'r2', automationId: 'a1', dueAt: 20, updatedAt: 2 }),
+        ], null);
+        expect(harness.get().automationRunsByAutomationId.a1?.map((entry) => entry.id))
+            .toEqual(['r1', 'r2']);
+        expect((harness.get() as PaginatedRunsState).automationRunNextCursorByAutomationId.a1).toBeNull();
+    });
+
+    it('keeps a socket-confirmed definition in a fresh traversal before terminal replacement', () => {
+        const harness = createHarness();
+
+        const token = traversalToken(harness.get().applyAutomations([automation({ id: 'a1', updatedAt: 1 })], 'fresh-page-2'));
+        harness.get().upsertAutomation(automation({ id: 'a-socket', updatedAt: 2 }));
+        harness.get().appendAutomations('fresh-page-2', token, [automation({ id: 'a2', updatedAt: 1 })], null);
+
+        expect(Object.keys(harness.get().automations).sort()).toEqual(['a-socket', 'a1', 'a2']);
     });
 
     it('re-seeds a run window the reader never paged so a background refresh still delivers new Runs and the current continuation', () => {

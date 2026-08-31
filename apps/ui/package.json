@@ -103,6 +103,7 @@
     "tauri:mcp:hosted-artifact-plugin-ui:qa": "corepack yarn --cwd ../../packages/tests -s test:desktop:plugin-ui-current-source",
     "tauri:mcp:session-agent:qa": "corepack yarn --cwd ../../packages/tests -s test:desktop:session-agent-current-source",
     "test:native-e2e:desktop-sidebar-chrome": "yarn -s ensure:workspace:built && node ./scripts/tauriMcpQa.mjs --desktop-sidebar-chrome",
+    "test:native-e2e:personal-home": "yarn -s ensure:workspace:built && node ./scripts/tauriMcpQa.mjs --personal-home",
     "tauri:build:dev": "tauri build --features devtools --config src-tauri/tauri.publicdev.conf.json",
     "tauri:build:preview": "tauri build --features devtools --config src-tauri/tauri.preview.conf.json",
     "tauri:build:production": "tauri build"
@@ -141,7 +142,9 @@
     "@happier-dev/brand": "0.0.0",
     "@happier-dev/cli-common": "0.0.0",
     "@happier-dev/connection-supervisor": "0.0.0",
+    "@happier-dev/iroh-native": "0.0.0",
     "@happier-dev/peer-mediation": "0.0.0",
+    "@happier-dev/peer-transport": "0.0.0",
     "@happier-dev/plugin-sdk": "0.0.0",
     "@happier-dev/plugin-ui": "0.0.0",
     "@happier-dev/plugins-auggie": "0.0.0",

@@ -282,12 +282,16 @@ export function createHostedWebAccountDataBridge(input: Readonly<{
                 }
                 switch (operation.operation) {
                     case 'accountKv.transaction.get':
-                        value = await active.transaction.get(args[1] as string) as unknown as JsonValue;
+                        value = await active.transaction.get(
+                            args[1] as string,
+                            signalOptions,
+                        ) as unknown as JsonValue;
                         break;
                     case 'accountKv.transaction.set': {
                         const input = args[2] as Readonly<{ value: JsonValue; expectedVersion: number | 'absent' }>;
                         value = await active.transaction.set(args[1] as string, input.value, {
                             expectedVersion: input.expectedVersion,
+                            ...(signal === undefined ? {} : { signal }),
                         }) as unknown as JsonValue;
                         break;
                     }
@@ -295,6 +299,7 @@ export function createHostedWebAccountDataBridge(input: Readonly<{
                         const input = args[2] as Readonly<{ expectedVersion: number }>;
                         value = await active.transaction.delete(args[1] as string, {
                             expectedVersion: input.expectedVersion,
+                            ...(signal === undefined ? {} : { signal }),
                         }) as unknown as JsonValue;
                         break;
                     }

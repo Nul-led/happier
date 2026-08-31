@@ -52,6 +52,7 @@ vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
 vi.mock('@/auth/pairing/pairingUrl', () => ({
     buildPairingDeepLink: () => 'happier:///pair?v=1&pairId=p&secret=s&server=http%3A%2F%2Flocalhost%3A53288',
     parsePairingDeepLink: () => ({ pairId: 'p', secret: 's', serverUrl: 'http://localhost:53288' }),
+    parseHomeQrInviteDeepLink: () => null,
 }));
 
 vi.mock('@/auth/flows/qrStart', () => ({

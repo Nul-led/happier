@@ -7,8 +7,7 @@ import {
     getServerProfileById,
     listServerProfiles,
     removeServerProfile,
-    resolveServerProfileScopeId,
-    upsertServerProfile,
+    adoptHomeProfile,
 } from '@/sync/domains/server/serverProfiles';
 import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
 import { canSafelyAutoAdoptCanonicalServerUrl } from '@/sync/domains/server/url/serverUrlClassification';
@@ -63,10 +62,13 @@ export function useServerAutoAddFromRoute(params: Readonly<{
             const preexistingProfileIds = new Set(
                 listServerProfiles().map((profile) => profile.id),
             );
-            const created = upsertServerProfile({
-                serverUrl: normalized,
-                name: defaultServerName(normalized),
+            const created = await adoptHomeProfile({
+                descriptor: {
+                    serverUrl: normalized,
+                    displayName: defaultServerName(normalized),
+                },
                 source: params.source,
+                preserveUserLabel: true,
             });
             const createdForThisAttempt =
                 !preexistingProfileIds.has(created.id);
@@ -77,11 +79,25 @@ export function useServerAutoAddFromRoute(params: Readonly<{
                 if (featuresSnapshot.status === 'ready') {
                     const advertisedRaw = featuresSnapshot.features.capabilities?.server?.canonicalServerUrl;
                     const advertised = typeof advertisedRaw === 'string' ? normalizeUrl(advertisedRaw) : '';
-                    if (advertised && advertised !== created.serverUrl && canSafelyAutoAdoptCanonicalServerUrl({ currentUrl: created.serverUrl, advertisedUrl: advertised })) {
-                        const canonical = upsertServerProfile({
-                            serverUrl: advertised,
-                            name: created.name,
+                    const learnedIdentity = featuresSnapshot.features.capabilities?.serverIdentity?.serverIdentityId
+                        ?? getServerProfileById(created.id)?.serverIdentityId
+                        ?? undefined;
+                    if (
+                        advertised
+                        && (
+                            advertised === created.serverUrl
+                            || canSafelyAutoAdoptCanonicalServerUrl({ currentUrl: created.serverUrl, advertisedUrl: advertised })
+                        )
+                    ) {
+                        const canonical = await adoptHomeProfile({
+                            descriptor: {
+                                serverUrl: created.serverUrl,
+                                canonicalServerUrl: advertised,
+                                displayName: created.name,
+                                ...(learnedIdentity ? { homeServerIdentityId: learnedIdentity } : {}),
+                            },
                             source: params.source,
+                            preserveUserLabel: true,
                         });
                         if (
                             createdForThisAttempt
@@ -101,7 +117,6 @@ export function useServerAutoAddFromRoute(params: Readonly<{
                 // best-effort
             }
 
-            await params.onSwitchServerById(resolveServerProfileScopeId(profile), { normalizeRoute: false });
             params.onAfterSuccess();
         })(), {
             tag: 'useServerAutoAddFromRoute.autoAdd',

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createExpoRouterMock, flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
 import type { PendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent.shared';
+import type { PersonalHomeFacts } from '@/components/personalHome/bootstrap/personalHomeBootstrapTypes';
 
 vi.mock('@/assets/images/logotype-light.png', () => ({ default: 'logotype-light' }));
 vi.mock('@/assets/images/logotype-dark.png', () => ({ default: 'logotype-dark' }));
@@ -12,7 +13,7 @@ vi.mock('@/components/onboarding', () => ({
     PreAuthOnboardingWizardEntry: () => null,
 }));
 vi.mock('@/components/onboarding/preAuth/PreAuthOnboardingWizardEntry', () => ({
-    PreAuthOnboardingWizardEntry: () => null,
+    PreAuthOnboardingWizardEntry: (props: Record<string, unknown>) => React.createElement('PreAuthOnboardingWizardEntry', props),
 }));
 vi.mock('@/modal/components/BaseModal', () => ({
     BaseModal: (props: any) => React.createElement('BaseModal', props, props.children),
@@ -38,7 +39,24 @@ vi.mock('react-native', async () => {
 const expoRouterMock = createExpoRouterMock({
     router: { push: vi.fn(), replace: vi.fn() },
 });
-vi.mock('expo-router', () => expoRouterMock.module);
+const routeParamsState = vi.hoisted(() => ({
+    value: {} as Record<string, string>,
+}));
+vi.mock('expo-router', () => ({
+    ...expoRouterMock.module,
+    useGlobalSearchParams: () => routeParamsState.value,
+}));
+
+const activeServerState = vi.hoisted(() => ({
+    value: {
+        serverId: 'server-a',
+        serverUrl: 'http://server-a.local',
+        generation: 1,
+    },
+}));
+vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
+    useActiveServerSnapshot: () => activeServerState.value,
+}));
 
 const tauriDesktopState = vi.hoisted(() => ({ value: true }));
 vi.mock('@/utils/platform/desktopHost', () => ({
@@ -94,8 +112,9 @@ vi.mock('@/components/settings/machines/localControl/useLocalDaemonControl', () 
     }),
 }));
 
+const relayDriftBannerState = vi.hoisted(() => ({ value: null as Record<string, unknown> | null }));
 vi.mock('@/components/settings/server/useRelayDriftBanner', () => ({
-    useRelayDriftBanner: () => null,
+    useRelayDriftBanner: () => relayDriftBannerState.value,
 }));
 
 vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
@@ -120,10 +139,17 @@ describe('/ (welcome) setup continuation', () => {
         vi.resetModules();
         installStubbedSetupWizardSurface();
         isAuthenticated = true;
+        activeServerState.value = {
+            serverId: 'server-a',
+            serverUrl: 'http://server-a.local',
+            generation: 1,
+        };
+        routeParamsState.value = {};
         tauriDesktopState.value = true;
         connectionHealthState.value = 0;
         machineSetupSatisfiedState.value = false;
         pendingTerminalConnectState.value = null;
+        relayDriftBannerState.value = null;
         getPendingSetupIntentMock.mockReset();
         getPendingSetupIntentMock.mockReturnValue({
             branch: 'thisComputer',
@@ -196,6 +222,51 @@ describe('/ (welcome) setup continuation', () => {
 
         expect(screen.findAllByType('MainView' as never)).toHaveLength(1);
         expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
+    });
+
+    it('resumes a signed-out explicit Home new-session continuation after that Home authenticates', async () => {
+        machineSetupSatisfiedState.value = true;
+        getPendingSetupIntentMock.mockReturnValue(null);
+        activeServerState.value = {
+            serverId: 'server-b',
+            serverUrl: 'http://server-b.local',
+            generation: 2,
+        };
+        routeParamsState.value = {
+            newSessionAuthContinuation: '1',
+            spawnServerId: 'server-b',
+            draftId: 'draft-1',
+        };
+
+        const Screen = (await import('@/app/(app)/index')).default;
+        await renderScreen(React.createElement(Screen));
+        await flushHookEffects({ cycles: 1, turns: 2 });
+
+        expect(expoRouterMock.spies.replace).toHaveBeenCalledWith({
+            pathname: '/new',
+            params: expect.objectContaining({
+                spawnServerId: 'server-b',
+                draftId: 'draft-1',
+            }),
+        });
+    });
+
+    it('does not resume an explicit Home continuation against a different active Home', async () => {
+        machineSetupSatisfiedState.value = true;
+        getPendingSetupIntentMock.mockReturnValue(null);
+        routeParamsState.value = {
+            newSessionAuthContinuation: '1',
+            spawnServerId: 'server-b',
+            draftId: 'draft-1',
+        };
+
+        const Screen = (await import('@/app/(app)/index')).default;
+        await renderScreen(React.createElement(Screen));
+        await flushHookEffects({ cycles: 1, turns: 2 });
+
+        expect(expoRouterMock.spies.replace).not.toHaveBeenCalledWith(expect.objectContaining({
+            pathname: '/new',
+        }));
     });
 
     it('opens the setup wizard in a modal on web (overlay owns scrolling + placement)', async () => {
@@ -273,7 +344,7 @@ describe('/ (welcome) setup continuation', () => {
         expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
     });
 
-    it('auto-opens the setup wizard overlay on desktop when this machine is not configured and no pending setup intent exists', async () => {
+    it('does not auto-open or seed the setup wizard on desktop when this machine is not configured and no pending setup intent exists (the Personal Home gate owns Desktop first run)', async () => {
         getPendingSetupIntentMock.mockReturnValue(null);
         localDaemonStatus.value = {
             serviceInstalled: false,
@@ -286,8 +357,8 @@ describe('/ (welcome) setup continuation', () => {
         const screen = await renderScreen(React.createElement(Screen));
         await flushHookEffects({ cycles: 1, turns: 2 });
 
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(1);
-        expect(setPendingSetupIntentMock).toHaveBeenCalledWith(expect.objectContaining({ phase: 'post_auth' }));
+        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
+        expect(setPendingSetupIntentMock).not.toHaveBeenCalled();
     });
 
     it('marks the setup wizard as dismissed on exit so it does not immediately re-open', async () => {
@@ -314,15 +385,78 @@ describe('/ (welcome) setup continuation', () => {
         expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
     });
 
-    it('auto-opens the setup wizard overlay on desktop when the current machine is not configured and there is no pending setup intent', async () => {
+    it('does not auto-open or seed the setup wizard on desktop even with an unconfigured machine and relay drift (the Personal Home gate owns Desktop first run)', async () => {
         getPendingSetupIntentMock.mockReturnValue(null);
+        relayDriftBannerState.value = { severity: 'drift' };
+        localDaemonStatus.value = {
+            serviceInstalled: false,
+            daemonRunning: false,
+            needsAuth: true,
+            machineId: null,
+        };
 
         const Screen = (await import('@/app/(app)/index')).default;
         const screen = await renderScreen(React.createElement(Screen));
         await flushHookEffects({ cycles: 1, turns: 3 });
 
-        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(1);
-        expect(setPendingSetupIntentMock).toHaveBeenCalledWith(expect.objectContaining({ phase: 'post_auth', branch: 'thisComputer' }));
+        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
+        expect(setPendingSetupIntentMock).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'post_auth', branch: 'thisComputer' }));
+    });
+
+    it('renders the real Desktop shell after the Personal Home provider releases readiness', async () => {
+        isAuthenticated = false;
+
+        const Screen = (await import('@/app/(app)/index')).default;
+        const screen = await renderScreen(React.createElement(Screen));
+        await flushHookEffects({ cycles: 1, turns: 2 });
+
+        expect(screen.findAllByType('MainView' as never)).toHaveLength(1);
+        expect(screen.findAllByType('PreAuthOnboardingWizardEntry' as never)).toHaveLength(0);
+        expect(screen.findAllByType('SetupWizardSurface' as never)).toHaveLength(0);
+    });
+
+    it('keeps verified Home plus profile-adoption retry in the real provider/index shell', async () => {
+        isAuthenticated = false;
+        getPendingSetupIntentMock.mockReturnValue(null);
+        const verifiedUnadopted: PersonalHomeFacts = {
+            hostIsDesktop: true,
+            isDesktopMainWindow: true,
+            explicitlySelectedOtherHome: false,
+            completedPersonalHomeProfile: null,
+            candidateLocalProfile: null,
+            relayRuntime: {
+                installed: true,
+                healthy: true,
+                serviceActive: true,
+                status: 'healthy',
+                purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+                anonymousSignupEnabled: false,
+            },
+            localHomeReachability: 'reachable',
+            localHomeIdentity: 'personal-home-identity',
+            localHomeAuth: 'present',
+            anonymousSignup: 'disabled',
+            daemon: null,
+            activeTask: null,
+        };
+        const Screen = (await import('@/app/(app)/index')).default;
+        const { PersonalHomeBootstrapGate } = await import('@/components/personalHome/bootstrap/PersonalHomeBootstrapGate');
+        const screen = await renderScreen(
+            <PersonalHomeBootstrapGate
+                isDesktopHost
+                isDesktopMainWindow
+                initialFacts={verifiedUnadopted}
+                readFacts={async () => verifiedUnadopted}
+                operations={{ 'connect-app': async () => { throw new Error('profile store unavailable'); } }}
+            >
+                <Screen />
+            </PersonalHomeBootstrapGate>,
+        );
+        await flushHookEffects({ cycles: 6, turns: 3 });
+
+        expect(screen.findAllByType('MainView' as never)).toHaveLength(1);
+        expect(screen.findAllByType('PreAuthOnboardingWizardEntry' as never)).toHaveLength(0);
+        expect(screen.findByTestId('personal-home-recovery-strip')).not.toBeNull();
     });
 
     it('does not auto-open the setup wizard on desktop when the account already has a machine, even with an unconfigured local daemon', async () => {

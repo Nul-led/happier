@@ -9,20 +9,19 @@ import { t } from '@/text';
 import { MachineSelector } from '@/components/sessions/new/components/MachineSelector';
 import { PathSelectionList } from '@/components/ui/pathPicker/PathSelectionList';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { Switch } from '@/components/ui/forms/Switch';
-import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import {
-    buildSessionHandoffWorkspaceTransfer,
+    buildSessionHandoffWorkspaceAction,
+    buildWorkspaceContentPolicy,
     normalizeSessionHandoffDefaults,
     parseSessionHandoffIgnoredIncludeGlobs,
-    SESSION_HANDOFF_CONFLICT_POLICY_OPTIONS,
     SESSION_HANDOFF_DIRECT_TARGET_MODE_OPTIONS,
     SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS,
-    SESSION_HANDOFF_WORKSPACE_TRANSFER_STRATEGY_OPTIONS,
+    SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS,
+    type SessionHandoffWorkspaceMode,
 } from '@/sync/domains/sessionHandoff/sessionHandoffDefaults';
 import { resolveSessionHandoffPickerSourceMachineId } from '@/sync/domains/sessionHandoff/resolveSessionHandoffPickerSourceMachineId';
 import {
@@ -35,13 +34,13 @@ import {
 } from '@/sync/domains/state/storage';
 import { sync } from '@/sync/sync';
 import { getRecentMachinesFromSessions } from '@/utils/sessions/recentMachines';
-import { resolveAbsolutePath } from '@/utils/path/pathUtils';
 import { canAttemptMachineSpawn } from '@/sync/domains/machines/identity/resolveMachineSpawnReadiness';
 import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
 import { useStableRecentPathsForMachine } from '@/utils/sessions/useStableRecentPathsForMachine';
 import { machineMetadataPlatformToTarget } from '@/utils/path/machinePlatform';
+import { resolveAbsolutePath } from '@/utils/path/pathUtils';
 
 import type { SessionHandoffPickerResult } from './openSessionHandoffPicker';
 import { Icon } from '@/components/ui/icons/Icon';
@@ -112,10 +111,9 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
         () => normalizeSessionHandoffDefaults(sessionHandoffDefaultsRaw),
         [sessionHandoffDefaultsRaw],
     );
-    const [openConflictPolicyMenu, setOpenConflictPolicyMenu] = React.useState(false);
+    const [openWorkspaceSyncModeMenu, setOpenWorkspaceSyncModeMenu] = React.useState(false);
     const [openIgnoredModeMenu, setOpenIgnoredModeMenu] = React.useState(false);
     const [openDirectTargetModeMenu, setOpenDirectTargetModeMenu] = React.useState(false);
-    const [openWorkspaceTransferStrategyMenu, setOpenWorkspaceTransferStrategyMenu] = React.useState(false);
 
     const allServerMachines = React.useMemo(() => {
         const sid = normalizeId(serverId);
@@ -124,11 +122,6 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
             activeServerMachines,
         ]);
     }, [activeServerMachines, machineListByServerId, serverId]);
-    const currentSession = React.useMemo(() => {
-        if (sessionRecord) return sessionRecord;
-        if (sessionRenderable) return sessionRenderable;
-        return sessions.find((session: any) => normalizeId(session?.id) === normalizeId(sessionId)) ?? null;
-    }, [sessionId, sessionRecord, sessionRenderable, sessions]);
     const currentSessionMetadata = React.useMemo(() => {
         if (sessionRecord) return readSessionOwnerMetadataView(sessionRecord);
         if (readSessionMetadataLayoutVersion(sessionRenderable?.metadataLayoutVersion) !== 0) return null;
@@ -145,26 +138,21 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
         if (!resolvedSourceMachineId) return null;
         return allServerMachines.find((machine: any) => normalizeId(machine?.id) === resolvedSourceMachineId) ?? null;
     }, [allServerMachines, resolvedSourceMachineId]);
+    const workspaceSourcePathSafety = React.useMemo(() => {
+        const sourceHomeDir = currentSessionMetadata?.homeDir;
+        const fallbackSourceHomeDir = sourceMachine?.metadata?.homeDir;
+        return evaluateSessionHandoffWorkspaceTransferSourcePathSafety({
+            sourcePath: resolveAbsolutePath(
+                normalizeId(currentSessionMetadata?.path),
+                sourceHomeDir ?? fallbackSourceHomeDir,
+            ),
+            sourceHomeDir,
+            fallbackSourceHomeDir,
+        });
+    }, [currentSessionMetadata, sourceMachine]);
     const isExternalSession = Boolean(
         readExternalSessionLink(currentSessionMetadata),
     );
-    const workspaceTransferPathSafety = React.useMemo(
-        () => {
-            const sourceHomeDir = currentSessionMetadata?.homeDir;
-            const fallbackSourceHomeDir = (sourceMachine as any)?.metadata?.homeDir;
-            const sourcePath = resolveAbsolutePath(
-                String(currentSessionMetadata?.path ?? '').trim(),
-                sourceHomeDir ?? fallbackSourceHomeDir,
-            );
-            return evaluateSessionHandoffWorkspaceTransferSourcePathSafety({
-                sourcePath,
-                sourceHomeDir,
-                fallbackSourceHomeDir,
-            });
-        },
-        [currentSessionMetadata, sourceMachine],
-    );
-
     const machines = React.useMemo(() => {
         return allServerMachines.filter((machine: any) => {
             const machineId = normalizeId(machine?.id);
@@ -242,17 +230,16 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
     const handleTargetPathChange = React.useCallback((path: string) => {
         setTargetPath(path.trim() || null);
     }, []);
-    const [workspaceTransferEnabled, setWorkspaceTransferEnabled] = React.useState(sessionHandoffDefaults.workspaceTransferEnabled);
-    const [workspaceTransferStrategy, setWorkspaceTransferStrategy] = React.useState<'transfer_snapshot' | 'sync_changes'>(
-        sessionHandoffDefaults.workspaceTransferStrategy,
-    );
-    const [conflictPolicy, setConflictPolicy] = React.useState<'create_sibling_copy' | 'replace_existing'>(sessionHandoffDefaults.conflictPolicy);
+    const [workspaceSyncMode, setWorkspaceSyncMode] = React.useState<SessionHandoffWorkspaceMode>(sessionHandoffDefaults.workspaceSyncMode);
     const [includeIgnoredMode, setIncludeIgnoredMode] = React.useState<'exclude' | 'include_selected'>(sessionHandoffDefaults.includeIgnoredMode);
     const [ignoredIncludeGlobs, setIgnoredIncludeGlobs] = React.useState<string[]>([...sessionHandoffDefaults.ignoredIncludeGlobs]);
     const [directTargetMode, setDirectTargetMode] = React.useState<'keep_direct' | 'convert_to_persisted'>(sessionHandoffDefaults.directTargetMode);
-
-    const effectiveWorkspaceTransferEnabled = workspaceTransferPathSafety.allowed ? workspaceTransferEnabled : false;
-    const workspaceTransferControlsDisabled = !effectiveWorkspaceTransferEnabled;
+    const selectedWorkspaceSyncMode = React.useMemo(
+        () => SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS.find((option) => option.id === workspaceSyncMode)
+            ?? SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS[0],
+        [workspaceSyncMode],
+    );
+    const workspacePolicyControlsDisabled = workspaceSyncMode !== 'copy_once';
 
     const handleCancel = React.useCallback(() => {
         onResolve(null);
@@ -261,24 +248,51 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
 
     const handleStart = React.useCallback(() => {
         const targetMachineId = normalizeId(selectedMachineId);
+        const sourceRootPath = normalizeId(currentSessionMetadata?.path);
         if (!targetMachineId) return;
         if (!canAttemptSelectedMachine) return;
-        const workspaceTransfer = buildSessionHandoffWorkspaceTransfer({
-            workspaceTransferEnabled: effectiveWorkspaceTransferEnabled,
-            workspaceTransferStrategy,
-            conflictPolicy,
+        if (workspaceSyncMode !== 'none' && !workspaceSourcePathSafety.allowed) return;
+        const persistentMode = workspaceSyncMode !== 'none' && workspaceSyncMode !== 'copy_once'
+            ? workspaceSyncMode
+            : null;
+        const workspaceAction = buildSessionHandoffWorkspaceAction({
+            workspaceSyncMode,
+            workspaceSyncRelationshipId: null,
             includeIgnoredMode,
             ignoredIncludeGlobs,
         });
+        if (!workspaceAction && !persistentMode) return;
         onResolve({
             targetMachineId,
             ...(targetPath ? { targetPath } : {}),
+            ...(sourceRootPath ? { sourceRootPath } : {}),
             targetSessionStorageMode: isExternalSession
                 ? (directTargetMode === 'convert_to_persisted' ? 'persisted' : 'direct')
                 : 'persisted',
-            ...(workspaceTransfer ? { workspaceTransfer } : {}),
+            ...(workspaceAction ? { workspaceAction } : {}),
+            ...(persistentMode && !workspaceAction
+                ? {
+                    workspaceSyncRelationshipIntent: {
+                        mode: persistentMode,
+                        contentPolicy: buildWorkspaceContentPolicy({ includeIgnoredMode, ignoredIncludeGlobs }),
+                    },
+                }
+                : {}),
         });
-    }, [canAttemptSelectedMachine, conflictPolicy, directTargetMode, effectiveWorkspaceTransferEnabled, ignoredIncludeGlobs, includeIgnoredMode, isExternalSession, onResolve, selectedMachineId, targetPath, workspaceTransferStrategy]);
+    }, [canAttemptSelectedMachine, currentSessionMetadata?.path, directTargetMode, ignoredIncludeGlobs, includeIgnoredMode, isExternalSession, onResolve, selectedMachineId, targetPath, workspaceSourcePathSafety.allowed, workspaceSyncMode]);
+
+    const canStart = Boolean(selectedMachine && canAttemptSelectedMachine && (
+        workspaceSyncMode === 'none'
+        || (workspaceSourcePathSafety.allowed && (
+            workspaceSyncMode !== 'copy_once'
+            || buildSessionHandoffWorkspaceAction({
+                workspaceSyncMode,
+                workspaceSyncRelationshipId: null,
+                includeIgnoredMode,
+                ignoredIncludeGlobs,
+            })
+        ))
+    ));
 
     const footer = React.useMemo(() => (
         <View style={styles.footer}>
@@ -287,10 +301,10 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
                 testID="session-handoff-start"
                 title={actionSpec.title}
                 onPress={handleStart}
-                disabled={!selectedMachine || !canAttemptSelectedMachine}
+                disabled={!canStart}
             />
         </View>
-    ), [actionSpec.title, canAttemptSelectedMachine, handleCancel, handleStart, selectedMachine, styles.footer]);
+    ), [actionSpec.title, canStart, handleCancel, handleStart, styles.footer]);
 
     const chrome = React.useMemo(() => ({
         kind: 'card' as const,
@@ -347,96 +361,33 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
                         />
                     </ItemGroup>
                     <ItemGroup
-                        title={t('settingsSession.handoff.workspaceTransfer.groupTitle')}
-                        footer={t('settingsSession.handoff.workspaceTransfer.groupFooter')}
+                        title={t('settingsSession.handoff.groupTitle')}
+                        footer={t('settingsSession.handoff.groupFooter')}
                     >
-                        <Item
-                            testID="session-handoff-workspace-transfer-enabled"
-                            title={t('settingsSession.handoff.workspaceTransfer.title')}
-                            subtitle={
-                                workspaceTransferEnabled
-                                    && workspaceTransferPathSafety.allowed
-                                    ? t('settingsSession.handoff.workspaceTransfer.enabledSubtitle')
-                                    : t('settingsSession.handoff.workspaceTransfer.disabledSubtitle')
-                            }
-                            icon={<Icon name="folder" size={16} color={theme.colors.text.secondary} />}
-                            rightElement={
-                                <Switch
-                                    value={effectiveWorkspaceTransferEnabled}
-                                    disabled={!workspaceTransferPathSafety.allowed}
-                                    onValueChange={setWorkspaceTransferEnabled}
-                                />
-                            }
-                            showChevron={false}
-                            onPress={() => {
-                                if (!workspaceTransferPathSafety.allowed) return;
-                                setWorkspaceTransferEnabled(!workspaceTransferEnabled);
-                            }}
-                        />
                         <DropdownMenu
-                            open={openWorkspaceTransferStrategyMenu}
-                            onOpenChange={setOpenWorkspaceTransferStrategyMenu}
+                            open={openWorkspaceSyncModeMenu}
+                            onOpenChange={setOpenWorkspaceSyncModeMenu}
                             variant="selectable"
                             search={false}
-                            selectedId={workspaceTransferStrategy}
+                            selectedId={workspaceSyncMode}
                             showCategoryTitles={false}
                             matchTriggerWidth={true}
                             connectToTrigger={true}
                             rowKind="item"
                             itemTrigger={{
-                                title: t('settingsSession.handoff.workspaceTransfer.strategy.title'),
-                                subtitle: t('settingsSession.handoff.workspaceTransfer.strategy.subtitle'),
-                                icon: <Icon name="git-branch" size={16} color={theme.colors.text.secondary} />,
-                                itemProps: {
-                                    disabled: workspaceTransferControlsDisabled,
-                                    testID: 'session-handoff-workspace-transfer-strategy-trigger',
-                                },
+                                title: t('settingsSession.handoff.workspaceMode.title'),
+                                subtitle: t(selectedWorkspaceSyncMode.subtitleKey),
+                                icon: <Icon name="folder" size={16} color={theme.colors.text.secondary} />,
+                                itemProps: { testID: 'session-handoff-workspace-sync-mode-trigger' },
                             }}
-                            items={SESSION_HANDOFF_WORKSPACE_TRANSFER_STRATEGY_OPTIONS.map((item) => ({
+                            items={SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS.map((item) => ({
                                 id: item.id,
                                 title: t(item.titleKey),
                                 subtitle: t(item.subtitleKey),
                             }))}
                             onSelect={(itemId) => {
-                                if (workspaceTransferControlsDisabled) return;
-                                const nextStrategy = itemId as 'transfer_snapshot' | 'sync_changes';
-                                setWorkspaceTransferStrategy(nextStrategy);
-                                if (nextStrategy === 'sync_changes' && conflictPolicy === 'create_sibling_copy') {
-                                    // `sync_changes` is only valid with `replace_existing` (protocol-enforced).
-                                    setConflictPolicy('replace_existing');
-                                }
-                                setOpenWorkspaceTransferStrategyMenu(false);
-                            }}
-                        />
-                        <DropdownMenu
-                            open={openConflictPolicyMenu}
-                            onOpenChange={setOpenConflictPolicyMenu}
-                            variant="selectable"
-                            search={false}
-                            selectedId={conflictPolicy}
-                            showCategoryTitles={false}
-                            matchTriggerWidth={true}
-                            connectToTrigger={true}
-                            rowKind="item"
-                            itemTrigger={{
-                                title: t('settingsSession.handoff.conflictPolicy.title'),
-                                subtitle: t('settingsSession.handoff.conflictPolicy.subtitle'),
-                                icon: <Icon name="copy" size={16} color={theme.colors.text.secondary} />,
-                                itemProps: {
-                                    disabled: workspaceTransferControlsDisabled,
-                                },
-                            }}
-                            items={SESSION_HANDOFF_CONFLICT_POLICY_OPTIONS
-                                .filter((item) => workspaceTransferStrategy !== 'sync_changes' || item.id !== 'create_sibling_copy')
-                                .map((item) => ({
-                                    id: item.id,
-                                    title: t(item.titleKey),
-                                    subtitle: t(item.subtitleKey),
-                                }))}
-                            onSelect={(itemId) => {
-                                if (workspaceTransferControlsDisabled) return;
-                                setConflictPolicy(itemId as 'create_sibling_copy' | 'replace_existing');
-                                setOpenConflictPolicyMenu(false);
+                                setWorkspaceSyncMode(itemId as SessionHandoffWorkspaceMode);
+                                setOpenWorkspaceSyncModeMenu(false);
                             }}
                         />
                         <DropdownMenu
@@ -454,7 +405,8 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
                                 subtitle: t('settingsSession.handoff.includeIgnoredMode.subtitle'),
                                 icon: <Icon name="funnel-simple" size={16} color={theme.colors.text.secondary} />,
                                 itemProps: {
-                                    disabled: workspaceTransferControlsDisabled,
+                                    disabled: workspacePolicyControlsDisabled,
+                                    testID: 'session-handoff-ignored-mode-trigger',
                                 },
                             }}
                             items={SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS.map((item) => ({
@@ -463,7 +415,7 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
                                 subtitle: t(item.subtitleKey),
                             }))}
                             onSelect={(itemId) => {
-                                if (workspaceTransferControlsDisabled) return;
+                                if (workspacePolicyControlsDisabled) return;
                                 setIncludeIgnoredMode(itemId as 'exclude' | 'include_selected');
                                 setOpenIgnoredModeMenu(false);
                             }}
@@ -474,15 +426,16 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
                                     {t('settingsSession.handoff.includeIgnoredMode.globsTitle')}
                                 </Text>
                                 <TextInput
+                                    accessibilityLabel={t('settingsSession.handoff.includeIgnoredMode.globsTitle')}
                                     value={ignoredIncludeGlobs.join(', ')}
                                     onChangeText={(value) => {
-                                        if (workspaceTransferControlsDisabled) return;
+                                        if (workspacePolicyControlsDisabled) return;
                                         setIgnoredIncludeGlobs(parseSessionHandoffIgnoredIncludeGlobs(value));
                                     }}
                                     placeholder={t('settingsSession.handoff.includeIgnoredMode.globsPlaceholder')}
                                     autoCapitalize="none"
                                     autoCorrect={false}
-                                    editable={!workspaceTransferControlsDisabled}
+                                    editable={!workspacePolicyControlsDisabled}
                                     style={{
                                         minHeight: 44,
                                         borderRadius: 10,

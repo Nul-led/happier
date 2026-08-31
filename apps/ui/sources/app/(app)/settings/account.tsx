@@ -97,6 +97,8 @@ import { runAccountEncryptionModeMigration } from '@/sync/ops/account/runAccount
 import { deleteCurrentAccount } from '@/sync/api/account/deleteCurrentAccount';
 import { AccountDeletedLocalCleanupError, completeAccountDeletion } from '@/components/settings/account/accountDeletionLifecycle';
 import { SettingsHistorySection } from '@/components/settings/account/SettingsHistorySection';
+import { AccountServiceSettingsSection } from '@/components/settings/account/AccountServiceSettingsSection';
+import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 
 type AccountEncryptionModePresentation = Readonly<{
     scope: string | null;
@@ -121,9 +123,10 @@ export default React.memo(() => {
     const applyProfile = storage((state) => state.applyProfile);
     const encryptionAccountOptOutEnabled = useFeatureEnabled('encryption.accountOptOut');
     const sessionDraftSyncEnabled = useFeatureEnabled('sessions.drafts');
-    const activeServer = useActiveServerSnapshot(
-        encryptionAccountOptOutEnabled,
-    );
+    const activeServer = useActiveServerSnapshot();
+    const activeHomeName = getServerProfileById(activeServer.serverId)?.name.trim()
+        || activeServer.serverUrl.trim()
+        || t('settingsAccount.currentHome');
     const accountEncryptionScope = auth.credentials
         ? getAccountEncryptionModeScopeKey(auth.credentials, activeServer)
         : null;
@@ -335,9 +338,12 @@ export default React.memo(() => {
 
     const handleLogout = async () => {
         const confirmed = await Modal.confirm(
-            t('common.logout'),
-            t('settingsAccount.logoutConfirm'),
-            { confirmText: t('common.logout'), destructive: true }
+            t('settingsAccount.logoutHome', { home: activeHomeName }),
+            t('settingsAccount.logoutHomeConfirm', { home: activeHomeName }),
+            {
+                confirmText: t('settingsAccount.logoutHome', { home: activeHomeName }),
+                destructive: true,
+            },
         );
         if (confirmed) {
             await presentFirstKeyCredentialLifecycle({
@@ -348,6 +354,31 @@ export default React.memo(() => {
                     }),
             });
         }
+    };
+    const handleForgetAllCredentials = async () => {
+        const confirmed = await Modal.confirm(
+            t('settingsAccount.forgetAllCredentials'),
+            t('settingsAccount.forgetAllCredentialsConfirm'),
+            {
+                confirmText: t('settingsAccount.forgetAllCredentials'),
+                destructive: true,
+            },
+        );
+        if (!confirmed) return;
+        let routed = false;
+        const routeAfterAuthorization = () => {
+            if (routed) return;
+            routed = true;
+            router.replace('/');
+        };
+        await presentFirstKeyCredentialLifecycle({
+            run: async () =>
+                await auth.logout({
+                    scope: 'all-credentials',
+                    beforeMutation: routeAfterAuthorization,
+                }),
+            onCompleted: routeAfterAuthorization,
+        });
     };
     const handleDeleteAccount = async () => {
         if (accountDeletionPending) return;
@@ -395,6 +426,8 @@ export default React.memo(() => {
                     router={router}
                     theme={theme}
                 />
+
+                <AccountServiceSettingsSection />
 
                 {/* Account access / linking */}
                 {showAccountAccessGroup ? (
@@ -1029,12 +1062,21 @@ export default React.memo(() => {
                 <ItemGroup title={t('settingsAccount.dangerZone')}>
                     <Item
                         testID="settings-account-logout"
-                        title={t('settingsAccount.logout')}
-                        subtitle={t('settingsAccount.logoutSubtitle')}
+                        title={t('settingsAccount.logoutHome', { home: activeHomeName })}
+                        subtitle={t('settingsAccount.logoutHomeSubtitle', { home: activeHomeName })}
                         icon={<Icon name="sign-out" size={29} color={theme.colors.state.danger.foreground} />}
                         destructive
                         disabled={accountDeletionPending}
                         onPress={handleLogout}
+                    />
+                    <Item
+                        testID="settings-account-forget-all-credentials"
+                        title={t('settingsAccount.forgetAllCredentials')}
+                        subtitle={t('settingsAccount.forgetAllCredentialsSubtitle')}
+                        icon={<Icon name="key" size={29} color={theme.colors.state.danger.foreground} />}
+                        destructive
+                        disabled={accountDeletionPending}
+                        onPress={handleForgetAllCredentials}
                     />
                     <Item testID="settings-account-delete" title={t('settingsAccount.deleteAccount')} subtitle={t('settingsAccount.deleteAccountSubtitle')} icon={<Icon name="trash" size={29} color={theme.colors.state.danger.foreground} />} destructive disabled={accountDeletionPending} loading={accountDeletionPending} onPress={handleDeleteAccount} />
                 </ItemGroup>

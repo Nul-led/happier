@@ -8,6 +8,9 @@ import type { ServerSelectionGroup } from '@/sync/domains/server/selection/serve
 import { promptSignedOutServerSwitchConfirmation } from '@/components/settings/server/modals/ServerSwitchAuthPrompt';
 
 import type { ServerAuthStatus } from './useServerAuthStatusByServerId';
+import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServerSwitch';
+import type { HomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
+import { normalizeServerSelectionGroupsForSettings } from '@/sync/domains/server/selection/serverSelectionSettingsAdapter';
 
 function toGroupProfileId(rawName: string): string {
     const base = String(rawName ?? '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-');
@@ -32,12 +35,12 @@ export function useServerSettingsGroupActions(params: Readonly<{
     groupPresentation: 'grouped' | 'flat-with-badge';
 
     setRevision: React.Dispatch<React.SetStateAction<number>>;
-    onSwitchServerById: (serverId: string) => Promise<void>;
+    onSwitchServerById: (serverId: string) => Promise<ActiveServerSwitchResult>;
     onAfterSignedOutSwitch: () => void;
 
-    setServerSelectionActiveTargetKind: (value: 'server' | 'group' | null) => void;
-    setServerSelectionActiveTargetId: (value: string | null) => void;
-    setServerSelectionGroups: (value: ServerSelectionGroup[]) => void;
+    setHomeViewSelectionSettings: (
+        update: (current: HomeViewSelectionSettings) => HomeViewSelectionSettings,
+    ) => void;
 }>) {
     const onSwitchGroup = React.useCallback(async (profile: ServerSelectionGroup) => {
         const nextServerIds = Array.from(new Set(profile.serverIds.map((id) => String(id ?? '').trim()).filter(Boolean)));
@@ -64,12 +67,15 @@ export function useServerSettingsGroupActions(params: Readonly<{
             if (!shouldContinue) return;
         }
 
-        params.setServerSelectionActiveTargetKind('group');
-        params.setServerSelectionActiveTargetId(profile.id);
-
         if (nextServerId !== params.activeServerId) {
-            await params.onSwitchServerById(nextServerId);
+            const result = await params.onSwitchServerById(nextServerId);
+            if (result === 'blocked') return;
         }
+        params.setHomeViewSelectionSettings((current) => ({
+            ...current,
+            serverSelectionActiveTargetKind: 'group',
+            serverSelectionActiveTargetId: profile.id,
+        }));
         if (authStatus === 'signedOut') {
             params.onAfterSignedOutSwitch();
         }
@@ -86,7 +92,10 @@ export function useServerSettingsGroupActions(params: Readonly<{
         const trimmed = next.trim();
         if (!trimmed) return;
         const nextProfiles = params.normalizedGroupProfiles.map((item) => item.id !== profile.id ? item : { ...item, name: trimmed });
-        params.setServerSelectionGroups(nextProfiles.slice());
+        params.setHomeViewSelectionSettings((current) => ({
+            ...current,
+            serverSelectionGroups: normalizeServerSelectionGroupsForSettings(nextProfiles),
+        }));
     }, [params]);
 
     const onRemoveGroup = React.useCallback(async (profile: ServerSelectionGroup) => {
@@ -98,11 +107,14 @@ export function useServerSettingsGroupActions(params: Readonly<{
         if (!confirmed) return;
 
         const nextProfiles = params.normalizedGroupProfiles.filter((item) => item.id !== profile.id);
-        params.setServerSelectionGroups(nextProfiles.slice());
-        if (params.activeGroupId === profile.id) {
-            params.setServerSelectionActiveTargetKind('server');
-            params.setServerSelectionActiveTargetId(params.activeServerId || null);
-        }
+        params.setHomeViewSelectionSettings((current) => ({
+            ...current,
+            serverSelectionGroups: normalizeServerSelectionGroupsForSettings(nextProfiles),
+            ...(params.activeGroupId === profile.id ? {
+                serverSelectionActiveTargetKind: params.activeServerId ? 'server' as const : null,
+                serverSelectionActiveTargetId: params.activeServerId || null,
+            } : {}),
+        }));
     }, [params]);
 
     const onCreateServerGroup = React.useCallback(async (input: { name: string; serverIds: string[] }) => {
@@ -145,15 +157,17 @@ export function useServerSettingsGroupActions(params: Readonly<{
             serverIds: nextServerIds,
             presentation: params.groupPresentation,
         };
-        const nextProfiles = [...params.normalizedGroupProfiles, nextGroup];
-        params.setServerSelectionGroups(nextProfiles.slice());
-
-        params.setServerSelectionActiveTargetKind('group');
-        params.setServerSelectionActiveTargetId(nextGroup.id);
-
         if (nextServerId !== params.activeServerId) {
-            await params.onSwitchServerById(nextServerId);
+            const result = await params.onSwitchServerById(nextServerId);
+            if (result === 'blocked') return false;
         }
+        const nextProfiles = [...params.normalizedGroupProfiles, nextGroup];
+        params.setHomeViewSelectionSettings((current) => ({
+            ...current,
+            serverSelectionGroups: normalizeServerSelectionGroupsForSettings(nextProfiles),
+            serverSelectionActiveTargetKind: 'group',
+            serverSelectionActiveTargetId: nextGroup.id,
+        }));
         if (authStatus === 'signedOut') {
             params.onAfterSignedOutSwitch();
         }

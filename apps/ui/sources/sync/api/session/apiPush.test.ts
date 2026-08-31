@@ -120,6 +120,44 @@ describe('apiPush', () => {
         expect(mocks.serverFetch).not.toHaveBeenCalled();
     });
 
+    it('registerPushToken sends bytes to the verified runtime origin while retaining the canonical Home key', async () => {
+        const { registerPushToken } = await import('./apiPush');
+        mocks.runtimeFetchWithServerReachability.mockResolvedValueOnce(jsonResponse({ success: true }));
+
+        await registerPushToken(credentials, 'ExponentPushToken[abc]', {
+            apiEndpoint: 'https://home.example.test',
+            runtimeOrigin: 'http://127.0.0.1:45991',
+            clientServerUrl: 'https://home.example.test',
+            retry: 'none',
+        });
+
+        expect(mocks.runtimeFetchWithServerReachability).toHaveBeenCalledWith(
+            expect.objectContaining({
+                serverUrl: 'https://home.example.test',
+                runtimeOrigin: 'http://127.0.0.1:45991',
+                url: 'http://127.0.0.1:45991/v1/push-tokens',
+            }),
+        );
+    });
+
+    it('deletePushToken sends bytes to the verified runtime origin while retaining the canonical Home key', async () => {
+        const { deletePushToken } = await import('./apiPush');
+        mocks.runtimeFetchWithServerReachability.mockResolvedValueOnce(jsonResponse({ success: true }));
+
+        await deletePushToken(credentials, 'ExponentPushToken[abc]', {
+            apiEndpoint: 'https://home.example.test',
+            runtimeOrigin: 'http://127.0.0.1:45991',
+        });
+
+        expect(mocks.runtimeFetchWithServerReachability).toHaveBeenCalledWith(
+            expect.objectContaining({
+                serverUrl: 'https://home.example.test',
+                runtimeOrigin: 'http://127.0.0.1:45991',
+                url: 'http://127.0.0.1:45991/v1/push-tokens/ExponentPushToken%5Babc%5D',
+            }),
+        );
+    });
+
     it('registerPushToken treats 204 No Content as success', async () => {
         const { registerPushToken } = await import('./apiPush');
         mocks.serverFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));

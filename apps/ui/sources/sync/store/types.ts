@@ -243,17 +243,30 @@ export interface AutomationsDomainSlice {
     automations: Record<string, AutomationDefinition>;
     automationDefinitionNextCursor: string | null;
     automationDefinitionWindowExtended: boolean;
+    automationDefinitionTraversal: Readonly<{
+        nextCursor: string;
+        automations: Record<string, AutomationDefinition>;
+    }> | null;
     automationRunsByAutomationId: Record<string, AutomationDefinitionRun[]>;
     automationRunNextCursorByAutomationId: Record<string, string | null>;
-    applyAutomations: (automations: AutomationDefinition[], nextCursor?: string | null) => void;
+    automationRunTraversalsByAutomationId: Record<string, Readonly<{
+        nextCursor: string;
+        runs: AutomationDefinitionRun[];
+    }>>;
+    applyAutomations: (automations: AutomationDefinition[], nextCursor?: string | null) => number | null;
     appendAutomations: (
         expectedCursor: string,
+        expectedTraversalToken: number,
         automations: AutomationDefinition[],
         nextCursor: string | null,
-    ) => void;
+    ) => boolean;
     upsertAutomation: (automation: AutomationDefinition) => void;
     removeAutomation: (automationId: string) => void;
-    setAutomationRuns: (automationId: string, runs: AutomationDefinitionRun[], nextCursor: string | null) => void;
+    setAutomationRuns: (
+        automationId: string,
+        runs: AutomationDefinitionRun[],
+        nextCursor: string | null,
+    ) => number | null;
     refreshAutomationRunsWindow: (
         automationId: string,
         runs: AutomationDefinitionRun[],
@@ -262,9 +275,10 @@ export interface AutomationsDomainSlice {
     appendAutomationRuns: (
         automationId: string,
         expectedCursor: string,
+        expectedTraversalToken: number,
         runs: AutomationDefinitionRun[],
         nextCursor: string | null,
-    ) => void;
+    ) => boolean;
     upsertAutomationRun: (run: AutomationDefinitionRun) => void;
 }
 

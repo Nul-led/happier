@@ -147,10 +147,19 @@ export async function fetchAccountEncryptionCurrentness(
 
 export async function fetchAccountEncryptionMode(
     credentials: AuthCredentials,
-    opts: Readonly<{ retry?: 'default' | 'none' }> = {},
+    opts: Readonly<{
+        retry?: 'default' | 'none';
+        /**
+         * Explicit Home-targeted request transport. When supplied, the mode read
+         * is one direct attempt against that request and never consults the
+         * active-server mode cache; the caller's endpoint owns the target.
+         */
+        request?: (path: string, init?: RequestInit) => Promise<Response>;
+    }> = {},
 ): Promise<AccountEncryptionModeResult> {
     const run = async (): Promise<AccountEncryptionModeResponse> => {
-        const response = await serverFetch(
+        const response = await (opts.request ?? ((path, init) =>
+            serverFetch(path, init, { includeAuth: false })))(
             '/v1/account/encryption',
             {
                 method: 'GET',
@@ -159,7 +168,6 @@ export async function fetchAccountEncryptionMode(
                     'Content-Type': 'application/json',
                 },
             },
-            { includeAuth: false },
         );
 
         // Back-compat: older servers may not implement this endpoint. Fail closed to E2EE.
@@ -196,7 +204,7 @@ export async function fetchAccountEncryptionMode(
         };
     };
 
-    if (opts.retry === 'none') {
+    if (opts.retry === 'none' || opts.request) {
         return await run();
     }
 

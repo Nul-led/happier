@@ -3,12 +3,15 @@ import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
+import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServerSwitch';
 import { installServerSettingsHooksCommonModuleMocks } from './serverSettingsHooksTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const routerReplaceMock = vi.fn();
-const setActiveServerAndSwitchMock = vi.fn(async () => true);
+const setActiveServerAndSwitchMock = vi.fn(
+    async (): Promise<ActiveServerSwitchResult> => 'switched',
+);
 const refreshFromActiveServerMock = vi.fn(async () => {});
 const createEndpointReadinessProbeMock = vi.hoisted(() => vi.fn(() => async () => ({ status: 'ready' as const })));
 const promptSignedOutServerSwitchConfirmationMock = vi.hoisted(() => vi.fn(async () => true));
@@ -102,6 +105,11 @@ vi.mock('@/components/settings/server/useRelayDriftBanner', () => ({
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getActiveServerSnapshot: () => ({ serverId: 'server-a', serverUrl: 'https://a.example.test', generation: 1 }),
     listServerProfiles: () => [],
+    getServerProfilesGeneration: () => 0,
+    subscribeServerProfiles: () => () => {},
+    subscribeActiveServer: () => () => {},
+    loadHomeViewState: () => null,
+    subscribeHomeViewState: () => () => {},
     getActiveServerId: () => 'server-a',
     getDeviceDefaultServerId: () => 'server-a',
     getTabActiveServerId: () => null,
@@ -112,6 +120,7 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     resolveServerProfileScopeId: (profile: { serverIdentityId?: string; id: string }) =>
         profile.serverIdentityId ?? profile.id,
     upsertServerProfile: vi.fn(() => addedServerProfile),
+    adoptHomeProfile: vi.fn(async () => addedServerProfile),
     removeServerProfile: vi.fn(),
 }));
 
@@ -168,7 +177,7 @@ describe('useServerSettingsScreenController (add server pending terminal)', () =
     afterEach(() => {
         routerReplaceMock.mockClear();
         setActiveServerAndSwitchMock.mockReset();
-        setActiveServerAndSwitchMock.mockResolvedValue(true);
+        setActiveServerAndSwitchMock.mockResolvedValue('switched');
         refreshFromActiveServerMock.mockClear();
         createEndpointReadinessProbeMock.mockClear();
         promptSignedOutServerSwitchConfirmationMock.mockClear();
@@ -180,7 +189,7 @@ describe('useServerSettingsScreenController (add server pending terminal)', () =
         vi.resetModules();
     });
 
-    it('retargets the pending terminal connect and returns to auth when adding a signed-out relay', async () => {
+    it('adopts a signed-out Home without retargeting pending terminal state or changing focus', async () => {
         pendingTerminalConnectMock.current = {
             publicKeyB64Url: 'abc123',
             serverUrl: 'https://wrong.example.test',
@@ -205,23 +214,16 @@ describe('useServerSettingsScreenController (add server pending terminal)', () =
             await value?.onAddServer();
         });
 
-        expect(promptSignedOutServerSwitchConfirmationMock).toHaveBeenCalledTimes(1);
-        expect(pendingTerminalConnectMock.set).toHaveBeenCalledWith({
-            publicKeyB64Url: 'abc123',
-            serverUrl: 'https://correct.example.test',
-        });
-        expect(setActiveServerAndSwitchMock).toHaveBeenCalledWith({
-            serverId: 'server-correct',
-            scope: 'device',
-            refreshAuth: refreshFromActiveServerMock,
-        });
-        expect(storageState.serverSelectionActiveTargetKind).toBe('server');
-        expect(storageState.serverSelectionActiveTargetId).toBe('server-correct');
-        expect(routerReplaceMock).toHaveBeenLastCalledWith('/?server=https%3A%2F%2Fcorrect.example.test');
+        expect(promptSignedOutServerSwitchConfirmationMock).not.toHaveBeenCalled();
+        expect(pendingTerminalConnectMock.set).not.toHaveBeenCalled();
+        expect(setActiveServerAndSwitchMock).not.toHaveBeenCalled();
+        expect(storageState.serverSelectionActiveTargetKind).toBeNull();
+        expect(storageState.serverSelectionActiveTargetId).toBeNull();
+        expect(routerReplaceMock).not.toHaveBeenCalled();
     });
 
-    it('does not retarget terminal or navigation state when marked custody blocks the switch', async () => {
-        setActiveServerAndSwitchMock.mockResolvedValue(false);
+    it('does not enter the focus-custody path while adopting a Home', async () => {
+        setActiveServerAndSwitchMock.mockResolvedValue('blocked');
         pendingTerminalConnectMock.current = {
             publicKeyB64Url: 'abc123',
             serverUrl: 'https://active.example.test',
@@ -245,7 +247,7 @@ describe('useServerSettingsScreenController (add server pending terminal)', () =
             await value?.onAddServer();
         });
 
-        expect(setActiveServerAndSwitchMock).toHaveBeenCalledTimes(1);
+        expect(setActiveServerAndSwitchMock).not.toHaveBeenCalled();
         expect(pendingTerminalConnectMock.set).not.toHaveBeenCalled();
         expect(storageState.serverSelectionActiveTargetKind).toBeNull();
         expect(storageState.serverSelectionActiveTargetId).toBeNull();

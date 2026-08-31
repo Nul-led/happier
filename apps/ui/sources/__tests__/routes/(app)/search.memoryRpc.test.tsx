@@ -15,6 +15,8 @@ import { installSearchRouteCommonModuleMocks } from './searchRouteTestHelpers';
 const machineRpcSpy = vi.fn();
 const routerPushSpy = vi.fn();
 const featureEnabledState: Record<string, boolean> = { 'memory.search': true };
+let activeServerSnapshot = { serverId: 'srv_1', generation: 1 };
+const activeServerListeners = new Set<() => void>();
 const machinesState = [
     {
         id: 'm1',
@@ -139,7 +141,11 @@ vi.mock('@/utils/sessions/sessionUtils', () => ({
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => ({ serverId: 'srv_1', generation: 1 }),
+    getActiveServerSnapshot: () => activeServerSnapshot,
+    subscribeActiveServer: (listener: () => void) => {
+        activeServerListeners.add(listener);
+        return () => activeServerListeners.delete(listener);
+    },
 }));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
@@ -150,7 +156,9 @@ afterEach(() => {
     machineRpcSpy.mockReset();
     routerPushSpy.mockReset();
     featureEnabledState['memory.search'] = true;
+    activeServerSnapshot = { serverId: 'srv_1', generation: 1 };
     standardCleanup();
+    activeServerListeners.clear();
 });
 
 function createMemoryStatusResponse(enabled: boolean) {
@@ -330,6 +338,59 @@ describe('Memory search screen', () => {
         }));
         const call = machineRpcSpy.mock.calls.find((c) => c?.[0]?.method === 'daemon.memory.search');
         expect(call?.[0]?.payload?.query).toBe('openclaw');
+    });
+
+    it('invalidates an in-flight search when the active server changes', async () => {
+        let resolveFirstSearch!: (value: unknown) => void;
+        machineRpcSpy.mockImplementation((params: any) => {
+            if (params?.method === 'daemon.memory.status') {
+                return Promise.resolve(createMemoryStatusResponse(true));
+            }
+            if (params?.method === 'daemon.memory.search' && params?.serverId === 'srv_1') {
+                return new Promise((resolve) => {
+                    resolveFirstSearch = resolve;
+                });
+            }
+            throw new Error('unexpected rpc');
+        });
+
+        const Screen = (await import('@/app/(app)/search')).default;
+        const screen = await renderScreen(React.createElement(Screen));
+        const input = findRequiredTestNode(screen, 'memory-search-query');
+        await act(async () => {
+            input.props.onChangeText?.('old server phrase');
+        });
+        const submit = findRequiredTestNode(screen, 'memory-search-submit');
+        await act(async () => {
+            submit.props.onPress?.();
+        });
+
+        activeServerSnapshot = { serverId: 'srv_2', generation: 2 };
+        await act(async () => {
+            for (const listener of [...activeServerListeners]) listener();
+        });
+        await screen.update(React.createElement(Screen));
+        await settleMemorySearchScreen();
+
+        await act(async () => {
+            resolveFirstSearch({
+                v: 1,
+                ok: true,
+                hits: [{
+                    sessionId: 'sess-1',
+                    seqFrom: 1,
+                    seqTo: 1,
+                    createdAtFromMs: 10,
+                    createdAtToMs: 10,
+                    summary: 'stale server result',
+                    score: 1,
+                }],
+            });
+        });
+        await settleMemorySearchScreen();
+
+        expect(screen.findAllByTestId('memory-search-hit-sess-1-1-0')).toHaveLength(0);
+        expect(screen.findAllByType('Text' as any).map((node) => node.props.children)).not.toContain('stale server result');
     });
 
     it('offers an enable CTA when memory is disabled', async () => {

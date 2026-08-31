@@ -42,6 +42,7 @@ type PackageAssetServerSnapshot = Readonly<{
 
 type PackageAssetRequestAuthority = Readonly<{
     request: (path: string, init?: RequestInit) => Promise<Response>;
+    release?: () => Promise<void>;
     credentials?: AuthCredentials;
     decryptDataEncryptionKey?: AccountArtifactEnvelopeKeyOpener;
 }>;
@@ -93,6 +94,7 @@ function defaultDependencies(): ActivePluginAccountPackageAssetReaderDependencie
             const authority = await captureSessionRequestAuthorityForServerAccountScope({ scope, activeRequest });
             return Object.freeze({
                 request: authority.request,
+                release: authority.release,
                 ...(authority.context.credentials ? { credentials: authority.context.credentials } : {}),
                 ...(authority.context.encryption ? {
                     decryptDataEncryptionKey: (value: string) =>
@@ -168,8 +170,9 @@ export function createActivePluginAccountPackageAssetSource(
         const capturedRetirement = capturedLifetime === requestedLifetime
             ? null
             : capturedLifetime.onRetire(abort);
+        let authority: PackageAssetRequestAuthority | null = null;
         try {
-            const authority = await dependencies.captureRequestAuthority({
+            authority = await dependencies.captureRequestAuthority({
                 scope: requestedLifetime.scope,
                 activeRequest: (path, init) => apiSocket.request(path, init),
             });
@@ -214,6 +217,7 @@ export function createActivePluginAccountPackageAssetSource(
         } catch {
             return null;
         } finally {
+            await authority?.release?.();
             requestedRetirement.dispose();
             capturedRetirement?.dispose();
         }

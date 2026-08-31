@@ -1,7 +1,6 @@
 import {
     BackendTargetKeyV2Schema,
     PersistedBackendTargetRefV2Schema,
-    PluginContributionIdentityV1Schema,
     parseBackendTargetKeyV2,
     readBackendTargetRefV2,
     type BackendTargetRefV2,
@@ -68,23 +67,13 @@ function parseBackendTargetKeySafe(value: unknown): PersistedBackendTargetRefV2 
     }
 
     const canonicalKey = BackendTargetKeyV2Schema.safeParse(trimmed);
-    if (canonicalKey.success && canonicalKey.data.startsWith('agent:')) {
-        const qualifiedIdentity = canonicalKey.data.slice('agent:'.length);
-        const separatorIndex = qualifiedIdentity.indexOf('/');
-        const identity = PluginContributionIdentityV1Schema.safeParse({
-            pluginId: qualifiedIdentity.slice(0, separatorIndex),
-            localId: qualifiedIdentity.slice(separatorIndex + 1),
-        });
-        return identity.success ? { kind: 'agent', identity: identity.data } : null;
-    }
     try {
-        return stripBackendTargetSourceKind(parseBackendTargetKeyV2(trimmed));
-    } catch {
-        try {
-            return stripBackendTargetSourceKind(readBackendTargetRefV2(trimmed as BackendTargetRefV2Input));
-        } catch {
-            return null;
+        if (canonicalKey.success) {
+            return stripBackendTargetSourceKind(parseBackendTargetKeyV2(canonicalKey.data));
         }
+        return stripBackendTargetSourceKind(readBackendTargetRefV2(trimmed as BackendTargetRefV2Input));
+    } catch {
+        return null;
     }
 }
 

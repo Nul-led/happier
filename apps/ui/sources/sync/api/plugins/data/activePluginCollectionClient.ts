@@ -295,7 +295,7 @@ export type PreparedCollectionOperation = Readonly<{
     material: AccountScopedCryptoMaterial | null;
     headers: Headers;
     signal: AbortSignal;
-    release(): void;
+    release(): Promise<void>;
 }>;
 
 export type PreparedCollectionOperationOutcome =
@@ -393,52 +393,55 @@ export async function prepareCollectionOperation(
     const abort = () => controller.abort();
     const retirement = lifetime.onRetire(abort);
     options?.signal?.addEventListener('abort', abort, { once: true });
-    const release = (): void => {
+    let authority: Awaited<ReturnType<typeof captureSessionRequestAuthorityForServerAccountScope>> | null = null;
+    const release = async (): Promise<void> => {
+        await authority?.release?.();
         options?.signal?.removeEventListener('abort', abort);
         retirement.dispose();
     };
     if (options?.signal?.aborted) {
-        release();
+        await release();
         return unavailable('operation-cancelled');
     }
     try {
-        const authority = await captureSessionRequestAuthorityForServerAccountScope({
+        authority = await captureSessionRequestAuthorityForServerAccountScope({
             scope: lifetime.scope,
             activeRequest: (path, init) => apiSocket.request(path, init),
         });
+        const capturedAuthority = authority;
         const currentnessAfterAuthority = isScopeAndServerCurrent(lifetime, serverSnapshot);
         if (currentnessAfterAuthority) {
-            release();
+            await release();
             return unavailable(currentnessAfterAuthority);
         }
         if (controller.signal.aborted) {
-            release();
+            await release();
             return unavailable(options?.signal?.aborted ? 'operation-cancelled' : 'account-scope-changed');
         }
 
-        const credentials = authority.context.credentials ?? { token: authority.context.token };
+        const credentials = capturedAuthority.context.credentials ?? { token: capturedAuthority.context.token };
         const currentness = await fetchAccountEncryptionCurrentness(credentials, {
-            request: (path, init) => authority.request(path, {
+            request: (path, init) => capturedAuthority.request(path, {
                 ...init,
                 signal: controller.signal,
             }),
         });
         const currentnessAfterRead = isScopeAndServerCurrent(lifetime, serverSnapshot);
         if (currentnessAfterRead) {
-            release();
+            await release();
             return unavailable(currentnessAfterRead);
         }
         if (controller.signal.aborted) {
-            release();
+            await release();
             return unavailable(options?.signal?.aborted ? 'operation-cancelled' : 'account-scope-changed');
         }
         const material = resolveCurrentAccountMaterial({
             mode: currentness.mode,
             contentKeyFingerprint: currentness.contentKeyFingerprint,
-            credentials: authority.context.credentials,
+            credentials: capturedAuthority.context.credentials,
         });
         if (currentness.mode === 'e2ee' && !material) {
-            release();
+            await release();
             return unavailable('account-encryption-material-unavailable');
         }
         return {
@@ -446,7 +449,7 @@ export async function prepareCollectionOperation(
             operation: {
                 lifetime,
                 serverSnapshot,
-                authority,
+                authority: capturedAuthority,
                 encryptionMode: currentness.mode,
                 material,
                 headers: compatibility.headers,
@@ -455,7 +458,7 @@ export async function prepareCollectionOperation(
             },
         };
     } catch {
-        release();
+        await release();
         return unavailable(controller.signal.aborted
             ? (options?.signal?.aborted ? 'operation-cancelled' : 'account-scope-changed')
             : 'account-currentness-unavailable');
@@ -700,7 +703,7 @@ export async function createActivePluginCollectionClientForContractRef<
             }),
         };
     } finally {
-        prepared.operation.release();
+        await prepared.operation.release();
     }
 }
 
@@ -755,7 +758,7 @@ export function createActivePluginCollectionClient<
                 ? unavailable('account-content-mismatch')
                 : { status: 'ready', row, absenceEpoch: result.data.absenceEpoch };
         } finally {
-            prepared.operation.release();
+            await prepared.operation.release();
         }
     };
 
@@ -805,7 +808,7 @@ export function createActivePluginCollectionClient<
                 changeCursor: result.data.changeCursor,
             };
         } finally {
-            prepared.operation.release();
+            await prepared.operation.release();
         }
     };
 
@@ -842,9 +845,10 @@ export function createActivePluginCollectionClient<
         | ActivePluginCollectionUnavailableV1
         | ActivePluginCollectionRejectedV1
     > => {
-        const absentPut = operations.find((candidate) => (
-            candidate.kind === 'put' && candidate.expectedRevision === 'absent'
-        ));
+        const absentPut = operations.find((candidate): candidate is Extract<
+            ActivePluginCollectionMutationInputV1<TValue>,
+            Readonly<{ kind: 'put' }>
+        > => candidate.kind === 'put' && candidate.expectedRevision === 'absent');
         if (!absentPut) return { status: 'ready' };
         const rowId = PluginCollectionRowIdV1Schema.safeParse(
             absentPut.value[params.contract.rowIdField],
@@ -890,7 +894,7 @@ export function createActivePluginCollectionClient<
                     changeCursor: result.data.changeCursor,
                 };
         } finally {
-            prepared.operation.release();
+            await prepared.operation.release();
         }
     };
 
@@ -934,7 +938,7 @@ export function createActivePluginCollectionClient<
                 if (!result.success) return unavailable('response-invalid');
                 if (result.data.status === 'forgotten') return result.data;
             } finally {
-                prepared.operation.release();
+                await prepared.operation.release();
             }
         }
     };
@@ -984,7 +988,7 @@ export function createActivePluginCollectionClient<
             }
             return { status: 'ready', tag: resolved.tag };
         } finally {
-            prepared.operation.release();
+            await prepared.operation.release();
         }
     };
 
@@ -1040,7 +1044,7 @@ export function createActivePluginCollectionClient<
                 }),
             };
         } finally {
-            prepared.operation.release();
+            await prepared.operation.release();
         }
     };
 

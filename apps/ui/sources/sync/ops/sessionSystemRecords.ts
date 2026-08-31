@@ -7,7 +7,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { apiSocket } from '@/sync/api/session/apiSocket';
-import { runtimeFetchWithServerReachability } from '@/sync/runtime/connectivity/serverReachabilityRuntimeFetch';
+import { createSessionRequestForResolvedServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
 import { resolveServerScopedSessionContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedSessionContext';
 
@@ -33,34 +33,29 @@ async function requestSessionSystemRecordRoute(params: Readonly<{
     path: string;
     init?: RequestInitLike;
     serverId?: string | null;
-}>): Promise<Response> {
+}>): Promise<Readonly<{ response: Response; release: () => Promise<void> }>> {
     const context = await resolveServerScopedSessionContext({
         serverId: params.serverId ?? resolvePreferredServerIdForSessionId(params.sessionId) ?? null,
     });
     const init = params.init ?? {};
 
-    if (context.scope === 'active') {
-        return await apiSocket.request(params.path, {
+    try {
+        const response = await createSessionRequestForResolvedServerScope({
+            context,
+            activeRequest: (path, requestInit) => apiSocket.request(path, requestInit),
+        })(params.path, {
             method: init.method ?? 'GET',
             ...(init.headers ? { headers: init.headers } : {}),
             ...(init.body !== undefined ? { body: init.body } : {}),
         });
+        return {
+            response,
+            release: context.scope === 'scoped' ? (context.release ?? (async () => undefined)) : async () => undefined,
+        };
+    } catch (error) {
+        if (context.scope === 'scoped') await context.release?.();
+        throw error;
     }
-
-    return await runtimeFetchWithServerReachability({
-        serverUrl: context.targetServerUrl,
-        token: context.token,
-        url: `${context.targetServerUrl}${params.path}`,
-        init: {
-            method: init.method ?? 'GET',
-            headers: {
-                Authorization: `Bearer ${context.token}`,
-                ...(init.headers ?? {}),
-            },
-            ...(init.body !== undefined ? { body: init.body } : {}),
-        },
-        timeoutMs: context.timeoutMs,
-    });
 }
 
 function buildSystemRecordsBasePath(sessionId: string): string {
@@ -106,20 +101,25 @@ export async function listSessionSystemRecords(params: Readonly<{
             limit: params.limit,
             cursor: params.cursor ?? undefined,
         });
-        const response = await requestSessionSystemRecordRoute({
+        const request = await requestSessionSystemRecordRoute({
             sessionId: params.sessionId,
             path,
             serverId: params.serverId ?? null,
         });
-        if (!response.ok) return empty;
-        const json = await response.json().catch(() => null);
-        const parsed = SessionSystemRecordPageResponseSchema.safeParse(json);
-        if (!parsed.success) return empty;
-        return {
-            records: parsed.data.records,
-            nextCursor: parsed.data.nextCursor,
-            hasNext: parsed.data.hasNext,
-        };
+        try {
+            const { response } = request;
+            if (!response.ok) return empty;
+            const json = await response.json().catch(() => null);
+            const parsed = SessionSystemRecordPageResponseSchema.safeParse(json);
+            if (!parsed.success) return empty;
+            return {
+                records: parsed.data.records,
+                nextCursor: parsed.data.nextCursor,
+                hasNext: parsed.data.hasNext,
+            };
+        } finally {
+            await request.release();
+        }
     } catch {
         return empty;
     }
@@ -141,16 +141,21 @@ export async function fetchSessionSystemRecord(params: Readonly<{
             namespace: params.namespace,
             localId: params.localId,
         });
-        const response = await requestSessionSystemRecordRoute({
+        const request = await requestSessionSystemRecordRoute({
             sessionId: params.sessionId,
             path,
             serverId: params.serverId ?? null,
         });
+        try {
+        const { response } = request;
         if (!response.ok) return null;
         const json = await response.json().catch(() => null);
         const parsed = LegacyHostSessionSystemRecordLookupResponseSchema.safeParse(json);
         if (!parsed.success) return null;
         return parsed.data.record ?? null;
+        } finally {
+            await request.release();
+        }
     } catch {
         return null;
     }

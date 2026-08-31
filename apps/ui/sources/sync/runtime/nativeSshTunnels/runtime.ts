@@ -7,6 +7,8 @@ import {
     type NativeSshTunnelCredentialResolution,
 } from './adapter';
 import { createNativeSshTunnelSupervisor } from './supervisor';
+import { disposeIrohHomeTunnelRuntime, getIrohHomeTunnelRuntime } from '@/sync/runtime/nativeIrohTunnels/runtime';
+import type { IrohHomeTunnelRuntime } from '@/sync/runtime/nativeIrohTunnels/types';
 import type {
     NativeSshCredentialsRef,
     NativeSshTunnelLease,
@@ -200,20 +202,23 @@ export function getNativeSshTunnelRuntime(params: RuntimeFactoryParams = {}): Na
 export function bindNativeSshTunnelRuntimeAppState(params: Readonly<{
     appState: AppStateLike;
     runtime: NativeSshTunnelRuntime;
+    /** Companion tunnel runtimes (e.g. Iroh) driven by the same app-state lifecycle mount. */
+    additionalRuntimes?: readonly Pick<IrohHomeTunnelRuntime, 'markSuspended' | 'markForeground'>[];
 }>): Readonly<{ remove: () => void }> {
+    const runtimes = [params.runtime, ...(params.additionalRuntimes ?? [])];
     const onStateChange = async (state: AppStateStatus | string): Promise<void> => {
         if (state === 'background' || state === 'inactive') {
-            params.runtime.markSuspended();
+            for (const runtime of runtimes) runtime.markSuspended();
             return;
         }
         if (state === 'active') {
-            await params.runtime.markForeground();
+            for (const runtime of runtimes) await runtime.markForeground();
         }
     };
 
     const subscription = params.appState.addEventListener('change', onStateChange);
     if (params.appState.currentState === 'background' || params.appState.currentState === 'inactive') {
-        params.runtime.markSuspended();
+        for (const runtime of runtimes) runtime.markSuspended();
     }
     return subscription;
 }
@@ -222,17 +227,21 @@ export function startNativeSshTunnelRuntimeAppStateLifecycle(): void {
     if (singletonLifecycleSubscription) {
         return;
     }
+    // One app-state mount owns suspend/foreground recovery for every native
+    // tunnel lifecycle (SSH and Iroh); there is no second AppState singleton.
     singletonLifecycleSubscription = bindNativeSshTunnelRuntimeAppState({
         appState: AppState,
         runtime: getNativeSshTunnelRuntime(),
+        additionalRuntimes: [getIrohHomeTunnelRuntime()],
     });
 }
 
-export function disposeNativeSshTunnelRuntime(): void {
+export async function disposeNativeSshTunnelRuntime(): Promise<void> {
     singletonLifecycleSubscription?.remove();
     singletonLifecycleSubscription = null;
     singletonRuntime = null;
     hostKeyPromptResolver = null;
     authPromptResolver = null;
     credentialResolutionsByRefKey.clear();
+    await disposeIrohHomeTunnelRuntime();
 }

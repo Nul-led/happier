@@ -999,10 +999,15 @@ export function AutomationDetailScreen() {
 
                 <ItemGroup title={t('automations.detail.actionsGroupTitle')}>
                     <Item
+                        testID="automation-detail-run-now"
                         title={t('automations.detail.runNowTitle')}
                         onPress={mutationsEnabled ? () => void handleRunNow() : undefined}
                         disabled={!mutationsEnabled || runNowPending}
                         loading={runNowPending}
+                        accessibilityLabel={runNowState === 'acknowledged'
+                            ? `${t('automations.detail.runNowTitle')}. ${t('common.success')}`
+                            : undefined}
+                        accessibilityLiveRegion={runNowState === 'acknowledged' ? 'polite' : undefined}
                         rightElement={runNowState === 'acknowledged'
                                 ? <Icon name="check" size={16} color={theme.colors.text.secondary} />
                                 : undefined}

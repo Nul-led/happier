@@ -9,12 +9,14 @@ import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
 
 type NotificationPushSectionProps = Readonly<{
+    homeName: string;
     pushEnabled: boolean;
     setPushEnabled: (enabled: boolean) => void;
     openPushTroubleshooting: () => void;
 }>;
 
 export function NotificationPushSection({
+    homeName,
     pushEnabled,
     setPushEnabled,
     openPushTroubleshooting,
@@ -24,12 +26,12 @@ export function NotificationPushSection({
     return (
         <ItemGroup
             title={t('settingsNotifications.push.title')}
-            footer={t('settingsNotifications.push.footer')}
+            footer={t('settingsNotifications.push.footer', { home: homeName })}
         >
             <Item
                 testID="settings-notifications-push-enabled"
                 title={t('common.enabled')}
-                subtitle={t('settingsNotifications.push.enabledSubtitle')}
+                subtitle={t('settingsNotifications.push.enabledSubtitle', { home: homeName })}
                 icon={<Icon name="bell" size={29} color={theme.colors.accent.blue} />}
                 rightElement={(
                     <Switch

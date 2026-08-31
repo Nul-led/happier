@@ -27,8 +27,9 @@ import { captureActiveServerAccountScopeCurrentness } from '@/sync/domains/scope
 import { useAllMachines, useSetting } from '@/sync/domains/state/storage';
 import { machineExternalSessionLinkEnsure } from '@/sync/ops/machineExternalSessions';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
-import { useProfile } from '@/sync/store/hooks';
+import { useProfile, useSettingsVersion } from '@/sync/store/hooks';
 import { sync } from '@/sync/sync';
+import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
 import type { Theme } from '@/theme';
 import { t } from '@/text';
 
@@ -117,6 +118,7 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
     const styles = stylesheet;
     const machines = useAllMachines();
     const profile = useProfile();
+    const settingsVersion = useSettingsVersion();
     const backendEnabledByTargetKey = useSetting('backendEnabledByTargetKey');
     const acpCatalogSettingsV1 = useSetting('acpCatalogSettingsV1');
     const connectedServicesProfileLabelByKey = useSetting('connectedServicesProfileLabelByKey');
@@ -459,27 +461,37 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
         autoLinkMutationPendingRef.current = true;
         setAutoLinkMutationPending(true);
         try {
-            await sync.mutateAccountSettings((raw) => ({
-                ...raw,
-                externalSessionsSettingsV1: enabled
-                    ? upsertExternalSessionsAutoLinkSourcePolicyV1(
-                        raw.externalSessionsSettingsV1,
-                        {
-                            machineId: effectiveSelectedMachineId,
-                            qualifiedIdentity: autoLinkPolicyScope.qualifiedIdentity,
-                            sourcePolicyId: autoLinkPolicyScope.sourcePolicyId,
-                            enabledAtMs: Date.now(),
+            if (settingsVersion === null) throw new Error('Account settings version is unavailable');
+            const enabledAtMs = Date.now();
+            requireOneShotAccountSettingsMutationApplied(
+                await sync.mutateAccountSettingsOnce({
+                    expectedSettingsVersion: settingsVersion,
+                    mutate: (raw) => ({
+                        settings: {
+                            ...raw,
+                            externalSessionsSettingsV1: enabled
+                                ? upsertExternalSessionsAutoLinkSourcePolicyV1(
+                                    raw.externalSessionsSettingsV1,
+                                    {
+                                        machineId: effectiveSelectedMachineId,
+                                        qualifiedIdentity: autoLinkPolicyScope.qualifiedIdentity,
+                                        sourcePolicyId: autoLinkPolicyScope.sourcePolicyId,
+                                        enabledAtMs,
+                                    },
+                                )
+                                : removeExternalSessionsAutoLinkSourcePolicyV1(
+                                    raw.externalSessionsSettingsV1,
+                                    {
+                                        machineId: effectiveSelectedMachineId,
+                                        qualifiedIdentity: autoLinkPolicyScope.qualifiedIdentity,
+                                        sourcePolicyId: autoLinkPolicyScope.sourcePolicyId,
+                                    },
+                                ),
                         },
-                    )
-                    : removeExternalSessionsAutoLinkSourcePolicyV1(
-                        raw.externalSessionsSettingsV1,
-                        {
-                            machineId: effectiveSelectedMachineId,
-                            qualifiedIdentity: autoLinkPolicyScope.qualifiedIdentity,
-                            sourcePolicyId: autoLinkPolicyScope.sourcePolicyId,
-                        },
-                    ),
-            }));
+                        value: undefined,
+                    }),
+                }),
+            );
         } catch {
             await Modal.alert(
                 t('common.error'),
@@ -489,7 +501,7 @@ export const ExternalSessionsBrowseScreen = React.memo((props: Readonly<{
             autoLinkMutationPendingRef.current = false;
             setAutoLinkMutationPending(false);
         }
-    }, [autoLinkPolicyScope, effectiveSelectedMachineId]);
+    }, [autoLinkPolicyScope, effectiveSelectedMachineId, settingsVersion]);
     const selectedMachineIsOffline = React.useMemo(() => {
         if (!effectiveSelectedMachineId) return false;
         return machines.find((machine) => machine.id === effectiveSelectedMachineId)?.active === false;

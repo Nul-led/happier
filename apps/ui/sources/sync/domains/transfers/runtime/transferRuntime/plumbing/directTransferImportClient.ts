@@ -15,6 +15,7 @@ import {
     createDirectTransferRequestAbortSignal,
     resolveDirectTransferRequestTimeoutMs,
 } from './directTransferRequestDeadline';
+import { rebaseMachineCarrierHttpEndpoint } from './machineCarrierHttpLease';
 
 export type ComposerMediaStageUploadRequest = Readonly<{
     t: 'composer_media_stage_upload_v1';
@@ -332,6 +333,7 @@ export async function prepareDirectImportSession(params: Readonly<{
     timeoutMs?: number | null;
     signal?: AbortSignal | null;
     preferScoped?: boolean;
+    httpOriginOverride?: string | null;
 }>): Promise<
     | Readonly<{ success: true; session: PreparedDirectImportSession }>
     | Readonly<{ success: false; error: string; errorCode?: string }>
@@ -407,12 +409,17 @@ export async function prepareDirectImportSession(params: Readonly<{
             hasMalformedEndpointCandidate = true;
             continue;
         }
-        if (!isSafeDirectTransferEndpointCandidate(parsedCandidate.data)) {
-            continue;
-        }
-
         try {
-            baseUrls.push(normalizeDirectPeerImportEndpointBaseUrl(parsedCandidate.data.url));
+            const endpointUrl = params.httpOriginOverride
+                ? rebaseMachineCarrierHttpEndpoint(parsedCandidate.data.url, params.httpOriginOverride)
+                : parsedCandidate.data.url;
+            if (!isSafeDirectTransferEndpointCandidate({ ...parsedCandidate.data, url: endpointUrl })) {
+                continue;
+            }
+            const normalizedBaseUrl = normalizeDirectPeerImportEndpointBaseUrl(endpointUrl);
+            baseUrls.push(params.httpOriginOverride
+                ? `${normalizedBaseUrl}${new URL(endpointUrl).search}`
+                : normalizedBaseUrl);
         } catch {
             hasMalformedEndpointCandidate = true;
             continue;

@@ -46,7 +46,7 @@ import {
     machinePluginActionFormConnectedAccountOptionsResolve,
     type MachinePluginActionFormConnectedAccountOptionsResult,
 } from '@/sync/ops/machineContributionRegistryProjection';
-import { DEFAULT_INVOCATION_TIMEOUT_MS } from '@/components/appShell/plugins/pluginUiInvocationHost';
+import { PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS } from '@/components/plugins/hostApi/interactionLifetime';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import {
     resolvePluginProjectedActionPresentation,
@@ -1134,7 +1134,7 @@ export function createPluginContributedActionController(params: Readonly<{
                 inputHints,
             },
             accountLifetime: resolved.snapshot.host.accountLifetime,
-            deadlineMs: DEFAULT_INVOCATION_TIMEOUT_MS,
+            deadlineMs: PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS,
             ...(resolved.snapshot.host.signal ? { signal: resolved.snapshot.host.signal } : {}),
             isCurrent: () => resolveFormAction(
                 resolved.descriptor,
@@ -1186,7 +1186,7 @@ export function createPluginContributedActionController(params: Readonly<{
                     expectedGeneration: host.expectedGeneration,
                     qualifiedActionId: resolved.descriptor.qualifiedActionId,
                     fieldPath: field.path,
-                    timeoutMs: DEFAULT_INVOCATION_TIMEOUT_MS,
+                    timeoutMs: PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS,
                     ...(resolved.snapshot.host.signal ? { signal: resolved.snapshot.host.signal } : {}),
                 },
             );

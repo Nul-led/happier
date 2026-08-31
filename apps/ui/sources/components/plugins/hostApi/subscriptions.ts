@@ -4,29 +4,6 @@ import {
     type PluginUiSurfaceContextV1,
 } from '@happier-dev/protocol/plugins/ui';
 
-export type PluginUiHostSubscriptionAuditEvent =
-    | Readonly<{
-        type: 'subscriptionRegistered';
-        subscriptionId: string;
-        surface: PluginUiSurfaceContextV1;
-    }>
-    | Readonly<{
-        type: 'subscriptionDisposed';
-        subscriptionId: string;
-        surface: PluginUiSurfaceContextV1;
-    }>
-    | Readonly<{
-        type: 'subscriptionEventDelivered';
-        subscriptionId: string;
-        surface: PluginUiSurfaceContextV1;
-    }>
-    | Readonly<{
-        type: 'subscriptionEventSuppressed';
-        subscriptionId: string;
-        surface: PluginUiSurfaceContextV1;
-        reason: 'unknown' | 'invalid_event';
-    }>;
-
 function createSurfaceKey(surface: PluginUiSurfaceContextV1): string {
     return [
         surface.pluginId,
@@ -47,7 +24,6 @@ export function createPluginUiHostSubscriptionRegistry(options: Readonly<{
         subscriptionId: string;
         value: unknown;
     }>) => void;
-    audit?: (event: PluginUiHostSubscriptionAuditEvent) => void;
 }> = {}) {
     const activeSubscriptionKeys = new Map<string, PluginUiSurfaceContextV1>();
 
@@ -64,11 +40,6 @@ export function createPluginUiHostSubscriptionRegistry(options: Readonly<{
     }>): void {
         const key = createSubscriptionKey(input.surface, input.subscriptionId);
         activeSubscriptionKeys.set(key, input.surface);
-        options.audit?.({
-            type: 'subscriptionRegistered',
-            subscriptionId: input.subscriptionId,
-            surface: input.surface,
-        });
     }
 
     function dispose(input: Readonly<{
@@ -77,11 +48,6 @@ export function createPluginUiHostSubscriptionRegistry(options: Readonly<{
     }>): boolean {
         const key = createSubscriptionKey(input.surface, input.subscriptionId);
         const hadActiveSubscription = activeSubscriptionKeys.delete(key);
-        options.audit?.({
-            type: 'subscriptionDisposed',
-            subscriptionId: input.subscriptionId,
-            surface: input.surface,
-        });
         return hadActiveSubscription;
     }
 
@@ -92,21 +58,10 @@ export function createPluginUiHostSubscriptionRegistry(options: Readonly<{
     ): boolean {
         const key = createSubscriptionKey(surface, subscriptionId);
         if (!activeSubscriptionKeys.has(key)) {
-            options.audit?.({
-                type: 'subscriptionEventSuppressed',
-                subscriptionId,
-                surface,
-                reason: 'unknown',
-            });
             return false;
         }
 
         options.deliverSubscriptionValue?.({ subscriptionId, value });
-        options.audit?.({
-            type: 'subscriptionEventDelivered',
-            subscriptionId,
-            surface,
-        });
         return true;
     }
 
@@ -116,12 +71,6 @@ export function createPluginUiHostSubscriptionRegistry(options: Readonly<{
     ): boolean {
         const parsed = PluginUiResourceSubscriptionEventV1Schema.safeParse(event);
         if (!parsed.success) {
-            options.audit?.({
-                type: 'subscriptionEventSuppressed',
-                subscriptionId: '',
-                surface,
-                reason: 'invalid_event',
-            });
             return false;
         }
 
@@ -143,12 +92,6 @@ export function createPluginUiHostSubscriptionRegistry(options: Readonly<{
     ): boolean {
         const subscriptionId = input.subscriptionId.trim();
         if (!subscriptionId) {
-            options.audit?.({
-                type: 'subscriptionEventSuppressed',
-                subscriptionId: '',
-                surface,
-                reason: 'invalid_event',
-            });
             return false;
         }
         return publishKnown(surface, subscriptionId, input.value);

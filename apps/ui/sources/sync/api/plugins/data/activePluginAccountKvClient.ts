@@ -8,6 +8,7 @@ import {
     assertPluginAccountKvExpectedVersionV1,
     assertPluginAccountStorageEnvelopeForModeV1,
     clonePluginAccountKvRowV1,
+    commitPluginAccountKvMutationWithRebaseV1,
     createEmptyPluginAccountKvRowV1,
     deletePluginAccountKvEntryV1,
     listPluginAccountKvEntriesV1,
@@ -28,6 +29,7 @@ import type {
 } from '@happier-dev/plugin-sdk/storage';
 
 import { getRandomBytes } from '@/platform/cryptoRandom';
+import type { PluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/reader';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
 import {
@@ -85,6 +87,17 @@ function inRowAlgebra<T>(operation: () => T): T {
     }
 }
 
+async function inRowAlgebraAsync<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+        return await operation();
+    } catch (error) {
+        if (error instanceof PluginAccountKvRowError) {
+            throw kvError(error.code, error.message);
+        }
+        throw error;
+    }
+}
+
 function accountKvPath(pluginId: string): string {
     return `/v1/account/plugin-storage/${encodeURIComponent(pluginId)}`;
 }
@@ -106,6 +119,10 @@ async function prepare(
 function assertStillCurrent(operation: PreparedCollectionOperation): void {
     const currentness = getPreparedCollectionOperationCurrentness(operation);
     if (currentness) throw unavailableError(currentness);
+}
+
+function assertSignalActive(signal?: AbortSignal): void {
+    if (signal?.aborted) throw unavailableError('operation-cancelled');
 }
 
 async function readSnapshot(input: Readonly<{
@@ -173,7 +190,7 @@ async function writeSnapshot(input: Readonly<{
     snapshot: AccountKvSnapshot;
     row: PluginAccountStorageRowV1;
     options?: ActivePluginCollectionOperationOptionsV1;
-}>): Promise<void> {
+}>): Promise<'updated' | 'conflict'> {
     let content: unknown;
     try {
         content = Object.keys(input.row.values).length === 0
@@ -221,11 +238,9 @@ async function writeSnapshot(input: Readonly<{
         throw kvError(PROTOCOL_INVALID_CODE, 'Account KV mutation response is invalid');
     }
     if (parsed.data.status === 'conflict') {
-        throw kvError(
-            'plugin_account_kv_conflict',
-            'Account KV changed before the conditional write completed',
-        );
+        return 'conflict';
     }
+    return 'updated';
 }
 
 /**
@@ -239,15 +254,31 @@ async function writeSnapshot(input: Readonly<{
 export function createActivePluginAccountKvClient(input: Readonly<{
     pluginId: string;
     accountLifetime: ActiveServerAccountScopeLifetime;
+    readAvailability: () => PluginAccountAvailabilityReader;
 }>): AccountKvService {
-    // One in-flight read-modify-write at a time, so an author cannot mutate the
-    // same row through the service while their transaction callback is open.
-    let transactionOpen = false;
+    const assertAccountKvAdmitted = (): void => {
+        const admission = input.readAvailability().readCurrentAccountKvCapability({
+            pluginId: input.pluginId,
+        });
+        if (admission.kind !== 'available') {
+            throw kvError(
+                ACCOUNT_STORAGE_UNAVAILABLE_CODE,
+                'Plugin Account KV is not admitted by the current Account release',
+            );
+        }
+    };
+
+    // transaction() itself is non-reentrant. Service set/delete calls remain
+    // separate mutations while a callback is pending: the transaction handle
+    // is the atomic unit, and the shared per-key rebase owner resolves physical
+    // row conflicts without replaying either callback.
+    let explicitTransactionOpen = false;
 
     const mutate = async <T>(
         operation: (transaction: AccountKvTransaction) => Promise<T>,
         options?: Readonly<{ signal?: AbortSignal }>,
     ): Promise<T> => {
+        assertAccountKvAdmitted();
         const prepared = await prepare(input.accountLifetime, options);
         try {
             const snapshot = await readSnapshot({
@@ -256,23 +287,28 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                 ...(options ? { options } : {}),
             });
             assertStillCurrent(prepared);
+            assertAccountKvAdmitted();
             const row = clonePluginAccountKvRowV1(snapshot.row);
+            const touchedKeys = new Set<string>();
             let active = true;
             let mutated = false;
-            const assertActive = (): void => {
+            const assertActive = (signal?: AbortSignal): void => {
                 if (!active) {
                     throw kvError(
                         ACCOUNT_KV_INVALID_CODE,
                         'Account KV transaction handle is no longer active',
                     );
                 }
+                assertSignalActive(signal);
                 assertStillCurrent(prepared);
+                assertAccountKvAdmitted();
             };
             const transaction: AccountKvTransaction = Object.freeze({
                 async get<TValue extends JsonValue = JsonValue>(
                     key: string,
+                    getOptions?: Readonly<{ signal?: AbortSignal }>,
                 ): Promise<AccountKvEntry<TValue> | null> {
-                    assertActive();
+                    assertActive(getOptions?.signal);
                     const entry = readPluginAccountKvEntryV1(
                         row,
                         inRowAlgebra(() => normalizePluginAccountKvLogicalKeyV1(key)),
@@ -284,9 +320,9 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                 async set(
                     key: string,
                     value: JsonValue,
-                    setOptions: Readonly<{ expectedVersion: number | 'absent' }>,
+                    setOptions: Readonly<{ expectedVersion: number | 'absent'; signal?: AbortSignal }>,
                 ): Promise<Readonly<{ version: number }>> {
-                    assertActive();
+                    assertActive(setOptions.signal);
                     const normalized = inRowAlgebra(() => normalizePluginAccountKvLogicalKeyV1(key));
                     const previous = inRowAlgebra(() => assertPluginAccountKvExpectedVersionV1(
                         row,
@@ -296,14 +332,15 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                     const version = inRowAlgebra(
                         () => setPluginAccountKvEntryV1(row, normalized, value, previous),
                     );
+                    touchedKeys.add(normalized);
                     mutated = true;
                     return Object.freeze({ version });
                 },
                 async delete(
                     key: string,
-                    deleteOptions: Readonly<{ expectedVersion: number }>,
+                    deleteOptions: Readonly<{ expectedVersion: number; signal?: AbortSignal }>,
                 ): Promise<Readonly<{ version: number; deleted: true }>> {
-                    assertActive();
+                    assertActive(deleteOptions.signal);
                     const normalized = inRowAlgebra(() => normalizePluginAccountKvLogicalKeyV1(key));
                     const previous = inRowAlgebra(() => assertPluginAccountKvExpectedVersionV1(
                         row,
@@ -316,6 +353,7 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                     const version = inRowAlgebra(
                         () => deletePluginAccountKvEntryV1(row, normalized, previous),
                     );
+                    touchedKeys.add(normalized);
                     mutated = true;
                     return Object.freeze({ version, deleted: true as const });
                 },
@@ -323,39 +361,55 @@ export function createActivePluginAccountKvClient(input: Readonly<{
             try {
                 const result = await operation(transaction);
                 assertStillCurrent(prepared);
+                assertAccountKvAdmitted();
                 if (mutated) {
-                    await writeSnapshot({
-                        pluginId: input.pluginId,
-                        operation: prepared,
-                        snapshot,
-                        row,
-                        ...(options ? { options } : {}),
-                    });
+                    await inRowAlgebraAsync(async () => await commitPluginAccountKvMutationWithRebaseV1({
+                        initialSnapshot: snapshot,
+                        pendingRow: row,
+                        touchedKeys: [...touchedKeys],
+                        assertCurrent: () => {
+                            assertSignalActive(options?.signal);
+                            assertStillCurrent(prepared);
+                            assertAccountKvAdmitted();
+                        },
+                        readLatest: async () => await readSnapshot({
+                            pluginId: input.pluginId,
+                            operation: prepared,
+                            ...(options ? { options } : {}),
+                        }),
+                        write: async (currentSnapshot, currentRow) => await writeSnapshot({
+                            pluginId: input.pluginId,
+                            operation: prepared,
+                            snapshot: currentSnapshot,
+                            row: currentRow,
+                            ...(options ? { options } : {}),
+                        }),
+                    }));
                 }
                 return result;
             } finally {
                 active = false;
             }
         } finally {
-            prepared.release();
+            await prepared.release();
         }
     };
 
-    const exclusiveMutate = async <T>(
+    const explicitTransaction = async <T>(
         operation: (transaction: AccountKvTransaction) => Promise<T>,
         options?: Readonly<{ signal?: AbortSignal }>,
     ): Promise<T> => {
-        if (transactionOpen) {
+        if (explicitTransactionOpen) {
             throw kvError(
                 ACCOUNT_KV_INVALID_CODE,
-                'Account KV mutations must use the active transaction handle',
+                'Nested Account KV transactions are unavailable',
             );
         }
-        transactionOpen = true;
+        explicitTransactionOpen = true;
         try {
             return await mutate(operation, options);
         } finally {
-            transactionOpen = false;
+            explicitTransactionOpen = false;
         }
     };
 
@@ -365,6 +419,7 @@ export function createActivePluginAccountKvClient(input: Readonly<{
             options?: Readonly<{ signal?: AbortSignal }>,
         ) {
             const normalized = inRowAlgebra(() => normalizePluginAccountKvLogicalKeyV1(key));
+            assertAccountKvAdmitted();
             const prepared = await prepare(input.accountLifetime, options);
             try {
                 const snapshot = await readSnapshot({
@@ -372,12 +427,13 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                     operation: prepared,
                     ...(options ? { options } : {}),
                 });
+                assertAccountKvAdmitted();
                 const entry = readPluginAccountKvEntryV1(snapshot.row, normalized);
                 return entry
                     ? inRowAlgebra(() => projectPluginAccountKvEntryV1<TValue>(entry)) as AccountKvEntry<TValue>
                     : null;
             } finally {
-                prepared.release();
+                await prepared.release();
             }
         },
         async set(
@@ -385,7 +441,7 @@ export function createActivePluginAccountKvClient(input: Readonly<{
             value: JsonValue,
             options: Readonly<{ expectedVersion: number | 'absent'; signal?: AbortSignal }>,
         ): Promise<Readonly<{ version: number }>> {
-            return await exclusiveMutate(
+            return await mutate(
                 async (transaction) => await transaction.set(key, value, options),
                 options.signal ? { signal: options.signal } : undefined,
             );
@@ -394,7 +450,7 @@ export function createActivePluginAccountKvClient(input: Readonly<{
             key: string,
             options: Readonly<{ expectedVersion: number; signal?: AbortSignal }>,
         ): Promise<Readonly<{ version: number; deleted: true }>> {
-            return await exclusiveMutate(
+            return await mutate(
                 async (transaction) => await transaction.delete(key, options),
                 options.signal ? { signal: options.signal } : undefined,
             );
@@ -413,6 +469,7 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                 ...(options.prefix === undefined ? {} : { prefix: options.prefix }),
                 ...(options.limit === undefined ? {} : { limit: options.limit }),
             }));
+            assertAccountKvAdmitted();
             const prepared = await prepare(input.accountLifetime, options);
             try {
                 const snapshot = await readSnapshot({
@@ -420,6 +477,7 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                     operation: prepared,
                     options,
                 });
+                assertAccountKvAdmitted();
                 return inRowAlgebra(() => listPluginAccountKvEntriesV1({
                     row: snapshot.row,
                     revision: snapshot.expectedRevision === 'absent' ? -1 : snapshot.expectedRevision,
@@ -431,14 +489,14 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                     nextCursor?: string;
                 }>;
             } finally {
-                prepared.release();
+                await prepared.release();
             }
         },
         async transaction<T>(
             operation: (transaction: AccountKvTransaction) => Promise<T>,
             options?: Readonly<{ signal?: AbortSignal }>,
         ) {
-            return await exclusiveMutate(operation, options);
+            return await explicitTransaction(operation, options);
         },
     });
 }

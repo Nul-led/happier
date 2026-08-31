@@ -70,6 +70,7 @@ installConnectionStatusControlCommonModuleMocks({
             useSocketStatus: () => ({ status: 'connected' }),
             useSyncError: () => null,
             useLastSyncAt: () => null,
+            useSettings: () => ({}),
             useSettingMutable: () => [null, vi.fn()],
         });
     },
@@ -86,6 +87,9 @@ vi.mock('@expo/vector-icons', () => ({
 }));
 
 vi.mock('@/constants/Typography', () => ({
+    FontWeights: {
+        regular: '400',
+    },
     Typography: {
         default: () => ({}),
         mono: () => ({}),
@@ -125,9 +129,40 @@ vi.mock('@/sync/domains/server/serverConfig', () => ({
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '').trim() === String(right ?? '').trim(),
     getActiveServerId: () => 'srv-1',
+    getDeviceDefaultServerId: () => 'srv-1',
+    loadHomeViewState: () => null,
     listServerProfiles: () => [{ id: 'srv-1', name: 'Happier Cloud', serverUrl: 'https://cloud.example.test' }],
     resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
     setActiveServerId: vi.fn(),
+}));
+
+vi.mock('@/hooks/server/useServerProfilesGeneration', () => ({
+    useServerProfilesGeneration: () => 1,
+}));
+
+vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
+    useActiveServerSnapshot: () => ({
+        serverId: 'srv-1',
+        serverUrl: 'https://cloud.example.test',
+        runtimeOrigin: 'http://127.0.0.1:4312',
+        carrier: 'iroh',
+        irohObservedPath: 'relay',
+        irohRelayPolicy: 'automatic',
+        generation: 1,
+    }),
+}));
+
+vi.mock('@/hooks/server/useHomeViewSelectionSettings', () => ({
+    useHomeViewSelectionSettingsMutable: () => ({
+        serverSelectionGroups: [],
+        serverSelectionActiveTargetKind: 'server',
+        serverSelectionActiveTargetId: 'srv-1',
+        setHomeViewSelectionSettings: vi.fn(),
+    }),
+}));
+
+vi.mock('@/components/settings/server/hooks/useServerAuthStatusByServerId', () => ({
+    useServerAuthStatusByServerId: () => ({ 'srv-1': 'signedIn' }),
 }));
 
 vi.mock('@/auth/context/AuthContext', () => ({
@@ -188,6 +223,10 @@ describe('ConnectionStatusControl (label)', () => {
         const joined = screen.getTextContent();
         expect(joined).toContain('Happier Cloud');
         expect(joined).not.toContain('status.connected');
+
+        const trigger = screen.findByProps({ accessibilityRole: 'button' });
+        expect(trigger.props.accessibilityLabel).toBe('Happier Cloud, status.actionRequired, connectionStatus.transport.secureRelay');
+        expect(trigger.props.accessibilityState).toEqual({ expanded: false });
     });
 
     it('uses a single-line tail ellipsis contract for long sidebar server labels', async () => {

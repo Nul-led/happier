@@ -28,6 +28,8 @@ import { useAllMachines, useAllSessions, useSetting } from '@/sync/domains/state
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { readSessionDisplayTitleField } from '@/sync/state/selectors';
 import { sync } from '@/sync/sync';
+import { useSettingsVersion } from '@/sync/store/hooks';
+import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
 import { t } from '@/text';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
 import { supportsExternalSessionBackgroundFollow } from '@/components/sessions/external/browse/resolveExternalSessionBrowseSourceOptions';
@@ -211,6 +213,7 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
     const backendEnabledByTargetKey = useSetting('backendEnabledByTargetKey');
     const acpCatalogSettingsV1 = useSetting('acpCatalogSettingsV1');
     const rawSettings = useSetting('externalSessionsSettingsV1');
+    const settingsVersion = useSettingsVersion();
     const settings = readExternalSessionsSettingsV1(rawSettings) ?? {
         v: 1 as const,
         keepPassivelyFollowingAfterRestart: false,
@@ -307,13 +310,22 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
         restartFollowMutationPendingRef.current = true;
         setRestartFollowMutationPending(true);
         try {
-            await sync.mutateAccountSettings((raw) => ({
-                ...raw,
-                externalSessionsSettingsV1: patchExternalSessionsSettingsV1(
-                    raw.externalSessionsSettingsV1,
-                    { keepPassivelyFollowingAfterRestart: enabled },
-                ),
-            }));
+            if (settingsVersion === null) throw new Error('Account settings version is unavailable');
+            requireOneShotAccountSettingsMutationApplied(
+                await sync.mutateAccountSettingsOnce({
+                    expectedSettingsVersion: settingsVersion,
+                    mutate: (raw) => ({
+                        settings: {
+                            ...raw,
+                            externalSessionsSettingsV1: patchExternalSessionsSettingsV1(
+                                raw.externalSessionsSettingsV1,
+                                { keepPassivelyFollowingAfterRestart: enabled },
+                            ),
+                        },
+                        value: undefined,
+                    }),
+                }),
+            );
         } catch {
             await Modal.alertAsync(
                 t('common.error'),
@@ -323,7 +335,7 @@ export const ExternalSessionsSettingsView = React.memo(function ExternalSessions
             restartFollowMutationPendingRef.current = false;
             setRestartFollowMutationPending(false);
         }
-    }, []);
+    }, [settingsVersion]);
 
     const setSessionFollowEnabled = React.useCallback(async (row: FollowRow, enabled: boolean) => {
         const link = readExternalSessionLink(readSessionOwnerMetadataView(row.session));

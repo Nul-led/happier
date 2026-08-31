@@ -1,148 +1,240 @@
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
-import { QRAuthKeyPair } from './qrStart';
+import { QRAuthKeyPair, type HomeQrEnrollmentTarget } from './qrStart';
 import { decryptBox } from '@/encryption/libsodium';
-import { serverFetch } from '@/sync/http/client';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { adoptHomeProfile } from '@/sync/domains/server/serverProfiles';
 import { isRuntimeActive } from '@/utils/runtime/isRuntimeActive';
-import { delay } from '@/utils/timing/time';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import { openTerminalProvisioningV3Response } from '@happier-dev/protocol';
+import tweetnacl from 'tweetnacl';
+import {
+    ENROLLMENT_POLL_IDLE_DELAY_MS,
+    enrollmentPollingBackoffMs,
+} from '@/auth/enrollment/enrollmentPollingBackoff';
+import { trackAuthEnrollmentTransientRetry } from '@/track';
 
 export type { AuthCredentials } from '@/auth/storage/tokenStorage';
+export type { HomeQrEnrollmentTarget } from './qrStart';
 
-export async function authQRWait(keypair: QRAuthKeyPair, onProgress?: (dots: number) => void, shouldCancel?: () => boolean): Promise<AuthCredentials | null> {
+/** Terminal, user-actionable wait outcomes. Credentials never appear in failures. */
+export type AuthQrWaitTerminalReason =
+    | 'cancelled'
+    | 'expired'
+    | 'rejected'
+    | 'wrong_target'
+    | 'malformed_response'
+    | 'legacy_provisioning_unavailable';
+
+export type AuthQrWaitResult =
+    | Readonly<{ ok: true; credentials: AuthCredentials; homeServerIdentityId: string | null }>
+    | Readonly<{ ok: false; reason: AuthQrWaitTerminalReason }>;
+
+export type AuthQrWaitOptions = Readonly<{
+    onProgress?: (dots: number) => void;
+    shouldCancel?: () => boolean;
+    /** Cancels the currently in-flight target request as well as future polls. */
+    signal?: AbortSignal;
+    /** Enrollment deadline; polling never continues past it. */
+    expiresAtMs?: number;
+    v2Context?: Readonly<{
+        pairId: string;
+        homeServerIdentityId: string;
+        bindingSecret: Uint8Array;
+        bindingProof: string;
+        issuedAtMs: number;
+        expiresAtMs: number;
+    }>;
+}>;
+
+// Bounded payload limits for the authorized account-auth response.
+const TOKEN_ENCRYPTED_MAX_CHARS = 8_192;
+const RESPONSE_MAX_CHARS = 8_192;
+
+function decodeBoundedBase64(value: unknown, maxChars: number): Uint8Array | null {
+    if (typeof value !== 'string' || value.length === 0 || value.length > maxChars) return null;
+    try {
+        const decoded = decodeBase64(value);
+        return encodeBase64(decoded) === value ? decoded : null;
+    } catch {
+        return null;
+    }
+}
+
+function decodeUtf8Strict(value: Uint8Array): string | null {
+    try {
+        const decoded = new TextDecoder('utf-8', { fatal: true }).decode(value);
+        return decoded.length > 0 && decoded.trim() === decoded ? decoded : null;
+    } catch {
+        return null;
+    }
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+    const actual = Object.keys(value).sort();
+    const expected = [...keys].sort();
+    return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+async function waitForNextPoll(ms: number, signal?: AbortSignal): Promise<boolean> {
+    if (!signal) {
+        await new Promise<void>((resolve) => setTimeout(resolve, ms));
+        return true;
+    }
+    if (signal.aborted) return false;
+
+    return new Promise<boolean>((resolve) => {
+        let settled = false;
+        const finish = (completed: boolean) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            signal.removeEventListener('abort', onAbort);
+            resolve(completed);
+        };
+        const onAbort = () => finish(false);
+        const timer = setTimeout(() => finish(true), ms);
+        signal.addEventListener('abort', onAbort, { once: true });
+        // Abort can race the listener registration between the check above and this point.
+        if (signal.aborted) onAbort();
+    });
+}
+
+/**
+ * Poll the explicit target Home until it authorizes this device's enrollment. Transport
+ * failures retry with bounded backoff and jitter until the deadline; malformed, oversized,
+ * unbound-legacy, and wrong-target responses fail closed with typed reasons.
+ */
+export async function authQRWait(
+    keypair: QRAuthKeyPair,
+    target: HomeQrEnrollmentTarget,
+    options: AuthQrWaitOptions = {},
+): Promise<AuthQrWaitResult> {
+    const { onProgress, shouldCancel, signal } = options;
+    const context = options.v2Context;
+    const expiresAtMs = context?.expiresAtMs ?? options.expiresAtMs;
     let dots = 0;
+    let transientFailures = 0;
 
-    type Requested = { state: 'requested' };
-    type AuthorizedV1 = { state: 'authorized'; token: string; response: string; serverIdentityId?: string | null };
-    type AuthorizedV2 = { state: 'authorized'; tokenEncrypted: string; response: string; serverIdentityId?: string | null };
-    type AuthPollResponse = Requested | AuthorizedV1 | AuthorizedV2;
+    if (
+        !context
+        || !target.descriptor
+        || context.homeServerIdentityId !== target.descriptor.homeServerIdentityId
+        || context.bindingSecret.length !== 32
+        || !context.bindingProof
+        || !Number.isSafeInteger(context.issuedAtMs)
+        || !Number.isSafeInteger(context.expiresAtMs)
+        || context.expiresAtMs <= context.issuedAtMs
+    ) {
+        return { ok: false, reason: 'legacy_provisioning_unavailable' };
+    }
+
+    const requestAtEndpoint = target.createRequest({
+        ...(target.serverId ? { serverId: target.serverId } : {}),
+        credentials: null,
+    });
+
+    const terminal = (reason: AuthQrWaitTerminalReason): AuthQrWaitResult => ({ ok: false, reason });
 
     while (true) {
-        if (shouldCancel && shouldCancel()) {
-            return null;
-        }
+        if (signal?.aborted || shouldCancel?.()) return terminal('cancelled');
+        if (expiresAtMs !== undefined && Date.now() >= expiresAtMs) return terminal('expired');
 
         if (!isRuntimeActive()) {
-            await delay(1000);
+            if (!await waitForNextPoll(1_000, signal)) return terminal('cancelled');
             continue;
         }
 
         try {
-            let response = await serverFetch('/v2/auth/account/request', {
+            const response = await requestAtEndpoint('/v2/auth/account/request', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     publicKey: encodeBase64(keypair.publicKey),
+                    pairId: context.pairId,
+                    homeServerIdentityId: context.homeServerIdentityId,
                 }),
-            }, { includeAuth: false });
-            if (response.status === 404) {
-                response = await serverFetch('/v1/auth/account/request', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        publicKey: encodeBase64(keypair.publicKey),
-                    }),
-                }, { includeAuth: false });
-            }
+                ...(signal ? { signal } : {}),
+            }, { includeAuth: false, retry: 'none' });
             if (!response.ok) {
-                throw new Error(`Failed to poll auth request: ${response.status}`);
-            }
-            const data = await response.json() as AuthPollResponse;
-
-            if (data.state === 'authorized') {
-                const token =
-                    'tokenEncrypted' in data
-                        ? (() => {
-                            const tokenEncrypted = decodeBase64(data.tokenEncrypted);
-                            const decryptedTokenBytes = decryptBox(tokenEncrypted, keypair.secretKey);
-                            if (!decryptedTokenBytes) {
-                                return null;
-                            }
-                            return new TextDecoder().decode(decryptedTokenBytes);
-                        })()
-                        : data.token;
-                if (!token) {
-                    return null;
+                if (response.status === 404 || response.status === 410) return terminal('expired');
+                if (response.status === 403) return terminal('wrong_target');
+                if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+                    return terminal('malformed_response');
                 }
+                transientFailures += 1;
+                trackAuthEnrollmentTransientRetry();
+            } else {
+                const data: unknown = await response.json().catch(() => null);
+                if (!data || typeof data !== 'object') {
+                    return terminal('malformed_response');
+                }
+                const record = data as Record<string, unknown>;
+                if (record.state === 'requested') {
+                    if (!hasExactKeys(record, ['state'])) return terminal('malformed_response');
+                    transientFailures = 0;
+                } else if (record.state === 'rejected') {
+                    if (!hasExactKeys(record, ['state'])) return terminal('malformed_response');
+                    return terminal('rejected');
+                } else if (record.state === 'authorized') {
+                    if (!hasExactKeys(record, ['state', 'tokenEncrypted', 'response'])) {
+                        return terminal('malformed_response');
+                    }
+                    transientFailures = 0;
 
-                if (data.serverIdentityId) {
-                    // Direct QR responses predate HomeConnectionDescriptorV1 and only carry
-                    // the Home identity. Converge them through the canonical adoption owner by
-                    // binding that identity to the currently connected stable HTTPS origin.
-                    const active = getActiveServerSnapshot();
-                    const canonicalServerUrl = active.canonicalServerUrl ?? active.serverUrl;
-                    try {
-                        await adoptHomeProfile({
-                            descriptor: {
-                                v: 1,
-                                homeServerIdentityId: data.serverIdentityId,
-                                canonicalServerUrl,
-                                revision: 1,
-                                endpoints: [{ kind: 'https', url: canonicalServerUrl }],
+                    const tokenEncryptedBytes = decodeBoundedBase64(record.tokenEncrypted, TOKEN_ENCRYPTED_MAX_CHARS);
+                    if (!tokenEncryptedBytes) return terminal('malformed_response');
+                    const openedToken = decryptBox(tokenEncryptedBytes, keypair.secretKey);
+                    if (!openedToken || openedToken.length === 0 || openedToken.length > 4_096) {
+                        return terminal('malformed_response');
+                    }
+                    const token = decodeUtf8Strict(openedToken);
+                    if (!token) return terminal('malformed_response');
+
+                    const responseBytes = decodeBoundedBase64(record.response, RESPONSE_MAX_CHARS);
+                    if (!responseBytes) return terminal('malformed_response');
+                    const material = openTerminalProvisioningV3Response({
+                        payload: responseBytes,
+                        recipientSecretKeyOrSeed: keypair.secretKey,
+                        terminalEphemeralPublicKey: keypair.publicKey,
+                        pairingSecret: context.bindingSecret,
+                        createdAtMs: context.issuedAtMs,
+                        expiresAtMs: context.expiresAtMs,
+                        nowMs: Date.now(),
+                    });
+                    if (!material) return terminal('malformed_response');
+
+                    const credentials: AuthCredentials = material.type === 'tokenOnly'
+                        ? { token }
+                        : {
+                            token,
+                            encryption: {
+                                machineKey: encodeBase64(material.key),
+                                publicKey: encodeBase64(tweetnacl.box.keyPair.fromSecretKey(material.key).publicKey),
                             },
-                            source: 'qr',
-                            preserveUserLabel: true,
-                        });
-                    } catch {
-                        // Identity conflicts fail closed; do not return credentials for an
-                        // ambiguous Home association.
-                        return null;
-                    }
-                }
-
-                const encryptedResponse = decodeBase64(data.response);
-                const decrypted = decryptBox(encryptedResponse, keypair.secretKey);
-                if (decrypted) {
-                    const text = new TextDecoder().decode(decrypted);
-                    try {
-                        const material = JSON.parse(text) as {
-                            type?: unknown;
-                            publicKey?: unknown;
-                            machineKey?: unknown;
                         };
-                        if (material.type === 'tokenOnly') return { token };
-                        if (
-                            material.type === 'dataKey'
-                            && typeof material.publicKey === 'string'
-                            && typeof material.machineKey === 'string'
-                        ) {
-                            return {
-                                token,
-                                encryption: {
-                                    publicKey: material.publicKey,
-                                    machineKey: material.machineKey,
-                                },
-                            };
-                        }
-                    } catch {
-                        // Released V1 readers carry raw legacy secret bytes.
-                    }
-                    return { secret: encodeBase64(decrypted, 'base64url'), token };
+
+                    return {
+                        ok: true,
+                        credentials,
+                        homeServerIdentityId: context.homeServerIdentityId,
+                    };
+                } else {
+                    return terminal('malformed_response');
                 }
-                return null;
             }
-        } catch (error) {
-            // Polling is long-lived; transient transport failures must not discard
-            // an otherwise valid pairing. Malformed/cryptographically invalid
-            // responses remain terminal and fail closed.
-            const message = error instanceof Error ? error.message : String(error);
-            if (!/network|fetch|timeout|aborted|temporar|connection|\b5\d\d\b/i.test(message)) {
-                return null;
-            }
+        } catch {
+            if (signal?.aborted || shouldCancel?.()) return terminal('cancelled');
+            // Polling is long-lived; transport failures must not discard an otherwise
+            // valid pairing. Payload-level problems above return terminal results
+            // directly instead of throwing.
+            transientFailures += 1;
+            trackAuthEnrollmentTransientRetry();
         }
 
-        // Call progress callback if provided
-        if (onProgress) {
-            onProgress(dots);
-        }
-        dots++;
+        onProgress?.(dots);
+        dots += 1;
 
-        // Wait 1 second before next check
-        await delay(1000);
+        const waitMs = transientFailures > 0
+            ? enrollmentPollingBackoffMs(transientFailures)
+            : ENROLLMENT_POLL_IDLE_DELAY_MS;
+        if (!await waitForNextPoll(waitMs, signal)) return terminal('cancelled');
     }
 }

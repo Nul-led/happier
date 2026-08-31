@@ -191,12 +191,15 @@ async function sendSessionRunnerRestartRequest<Request>(input: RestartSessionRun
     }
 }
 
-async function requestSessionRunnerRestart(input: RestartSessionRunnerInput): Promise<RestartSessionRunnerResultV1> {
+async function requestSessionRunnerRestart(
+    input: RestartSessionRunnerInput,
+    mode: 'if_stale' | 'force_current_cli',
+): Promise<RestartSessionRunnerResultV1> {
     const identityGuard = readRestartIdentityGuard(input.runtimeState);
     if ('ok' in identityGuard) return identityGuard;
     const request = RestartSessionRunnerRequestV1Schema.parse({
         sessionId: input.runtimeState.sessionId,
-        mode: 'if_stale',
+        mode,
         reason: 'ui_stale_runner_banner',
         expectedRunnerPid: identityGuard.expectedRunnerPid,
         expectedProcessCommandHash: identityGuard.expectedProcessCommandHash,
@@ -212,7 +215,13 @@ async function requestSessionRunnerRestart(input: RestartSessionRunnerInput): Pr
 export async function restartSessionRunnerOnCurrentRuntime(
     input: RestartSessionRunnerInput,
 ): Promise<RestartSessionRunnerResultV1> {
-    return await requestSessionRunnerRestart(input);
+    return await requestSessionRunnerRestart(input, 'if_stale');
+}
+
+export async function restartSessionRunnerForConfigurationChange(
+    input: RestartSessionRunnerInput,
+): Promise<RestartSessionRunnerResultV1> {
+    return await requestSessionRunnerRestart(input, 'force_current_cli');
 }
 
 export async function restartSessionRunnerForProviderBindingChange(

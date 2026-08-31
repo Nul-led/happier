@@ -1,6 +1,7 @@
 import * as React from 'react';
 
-import { useSetting } from '@/sync/domains/state/storage';
+import { useSettings } from '@/sync/domains/state/storage';
+import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 import { listServerProfiles } from '@/sync/domains/server/serverProfiles';
 import {
     listServerProfileScopeIds,
@@ -79,9 +80,12 @@ function useActiveServerSelectionSource(): ActiveServerSelectionSource {
 }
 
 export function useResolvedActiveServerSelection(): ResolvedActiveServerSelection {
-    const groups = useSetting('serverSelectionGroups');
-    const activeKind = useSetting('serverSelectionActiveTargetKind');
-    const activeId = useSetting('serverSelectionActiveTargetId');
+    const accountSettings = useSettings();
+    const {
+        serverSelectionGroups: groups,
+        serverSelectionActiveTargetKind: activeKind,
+        serverSelectionActiveTargetId: activeId,
+    } = useHomeViewSelectionSettings(accountSettings);
     const activeServer = useActiveServerSelectionSource();
 
     return React.useMemo(
@@ -102,9 +106,12 @@ export function useResolvedActiveServerSelection(): ResolvedActiveServerSelectio
 }
 
 export function useEffectiveServerSelection(): EffectiveServerSelection {
-    const groups = useSetting('serverSelectionGroups');
-    const activeKind = useSetting('serverSelectionActiveTargetKind');
-    const activeId = useSetting('serverSelectionActiveTargetId');
+    const accountSettings = useSettings();
+    const {
+        serverSelectionGroups: groups,
+        serverSelectionActiveTargetKind: activeKind,
+        serverSelectionActiveTargetId: activeId,
+    } = useHomeViewSelectionSettings(accountSettings);
     const activeServer = useActiveServerSelectionSource();
 
     return React.useMemo(

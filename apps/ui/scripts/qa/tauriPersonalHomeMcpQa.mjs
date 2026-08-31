@@ -1,0 +1,269 @@
+#!/usr/bin/env node
+import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join } from 'node:path';
+import process from 'node:process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
+
+import {
+    ensureDir,
+    nowStamp,
+    runTauriMcpCli,
+    writeTextArtifact,
+} from './tauriMcpCli.mjs';
+import { appendTauriQaHmrOptOut } from './tauriQaPathing.mjs';
+
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const packageRoot = dirname(dirname(scriptDir));
+const repoRoot = dirname(dirname(packageRoot));
+const execFileAsync = promisify(execFile);
+const shellWaitTimeoutMs = 360_000;
+const cliTimeoutMs = 30_000;
+
+function readString(value, fallback = '') {
+    const text = String(value ?? '').trim();
+    return text || fallback;
+}
+
+function parseEnvText(text) {
+    const result = {};
+    for (const line of String(text ?? '').split(/\r?\n/u)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const equals = trimmed.indexOf('=');
+        if (equals <= 0) continue;
+        result[trimmed.slice(0, equals).trim()] = trimmed.slice(equals + 1).trim();
+    }
+    return result;
+}
+
+function resolveRuntimePaths(env = process.env) {
+    const userHome = readString(env.HOME ?? env.USERPROFILE, homedir());
+    const installRoot = readString(env.HAPPIER_SELF_HOST_INSTALL_ROOT, join(userHome, '.happier', 'self-host'));
+    const configDir = readString(env.HAPPIER_SELF_HOST_CONFIG_DIR, join(installRoot, 'config'));
+    const dataDir = readString(
+        env.HAPPIER_SERVER_LIGHT_DATA_DIR ?? env.HAPPY_SERVER_LIGHT_DATA_DIR,
+        join(installRoot, 'data'),
+    );
+    return { configDir, dataDir, installRoot };
+}
+
+function requireLoopbackListener(host, port, canonicalServerUrl) {
+    const normalizedHost = readString(host).replace(/^\[|\]$/gu, '').toLowerCase();
+    if (!['127.0.0.1', 'localhost', '::1'].includes(normalizedHost)) {
+        throw new Error(`Personal Home startup receipt is not loopback-bound: ${normalizedHost || 'missing host'}`);
+    }
+    const parsedUrl = new URL(canonicalServerUrl);
+    const expectedPort = Number(parsedUrl.port);
+    if (!Number.isInteger(port) || port !== expectedPort) {
+        throw new Error(`Personal Home startup receipt port ${port} does not match ${expectedPort}.`);
+    }
+    return { host: normalizedHost, port };
+}
+
+export async function inspectPersonalHomeRuntimeEvidence({
+    env = process.env,
+    fetchImpl = fetch,
+} = {}) {
+    const paths = resolveRuntimePaths(env);
+    const state = JSON.parse(await readFile(join(paths.installRoot, 'self-host-state.json'), 'utf8'));
+    const managedEnv = parseEnvText(await readFile(join(paths.configDir, 'server.env'), 'utf8'));
+    const receipt = JSON.parse(await readFile(join(paths.dataDir, 'startup-receipt.json'), 'utf8'));
+    const purpose = state?.purpose;
+    const canonicalServerUrl = readString(purpose?.canonicalServerUrl);
+    if (purpose?.kind !== 'personal-home' || !canonicalServerUrl) {
+        throw new Error('Loaded runtime is not durably classified as Personal Home.');
+    }
+    if (managedEnv.AUTH_ANONYMOUS_SIGNUP_ENABLED !== '0') {
+        throw new Error('Loaded Personal Home managed environment did not preserve signup closure.');
+    }
+    if (managedEnv.HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY !== 'plaintext_only') {
+        throw new Error('Loaded Personal Home storage policy is not plaintext_only.');
+    }
+    if (managedEnv.HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE !== 'plain') {
+        throw new Error('Loaded Personal Home default Account mode is not plain.');
+    }
+    const listener = requireLoopbackListener(receipt?.host, Number(receipt?.port), canonicalServerUrl);
+    const healthResponse = await fetchImpl(new URL('/health', canonicalServerUrl), {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(10_000),
+    });
+    if (!healthResponse?.ok) {
+        throw new Error(`Loaded Personal Home health check failed with HTTP ${healthResponse?.status ?? 'unknown'}.`);
+    }
+    return {
+        anonymousSignupEnabled: false,
+        canonicalServerUrl,
+        defaultAccountMode: 'plain',
+        healthy: true,
+        listener,
+        purpose: 'personal-home',
+        storagePolicy: 'plaintext_only',
+        version: readString(state?.version) || null,
+    };
+}
+
+function resolveArtifactRoot(env = process.env) {
+    const explicit = readString(env.HAPPIER_TAURI_QA_OUTDIR);
+    if (explicit) return isAbsolute(explicit) ? explicit : join(repoRoot, explicit);
+    return join(repoRoot, '.project', 'logs', 'lane-03-personal-home-qa', `tauri-personal-home-${nowStamp()}`);
+}
+
+export function buildTauriPersonalHomeQaPlan({ env = process.env } = {}) {
+    const appIdentifier = readString(env.HAPPIER_TAURI_MCP_APP_IDENTIFIER ?? env.HAPPIER_STACK_TAURI_IDENTIFIER);
+    return {
+        appIdentifier,
+        artifactRoot: resolveArtifactRoot(env),
+        forbiddenOnboardingSelector: '[data-testid="onboarding-wizard-welcome-auth"]',
+        personalHomeSettingsSelector: '[data-testid="settings.personalHomeRuntime.identity"]',
+        shellSelectors: [
+            '[data-testid="desktop-sidebar-chrome"]',
+            '[data-testid="desktop-collapsed-shell-chrome"]',
+            '[data-testid="desktop-narrow-shell-chrome"]',
+        ],
+        setupSelector: '[data-testid="personal-home-bootstrap-phase"]',
+        prerequisites: [
+            'Run on a dedicated OS user or VM; the stable Personal Home service name is user-global.',
+            'Use a unique stack-owned Tauri identifier and storage scope.',
+            'Do not inject an existing stack server into the renderer; the Desktop bootstrap owner must select the local Home.',
+        ],
+    };
+}
+
+function cliEnv(env, appIdentifier) {
+    return { ...env, HAPPIER_TAURI_MCP_APP_IDENTIFIER: appIdentifier };
+}
+
+async function runCli(args, { appIdentifier, env = process.env, timeoutMs = cliTimeoutMs } = {}) {
+    return await runTauriMcpCli(args, {
+        cwd: packageRoot,
+        env: cliEnv(env, appIdentifier),
+        timeoutMs,
+    });
+}
+
+async function selectorPresent(selector, { appIdentifier, env, timeoutMs = 1_000 } = {}) {
+    try {
+        await runCli([
+            'webview-wait-for', '--type', 'selector', '--strategy', 'css', '--value', selector,
+            '--timeout', String(timeoutMs), '--app-identifier', appIdentifier,
+        ], { appIdentifier, env, timeoutMs: Math.max(cliTimeoutMs, timeoutMs + 5_000) });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function waitForAnyShell(plan, { env } = {}) {
+    const deadline = Date.now() + shellWaitTimeoutMs;
+    while (Date.now() < deadline) {
+        for (const selector of plan.shellSelectors) {
+            // eslint-disable-next-line no-await-in-loop
+            if (await selectorPresent(selector, { appIdentifier: plan.appIdentifier, env, timeoutMs: 1_000 })) {
+                return selector;
+            }
+        }
+        // eslint-disable-next-line no-await-in-loop
+        await delay(500);
+    }
+    throw new Error('Timed out waiting for the real Desktop shell after Personal Home bootstrap.');
+}
+
+async function navigate(pathname, { appIdentifier, env } = {}) {
+    const target = appendTauriQaHmrOptOut(pathname);
+    const script = `(() => { window.history.pushState({}, '', ${JSON.stringify(target)}); window.dispatchEvent(new PopStateEvent('popstate')); return window.location.pathname; })()`;
+    await runCli([
+        'webview-execute-js', '--script', script, '--app-identifier', appIdentifier, '--json',
+    ], { appIdentifier, env });
+}
+
+async function captureLoadedSurface(plan, { env } = {}) {
+    const screenshotPath = join(plan.artifactRoot, '01-personal-home-ready.png');
+    await runCli([
+        'webview-screenshot', '--format', 'png', '--file-path', screenshotPath,
+        '--app-identifier', plan.appIdentifier,
+    ], { appIdentifier: plan.appIdentifier, env });
+    for (const type of ['structure', 'accessibility']) {
+        // eslint-disable-next-line no-await-in-loop
+        const snapshot = await runCli([
+            'webview-dom-snapshot', '--type', type, '--app-identifier', plan.appIdentifier,
+        ], { appIdentifier: plan.appIdentifier, env });
+        // eslint-disable-next-line no-await-in-loop
+        await writeTextArtifact(join(plan.artifactRoot, `01-personal-home-ready.${type}.yml`), String(snapshot.stdout ?? ''));
+    }
+    return screenshotPath;
+}
+
+async function readBuildIdentity() {
+    const [{ stdout: head }, { stdout: status }] = await Promise.all([
+        execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }),
+        execFileAsync('git', ['status', '--short'], { cwd: repoRoot, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }),
+    ]);
+    return {
+        head: head.trim(),
+        dirtyEntries: status.split(/\r?\n/u).filter(Boolean).length,
+    };
+}
+
+async function main(argv = process.argv.slice(2)) {
+    const plan = buildTauriPersonalHomeQaPlan({ env: process.env });
+    if (argv.includes('--help') || argv.includes('-h')) {
+        process.stdout.write('Usage: node ./apps/ui/scripts/qa/tauriPersonalHomeMcpQa.mjs [--json]\n');
+        return;
+    }
+    if (argv.includes('--json')) {
+        process.stdout.write(`${JSON.stringify({ ok: true, plan }, null, 2)}\n`);
+        return;
+    }
+    if (!plan.appIdentifier) {
+        throw new Error('Personal Home loaded QA requires an exact Tauri app identifier.');
+    }
+
+    await ensureDir(plan.artifactRoot);
+    const setupSurfaceObserved = await selectorPresent(plan.setupSelector, {
+        appIdentifier: plan.appIdentifier,
+        env: process.env,
+        timeoutMs: 2_000,
+    });
+    const matchedShellSelector = await waitForAnyShell(plan, { env: process.env });
+    if (await selectorPresent(plan.forbiddenOnboardingSelector, {
+        appIdentifier: plan.appIdentifier,
+        env: process.env,
+        timeoutMs: 750,
+    })) {
+        throw new Error('Retired pre-auth onboarding replaced the loaded Personal Home shell.');
+    }
+
+    await navigate('/settings/server', { appIdentifier: plan.appIdentifier, env: process.env });
+    if (!(await selectorPresent(plan.personalHomeSettingsSelector, {
+        appIdentifier: plan.appIdentifier,
+        env: process.env,
+        timeoutMs: 30_000,
+    }))) {
+        throw new Error('Canonical Personal Home settings projection did not load after bootstrap.');
+    }
+
+    const runtimeEvidence = await inspectPersonalHomeRuntimeEvidence({ env: process.env });
+    const screenshotPath = await captureLoadedSurface(plan, { env: process.env });
+    const summary = {
+        ok: true,
+        appIdentifier: plan.appIdentifier,
+        build: await readBuildIdentity(),
+        matchedShellSelector,
+        runtimeEvidence,
+        screenshotPath,
+        setupSurfaceObserved,
+    };
+    await writeTextArtifact(join(plan.artifactRoot, '99-summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: true, artifactRoot: plan.artifactRoot }, null, 2)}\n`);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+    main().catch((error) => {
+        process.stderr.write(`[tauri-personal-home-qa] ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+        process.exit(1);
+    });
+}

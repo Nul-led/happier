@@ -1286,7 +1286,7 @@ describe('active Account Collection direct client', () => {
                 expect.anything(),
             );
         } finally {
-            prepared.operation.release();
+            await prepared.operation.release();
         }
     });
 });

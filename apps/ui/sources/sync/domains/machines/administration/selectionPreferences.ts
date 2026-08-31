@@ -6,6 +6,7 @@ import {
 } from '@happier-dev/protocol';
 
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
+import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
 
 export const MACHINE_ADMINISTRATION_SELECTION_KEYS_V1 = Object.freeze({
     plugins: 'plugins.home',
@@ -98,9 +99,16 @@ export function applyMachineAdministrationSelectionMutationToAccountSettings(
 }
 
 export async function persistMachineAdministrationSelectionMutation(
+    expectedSettingsVersion: number,
     mutate: (current: MachineAdministrationSelectionsV1) => MachineAdministrationSelectionsV1,
 ): Promise<void> {
-    await getSyncSingleton().mutateAccountSettings((raw) => (
-        applyMachineAdministrationSelectionMutationToAccountSettings(raw, mutate)
-    ));
+    requireOneShotAccountSettingsMutationApplied(
+        await getSyncSingleton().mutateAccountSettingsOnce({
+            expectedSettingsVersion,
+            mutate: (raw) => ({
+                settings: applyMachineAdministrationSelectionMutationToAccountSettings(raw, mutate),
+                value: undefined,
+            }),
+        }),
+    );
 }

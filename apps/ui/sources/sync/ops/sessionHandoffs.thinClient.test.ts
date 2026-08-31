@@ -29,8 +29,8 @@ describe('session handoff UI request client', () => {
             handoffId: 'handoff-1',
             status: { handoffId: 'handoff-1', status: 'completed', phase: 'finalizing', recoveryActions: [] },
         });
-        const { completeSessionHandoff } = await import('./sessionHandoffs');
-        await expect(completeSessionHandoff({
+        const { startSessionHandoff } = await import('./sessionHandoffs');
+        await expect(startSessionHandoff({
             sessionId: 'session-1',
             targetMachineId: 'target-1',
             serverId: 'server-1',

@@ -1357,7 +1357,6 @@ describe('sync socket offline tracking', () => {
       friendsSync: (sync as any).friendsSync,
       friendRequestsSync: (sync as any).friendRequestsSync,
       feedSync: (sync as any).feedSync,
-      pushTokenSync: (sync as any).pushTokenSync,
       nativeUpdateSync: (sync as any).nativeUpdateSync,
       credentials: (sync as any).credentials,
     };
@@ -1375,7 +1374,6 @@ describe('sync socket offline tracking', () => {
       friendsSync: createFakeSyncUnit('friends', events),
       friendRequestsSync: createFakeSyncUnit('friendRequests', events),
       feedSync: createFakeSyncUnit('feed', events),
-      pushTokenSync: createFakeSyncUnit('pushToken', events),
       nativeUpdateSync: createFakeSyncUnit('nativeUpdate', events),
     };
 

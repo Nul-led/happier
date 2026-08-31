@@ -1,9 +1,12 @@
 import {
     DEFAULT_SESSION_HANDOFF_DEFAULTS_V1,
     SessionHandoffDefaultsV1Schema,
+    computeWorkspaceSyncPolicyDigest,
+    type HandoffWorkspaceActionV1,
     type SessionHandoffDefaultsV1,
     type SessionHandoffDirectTargetMode,
-    type SessionHandoffWorkspaceTransfer,
+    type WorkspaceContentPolicyV1,
+    type WorkspaceSyncModeV1,
 } from '@happier-dev/protocol';
 
 export {
@@ -13,19 +16,40 @@ export {
     type SessionHandoffDirectTargetMode,
 };
 
-export const SESSION_HANDOFF_CONFLICT_POLICY_OPTIONS = [
+export type SessionHandoffWorkspaceMode = 'none' | WorkspaceSyncModeV1;
+
+/**
+ * Workspace actions are intentionally one explicit choice. The old
+ * transfer/sync strategy split is not represented in UI state anymore.
+ */
+export const SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS = [
     {
-        id: 'create_sibling_copy',
-        titleKey: 'settingsSession.handoff.conflictPolicy.createSiblingCopyTitle',
-        subtitleKey: 'settingsSession.handoff.conflictPolicy.createSiblingCopySubtitle',
+        id: 'none',
+        titleKey: 'settingsSession.handoff.workspaceMode.noneTitle',
+        subtitleKey: 'settingsSession.handoff.workspaceMode.noneSubtitle',
     },
     {
-        id: 'replace_existing',
-        titleKey: 'settingsSession.handoff.conflictPolicy.replaceExistingTitle',
-        subtitleKey: 'settingsSession.handoff.conflictPolicy.replaceExistingSubtitle',
+        id: 'copy_once',
+        titleKey: 'workspaceSync.mode.copyOnce',
+        subtitleKey: 'settingsSession.handoff.workspaceMode.copyOnceSubtitle',
+    },
+    {
+        id: 'keep_synced',
+        titleKey: 'workspaceSync.mode.keepSynced',
+        subtitleKey: 'settingsSession.handoff.workspaceMode.keepSyncedSubtitle',
+    },
+    {
+        id: 'mirror_exactly',
+        titleKey: 'workspaceSync.mode.mirrorExactly',
+        subtitleKey: 'settingsSession.handoff.workspaceMode.mirrorExactlySubtitle',
+    },
+    {
+        id: 'keep_both_in_sync',
+        titleKey: 'workspaceSync.mode.keepBothInSync',
+        subtitleKey: 'settingsSession.handoff.workspaceMode.keepBothInSyncSubtitle',
     },
 ] as const satisfies readonly Readonly<{
-    id: SessionHandoffWorkspaceTransfer['conflictPolicy'];
+    id: SessionHandoffWorkspaceMode;
     titleKey: string;
     subtitleKey: string;
 }>[];
@@ -42,7 +66,7 @@ export const SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS = [
         subtitleKey: 'settingsSession.handoff.includeIgnoredMode.includeSelectedSubtitle',
     },
 ] as const satisfies readonly Readonly<{
-    id: SessionHandoffWorkspaceTransfer['includeIgnoredMode'];
+    id: SessionHandoffDefaultsV1['includeIgnoredMode'];
     titleKey: string;
     subtitleKey: string;
 }>[];
@@ -64,43 +88,40 @@ export const SESSION_HANDOFF_DIRECT_TARGET_MODE_OPTIONS = [
     subtitleKey: string;
 }>[];
 
-export const SESSION_HANDOFF_WORKSPACE_TRANSFER_STRATEGY_OPTIONS = [
-    {
-        id: 'transfer_snapshot',
-        titleKey: 'settingsSession.handoff.workspaceTransfer.strategy.transferSnapshotTitle',
-        subtitleKey: 'settingsSession.handoff.workspaceTransfer.strategy.transferSnapshotSubtitle',
-    },
-    {
-        id: 'sync_changes',
-        titleKey: 'settingsSession.handoff.workspaceTransfer.strategy.syncChangesTitle',
-        subtitleKey: 'settingsSession.handoff.workspaceTransfer.strategy.syncChangesSubtitle',
-    },
-] as const satisfies readonly Readonly<{
-    id: SessionHandoffWorkspaceTransfer['strategy'];
-    titleKey: string;
-    subtitleKey: string;
-}>[];
+function normalizeWorkspaceMode(value: unknown): SessionHandoffWorkspaceMode {
+    return typeof value === 'string' && (
+        value === 'none'
+        || value === 'copy_once'
+        || value === 'keep_synced'
+        || value === 'mirror_exactly'
+        || value === 'keep_both_in_sync'
+    )
+        ? value
+        : 'none';
+}
+function normalizeRelationshipId(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
 
+/**
+ * Normalize persisted presentation defaults. Legacy transfer fields are
+ * deliberately ignored; they never get converted into a live workspace
+ * operation. This keeps stale clients fail-closed at the daemon boundary.
+ */
 export function normalizeSessionHandoffDefaults(raw: unknown): SessionHandoffDefaultsV1 {
     const parsed = SessionHandoffDefaultsV1Schema.safeParse(raw);
     const candidate = parsed.success ? parsed.data : DEFAULT_SESSION_HANDOFF_DEFAULTS_V1;
-    const workspaceTransferStrategy =
-        candidate?.workspaceTransferStrategy === 'sync_changes' ? 'sync_changes' : 'transfer_snapshot';
     return {
         v: 1,
-        workspaceTransferEnabled: candidate?.workspaceTransferEnabled === true,
-        workspaceTransferStrategy,
-        conflictPolicy:
-            workspaceTransferStrategy === 'sync_changes'
-                ? 'replace_existing'
-                : candidate?.conflictPolicy === 'replace_existing'
-                    ? 'replace_existing'
-                    : 'create_sibling_copy',
-        includeIgnoredMode: candidate?.includeIgnoredMode === 'include_selected' ? 'include_selected' : 'exclude',
-        ignoredIncludeGlobs: Array.isArray(candidate?.ignoredIncludeGlobs)
+        workspaceSyncMode: normalizeWorkspaceMode(candidate.workspaceSyncMode),
+        workspaceSyncRelationshipId: normalizeRelationshipId(candidate.workspaceSyncRelationshipId),
+        includeIgnoredMode: candidate.includeIgnoredMode === 'include_selected' ? 'include_selected' : 'exclude',
+        ignoredIncludeGlobs: Array.isArray(candidate.ignoredIncludeGlobs)
             ? candidate.ignoredIncludeGlobs.filter((value): value is string => typeof value === 'string')
             : [],
-        directTargetMode: candidate?.directTargetMode === 'convert_to_persisted' ? 'convert_to_persisted' : 'keep_direct',
+        directTargetMode: candidate.directTargetMode === 'convert_to_persisted' ? 'convert_to_persisted' : 'keep_direct',
     };
 }
 
@@ -111,23 +132,48 @@ export function parseSessionHandoffIgnoredIncludeGlobs(value: string): string[] 
         .filter((entry) => entry.length > 0);
 }
 
-export function buildSessionHandoffWorkspaceTransfer(args: Readonly<{
-    workspaceTransferEnabled: boolean;
-    workspaceTransferStrategy: SessionHandoffWorkspaceTransfer['strategy'];
-    conflictPolicy: SessionHandoffWorkspaceTransfer['conflictPolicy'];
-    includeIgnoredMode: SessionHandoffWorkspaceTransfer['includeIgnoredMode'];
+export function buildWorkspaceContentPolicy(args: Readonly<{
+    includeIgnoredMode: SessionHandoffDefaultsV1['includeIgnoredMode'];
     ignoredIncludeGlobs: readonly string[];
-}>): SessionHandoffWorkspaceTransfer | undefined {
-    if (!args.workspaceTransferEnabled) return undefined;
-    const conflictPolicy =
-        args.workspaceTransferStrategy === 'sync_changes'
-            ? 'replace_existing'
-            : args.conflictPolicy;
+}>): WorkspaceContentPolicyV1 {
+    const base: Omit<WorkspaceContentPolicyV1, 'policyDigest'> = {
+        v: 1,
+        selection: 'git_worktree',
+        extraIgnorePatterns: [],
+        extraIncludePatterns: args.includeIgnoredMode === 'include_selected'
+            ? [...args.ignoredIncludeGlobs]
+            : [],
+        includeGitDirectory: false,
+    };
     return {
-        enabled: args.workspaceTransferEnabled,
-        strategy: args.workspaceTransferStrategy,
-        conflictPolicy,
-        includeIgnoredMode: args.includeIgnoredMode,
-        ignoredIncludeGlobs: [...args.ignoredIncludeGlobs],
+        ...base,
+        policyDigest: computeWorkspaceSyncPolicyDigest(base),
+    };
+}
+
+/**
+ * Construct the protocol action at the request boundary. Persistent modes
+ * require an existing relationship identity; no identity is fabricated and
+ * no persistent mode is silently downgraded to a copy.
+ */
+export function buildSessionHandoffWorkspaceAction(args: Readonly<{
+    workspaceSyncMode: SessionHandoffWorkspaceMode;
+    workspaceSyncRelationshipId?: string | null;
+    includeIgnoredMode: SessionHandoffDefaultsV1['includeIgnoredMode'];
+    ignoredIncludeGlobs: readonly string[];
+}>): HandoffWorkspaceActionV1 | undefined {
+    if (args.workspaceSyncMode === 'none') return { kind: 'none' };
+    if (args.workspaceSyncMode === 'copy_once') {
+        return {
+            kind: 'copy_once',
+            contentPolicy: buildWorkspaceContentPolicy(args),
+        };
+    }
+    const relationshipId = normalizeRelationshipId(args.workspaceSyncRelationshipId);
+    if (!relationshipId) return undefined;
+    return {
+        kind: 'relationship',
+        relationshipId,
+        flushBeforeCommit: true,
     };
 }

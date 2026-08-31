@@ -184,6 +184,76 @@ describe('PluginHostedArtifactDesktopViewHost', () => {
         });
     });
 
+    it.each([
+        ['a rejected native delivery', () => Promise.reject(new Error('native child disappeared'))],
+        ['a resolved unavailable native delivery', () => Promise.resolve({
+            kind: 'unavailable',
+            code: 'desktop_hosted_artifact_view_unavailable',
+        })],
+    ] as const)('retires the bridge through the existing load-error owner after %s', async (_label, deliveryResult) => {
+        let sendHostMessage: ((message: unknown) => void) | undefined;
+        const onNativeArtifactLoadError = vi.fn();
+        listenDesktopHostEvent.mockResolvedValue(() => {});
+        invokeDesktopHost.mockImplementation((command: string) => {
+            if (command === 'desktop_hosted_artifact_open_view') return Promise.resolve({ kind: 'opened' });
+            if (command === 'desktop_hosted_artifact_post_message') return deliveryResult();
+            return Promise.resolve({ kind: 'ok' });
+        });
+
+        const { PluginHostedArtifactDesktopViewHost } = await import('./PluginHostedArtifactDesktopViewHost');
+        const { tree } = await renderScreen(<PluginHostedArtifactDesktopViewHost
+            title="Plugin preview"
+            artifact={{
+                artifactHandleToken: 'hpat_test_token',
+                initialPathAndQuery: '/?happierBridgeNonce=nonce-1',
+            }}
+            bridge={{
+                expectedOrigin: frameOrigin,
+                expectedPluginId: 'acme.preview',
+                expectedContributionId: 'preview-web',
+                expectedSurfaceId: 'preview-surface',
+                expectedNonce: 'nonce-1',
+                expectedSessionId: 'session-1',
+                allowedMessageKinds: new Set(['ready']),
+                attachHostMessages: (send) => {
+                    sendHostMessage = send;
+                    return () => {};
+                },
+                onMessage: () => readyResponse(),
+            }}
+            onNativeArtifactLoadError={onNativeArtifactLoadError}
+            testID="plugin-hosted-web-frame"
+        />);
+
+        await act(async () => {
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        sendHostMessage?.(bootstrapMessage());
+        await act(async () => {
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(onNativeArtifactLoadError).toHaveBeenCalledExactlyOnceWith({
+            nativeEvent: {
+                code: 'desktop_hosted_artifact_view_unavailable',
+            },
+        });
+
+        sendHostMessage?.(bootstrapMessage());
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(invokeDesktopHost.mock.calls.filter(([command]) => command === 'desktop_hosted_artifact_post_message'))
+            .toHaveLength(1);
+
+        await act(async () => {
+            tree.unmount();
+        });
+    });
+
     it('flushes strict host envelopes emitted by an early ready only after the child acknowledges open', async () => {
         let nativeEventHandler: ((payload: unknown) => void) | undefined;
         let sendHostMessage: ((message: unknown) => void) | undefined;

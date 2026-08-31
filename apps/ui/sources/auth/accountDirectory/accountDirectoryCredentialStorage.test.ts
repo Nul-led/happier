@@ -12,21 +12,21 @@ describe('account directory credential storage', () => {
 
     it('isolates credentials by endpoint and supports independent removal', async () => {
         const { accountDirectoryCredentialStorage } = await import('./accountDirectoryCredentialStorage');
-        await accountDirectoryCredentialStorage.set('https://directory-a.test', { token: 'a' });
-        await accountDirectoryCredentialStorage.set('https://directory-b.test', { token: 'b' });
+        await accountDirectoryCredentialStorage.set({ endpoint: 'https://directory-a.test' }, { token: 'a' });
+        await accountDirectoryCredentialStorage.set({ endpoint: 'https://directory-b.test' }, { token: 'b' });
 
-        await expect(accountDirectoryCredentialStorage.get('https://directory-a.test')).resolves.toEqual({ token: 'a' });
-        await expect(accountDirectoryCredentialStorage.get('https://directory-b.test')).resolves.toEqual({ token: 'b' });
+        await expect(accountDirectoryCredentialStorage.get({ endpoint: 'https://directory-a.test' })).resolves.toEqual({ token: 'a' });
+        await expect(accountDirectoryCredentialStorage.get({ endpoint: 'https://directory-b.test' })).resolves.toEqual({ token: 'b' });
 
-        await accountDirectoryCredentialStorage.remove('https://directory-a.test');
-        await expect(accountDirectoryCredentialStorage.get('https://directory-a.test')).resolves.toBeNull();
-        await expect(accountDirectoryCredentialStorage.get('https://directory-b.test')).resolves.toEqual({ token: 'b' });
+        await accountDirectoryCredentialStorage.remove({ endpoint: 'https://directory-a.test' });
+        await expect(accountDirectoryCredentialStorage.get({ endpoint: 'https://directory-a.test' })).resolves.toBeNull();
+        await expect(accountDirectoryCredentialStorage.get({ endpoint: 'https://directory-b.test' })).resolves.toEqual({ token: 'b' });
     });
 
     it('rejects malformed records instead of returning untyped secrets', async () => {
         const { writeDeviceLocalStorageString } = await import('@/auth/storage/deviceLocalStorage');
         await writeDeviceLocalStorageString('account_directory_auth_credentials', '{"bad":true}');
         const { accountDirectoryCredentialStorage } = await import('./accountDirectoryCredentialStorage');
-        await expect(accountDirectoryCredentialStorage.get('https://directory.test')).resolves.toBeNull();
+        await expect(accountDirectoryCredentialStorage.get({ endpoint: 'https://directory.test' })).resolves.toBeNull();
     });
 });

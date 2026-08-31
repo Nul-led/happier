@@ -1,4 +1,5 @@
 import * as React from 'react';
+import type { FeaturesResponse } from '@happier-dev/protocol';
 
 import { getAuthProvider } from '@/auth/providers/registry';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
@@ -98,6 +99,27 @@ function resolveMethodById(methods: readonly AuthMethod[], providerId: string): 
     const normalized = normalizeProviderId(providerId);
     if (!normalized) return null;
     return methods.find((method) => normalizeProviderId(method.id) === normalized) ?? null;
+}
+
+/** Canonical deterministic provider choice for keyed account provisioning surfaces. */
+export function resolvePreferredProvisionProviderId(features: FeaturesResponse | null): string | null {
+    const authMethodsRaw = features?.capabilities?.auth?.methods ?? [];
+    const authMethods = Array.isArray(authMethodsRaw) ? (authMethodsRaw as readonly AuthMethod[]) : [];
+    const legacySignupMethods = features?.capabilities?.auth?.signup?.methods ?? [];
+    const legacyEnabledSignupIds = legacySignupMethods
+        .filter((method) => method.enabled === true)
+        .map((method) => normalizeProviderId(method.id))
+        .filter(Boolean);
+    const providerIds = authMethods.length > 0
+        ? authMethods
+            .map((method) => normalizeProviderId(method.id))
+            .filter(Boolean)
+            .filter((id) => id !== 'key_challenge' && id !== 'mtls')
+            .filter((id) => hasEnabledAction(resolveMethodById(authMethods, id), 'provision', ['keyed', 'either']))
+        : legacyEnabledSignupIds.filter((id) => id !== 'anonymous');
+    return providerIds.find((id) => features?.capabilities?.oauth?.providers?.[id]?.configured === true)
+        ?? providerIds[0]
+        ?? null;
 }
 
 export function useAuthEntryOptions(): AuthEntryOptions {
@@ -251,14 +273,6 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                     ? hasEnabledAction(resolveMethodById(authMethods, 'key_challenge'), 'provision', ['keyed', 'either'])
                     : legacyEnabledSignupIds.includes('anonymous');
 
-                const keyedProvisionProviderIds = authMethods.length > 0
-                    ? authMethods
-                        .map((method) => normalizeProviderId(method.id))
-                        .filter(Boolean)
-                        .filter((id) => id !== 'key_challenge' && id !== 'mtls')
-                        .filter((id) => hasEnabledAction(resolveMethodById(authMethods, id), 'provision', ['keyed', 'either']))
-                    : legacyEnabledSignupIds.filter((id) => id !== 'anonymous');
-
                 const keylessLoginMethodIds = authMethods.length > 0
                     ? authMethods
                         .map((method) => normalizeProviderId(method.id))
@@ -304,9 +318,7 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                     return;
                 }
 
-                const configuredProviderId =
-                    keyedProvisionProviderIds.find((id) => features?.capabilities?.oauth?.providers?.[id]?.configured === true) ?? null;
-                const preferredProviderId = configuredProviderId ?? keyedProvisionProviderIds[0] ?? null;
+                const preferredProviderId = resolvePreferredProvisionProviderId(features);
 
                 const configuredKeylessProviderId =
                     keylessProviderIds.find((id) => features?.capabilities?.oauth?.providers?.[id]?.configured === true) ?? null;

@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 
 import {
+    acquireServerReachabilitySupervisor,
+    peekServerReachabilityState,
     resetServerReachabilitySupervisors,
     startServerReachabilitySupervisor,
     subscribeServerReachabilityState,
@@ -22,6 +24,7 @@ type ObservedState = {
 
 async function runProbe(params: Readonly<{
     token: string | null;
+    runtimeOrigin?: string;
     respond: (url: string) => Response;
 }>): Promise<{ observed: ObservedState; requestedUrls: string[] }> {
     const runtimeFetchSpy = vi.fn(async (input: RequestInfo | URL) => params.respond(String(input)));
@@ -38,6 +41,7 @@ async function runProbe(params: Readonly<{
         await startServerReachabilitySupervisor({
             serverUrl: 'https://example.test',
             token: params.token,
+            ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
         });
     } finally {
         unsubscribe();
@@ -47,6 +51,32 @@ async function runProbe(params: Readonly<{
 }
 
 describe('serverReachabilitySupervisorPool (readiness probe)', () => {
+    it('hands one canonical supervisor between retained consumers and stops only after the final release', async () => {
+        vi.useFakeTimers();
+        setRuntimeFetch(vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })));
+
+        const first = await acquireServerReachabilitySupervisor({
+            serverUrl: 'https://example.test',
+            runtimeOrigin: 'http://127.0.0.1:45981',
+            token: 'token',
+        });
+        const second = await acquireServerReachabilitySupervisor({
+            serverUrl: 'https://example.test',
+            runtimeOrigin: 'http://127.0.0.1:45981',
+            token: 'token',
+        });
+        expect(peekServerReachabilityState('https://example.test')?.phase).toBe('online');
+
+        await first.release();
+        expect(peekServerReachabilityState('https://example.test')?.phase).toBe('online');
+
+        await second.release();
+        expect(peekServerReachabilityState('https://example.test')?.phase).not.toBe('online');
+    });
+
     it('issues only the authenticated ping when a token is available', async () => {
         vi.useFakeTimers();
 
@@ -65,6 +95,27 @@ describe('serverReachabilitySupervisorPool (readiness probe)', () => {
 
         expect(observed.phase).toBe('online');
         expect(requestedUrls).toEqual(['https://example.test/v1/auth/ping']);
+    });
+
+    it('keeps canonical reachability ownership while probing an acquired runtime origin', async () => {
+        vi.useFakeTimers();
+
+        const { observed, requestedUrls } = await runProbe({
+            token: 'token',
+            runtimeOrigin: 'http://127.0.0.1:45981',
+            respond: (url) => {
+                if (url === 'http://127.0.0.1:45981/v1/auth/ping') {
+                    return new Response(JSON.stringify({ ok: true }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+                throw new Error(`Unexpected probe URL: ${url}`);
+            },
+        });
+
+        expect(observed.phase).toBe('online');
+        expect(requestedUrls).toEqual(['http://127.0.0.1:45981/v1/auth/ping']);
     });
 
     it('treats a host that does not serve the authenticated ping as unreachable (prevents wrong-server loops)', async () => {

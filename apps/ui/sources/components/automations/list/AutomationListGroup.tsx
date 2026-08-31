@@ -150,8 +150,14 @@ export const AutomationListGroup = React.memo((props: Props) => {
                                     ])}
                                     disabled={runNowDisabled}
                                     accessibilityRole="button"
-                                    accessibilityLabel={`${t('automations.detail.runNowTitle')}: ${automation.name}`}
+                                    accessibilityLabel={runState === 'acknowledged'
+                                        ? `${t('automations.detail.runNowTitle')}: ${automation.name}. ${t('common.success')}`
+                                        : `${t('automations.detail.runNowTitle')}: ${automation.name}`}
                                     accessibilityState={{ disabled: runNowDisabled, busy: runNowPending }}
+                                    accessibilityLiveRegion={runState === 'acknowledged' ? 'polite' : undefined}
+                                    {...(runState === 'acknowledged'
+                                        ? ({ 'aria-live': 'polite' } as Record<string, unknown>)
+                                        : {})}
                                 >
                                     {runState === 'submitting' ? (
                                         <ActivitySpinner size="small" color={theme.colors.text.secondary} />

@@ -1,5 +1,11 @@
 import { AGENT_IDS } from '@happier-dev/agents';
-import { projectLaunchProfileListV1, type LaunchProfileListProjectionV1 } from '@happier-dev/protocol';
+import {
+    BackendTargetKeyV2Schema,
+    buildQualifiedPluginContributionKey,
+    parseBackendTargetKeyV2,
+    projectLaunchProfileListV1,
+    type LaunchProfileListProjectionV1,
+} from '@happier-dev/protocol';
 
 import { readUiAiLaunchProfileSnapshot } from '@/sync/domains/profiles/aiLaunchProfileCollection';
 import { storage } from '@/sync/domains/state/storage';
@@ -34,9 +40,11 @@ export function listSpawnProfilesForActions(
             ...(profile.preferredAgentTargetKey ? [profile.preferredAgentTargetKey] : []),
         ];
         for (const targetKey of targetKeys) {
-            if (!targetKey.startsWith('agent:')) continue;
-            const qualifiedAgentId = targetKey.slice('agent:'.length).trim();
-            if (qualifiedAgentId) agentIds.add(qualifiedAgentId);
+            const parsedKey = BackendTargetKeyV2Schema.safeParse(targetKey);
+            if (!parsedKey.success) continue;
+            const parsedTarget = parseBackendTargetKeyV2(parsedKey.data);
+            if (parsedTarget.kind !== 'agent') continue;
+            agentIds.add(buildQualifiedPluginContributionKey(parsedTarget.identity));
         }
     }
     return projectLaunchProfileListV1(snapshot.profiles, {

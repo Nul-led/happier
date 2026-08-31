@@ -485,11 +485,15 @@ export function createPluginReactNativeArtifactLeasePersistentScope(input: Reado
         scope: input.lifetime.scope,
         isCurrent: input.lifetime.isCurrent,
     });
-    const isCurrent = () => operation !== null && isCurrentLeaseCacheLifetime({
+    // Persistent storage is optional (for example in browser/test hosts), but
+    // its absence must not revoke an otherwise-current Artifact lease. The
+    // captured operation gates physical store work only; Account/cache
+    // currentness continues to fence the selected lease and hot-cache write.
+    const isCurrent = () => isCurrentLeaseCacheLifetime({
         cache: input.cache,
         lifetime: input.lifetime,
         scope: input.lifetime.scope,
-    }) && operation.isCurrent();
+    }) && (operation?.isCurrent() ?? true);
     const canUseStore = () => operation !== null && operation.isOpen() && isCurrent();
     // Source acquisition may finish before its revocable Artifact lease does. A
     // lease that proves its retained bytes cannot satisfy the current digest

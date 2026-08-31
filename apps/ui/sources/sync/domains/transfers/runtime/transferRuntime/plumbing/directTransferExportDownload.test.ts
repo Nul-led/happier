@@ -28,7 +28,7 @@ describe('directTransferExportDownload', () => {
         runtimeFetchMock.mockReset();
     });
 
-    it('downloads and parses a direct-export JSON payload', async () => {
+    it('downloads and verifies a direct-export JSON payload through a machine-carrier origin override', async () => {
         const payload = {
             assetTypeId: 'agents.skill',
             scope: 'user',
@@ -55,7 +55,7 @@ describe('directTransferExportDownload', () => {
             endpointCandidates: [
                 {
                     kind: 'http',
-                    url: 'http://127.0.0.1:46001/machine-transfers/direct/transfer-1?bad=ignored',
+                    url: 'http://10.44.0.8:46001/machine-transfers/direct/transfer-1?grant=kept',
                     authorizationToken: 'token-1',
                     expiresAt: 5_000,
                 },
@@ -63,7 +63,7 @@ describe('directTransferExportDownload', () => {
         });
 
         runtimeFetchMock.mockImplementationOnce(async (url: string, init?: RequestInit) => {
-            expect(url).toBe('http://127.0.0.1:46001/machine-transfers/direct/transfer-1/open');
+            expect(url).toBe('http://127.0.0.1:48126/machine-transfers/direct/transfer-1/open?grant=kept');
             expect(init?.headers).toMatchObject({
                 authorization: 'Bearer token-1',
                 'x-happier-transfer-recipient-public-key': expect.any(String),
@@ -78,7 +78,7 @@ describe('directTransferExportDownload', () => {
             });
 
             runtimeFetchMock.mockImplementationOnce(async (chunkUrl: string, chunkInit?: RequestInit) => {
-                expect(chunkUrl).toBe('http://127.0.0.1:46001/machine-transfers/direct/transfer-1/chunks/0');
+                expect(chunkUrl).toBe('http://127.0.0.1:48126/machine-transfers/direct/transfer-1/chunks/0?grant=kept');
                 expect(chunkInit?.headers).toMatchObject({
                     authorization: 'Bearer token-1',
                     'x-happier-transfer-recipient-public-key': expect.any(String),
@@ -116,6 +116,7 @@ describe('directTransferExportDownload', () => {
                 externalRef: { skillName: 'reviewer' },
             },
             parsePayload: (value) => value as typeof payload,
+            httpOriginOverride: 'http://127.0.0.1:48126',
         });
 
         expect(result).toEqual({

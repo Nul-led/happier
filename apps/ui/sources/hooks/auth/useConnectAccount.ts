@@ -1,9 +1,5 @@
 import * as React from 'react';
 import { router } from 'expo-router';
-import { useAuth } from '@/auth/context/AuthContext';
-import { decodeBase64 } from '@/encryption/base64';
-import { authAccountApprove } from '@/auth/flows/accountApprove';
-import { buildAccountLinkResponse } from '@/auth/flows/buildAccountLinkResponse';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { parseAccountConnectDeepLink } from '@/auth/pairing/accountConnectUrl';
@@ -15,8 +11,7 @@ interface UseConnectAccountOptions {
 }
 
 export function useConnectAccount(options?: UseConnectAccountOptions) {
-    const auth = useAuth();
-    const [isLoading, setIsLoading] = React.useState(false);
+    void options;
 
     const processAuthUrl = React.useCallback(async (url: string) => {
         const parsed = parseAccountConnectDeepLink(url);
@@ -25,28 +20,13 @@ export function useConnectAccount(options?: UseConnectAccountOptions) {
             return false;
         }
         
-        setIsLoading(true);
-        try {
-            const publicKey = decodeBase64(parsed.publicKeyB64Url, 'base64url');
-            const creds = auth.credentials!;
-            const response = buildAccountLinkResponse(creds, publicKey);
-            await authAccountApprove(creds.token, publicKey, response);
-            
-            await Modal.alertAsync(t('common.success'), t('modals.deviceLinkedSuccessfully'), [
-                { 
-                    text: t('common.ok'), 
-                    onPress: () => options?.onSuccess?.()
-                }
-            ]);
-            return true;
-        } catch (e) {
-            await Modal.alertAsync(t('common.error'), t('modals.failedToLinkDevice'), [{ text: t('common.ok') }]);
-            options?.onError?.(e);
-            return false;
-        } finally {
-            setIsLoading(false);
-        }
-    }, [auth.credentials, options]);
+        // Parse-only compatibility: the old public-key QR has no Home identity,
+        // expiry, or QR-secret binding and therefore cannot safely export credentials.
+        await Modal.alertAsync(t('common.unavailable'), t('connect.legacyAccountQrUnavailable'), [
+            { text: t('common.ok') },
+        ]);
+        return false;
+    }, []);
 
     const connectAccount = React.useCallback(async () => {
         const canUseScanner = canUseCurrentDeviceQrScanner();
@@ -64,7 +44,7 @@ export function useConnectAccount(options?: UseConnectAccountOptions) {
     return {
         connectAccount,
         connectWithUrl,
-        isLoading,
+        isLoading: false,
         processAuthUrl
     };
 }

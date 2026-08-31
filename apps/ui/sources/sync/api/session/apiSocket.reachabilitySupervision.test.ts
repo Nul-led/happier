@@ -479,4 +479,209 @@ describe('apiSocket reachability supervision', () => {
 
         expect(observedPhases.at(-1)).toBe('shutting_down');
     });
+
+    describe('focused Iroh runtime-origin supervision', () => {
+        let currentSnapshot: Record<string, unknown> = {};
+        const irohProfile = {
+            id: 'srv_home',
+            name: 'Home',
+            serverUrl: 'https://api.example.test',
+            canonicalServerUrl: 'https://api.example.test',
+            serverIdentityId: 'srv_home',
+            irohEndpoint: { endpointId: 'ep-home', relayUrls: ['https://relay.example.test'] },
+            connectionDescriptorRevision: 1,
+            publicServerUrl: null,
+        };
+
+        function mockFocusedHomeRuntimeContext(params: Readonly<{ profile: Record<string, unknown> | null }> = { profile: irohProfile }): void {
+            vi.doMock('@/sync/domains/server/serverRuntime', () => ({
+                getActiveServerSnapshot: () => currentSnapshot,
+            }));
+            vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+                const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+                return {
+                    ...actual,
+                    getServerProfileById: (id: unknown) => (
+                        params.profile && String(id) === params.profile.id ? params.profile : null
+                    ),
+                };
+            });
+        }
+
+        it('keys focused reachability by the canonical Home URL with the verified Iroh origin as metadata', async () => {
+            const subscribeUrls: string[] = [];
+            const startParams: Array<Record<string, unknown>> = [];
+            vi.doMock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', async (importOriginal) => {
+                const actual = await importOriginal<typeof import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool')>();
+                return {
+                    ...actual,
+                    subscribeServerReachabilityState: (serverUrl: string, _listener: (state: any) => void) => {
+                        subscribeUrls.push(serverUrl);
+                        return () => {};
+                    },
+                    startServerReachabilitySupervisor: async (params: Record<string, unknown>) => {
+                        startParams.push(params);
+                    },
+                };
+            });
+            vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => ({
+                createSyncSocketTransport: () => {
+                    throw new Error('createSyncSocketTransport should not be called in this test');
+                },
+            }));
+            mockFocusedHomeRuntimeContext();
+
+            currentSnapshot = {
+                serverId: 'srv_home',
+                serverUrl: 'https://api.example.test',
+                carrier: 'iroh',
+                runtimeOrigin: 'http://127.0.0.1:43111',
+                generation: 1,
+            };
+
+            const { apiSocket } = await import('./apiSocket');
+            const encryption = { getSessionEncryption: () => null } as unknown as Encryption;
+            apiSocket.initialize({ endpoint: 'https://api.example.test', token: 'token-a' }, encryption);
+
+            // One canonical pool entry for the Home; the loopback origin is metadata, never a key.
+            expect(subscribeUrls).toEqual(['https://api.example.test']);
+            expect(startParams[0]).toMatchObject({
+                serverUrl: 'https://api.example.test',
+                token: 'token-a',
+                runtimeOrigin: 'http://127.0.0.1:43111',
+            });
+        });
+
+        it('re-arms focused supervision when the verified runtime origin republishes for this Home', async () => {
+            const startParams: Array<Record<string, unknown>> = [];
+            let originListener: ((snapshot: Record<string, unknown>) => void) | null = null;
+            vi.doMock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', async (importOriginal) => {
+                const actual = await importOriginal<typeof import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool')>();
+                return {
+                    ...actual,
+                    subscribeServerReachabilityState: (_serverUrl: string, _listener: (state: any) => void) => () => {},
+                    startServerReachabilitySupervisor: async (params: Record<string, unknown>) => {
+                        startParams.push(params);
+                    },
+                };
+            });
+            vi.doMock('@/sync/domains/server/serverRuntime', () => ({
+                getActiveServerSnapshot: () => currentSnapshot,
+            }));
+            vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+                const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+                return {
+                    ...actual,
+                    getServerProfileById: (id: unknown) => (String(id) === 'srv_home' ? irohProfile : null),
+                    subscribeActiveServerRuntimeOrigin: (listener: (snapshot: Record<string, unknown>) => void) => {
+                        originListener = listener;
+                        return () => {};
+                    },
+                };
+            });
+            vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => ({
+                createSyncSocketTransport: () => {
+                    throw new Error('createSyncSocketTransport should not be called in this test');
+                },
+            }));
+
+            // Foreground recovery starts from the suspended world: no published origin.
+            currentSnapshot = {
+                serverId: 'srv_home',
+                serverUrl: 'https://api.example.test',
+                generation: 1,
+            };
+
+            const { apiSocket } = await import('./apiSocket');
+            const encryption = { getSessionEncryption: () => null } as unknown as Encryption;
+            apiSocket.initialize({ endpoint: 'https://api.example.test', token: 'token-a' }, encryption);
+            // The canonical URL is the auth audience, not fallback proof. With
+            // no descriptor-proven HTTPS ingress, foreground waits for the
+            // verified Iroh origin instead of probing the canonical URL.
+            expect(startParams).toHaveLength(0);
+
+            // The native lease re-verifies and republishes; supervision must re-arm with
+            // the fresh verified origin so the probe and socket rebind stop targeting the
+            // suspended transport.
+            currentSnapshot = {
+                ...currentSnapshot,
+                carrier: 'iroh',
+                runtimeOrigin: 'http://127.0.0.1:43222',
+            };
+            originListener?.(currentSnapshot);
+
+            expect(startParams[0]).toMatchObject({
+                serverUrl: 'https://api.example.test',
+                token: 'token-a',
+                runtimeOrigin: 'http://127.0.0.1:43222',
+            });
+        });
+
+        it('does not probe canonical loopback for a loopback-only Iroh Home until the origin republishes', async () => {
+            const loopbackProfile = {
+                ...irohProfile,
+                serverUrl: 'http://127.0.0.1:3010',
+                canonicalServerUrl: 'http://127.0.0.1:3010',
+                publicServerUrl: null,
+            };
+            const startParams: Array<Record<string, unknown>> = [];
+            let originListener: ((snapshot: Record<string, unknown>) => void) | null = null;
+            vi.doMock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', async (importOriginal) => {
+                const actual = await importOriginal<typeof import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool')>();
+                return {
+                    ...actual,
+                    subscribeServerReachabilityState: (_serverUrl: string, _listener: (state: any) => void) => () => {},
+                    startServerReachabilitySupervisor: async (params: Record<string, unknown>) => {
+                        startParams.push(params);
+                    },
+                };
+            });
+            vi.doMock('@/sync/domains/server/serverRuntime', () => ({
+                getActiveServerSnapshot: () => currentSnapshot,
+            }));
+            vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+                const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+                return {
+                    ...actual,
+                    getServerProfileById: (id: unknown) => (String(id) === 'srv_home' ? loopbackProfile : null),
+                    subscribeActiveServerRuntimeOrigin: (listener: (snapshot: Record<string, unknown>) => void) => {
+                        originListener = listener;
+                        return () => {};
+                    },
+                };
+            });
+            vi.doMock('@/sync/api/session/connection/createSyncSocketTransport', () => ({
+                createSyncSocketTransport: () => {
+                    throw new Error('createSyncSocketTransport should not be called in this test');
+                },
+            }));
+
+            // Suspended: the canonical audience is this device's loopback URL, which is not
+            // a network route to the Home. Supervision must wait for the verified origin.
+            currentSnapshot = {
+                serverId: 'srv_home',
+                serverUrl: 'http://127.0.0.1:3010',
+                generation: 1,
+            };
+
+            const { apiSocket } = await import('./apiSocket');
+            const encryption = { getSessionEncryption: () => null } as unknown as Encryption;
+            apiSocket.initialize({ endpoint: 'http://127.0.0.1:3010', token: 'token-a' }, encryption);
+            expect(startParams).toEqual([]);
+
+            // Verified republish arms supervision with the fresh origin as metadata.
+            currentSnapshot = {
+                ...currentSnapshot,
+                carrier: 'iroh',
+                runtimeOrigin: 'http://127.0.0.1:43333',
+            };
+            originListener?.(currentSnapshot);
+            expect(startParams).toHaveLength(1);
+            expect(startParams[0]).toMatchObject({
+                serverUrl: 'http://127.0.0.1:3010',
+                token: 'token-a',
+                runtimeOrigin: 'http://127.0.0.1:43333',
+            });
+        });
+    });
 });

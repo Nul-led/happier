@@ -4,6 +4,7 @@ import { SESSION_RUNNER_RUNTIME_METADATA_KEY } from '@happier-dev/protocol';
 
 import {
     readStaleSessionRunnerRuntimeState,
+    readSessionRunnerRuntimeStateForTarget,
     readSessionRunnerRuntimeStateFromMetadata,
 } from './sessionRunnerRuntimeStatus';
 
@@ -46,6 +47,20 @@ describe('session runner runtime status reader', () => {
 
         expect(parsed?.sessionId).toBe('s1');
         expect(parsed?.runner.processCommandHash).toBe('hash-old');
+    });
+
+    it('reuses target identity validation for current and stale runtime consumers', () => {
+        const currentState = { ...staleRuntimeState, versionState: 'current' as const };
+        expect(readSessionRunnerRuntimeStateForTarget({
+            metadata: { [SESSION_RUNNER_RUNTIME_METADATA_KEY]: currentState },
+            sessionId: 's1',
+            machineId: 'm1',
+        })?.versionState).toBe('current');
+        expect(readSessionRunnerRuntimeStateForTarget({
+            metadata: { [SESSION_RUNNER_RUNTIME_METADATA_KEY]: currentState },
+            sessionId: 'other-session',
+            machineId: 'm1',
+        })).toBeNull();
     });
 
     it('fails closed for absent or malformed metadata', () => {

@@ -13,7 +13,7 @@ import {
     createAppShellTransientInteractions,
     presentAppShellTransientInteraction,
 } from './appShellQuestionInteractions';
-import { DEFAULT_INVOCATION_TIMEOUT_MS } from './pluginUiInvocationHost';
+import { PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS } from '@/components/plugins/hostApi/interactionLifetime';
 
 function questionRequest(): Extract<InteractionTransientRequestV1, Readonly<{ kind: 'questions' }>> {
     return {
@@ -412,7 +412,7 @@ describe('app-shell transient interaction presenter', () => {
                 questions: [{ id: 'mode', prompt: 'Which mode?', type: 'text' }],
             });
 
-            await vi.advanceTimersByTimeAsync(DEFAULT_INVOCATION_TIMEOUT_MS);
+            await vi.advanceTimersByTimeAsync(PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS);
             await expect(pending).resolves.toEqual(expect.objectContaining({
                 kind: 'questions',
                 status: 'timedOut',

@@ -13,7 +13,8 @@ export function buildRemoteSshManageHostSystemTaskSpec(params: Readonly<{
         | 'relayRuntime.installOrUpdate'
         | 'relayRuntime.start'
         | 'relayRuntime.stop'
-        | 'relayRuntime.restart';
+        | 'relayRuntime.restart'
+        | 'personalHome.erase';
     sshTarget?: string;
     sshUsername?: string;
     sshHost?: string;

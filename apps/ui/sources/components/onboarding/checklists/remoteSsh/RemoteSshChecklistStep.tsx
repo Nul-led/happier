@@ -450,7 +450,6 @@ export const RemoteSshChecklistStep = React.memo(function RemoteSshChecklistStep
         }
         if (activeTaskSnapshot?.result?.ok && !completionHandledRef.current) {
             completionHandledRef.current = true;
-            setPhase('complete');
             const completion = {
                 machineId: completedMachineId,
                 relayRuntimeUrl: completionRelayUrl,
@@ -459,7 +458,7 @@ export const RemoteSshChecklistStep = React.memo(function RemoteSshChecklistStep
             } as const;
 
             const currentRun = runContextRef.current;
-            persistRemoteHostAfterRemoteSshCompletion({
+            const persistence = persistRemoteHostAfterRemoteSshCompletion({
                 managementEnabled: remoteHostsManagementEnabled,
                 secretMaterialEnabled: remoteHostsSecretMaterialEnabled,
                 remoteHostsRaw,
@@ -473,8 +472,18 @@ export const RemoteSshChecklistStep = React.memo(function RemoteSshChecklistStep
                     relayRuntimeUrl: completion.relayRuntimeUrl,
                 },
             });
-
-            props.onCompleted?.(completion);
+            persistence.then(
+                () => {
+                    setPhase('complete');
+                    props.onCompleted?.(completion);
+                },
+                (error: unknown) => {
+                    completionHandledRef.current = false;
+                    setStartErrorMessage(error instanceof Error
+                        ? error.message
+                        : t('setupOnboarding.remoteSshChecklist.continueFailed'));
+                },
+            );
         }
     }, [
         activeTaskSnapshot?.result?.ok,

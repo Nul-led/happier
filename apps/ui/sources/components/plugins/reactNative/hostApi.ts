@@ -83,6 +83,7 @@ import {
 } from '../surfaces/createPluginSurfaceHostApi';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 import { decodeBase64 } from '@/encryption/base64';
+import { qualifyPluginContributionReference } from '@/components/plugins/qualifyPluginContributionReference';
 
 export type PluginReactNativeHostApiRequestHandler = (
     request: PluginUiHostApiRequestEnvelopeV1,
@@ -614,20 +615,6 @@ function canonicalReferencePayload(reference: string | Readonly<{ pluginId: stri
     return typeof reference === 'string'
         ? reference
         : { pluginId: reference.pluginId, localId: reference.localId };
-}
-
-function canonicalSurfaceDestinationPayload(
-    destination: PluginReference,
-    callerPluginId: string,
-): PluginUiJsonValueV1 {
-    // `openSurface` is the one reference-bearing request whose Protocol payload
-    // is always an exact contribution identity. Keep bare author references
-    // caller-relative at this transport boundary while preserving an explicit
-    // cross-plugin target verbatim; Action and Resource payloads retain their
-    // own Protocol-owned reference shapes above.
-    return typeof destination === 'string'
-        ? { pluginId: callerPluginId, localId: destination }
-        : { pluginId: destination.pluginId, localId: destination.localId };
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -1279,7 +1266,10 @@ export function createCanonicalPluginReactNativeHostApiAdapter(params: Readonly<
             assertActive(options?.signal);
             assertInstalled('openSurface');
             await transport.request('openSurface', {
-                destination: canonicalSurfaceDestinationPayload(destination, params.requestSurface.pluginId),
+                destination: qualifyPluginContributionReference(
+                    destination,
+                    params.requestSurface.pluginId,
+                ),
                 ...(input !== undefined ? { input: input as PluginUiJsonValueV1 } : {}),
                 // EU-5b: the plugin-local location inside a full-page
                 // destination. Forwarded verbatim; the mounted handler's

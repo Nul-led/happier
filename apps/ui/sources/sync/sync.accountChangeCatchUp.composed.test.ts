@@ -40,7 +40,6 @@ type SyncAccountChangeWakeSchedulingHarness = SyncAccountChangeCatchUpHarness & 
     isForeground: boolean;
     resumeInFlight: Promise<void> | null;
     purchasesSync: ResumeSyncUnit;
-    pushTokenSync: ResumeSyncUnit;
     nativeUpdateSync: ResumeSyncUnit;
     sessionsSync: ResumeSyncUnit;
     machinesSync: ResumeSyncUnit;
@@ -456,7 +455,6 @@ describe('sync AccountChange catch-up projection', () => {
             awaitQueue: vi.fn(async () => {}),
         };
         harness.purchasesSync = resumeUnit;
-        harness.pushTokenSync = resumeUnit;
         harness.nativeUpdateSync = resumeUnit;
         harness.sessionsSync = resumeUnit;
         harness.machinesSync = resumeUnit;
@@ -510,7 +508,6 @@ describe('sync AccountChange catch-up projection', () => {
             awaitQueue: vi.fn(async () => {}),
         };
         harness.purchasesSync = resumeUnit;
-        harness.pushTokenSync = resumeUnit;
         harness.nativeUpdateSync = resumeUnit;
         harness.sessionsSync = resumeUnit;
         harness.machinesSync = resumeUnit;

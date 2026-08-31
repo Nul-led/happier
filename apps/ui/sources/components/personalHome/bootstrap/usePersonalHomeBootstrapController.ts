@@ -26,6 +26,7 @@ export type PersonalHomeBootstrapController = Readonly<{
     isOperating: boolean;
     refresh: () => void;
     retry: () => void;
+    execute: (runner: PersonalHomeBootstrapOperationRunner) => Promise<boolean>;
 }>;
 
 const EMPTY_ROWS = [
@@ -62,6 +63,40 @@ function operationForSnapshot(snapshot: PersonalHomeBootstrapSnapshot): Personal
 }
 
 function errorSnapshot(snapshot: PersonalHomeBootstrapSnapshot, error: Error): PersonalHomeBootstrapSnapshot {
+    const code = 'code' in error && typeof (error as { code?: unknown }).code === 'string'
+        ? (error as { code: string }).code
+        : null;
+    if (
+        code === 'personal_home_existing_runtime_conflict'
+        || code === 'personal_home_credentials_unverified'
+    ) {
+        return {
+            ...snapshot,
+            shouldGateShell: true,
+            phase: 'blocked',
+            action: 'choose-existing-runtime',
+            detail: {
+                code: 'existing_runtime',
+                message: error.message,
+                retryable: false,
+            },
+        };
+    }
+    if (
+        code === 'personal_home_existing_runtime_operation_failed'
+        || snapshot.action === 'choose-existing-runtime'
+    ) {
+        return {
+            ...snapshot,
+            phase: 'blocked',
+            action: 'choose-existing-runtime',
+            detail: {
+                code: 'existing_runtime_operation_failed',
+                message: error.message,
+                retryable: true,
+            },
+        };
+    }
     return {
         ...snapshot,
         shouldGateShell: snapshot.homeReady ? false : true,
@@ -82,9 +117,11 @@ export function usePersonalHomeBootstrapController(
     const [facts, setFacts] = React.useState<PersonalHomeFacts | null>(options.initialFacts ?? null);
     const [error, setError] = React.useState<Error | null>(null);
     const [isChecking, setIsChecking] = React.useState(options.initialFacts == null);
+    const [hasAuthoritativeFacts, setHasAuthoritativeFacts] = React.useState(false);
     const [isOperating, setIsOperating] = React.useState(false);
     const [refreshVersion, setRefreshVersion] = React.useState(0);
     const operationKeyRef = React.useRef<string | null>(null);
+    const operationInFlightRef = React.useRef(false);
     const mountedRef = React.useRef(true);
 
     React.useEffect(() => {
@@ -95,7 +132,9 @@ export function usePersonalHomeBootstrapController(
     }, []);
 
     const refresh = React.useCallback(() => {
+        if (operationInFlightRef.current) return;
         operationKeyRef.current = null;
+        setHasAuthoritativeFacts(false);
         setError(null);
         setRefreshVersion((value) => value + 1);
     }, []);
@@ -112,6 +151,7 @@ export function usePersonalHomeBootstrapController(
             .then((nextFacts) => {
                 if (cancelled || !mountedRef.current) return;
                 setFacts(nextFacts);
+                setHasAuthoritativeFacts(true);
                 setError(null);
             })
             .catch((cause: unknown) => {
@@ -133,32 +173,70 @@ export function usePersonalHomeBootstrapController(
     );
     const snapshot = error ? errorSnapshot(derivedSnapshot, error) : derivedSnapshot;
 
+    const execute = React.useCallback(async (
+        runner: PersonalHomeBootstrapOperationRunner,
+    ): Promise<boolean> => {
+        if (!enabled || !facts || operationInFlightRef.current) return false;
+        const startedFromExistingRuntimeDecision = derivedSnapshot.action === 'choose-existing-runtime';
+        operationInFlightRef.current = true;
+        setIsOperating(true);
+
+        let operationError: Error | null = null;
+        try {
+            await runner(facts);
+        } catch (cause: unknown) {
+            const nextError = cause instanceof Error ? cause : new Error(String(cause));
+            const code = 'code' in nextError && typeof (nextError as { code?: unknown }).code === 'string'
+                ? (nextError as { code: string }).code
+                : null;
+            operationError = startedFromExistingRuntimeDecision
+                && code !== 'personal_home_existing_runtime_conflict'
+                && code !== 'personal_home_credentials_unverified'
+                ? Object.assign(new Error(nextError.message, { cause: nextError }), {
+                    code: 'personal_home_existing_runtime_operation_failed',
+                })
+                : nextError;
+        }
+
+        // Facts are the recovery contract. Re-read them after both success and failure so a
+        // partially completed operation cannot publish an error over stale readiness state.
+        let nextFacts: PersonalHomeFacts | null = null;
+        try {
+            nextFacts = await options.readFacts();
+        } catch (cause: unknown) {
+            if (!operationError) {
+                operationError = cause instanceof Error ? cause : new Error(String(cause));
+            }
+        }
+
+        operationInFlightRef.current = false;
+        if (!mountedRef.current) return operationError == null;
+        if (nextFacts) setFacts(nextFacts);
+        setError(operationError);
+        setIsOperating(false);
+        return operationError == null;
+    }, [derivedSnapshot.action, enabled, facts, options.readFacts]);
+
     React.useEffect(() => {
-        if (!enabled || !facts || error || isChecking || isOperating) return;
+        if (!enabled || !facts || !hasAuthoritativeFacts || error || isChecking || isOperating) return;
         const operation = operationForSnapshot(snapshot);
         const runner = operation ? options.operations?.[operation] : undefined;
         if (!operation || !runner) return;
+        if (
+            operation === 'prepare-computer'
+            && (
+                facts.localHomeReachability !== 'reachable'
+                || !facts.localHomeIdentity
+                || facts.localHomeAuth !== 'present'
+            )
+        ) return;
 
         // This key is intentionally transient. Facts remain the recovery contract after a restart.
         const operationKey = `${operation}:${facts.relayRuntime?.status ?? ''}:${facts.localHomeIdentity ?? ''}:${facts.localHomeAuth}:${facts.anonymousSignup}:${facts.daemon?.machineId ?? ''}`;
         if (operationKeyRef.current === operationKey) return;
         operationKeyRef.current = operationKey;
-        setIsOperating(true);
-        void runner(facts)
-            .then(() => options.readFacts())
-            .then((nextFacts) => {
-                if (!mountedRef.current) return;
-                setFacts(nextFacts);
-                setError(null);
-            })
-            .catch((cause: unknown) => {
-                if (!mountedRef.current) return;
-                setError(cause instanceof Error ? cause : new Error(String(cause)));
-            })
-            .finally(() => {
-                if (mountedRef.current) setIsOperating(false);
-            });
-    }, [enabled, error, facts, isChecking, isOperating, options.operations, options.readFacts, snapshot]);
+        void execute(runner);
+    }, [enabled, error, execute, facts, hasAuthoritativeFacts, isChecking, isOperating, options.operations, snapshot]);
 
     return {
         facts,
@@ -168,6 +246,7 @@ export function usePersonalHomeBootstrapController(
         isOperating,
         refresh,
         retry,
+        execute,
     };
 }
 

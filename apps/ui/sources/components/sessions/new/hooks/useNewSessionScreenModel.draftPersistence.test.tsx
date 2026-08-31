@@ -859,6 +859,7 @@ vi.mock('@/sync/domains/scope/activeServerAccountScope', async (importOriginal) 
 
 vi.mock('@/sync/store/settingsWriters', () => ({
     useApplySettings: () => vi.fn(),
+    useDeleteAiLaunchProfile: () => vi.fn(async () => {}),
 }));
 
 vi.mock('@/utils/sessions/recentPaths', () => ({
@@ -3356,6 +3357,50 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         expect(model?.wizardProps?.profiles?.selectedProfileId).toBeNull();
         expect(model?.wizardProps?.profiles?.getProfileSubtitleExtra?.({ id: 'profile_docs' })).toBeNull();
         expect(model?.wizardProps?.profiles?.getProfileSubtitleExtra?.({ id: 'profile_workspace' })).toBeNull();
+    });
+
+    it('keeps an explicit Default Environment selection when last-used profile state changes', async () => {
+        settingsState.useProfiles = true;
+        settingsState.useEnhancedSessionWizard = true;
+        settingsState.lastUsedProfile = 'profile_previous';
+        const previousProfile = {
+            id: 'profile_previous',
+            name: 'Previous profile',
+            environmentVariables: [],
+            defaultPermissionModeByAgent: {},
+            defaultPermissionModeByTargetKey: {},
+            defaultPersistenceModeByAgent: {},
+            defaultPersistenceModeByTargetKey: {},
+            isBuiltIn: false,
+            compatibility: { claude: true },
+            compatibilityByTargetKey: {},
+            envVarRequirements: [],
+            createdAt: 0,
+            updatedAt: 0,
+            version: '1.0.0',
+        };
+        settingsState.profiles = [
+            previousProfile,
+            { ...previousProfile, id: 'profile_new', name: 'New profile' },
+        ];
+
+        let model: any = null;
+        const hook = await renderNewSessionScreenModel((nextModel) => {
+            model = nextModel;
+        });
+
+        expect(model?.wizardProps?.profiles?.selectedProfileId).toBe('profile_previous');
+
+        await act(async () => {
+            model?.wizardProps?.profiles?.onPressDefaultEnvironment?.();
+            await flushHookEffects({ cycles: 1, turns: 2 });
+        });
+        expect(model?.wizardProps?.profiles?.selectedProfileId).toBeNull();
+
+        settingsState.lastUsedProfile = 'profile_new';
+        await hook.rerender();
+
+        expect(model?.wizardProps?.profiles?.selectedProfileId).toBeNull();
     });
 
     it('persists updated checkout creation draft state after in-memory changes', async () => {

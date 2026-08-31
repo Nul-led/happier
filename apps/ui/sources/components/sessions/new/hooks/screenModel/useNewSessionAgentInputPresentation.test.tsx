@@ -46,6 +46,37 @@ const sessionAgentInputTheme = {
 } as const;
 
 describe('useNewSessionAgentInputPresentation', () => {
+    it('invalidates stabilized chips when their rendered content revision changes', async () => {
+        const presentationModule = await import('./useNewSessionAgentInputPresentation');
+        const buildSignature = (presentationModule as unknown as {
+            buildExtraActionChipsSignature: (params: {
+                chips: ReadonlyArray<Record<string, unknown>>;
+                agentType: string;
+                backendTarget: unknown;
+                checkoutPickerOpen: boolean;
+            }) => string;
+        }).buildExtraActionChipsSignature;
+        const base = {
+            agentType: 'claude',
+            backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
+            checkoutPickerOpen: false,
+        };
+        const createChip = (stabilityKey: string, renderContent: () => string) => ({
+            key: 'new-session-mcp',
+            controlId: 'mcp',
+            stabilityKey,
+            collapsedContentPopover: { title: 'MCP', label: 'MCP', renderContent },
+            render: () => null,
+        });
+
+        const first = buildSignature({ ...base, chips: [createChip('selection-a', () => 'first')] });
+        const handlerOnlyChange = buildSignature({ ...base, chips: [createChip('selection-a', () => 'second')] });
+        const contentChange = buildSignature({ ...base, chips: [createChip('selection-b', () => 'second')] });
+
+        expect(handlerOnlyChange).toBe(first);
+        expect(contentChange).not.toBe(first);
+    });
+
     function createRouter(): Router {
         const routerMock = createExpoRouterMock();
         return {

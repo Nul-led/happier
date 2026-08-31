@@ -450,7 +450,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         expect(storage.getState().accountSettingsSyncStatus).toEqual({ state: 'idle', lastSyncedAt: null });
     });
 
-    it('refuses a functional account-settings mutation when the account changes during preflush', async () => {
+    it('refuses an immutable account-settings mutation when the account changes during preflush', async () => {
         const { sync } = await import('./sync');
         const syncInternals = sync as any;
         const originalSyncSettings = syncInternals.syncSettings;
@@ -465,17 +465,16 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         syncInternals.pendingSettingsScope = { serverId: 'server-a', accountId: 'account-a' };
         syncInternals.serverScopeGeneration = 10;
         syncInternals.syncSettings = vi.fn(async () => preflush);
-        const mutate = vi.fn((raw: Record<string, unknown>) => raw);
-
         try {
-            const operation = sync.mutateAccountSettings(mutate);
+            const operation = sync.applyAccountSettingsMutation({
+                operations: [{ op: 'set', key: 'analyticsOptOut', value: true }],
+            });
             syncInternals.pendingSettingsScope = { serverId: 'server-b', accountId: 'account-b' };
             syncInternals.serverScopeGeneration = 11;
             syncInternals.credentials = { token: 'account-b' };
             releasePreflush();
 
             await expect(operation).rejects.toThrow('Account settings scope changed while mutating settings');
-            expect(mutate).not.toHaveBeenCalled();
         } finally {
             syncInternals.syncSettings = originalSyncSettings;
             syncInternals.credentials = originalCredentials;

@@ -287,7 +287,9 @@ async function emitLegacySessionMetadataUpdate(params: Readonly<{
         );
     }
     const socket = await createEphemeralServerSocketClient({
-        serverUrl: params.context.targetServerUrl,
+        serverUrl: params.context.runtimeOrigin ?? params.context.targetServerUrl,
+        reachabilityServerUrl: params.context.targetServerUrl,
+        ...(params.context.carrier ? { carrier: params.context.carrier } : {}),
         token: params.context.token,
         timeoutMs: params.context.timeoutMs,
     });
@@ -300,6 +302,7 @@ async function emitLegacySessionMetadataUpdate(params: Readonly<{
             ) as UpdateMetadataAck;
     } finally {
         socket.disconnect();
+        await params.context.release?.();
     }
 }
 
@@ -322,6 +325,7 @@ export async function emitSessionMetadataUpdateWithServerScope(
                 : resolvePreferredServerIdForSessionId(params.sessionId),
         timeoutMs: params.timeoutMs,
     });
+    try {
 
     if ('patch' in params) {
         return await emitSessionMetadataTuplePatch({
@@ -345,4 +349,7 @@ export async function emitSessionMetadataUpdateWithServerScope(
         metadata: params.metadata,
         context,
     });
+    } finally {
+        if (context.scope === 'scoped') await context.release?.();
+    }
 }

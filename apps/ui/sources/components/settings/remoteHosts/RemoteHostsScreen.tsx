@@ -7,7 +7,7 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import type { ItemAction } from '@/components/ui/lists/itemActions';
-import { t } from '@/text';
+import { t, tLoose } from '@/text';
 import { Modal } from '@/modal';
 import { useSettingMutable, useSettings } from '@/sync/domains/state/storage';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
@@ -50,6 +50,12 @@ import { resolvePreferredPublicReleaseRingLabelForCurrentApp } from '@/sync/runt
 import { Icon } from '@/components/ui/icons/Icon';
 
 const REMOTE_HOST_ROW_ACTIONS_OVERFLOW_THRESHOLD = Number.MAX_SAFE_INTEGER;
+
+function personalHomeCopy(key: string, fallback: string): string {
+    const translationKey = `personalHome.settings.${key}`;
+    const value = tLoose(translationKey);
+    return value === translationKey ? fallback : value;
+}
 
 function sortByLastUsedDesc(hosts: readonly RemoteHost[]): RemoteHost[] {
     return [...hosts].sort((left, right) => (right.lastUsedAt ?? 0) - (left.lastUsedAt ?? 0));
@@ -551,6 +557,19 @@ const RemoteHostsScreenBody = React.memo(function RemoteHostsScreenBody(props: R
                                 title: t('settings.remoteHostsRelayRuntimeRestartTitle'),
                                 icon: 'arrow-clockwise',
                                 onPress: () => void startManageHostAction(host, 'relayRuntime.restart', t('settings.remoteHostsRelayRuntimeRestartTitle')),
+                            },
+                            {
+                                id: 'personalHome.erase',
+                                title: personalHomeCopy('eraseDataAction', 'Delete Personal Home data'),
+                                subtitle: personalHomeCopy('eraseDataSubtitle', 'Separate from uninstall. Permanently deletes the resolved Home data.'),
+                                icon: 'trash',
+                                destructive: true,
+                                inlineTestID: `settings.remoteHosts.action.personalHome.erase.${host.id}`,
+                                onPress: () => void startManageHostAction(
+                                    host,
+                                    'personalHome.erase',
+                                    personalHomeCopy('eraseDataAction', 'Delete Personal Home data'),
+                                ),
                             }] satisfies ItemAction[] : []),
                             {
                                 id: 'edit',

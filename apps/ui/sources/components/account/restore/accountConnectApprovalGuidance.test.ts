@@ -23,7 +23,7 @@ describe('account-connect approval guidance', () => {
         await expect(promptAccountConnectApprovalRequired()).resolves.toBe('showQr');
         expect(alertAsyncSpy).toHaveBeenCalledWith(
             'connect.restoreAccount',
-            'connect.restoreQrInstructions',
+            'connect.legacyAccountQrUnavailable',
             expect.any(Array),
         );
     });

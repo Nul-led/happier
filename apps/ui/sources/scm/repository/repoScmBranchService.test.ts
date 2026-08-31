@@ -80,6 +80,47 @@ describe('repoScmBranchService', () => {
         vi.restoreAllMocks();
     });
 
+    it('uses the selected server and Home for branch reads and cache identity', async () => {
+        storageGetStateMock.mockReturnValue({});
+        vi.mocked(machineScmBranchList).mockImplementation(async (_machineId, request, options) => ({
+            success: true,
+            branches: [{
+                name: `${options?.serverId}:${request.cwd}`,
+                type: 'local' as const,
+                isCurrent: false,
+                upstream: null,
+            }],
+        }));
+        const { RepoScmBranchService } = await import('./repoScmBranchService');
+        const service = new RepoScmBranchService();
+
+        await service.fetchBranchesForMachinePath({
+            serverId: 'server-a',
+            machineId: 'machine-a',
+            path: '~/repo',
+            homeDir: '/Users/server-a',
+        });
+        await service.fetchBranchesForMachinePath({
+            serverId: 'server-b',
+            machineId: 'machine-a',
+            path: '~/repo',
+            homeDir: '/Users/server-b',
+        });
+
+        expect(service.readCachedBranchesForMachinePath({
+            serverId: 'server-a',
+            machineId: 'machine-a',
+            path: '~/repo',
+            homeDir: '/Users/server-a',
+        })[0]?.name).toBe('server-a:/Users/server-a/repo');
+        expect(service.readCachedBranchesForMachinePath({
+            serverId: 'server-b',
+            machineId: 'machine-a',
+            path: '~/repo',
+            homeDir: '/Users/server-b',
+        })[0]?.name).toBe('server-b:/Users/server-b/repo');
+    });
+
     it('fetches repo branches for a machine/path through the canonical machine SCM layer', async () => {
         storageGetStateMock.mockReturnValue({
             machines: {

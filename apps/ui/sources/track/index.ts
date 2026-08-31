@@ -40,6 +40,13 @@ export function trackAccountRestored() {
     tracking?.capture('account_restored');
 }
 
+export function trackAuthEnrollmentTransientRetry() {
+    tracking?.capture('auth_enrollment_outcome', {
+        flow: 'account_qr',
+        outcome: 'transient_retry',
+    });
+}
+
 export function trackLogout() {
     trackingAnonymousUserId = null;
     publishTrackingAnonymousUserIdChange();

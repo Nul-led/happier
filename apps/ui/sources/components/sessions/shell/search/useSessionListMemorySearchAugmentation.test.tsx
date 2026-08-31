@@ -6,8 +6,32 @@ import { createDeferred, flushHookEffects, renderHook, standardCleanup } from '@
 import type { Machine } from '@/sync/domains/state/storageTypes';
 
 const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
+const homeSearchMock = vi.hoisted(() => vi.fn());
 const featureEnabledState = vi.hoisted(() => ({ memorySearch: true }));
 const activeServerState = vi.hoisted(() => ({ serverId: 'server-a' as string | null }));
+const serverProfilesState = vi.hoisted(() => ({ profileSource: 'manual' as string | undefined }));
+const featureRuntimeState = vi.hoisted(() => ({
+    storagePolicy: 'required_e2ee' as string | undefined,
+    homeSearch: undefined as unknown,
+}));
+const defaultMachines = [{
+        id: 'machine-a',
+        seq: 0,
+        createdAt: 0,
+        updatedAt: 0,
+        active: true,
+        activeAt: 0,
+        metadata: {
+            host: 'machine-a',
+            platform: 'darwin',
+            happyCliVersion: '0.0.0-test',
+            happyHomeDir: '/tmp/happier',
+            homeDir: '/tmp',
+        },
+        metadataVersion: 0,
+        daemonState: null,
+        daemonStateVersion: 0,
+    }] satisfies Machine[];
 const machinesState = vi.hoisted(() => ({
     machines: [{
         id: 'machine-a',
@@ -33,12 +57,50 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
     machineRpcWithServerScope: machineRpcWithServerScopeMock,
 }));
 
+vi.mock('@/sync/domains/memory/searchHomeMemory', () => ({
+    searchHomeMemory: homeSearchMock,
+}));
+
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: (featureId: string) => featureId === 'memory.search' && featureEnabledState.memorySearch,
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => ({ serverId: activeServerState.serverId, generation: 1 }),
+}));
+
+vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
+    useActiveServerSnapshot: () => ({ serverId: activeServerState.serverId, serverUrl: '', generation: 1 }),
+}));
+
+vi.mock('@/hooks/server/useServerProfilesGeneration', () => ({
+    useServerProfilesGeneration: () => 1,
+}));
+
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>()),
+    getServerProfileById: () => serverProfilesState.profileSource === undefined
+        ? null
+        : {
+            id: String(activeServerState.serverId ?? 'server-a'),
+            name: 'Home profile',
+            serverUrl: 'https://home.example.test',
+            source: serverProfilesState.profileSource,
+        },
+}));
+
+vi.mock('@/sync/domains/features/featureDecisionRuntime', () => ({
+    useServerFeaturesRuntimeSnapshot: () => ({
+        status: 'ready',
+        features: {
+            capabilities: {
+                encryption: featureRuntimeState.storagePolicy === undefined
+                    ? {}
+                    : { storagePolicy: featureRuntimeState.storagePolicy },
+                homeSearch: featureRuntimeState.homeSearch,
+            },
+        },
+    }),
 }));
 
 vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
@@ -112,8 +174,13 @@ async function renderMemoryAugmentationHook(props: Readonly<{
 afterEach(() => {
     vi.useRealTimers();
     machineRpcWithServerScopeMock.mockReset();
+    homeSearchMock.mockReset();
     featureEnabledState.memorySearch = true;
     activeServerState.serverId = 'server-a';
+    serverProfilesState.profileSource = 'manual';
+    featureRuntimeState.storagePolicy = 'required_e2ee';
+    featureRuntimeState.homeSearch = undefined;
+    machinesState.machines = defaultMachines;
     standardCleanup();
 });
 
@@ -291,5 +358,106 @@ describe('useSessionListMemorySearchAugmentation', () => {
 
         expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-a:session-2']);
         expect(hook.getCurrent().lastSuccessfulQuery).toBe('parser');
+    });
+
+    it('augments from Home with zero machines and never calls daemon RPC', async () => {
+        vi.useFakeTimers();
+        machinesState.machines = [];
+        serverProfilesState.profileSource = 'desktop-personal-home';
+        featureRuntimeState.storagePolicy = 'plaintext_only';
+        featureRuntimeState.homeSearch = { enabled: true, provider: 'home' };
+        machineRpcWithServerScopeMock.mockImplementation(async () => {
+            throw new Error('daemon RPC must not be called for the Home provider');
+        });
+        homeSearchMock.mockResolvedValueOnce({
+            v: 1,
+            ok: true,
+            hits: [createMemorySearchHit('session-1')],
+        });
+
+        const hook = await renderMemoryAugmentationHook({
+            searchQuery: 'vector',
+            candidateSessionKeys: new Set(['server-a:session-1']),
+        });
+        await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
+
+        expect(homeSearchMock).toHaveBeenCalledWith(expect.objectContaining({
+            query: 'vector',
+        }));
+        expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-a:session-1']);
+        expect(hook.getCurrent().isSearchingMemory).toBe(false);
+    });
+
+    it('keeps missing and indexing Personal Home capability off the daemon path', async () => {
+        vi.useFakeTimers();
+        machinesState.machines = [];
+        serverProfilesState.profileSource = 'desktop-personal-home';
+
+        const hook = await renderMemoryAugmentationHook({
+            searchQuery: 'vector',
+            candidateSessionKeys: new Set(['server-a:session-1']),
+        });
+        await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
+
+        expect(homeSearchMock).not.toHaveBeenCalled();
+        expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
+        expect(hook.getCurrent().memorySearchUnavailableReason).toBe('home_unknown');
+
+        featureRuntimeState.homeSearch = { enabled: false, provider: 'home', reason: 'indexing' };
+        await hook.rerender({
+            searchQuery: 'vector',
+            candidateSessionKeys: new Set(['server-a:session-1']),
+        });
+        await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
+
+        expect(homeSearchMock).not.toHaveBeenCalled();
+        expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
+        expect(hook.getCurrent().memorySearchUnavailableReason).toBe('home_indexing');
+    });
+
+    it('ignores stale Home results after a server switch', async () => {
+        vi.useFakeTimers();
+        machinesState.machines = [];
+        serverProfilesState.profileSource = 'desktop-personal-home';
+        featureRuntimeState.storagePolicy = 'plaintext_only';
+        featureRuntimeState.homeSearch = { enabled: true, provider: 'home' };
+        const staleSearch = createDeferred<unknown>();
+        let homeSearchCallCount = 0;
+        homeSearchMock.mockImplementation(() => {
+            homeSearchCallCount += 1;
+            if (homeSearchCallCount === 1) return staleSearch.promise;
+            return Promise.resolve({
+                v: 1,
+                ok: true,
+                hits: [createMemorySearchHit('session-2', 'Fresh summary')],
+            });
+        });
+
+        const hook = await renderMemoryAugmentationHook({
+            searchQuery: 'vector',
+            candidateSessionKeys: new Set(['server-a:session-1', 'server-a:session-2']),
+        });
+        await flushHookEffects({ advanceTimersMs: 300, cycles: 3 });
+
+        activeServerState.serverId = 'server-b';
+        await hook.rerender({
+            searchQuery: 'vector',
+            candidateSessionKeys: new Set(['server-b:session-2']),
+        });
+        await flushHookEffects({ advanceTimersMs: 300, cycles: 4 });
+
+        expect(homeSearchCallCount).toBe(2);
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-b:session-2']);
+
+        staleSearch.resolve({
+            v: 1,
+            ok: true,
+            hits: [createMemorySearchHit('session-1', 'Stale summary')],
+        });
+        await flushHookEffects({ cycles: 3 });
+
+        expect([...hook.getCurrent().memoryMatchedSessionKeys]).toEqual(['server-b:session-2']);
+        expect(hook.getCurrent().lastSuccessfulQuery).toBe('vector');
     });
 });

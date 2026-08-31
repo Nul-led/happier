@@ -1,9 +1,9 @@
 import type { FeaturesResponse as ServerFeatures } from '@happier-dev/protocol';
 import { AsyncTtlCache } from '@happier-dev/protocol';
 
+import * as serverHttp from '@/sync/http/client';
 import {
     ServerFetchAbortedForServerSwitchError,
-    serverFetch,
     StaleServerGenerationError,
 } from '@/sync/http/client';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
@@ -28,11 +28,18 @@ const TTL_ERROR_RESPONSE_STATUS_MS = 30 * 1000;
 const FORCE_COOLDOWN_ENDPOINT_MISSING_MS = 60 * 1000;
 
 export type ServerFeaturesSnapshot =
-    | Readonly<{ status: 'ready'; features: ServerFeatures }>
+    | Readonly<{ status: 'ready'; features: ServerFeatures; serverIdentityId?: string | null }>
     | Readonly<{ status: 'unsupported'; reason: 'endpoint_missing' | 'invalid_payload' }>
     | Readonly<{ status: 'error'; reason: 'network' | 'timeout' | 'response_status' }>;
 
 const cache = new AsyncTtlCache<ServerFeaturesSnapshot>({
+    successTtlMs: TTL_READY_MS,
+    errorTtlMs: TTL_ERROR_NETWORK_MS,
+});
+// Explicit endpoint probes are diagnostic inputs for their caller, not active
+// Home state. Keep their cache and in-flight map separate so a probe cannot
+// notify active feature subscribers or collide with an id-scoped entry.
+const endpointCache = new AsyncTtlCache<ServerFeaturesSnapshot>({
     successTtlMs: TTL_READY_MS,
     errorTtlMs: TTL_ERROR_NETWORK_MS,
 });
@@ -51,6 +58,14 @@ function writeServerFeaturesSnapshot(
 ): void {
     cache.setSuccess(cacheKey, snapshot, { ttlMs });
     notifyServerFeaturesSnapshotChanged();
+}
+
+function writeEndpointServerFeaturesSnapshot(
+    cacheKey: string,
+    snapshot: ServerFeaturesSnapshot,
+    ttlMs: number,
+): void {
+    endpointCache.setSuccess(cacheKey, snapshot, { ttlMs });
 }
 
 export function subscribeServerFeaturesSnapshot(
@@ -105,6 +120,30 @@ function joinBaseAndPath(baseUrl: string, path: string): string {
     const base = String(baseUrl ?? '').replace(/\/+$/, '');
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
     return `${base}${normalizedPath}`;
+}
+
+/**
+ * Explicit endpoint probes are keyed by their stable URL rather than the focused
+ * server id. Keep the namespace separate from id-scoped entries in the legacy
+ * active-server cache; a URL is allowed to be unknown to the local profile store.
+ */
+function getEndpointCacheKey(endpointUrl: string): string {
+    return `endpoint:${endpointUrl}`;
+}
+
+function normalizeExplicitEndpointUrl(raw: unknown): string {
+    const value = String(raw ?? '').trim();
+    if (!value) return '';
+    try {
+        const parsed = new URL(value);
+        parsed.username = '';
+        parsed.password = '';
+        parsed.search = '';
+        parsed.hash = '';
+        return parsed.toString().replace(/\/+$/, '');
+    } catch {
+        return '';
+    }
 }
 
 function isAbortErrorLike(error: unknown): boolean {
@@ -196,7 +235,7 @@ async function getServerFeaturesSnapshotWithRetry(
                             },
                             timeoutMs,
                         })
-                        : await serverFetch(
+                        : await serverHttp.serverFetch(
                             '/v1/features',
                             {
                                 method: 'GET',
@@ -368,7 +407,193 @@ export function deleteServerFeaturesSnapshot(params?: { serverId?: string }): vo
     notifyServerFeaturesSnapshotChanged();
 }
 
+export type ProbeServerFeaturesAtUrlOptions = Readonly<{
+    /** Bound for the feature request itself. Defaults to the active probe bound. */
+    timeoutMs?: number;
+    /** Force a refresh even when a URL-scoped snapshot is still fresh. */
+    force?: boolean;
+    /** Stable profile/identity hint used only for credential/reachability scoping. */
+    serverId?: string;
+    /** Request-only transport origin (for example an Iroh loopback origin). */
+    runtimeOrigin?: string;
+    /** Caller cancellation; it never changes focused-server state. */
+    signal?: AbortSignal;
+}>;
+
+export type ProbeServerFeaturesAtUrlInput = ProbeServerFeaturesAtUrlOptions & {
+    /** Canonical spelling used by the endpoint contracts. */
+    endpointUrl?: string;
+    /** Compatibility spelling retained by the earlier probe helper contract. */
+    serverUrl?: string;
+};
+
+function normalizeProbeServerFeaturesArgs(
+    endpointOrInput: string | ProbeServerFeaturesAtUrlInput,
+    options?: ProbeServerFeaturesAtUrlOptions,
+): ProbeServerFeaturesAtUrlInput {
+    if (typeof endpointOrInput === 'string') {
+        return {
+            endpointUrl: endpointOrInput,
+            ...(options ?? {}),
+        };
+    }
+    return {
+        ...endpointOrInput,
+        endpointUrl: endpointOrInput.endpointUrl ?? endpointOrInput.serverUrl ?? '',
+    };
+}
+
+/**
+ * Probe a Home/Account Service at an explicit endpoint. This is intentionally
+ * independent from the focused-server snapshot/profile path: the URL is the
+ * request's stable audience and the optional runtime origin is transport-only.
+ * The result records observed identity, but does not adopt it into profiles or
+ * change focus.
+ */
+export async function probeServerFeaturesAtUrl(
+    endpointUrl: string,
+    options?: ProbeServerFeaturesAtUrlOptions,
+): Promise<ServerFeaturesSnapshot>;
+export async function probeServerFeaturesAtUrl(
+    input: ProbeServerFeaturesAtUrlInput,
+): Promise<ServerFeaturesSnapshot>;
+export async function probeServerFeaturesAtUrl(
+    endpointOrInput: string | ProbeServerFeaturesAtUrlInput,
+    options?: ProbeServerFeaturesAtUrlOptions,
+): Promise<ServerFeaturesSnapshot> {
+    const input = normalizeProbeServerFeaturesArgs(endpointOrInput, options);
+    const endpointUrl = normalizeExplicitEndpointUrl(input.endpointUrl);
+    const cacheKey = getEndpointCacheKey(endpointUrl);
+    const force = input.force ?? false;
+    const timeoutMs = typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)
+        ? Math.max(0, Math.trunc(input.timeoutMs))
+        : 800;
+
+    const cachedEntry = endpointCache.get(cacheKey);
+    const cached = cachedEntry?.kind === 'success' ? cachedEntry.value : null;
+    if (cached && cachedEntry && endpointCache.isFresh(cachedEntry)) {
+        if (!force) return cached;
+        const ageMs = Date.now() - cachedEntry.updatedAt;
+        if (ageMs < getForceCooldownMs(cached)) return cached;
+    }
+
+    return await endpointCache.runDedupe(cacheKey, async (): Promise<ServerFeaturesSnapshot> => {
+        const cachedEntry2 = endpointCache.get(cacheKey);
+        const cached2 = cachedEntry2?.kind === 'success' ? cachedEntry2.value : null;
+        if (cached2 && cachedEntry2 && endpointCache.isFresh(cachedEntry2)) {
+            if (!force) return cached2;
+            const ageMs = Date.now() - cachedEntry2.updatedAt;
+            if (ageMs < getForceCooldownMs(cached2)) return cached2;
+        }
+
+        if (!endpointUrl) {
+            const value: ServerFeaturesSnapshot = { status: 'error', reason: 'network' };
+            writeEndpointServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+            return value;
+        }
+
+        const controller = new AbortController();
+        let didTimeout = false;
+        const timer = timeoutMs > 0
+            ? setTimeout(() => {
+                didTimeout = true;
+                controller.abort('features-timeout');
+            }, timeoutMs)
+            : null;
+
+        try {
+            recordAccountStoredContentServerRequirements({
+                serverUrl: endpointUrl,
+                requirements: undefined,
+            });
+            const request = serverHttp.createServerFetchAtEndpoint({
+                endpointUrl,
+                runtimeOrigin: input.runtimeOrigin,
+                serverId: input.serverId,
+                // A feature probe is intentionally unauthenticated. Passing null
+                // also prevents a scoped credential lookup if a future caller
+                // omits includeAuth on the request adapter.
+                credentials: null,
+                signal: input.signal,
+            });
+
+            let response: Response;
+            try {
+                response = await request(
+                    '/v1/features',
+                    {
+                        method: 'GET',
+                        signal: controller.signal,
+                    },
+                    { includeAuth: false, retry: 'none' },
+                );
+            } catch (error) {
+                if (didTimeout) {
+                    const value: ServerFeaturesSnapshot = { status: 'error', reason: 'timeout' };
+                    writeEndpointServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+                    return value;
+                }
+                // An upstream cancellation is not a server observation. Keep the
+                // result uncached so a later owner can retry immediately.
+                if (input.signal?.aborted || controller.signal.aborted) {
+                    return { status: 'error', reason: 'network' };
+                }
+                const value: ServerFeaturesSnapshot = { status: 'error', reason: 'network' };
+                writeEndpointServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+                return value;
+            }
+
+            if (!response.ok) {
+                const value: ServerFeaturesSnapshot = isEndpointMissing(response.status)
+                    ? { status: 'unsupported', reason: 'endpoint_missing' }
+                    : { status: 'error', reason: 'response_status' };
+                writeEndpointServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+                return value;
+            }
+
+            const contentType = String(response.headers?.get?.('content-type') ?? '').toLowerCase();
+            if (contentType && !contentType.includes('application/json') && !contentType.includes('+json')) {
+                const value: ServerFeaturesSnapshot = { status: 'unsupported', reason: 'invalid_payload' };
+                writeEndpointServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+                return value;
+            }
+
+            let payload: unknown;
+            try {
+                payload = await response.json();
+            } catch {
+                const value: ServerFeaturesSnapshot = { status: 'unsupported', reason: 'invalid_payload' };
+                writeEndpointServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+                return value;
+            }
+
+            const parsed = parseServerFeatures(payload);
+            if (!parsed) {
+                const value: ServerFeaturesSnapshot = { status: 'unsupported', reason: 'invalid_payload' };
+                writeEndpointServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+                return value;
+            }
+
+            const serverIdentityId = parsed.capabilities.serverIdentity.serverIdentityId;
+            const value: ServerFeaturesSnapshot = {
+                status: 'ready',
+                features: parsed,
+                serverIdentityId,
+            };
+            recordAccountStoredContentServerRequirements({
+                serverUrl: endpointUrl,
+                requirements: parsed.capabilities.accountStoredContentCompatibility,
+            });
+            writeEndpointServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+            return value;
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    });
+}
+
 export function resetServerFeaturesClientForTests(): void {
     cache.clear();
+    endpointCache.clear();
     notifyServerFeaturesSnapshotChanged();
 }

@@ -10,6 +10,7 @@ import { renderScreen } from '@/dev/testkit';
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 const switchConnectionToActiveServerSpy = vi.hoisted(() => vi.fn(async () => null));
+const disconnectActiveServerConnectionSpy = vi.hoisted(() => vi.fn(async () => {}));
 const syncSwitchServerSpy = vi.hoisted(() => vi.fn(async () => {}));
 const subscribeActiveServerSpy = vi.hoisted(() => vi.fn());
 const subscribeAuthCredentialsInvalidationSpy = vi.hoisted(() => vi.fn());
@@ -20,6 +21,7 @@ let authInvalidationListener: ((event: unknown) => void | Promise<void>) | null 
 
 vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
     switchConnectionToActiveServer: switchConnectionToActiveServerSpy,
+    disconnectActiveServerConnection: disconnectActiveServerConnectionSpy,
 }));
 
 vi.mock('@/sync/sync', () => ({
@@ -67,6 +69,7 @@ describe('AuthContext credential invalidation handling', () => {
     beforeEach(() => {
         switchConnectionToActiveServerSpy.mockReset();
         switchConnectionToActiveServerSpy.mockResolvedValue(null);
+        disconnectActiveServerConnectionSpy.mockReset();
         syncSwitchServerSpy.mockReset();
         subscribeActiveServerSpy.mockReset();
         subscribeAuthCredentialsInvalidationSpy.mockReset();
@@ -79,7 +82,7 @@ describe('AuthContext credential invalidation handling', () => {
         vi.unstubAllGlobals();
     });
 
-    it('refreshes focused auth without stopping secondary-server cache continuity', async () => {
+    it('disconnects first-key rejected auth through the connection owner without stopping secondary-server continuity', async () => {
         const { AuthProvider, getCurrentAuth } = await import('./AuthContext');
 
         const screen = await renderScreen(
@@ -97,17 +100,19 @@ describe('AuthContext credential invalidation handling', () => {
 
             await act(async () => {
                 await authInvalidationListener?.({
+                    kind: 'first_key_recovery_required',
                     serverId: 'server-a',
                     serverUrl: 'http://localhost:3012',
-                    token: 'token-a',
+                    recovery: {},
                 });
             });
 
             await vi.waitFor(() => {
-                expect(switchConnectionToActiveServerSpy).toHaveBeenCalledTimes(1);
-                expect(syncSwitchServerSpy).toHaveBeenCalledWith(null);
+                expect(disconnectActiveServerConnectionSpy).toHaveBeenCalledTimes(1);
                 expect(getCurrentAuth()?.isAuthenticated).toBe(false);
             });
+            expect(switchConnectionToActiveServerSpy).not.toHaveBeenCalled();
+            expect(syncSwitchServerSpy).not.toHaveBeenCalled();
             expect(stopConcurrentSessionCacheSyncSpy).not.toHaveBeenCalled();
         } finally {
             await screen.unmount();

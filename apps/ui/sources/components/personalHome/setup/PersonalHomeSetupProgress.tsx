@@ -6,9 +6,9 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
+import { t } from '@/text';
 
 import type { SetupRowState } from '../bootstrap/personalHomeBootstrapTypes';
-import { personalHomeCopy } from './personalHomeCopy';
 
 const styles = StyleSheet.create((theme) => ({
     row: {
@@ -23,58 +23,82 @@ const styles = StyleSheet.create((theme) => ({
         backgroundColor: theme.colors.background.canvas,
     },
     icon: { width: 28, alignItems: 'center' },
-    copy: { flex: 1, gap: 2 },
+    copy: { flex: 1, minWidth: 0, gap: 2 },
     title: { ...Typography.default('semiBold'), color: theme.colors.text.primary, fontSize: 15 },
-    detail: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 13 },
+    detail: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 13, flexShrink: 1 },
 }));
 
-const ROW_COPY: Record<SetupRowState['id'], { title: string; detail: string }> = {
-    home: {
-        title: personalHomeCopy('preparingHomeTitle', 'Preparing your Home'),
-        detail: personalHomeCopy('preparingHomeDetail', 'Getting this computer ready for your local work.'),
-    },
-    app: {
-        title: personalHomeCopy('connectingAppTitle', 'Connecting Happier'),
-        detail: personalHomeCopy('connectingAppDetail', 'Connecting Happier to your Home securely.'),
-    },
-    computer: {
-        title: personalHomeCopy('preparingComputerTitle', 'Preparing this computer'),
-        detail: personalHomeCopy('preparingComputerDetail', 'Setting up the background service so sessions can keep running.'),
-    },
-};
+function rowCopy(id: SetupRowState['id']): { title: string; detail: string } {
+    switch (id) {
+        case 'home': return {
+            title: t('personalHome.bootstrap.preparingHomeTitle'),
+            detail: t('personalHome.bootstrap.preparingHomeDetail'),
+        };
+        case 'app': return {
+            title: t('personalHome.bootstrap.connectingAppTitle'),
+            detail: t('personalHome.bootstrap.connectingAppDetail'),
+        };
+        case 'computer': return {
+            title: t('personalHome.bootstrap.preparingComputerTitle'),
+            detail: t('personalHome.bootstrap.preparingComputerDetail'),
+        };
+    }
+}
+
+function rowStatus(status: SetupRowState['status']): string {
+    switch (status) {
+        case 'pending': return t('personalHome.bootstrap.pending');
+        case 'active': return t('personalHome.bootstrap.active');
+        case 'complete': return t('personalHome.bootstrap.complete');
+        case 'blocked': return t('personalHome.bootstrap.blocked');
+    }
+}
 
 export const PersonalHomeSetupProgress = React.memo(function PersonalHomeSetupProgress(props: Readonly<{
     rows: readonly SetupRowState[];
 }>) {
     const { theme } = useUnistyles();
     return (
-        <View testID="personal-home-bootstrap-progress" accessibilityRole="list">
+        <View
+            testID="personal-home-bootstrap-progress"
+            accessibilityRole="list"
+            accessibilityLabel={t('personalHome.bootstrap.progressLabel')}
+        >
             {props.rows.map((item) => {
-                const copy = ROW_COPY[item.id];
+                const copy = rowCopy(item.id);
                 const isActive = item.status === 'active';
                 const isBlocked = item.status === 'blocked';
                 return (
                     <View
                         key={item.id}
                         testID={`personal-home-bootstrap-row-${item.id}`}
-                        accessibilityLiveRegion="polite"
+                        accessible
+                        accessibilityLabel={t('personalHome.bootstrap.rowAccessibilityLabel', {
+                            title: copy.title,
+                            status: rowStatus(item.status),
+                            detail: copy.detail,
+                        })}
+                        accessibilityState={{ busy: isActive }}
                         style={styles.row}
                     >
-                        <View style={styles.icon}>
+                        <View style={styles.icon} accessible={false} accessibilityElementsHidden>
                             {isActive ? (
-                                <ActivitySpinner size="small" color={theme.colors.button.primary.background} />
+                                <ActivitySpinner
+                                    accessible={false}
+                                    size="small"
+                                    color={theme.colors.button.primary.background}
+                                />
                             ) : (
                                 <Icon
                                     name={isBlocked ? 'warning-circle' : item.status === 'complete' ? 'check-circle' : 'circle'}
                                     size={ICON_SIZE.md}
                                     color={isBlocked ? theme.colors.text.secondary : item.status === 'complete' ? theme.colors.button.primary.background : theme.colors.text.tertiary}
-                                    accessibilityLabel={isBlocked ? personalHomeCopy('blocked', 'Needs attention') : undefined}
                                 />
                             )}
                         </View>
                         <View style={styles.copy}>
                             <Text style={styles.title}>{copy.title}</Text>
-                            <Text style={styles.detail}>{item.detail ?? copy.detail}</Text>
+                            <Text style={styles.detail}>{copy.detail}</Text>
                         </View>
                     </View>
                 );

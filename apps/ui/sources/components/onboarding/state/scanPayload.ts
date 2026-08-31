@@ -1,8 +1,9 @@
 import { parseAccountConnectDeepLink } from '@/auth/pairing/accountConnectUrl';
-import { parsePairingDeepLink } from '@/auth/pairing/pairingUrl';
+import { parseHomeQrInviteDeepLink, parsePairingDeepLink } from '@/auth/pairing/pairingUrl';
 import { normalizeServerUrl } from '@/sync/domains/server/activeServerSwitch';
 
 export type ParsedOnboardingScanPayload =
+    | Readonly<{ kind: 'home_qr_invite'; rawLink: string }>
     | Readonly<{ kind: 'pairing_link'; pairId: string; secret: string; serverUrl: string | null }>
     | Readonly<{ kind: 'account_connect'; publicKeyB64Url: string }>
     | Readonly<{ kind: 'relay_url'; serverUrl: string }>
@@ -15,6 +16,10 @@ function isLikelyRelayUrlCandidate(raw: string): boolean {
 export function parseOnboardingScanPayload(raw: string): ParsedOnboardingScanPayload {
     const trimmed = String(raw ?? '').trim();
     if (!trimmed) return { kind: 'unknown' };
+
+    if (parseHomeQrInviteDeepLink(trimmed)) {
+        return { kind: 'home_qr_invite', rawLink: trimmed };
+    }
 
     const pairing = parsePairingDeepLink(trimmed);
     if (pairing) {

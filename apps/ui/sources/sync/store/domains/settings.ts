@@ -34,6 +34,8 @@ import { resolveSessionListIndexSettingsImpact } from './settingsSessionListInde
 import { emitLocalSettingChangedEvents } from '@/track/settingsAnalytics/emitSettingChangedEvent';
 import type { SettingsAnalyticsSource } from '@/track/settingsAnalytics/types';
 import { setPreferredLanguageFromSettings } from '@/text/i18n';
+import { loadHomeViewState } from '@/sync/domains/server/serverProfiles';
+import { normalizeServerSelectionGroupsForSettings } from '@/sync/domains/server/selection/serverSelectionSettingsAdapter';
 
 import type { StoreGet, StoreSet } from './_shared';
 
@@ -142,7 +144,16 @@ function buildSettingsProjectionState<S extends SettingsDomain & SettingsDomainD
     // so every object/array-valued key arrives as a fresh reference even when nothing changed;
     // `useSettings`/`useSetting` subscribe shallowly and would re-render app-wide on that echo.
     // Content always wins — a key is reused only when structurally deep-equal to the previous one.
-    const nextSettings = reconcileSettingsReferences(state.settings, incomingSettings);
+    const homeViewState = loadHomeViewState();
+    const projectedSettings = homeViewState
+        ? {
+            ...incomingSettings,
+            serverSelectionGroups: normalizeServerSelectionGroupsForSettings(homeViewState.groups),
+            serverSelectionActiveTargetKind: homeViewState.activeTargetKind,
+            serverSelectionActiveTargetId: homeViewState.activeTargetId,
+        }
+        : incomingSettings;
+    const nextSettings = reconcileSettingsReferences(state.settings, projectedSettings);
 
     safeSetPreferredLanguageFromSettings(nextSettings.preferredLanguage);
 
@@ -183,7 +194,16 @@ export function createSettingsDomain<S extends SettingsDomain & SettingsDomainDe
     get: StoreGet<S>;
 }): SettingsDomain {
     const { settings: rawSettings, version } = loadSettings();
-    const settings = settingsParse(rawSettings);
+    const parsedSettings = settingsParse(rawSettings);
+    const homeViewState = loadHomeViewState();
+    const settings = homeViewState
+        ? {
+            ...parsedSettings,
+            serverSelectionGroups: normalizeServerSelectionGroupsForSettings(homeViewState.groups),
+            serverSelectionActiveTargetKind: homeViewState.activeTargetKind,
+            serverSelectionActiveTargetId: homeViewState.activeTargetId,
+        }
+        : parsedSettings;
     safeSetPreferredLanguageFromSettings(settings.preferredLanguage);
     const localSettings = loadLocalSettings();
     const purchases = loadPurchases();

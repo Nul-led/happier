@@ -229,7 +229,18 @@ describe('runNativeRemoteSshBootstrapTask', () => {
                     return { ok: false, data: { code: 'not_authenticated' } };
                 }
                 if (command.includes('auth request')) {
-                    return { ok: true, data: { publicKey: 'pubkey-a' } };
+                    return {
+                        ok: true,
+                        data: {
+                            publicKey: 'pubkey-a',
+                            pairing: {
+                                secretB64Url: 'pairing-secret-b64url',
+                                createdAtMs: 123,
+                                expiresAtMs: 456,
+                            },
+                            supportsTokenOnly: true,
+                        },
+                    };
                 }
                 if (command.includes('auth wait')) {
                     return { ok: true, data: { machineId: 'machine-paired' } };
@@ -251,7 +262,16 @@ describe('runNativeRemoteSshBootstrapTask', () => {
             machineId: 'machine-paired',
             publicKey: 'pubkey-a',
         });
-        expect(approveLocalAuthRequest).toHaveBeenCalledWith('pubkey-a');
+        expect(approveLocalAuthRequest).toHaveBeenCalledWith({
+            publicKey: 'pubkey-a',
+            pairing: {
+                secretB64Url: 'pairing-secret-b64url',
+                createdAtMs: 123,
+                expiresAtMs: 456,
+            },
+            supportsTokenOnly: true,
+            endpointUrl: 'https://relay.example.test',
+        });
     });
 
     it('installs optional relay runtime through the remote CLI over native SSH exec', async () => {
@@ -340,19 +360,35 @@ describe('runNativeRemoteSshBootstrapTask', () => {
         }))).toThrow('native_ssh_missing_credentials');
     });
 
-    it('reports a typed upgrade requirement without posting when local credentials are token-only', async () => {
+    it('posts a pairing-bound data-key v3 response to the exact Home target', async () => {
         vi.resetModules();
-        const authApprove = vi.fn();
+        const authApproveAtEndpoint = vi.fn(async () => 'approved' as const);
+        const machineKey = new Uint8Array(32).fill(5);
+        const contentPublicKey = (await import('tweetnacl')).default.box.keyPair.fromSecretKey(machineKey).publicKey;
         vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => {
             const actual = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
             return {
                 ...actual,
                 TokenStorage: {
-                    getCredentials: vi.fn(async () => ({ token: 'plain-token' })),
+                    getCredentialsForServerUrl: vi.fn(async () => ({
+                        token: 'home-token',
+                        encryption: {
+                            publicKey: Buffer.from(contentPublicKey).toString('base64'),
+                            machineKey: Buffer.from(machineKey).toString('base64'),
+                        },
+                    })),
                 },
             };
         });
-        vi.doMock('@/auth/flows/approve', () => ({ authApprove }));
+        vi.doMock('@/auth/flows/approve', () => ({ authApproveAtEndpoint }));
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
+            listServerProfiles: () => [{
+                id: 'home-profile',
+                serverIdentityId: 'home-identity',
+                serverUrl: 'https://relay.example.test',
+            }],
+        }));
 
         try {
             const loaded = await import('./nativeTask');
@@ -373,13 +409,29 @@ describe('runNativeRemoteSshBootstrapTask', () => {
                 cancelRequest: vi.fn(async () => undefined),
             } satisfies NativeSshModule;
             const publicKey = Buffer.alloc(32, 3).toString('base64url');
+            const createdAtMs = Date.now() - 1_000;
+            const expiresAtMs = Date.now() + 60_000;
             const commandRunner = {
                 runJsonCommand: vi.fn(async ({ command }: { command: string }) => {
                     if (command.includes('auth status')) {
                         return { ok: false, data: { code: 'not_authenticated' } };
                     }
                     if (command.includes('auth request')) {
-                        return { ok: true, data: { publicKey } };
+                        return {
+                            ok: true,
+                            data: {
+                                publicKey,
+                                pairing: {
+                                    secretB64Url: Buffer.alloc(32, 7).toString('base64url'),
+                                    createdAtMs,
+                                    expiresAtMs,
+                                },
+                                supportsTokenOnly: true,
+                            },
+                        };
+                    }
+                    if (command.includes('auth wait')) {
+                        return { ok: true, data: { machineId: 'machine-paired' } };
                     }
                     return { ok: true, data: {} };
                 }),
@@ -392,14 +444,17 @@ describe('runNativeRemoteSshBootstrapTask', () => {
                 spec: createRemoteBootstrapSpec(),
                 commandRunner,
                 prompt: async () => ({ approved: true }),
-            })).rejects.toMatchObject({
-                name: 'SystemTaskExecutionError',
-                code: 'native_ssh_token_only_terminal_approval_upgrade_required',
-            });
-            expect(authApprove).not.toHaveBeenCalled();
+            })).resolves.toMatchObject({ machineId: 'machine-paired' });
+            expect(authApproveAtEndpoint).toHaveBeenCalledWith(expect.objectContaining({
+                endpointUrl: 'https://relay.example.test',
+                serverId: 'home-identity',
+                token: 'home-token',
+                responseKind: 'dataKey',
+            }));
         } finally {
             vi.doUnmock('@/auth/storage/tokenStorage');
             vi.doUnmock('@/auth/flows/approve');
+            vi.doUnmock('@/sync/domains/server/serverProfiles');
             vi.resetModules();
         }
     });

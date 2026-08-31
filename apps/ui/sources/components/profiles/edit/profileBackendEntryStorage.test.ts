@@ -42,6 +42,26 @@ const ohMyPiEntry: ResolvedBackendCatalogEntry = {
     subtitle: 'Oh My Pi',
     cliAuthBackgroundCheckSafe: false,
 };
+const claudeEntry: ResolvedBackendCatalogEntry = {
+    agentCatalogEntry: createResolvedAgentCatalogEntryFixture({ agentId: 'claude' }),
+    backendTarget: {
+        kind: 'agent',
+        identity: {
+            pluginId: 'happier.agent.claude',
+            localId: 'claude',
+        },
+    },
+    backendTargetKey: 'agent:happier.agent.claude/claude',
+    kind: 'builtInAgent',
+    backendId: 'claude',
+    agentId: 'claude',
+    catalogAgentId: 'claude',
+    builtInAgentId: 'claude',
+    iconAgentId: 'claude',
+    title: 'Claude',
+    subtitle: 'Claude',
+    cliAuthBackgroundCheckSafe: false,
+};
 
 describe('profileBackendEntryStorage', () => {
     it('reads explicit compatibility by backend target key', () => {
@@ -54,12 +74,32 @@ describe('profileBackendEntryStorage', () => {
         )).toBe(true);
     });
 
+    it('reads legacy compatibility for a persisted built-in Agent identity', () => {
+        expect(readProfileTargetKeyValueForEntry(
+            {
+                'agent:claude': true,
+            },
+            claudeEntry,
+        )).toBe(true);
+    });
+
     it('treats explicit compatibility as authoritative for plugin backends', () => {
         const profileTargetKey = resolveProfileBackendTargetKeyForEntry(pluginBackendEntry);
         expect(isProfileCompatibleWithResolvedBackendEntry(
             {
                 compatibility: {},
                 compatibilityByTargetKey: { [profileTargetKey]: true },
+                isBuiltIn: false,
+            },
+            pluginBackendEntry,
+        )).toBe(true);
+    });
+
+    it('uses the canonical custom-profile default for plugin backends', () => {
+        expect(isProfileCompatibleWithResolvedBackendEntry(
+            {
+                compatibility: {},
+                compatibilityByTargetKey: {},
                 isBuiltIn: false,
             },
             pluginBackendEntry,

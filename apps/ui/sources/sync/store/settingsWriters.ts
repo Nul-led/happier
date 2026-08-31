@@ -19,9 +19,29 @@ import {
   replayFavoriteModelSelectionReplacementIntent,
   replayRememberedEngineSelectionReplacementIntent,
 } from '../domains/settings/sessionAuthoringSelectionPersistence';
+import { removeAiLaunchProfileFromAccountSettings } from '../domains/profiles/aiLaunchProfileCollection';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import type { SettingsAnalyticsSource } from '@/track/settingsAnalytics/types';
 import { getStorage } from '@/sync/domains/state/storageStore';
+import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
+
+function requireCurrentSettingsVersion(): number {
+  const settingsVersion = getStorage().getState().settingsVersion;
+  if (settingsVersion === null) throw new Error('Account settings version is unavailable');
+  return settingsVersion;
+}
+
+async function persistAccountSettingsOnce(
+  expectedSettingsVersion: number,
+  mutate: (raw: Readonly<Record<string, unknown>>) => Record<string, unknown>,
+): Promise<void> {
+  requireOneShotAccountSettingsMutationApplied(
+    await getSyncSingleton().mutateAccountSettingsOnce({
+      expectedSettingsVersion,
+      mutate: (raw) => ({ settings: mutate(raw), value: undefined }),
+    }),
+  );
+}
 
 function applyLocalSettingsFromStore(delta: Partial<LocalSettings>, source: SettingsAnalyticsSource): void {
   getStorage().getState().applyLocalSettings(delta, { source });
@@ -55,6 +75,14 @@ export function useApplyProfileSave(): (input: Readonly<{
         }),
       };
     getSyncSingleton().applySettings(delta, { source: 'ui' satisfies SettingsAnalyticsSource });
+  }, []);
+}
+
+export function useDeleteAiLaunchProfile(): (profileId: string) => Promise<void> {
+  return React.useCallback(async (profileId: string) => {
+    await persistAccountSettingsOnce(requireCurrentSettingsVersion(), (raw) => (
+      removeAiLaunchProfileFromAccountSettings(raw, profileId)
+    ));
   }, []);
 }
 
@@ -100,9 +128,9 @@ export function useApplyRetainedSecretBindingsByProfileId(): (
 }
 
 /**
- * Apply a typed Favorite replacement through the canonical functional Account
- * Settings mutation. The callback is replayed over every CAS winner, so a
- * rendered raw carrier can never overwrite concurrent opaque entries.
+ * Apply a typed Favorite replacement once against the explicitly observed
+ * Account Settings version. The reducer preserves opaque entries in that
+ * observed carrier; a concurrent winner is reported rather than replayed.
  */
 export function useApplyFavoriteModelSelectionReplacementIntent(): (
   input: Readonly<{
@@ -111,15 +139,15 @@ export function useApplyFavoriteModelSelectionReplacementIntent(): (
   }>,
 ) => Promise<void> {
   return React.useCallback(async (input) => {
-    await getSyncSingleton().mutateAccountSettings((raw) => (
+    await persistAccountSettingsOnce(requireCurrentSettingsVersion(), (raw) => (
       replayFavoriteModelSelectionReplacementIntent({ raw, ...input })
     ));
   }, []);
 }
 
 /**
- * Apply a typed remembered-selection replacement through the same functional
- * Account Settings owner. An opaque winner scope remains unowned by this UI.
+ * Apply a typed remembered-selection replacement through the same one-shot
+ * owner. An opaque scope in the observed carrier remains unowned by this UI.
  */
 export function useApplyRememberedEngineSelectionReplacementIntent(): (
   input: Readonly<{
@@ -128,7 +156,7 @@ export function useApplyRememberedEngineSelectionReplacementIntent(): (
   }>,
 ) => Promise<void> {
   return React.useCallback(async (input) => {
-    await getSyncSingleton().mutateAccountSettings((raw) => (
+    await persistAccountSettingsOnce(requireCurrentSettingsVersion(), (raw) => (
       replayRememberedEngineSelectionReplacementIntent({ raw, ...input })
     ));
   }, []);

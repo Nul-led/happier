@@ -65,7 +65,7 @@ vi.mock('@/sync/ops/sessions', () => ({
 }));
 
 vi.mock('@/sync/ops/sessionHandoffs', () => ({
-    completeSessionHandoff: vi.fn(),
+    startSessionHandoff: vi.fn(),
 }));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedSessionRpc', () => ({

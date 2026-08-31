@@ -22,7 +22,13 @@ type PopoverCaptureProps = {
     children?: ((params: { maxHeight: number }) => React.ReactNode) | React.ReactNode;
 };
 
-type ActionLike = { id?: unknown; label?: unknown; onPress?: () => void };
+type ActionLike = {
+    id?: unknown;
+    label?: unknown;
+    subtitle?: unknown;
+    accessibilityLabel?: unknown;
+    onPress?: () => void;
+};
 type ActionListSectionProps = {
     actions?: ActionLike[];
 };
@@ -64,6 +70,8 @@ const tokenStorageMock = vi.hoisted(() => ({
     getCredentialsForServerUrl: vi.fn<(serverUrl: string) => Promise<{ token: string; secret: string } | null>>(
         async () => ({ token: 'scoped-token', secret: 'scoped-secret' })
     ),
+    readPendingExternalAuthState: vi.fn(async () => ({ value: null, serverMismatch: false })),
+    readPendingExternalAuthStateForServerUrl: vi.fn(async () => ({ value: null, serverMismatch: false })),
 }));
 
 const routerMocks = vi.hoisted(() => ({
@@ -85,6 +93,10 @@ const connectionState = vi.hoisted(() => ({
     socketStatus: 'connected' as 'connected' | 'connecting' | 'disconnected' | 'error',
     syncError: null as null | { message: string; retryable?: boolean; kind?: string; at?: number },
     lastSyncAt: null as number | null,
+}));
+
+const machineListStatusState = vi.hoisted(() => ({
+    byServerId: {} as Record<string, 'idle' | 'loading' | 'signedOut' | 'error'>,
 }));
 
 const connectionHealthState = vi.hoisted(() => ({
@@ -154,6 +166,8 @@ installConnectionStatusControlCommonModuleMocks({
             useSocketStatus: () => ({ status: connectionState.socketStatus }),
             useSyncError: () => connectionState.syncError,
             useLastSyncAt: () => connectionState.lastSyncAt,
+            useMachineListStatusByServerId: () => machineListStatusState.byServerId,
+            useSettings: () => settingsState,
             useSettingMutable: (key: keyof typeof settingsState) => [
                 settingsState[key],
                 (value: unknown) => {
@@ -183,6 +197,9 @@ vi.mock('@expo/vector-icons', () => ({
 }));
 
 vi.mock('@/constants/Typography', () => ({
+    FontWeights: {
+        regular: '400',
+    },
     Typography: {
         default: () => ({}),
     },
@@ -230,6 +247,7 @@ vi.mock('@/auth/context/AuthContext', () => ({
 
 vi.mock('@/auth/storage/tokenStorage', () => ({
     TokenStorage: tokenStorageMock,
+    subscribeHomeCredentialMutations: () => () => {},
 }));
 
 vi.mock('@/sync/sync', () => ({
@@ -270,7 +288,8 @@ async function importConnectionStatusControl() {
 afterEach(() => {
     capture.reset();
     authMocks.refreshFromActiveServer.mockClear();
-    connectionMocks.switchConnectionToActiveServer.mockClear();
+    connectionMocks.switchConnectionToActiveServer.mockReset();
+    connectionMocks.switchConnectionToActiveServer.mockResolvedValue(null);
     modalMocks.confirm.mockReset();
     syncMocks.retryNow.mockReset();
     tokenStorageMock.getCredentialsForServerUrl.mockReset();
@@ -283,6 +302,7 @@ afterEach(() => {
     connectionState.socketStatus = 'connected';
     connectionState.syncError = null;
     connectionState.lastSyncAt = null;
+    machineListStatusState.byServerId = {};
     connectionHealthState.kind = 'no_machine';
     connectionHealthState.color = '#ff9900';
     connectionHealthState.isPulsing = false;
@@ -390,6 +410,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-relay' }).length).toBeGreaterThan(0);
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-realtime' }).length).toBeGreaterThan(0);
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-machines' }).length).toBeGreaterThan(0);
+        expect(screen.getTextContent()).toContain('connectionStatus.transport.standard');
     });
 
     it('places an icon-only retry action next to the relay status badge when the server is unreachable', async () => {
@@ -483,6 +504,65 @@ describe('ConnectionStatusControl (native popover config)', () => {
             } else {
                 process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
             }
+        }
+    });
+
+    it('keeps the pending Home name and URL from the same profile during a deferred switch', async () => {
+        const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+        const scope = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+
+        try {
+            vi.resetModules();
+            const profiles = await import('@/sync/domains/server/serverProfiles');
+            const local = profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
+            const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+            profiles.setActiveServerId(local.id, { scope: 'device' });
+            settingsState.serverSelectionGroups = [{
+                id: 'grp-dev',
+                name: 'Dev Group',
+                serverIds: [local.id, company.id],
+                presentation: 'grouped',
+            }];
+
+            let releaseConnection!: () => void;
+            connectionMocks.switchConnectionToActiveServer.mockImplementationOnce(() => new Promise<void>((resolve) => {
+                releaseConnection = resolve;
+            }));
+
+            const ConnectionStatusControl = await importConnectionStatusControl();
+            const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+            const trigger = screen.findByProps({ accessibilityRole: 'button' });
+            await act(async () => {
+                await pressTestInstanceAsync(trigger);
+            });
+
+            const initialDropdown = capture.dropdownMenuProps.at(-1);
+            const companyItem = initialDropdown?.items?.find((item) => item.id === `target-use-server-${company.id}`);
+            expect(companyItem).toBeTruthy();
+
+            await act(async () => {
+                initialDropdown?.onSelect?.(companyItem?.id ?? '');
+                await Promise.resolve();
+            });
+
+            const pendingDropdown = capture.dropdownMenuProps.at(-1);
+            expect(pendingDropdown?.itemTrigger).toMatchObject({
+                title: expect.stringContaining('Company'),
+                subtitle: expect.stringContaining('company.example.test'),
+            });
+            expect(pendingDropdown?.itemTrigger?.subtitle).not.toContain('local.example.test');
+
+            await act(async () => {
+                releaseConnection();
+                await Promise.resolve();
+            });
+            await act(async () => {
+                screen.tree.unmount();
+            });
+        } finally {
+            if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+            else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
         }
     });
 
@@ -589,6 +669,52 @@ describe('ConnectionStatusControl (native popover config)', () => {
             } else {
                 process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
             }
+        }
+    });
+
+    it('labels each Home target with only its own provable auth and connection facts', async () => {
+        const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+        const scope = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+
+        try {
+            vi.resetModules();
+            const profiles = await import('@/sync/domains/server/serverProfiles');
+            const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+            const local = profiles.listServerProfiles().find((profile) => profile.id !== company.id)!;
+            profiles.setActiveServerId(local.id, { scope: 'device' });
+            machineListStatusState.byServerId = { [company.id]: 'error' };
+            tokenStorageMock.getCredentialsForServerUrl.mockImplementation(async (...args: unknown[]) => {
+                const url = String(args[0] ?? '');
+                return url.includes('company.example.test') ? null : { token: 'scoped-token', secret: 'scoped-secret' };
+            });
+
+            const ConnectionStatusControl = await importConnectionStatusControl();
+            const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+
+            await vi.waitFor(() => {
+                expect(tokenStorageMock.getCredentialsForServerUrl).toHaveBeenCalledWith(company.serverUrl, { serverId: company.id });
+            });
+            const trigger = screen.findByProps({ accessibilityRole: 'button' });
+            await act(async () => {
+                await pressTestInstanceAsync(trigger);
+            });
+
+            const localAction = findAction(`target-use-server-${local.id}`);
+            const companyAction = findAction(`target-use-server-${company.id}`);
+            expect(localAction?.subtitle).toContain('server.active');
+            expect(localAction?.subtitle).toContain('status.actionRequired');
+            expect(localAction?.accessibilityLabel).toContain('server.active');
+            expect(companyAction?.subtitle).toContain('server.signedOut');
+            expect(companyAction?.subtitle).not.toContain('status.actionRequired');
+            expect(companyAction?.accessibilityLabel).toContain('server.signedOut');
+
+            await act(async () => {
+                screen.tree.unmount();
+            });
+        } finally {
+            if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+            else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
         }
     });
 

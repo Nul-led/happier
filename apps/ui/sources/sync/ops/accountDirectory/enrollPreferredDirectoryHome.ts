@@ -1,22 +1,58 @@
-import { decodeBase64, encodeBase64 } from '@/encryption/base64';
-import { decryptBox } from '@/encryption/libsodium';
+import { encodeBase64 } from '@/encryption/base64';
 import sodium from '@/encryption/libsodium.lib';
-import { TokenStorage } from '@/auth/storage/tokenStorage';
-import { createAccountDirectoryClient, redeemHomeLoginAssertion } from '@/sync/api/accountDirectory/accountDirectoryClient';
 import type { AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
-import { adoptDirectoryHome } from './adoptDirectoryHome';
+import { continueHomeLoginEnrollment, type HomeLoginContinuationResult } from './homeLoginApproval';
 
 export type PreferredDirectoryHomeEnrollmentResult =
-    | Readonly<{ kind: 'enrolled'; homeServerIdentityId: string }>
+    | HomeLoginContinuationResult
     | Readonly<{ kind: 'unavailable'; reason: 'directory_not_ready' | 'no_preferred_home' | 'unsupported' }>
-    | Readonly<{ kind: 'failed'; error: unknown }>;
+    | Readonly<{ kind: 'failed'; error?: unknown }>;
 
-function decodeSealedHomeToken(value: string, privateKey: Uint8Array): string {
-    const opened = decryptBox(decodeBase64(value, 'base64url'), privateKey);
-    if (!opened) throw new Error('Home enrollment response could not be opened by this device');
-    const token = new TextDecoder().decode(opened).trim();
-    if (!token) throw new Error('Home enrollment response did not contain a Home token');
-    return token;
+export type PendingPreferredHomeEnrollment = Extract<
+    HomeLoginContinuationResult,
+    { kind: 'approval_required' }
+>;
+
+let pendingPreferredHomeEnrollment: PendingPreferredHomeEnrollment | null = null;
+let pendingPreferredHomeResume: Promise<HomeLoginContinuationResult> | null = null;
+const pendingListeners = new Set<() => void>();
+
+function publishPending(result: HomeLoginContinuationResult): void {
+    pendingPreferredHomeEnrollment = result.kind === 'approval_required'
+        ? result
+        : null;
+    for (const listener of pendingListeners) listener();
+}
+
+export function getPendingPreferredHomeEnrollment(): PendingPreferredHomeEnrollment | null {
+    return pendingPreferredHomeEnrollment;
+}
+
+export function subscribePendingPreferredHomeEnrollment(listener: () => void): () => void {
+    pendingListeners.add(listener);
+    return () => pendingListeners.delete(listener);
+}
+
+export async function cancelPendingPreferredHomeEnrollment(): Promise<void> {
+    const pending = pendingPreferredHomeEnrollment;
+    publishPending({ kind: 'cancelled' });
+    await pending?.cancel().catch(() => {});
+}
+
+export async function resumePendingPreferredHomeEnrollment(): Promise<HomeLoginContinuationResult | null> {
+    if (pendingPreferredHomeResume) return await pendingPreferredHomeResume;
+    const pending = pendingPreferredHomeEnrollment;
+    if (!pending) return null;
+    const resume = pending.resume().then((result) => {
+        publishPending(result);
+        return result;
+    });
+    pendingPreferredHomeResume = resume;
+    try {
+        return await resume;
+    } finally {
+        if (pendingPreferredHomeResume === resume) pendingPreferredHomeResume = null;
+    }
 }
 
 /**
@@ -37,30 +73,33 @@ export async function enrollPreferredDirectoryHome(
     const entry = snapshot.homes.find((candidate) => candidate.homeServerIdentityId === preferredIdentity);
     if (!entry) return { kind: 'unavailable', reason: 'no_preferred_home' };
 
+    await cancelPendingPreferredHomeEnrollment();
     try {
         const keyPair = sodium.crypto_box_keypair();
-        const directoryClient = createAccountDirectoryClient(snapshot.endpoint);
-        const assertion = await directoryClient.requestLoginAssertion(entry.homeServerIdentityId, {
-            clientBoxPublicKeyBase64: encodeBase64(keyPair.publicKey, 'base64url'),
-        });
+        const assertion = await session.requestLoginAssertion(entry.homeServerIdentityId,
+            // The Lane 02 assertion DTO deliberately uses canonical padded
+            // base64 (not base64url) for the requester box key.
+            encodeBase64(keyPair.publicKey, 'base64'),
+        );
         if (assertion.audienceHomeServerIdentityId !== entry.homeServerIdentityId) {
             throw new Error('Account Service assertion targeted a different Home');
         }
-        const redemption = await redeemHomeLoginAssertion(entry.connectionDescriptor.canonicalServerUrl, assertion);
-        if (
-            redemption.homeServerIdentityId !== entry.homeServerIdentityId
-            || redemption.expiresAtMs <= redemption.issuedAtMs
-            || redemption.expiresAtMs <= Date.now()
-        ) {
-            throw new Error('Invalid Home enrollment response');
-        }
-        const token = decodeSealedHomeToken(redemption.sealedHomeTokenBase64Url, keyPair.privateKey);
-        const profile = await adoptDirectoryHome(entry);
-        const stored = await TokenStorage.setCredentialsForServerUrl(profile.serverUrl, { token }, {
-            ...(profile.serverIdentityId ? { serverId: profile.serverIdentityId } : {}),
+        const result = await continueHomeLoginEnrollment({
+            home: entry,
+            clientSecretKey: keyPair.privateKey,
+            assertion,
         });
-        if (!stored) throw new Error('Unable to store Home credential');
-        return { kind: 'enrolled', homeServerIdentityId: entry.homeServerIdentityId };
+        if (result.kind === 'transient') {
+            // This production boundary retains only Home approval continuations.
+            // Release a transient carrier before projecting it to the existing
+            // retryable failure outcome used by settings and OAuth callers.
+            await result.cancel();
+            const failed = { kind: 'failed' } as const;
+            publishPending(failed);
+            return failed;
+        }
+        publishPending(result);
+        return result;
     } catch (error) {
         return { kind: 'failed', error };
     }

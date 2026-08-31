@@ -12,6 +12,7 @@ import { RestoreScanComputerQrView } from '@/components/account/restore/RestoreS
 export type RestoreIndexEmbeddedProps = Readonly<{
     onBack: () => void;
     onOpenSecretKeyLogin?: () => void;
+    initialPairingLink?: string | null;
 }>;
 
 export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(props: RestoreIndexEmbeddedProps) {
@@ -42,13 +43,14 @@ export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(pro
     }, [height, isDesktopShell, width]);
     const isWebPhoneWithCamera =
         Platform.OS === 'web' && canUseScanner && isWebMobileLikeQrScannerHost(heuristicViewport);
-    const showScannerFirst = isNativePhone || isWebPhoneWithCamera;
+    const showScannerFirst = Boolean(props.initialPairingLink) || isNativePhone || isWebPhoneWithCamera;
     const [currentView, setCurrentView] = React.useState<'qr' | 'scanner' | null>(null);
     const activeView = currentView ?? (showScannerFirst ? 'scanner' : 'qr');
 
     return activeView === 'scanner' ? (
         <RestoreScanComputerQrView
             embedded
+            initialPairingLink={props.initialPairingLink}
             onBack={props.onBack}
             onOpenSecretKeyLogin={props.onOpenSecretKeyLogin}
             onShowQrInstead={() => setCurrentView('qr')}

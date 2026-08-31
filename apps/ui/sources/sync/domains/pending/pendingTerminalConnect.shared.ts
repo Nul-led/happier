@@ -1,3 +1,5 @@
+import { normalizeServerIdentityIdCapability } from '@happier-dev/protocol';
+
 export type PendingTerminalPairing = Readonly<{
     secretB64Url: string;
     createdAtMs: number;
@@ -7,6 +9,7 @@ export type PendingTerminalPairing = Readonly<{
 export type PendingTerminalConnect = Readonly<{
     publicKeyB64Url: string;
     serverUrl: string;
+    serverIdentityId: string;
     pairing?: PendingTerminalPairing;
     supportsTokenOnly?: true;
 }>;
@@ -14,6 +17,7 @@ export type PendingTerminalConnect = Readonly<{
 export type PendingTerminalConnectRecord = Readonly<{
     publicKeyB64Url: string;
     serverUrl: string;
+    serverIdentityId: string;
     pairing?: PendingTerminalPairing;
     supportsTokenOnly?: true;
     createdAtMs: number;
@@ -34,7 +38,8 @@ const ttlMs = readTtlFromEnv();
 export function toRecord(value: PendingTerminalConnect): PendingTerminalConnectRecord | null {
     const publicKeyB64Url = String(value?.publicKeyB64Url ?? '').trim();
     const serverUrl = String(value?.serverUrl ?? '').trim();
-    if (!publicKeyB64Url || !serverUrl) return null;
+    const serverIdentityId = normalizeServerIdentityIdCapability(value?.serverIdentityId);
+    if (!publicKeyB64Url || !serverUrl || !serverIdentityId) return null;
     const pairing =
         value.pairing
         && String(value.pairing.secretB64Url ?? '').trim()
@@ -48,9 +53,11 @@ export function toRecord(value: PendingTerminalConnect): PendingTerminalConnectR
                 expiresAtMs: value.pairing.expiresAtMs,
             }
             : undefined;
+    if (value.pairing && !pairing) return null;
     return {
         publicKeyB64Url,
         serverUrl,
+        serverIdentityId,
         ...(pairing ? { pairing } : {}),
         ...(pairing && value.supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
         createdAtMs: Date.now(),
@@ -62,8 +69,9 @@ export function fromRecord(value: unknown): PendingTerminalConnect | null {
     const record = value as Record<string, unknown>;
     const publicKeyB64Url = String(record.publicKeyB64Url ?? '').trim();
     const serverUrl = String(record.serverUrl ?? '').trim();
+    const serverIdentityId = normalizeServerIdentityIdCapability(record.serverIdentityId);
     const createdAtMs = Number(record.createdAtMs ?? 0);
-    if (!publicKeyB64Url || !serverUrl || !Number.isFinite(createdAtMs) || createdAtMs <= 0) return null;
+    if (!publicKeyB64Url || !serverUrl || !serverIdentityId || !Number.isFinite(createdAtMs) || createdAtMs <= 0) return null;
     if (Date.now() - createdAtMs > ttlMs) return null;
     const pairingRecord =
         record.pairing && typeof record.pairing === 'object'
@@ -84,9 +92,11 @@ export function fromRecord(value: unknown): PendingTerminalConnect | null {
                 expiresAtMs: pairingExpiresAtMs,
             }
             : undefined;
+    if (pairingRecord && !pairing) return null;
     return {
         publicKeyB64Url,
         serverUrl,
+        serverIdentityId,
         ...(pairing ? { pairing } : {}),
         ...(pairing && record.supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
     };

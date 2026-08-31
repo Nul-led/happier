@@ -143,4 +143,49 @@ describe('SavedServersSection web actions', () => {
         expect(row?.props?.selected).toBe(true);
         expect(row?.props?.subtitle).toContain('server.signedIn');
     });
+
+    it('exposes focused, default, auth, and per-Home connection facts as text and an accessible name', async () => {
+        const { SavedServersSection } = await import('./SavedServersSection');
+
+        const screen = await renderScreen(React.createElement(SavedServersSection, {
+            servers: [
+                {
+                    id: 'server-a',
+                    name: 'Focused Home With A Very Long Name',
+                    serverUrl: 'https://focused.example',
+                    source: 'manual',
+                    createdAt: 1,
+                    updatedAt: 1,
+                    lastUsedAt: 1,
+                },
+                {
+                    id: 'server-b',
+                    name: 'Offline Home',
+                    serverUrl: 'https://offline.example',
+                    source: 'manual',
+                    createdAt: 1,
+                    updatedAt: 1,
+                    lastUsedAt: 1,
+                },
+            ],
+            activeServerId: 'server-a',
+            deviceDefaultServerId: 'server-a',
+            authStatusByServerId: { 'server-a': 'signedIn', 'server-b': 'signedIn' },
+            connectionStatusByServerId: { 'server-a': 'connected', 'server-b': 'disconnected' },
+            onSwitch: vi.fn(),
+            onRename: vi.fn(),
+            onRemove: vi.fn(),
+        }));
+
+        const focused = screen.findByTestId('saved-server-row-server-a');
+        const offline = screen.findByTestId('saved-server-row-server-b');
+        expect(focused?.props?.subtitle).toContain('status.connected');
+        expect(focused?.props?.detail).toBe('server.active');
+        expect(focused?.props?.accessibilityLabel).toContain('server.active');
+        expect(focused?.props?.accessibilityLabel).toContain('status.connected');
+        expect(focused?.props?.titleLines).toBe(1);
+        expect(focused?.props?.titleEllipsizeMode).toBe('tail');
+        expect(offline?.props?.subtitle).toContain('status.disconnected');
+        expect(offline?.props?.accessibilityLabel).toContain('status.disconnected');
+    });
 });

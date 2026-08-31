@@ -14,6 +14,7 @@ const syncSpies = vi.hoisted(() => ({
 }));
 const routeParamsState = vi.hoisted(() => ({ id: 'a1', runId: 'run-1' }));
 const routerPushSpy = vi.hoisted(() => vi.fn());
+const modalConfirmSpy = vi.hoisted(() => vi.fn(async () => false));
 const runDetailMachinesState = vi.hoisted(() => ({ list: [] as Array<{ id: string; metadata?: { displayName?: string } }> }));
 const runsState = vi.hoisted(() => ({
     list: [] as any[],
@@ -59,6 +60,16 @@ installAutomationScreensCommonModuleMocks({
                 Screen: (props: any) => React.createElement('StackScreen', props),
             },
         };
+    },
+    modal: async () => {
+        const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
+        return createModalModuleMock({
+            spies: {
+                alert: vi.fn(),
+                confirm: modalConfirmSpy,
+                prompt: vi.fn(),
+            },
+        }).module;
     },
     text: {
         translate: (key: string, params?: Record<string, unknown>) => {
@@ -144,6 +155,12 @@ installAutomationScreensCommonModuleMocks({
             if (key === 'automations.detail.runMeta.historyReason.cancelled_after_dispatch_permitted') {
                 return 'Cancelled after the external execution had already been permitted';
             }
+            if (key === 'automations.detail.runMeta.historyReason.cancelled_while_running') {
+                return 'Cancelled while the assigned machine could still have been executing';
+            }
+            if (key === 'automations.detail.cancelRunConfirmTitle') return 'Cancel Run?';
+            if (key === 'automations.detail.cancelRunConfirmMessage') return 'This stops the Run when possible.';
+            if (key === 'automations.detail.cancelRunConfirmButton') return 'Cancel Run';
             return key;
         },
     },
@@ -757,6 +774,42 @@ describe('AutomationRunDetailScreen', () => {
         expect(tree).not.toContain('cancelled_after_dispatch_permitted');
     });
 
+    it('explains when cancellation left a running Run outcome uncertain', async () => {
+        runsState.list = [{
+            ...runsState.list[0],
+            state: 'outcome_uncertain',
+            executionDispatchState: 'outcomeUnknown',
+            updatedAt: 22,
+        }];
+        syncSpies.getAutomationRunDetailInspection.mockResolvedValue(inspectRunDetail({
+            ...runsState.list[0],
+            triggerEvidenceEnvelope: null,
+            executionInputEnvelope: null,
+            resultEnvelope: null,
+            legacySummaryCiphertext: null,
+            events: [{
+                at: 20,
+                type: 'run_outcome_uncertain',
+                machineId: null,
+                errorCode: null,
+                executionAttempt: null,
+                outcome: null,
+                reason: 'cancelled_while_running',
+            }],
+        }));
+        const { AutomationRunDetailScreen } = await import('./AutomationRunDetailScreen');
+        const screen = await renderScreen(React.createElement(AutomationRunDetailScreen));
+
+        await vi.waitFor(() => {
+            expect(syncSpies.getAutomationRunDetailInspection).toHaveBeenCalledWith('a1', 'run-1');
+        });
+
+        expect(screen.getTextContent()).toContain(
+            'Cancelled while the assigned machine could still have been executing',
+        );
+        expect(JSON.stringify(screen.tree.toJSON())).not.toContain('cancelled_while_running');
+    });
+
     it('omits the assignment and handoff rows a Run has no fact for', async () => {
         runDetailMachinesState.list = [];
         runsState.list = [{
@@ -872,6 +925,18 @@ describe('AutomationRunDetailScreen', () => {
             await cancel.props.onPress();
         });
 
+        expect(modalConfirmSpy).toHaveBeenCalledWith(
+            'Cancel Run?',
+            'This stops the Run when possible.',
+            { cancelText: 'common.keepEditing', confirmText: 'Cancel Run', destructive: true },
+        );
+        expect(syncSpies.cancelAutomationRun).not.toHaveBeenCalled();
+
+        modalConfirmSpy.mockResolvedValueOnce(true);
+        await act(async () => {
+            await cancel.props.onPress();
+        });
+
         expect(syncSpies.cancelAutomationRun).toHaveBeenCalledWith('run-1');
     });
 
@@ -953,11 +1018,12 @@ describe('AutomationRunDetailScreen', () => {
         if (!cancel) {
             throw new Error('Expected a cancellable Run action');
         }
+        modalConfirmSpy.mockResolvedValueOnce(true);
         await act(async () => {
             await cancel.props.onPress();
         });
         await vi.waitFor(() => {
-            expect(syncSpies.getAutomationRunDetailInspection).toHaveBeenCalledTimes(2);
+            expect(syncSpies.cancelAutomationRun).toHaveBeenCalledWith('run-1');
         });
 
         await act(async () => {

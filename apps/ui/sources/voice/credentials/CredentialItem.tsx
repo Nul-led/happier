@@ -24,6 +24,10 @@ import { settingsParse, type Settings } from '@/sync/domains/settings/settings';
 import { storage, useSettings } from '@/sync/domains/state/storage';
 import { useSettingsVersion } from '@/sync/store/hooks';
 import { sync } from '@/sync/sync';
+import {
+  requireOneShotAccountSettingsMutationApplied,
+  type OneShotAccountSettingsMutationResult,
+} from '@/sync/engine/settings/syncSettings';
 import { t, tLoose } from '@/text';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
@@ -281,6 +285,21 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
     return result;
   };
 
+  const runAccountSettingsMutationOnce = async <T,>(
+    mutate: (raw: Readonly<Record<string, unknown>>) => Readonly<{
+      settings: Record<string, unknown>;
+      value: T;
+    }>,
+  ): Promise<OneShotAccountSettingsMutationResult<T>> => {
+    const expectedSettingsVersion = latestSettingsVersionRef.current;
+    if (expectedSettingsVersion === null) {
+      throw Object.assign(new Error('account_settings_version_unavailable'), {
+        code: 'account_settings_version_unavailable',
+      });
+    }
+    return await sync.mutateAccountSettingsOnce({ expectedSettingsVersion, mutate });
+  };
+
   const pickStoredSavedSecretId = async (
     currentSecretId: string | null,
   ): Promise<SavedSecretPick> => await new Promise<SavedSecretPick>((resolve) => {
@@ -367,8 +386,8 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
             recipientApproval.summary,
             { confirmText: t('settingsVoice.externalCredentials.recipientApprovalConfirm') },
           )) return;
-          await sync.mutateAccountSettings((raw) =>
-            approveAccountVoiceCredentialRecipientContract({
+          requireOneShotAccountSettingsMutationApplied(await runAccountSettingsMutationOnce((raw) => {
+            const approved = approveAccountVoiceCredentialRecipientContract({
               settings: settingsParse(raw),
               contribution,
               credentialSlotId: props.credentialSlotId,
@@ -376,7 +395,9 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
               expectedSecretId,
               expectedSecretUpdatedAt,
               approvedRecipientContractDigest: recipientApproval.digest,
-            }).accountSettings);
+            });
+            return { settings: approved.accountSettings, value: undefined };
+          }));
           props.onChanged?.();
           return;
         }
@@ -469,15 +490,20 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
               if (applied.status === 'outcomeUnknown') return 'outcomeUnknown';
               return applied.status === 'applied' && effective ? 'effective' : 'notEffective';
             }
-            await sync.mutateAccountSettings((raw) => {
+            const bindingResult = await runAccountSettingsMutationOnce((raw) => {
               const result = bindAccountVoiceCredentialSavedSecret({
                 ...binding,
                 settings: settingsParse(raw),
               });
-              effective = usesSelectedSecret(result.settings);
-              return result.accountSettings;
+              return {
+                settings: result.accountSettings,
+                value: usesSelectedSecret(result.settings),
+              };
             });
-            return effective ? 'effective' : 'notEffective';
+            if (bindingResult.status === 'outcomeUnknown') return 'outcomeUnknown';
+            return bindingResult.status === 'applied' && bindingResult.value
+              ? 'effective'
+              : 'notEffective';
           })();
           if (selectionOutcome === 'outcomeUnknown') {
             await reportVoiceCredentialMutationOutcomeUnknown(
@@ -533,14 +559,17 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
             t('settingsVoice.local.voiceCredential.deleteAccountBody'),
             { destructive: true, confirmText: t('common.remove') },
           )) return;
-          await sync.mutateAccountSettings((raw) => removeAccountVoiceCredential({
-            settings: settingsParse(raw),
-            contribution,
-            credentialSlotId: props.credentialSlotId,
-            machineId: props.machineId,
-            expectedSecretId,
-            expectedSecretUpdatedAt,
-          }).accountSettings);
+          requireOneShotAccountSettingsMutationApplied(await runAccountSettingsMutationOnce((raw) => ({
+            settings: removeAccountVoiceCredential({
+              settings: settingsParse(raw),
+              contribution,
+              credentialSlotId: props.credentialSlotId,
+              machineId: props.machineId,
+              expectedSecretId,
+              expectedSecretUpdatedAt,
+            }).accountSettings,
+            value: undefined,
+          })));
           props.onChanged?.();
           return;
         }
@@ -577,7 +606,10 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
             credentialSlotId: props.credentialSlotId,
             machineId: props.machineId,
             value: secret,
-            generateId: randomUUID,
+            generateId: (() => {
+              const secretId = randomUUID();
+              return () => secretId;
+            })(),
             now: Date.now(),
             expectedSecretId,
             expectedSecretUpdatedAt,
@@ -603,10 +635,13 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
               return;
             }
           } else {
-            await sync.mutateAccountSettings((raw) => upsertAccountVoiceCredential({
-              ...mutationInput,
-              settings: settingsParse(raw),
-            }).accountSettings);
+            requireOneShotAccountSettingsMutationApplied(await runAccountSettingsMutationOnce((raw) => ({
+              settings: upsertAccountVoiceCredential({
+                ...mutationInput,
+                settings: settingsParse(raw),
+              }).accountSettings,
+              value: undefined,
+            })));
           }
           props.onChanged?.();
           return;
@@ -617,14 +652,17 @@ export const VoiceCredentialItem = React.memo(function VoiceCredentialItem(props
           t('settingsVoice.local.voiceCredential.deleteAccountBody'),
           { destructive: true, confirmText: t('common.remove') },
         )) return;
-        await sync.mutateAccountSettings((raw) => removeAccountVoiceCredential({
-          settings: settingsParse(raw),
-          contribution,
-          credentialSlotId: props.credentialSlotId,
-          machineId: props.machineId,
-          expectedSecretId,
-          expectedSecretUpdatedAt,
-        }).accountSettings);
+        requireOneShotAccountSettingsMutationApplied(await runAccountSettingsMutationOnce((raw) => ({
+          settings: removeAccountVoiceCredential({
+            settings: settingsParse(raw),
+            contribution,
+            credentialSlotId: props.credentialSlotId,
+            machineId: props.machineId,
+            expectedSecretId,
+            expectedSecretUpdatedAt,
+          }).accountSettings,
+          value: undefined,
+        })));
         props.onChanged?.();
       } catch (error) {
         // Recorded before the alert, never instead of it: the alert is an

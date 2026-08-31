@@ -54,6 +54,24 @@ function createManualBridge() {
 }
 
 describe('createSystemTaskRunner', () => {
+    it('waits for the terminal result of a started task, including an already-completed task', async () => {
+        const { createSystemTaskRunner, waitForSystemTaskResult } = await import('./createSystemTaskRunner');
+        const manual = createManualBridge();
+        const runner = createSystemTaskRunner({ bridge: manual.bridge });
+        const taskId = await runner.start(createSpec());
+
+        const pending = waitForSystemTaskResult(runner, taskId);
+        manual.emitResult(taskId, {
+            protocolVersion: 1,
+            taskId,
+            ok: true,
+            data: { completed: true },
+        } satisfies SystemTaskResult);
+
+        await expect(pending).resolves.toMatchObject({ ok: true, data: { completed: true } });
+        await expect(waitForSystemTaskResult(runner, taskId)).resolves.toMatchObject({ ok: true, data: { completed: true } });
+    });
+
     it('ignores invalid events and converts an invalid result payload into a stable failure result', async () => {
         const { createSystemTaskRunner } = await import('./createSystemTaskRunner');
         const manual = createManualBridge();

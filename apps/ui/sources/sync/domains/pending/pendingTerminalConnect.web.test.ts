@@ -59,6 +59,7 @@ describe('pendingTerminalConnect.web', () => {
         setPendingTerminalConnect({
             publicKeyB64Url: 'abcDEF_123-zzz',
             serverUrl: 'https://stack.example.test',
+            serverIdentityId: 'srv_stack',
             supportsTokenOnly: true,
             pairing: {
                 secretB64Url: 'pairing-secret',
@@ -69,6 +70,7 @@ describe('pendingTerminalConnect.web', () => {
         expect(getPendingTerminalConnect()).toEqual({
             publicKeyB64Url: 'abcDEF_123-zzz',
             serverUrl: 'https://stack.example.test',
+            serverIdentityId: 'srv_stack',
             supportsTokenOnly: true,
             pairing: {
                 secretB64Url: 'pairing-secret',
@@ -86,6 +88,7 @@ describe('pendingTerminalConnect.web', () => {
         setPendingTerminalConnect({
             publicKeyB64Url: 'abcDEF_123-zzz',
             serverUrl: 'https://stack.example.test',
+            serverIdentityId: 'srv_stack',
         });
 
         vi.spyOn(Date, 'now').mockReturnValue(now + 60 * 60 * 1000);
@@ -100,6 +103,7 @@ describe('pendingTerminalConnect.web', () => {
         setPendingTerminalConnect({
             publicKeyB64Url: 'key-a',
             serverUrl: 'https://shared.example.test',
+            serverIdentityId: 'srv_shared',
         });
 
         await activateServerAccount('https://shared.example.test', 'account-b');
@@ -108,17 +112,20 @@ describe('pendingTerminalConnect.web', () => {
         setPendingTerminalConnect({
             publicKeyB64Url: 'key-b',
             serverUrl: 'https://shared.example.test',
+            serverIdentityId: 'srv_shared',
         });
 
         expect(getPendingTerminalConnect()).toEqual({
             publicKeyB64Url: 'key-b',
             serverUrl: 'https://shared.example.test',
+            serverIdentityId: 'srv_shared',
         });
 
         await activateServerAccount('https://shared.example.test', 'account-a');
         expect(getPendingTerminalConnect()).toEqual({
             publicKeyB64Url: 'key-a',
             serverUrl: 'https://shared.example.test',
+            serverIdentityId: 'srv_shared',
         });
     });
 });

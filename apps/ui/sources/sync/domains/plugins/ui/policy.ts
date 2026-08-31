@@ -11,7 +11,9 @@ export type {
 } from './policy/evaluate';
 export {
     createPluginUiPolicyEvaluationContext,
+    createPluginUiSessionPolicyEvaluationContext,
     type PluginUiPolicyEvaluationContextInput,
+    type PluginUiSessionPolicyFacts,
 } from './policy/context';
 export {
     evaluatePluginUiPolicy,

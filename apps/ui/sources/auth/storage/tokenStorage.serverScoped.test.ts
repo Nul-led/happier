@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installTokenStorageWebPlatformMocks } from './tokenStorage.testHelpers';
 import { installLocalStorageMock } from './tokenStorage.web.testHelpers';
+import type { HomeCredentialMutationEvent } from './tokenStorage';
 
 installTokenStorageWebPlatformMocks();
 
@@ -347,24 +348,99 @@ describe('TokenStorage (web) server-scoped credentials', () => {
 
     it('clears credentials across configured server scopes on explicit logout', async () => {
         restoreLocalStorage = installLocalStorageMock().restore;
+        const profiles = [
+            { id: 'server-a', serverIdentityId: 'srv_identity_a', serverUrl: 'https://server-a.example.test', name: 'Server A' },
+            { id: 'server-b', serverIdentityId: 'srv_identity_b', serverUrl: 'https://server-b.example.test', name: 'Server B' },
+        ];
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
+            getActiveServerId: () => 'server-a',
+            getActiveServerUrl: () => 'https://server-a.example.test',
+            listServerProfiles: () => profiles,
+        }));
 
-        const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
-        const { TokenStorage } = await import('./tokenStorage');
+        let unsubscribe: (() => void) | null = null;
+        try {
+            const { TokenStorage, subscribeHomeCredentialMutations } = await import('./tokenStorage');
+            await expect(TokenStorage.setCredentialsForServerUrl(
+                profiles[0]!.serverUrl,
+                { serverId: profiles[0]!.id },
+                { token: 'token-a', secret: 'secret-a' },
+            )).resolves.toBe(true);
+            await expect(TokenStorage.setCredentialsForServerUrl(
+                profiles[1]!.serverUrl,
+                { serverId: profiles[1]!.id },
+                { token: 'token-b', secret: 'secret-b' },
+            )).resolves.toBe(true);
 
-        setServerUrl('https://server-a.example.test');
-        await expect(TokenStorage.setCredentials({ token: 'token-a', secret: 'secret-a' })).resolves.toBe(true);
+            const events: HomeCredentialMutationEvent[] = [];
+            unsubscribe = subscribeHomeCredentialMutations((event) => events.push(event));
+            await expect(TokenStorage.removeCredentials()).resolves.toBe(true);
 
-        setServerUrl('https://server-b.example.test');
-        await expect(TokenStorage.setCredentials({ token: 'token-b', secret: 'secret-b' })).resolves.toBe(true);
+            await expect(TokenStorage.getCredentialsForServerUrl(
+                profiles[0]!.serverUrl,
+                { serverId: profiles[0]!.id },
+            )).resolves.toBeNull();
+            await expect(TokenStorage.getCredentialsForServerUrl(
+                profiles[1]!.serverUrl,
+                { serverId: profiles[1]!.id },
+            )).resolves.toBeNull();
+            expect(events).toEqual([
+                { kind: 'credentials_removed', serverId: 'srv_identity_a', serverUrl: profiles[0]!.serverUrl },
+                { kind: 'credentials_removed', serverId: 'srv_identity_b', serverUrl: profiles[1]!.serverUrl },
+            ]);
+        } finally {
+            unsubscribe?.();
+            vi.doUnmock('@/sync/domains/server/serverProfiles');
+        }
+    });
 
-        setServerUrl('https://server-a.example.test');
-        await expect(TokenStorage.removeCredentials()).resolves.toBe(true);
+    it('emits bulk-removal events only for Home targets whose credential removal succeeds', async () => {
+        const localStorageHandle = installLocalStorageMock();
+        restoreLocalStorage = localStorageHandle.restore;
+        const profiles = [
+            { id: 'server-a', serverIdentityId: 'srv_identity_a', serverUrl: 'https://server-a.example.test', name: 'Server A' },
+            { id: 'server-b', serverIdentityId: 'srv_identity_b', serverUrl: 'https://server-b.example.test', name: 'Server B' },
+        ];
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
+            getActiveServerId: () => 'server-a',
+            getActiveServerUrl: () => 'https://server-a.example.test',
+            listServerProfiles: () => profiles,
+        }));
 
-        setServerUrl('https://server-a.example.test');
-        await expect(TokenStorage.getCredentials()).resolves.toBeNull();
+        let unsubscribe: (() => void) | null = null;
+        try {
+            const { TokenStorage, subscribeHomeCredentialMutations } = await import('./tokenStorage');
+            for (const [index, profile] of profiles.entries()) {
+                await expect(TokenStorage.setCredentialsForServerUrl(
+                    profile.serverUrl,
+                    { serverId: profile.id },
+                    { token: `token-${index}` },
+                )).resolves.toBe(true);
+            }
+            localStorageHandle.removeItemMock.mockImplementation((key: string) => {
+                if (key.includes('auth_credentials__srv_server-b')) {
+                    throw new Error('server B legacy removal failed');
+                }
+                localStorageHandle.store.delete(key);
+            });
 
-        setServerUrl('https://server-b.example.test');
-        await expect(TokenStorage.getCredentials()).resolves.toBeNull();
+            const events: HomeCredentialMutationEvent[] = [];
+            unsubscribe = subscribeHomeCredentialMutations((event) => events.push(event));
+            await expect(TokenStorage.removeCredentials()).resolves.toBe(false);
+
+            expect(events).toEqual([
+                { kind: 'credentials_removed', serverId: 'srv_identity_a', serverUrl: profiles[0]!.serverUrl },
+            ]);
+            await expect(TokenStorage.getCredentialsForServerUrl(
+                profiles[1]!.serverUrl,
+                { serverId: profiles[1]!.id },
+            )).resolves.toEqual({ token: 'token-1' });
+        } finally {
+            unsubscribe?.();
+            vi.doUnmock('@/sync/domains/server/serverProfiles');
+        }
     });
 
     it('writes explicit Home credentials without changing the focused server', async () => {
@@ -374,8 +450,402 @@ describe('TokenStorage (web) server-scoped credentials', () => {
         const { TokenStorage } = await import('./tokenStorage');
         setServerUrl('https://focused.example.test');
         const before = getActiveServerUrl();
-        await expect(TokenStorage.setCredentialsForServerUrl('https://secondary.example.test', { token: 'secondary' })).resolves.toBe(true);
+        await expect(TokenStorage.setCredentialsForServerUrl(
+            'https://secondary.example.test',
+            {},
+            { token: 'secondary' },
+        )).resolves.toBe(true);
         expect(getActiveServerUrl()).toBe(before);
         await expect(TokenStorage.getCredentialsForServerUrl('https://secondary.example.test')).resolves.toEqual({ token: 'secondary' });
+    });
+
+    it('notifies exact-target Home credential mutations only after successful explicit writes and removals', async () => {
+        restoreLocalStorage = installLocalStorageMock().restore;
+        let unsubscribe: (() => void) | null = null;
+
+        const state = {
+            activeServerId: 'server-a',
+            activeServerUrl: 'https://focused.example.test',
+            profiles: [
+                { id: 'server-a', serverUrl: 'https://focused.example.test', name: 'Server A' },
+                {
+                    id: 'server-b',
+                    serverIdentityId: 'srv_identity_b',
+                    serverUrl: 'https://secondary.example.test',
+                    name: 'Server B',
+                },
+            ],
+        };
+
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+            const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+            return {
+                ...actual,
+                getActiveServerId: () => state.activeServerId,
+                getActiveServerUrl: () => state.activeServerUrl,
+                listServerProfiles: () => state.profiles,
+            };
+        });
+
+        try {
+            const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
+            const { TokenStorage, subscribeHomeCredentialMutations } = await import('./tokenStorage');
+            setServerUrl('https://focused.example.test');
+
+            const events: HomeCredentialMutationEvent[] = [];
+            unsubscribe = subscribeHomeCredentialMutations((event) => {
+                events.push(event);
+            });
+
+            // Focused-server writes stay owned by the focused auth context:
+            // no exact-target Home credential mutation notification.
+            await expect(TokenStorage.setCredentials({ token: 'focused-token' })).resolves.toBe(true);
+            expect(events).toEqual([]);
+
+            // Canonical identity: the input URL normalizes to the stored scope URL and
+            // the resolved identity is the profile's stable server identity.
+            await expect(TokenStorage.setCredentialsForServerUrl(
+                'https://secondary.example.test/',
+                { serverId: 'server-b' },
+                { token: 'secondary-token' },
+            )).resolves.toBe(true);
+            expect(events).toEqual([
+                { kind: 'credentials_set', serverId: 'srv_identity_b', serverUrl: 'https://secondary.example.test' },
+            ]);
+
+            await expect(TokenStorage.removeCredentialsForServerUrl(
+                'https://secondary.example.test',
+                { serverId: 'srv_identity_b' },
+            )).resolves.toBe(true);
+            expect(events).toEqual([
+                { kind: 'credentials_set', serverId: 'srv_identity_b', serverUrl: 'https://secondary.example.test' },
+                { kind: 'credentials_removed', serverId: 'srv_identity_b', serverUrl: 'https://secondary.example.test' },
+            ]);
+
+            // An existing profile identity cannot be attributed to a different URL:
+            // the write fails closed instead of landing under the URL hash.
+            await expect(TokenStorage.setCredentialsForServerUrl(
+                'https://unrelated.example.test',
+                { serverId: 'server-b' },
+                { token: 'unrelated-token' },
+            )).resolves.toBe(false);
+            expect(events).toHaveLength(2);
+            await expect(TokenStorage.getCredentialsForServerUrl('https://unrelated.example.test')).resolves.toBeNull();
+
+            // Enrollment can persist credentials under the stable Home identity
+            // before profile adoption. Token invalidation uses the same mutation path.
+            await expect(TokenStorage.setCredentialsForServerUrl(
+                'https://pre-adoption.example.test/',
+                { serverId: 'srv_identity_pre_adoption' },
+                { token: 'pre-adoption-token' },
+            )).resolves.toBe(true);
+            await expect(TokenStorage.invalidateCredentialsTokenForServerUrl(
+                'https://pre-adoption.example.test',
+                'different-token',
+                { serverId: 'srv_identity_pre_adoption' },
+            )).resolves.toBe(false);
+            expect(events.at(-1)).toEqual({
+                kind: 'credentials_set',
+                serverId: 'srv_identity_pre_adoption',
+                serverUrl: 'https://pre-adoption.example.test',
+            });
+            await expect(TokenStorage.invalidateCredentialsTokenForServerUrl(
+                'https://pre-adoption.example.test',
+                'pre-adoption-token',
+                { serverId: 'srv_identity_pre_adoption' },
+            )).resolves.toBe(true);
+            expect(events.slice(-2)).toEqual([
+                {
+                    kind: 'credentials_set',
+                    serverId: 'srv_identity_pre_adoption',
+                    serverUrl: 'https://pre-adoption.example.test',
+                },
+                {
+                    kind: 'credentials_removed',
+                    serverId: 'srv_identity_pre_adoption',
+                    serverUrl: 'https://pre-adoption.example.test',
+                },
+            ]);
+
+        } finally {
+            unsubscribe?.();
+            vi.doUnmock('@/sync/domains/server/serverProfiles');
+        }
+    });
+
+    it('emits no Home credential mutation notification when an exact-target write or removal fails', async () => {
+        const localStorageHandle = installLocalStorageMock();
+        restoreLocalStorage = localStorageHandle.restore;
+
+        const { TokenStorage, subscribeHomeCredentialMutations } = await import('./tokenStorage');
+        const events: HomeCredentialMutationEvent[] = [];
+        const unsubscribe = subscribeHomeCredentialMutations((event) => {
+            events.push(event);
+        });
+        const target = { serverId: 'srv_identity_secondary' } as const;
+
+        try {
+            // Genuine storage failure: credential writes cannot be persisted.
+            localStorageHandle.setItemMock.mockImplementation((key: string, value: string) => {
+                if (key.includes('auth_credentials__srv_')) {
+                    throw new Error('storage write failed');
+                }
+                localStorageHandle.store.set(key, value);
+            });
+
+            await expect(TokenStorage.setCredentialsForServerUrl(
+                'https://secondary.example.test',
+                target,
+                { token: 'secondary-token' },
+            )).resolves.toBe(false);
+            expect(events).toEqual([]);
+
+            localStorageHandle.setItemMock.mockImplementation((key: string, value: string) => {
+                localStorageHandle.store.set(key, value);
+            });
+            await expect(TokenStorage.setCredentialsForServerUrl(
+                'https://secondary.example.test',
+                target,
+                { token: 'secondary-token' },
+            )).resolves.toBe(true);
+            expect(events).toHaveLength(1);
+
+            localStorageHandle.removeItemMock.mockImplementation((key: string) => {
+                if (key.includes('auth_credentials__srv_')) {
+                    throw new Error('storage remove failed');
+                }
+                localStorageHandle.store.delete(key);
+            });
+
+            await expect(TokenStorage.removeCredentialsForServerUrl(
+                'https://secondary.example.test',
+                target,
+            )).resolves.toBe(false);
+            expect(events).toHaveLength(1);
+        } finally {
+            unsubscribe();
+            vi.restoreAllMocks();
+        }
+    });
+
+    it('keeps a pre-adoption credential unreadable when a competing identity claims the URL', async () => {
+        restoreLocalStorage = installLocalStorageMock().restore;
+
+        const state = {
+            profiles: [] as Array<{ id: string; serverIdentityId?: string; serverUrl: string; name: string }>,
+        };
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
+            getActiveServerId: () => 'focused',
+            getActiveServerUrl: () => 'https://focused.example.test',
+            listServerProfiles: () => state.profiles,
+        }));
+
+        try {
+            const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
+            const { TokenStorage } = await import('./tokenStorage');
+            setServerUrl('https://focused.example.test');
+
+            // Home A preflights identity A at the shared URL and persists its
+            // credential before any profile exists.
+            await expect(TokenStorage.setCredentialsForServerUrl(
+                'https://shared.example.test',
+                { serverId: 'srv_home_a' },
+                { token: 'home-a-token' },
+            )).resolves.toBe(true);
+
+            // The competing adoption claims the same URL under identity B
+            // (profile committed, credential step still pending).
+            state.profiles.push({
+                id: 'server-b',
+                serverIdentityId: 'srv_home_b',
+                serverUrl: 'https://shared.example.test',
+                name: 'Home B',
+            });
+
+            // A's final adoption fails closed. Neither B's reader nor a URL-only
+            // lookup may migrate or read A's credential.
+            await expect(TokenStorage.getCredentialsForServerUrl('https://shared.example.test')).resolves.toBeNull();
+            await expect(TokenStorage.getCredentialsForServerUrl(
+                'https://shared.example.test',
+                { serverId: 'srv_home_b' },
+            )).resolves.toBeNull();
+
+            // Once B owns the URL, even A's explicit identity reader fails
+            // closed until the losing write is rolled back.
+            await expect(TokenStorage.getCredentialsForServerUrl(
+                'https://shared.example.test',
+                { serverId: 'srv_home_a' },
+            )).resolves.toBeNull();
+        } finally {
+            vi.doUnmock('@/sync/domains/server/serverProfiles');
+        }
+    });
+
+    it('rejects a pre-profile identity write when another Home already owns the URL', async () => {
+        const localStorageHandle = installLocalStorageMock();
+        restoreLocalStorage = localStorageHandle.restore;
+
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
+            getActiveServerId: () => 'focused',
+            getActiveServerUrl: () => 'https://focused.example.test',
+            listServerProfiles: () => [{
+                id: 'server-b',
+                serverIdentityId: 'srv_home_b',
+                serverUrl: 'https://shared.example.test',
+                name: 'Home B',
+            }],
+        }));
+
+        try {
+            const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
+            const { TokenStorage } = await import('./tokenStorage');
+            setServerUrl('https://focused.example.test');
+
+            await expect(TokenStorage.setCredentialsForServerUrl(
+                'https://shared.example.test',
+                { serverId: 'srv_home_a' },
+                { token: 'home-a-token' },
+            )).resolves.toBe(false);
+            await expect(TokenStorage.setCredentialsForServerUrlWithRollback(
+                'https://shared.example.test',
+                { serverId: 'srv_home_a' },
+                { token: 'home-a-token' },
+            )).resolves.toBeNull();
+            for (const [, value] of localStorageHandle.store) {
+                expect(value).not.toContain('home-a-token');
+            }
+        } finally {
+            vi.doUnmock('@/sync/domains/server/serverProfiles');
+        }
+    });
+
+    it('rolls back exactly the failed pre-adoption write and never the concurrent winner credentials', async () => {
+        const localStorageHandle = installLocalStorageMock();
+        restoreLocalStorage = localStorageHandle.restore;
+
+        const state = {
+            profiles: [] as Array<{ id: string; serverIdentityId?: string; serverUrl: string; name: string }>,
+        };
+        localStorageHandle.setItemMock.mockImplementation((key: string, value: string) => {
+            localStorageHandle.store.set(key, value);
+            if (!value.includes('home-a-token') || state.profiles.length > 0) return;
+            // Deterministically claim the URL after A resolved its identity but
+            // before A's async credential write returns to the composition owner.
+            state.profiles.push({
+                id: 'server-b',
+                serverIdentityId: 'srv_home_b',
+                serverUrl: 'https://shared.example.test',
+                name: 'Home B',
+            });
+        });
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
+            getActiveServerId: () => 'focused',
+            getActiveServerUrl: () => 'https://focused.example.test',
+            listServerProfiles: () => state.profiles,
+        }));
+
+        try {
+            const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
+            const { TokenStorage } = await import('./tokenStorage');
+            setServerUrl('https://focused.example.test');
+
+            const receipt = await TokenStorage.setCredentialsForServerUrlWithRollback(
+                'https://shared.example.test',
+                { serverId: 'srv_home_a' },
+                { token: 'home-a-token' },
+            );
+            expect(receipt).toMatchObject({ serverUrl: 'https://shared.example.test', serverId: 'srv_home_a' });
+
+            // B completes its own write after claiming the URL while A's write
+            // was in flight.
+            await expect(TokenStorage.setCredentialsForServerUrl(
+                'https://shared.example.test',
+                { serverId: 'srv_home_b' },
+                { token: 'home-b-token' },
+            )).resolves.toBe(true);
+
+            // A's final adoption fails; the attempted write is undone exactly.
+            await expect(receipt!.rollback()).resolves.toBe(true);
+
+            await expect(TokenStorage.getCredentialsForServerUrl(
+                'https://shared.example.test',
+                { serverId: 'srv_home_b' },
+            )).resolves.toEqual({ token: 'home-b-token' });
+            await expect(TokenStorage.getCredentialsForServerUrl('https://shared.example.test')).resolves.toEqual({ token: 'home-b-token' });
+            await expect(TokenStorage.getCredentialsForServerUrl(
+                'https://shared.example.test',
+                { serverId: 'srv_home_a' },
+            )).resolves.toBeNull();
+            for (const [, value] of localStorageHandle.store) {
+                expect(value).not.toContain('home-a-token');
+            }
+        } finally {
+            vi.doUnmock('@/sync/domains/server/serverProfiles');
+        }
+    });
+
+    it('restores reader-only URL scopes on rollback and never clobbers a concurrent URL-scope writer', async () => {
+        const localStorageHandle = installLocalStorageMock();
+        restoreLocalStorage = localStorageHandle.restore;
+
+        // Seed a legacy URL-hash credential at the shared URL (pre-identity shape).
+        const { digest } = await import('@/platform/digest');
+        const { encodeBase64 } = await import('@/encryption/base64');
+        const { scopedStorageId } = await import('@/utils/system/storageScope');
+        const legacyHash = await digest('SHA-256', new TextEncoder().encode('https://shared.example.test'));
+        const legacyScopeToken = encodeBase64(legacyHash, 'base64url');
+        const legacyKey = scopedStorageId(`auth_credentials__srv_${legacyScopeToken}`, null);
+        localStorageHandle.store.set(legacyKey, JSON.stringify({ token: 'legacy-url-token' }));
+
+        const state = {
+            profiles: [] as Array<{ id: string; serverIdentityId?: string; serverUrl: string; name: string }>,
+        };
+        vi.doMock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
+            ...await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>(),
+            getActiveServerId: () => 'focused',
+            getActiveServerUrl: () => 'https://focused.example.test',
+            listServerProfiles: () => state.profiles,
+        }));
+
+        try {
+            const { setServerUrl } = await import('@/sync/domains/server/serverConfig');
+            const { TokenStorage } = await import('./tokenStorage');
+            setServerUrl('https://focused.example.test');
+
+            const receipt = await TokenStorage.setCredentialsForServerUrlWithRollback(
+                'https://shared.example.test',
+                { serverId: 'srv_home_a' },
+                { token: 'home-a-token' },
+            );
+            expect(receipt).not.toBeNull();
+
+            // A concurrent manual URL-only writer (no stable identity) claims the
+            // URL scope while A's adoption is in flight.
+            await expect(TokenStorage.setCredentialsForServerUrl(
+                'https://shared.example.test',
+                {},
+                { token: 'manual-url-token' },
+            )).resolves.toBe(true);
+
+            await expect(receipt!.rollback()).resolves.toBe(true);
+
+            // The attempted identity write is gone...
+            await expect(TokenStorage.getCredentialsForServerUrl(
+                'https://shared.example.test',
+                { serverId: 'srv_home_a' },
+            )).resolves.toBeNull();
+            for (const [, value] of localStorageHandle.store) {
+                expect(value).not.toContain('home-a-token');
+            }
+            // ...the concurrent manual URL-scope writer keeps its credential...
+            await expect(TokenStorage.getCredentialsForServerUrl('https://shared.example.test')).resolves.toEqual({ token: 'manual-url-token' });
+            // ...and rollback did not clobber it with the restored legacy value.
+            expect(localStorageHandle.store.get(legacyKey)).toBe(JSON.stringify({ token: 'manual-url-token' }));
+        } finally {
+            vi.doUnmock('@/sync/domains/server/serverProfiles');
+        }
     });
 });

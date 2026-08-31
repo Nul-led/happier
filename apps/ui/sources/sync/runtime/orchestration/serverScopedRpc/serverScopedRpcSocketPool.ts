@@ -9,6 +9,7 @@ import { resolveSocketIoTransports } from '@/sync/runtime/socketIoTransports';
 import {
     reportServerUnreachable,
     startServerReachabilitySupervisor,
+    acquireServerReachabilitySupervisor,
     subscribeServerReachabilityNetworkAllowed,
     waitForServerReachable,
 } from '@/sync/runtime/connectivity/serverReachabilitySupervisorPool';
@@ -31,6 +32,7 @@ type SocketLike = Readonly<{
 }>;
 
 type ReachabilityDeps = Readonly<{
+    acquireReachability?: (params: Readonly<{ serverUrl: string; runtimeOrigin: string; token: string }>) => Promise<Readonly<{ release: () => Promise<void> }>>;
     startReachability: (params: Readonly<{ serverUrl: string; token: string }>) => Promise<void>;
     waitForReachable: (params: Readonly<{ serverUrl: string; token: string; timeoutMs: number }>) => Promise<void>;
     reportUnreachable: (serverUrl: string, error: unknown) => void;
@@ -45,13 +47,16 @@ type Deps = Readonly<{
 }>;
 
 type PoolEntry = {
+    key: string;
     serverUrl: string;
+    reachabilityServerUrl: string;
     token: string;
     socket: SocketLike;
     inUseCount: number;
     connectInFlight: Promise<void> | null;
     intentionalDisconnect: boolean;
     idleDisconnectTimer: ReturnType<typeof setTimeout> | null;
+    reachabilityRelease: (() => Promise<void>) | null;
 };
 
 const INTENTIONAL_DISCONNECT_FLAG_RESET_MS = 1_000;
@@ -185,6 +190,11 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             }) as unknown as SocketLike;
         }),
         reachability: overrides?.reachability ?? {
+            acquireReachability: async (params) => await acquireServerReachabilitySupervisor({
+                serverUrl: params.serverUrl,
+                runtimeOrigin: params.runtimeOrigin,
+                token: params.token,
+            }),
             startReachability: async (params) => {
                 await startServerReachabilitySupervisor({ serverUrl: params.serverUrl, token: params.token });
             },
@@ -207,7 +217,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
 
     const buildKey = (serverUrl: string, token: string) => `${serverUrl}::${getOrCreateTokenCacheKey(token)}`;
 
-    const stopEntrySocket = async (entry: PoolEntry): Promise<void> => {
+    const stopEntrySocket = async (entry: PoolEntry, remove: boolean): Promise<void> => {
         if (entry.idleDisconnectTimer) {
             clearTimeout(entry.idleDisconnectTimer);
             entry.idleDisconnectTimer = null;
@@ -218,6 +228,12 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
         } catch {
             // ignore
         }
+        if (remove && entriesByKey.get(entry.key) === entry) {
+            entriesByKey.delete(entry.key);
+        }
+        const releaseReachability = entry.reachabilityRelease;
+        entry.reachabilityRelease = null;
+        await releaseReachability?.();
         // socket.io-client disconnect events are not guaranteed to be synchronous; keep the
         // intentional disconnect flag set briefly so we don't report an expected disconnect
         // as an unreachable server signal.
@@ -234,30 +250,33 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             entry.idleDisconnectTimer = null;
         }
         if (idleMs === 0) {
-            void stopEntrySocket(entry);
+            void stopEntrySocket(entry, true);
             return;
         }
         entry.idleDisconnectTimer = setTimeout(() => {
             entry.idleDisconnectTimer = null;
             if (entry.inUseCount > 0) return;
-            void stopEntrySocket(entry);
+            void stopEntrySocket(entry, true);
         }, idleMs);
     };
 
-    const getOrCreateEntry = (serverUrl: string, token: string): PoolEntry => {
-        const key = buildKey(serverUrl, token);
+    const getOrCreateEntry = (serverUrl: string, reachabilityServerUrl: string, token: string): PoolEntry => {
+        const key = `${buildKey(reachabilityServerUrl, token)}::${serverUrl}`;
         const existing = entriesByKey.get(key);
         if (existing) return existing;
 
         const socket = deps.createSocket({ serverUrl, token });
         const entry: PoolEntry = {
+            key,
             serverUrl,
+            reachabilityServerUrl,
             token,
             socket,
             inUseCount: 0,
             connectInFlight: null,
             intentionalDisconnect: false,
             idleDisconnectTimer: null,
+            reachabilityRelease: null,
         };
 
         socket.on('disconnect', (reason: unknown) => {
@@ -265,13 +284,13 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
                 entry.intentionalDisconnect = false;
                 return;
             }
-            deps.reachability.reportUnreachable(serverUrl, new Error(typeof reason === 'string' ? reason : 'socket disconnect'));
+            deps.reachability.reportUnreachable(reachabilityServerUrl, new Error(typeof reason === 'string' ? reason : 'socket disconnect'));
         });
         socket.on('connect_error', (error: unknown) => {
-            deps.reachability.reportUnreachable(serverUrl, error);
+            deps.reachability.reportUnreachable(reachabilityServerUrl, error);
         });
         socket.on('error', (error: unknown) => {
-            deps.reachability.reportUnreachable(serverUrl, error);
+            deps.reachability.reportUnreachable(reachabilityServerUrl, error);
         });
 
         entriesByKey.set(key, entry);
@@ -285,8 +304,17 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             return;
         }
         const run = (async () => {
-            await deps.reachability.startReachability({ serverUrl: entry.serverUrl, token: entry.token });
-            await deps.reachability.waitForReachable({ serverUrl: entry.serverUrl, token: entry.token, timeoutMs });
+            if (!entry.reachabilityRelease && deps.reachability.acquireReachability) {
+                const lease = await deps.reachability.acquireReachability({
+                    serverUrl: entry.reachabilityServerUrl,
+                    runtimeOrigin: entry.serverUrl,
+                    token: entry.token,
+                });
+                entry.reachabilityRelease = lease.release;
+            } else if (!entry.reachabilityRelease) {
+                await deps.reachability.startReachability({ serverUrl: entry.reachabilityServerUrl, token: entry.token });
+            }
+            await deps.reachability.waitForReachable({ serverUrl: entry.reachabilityServerUrl, token: entry.token, timeoutMs });
             await connectSocketWithTimeout(entry.socket, timeoutMs);
         })();
         entry.connectInFlight = run;
@@ -301,6 +329,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
 
     const acquire = async (params: ScopedSocketConnectParams): Promise<ScopedSocketClient> => {
         const serverUrl = normalizeServerUrl(params.serverUrl);
+        const reachabilityServerUrl = normalizeServerUrl(params.reachabilityServerUrl ?? params.serverUrl);
         const token = String(params.token ?? '');
         const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 30_000;
         if (!serverUrl) {
@@ -310,7 +339,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             throw new Error('Missing token');
         }
 
-        const entry = getOrCreateEntry(serverUrl, token);
+        const entry = getOrCreateEntry(serverUrl, reachabilityServerUrl, token);
         entry.inUseCount += 1;
         if (entry.idleDisconnectTimer) {
             clearTimeout(entry.idleDisconnectTimer);
@@ -347,8 +376,9 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
         const entries = Array.from(entriesByKey.values());
         await Promise.allSettled(entries.map(async (entry) => {
             entry.inUseCount = 0;
-            await stopEntrySocket(entry);
+            await stopEntrySocket(entry, true);
         }));
+        entriesByKey.clear();
     };
 
     const resetForTests = () => {

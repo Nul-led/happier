@@ -1,4 +1,4 @@
-import { deriveAccountMachineKeyFromRecoverySecret, parseSshTarget, SystemTaskJsonValueSchema } from '@happier-dev/protocol';
+import { parseSshTarget, SystemTaskJsonValueSchema } from '@happier-dev/protocol';
 import {
     buildRemoteBootstrapCommand,
     createRemoteSshBootstrapMachineTaskKind,
@@ -12,16 +12,13 @@ import {
 
 import type { NativeSshModule } from '@happier-dev/ssh-native';
 
-import { authApprove } from '@/auth/flows/approve';
+import { approveTerminalPairing } from '@/auth/terminal/approveTerminalPairing';
 import {
-    isDataKeyAuthCredentials,
-    isLegacyAuthCredentials,
     TokenStorage,
-    type AuthCredentials,
 } from '@/auth/storage/tokenStorage';
-import { buildTerminalResponseV1, buildTerminalResponseV2 } from '@/auth/terminal/terminalProvisioning';
-import { decodeBase64 } from '@/encryption/base64';
-import { storage } from '@/sync/domains/state/storageStore';
+import { decodeBase64, encodeBase64 } from '@/encryption/base64';
+import { listServerProfiles } from '@/sync/domains/server/serverProfiles';
+import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { isLoopbackHostname } from '@/sync/domains/server/url/serverUrlClassification';
 import {
     NATIVE_SSH_BOOTSTRAP_TASK_KIND,
@@ -29,6 +26,8 @@ import {
 } from '../bridges/native';
 import { buildNativeSystemTaskEvent } from '../bridges/events';
 import { createNativeRemoteSshCommandRunner, type NativeRemoteSshCommandRunner } from './nativeCommandRunner';
+
+type RemoteBootstrapMachineParams = ReturnType<typeof parseRemoteBootstrapMachineParams>;
 
 export type NativeRemoteSshBootstrapEventSink = Readonly<{
     event: (payload: unknown) => void;
@@ -50,7 +49,12 @@ export type RunNativeRemoteSshBootstrapTaskParams = Readonly<{
         arch: 'x64' | 'arm64';
         remoteHomeDir?: string;
     }>) => Promise<RemoteSelfDownloadFirstPartyInstallPlan>;
-    approveLocalAuthRequest?: (publicKey: string) => Promise<void>;
+    approveLocalAuthRequest?: (params: Readonly<{
+        publicKey: string;
+        pairing?: unknown;
+        supportsTokenOnly?: boolean;
+        endpointUrl: string;
+    }>) => Promise<void>;
     prompt?: (payload: Readonly<{
         kind: string;
         stepId?: string;
@@ -88,27 +92,45 @@ function decodeTerminalPublicKey(value: string): Uint8Array {
     }
 }
 
-function resolveTerminalProvisioningContentPrivateKey(credentials: AuthCredentials): Uint8Array {
-    if (isDataKeyAuthCredentials(credentials)) {
-        const machineKey = decodeBase64(credentials.encryption.machineKey, 'base64');
-        if (machineKey.length !== 32) {
-            throw new Error('native_ssh_invalid_terminal_key_material');
-        }
-        return machineKey;
-    }
-
-    if (!isLegacyAuthCredentials(credentials)) {
+function readNativePairingContext(value: unknown): Readonly<{
+    secret: Uint8Array;
+    createdAtMs: number;
+    expiresAtMs: number;
+}> {
+    const record = readRecord(value);
+    const keys = Object.keys(record).sort();
+    if (keys.length !== 3 || keys.join(',') !== 'createdAtMs,expiresAtMs,secretB64Url') {
         throw new SystemTaskExecutionError(
-            'native_ssh_token_only_terminal_approval_upgrade_required',
-            'Token-only native SSH pairing requires a newer authenticated remote-pairing protocol.',
+            'native_ssh_terminal_pairing_context_required',
+            'Native SSH pairing requires the authenticated v3 context from the remote auth request.',
         );
     }
-
-    const secretKey = decodeBase64(credentials.secret, 'base64url');
-    if (secretKey.length !== 32) {
-        throw new Error('native_ssh_invalid_terminal_key_material');
+    const secretB64Url = typeof record.secretB64Url === 'string' ? record.secretB64Url : '';
+    const createdAtMs = record.createdAtMs;
+    const expiresAtMs = record.expiresAtMs;
+    let secret: Uint8Array;
+    try {
+        secret = decodeBase64(secretB64Url, 'base64url');
+    } catch {
+        secret = new Uint8Array();
     }
-    return deriveAccountMachineKeyFromRecoverySecret(secretKey);
+    if (
+        secret.length !== 32
+        || encodeBase64(secret, 'base64url') !== secretB64Url
+        || typeof createdAtMs !== 'number'
+        || !Number.isSafeInteger(createdAtMs)
+        || createdAtMs < 0
+        || typeof expiresAtMs !== 'number'
+        || !Number.isSafeInteger(expiresAtMs)
+        || expiresAtMs <= createdAtMs
+        || Date.now() > expiresAtMs
+    ) {
+        throw new SystemTaskExecutionError(
+            'native_ssh_terminal_pairing_context_invalid',
+            'The remote authenticated terminal pairing context is malformed or expired.',
+        );
+    }
+    return { secret, createdAtMs, expiresAtMs };
 }
 
 async function installRemoteCliViaNativeSelfDownload(params: Readonly<{
@@ -158,8 +180,44 @@ async function installRemoteCliViaNativeSelfDownload(params: Readonly<{
     }
 }
 
-async function approveNativeLocalAuthRequest(publicKeyText: string): Promise<void> {
-    const credentials = await TokenStorage.getCredentials();
+function resolveNativeApprovalTarget(parsed: RemoteBootstrapMachineParams): Readonly<{
+    endpointUrl: string;
+    credentialUrl: string;
+    serverId: string;
+}> {
+    const endpointUrl = parsed.relay.relayUrl.trim();
+    const credentialUrl = parsed.relay.publicRelayUrl?.trim() || endpointUrl;
+    const credentialKey = createServerUrlComparableKey(credentialUrl);
+    const matches = credentialKey
+        ? listServerProfiles().filter((profile) => (
+            createServerUrlComparableKey(profile.serverUrl) === credentialKey
+            || createServerUrlComparableKey(profile.canonicalServerUrl ?? '') === credentialKey
+            || createServerUrlComparableKey(profile.publicServerUrl ?? '') === credentialKey
+        ))
+        : [];
+    const identities = [...new Set(matches.map((profile) => (
+        profile.serverIdentityId?.trim()
+    )).filter((identity): identity is string => Boolean(identity)))];
+    if (!endpointUrl || identities.length !== 1) {
+        throw new SystemTaskExecutionError(
+            'native_ssh_local_approval_target_unavailable',
+            'Native SSH bootstrap could not resolve one exact Home credential target.',
+        );
+    }
+    return { endpointUrl, credentialUrl, serverId: identities[0]! };
+}
+
+async function approveNativeLocalAuthRequest(params: Readonly<{
+    publicKey: string;
+    pairing?: unknown;
+    supportsTokenOnly?: boolean;
+    parsed: RemoteBootstrapMachineParams;
+}>): Promise<void> {
+    const target = resolveNativeApprovalTarget(params.parsed);
+    const credentials = await TokenStorage.getCredentialsForServerUrl(
+        target.credentialUrl,
+        { serverId: target.serverId },
+    );
     if (!credentials) {
         throw new SystemTaskExecutionError(
             'native_ssh_local_approval_unauthenticated',
@@ -167,24 +225,15 @@ async function approveNativeLocalAuthRequest(publicKeyText: string): Promise<voi
         );
     }
 
-    const publicKey = decodeTerminalPublicKey(publicKeyText);
-    const contentPrivateKey = resolveTerminalProvisioningContentPrivateKey(credentials);
-    const responseV2 = buildTerminalResponseV2({
-        contentPrivateKey,
-        terminalEphemeralPublicKey: publicKey,
+    const publicKey = decodeTerminalPublicKey(params.publicKey);
+    const pairing = readNativePairingContext(params.pairing);
+    const result = await approveTerminalPairing({
+        target: { endpointUrl: target.endpointUrl, serverId: target.serverId },
+        requesterPublicKey: publicKey,
+        pairingContext: pairing,
+        targetCredentials: credentials,
+        supportsTokenOnly: params.supportsTokenOnly === true,
     });
-    const allowLegacySecretExportEnabled = Boolean(
-        storage.getState().settings?.terminalConnectLegacySecretExportEnabled,
-    );
-    const responseV1 =
-        allowLegacySecretExportEnabled && isLegacyAuthCredentials(credentials)
-            ? () => buildTerminalResponseV1({
-                legacySecretB64Url: credentials.secret,
-                terminalEphemeralPublicKey: publicKey,
-            })
-            : new Uint8Array();
-
-    const result = await authApprove(credentials.token, publicKey, responseV1, responseV2);
     if (result === 'not_found') {
         throw new SystemTaskExecutionError(
             'native_ssh_local_approval_not_found',
@@ -289,8 +338,22 @@ export async function runNativeRemoteSshBootstrapTask(
                 resolveInstallPlan: params.resolveInstallPlan,
             });
         },
-        approveLocalAuthRequest: async ({ publicKey }) => {
-            await (params.approveLocalAuthRequest ?? approveNativeLocalAuthRequest)(publicKey);
+        approveLocalAuthRequest: async ({ publicKey, pairing, supportsTokenOnly, parsed: approvalTarget }) => {
+            if (params.approveLocalAuthRequest) {
+                await params.approveLocalAuthRequest({
+                    publicKey,
+                    ...(pairing !== undefined ? { pairing } : {}),
+                    ...(supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
+                    endpointUrl: approvalTarget.relay.relayUrl,
+                });
+                return;
+            }
+            await approveNativeLocalAuthRequest({
+                publicKey,
+                ...(pairing !== undefined ? { pairing } : {}),
+                ...(supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
+                parsed: approvalTarget,
+            });
         },
         runRemoteCommand: async ({ label, data }) => {
             const localServerUrl = typeof data?.localServerUrl === 'string' ? data.localServerUrl.trim() : '';

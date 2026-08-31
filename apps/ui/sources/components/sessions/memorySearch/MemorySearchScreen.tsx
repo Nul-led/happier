@@ -5,12 +5,16 @@ import { useRouter } from 'expo-router';
 
 import { useAllMachines } from '@/sync/domains/state/storage';
 import { useAllSessions } from '@/sync/store/hooks';
-import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { fetchDaemonMemoryStatus } from '@/sync/domains/memory/fetchDaemonMemoryStatus';
 import { getDaemonMemoryStatusStateTranslationKey } from '@/sync/domains/memory/getDaemonMemoryStatusStateTranslationKey';
 import { isDaemonMemorySearchUsable } from '@/sync/domains/memory/isDaemonMemorySearchUsable';
 import { presentDaemonMemoryStatus } from '@/sync/domains/memory/presentDaemonMemoryStatus';
 import { searchDaemonMemory } from '@/sync/domains/memory/searchDaemonMemory';
+import { searchHomeMemory } from '@/sync/domains/memory/searchHomeMemory';
+import {
+    useMemorySearchProvider,
+} from '@/sync/domains/memory/useMemorySearchProvider';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 
@@ -26,10 +30,14 @@ export const MemorySearchScreen = React.memo(function MemorySearchScreen() {
     const { theme } = useUnistyles();
     const router = useRouter();
     const memorySearchEnabled = useFeatureEnabled('memory.search');
+    const memorySearchProvider = useMemorySearchProvider();
+    const isHomeProvider = memorySearchProvider.provider === 'home';
     const machines = useAllMachines();
     const allSessions = useAllSessions();
-    const activeServerSnapshot = getActiveServerSnapshot();
+    const activeServerSnapshot = useActiveServerSnapshot();
     const serverId = activeServerSnapshot.serverId;
+
+    const homeReadiness = memorySearchProvider.homeReadiness;
 
     const [machineId, setMachineId] = React.useState<string>(() => machines[0]?.id ?? '');
     const [query, setQuery] = React.useState('');
@@ -39,6 +47,14 @@ export const MemorySearchScreen = React.memo(function MemorySearchScreen() {
     const [memoryStatus, setMemoryStatus] = React.useState<MemoryStatusV1 | null>(null);
     const [memoryStatusLoading, setMemoryStatusLoading] = React.useState(false);
     const [machineMenuOpen, setMachineMenuOpen] = React.useState(false);
+    const searchRequestIdRef = React.useRef(0);
+
+    React.useEffect(() => {
+        searchRequestIdRef.current += 1;
+        setHits([]);
+        setStatus('idle');
+        setErrorCode(null);
+    }, [isHomeProvider, machineId, serverId]);
 
     React.useEffect(() => {
         if (!machines.find((m) => m.id === machineId)) {
@@ -69,7 +85,7 @@ export const MemorySearchScreen = React.memo(function MemorySearchScreen() {
     }, [allSessions]);
 
     React.useEffect(() => {
-        if (!memorySearchEnabled || !serverId || !machineId) {
+        if (isHomeProvider || !memorySearchEnabled || !serverId || !machineId) {
             setMemoryStatus(null);
             setMemoryStatusLoading(false);
             return;
@@ -90,17 +106,29 @@ export const MemorySearchScreen = React.memo(function MemorySearchScreen() {
         return () => {
             cancelled = true;
         };
-    }, [machineId, memorySearchEnabled, serverId]);
+    }, [isHomeProvider, machineId, memorySearchEnabled, serverId]);
 
     const statusPresentation = React.useMemo(() => presentDaemonMemoryStatus(memoryStatus), [memoryStatus]);
     const memorySearchUsable = React.useMemo(() => isDaemonMemorySearchUsable(memoryStatus), [memoryStatus]);
-    const showEnableCta =
-        memoryStatusLoading !== true
+    const showEnableCta = !isHomeProvider
+        && memoryStatusLoading !== true
         && ((status === 'error' && errorCode === 'memory_disabled') || (memoryStatus?.enabled === false));
     const statusText = React.useMemo(() => {
+        if (isHomeProvider) {
+            if (homeReadiness === 'indexing') {
+                return t('memorySearchSettings.status.indexing');
+            }
+            if (homeReadiness === 'unavailable' || homeReadiness === 'unknown') {
+                return t('memorySearchSettings.status.unavailableLight');
+            }
+            if (status === 'error' && errorCode === 'memory_index_missing') {
+                return t('memorySearchSettings.status.unavailableLight');
+            }
+            return null;
+        }
         if (memoryStatusLoading && !statusPresentation) return t('common.loading');
         return t(getDaemonMemoryStatusStateTranslationKey(statusPresentation));
-    }, [memoryStatusLoading, statusPresentation]);
+    }, [errorCode, homeReadiness, isHomeProvider, memoryStatusLoading, status, statusPresentation]);
     const groupedHits = React.useMemo(() => groupMemorySearchHitsBySession({
         hits,
         sessionLabelById,
@@ -109,32 +137,51 @@ export const MemorySearchScreen = React.memo(function MemorySearchScreen() {
     const runSearch = React.useCallback(async () => {
         if (!memorySearchEnabled) return;
         const q = query.trim();
-        if (!q || !serverId || !machineId || !memorySearchUsable) return;
+        if (!q || !serverId) return;
+        if (isHomeProvider && !memorySearchProvider.queryAvailable) return;
+        if (!isHomeProvider && (!machineId || !memorySearchUsable)) return;
+        const requestId = searchRequestIdRef.current + 1;
+        searchRequestIdRef.current = requestId;
         setStatus('loading');
         setErrorCode(null);
         try {
-            const parsed = await searchDaemonMemory({
-                machineId,
-                serverId,
-                query: q,
-                scope: { type: 'global' },
-                mode: 'auto',
-                maxResults: 20,
-            });
+            const parsed = isHomeProvider
+                ? await searchHomeMemory({
+                    query: q,
+                    scope: { type: 'global' },
+                    mode: 'auto',
+                    maxResults: 20,
+                })
+                : await searchDaemonMemory({
+                    machineId,
+                    serverId,
+                    query: q,
+                    scope: { type: 'global' },
+                    mode: 'auto',
+                    maxResults: 20,
+                });
+            if (searchRequestIdRef.current !== requestId) return;
             if (parsed.ok) {
                 setHits(parsed.hits);
                 setStatus('ready');
                 return;
             }
             setErrorCode(typeof parsed.errorCode === 'string' ? parsed.errorCode : null);
-            setHits([]);
             setStatus('error');
         } catch {
+            if (searchRequestIdRef.current !== requestId) return;
             setErrorCode(null);
-            setHits([]);
             setStatus('error');
         }
-    }, [machineId, memorySearchEnabled, memorySearchUsable, query, serverId]);
+    }, [isHomeProvider, machineId, memorySearchEnabled, memorySearchProvider.queryAvailable, memorySearchUsable, query, serverId]);
+
+    const clearSearch = React.useCallback(() => {
+        searchRequestIdRef.current += 1;
+        setQuery('');
+        setHits([]);
+        setErrorCode(null);
+        setStatus('idle');
+    }, []);
 
     if (!memorySearchEnabled) {
         return (
@@ -157,37 +204,51 @@ export const MemorySearchScreen = React.memo(function MemorySearchScreen() {
 
     return (
         <View style={{ flex: 1, padding: 16 }}>
-            <Text style={{ color: theme.colors.text.secondary, paddingVertical: 8 }}>
-                {t('memorySearchSettings.screen.machineLabel', { machine: machineTitle })}
-            </Text>
-            <DropdownMenu
-                open={machineMenuOpen}
-                onOpenChange={setMachineMenuOpen}
-                selectedId={machineId}
-                items={machineItems}
-                search={true}
-                onSelect={(nextId) => {
-                    setMachineId(nextId);
-                    setHits([]);
-                    setStatus('idle');
-                    setErrorCode(null);
-                    setMachineMenuOpen(false);
-                }}
-                itemTrigger={{
-                    title: t('memorySearchSettings.machine.changeTitle'),
-                    itemProps: {
-                        testID: 'memory-search-machine-trigger',
-                    },
-                }}
-            />
-            <Text style={{ color: theme.colors.text.secondary, marginBottom: 12 }}>
-                {statusText}
+            {isHomeProvider ? null : (
+                <>
+                    <Text style={{ color: theme.colors.text.secondary, paddingVertical: 8 }}>
+                        {t('memorySearchSettings.screen.machineLabel', { machine: machineTitle })}
+                    </Text>
+                    <DropdownMenu
+                        open={machineMenuOpen}
+                        onOpenChange={setMachineMenuOpen}
+                        selectedId={machineId}
+                        items={machineItems}
+                        search={true}
+                        onSelect={(nextId) => {
+                            setMachineId(nextId);
+                            setHits([]);
+                            setStatus('idle');
+                            setErrorCode(null);
+                            setMachineMenuOpen(false);
+                        }}
+                        itemTrigger={{
+                            title: t('memorySearchSettings.machine.changeTitle'),
+                            itemProps: {
+                                testID: 'memory-search-machine-trigger',
+                            },
+                        }}
+                    />
+                </>
+            )}
+            {statusText !== null ? (
+                <Text
+                    accessibilityLiveRegion="polite"
+                    style={{ color: theme.colors.text.secondary, marginBottom: 12 }}
+                >
+                    {statusText}
+                </Text>
+            ) : null}
+            <Text style={{ color: theme.colors.text.secondary, marginBottom: 6 }}>
+                {t('memorySearchSettings.screen.searchPlaceholder')}
             </Text>
             <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
                 <TextInput
                     testID="memory-search-query"
                     value={query}
                     onChangeText={setQuery}
+                    onSubmitEditing={() => { void runSearch(); }}
+                    accessibilityLabel={t('memorySearchSettings.screen.searchPlaceholder')}
                     placeholder={t('memorySearchSettings.screen.searchPlaceholder')}
                     placeholderTextColor={theme.colors.input.placeholder}
                     style={{
@@ -201,25 +262,48 @@ export const MemorySearchScreen = React.memo(function MemorySearchScreen() {
                 />
                 <Pressable
                     testID="memory-search-submit"
-                    disabled={!memorySearchUsable}
-                    accessibilityState={{ disabled: !memorySearchUsable }}
+                    disabled={isHomeProvider ? !memorySearchProvider.queryAvailable : !memorySearchUsable}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('memorySearchSettings.screen.searchPlaceholder')}
+                    accessibilityState={{ disabled: isHomeProvider ? !memorySearchProvider.queryAvailable : !memorySearchUsable }}
                     onPress={() => { void runSearch(); }}
                     style={{
                         paddingHorizontal: 12,
                         paddingVertical: 10,
                         borderRadius: 10,
-                        backgroundColor: memorySearchUsable ? theme.colors.accent.blue : theme.colors.input.background,
+                        backgroundColor: ((isHomeProvider && memorySearchProvider.queryAvailable) || (!isHomeProvider && memorySearchUsable))
+                            ? theme.colors.accent.blue
+                            : theme.colors.input.background,
                     }}
                 >
-                    <View>
-                        {/* Using View as a test-friendly placeholder; native button content is styled elsewhere. */}
-                    </View>
+                    <Text style={{ color: theme.colors.text.primary }}>
+                        {t('memorySearchSettings.screen.searchPlaceholder')}
+                    </Text>
                 </Pressable>
+                {query.length > 0 || hits.length > 0 ? (
+                    <Pressable
+                        testID="memory-search-clear"
+                        accessibilityRole="button"
+                        accessibilityLabel={t('common.clearSearch')}
+                        onPress={clearSearch}
+                        style={{ paddingHorizontal: 12, paddingVertical: 10 }}
+                    >
+                        <Text style={{ color: theme.colors.text.secondary }}>
+                            {t('common.clearSearch')}
+                        </Text>
+                    </Pressable>
+                ) : null}
             </View>
 
             {status === 'loading' ? (
-                <Text style={{ color: theme.colors.text.secondary, marginTop: 16 }}>
+                <Text accessibilityLiveRegion="polite" style={{ color: theme.colors.text.secondary, marginTop: 16 }}>
                     {t('common.loading')}
+                </Text>
+            ) : null}
+
+            {status === 'error' ? (
+                <Text accessibilityLiveRegion="assertive" style={{ color: theme.colors.text.secondary, marginTop: 16 }}>
+                    {t('common.requestFailed')}
                 </Text>
             ) : null}
 
@@ -229,7 +313,7 @@ export const MemorySearchScreen = React.memo(function MemorySearchScreen() {
                 </Text>
             ) : null}
 
-            {status === 'ready' && groupedHits.length > 0 ? (
+            {(status === 'ready' || status === 'loading' || status === 'error') && groupedHits.length > 0 ? (
                 <View style={{ marginTop: 16, gap: 10 }}>
                     {groupedHits.map((group) => (
                         <View key={group.sessionId} style={{ gap: 8 }}>
@@ -239,6 +323,8 @@ export const MemorySearchScreen = React.memo(function MemorySearchScreen() {
                             {group.hits.map((hit, idx) => (
                                 <Pressable
                                     key={`${hit.sessionId}:${hit.seqFrom}:${hit.seqTo}:${idx}`}
+                                    testID={`memory-search-hit-${hit.sessionId}-${hit.seqFrom}-${idx}`}
+                                    accessibilityRole="button"
                                     onPress={() => {
                                         const jumpSeq = typeof hit.seqFrom === 'number' ? Math.max(0, Math.trunc(hit.seqFrom)) : 0;
                                         router.push(`/session/${encodeURIComponent(String(hit.sessionId))}?jumpSeq=${encodeURIComponent(String(jumpSeq))}` as any);

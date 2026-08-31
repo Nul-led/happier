@@ -116,6 +116,67 @@ describe('accountSettingsPersistence', () => {
         });
     });
 
+    it('seeds Home selection once and ignores later stale scoped selection saves across restart', async () => {
+        const mod = await loadAccountSettingsPersistenceModule();
+        expect(mod, 'account settings persistence module should exist').not.toBeNull();
+        if (!mod) return;
+
+        writeLegacyAccountSettingsCache(scopeA, {
+            ...settingsDefaults,
+            serverSelectionGroups: [{ id: 'focused', name: 'Focused', serverIds: ['server-a', 'server-b'] }],
+            serverSelectionActiveTargetKind: 'group',
+            serverSelectionActiveTargetId: 'focused',
+        }, 1);
+        mod.prepareAccountSettingsScopeForActivation(scopeA);
+
+        mod.saveAccountSettings(sameAccountDifferentServer, {
+            ...settingsDefaults,
+            serverSelectionGroups: [{ id: 'stale', name: 'Stale', serverIds: ['server-b'], presentation: 'grouped' }],
+            serverSelectionActiveTargetKind: 'server',
+            serverSelectionActiveTargetId: 'server-b',
+        }, 2);
+
+        vi.resetModules();
+        const restarted = await loadAccountSettingsPersistenceModule();
+        expect(restarted, 'account settings persistence module should survive restart').not.toBeNull();
+        if (!restarted) return;
+        expect(restarted.loadAccountSettings(sameAccountDifferentServer).settings).toMatchObject({
+            serverSelectionGroups: [{ id: 'focused', name: 'Focused', serverIds: ['server-a', 'server-b'] }],
+            serverSelectionActiveTargetKind: 'group',
+            serverSelectionActiveTargetId: 'focused',
+        });
+
+        const staleEnvelope = JSON.parse(store.get(accountSettingsStorageKey(sameAccountDifferentServer)) ?? '{}') as {
+            settings?: Record<string, unknown>;
+        };
+        expect(staleEnvelope.settings).not.toHaveProperty('serverSelectionGroups');
+        expect(staleEnvelope.settings).not.toHaveProperty('serverSelectionActiveTargetKind');
+        expect(staleEnvelope.settings).not.toHaveProperty('serverSelectionActiveTargetId');
+    });
+
+    it('does not mirror device-global Home selection into legacy settings persistence', async () => {
+        const { saveHomeViewState } = await import('../server/serverProfiles');
+        const { loadSettings, saveSettings } = await import('./settingsPersistence');
+        saveHomeViewState({
+            version: 1,
+            groups: [{ id: 'global', name: 'Global', serverIds: ['server-a'] }],
+            activeTargetKind: 'server',
+            activeTargetId: 'server-a',
+        });
+
+        saveSettings({
+            ...settingsDefaults,
+            serverSelectionGroups: [{ id: 'stale', name: 'Stale', serverIds: ['server-b'], presentation: 'grouped' }],
+            serverSelectionActiveTargetKind: 'server',
+            serverSelectionActiveTargetId: 'server-b',
+        }, 3);
+
+        const persisted = loadSettings().settings as Record<string, unknown>;
+        expect(persisted).not.toHaveProperty('serverSelectionGroups');
+        expect(persisted).not.toHaveProperty('serverSelectionActiveTargetKind');
+        expect(persisted).not.toHaveProperty('serverSelectionActiveTargetId');
+    });
+
     it('typed-refuses raw secret-string values without changing cached or pending account settings', async () => {
         const mod = await loadAccountSettingsPersistenceModule();
         expect(mod, 'account settings persistence module should exist').not.toBeNull();

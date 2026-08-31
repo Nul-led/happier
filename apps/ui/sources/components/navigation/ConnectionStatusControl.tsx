@@ -6,16 +6,15 @@ import { StatusDot } from '@/components/ui/status/StatusDot';
 import { StatusPill, type StatusPillVariant } from '@/components/ui/status/StatusPill';
 import { Popover } from '@/components/ui/popover';
 import { FloatingOverlay } from '@/components/ui/overlays/FloatingOverlay';
-import { useSocketStatus, useSyncError, useLastSyncAt, useSettingMutable } from '@/sync/domains/state/storage';
-import { getServerUrl } from '@/sync/domains/server/serverConfig';
+import { useSocketStatus, useSyncError, useLastSyncAt, useMachineListStatusByServerId, useSettings } from '@/sync/domains/state/storage';
+import { useHomeViewSelectionSettingsMutable } from '@/hooks/server/useHomeViewSelectionSettings';
 import {
     areServerProfileIdentifiersEquivalent,
-    getActiveServerId,
+    getDeviceDefaultServerId,
     listServerProfiles,
     resolveServerProfileScopeId,
 } from '@/sync/domains/server/serverProfiles';
 import { useAuth } from '@/auth/context/AuthContext';
-import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { useRouter } from 'expo-router';
 import { setActiveServerAndSwitch } from '@/sync/domains/server/activeServerSwitch';
@@ -27,7 +26,7 @@ import {
     listServerProfileScopeIds,
     normalizeServerSelectionSettingsForProfileScopeIds,
 } from '@/sync/domains/server/selection/serverSelectionProfileScopeIds';
-import { writeServerSelectionActiveTargetToServer } from '@/sync/domains/server/selection/serverSelectionActiveTarget';
+import { buildServerSelectionActiveTargetForServer } from '@/sync/domains/server/selection/serverSelectionActiveTarget';
 import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import { useConnectionTargetActions } from '@/components/navigation/connection/useConnectionTargetActions';
 import { promptSignedOutServerSwitchConfirmation } from '@/components/settings/server/modals/ServerSwitchAuthPrompt';
@@ -41,6 +40,10 @@ import { selectSyncErrorForServer } from '@/sync/runtime/connectivity/syncErrorS
 import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
 import { ActionListSection } from '@/components/ui/lists/ActionListSection';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
+import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
+import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
+import { useServerAuthStatusByServerId } from '@/components/settings/server/hooks/useServerAuthStatusByServerId';
+import { resolveHomeTransportPresentation } from '@/components/navigation/connectionStatus/resolveHomeTransportPresentation';
 
 type Variant = 'sidebar' | 'header';
 const RELAY_SETTINGS_ROUTE = '/settings/server';
@@ -396,14 +399,28 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
     const syncError = useSyncError();
     const lastSyncAt = useLastSyncAt();
     const connectionHealth = useConnectionHealth();
-    const [serverSelectionGroups] = useSettingMutable('serverSelectionGroups');
-    const [serverSelectionActiveTargetKind, setServerSelectionActiveTargetKind] = useSettingMutable('serverSelectionActiveTargetKind');
-    const [serverSelectionActiveTargetId, setServerSelectionActiveTargetId] = useSettingMutable('serverSelectionActiveTargetId');
+    const accountSettings = useSettings();
+    const {
+        serverSelectionGroups,
+        serverSelectionActiveTargetKind,
+        serverSelectionActiveTargetId,
+        setHomeViewSelectionSettings,
+    } = useHomeViewSelectionSettingsMutable(accountSettings);
 
     const [open, setOpen] = React.useState(false);
     const [relayDropdownOpen, setRelayDropdownOpen] = React.useState(false);
+    const [pendingServerId, setPendingServerId] = React.useState<string | null>(null);
     const anchorRef = React.useRef<React.ElementRef<typeof View> | null>(null);
-    const [authStatusByServerId, setAuthStatusByServerId] = React.useState<Record<string, 'signedIn' | 'signedOut' | 'unknown'>>({});
+    const serverProfilesGeneration = useServerProfilesGeneration();
+    const activeServerSnapshot = useActiveServerSnapshot();
+    const transportPresentation = React.useMemo(
+        () => resolveHomeTransportPresentation(activeServerSnapshot),
+        [
+            activeServerSnapshot.carrier,
+            activeServerSnapshot.irohObservedPath,
+            activeServerSnapshot.irohRelayPolicy,
+        ],
+    );
 
     const textSize = props.textSize ?? (props.variant === 'sidebar' ? 11 : 12);
     const dotSize = props.dotSize ?? 6;
@@ -416,55 +433,35 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
         } catch {
             return [];
         }
-    }, [open]);
-
-    const activeServerId = React.useMemo(() => {
-        try {
-            return getActiveServerId();
-        } catch {
-            return '';
-        }
-    }, [open]);
+    }, [serverProfilesGeneration]);
+    const activeServerId = activeServerSnapshot.serverId;
+    const machineListStatusByServerId = useMachineListStatusByServerId();
+    const authStatusByServerId = useServerAuthStatusByServerId(servers);
     const activeSyncError = React.useMemo(() => {
         return selectSyncErrorForServer(syncError, activeServerId);
     }, [activeServerId, syncError]);
 
+    const displayServerId = pendingServerId ?? activeServerId;
+    const displayServerProfile = React.useMemo(() => {
+        return servers.find((server) => server.id === displayServerId || resolveServerProfileScopeId(server) === displayServerId) ?? null;
+    }, [displayServerId, servers]);
+    const displayServerUrl = displayServerProfile?.serverUrl ?? activeServerSnapshot.serverUrl;
     const activeServerLabel = React.useMemo(() => {
-        const active = servers.find((server) => server.id === activeServerId || resolveServerProfileScopeId(server) === activeServerId);
+        const active = displayServerProfile;
         const name = String(active?.name ?? '').trim();
         if (name) return name;
-        return toServerUrlDisplay(getServerUrl()) || t('status.connected');
-    }, [activeServerId, servers]);
-
-    React.useEffect(() => {
-        let cancelled = false;
-        fireAndForget((async () => {
-            const entries = await Promise.all(servers.map(async (profile) => {
-                const scopeId = resolveServerProfileScopeId(profile);
-                try {
-                    const creds = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, { serverId: profile.id });
-                    return [scopeId, creds ? 'signedIn' : 'signedOut'] as const;
-                } catch {
-                    return [scopeId, 'unknown'] as const;
-                }
-            }));
-            if (cancelled) return;
-            const next: Record<string, 'signedIn' | 'signedOut' | 'unknown'> = {};
-            for (const [id, status] of entries) next[id] = status;
-            setAuthStatusByServerId(next);
-        })(), { tag: 'ConnectionStatusControl.loadAuthStatusByServerId' });
-        return () => {
-            cancelled = true;
-        };
-    }, [servers]);
+        return toServerUrlDisplay(displayServerUrl) || t('status.connected');
+    }, [displayServerProfile, displayServerUrl]);
 
     const switchServer = React.useCallback(async (serverId: string, scope: 'tab' | 'device' = 'device') => {
-        await setActiveServerAndSwitch({
-            serverId,
-            scope,
-            refreshAuth: auth.refreshFromActiveServer,
-        });
-        setOpen(false);
+        setPendingServerId(serverId);
+        try {
+            const result = await setActiveServerAndSwitch({ serverId, scope, refreshAuth: auth.refreshFromActiveServer });
+            if (result !== 'blocked') setOpen(false);
+            return result;
+        } finally {
+            setPendingServerId((current) => current === serverId ? null : current);
+        }
     }, [auth]);
 
     const serverSelectionScopeSettings = React.useMemo(() => normalizeServerSelectionSettingsForProfileScopeIds({
@@ -516,18 +513,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
 
     const switchTarget = React.useCallback(async (target: (typeof serverTargets)[number]) => {
         const confirmSignedOutSwitch = async (serverId: string): Promise<boolean> => {
-            let status = authStatusByServerId[serverId] ?? 'unknown';
-            if (status === 'unknown') {
-                const profile = serverById.get(serverId);
-                if (profile) {
-                    try {
-                        const creds = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, { serverId: profile.id });
-                        status = creds ? 'signedIn' : 'signedOut';
-                    } catch {
-                        status = 'unknown';
-                    }
-                }
-            }
+            const status = authStatusByServerId[serverId] ?? 'unknown';
             if (status !== 'signedOut') return true;
             const shouldContinue = await promptSignedOutServerSwitchConfirmation();
             return shouldContinue;
@@ -538,11 +524,10 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
             if (!server) return;
             const shouldSwitch = await confirmSignedOutSwitch(target.serverId);
             if (!shouldSwitch) return;
-            writeServerSelectionActiveTargetToServer({
-                setServerSelectionActiveTargetKind,
-                setServerSelectionActiveTargetId,
-            }, target.serverId);
-            await switchServer(target.serverId, 'device');
+            const result = await switchServer(target.serverId, 'device');
+            if (result === 'blocked') return;
+            const nextTarget = buildServerSelectionActiveTargetForServer(target.serverId);
+            setHomeViewSelectionSettings((current) => ({ ...current, ...nextTarget }));
             if ((authStatusByServerId[target.serverId] ?? 'unknown') === 'signedOut') {
                 router.replace('/');
             }
@@ -555,12 +540,15 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
             if (!shouldSwitch) return;
         }
 
-        setServerSelectionActiveTargetKind('group');
-        setServerSelectionActiveTargetId(target.groupId);
-
         if (nextServerId && !areServerProfileIdentifiersEquivalent(nextServerId, activeServerId)) {
-            await switchServer(nextServerId, 'device');
+            const result = await switchServer(nextServerId, 'device');
+            if (result === 'blocked') return;
         }
+        setHomeViewSelectionSettings((current) => ({
+            ...current,
+            serverSelectionActiveTargetKind: 'group',
+            serverSelectionActiveTargetId: target.groupId,
+        }));
         if (nextServerId && (authStatusByServerId[nextServerId] ?? 'unknown') === 'signedOut') {
             router.replace('/');
             return;
@@ -570,11 +558,36 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
         activeServerId,
         authStatusByServerId,
         router,
-        setServerSelectionActiveTargetId,
-        setServerSelectionActiveTargetKind,
+        setHomeViewSelectionSettings,
         serverById,
         switchServer,
     ]);
+    const targetStatusByServerId = React.useMemo(() => {
+        const result: Record<string, { label: string }> = {};
+        for (const target of serverTargets) {
+            if (target.kind !== 'server') continue;
+            const authStatus = authStatusByServerId[target.serverId] ?? 'unknown';
+            const projectionStatus = machineListStatusByServerId[target.serverId];
+            result[target.serverId] = {
+                label: authStatus === 'signedOut'
+                    ? t('server.signedOut')
+                    : pendingServerId === target.serverId
+                        ? t('status.connecting')
+                        : target.serverId === activeServerId
+                            ? t(connectionHealth.statusLabelKey)
+                            : projectionStatus === 'idle'
+                                ? t('status.connected')
+                                : projectionStatus === 'loading'
+                                    ? t('status.connecting')
+                                    : projectionStatus === 'error'
+                                        ? t('status.offline')
+                                        : authStatus === 'signedIn'
+                                            ? t('server.signedIn')
+                                            : t('server.authStatusUnknown'),
+            };
+        }
+        return result;
+    }, [activeServerId, authStatusByServerId, connectionHealth.statusLabelKey, machineListStatusByServerId, pendingServerId, serverTargets]);
     const targetActions = useConnectionTargetActions({
         targets: serverTargets,
         activeTargetKey,
@@ -583,6 +596,9 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
         },
         selectedColor: theme.colors.status.connected,
         iconColor: theme.colors.text.primary,
+        statusByServerId: targetStatusByServerId,
+        focusedServerId: activeServerId,
+        defaultServerId: getDeviceDefaultServerId(),
     });
 
     const relayDropdownItems = React.useMemo<ReadonlyArray<DropdownMenuItem>>(() => {
@@ -640,6 +656,8 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
     }, [router]);
     const shouldUseRelayDropdown = targetActions.length > RELAY_DROPDOWN_TARGET_THRESHOLD;
     const popoverMinWidth = props.variant === 'sidebar' && Platform.OS === 'web' ? POPOVER_MIN_WIDTH : undefined;
+    const collapsedStatusLabel = pendingServerId ? t('status.connecting') : t(connectionHealth.statusLabelKey);
+    const collapsedStatusColor = pendingServerId ? theme.colors.status.connecting : connectionHealth.color;
 
     return (
         <>
@@ -653,15 +671,17 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                     style={styles.statusContainer}
                     onPress={() => setOpen((currentOpen) => !currentOpen)}
                     accessibilityRole="button"
+                    accessibilityLabel={`${activeServerLabel}, ${collapsedStatusLabel}, ${t(transportPresentation.pathLabelKey)}`}
+                    accessibilityState={{ expanded: open }}
                 >
                     <StatusDot
-                        color={connectionHealth.color}
-                        isPulsing={connectionHealth.isPulsing}
+                        color={collapsedStatusColor}
+                        isPulsing={pendingServerId ? true : connectionHealth.isPulsing}
                         size={dotSize}
                         style={{ marginRight: 4 }}
                     />
                     <Text
-                        style={[styles.statusText, { color: connectionHealth.color, fontSize: textSize }]}
+                        style={[styles.statusText, { color: collapsedStatusColor, fontSize: textSize }]}
                         numberOfLines={1}
                         ellipsizeMode="tail"
                     >
@@ -670,7 +690,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                     <Icon
                         name={open ? "caret-up" : "caret-down"}
                         size={chevronSize}
-                        color={connectionHealth.color}
+                        color={collapsedStatusColor}
                         style={styles.statusChevron}
                     />
                 </Pressable>
@@ -781,7 +801,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                                 testID="connection-popover-relay"
                                                 icon="hard-drives"
                                                 title={t('systemStatus.server.activeServer')}
-                                                subtitle={toServerUrlDisplay(getServerUrl())}
+                                                subtitle={toServerUrlDisplay(activeServerSnapshot.serverUrl)}
                                                 statusLabel={t(endpointPresentation.labelKey)}
                                                 statusColor={endpointPresentation.color}
                                                 dotColor={endpointPresentation.dotColor}
@@ -813,6 +833,27 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                 })()}
 
                                 <View style={styles.statusMeta}>
+                                    <View style={styles.statusMetaRow}>
+                                        <Text style={styles.statusMetaLabel}>
+                                            {t('connectionStatus.labels.transport')}
+                                        </Text>
+                                        <Text style={styles.statusMetaValue}>
+                                            {t(transportPresentation.pathLabelKey)}
+                                        </Text>
+                                    </View>
+                                    {activeServerSnapshot.carrier === 'iroh' ? (
+                                        <View style={styles.statusMetaRow}>
+                                            <Text style={styles.statusMetaLabel}>
+                                                {t('connectionStatus.labels.connectionMode')}
+                                            </Text>
+                                            <Text
+                                                style={[styles.statusMetaValue, { flexShrink: 1, textAlign: 'right' }]}
+                                                numberOfLines={2}
+                                            >
+                                                {t(transportPresentation.modeLabelKey)}
+                                            </Text>
+                                        </View>
+                                    ) : null}
                                     <View style={styles.statusMetaRow}>
                                         <Text style={styles.statusMetaLabel}>
                                             {t('connectionStatus.labels.lastSync')}
@@ -887,7 +928,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                                 connectToTrigger={true}
                                                 itemTrigger={{
                                                     title: activeServerLabel,
-                                                    subtitle: toServerUrlDisplay(getServerUrl()),
+                                                    subtitle: toServerUrlDisplay(displayServerUrl),
                                                     showSelectedDetail: false,
                                                     showSelectedSubtitle: false,
                                                 }}

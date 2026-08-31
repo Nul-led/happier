@@ -1,141 +1,302 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import tweetnacl from 'tweetnacl';
+import {
+    sealTerminalProvisioningV3Payload,
+    sealTerminalProvisioningV3TokenOnlyPayload,
+} from '@happier-dev/protocol';
 
-import sodium from '@/encryption/libsodium.lib';
 import { encodeBase64 } from '@/encryption/base64';
 import { encryptBox } from '@/encryption/libsodium';
 import { generateAuthKeyPair } from './qrStart';
-import { authQRWait } from './qrWait';
-import { serverFetch } from '@/sync/http/client';
+import { authQRWait, type AuthQrWaitOptions, type HomeQrEnrollmentTarget } from './qrWait';
+import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
 
-const activeServerSnapshot = vi.hoisted(() => ({
-    serverId: 'relay-example',
-    serverUrl: 'https://relay.example.test',
-    generation: 0,
-}));
-
-const adoptHomeProfileMock = vi.hoisted(() => vi.fn(async () => ({ serverId: 'relay-example', serverUrl: 'https://relay.example.test' })));
+const endpointFetchMock = vi.hoisted(() => vi.fn());
+const createServerFetchAtEndpointMock = vi.hoisted(() => vi.fn<(input: unknown) => typeof endpointFetchMock>(() => endpointFetchMock));
+const serverFetchMock = vi.hoisted(() => vi.fn());
+const trackAuthEnrollmentTransientRetryMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@/sync/http/client', () => ({
-    serverFetch: vi.fn(),
+    createServerFetchAtEndpoint: (input: unknown) => createServerFetchAtEndpointMock(input),
+    serverFetch: (...args: unknown[]) => serverFetchMock(...args),
+}));
+vi.mock('@/utils/runtime/isRuntimeActive', () => ({ isRuntimeActive: () => true }));
+vi.mock('@/track', () => ({
+    trackAuthEnrollmentTransientRetry: trackAuthEnrollmentTransientRetryMock,
 }));
 
-vi.mock('@/sync/domains/server/serverRuntime', () => ({
-    getActiveServerSnapshot: () => activeServerSnapshot,
-}));
+function json(status: number, payload: unknown): Response {
+    return new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } });
+}
 
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    adoptHomeProfile: (...args: unknown[]) => adoptHomeProfileMock(...args),
-}));
-
-type StubResponse = {
-    ok: boolean;
-    status: number;
-    json: () => Promise<any>;
+const HOME_B_DESCRIPTOR = {
+        v: 1 as const,
+        homeServerIdentityId: 'srv_home_b',
+        canonicalServerUrl: 'https://home-b.test',
+        revision: 1,
+        endpoints: [{ kind: 'https' as const, url: 'https://home-b.test' }],
 };
+let HOME_B_TARGET: HomeQrEnrollmentTarget;
 
-function makeJsonResponse(status: number, payload: any): StubResponse {
+function createV2Context(overrides: Partial<NonNullable<AuthQrWaitOptions['v2Context']>> = {}) {
+    const issuedAtMs = Date.now();
     return {
-        ok: status >= 200 && status < 300,
-        status,
-        json: async () => payload,
+        pairId: 'pair-home-b',
+        homeServerIdentityId: 'srv_home_b',
+        bindingSecret: new Uint8Array(32).fill(17),
+        bindingProof: 'bound-proof',
+        issuedAtMs,
+        expiresAtMs: issuedAtMs + 60_000,
+        ...overrides,
     };
 }
 
-describe('authQRWait v2 fallback', () => {
-    beforeAll(async () => {
-        await sodium.ready;
-    });
-
-    it('uses /v2/auth/account/request when available', async () => {
-        const keypair = generateAuthKeyPair();
-        const expectedToken = 'tkn-test-1';
-        const expectedSecret = new Uint8Array([1, 2, 3, 4]);
-
-        const tokenEncrypted = encodeBase64(encryptBox(new TextEncoder().encode(expectedToken), keypair.publicKey));
-        const responseEncrypted = encodeBase64(encryptBox(expectedSecret, keypair.publicKey));
-
-        const fetchMock = vi.mocked(serverFetch);
-        fetchMock.mockReset();
-        fetchMock.mockResolvedValueOnce(
-            makeJsonResponse(200, { state: 'authorized', tokenEncrypted, response: responseEncrypted }) as any,
-        );
-
-        const out = await authQRWait(keypair);
-        expect(out?.token).toBe(expectedToken);
-        expect(out?.secret).toBe(encodeBase64(expectedSecret, 'base64url'));
-        expect(fetchMock.mock.calls[0]?.[0]).toBe('/v2/auth/account/request');
-        expect(fetchMock).toHaveBeenCalledTimes(1);
-    });
-
-    it('falls back to /v1/auth/account/request when /v2 is missing', async () => {
-        const keypair = generateAuthKeyPair();
-        const expectedToken = 'tkn-test-2';
-        const expectedSecret = new Uint8Array([9, 8, 7]);
-
-        const responseEncrypted = encodeBase64(encryptBox(expectedSecret, keypair.publicKey));
-
-        const fetchMock = vi.mocked(serverFetch);
-        fetchMock.mockReset();
-        fetchMock.mockResolvedValueOnce(makeJsonResponse(404, { error: 'Not Found' }) as any);
-        fetchMock.mockResolvedValueOnce(
-            makeJsonResponse(200, { state: 'authorized', token: expectedToken, response: responseEncrypted }) as any,
-        );
-
-        const out = await authQRWait(keypair);
-        expect(out?.token).toBe(expectedToken);
-        expect(out?.secret).toBe(encodeBase64(expectedSecret, 'base64url'));
-        expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
-            '/v2/auth/account/request',
-            '/v1/auth/account/request',
-        ]);
-        expect(fetchMock).toHaveBeenCalledTimes(2);
-    });
-
-    it('stores server identity from authorized auth responses', async () => {
-        const keypair = generateAuthKeyPair();
-        const expectedToken = 'tkn-test-identity';
-        const expectedSecret = new Uint8Array([4, 5, 6]);
-        const responseEncrypted = encodeBase64(encryptBox(expectedSecret, keypair.publicKey));
-
-        adoptHomeProfileMock.mockClear();
-        const fetchMock = vi.mocked(serverFetch);
-        fetchMock.mockReset();
-        fetchMock.mockResolvedValueOnce(
-            makeJsonResponse(200, {
-                state: 'authorized',
-                token: expectedToken,
-                response: responseEncrypted,
-                serverIdentityId: 'srv_auth_identity',
-            }) as any,
-        );
-
-        const out = await authQRWait(keypair);
-
-        expect(out?.token).toBe(expectedToken);
-        expect(adoptHomeProfileMock).toHaveBeenCalledWith(expect.objectContaining({
-            source: 'qr',
-            preserveUserLabel: true,
-            descriptor: expect.objectContaining({
-                homeServerIdentityId: 'srv_auth_identity',
-                canonicalServerUrl: 'https://relay.example.test',
-            }),
+function authorizedV2(params: Readonly<{
+    keypair: ReturnType<typeof generateAuthKeyPair>;
+    context: NonNullable<AuthQrWaitOptions['v2Context']>;
+    token: string;
+    dataKey?: Uint8Array;
+    rawResponse?: Uint8Array;
+}>) {
+    const response = params.rawResponse ?? (params.dataKey
+        ? sealTerminalProvisioningV3Payload({
+            contentPrivateKey: params.dataKey,
+            terminalEphemeralPublicKey: params.keypair.publicKey,
+            pairingSecret: params.context.bindingSecret,
+            createdAtMs: params.context.issuedAtMs,
+            expiresAtMs: params.context.expiresAtMs,
+            randomBytes: tweetnacl.randomBytes,
+        })
+        : sealTerminalProvisioningV3TokenOnlyPayload({
+            terminalEphemeralPublicKey: params.keypair.publicKey,
+            pairingSecret: params.context.bindingSecret,
+            createdAtMs: params.context.issuedAtMs,
+            expiresAtMs: params.context.expiresAtMs,
+            randomBytes: tweetnacl.randomBytes,
         }));
+    return {
+        state: 'authorized',
+        tokenEncrypted: encodeBase64(encryptBox(new TextEncoder().encode(params.token), params.keypair.publicKey)),
+        response: encodeBase64(response),
+    };
+}
+
+beforeAll(async () => {
+    const resolution = await resolveHomeEnrollmentTransport(HOME_B_DESCRIPTOR);
+    if (!resolution.ok) throw new Error('Expected test Home transport');
+    HOME_B_TARGET = { ...resolution.transport, serverId: 'profile-b' };
+});
+
+async function settle<T>(promise: Promise<T>): Promise<T> {
+    await vi.advanceTimersByTimeAsync(50);
+    return promise;
+}
+
+describe('authQRWait explicit-target enrollment', () => {
+    afterEach(() => {
+        endpointFetchMock.mockReset();
+        createServerFetchAtEndpointMock.mockClear();
+        createServerFetchAtEndpointMock.mockImplementation(() => endpointFetchMock);
+        serverFetchMock.mockReset();
+        trackAuthEnrollmentTransientRetryMock.mockReset();
+        vi.useRealTimers();
     });
 
-    it('retries after a transient network failure', async () => {
+    it('polls only the explicit Home and opens canonical token-only v3 material', async () => {
+        vi.useFakeTimers();
         const keypair = generateAuthKeyPair();
-        const expectedToken = 'tkn-after-retry';
-        const expectedSecret = new Uint8Array([7, 7, 7]);
-        const responseEncrypted = encodeBase64(encryptBox(expectedSecret, keypair.publicKey));
-        const fetchMock = vi.mocked(serverFetch);
-        fetchMock.mockReset();
-        fetchMock.mockRejectedValueOnce(new Error('network unavailable'));
-        fetchMock.mockResolvedValueOnce(
-            makeJsonResponse(200, { state: 'authorized', token: expectedToken, response: responseEncrypted }) as any,
-        );
+        const context = createV2Context();
+        endpointFetchMock.mockResolvedValueOnce(json(200, authorizedV2({ keypair, context, token: 'home-b-token' })));
 
-        const out = await authQRWait(keypair);
-        expect(out).toEqual({ token: expectedToken, secret: encodeBase64(expectedSecret, 'base64url') });
-        expect(fetchMock).toHaveBeenCalledTimes(2);
+        const result = await settle(authQRWait(keypair, HOME_B_TARGET, { v2Context: context }));
+
+        expect(result).toEqual({ ok: true, credentials: { token: 'home-b-token' }, homeServerIdentityId: 'srv_home_b' });
+        expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith(expect.objectContaining({
+            endpointUrl: 'https://home-b.test',
+            serverId: 'profile-b',
+            credentials: null,
+        }));
+        expect(endpointFetchMock).toHaveBeenCalledWith('/v2/auth/account/request', expect.objectContaining({
+            body: JSON.stringify({
+                publicKey: encodeBase64(keypair.publicKey),
+                pairId: context.pairId,
+                homeServerIdentityId: context.homeServerIdentityId,
+            }),
+        }), expect.anything());
+        expect(serverFetchMock).not.toHaveBeenCalled();
+    });
+
+    it('maps canonical dataKey v3 material using X25519 scalar public derivation', async () => {
+        vi.useFakeTimers();
+        const keypair = generateAuthKeyPair();
+        const context = createV2Context();
+        const dataKey = new Uint8Array(Array.from({ length: 32 }, (_, index) => index + 1));
+        const publicKey = tweetnacl.box.keyPair.fromSecretKey(dataKey).publicKey;
+        endpointFetchMock.mockResolvedValueOnce(json(200, authorizedV2({ keypair, context, token: 'data-key-token', dataKey })));
+
+        await expect(settle(authQRWait(keypair, HOME_B_TARGET, { v2Context: context }))).resolves.toEqual({
+            ok: true,
+            credentials: {
+                token: 'data-key-token',
+                encryption: { machineKey: encodeBase64(dataKey), publicKey: encodeBase64(publicKey) },
+            },
+            homeServerIdentityId: 'srv_home_b',
+        });
+    });
+
+    it('rejects raw legacy/custom JSON instead of opening a competing envelope', async () => {
+        vi.useFakeTimers();
+        const keypair = generateAuthKeyPair();
+        const context = createV2Context();
+        endpointFetchMock.mockResolvedValueOnce(json(200, authorizedV2({
+            keypair,
+            context,
+            token: 'must-not-leak',
+            rawResponse: new TextEncoder().encode(JSON.stringify({ token: 'raw', secret: 'legacy' })),
+        })));
+
+        const result = await settle(authQRWait(keypair, HOME_B_TARGET, { v2Context: context }));
+        expect(result).toEqual({ ok: false, reason: 'malformed_response' });
+        expect(JSON.stringify(result)).not.toContain('must-not-leak');
+    });
+
+    it.each([
+        ['oversized', 'malformed_response'],
+        ['tampered', 'malformed_response'],
+    ])('rejects %s response terminally', async (variant, expectedReason) => {
+        vi.useFakeTimers();
+        const keypair = generateAuthKeyPair();
+        const context = createV2Context();
+        const valid = authorizedV2({ keypair, context, token: 't' });
+        const payload = variant === 'oversized'
+                ? { ...valid, response: 'A'.repeat(20_000) }
+                : { ...valid, response: `${valid.response.startsWith('A') ? 'B' : 'A'}${valid.response.slice(1)}` };
+        endpointFetchMock.mockResolvedValueOnce(json(200, payload));
+
+        await expect(settle(authQRWait(keypair, HOME_B_TARGET, { v2Context: context })))
+            .resolves.toEqual({ ok: false, reason: expectedReason });
+    });
+
+    it.each([
+        ['padding-mutated', (value: string) => value.endsWith('=') ? value.replace(/=+$/, '') : `${value}=`],
+        ['whitespace-contaminated', (value: string) => `${value.slice(0, 4)} ${value.slice(4)}`],
+    ])('rejects noncanonical %s tokenEncrypted base64 instead of lenient decoding', async (_variant, mutateTokenEncrypted) => {
+        vi.useFakeTimers();
+        const keypair = generateAuthKeyPair();
+        const context = createV2Context();
+        const valid = authorizedV2({ keypair, context, token: 'home-b-token' });
+        endpointFetchMock.mockResolvedValueOnce(json(200, {
+            ...valid,
+            tokenEncrypted: mutateTokenEncrypted(valid.tokenEncrypted),
+        }));
+
+        const result = await settle(authQRWait(keypair, HOME_B_TARGET, { v2Context: context }));
+        expect(result).toEqual({ ok: false, reason: 'malformed_response' });
+        expect(JSON.stringify(result)).not.toContain('home-b-token');
+    });
+
+    it.each([
+        ['surrounding whitespace', '  home-b-token  '],
+        ['whitespace-only', '   '],
+    ])('rejects %s in the decrypted raw token', async (_variant, token) => {
+        vi.useFakeTimers();
+        const keypair = generateAuthKeyPair();
+        const context = createV2Context();
+        endpointFetchMock.mockResolvedValueOnce(json(200, authorizedV2({ keypair, context, token })));
+
+        const result = await settle(authQRWait(keypair, HOME_B_TARGET, { v2Context: context }));
+        expect(result).toEqual({ ok: false, reason: 'malformed_response' });
+        expect(JSON.stringify(result)).not.toContain(token);
+    });
+
+    it('retries transient transport failure and then succeeds', async () => {
+        vi.useFakeTimers();
+        const keypair = generateAuthKeyPair();
+        const context = createV2Context();
+        endpointFetchMock
+            .mockRejectedValueOnce(new TypeError('network'))
+            .mockResolvedValueOnce(json(200, authorizedV2({ keypair, context, token: 'after-retry' })));
+
+        const resultPromise = authQRWait(keypair, HOME_B_TARGET, { v2Context: context });
+        await vi.advanceTimersByTimeAsync(10_000);
+        await expect(resultPromise).resolves.toEqual({
+            ok: true,
+            credentials: { token: 'after-retry' },
+            homeServerIdentityId: 'srv_home_b',
+        });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(2);
+        expect(trackAuthEnrollmentTransientRetryMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns a direct-QR rejection as a typed terminal result', async () => {
+        vi.useFakeTimers();
+        const keypair = generateAuthKeyPair();
+        const context = createV2Context();
+        endpointFetchMock.mockResolvedValueOnce(json(200, { state: 'rejected' }));
+
+        await expect(settle(authQRWait(keypair, HOME_B_TARGET, { v2Context: context })))
+            .resolves.toEqual({ ok: false, reason: 'rejected' });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('aborts the in-flight poll without scheduling another request', async () => {
+        const keypair = generateAuthKeyPair();
+        const context = createV2Context();
+        const controller = new AbortController();
+        endpointFetchMock.mockImplementationOnce((_path: string, init: RequestInit) => new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+        }));
+
+        const resultPromise = authQRWait(keypair, HOME_B_TARGET, {
+            v2Context: context,
+            signal: controller.signal,
+        });
+        await vi.waitFor(() => expect(endpointFetchMock).toHaveBeenCalledTimes(1));
+
+        controller.abort();
+
+        await expect(resultPromise).resolves.toEqual({ ok: false, reason: 'cancelled' });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
+        expect(trackAuthEnrollmentTransientRetryMock).not.toHaveBeenCalled();
+    });
+
+    it('cancels immediately during transient retry backoff', async () => {
+        vi.useFakeTimers();
+        const keypair = generateAuthKeyPair();
+        const context = createV2Context();
+        const controller = new AbortController();
+        endpointFetchMock.mockRejectedValueOnce(new TypeError('network'));
+
+        const resultPromise = authQRWait(keypair, HOME_B_TARGET, {
+            v2Context: context,
+            signal: controller.signal,
+        });
+        await vi.waitFor(() => expect(endpointFetchMock).toHaveBeenCalledTimes(1));
+
+        controller.abort();
+
+        await expect(resultPromise).resolves.toEqual({ ok: false, reason: 'cancelled' });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('never falls back from V2 to V1 or accepts plaintext token response', async () => {
+        vi.useFakeTimers();
+        const keypair = generateAuthKeyPair();
+        const context = createV2Context();
+        endpointFetchMock.mockResolvedValueOnce(json(404, { state: 'authorized', token: 'plaintext' }));
+
+        await expect(settle(authQRWait(keypair, HOME_B_TARGET, { v2Context: context })))
+            .resolves.toEqual({ ok: false, reason: 'expired' });
+        expect(endpointFetchMock.mock.calls.map((call) => call[0])).toEqual(['/v2/auth/account/request']);
+    });
+
+    it('fails closed before network use without immutable V2 binding context', async () => {
+        const keypair = generateAuthKeyPair();
+        await expect(authQRWait(keypair, HOME_B_TARGET)).resolves.toEqual({
+            ok: false,
+            reason: 'legacy_provisioning_unavailable',
+        });
+        expect(endpointFetchMock).not.toHaveBeenCalled();
+        expect(serverFetchMock).not.toHaveBeenCalled();
     });
 });

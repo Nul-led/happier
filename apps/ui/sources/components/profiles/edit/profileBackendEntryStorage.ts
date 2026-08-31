@@ -7,8 +7,8 @@ import {
 } from '@happier-dev/protocol';
 
 import type { AIBackendProfile } from '@/sync/domains/profiles/profileCompatibility';
+import { isProfileCompatibleWithBackendTarget } from '@/sync/domains/profiles/profileCompatibility';
 import type { ResolvedBackendCatalogEntry } from '@/agents/backendCatalog/getResolvedBackendCatalogEntries';
-import { isBundledAgentId } from '@/agents/catalog/catalog';
 
 type ProfileTargetValueRecord<TValue> = Readonly<Record<string, TValue | undefined>> | null | undefined;
 
@@ -22,7 +22,13 @@ export function readProfileTargetKeyValueForEntry<TValue>(
 ): TValue | undefined {
     const canonical = record?.[resolveProfileBackendTargetKeyForEntry(entry)];
     if (canonical !== undefined) return canonical;
-    const legacyKey = buildBackendTargetKey(convertBackendTargetRefV2ToV1(entry.backendTarget));
+    let legacyKey: string | null = null;
+    if (entry.builtInAgentId) {
+        legacyKey = buildBackendTargetKey({ kind: 'builtInAgent', agentId: entry.builtInAgentId });
+    } else if (entry.backendTarget.kind === 'backend') {
+        legacyKey = buildBackendTargetKey(convertBackendTargetRefV2ToV1(entry.backendTarget));
+    }
+    if (!legacyKey) return undefined;
     return record?.[legacyKey];
 }
 
@@ -30,20 +36,7 @@ export function isProfileCompatibleWithResolvedBackendEntry(
     profile: Pick<AIBackendProfile, 'compatibility' | 'compatibilityByTargetKey' | 'isBuiltIn'>,
     entry: ResolvedBackendCatalogEntry,
 ): boolean {
-    const explicitByTargetKey = readProfileTargetKeyValueForEntry(profile.compatibilityByTargetKey, entry);
-    if (typeof explicitByTargetKey === 'boolean') {
-        return explicitByTargetKey === true;
-    }
-
-    if (entry.builtInAgentId && typeof profile.compatibility?.[entry.builtInAgentId] === 'boolean') {
-        return profile.compatibility[entry.builtInAgentId] === true;
-    }
-
-    if (isBundledAgentId(entry.agentId) && typeof profile.compatibility?.[entry.agentId] === 'boolean') {
-        return profile.compatibility[entry.agentId] === true;
-    }
-
-    return profile.isBuiltIn ? false : entry.kind === 'builtInAgent';
+    return isProfileCompatibleWithBackendTarget(profile, entry.backendTarget);
 }
 
 export function stripLegacyProviderSentinelTargetKeys<TValue>(

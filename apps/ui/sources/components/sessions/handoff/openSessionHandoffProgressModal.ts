@@ -8,7 +8,7 @@ export function openSessionHandoffProgressModal(params?: Readonly<{
     message?: string;
     status?: SessionHandoffStatus;
     operation?: ActionOperationSnapshotV1;
-    workspaceTransferEnabled?: boolean;
+    workspaceSyncEnabled?: boolean;
 }>): string {
     return Modal.show({
         component: SessionHandoffProgressModal,
@@ -17,7 +17,7 @@ export function openSessionHandoffProgressModal(params?: Readonly<{
             ...(params?.message ? { message: params.message } : {}),
             ...(params?.status ? { status: params.status } : {}),
             ...(params?.operation ? { operation: params.operation } : {}),
-            ...(params?.workspaceTransferEnabled ? { workspaceTransferEnabled: true } : {}),
+            ...(params?.workspaceSyncEnabled ? { workspaceSyncEnabled: true } : {}),
         },
         closeOnBackdrop: false,
     });

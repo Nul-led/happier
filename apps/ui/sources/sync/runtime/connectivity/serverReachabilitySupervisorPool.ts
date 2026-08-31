@@ -195,6 +195,8 @@ async function probeServerReadiness(params: Readonly<{ endpoint: string; token: 
 
 type ReachabilitySupervisorEntry = {
     serverUrl: string;
+    /** Verified request-only transport origin; canonical serverUrl remains the pool key. */
+    runtimeOrigin: string | null;
     token: string | null;
     state: ManagedConnectionState;
     supervisor: ManagedConnectionSupervisor;
@@ -202,6 +204,7 @@ type ReachabilitySupervisorEntry = {
     subscribers: Set<(state: ManagedConnectionState) => void>;
     invalidateInFlight: Promise<void> | null;
     lastInvalidateAt: number;
+    ownerCount: number;
 };
 
 const entriesByServerUrl = new Map<string, ReachabilitySupervisorEntry>();
@@ -241,6 +244,7 @@ function getOrCreateEntry(serverUrlRaw: string): ReachabilitySupervisorEntry {
     const subscribers = new Set<(state: ManagedConnectionState) => void>();
     const entry: ReachabilitySupervisorEntry = {
         serverUrl,
+        runtimeOrigin: null,
         token: null,
         state: {
             phase: 'idle',
@@ -259,7 +263,10 @@ function getOrCreateEntry(serverUrlRaw: string): ReachabilitySupervisorEntry {
             entry.currentTransportController = controller;
             return controller.transport;
         },
-        probeReadiness: async () => probeServerReadiness({ endpoint: entry.serverUrl, token: entry.token }),
+        probeReadiness: async () => probeServerReadiness({
+            endpoint: entry.runtimeOrigin ?? entry.serverUrl,
+            token: entry.token,
+        }),
         onStateChange: (state) => {
             entry.state = state;
             subscribers.forEach((listener) => listener(state));
@@ -269,6 +276,7 @@ function getOrCreateEntry(serverUrlRaw: string): ReachabilitySupervisorEntry {
         subscribers,
         invalidateInFlight: null,
         lastInvalidateAt: Number.NEGATIVE_INFINITY,
+        ownerCount: 0,
     };
 
     entriesByServerUrl.set(serverUrl, entry);
@@ -557,10 +565,19 @@ export async function stopServerReachabilitySupervisors(): Promise<void> {
 export async function startServerReachabilitySupervisor(params: Readonly<{
     serverUrl: string;
     token: string | null;
+    /** Verified transport-only origin; ownership/subscriptions remain keyed by serverUrl. */
+    runtimeOrigin?: string;
 }>): Promise<void> {
     const entry = getOrCreateEntry(params.serverUrl);
     const tokenChanged = entry.token !== params.token;
+    const runtimeOriginRaw = String(params.runtimeOrigin ?? '').trim();
+    const runtimeOrigin = runtimeOriginRaw ? canonicalizeServerUrl(runtimeOriginRaw) : null;
+    if (runtimeOriginRaw && !runtimeOrigin) {
+        throw new Error('Invalid server reachability runtime origin');
+    }
+    const runtimeOriginChanged = entry.runtimeOrigin !== runtimeOrigin;
     entry.token = params.token;
+    entry.runtimeOrigin = runtimeOrigin;
 
     if (!networkAllowed) {
         return;
@@ -568,16 +585,45 @@ export async function startServerReachabilitySupervisor(params: Readonly<{
 
     if (entry.state.phase === 'idle' || entry.state.phase === 'shutting_down') {
         await entry.supervisor.start();
-    } else if (entry.state.phase === 'auth_failed' && tokenChanged) {
+    } else if (runtimeOriginChanged || (entry.state.phase === 'auth_failed' && tokenChanged)) {
         await entry.supervisor.stop();
         await entry.supervisor.start();
     }
+}
+
+export type ServerReachabilityLease = Readonly<{ release: () => Promise<void> }>;
+
+export async function acquireServerReachabilitySupervisor(params: Readonly<{
+    serverUrl: string;
+    token: string | null;
+    runtimeOrigin?: string;
+}>): Promise<ServerReachabilityLease> {
+    const entry = getOrCreateEntry(params.serverUrl);
+    entry.ownerCount += 1;
+    try {
+        await startServerReachabilitySupervisor(params);
+    } catch (error) {
+        entry.ownerCount = Math.max(0, entry.ownerCount - 1);
+        throw error;
+    }
+    let released = false;
+    return {
+        release: async () => {
+            if (released) return;
+            released = true;
+            entry.ownerCount = Math.max(0, entry.ownerCount - 1);
+            if (entry.ownerCount === 0 && entry.subscribers.size === 0) {
+                await entry.supervisor.stop();
+            }
+        },
+    };
 }
 
 export async function stopServerReachabilitySupervisor(serverUrl: string): Promise<void> {
     const normalized = canonicalizeServerUrl(String(serverUrl ?? ''));
     const entry = normalized ? entriesByServerUrl.get(normalized) : null;
     if (!entry) return;
+    if (entry.ownerCount > 0 || entry.subscribers.size > 0) return;
     await entry.supervisor.stop();
 }
 

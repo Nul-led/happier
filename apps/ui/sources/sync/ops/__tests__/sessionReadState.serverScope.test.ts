@@ -199,14 +199,13 @@ describe('sessionSetManualReadStateWithServerScope', () => {
                 timeoutMs: 1000,
                 init: expect.objectContaining({
                     method: 'POST',
-                    headers: expect.objectContaining({
-                        Authorization: 'Bearer tok-scoped',
-                        'Content-Type': 'application/json',
-                    }),
                     body: JSON.stringify({ state: 'read' }),
                 }),
             }),
         );
+        const scopedHeaders = new Headers(mockRuntimeFetchWithServerReachability.mock.calls[0]?.[0]?.init?.headers);
+        expect(scopedHeaders.get('Authorization')).toBe('Bearer tok-scoped');
+        expect(scopedHeaders.get('Content-Type')).toBe('application/json');
         expect(mockRequest).not.toHaveBeenCalled();
     });
 

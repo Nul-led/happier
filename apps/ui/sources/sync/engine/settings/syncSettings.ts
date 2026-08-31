@@ -1,5 +1,4 @@
 import { tracking } from '@/track';
-import { HappyError } from '@/utils/errors/errors';
 import { applySettings, settingsParse, type Settings } from '@/sync/domains/settings/settings';
 import {
     normalizeVoiceSettingsLocalDelta,
@@ -44,12 +43,16 @@ import { serverFetch } from '@/sync/http/client';
 import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
 import { getRandomBytes } from '@/platform/cryptoRandom';
 import {
-    AccountSettingsV2GetResponseSchema,
+    applyAccountSettingMutationV1,
     AccountSettingsV2UpdateResponseSchema,
     sealAccountScopedBlobCiphertext,
-    type AccountScopedCiphertextFormat,
+    type AccountSettingMutationV1,
     type AccountSettingsStoredContentEnvelope,
 } from '@happier-dev/protocol';
+import {
+    readAccountSettingsBaseline,
+    type AccountSettingsBaselineContent,
+} from './accountSettingsBaseline';
 import { applyCrashReportsOptOut } from '@/utils/system/sentry';
 import { emitAccountSettingChangedEvents } from '@/track/settingsAnalytics/emitSettingChangedEvent';
 import type { SettingsAnalyticsSource } from '@/track/settingsAnalytics/types';
@@ -109,6 +112,21 @@ export type OneShotAccountSettingsMutationResult<T> =
         safeSnapshotVersion?: number;
     }>;
 
+export function requireOneShotAccountSettingsMutationApplied<T>(
+    result: OneShotAccountSettingsMutationResult<T>,
+): Extract<OneShotAccountSettingsMutationResult<T>, Readonly<{ status: 'applied' }>> {
+    if (result.status === 'applied') return result;
+    throw Object.assign(
+        new Error(`Account Settings mutation did not settle: ${result.status}`),
+        {
+            code: result.status === 'conflict'
+                ? 'account_settings_mutation_conflict'
+                : 'account_settings_mutation_outcome_unknown',
+            result,
+        },
+    );
+}
+
 export type SyncSettingsParams<TOneShotMutationValue = never> = {
     credentials: AuthCredentials;
     encryption: Encryption | null;
@@ -117,13 +135,11 @@ export type SyncSettingsParams<TOneShotMutationValue = never> = {
     clearPendingSettings: (nextPendingSettings: Partial<Settings>) => void;
     settingsSecretsKey?: Uint8Array | null;
     settingsSecretsReadKeys?: ReadonlyArray<Uint8Array | null | undefined>;
-    /** Recomputed against every fetched CAS baseline, including conflict winners. */
-    serverSettingsMutation?: (
-        raw: Readonly<Record<string, unknown>>,
-    ) => Record<string, unknown>;
+    /** Immutable set/reset operations reapplied to each fetched CAS winner. */
+    accountSettingsMutation?: AccountSettingMutationV1;
     /**
      * One explicit semantic mutation against one Account Settings version.
-     * Unlike serverSettingsMutation, this callback is never replayed after a
+     * Unlike immutable operations, this callback is never replayed after a
      * version conflict; the canonical winner is refreshed and returned.
      */
     oneShotServerSettingsMutation?: Readonly<{
@@ -157,7 +173,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
     const pendingServerSettings = stripMigratedSessionOrganizationSettings(pendingAccountSettings) as Partial<Settings>;
     let legacySessionOrganizationImportCompletedThisRun = false;
 
-    if (params.serverSettingsMutation && params.oneShotServerSettingsMutation) {
+    if (params.accountSettingsMutation && params.oneShotServerSettingsMutation) {
         throw new Error('Account settings mutation cannot be both replaying and one-shot');
     }
     if (params.oneShotServerSettingsMutation) {
@@ -229,60 +245,9 @@ export async function syncSettings<TOneShotMutationValue = never>(
         applyCrashReportsOptOut(nextSettings.crashReportsOptOut);
     }
 
-    type AccountSettingsServerBaseline = {
-        api: 'v2' | 'v1';
-        content: AccountSettingsStoredContentEnvelope | null;
-        version: number;
-        raw: Record<string, unknown> | null;
-        format: AccountScopedCiphertextFormat | 'plain' | 'empty';
+    type AccountSettingsServerBaseline = AccountSettingsBaselineContent & {
         serverIdentityKeysChanged: boolean;
     };
-
-    async function fetchSettingsV2(): Promise<{ content: AccountSettingsStoredContentEnvelope | null; version: number }> {
-        const response = await serverFetch('/v2/account/settings', {
-            headers: {
-                'Authorization': `Bearer ${credentials.token}`,
-                'Content-Type': 'application/json',
-            },
-        }, { includeAuth: false });
-
-        if (!response.ok) {
-            if (response.status === 404) {
-                // Back-compat: old servers only support v1.
-                throw Object.assign(new Error('settings_v2_not_supported'), { code: 'settings_v2_not_supported' });
-            }
-            if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
-                throw new HappyError(`Failed to fetch settings (${response.status})`, false);
-            }
-            throw new Error(`Failed to fetch settings: ${response.status}`);
-        }
-
-        const data: unknown = await response.json();
-        const parsed = AccountSettingsV2GetResponseSchema.safeParse(data);
-        if (!parsed.success) {
-            throw new Error('Failed to parse account settings v2 response');
-        }
-        return { content: parsed.data.content, version: parsed.data.version };
-    }
-
-    async function fetchSettingsV1(): Promise<{ content: AccountSettingsStoredContentEnvelope | null; version: number }> {
-        const response = await serverFetch('/v1/account/settings', {
-            headers: {
-                'Authorization': `Bearer ${credentials.token}`,
-                'Content-Type': 'application/json',
-            },
-        }, { includeAuth: false });
-
-        if (!response.ok) {
-            if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
-                throw new HappyError(`Failed to fetch settings (${response.status})`, false);
-            }
-            throw new Error(`Failed to fetch settings: ${response.status}`);
-        }
-
-        const data = (await response.json()) as { settings: string | null; settingsVersion: number };
-        return { content: data.settings ? { t: 'encrypted', c: data.settings } : null, version: data.settingsVersion };
-    }
 
     async function updateSettingsV2(params: { content: unknown; expectedVersion: number }): Promise<unknown> {
         const response = await serverFetch('/v2/account/settings', {
@@ -360,51 +325,21 @@ export async function syncSettings<TOneShotMutationValue = never>(
     }
 
     async function fetchAccountSettingsBaseline(): Promise<AccountSettingsServerBaseline> {
-        try {
-            const fetched = await fetchSettingsV2();
-            const opened = openAccountSettingsStoredContent({
-                content: fetched.content,
-                encryption,
-                expectedMode: accountMode,
-            });
-            const migrated = migrateRawServerIdentityKeys(opened.raw);
-            normalizeSettingsForLocalStorage({
-                raw: migrated.raw,
-                mode: opened.mode,
-            });
-            return {
-                api: 'v2',
-                content: fetched.content,
-                version: fetched.version,
-                raw: migrated.raw,
-                format: opened.format,
-                serverIdentityKeysChanged: migrated.changed,
-            };
-        } catch (e: any) {
-            if (e?.code !== 'settings_v2_not_supported') throw e;
-            if (accountMode === 'plain') {
-                throw new Error('Settings v2 is required but not supported by this server');
-            }
-            const fetched = await fetchSettingsV1();
-            const opened = openAccountSettingsStoredContent({
-                content: fetched.content,
-                encryption,
-                expectedMode: 'e2ee',
-            });
-            const migrated = migrateRawServerIdentityKeys(opened.raw);
-            normalizeSettingsForLocalStorage({
-                raw: migrated.raw,
-                mode: opened.mode,
-            });
-            return {
-                api: 'v1',
-                content: fetched.content,
-                version: fetched.version,
-                raw: migrated.raw,
-                format: opened.format,
-                serverIdentityKeysChanged: migrated.changed,
-            };
-        }
+        // The wire read and envelope opening live in the shared baseline seam;
+        // this wrapper adds only the captured-scope identity-key migration and
+        // its local normalization side effect.
+        const fetched = await readAccountSettingsBaseline({
+            request: (path, init) => serverFetch(path, init, { includeAuth: false }),
+            credentials,
+            encryption,
+            accountMode,
+        });
+        const migrated = migrateRawServerIdentityKeys(fetched.raw);
+        normalizeSettingsForLocalStorage({
+            raw: migrated.raw,
+            mode: accountMode,
+        });
+        return { ...fetched, raw: migrated.raw, serverIdentityKeysChanged: migrated.changed };
     }
 
     async function baselineFromVersionMismatch(data: any): Promise<AccountSettingsServerBaseline> {
@@ -650,7 +585,7 @@ export async function syncSettings<TOneShotMutationValue = never>(
 
     // Apply pending settings
     if (Object.keys(pendingServerSettings).length > 0
-        || params.serverSettingsMutation
+        || params.accountSettingsMutation
         || params.oneShotServerSettingsMutation) {
         dbgSettings('syncSettings: pending detected; will POST', {
             endpoint: activeServerUrl,
@@ -680,11 +615,24 @@ export async function syncSettings<TOneShotMutationValue = never>(
             const oneShotMutation = params.oneShotServerSettingsMutation
                 ? params.oneShotServerSettingsMutation.mutate(baseline.raw ?? {})
                 : null;
+            const immutableMutation = params.accountSettingsMutation
+                ? applyAccountSettingMutationV1(
+                    baseline.raw ?? {},
+                    params.accountSettingsMutation,
+                )
+                : null;
+            if (immutableMutation?.status === 'invalid') {
+                throw Object.assign(
+                    new Error(`Invalid Account Settings mutation: ${immutableMutation.reason}`),
+                    {
+                        code: 'account_settings_mutation_invalid',
+                        reason: immutableMutation.reason,
+                    },
+                );
+            }
             const mutationBaseline = oneShotMutation
                 ? oneShotMutation.settings
-                : params.serverSettingsMutation
-                    ? params.serverSettingsMutation(baseline.raw ?? {})
-                    : baseline.raw;
+                : immutableMutation?.raw ?? baseline.raw;
             const merged = mergePendingSettingsIntoRawBaseline({
                 rawBaseline: mutationBaseline,
                 pendingSettings: pendingServerSettings,

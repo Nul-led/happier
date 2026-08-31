@@ -1,6 +1,6 @@
 import React from 'react';
 import { act } from 'react-test-renderer';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
 import type { SystemTaskRunState, SystemTaskRunner } from '@/components/systemTasks/types';
@@ -218,8 +218,18 @@ function flattenStyle(style: unknown): Record<string, unknown> {
         : (style as Record<string, unknown>);
 }
 
+async function resetProfileRegistry(): Promise<void> {
+    const profiles = await import('@/sync/domains/server/serverProfiles');
+    profiles.clearTabActiveServerId();
+    for (const profile of profiles.listServerProfiles()) profiles.removeServerProfile(profile.id);
+}
+
 describe('RemoteSshChecklistStep', () => {
-    afterEach(() => {
+    beforeEach(async () => {
+        await resetProfileRegistry();
+    });
+
+    afterEach(async () => {
         standardCleanup();
         act(() => {
             getStorage().getState().applySettingsLocal({ remoteHostsV1: [] });
@@ -232,6 +242,140 @@ describe('RemoteSshChecklistStep', () => {
         syncSingletonState.decryptSecretValue.mockReturnValue(null);
         syncSingletonState.encryptSecretValue.mockReset();
         syncSingletonState.encryptSecretValue.mockReturnValue(null);
+        await resetProfileRegistry();
+    });
+
+    it('adopts a discovered relay through the Home owner without changing focus or groups, then links the saved host', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const focusedHome = profiles.upsertServerProfile({
+            serverUrl: 'https://focused-home.example',
+            name: 'Focused Home',
+            source: 'manual',
+        });
+        profiles.setActiveServerId(focusedHome.id);
+        profiles.saveHomeViewState({
+            version: 1,
+            groups: [{ id: 'visible-homes', name: 'Visible Homes', serverIds: [focusedHome.id] }],
+            activeTargetKind: 'server',
+            activeTargetId: focusedHome.id,
+        });
+        const focusedBefore = profiles.getActiveServerSnapshot();
+        const homeViewBefore = profiles.loadHomeViewState();
+        const { persistRemoteHostAfterRemoteSshCompletion } = await import('./persistRemoteHostAfterRemoteSshCompletion');
+
+        await persistRemoteHostAfterRemoteSshCompletion({
+            managementEnabled: true,
+            secretMaterialEnabled: true,
+            remoteHostsRaw: [],
+            selectedSavedRemoteHostId: '__new__',
+            runContext: {
+                selectedSavedRemoteHostId: '__new__',
+                saveHost: true,
+                saveSecretMaterial: false,
+            },
+            newHostSentinelId: '__new__',
+            draft: {
+                username: 'dev',
+                host: 'remote.example',
+                port: '22',
+                authMode: 'agent',
+                identityFilePath: '',
+                password: '',
+            },
+            privateKeyMaterialDraft: '',
+            completion: {
+                machineId: 'machine-remote',
+                relayRuntimeUrl: 'https://relay.remote.example',
+            },
+        });
+
+        const relayProfiles = profiles.listServerProfiles().filter((profile) => profile.serverUrl === 'https://relay.remote.example');
+        expect(relayProfiles).toHaveLength(1);
+        expect(relayProfiles[0]).toMatchObject({
+            canonicalServerUrl: 'https://relay.remote.example',
+            source: 'manual',
+        });
+        const writtenHost = syncSingletonState.applySettings.mock.calls.at(-1)?.[0]?.remoteHostsV1?.[0];
+        expect(writtenHost).toMatchObject({
+            linkedMachineId: 'machine-remote',
+            linkedRelayProfileId: relayProfiles[0]!.id,
+        });
+        expect(profiles.getActiveServerSnapshot()).toMatchObject({
+            serverId: focusedBefore.serverId,
+            serverUrl: focusedBefore.serverUrl,
+            isSelectionExplicit: focusedBefore.isSelectionExplicit,
+        });
+        expect(profiles.loadHomeViewState()).toEqual(homeViewBefore);
+    });
+
+    it('rejects a malformed discovered relay before linking or persisting a remote host', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const before = profiles.listServerProfiles();
+        const { persistRemoteHostAfterRemoteSshCompletion } = await import('./persistRemoteHostAfterRemoteSshCompletion');
+
+        await expect(persistRemoteHostAfterRemoteSshCompletion({
+            managementEnabled: true,
+            secretMaterialEnabled: false,
+            remoteHostsRaw: [],
+            selectedSavedRemoteHostId: '__new__',
+            runContext: {
+                selectedSavedRemoteHostId: '__new__',
+                saveHost: true,
+                saveSecretMaterial: false,
+            },
+            newHostSentinelId: '__new__',
+            draft: {
+                username: 'dev',
+                host: 'remote.example',
+                port: '',
+                authMode: 'agent',
+                identityFilePath: '',
+                password: '',
+            },
+            privateKeyMaterialDraft: '',
+            completion: { machineId: null, relayRuntimeUrl: 'ssh://not-a-home' },
+        })).rejects.toThrow('Invalid Home connection URL');
+
+        expect(profiles.listServerProfiles()).toEqual(before);
+        expect(syncSingletonState.applySettings).not.toHaveBeenCalled();
+    });
+
+    it('still adopts a discovered relay when remote-host management is disabled', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { persistRemoteHostAfterRemoteSshCompletion } = await import('./persistRemoteHostAfterRemoteSshCompletion');
+
+        await persistRemoteHostAfterRemoteSshCompletion({
+            managementEnabled: false,
+            secretMaterialEnabled: false,
+            remoteHostsRaw: [],
+            selectedSavedRemoteHostId: '__new__',
+            runContext: null,
+            newHostSentinelId: '__new__',
+            draft: {
+                username: 'dev',
+                host: 'remote.example',
+                port: '',
+                authMode: 'agent',
+                identityFilePath: '',
+                password: '',
+            },
+            privateKeyMaterialDraft: '',
+            completion: {
+                machineId: null,
+                relayRuntimeUrl: 'https://unmanaged-relay.remote.example',
+            },
+        });
+
+        expect(profiles.listServerProfiles().filter(
+            (profile) => profile.serverUrl === 'https://unmanaged-relay.remote.example',
+        )).toEqual([
+            expect.objectContaining({
+                serverUrl: 'https://unmanaged-relay.remote.example',
+                canonicalServerUrl: 'https://unmanaged-relay.remote.example',
+                source: 'manual',
+            }),
+        ]);
+        expect(syncSingletonState.applySettings).not.toHaveBeenCalled();
     });
 
     it('does not trigger a maximum update depth loop when wired to the wizard chrome override store', async () => {
@@ -781,6 +925,15 @@ describe('RemoteSshChecklistStep', () => {
                         auth: 'agent',
                     },
                 },
+            }),
+        ]);
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        expect(profiles.listServerProfiles().filter(
+            (profile) => profile.serverUrl === 'https://public-relay.example.test',
+        )).toEqual([
+            expect.objectContaining({
+                canonicalServerUrl: 'https://public-relay.example.test',
+                source: 'manual',
             }),
         ]);
         const completeStatusSlot = screen.findByTestId('remote-ssh-step-complete-checklist-row-install_relay_runtime-status-slot');

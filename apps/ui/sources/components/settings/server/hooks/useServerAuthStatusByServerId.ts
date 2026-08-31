@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { subscribeHomeCredentialMutations, TokenStorage } from '@/auth/storage/tokenStorage';
 import { resolveServerProfileScopeId, type ServerProfile } from '@/sync/domains/server/serverProfiles';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
@@ -10,6 +10,13 @@ type ServerProfileLike = Pick<ServerProfile, 'id' | 'serverUrl' | 'serverIdentit
 
 export function useServerAuthStatusByServerId(servers: ReadonlyArray<ServerProfileLike>): Readonly<Record<string, ServerAuthStatus>> {
     const [statusById, setStatusById] = React.useState<Record<string, ServerAuthStatus>>({});
+    const [credentialRevision, setCredentialRevision] = React.useState(0);
+
+    React.useEffect(() => {
+        return subscribeHomeCredentialMutations(() => {
+            setCredentialRevision((current) => current + 1);
+        });
+    }, []);
 
     React.useEffect(() => {
         let cancelled = false;
@@ -31,7 +38,7 @@ export function useServerAuthStatusByServerId(servers: ReadonlyArray<ServerProfi
         return () => {
             cancelled = true;
         };
-    }, [servers]);
+    }, [credentialRevision, servers]);
 
     return statusById;
 }

@@ -65,6 +65,7 @@ type AccountHostedArtifactServerSnapshot = Readonly<{
 
 type AccountHostedArtifactRequestAuthority = Readonly<{
     request: (path: string, init?: RequestInit) => Promise<Response>;
+    release?: () => Promise<void>;
     credentials?: AuthCredentials;
     decryptDataEncryptionKey?: AccountArtifactEnvelopeKeyOpener;
 }>;
@@ -353,6 +354,7 @@ function defaultDependencies(): ActivePluginAccountHostedArtifactReaderDependenc
             });
             return Object.freeze({
                 request: authority.request,
+                release: authority.release,
                 ...(authority.context.credentials
                     ? { credentials: authority.context.credentials }
                     : {}),
@@ -438,13 +440,15 @@ export function createActivePluginAccountHostedArtifactReader(
             ? null
             : capturedLifetime.onRetire(abort);
         input.signal?.addEventListener('abort', abort, { once: true });
-        const release = () => {
+        let authority: AccountHostedArtifactRequestAuthority | null = null;
+        const release = async () => {
+            await authority?.release?.();
             requestedRetirement.dispose();
             capturedRetirement?.dispose();
             input.signal?.removeEventListener('abort', abort);
         };
         try {
-            const authority = await dependencies.captureRequestAuthority({
+            authority = await dependencies.captureRequestAuthority({
                 scope: input.accountLifetime.scope,
                 activeRequest: (path, init) => apiSocket.request(path, init),
             });
@@ -563,7 +567,7 @@ export function createActivePluginAccountHostedArtifactReader(
                 value: Object.freeze({ link: parsed.data.link, archive }),
             });
         } finally {
-            release();
+            await release();
         }
     };
 
@@ -642,13 +646,15 @@ export function createActivePluginAccountHostedArtifactPublisher(
             ? null
             : capturedLifetime.onRetire(abort);
         input.signal?.addEventListener('abort', abort, { once: true });
-        const release = () => {
+        let authority: AccountHostedArtifactRequestAuthority | null = null;
+        const release = async () => {
+            await authority?.release?.();
             requestedRetirement.dispose();
             capturedRetirement?.dispose();
             input.signal?.removeEventListener('abort', abort);
         };
         try {
-            const authority = await dependencies.captureRequestAuthority({
+            authority = await dependencies.captureRequestAuthority({
                 scope: input.accountLifetime.scope,
                 activeRequest: (path, init) => apiSocket.request(path, init),
             });
@@ -769,7 +775,7 @@ export function createActivePluginAccountHostedArtifactPublisher(
             }
             return Object.freeze({ kind: 'published', value: parsed.data });
         } finally {
-            release();
+            await release();
         }
     };
 

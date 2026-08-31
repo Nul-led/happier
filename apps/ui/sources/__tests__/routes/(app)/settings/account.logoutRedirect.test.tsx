@@ -19,6 +19,7 @@ import {
 
 type LogoutOptions = Readonly<{
     beforeMutation?: () => void;
+    scope?: 'focused-home' | 'all-credentials';
 }>;
 type LogoutResult =
     | Readonly<{ kind: 'completed' }>
@@ -42,6 +43,14 @@ const logoutMock = vi.hoisted(() =>
 const deleteCurrentAccountMock = vi.hoisted(() => vi.fn(async () => ({ status: 'deleted' as const })));
 
 installAccountSettingsRouteModuleMocks({
+    textModule: async () => {
+        const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
+        return createTextModuleMock({
+            translate: (key: string, params?: Readonly<{ home?: string }>) => (
+                params?.home ? `${key}:${params.home}` : key
+            ),
+        });
+    },
     modalModule: async () => {
         const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
         const modalMock = createModalModuleMock({
@@ -123,6 +132,13 @@ describe('Settings → Account logout redirect', () => {
 
     it('routes after custody authorization and before tearing down auth state', async () => {
         storage.getState().applyProfile({ ...profileDefaults, linkedProviders: [], username: null });
+        const serverProfiles = await import('@/sync/domains/server/serverProfiles');
+        const focusedHome = serverProfiles.upsertServerProfile({
+            serverUrl: 'https://studio-home.example.test',
+            name: 'Studio Home',
+            source: 'manual',
+        });
+        serverProfiles.setActiveServerId(focusedHome.id);
         let resolveLogout!: () => void;
         logoutMock.mockImplementationOnce(async (options) => {
             options?.beforeMutation?.();
@@ -147,8 +163,8 @@ describe('Settings → Account logout redirect', () => {
         const { default: AccountScreen } = await import('@/app/(app)/settings/account');
         const screen = await renderSettingsView(<AccountScreen />);
 
-        const logoutRow = screen.findRowByTitle('settingsAccount.logout');
-        expect(logoutRow?.props.testID).toBe('settings-account-logout');
+        const logoutRow = screen.findByTestId('settings-account-logout');
+        expect(logoutRow).toBeTruthy();
 
         let pendingLogoutPress: Promise<void> | undefined;
         await act(async () => {
@@ -160,6 +176,14 @@ describe('Settings → Account logout redirect', () => {
         expect(logoutMock).toHaveBeenCalledWith({
             beforeMutation: expect.any(Function),
         });
+        expect(modalMockRef.current?.spies.confirm).toHaveBeenCalledWith(
+            'settingsAccount.logoutHome:Studio Home',
+            'settingsAccount.logoutHomeConfirm:Studio Home',
+            expect.objectContaining({
+                confirmText: 'settingsAccount.logoutHome:Studio Home',
+                destructive: true,
+            }),
+        );
         expect(
             logoutMock.mock.invocationCallOrder[0],
         ).toBeLessThan(
@@ -197,7 +221,8 @@ describe('Settings → Account logout redirect', () => {
 
         const { default: AccountScreen } = await import('@/app/(app)/settings/account');
         const screen = await renderSettingsView(<AccountScreen />);
-        const logoutRow = screen.findRowByTitle('settingsAccount.logout');
+        const logoutRow = screen.findByTestId('settings-account-logout');
+        expect(logoutRow).toBeTruthy();
 
         let pendingLogoutPress: Promise<void> | undefined;
         await act(async () => {
@@ -223,6 +248,42 @@ describe('Settings → Account logout redirect', () => {
         await act(async () => {
             await pendingLogoutPress;
         });
+    });
+
+    it('offers a separately confirmed action that forgets every local credential', async () => {
+        storage.getState().applyProfile({ ...profileDefaults, linkedProviders: [], username: null });
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            const url = getRequestUrl(input);
+            if (isFeaturesRequest(url)) {
+                return {
+                    ok: true,
+                    json: async () => createAccountFeaturesResponse(),
+                };
+            }
+            throw new Error(`Unexpected fetch: ${url}`);
+        }) as unknown as typeof fetch);
+        const { default: AccountScreen } = await import('@/app/(app)/settings/account');
+        const screen = await renderSettingsView(<AccountScreen />);
+
+        const forgetAllRow = screen.findByTestId('settings-account-forget-all-credentials');
+        expect(forgetAllRow).not.toBeNull();
+        await act(async () => {
+            await forgetAllRow?.props.onPress?.();
+        });
+
+        expect(modalMockRef.current?.spies.confirm).toHaveBeenCalledWith(
+            'settingsAccount.forgetAllCredentials',
+            'settingsAccount.forgetAllCredentialsConfirm',
+            expect.objectContaining({
+                confirmText: 'settingsAccount.forgetAllCredentials',
+                destructive: true,
+            }),
+        );
+        expect(logoutMock).toHaveBeenCalledWith({
+            scope: 'all-credentials',
+            beforeMutation: expect.any(Function),
+        });
+        expect(routerMockRef.current.spies.replace).toHaveBeenCalledWith('/');
     });
 
     it('requires typed confirmation before deletion and canonical logout cleanup', async () => {

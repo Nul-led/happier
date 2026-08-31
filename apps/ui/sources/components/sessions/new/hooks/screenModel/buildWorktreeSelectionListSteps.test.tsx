@@ -134,6 +134,42 @@ function requireDynamicSection(step: SelectionListStep, sectionId: string): Sele
 }
 
 describe('buildWorktreeSelectionListSteps', () => {
+    it('carries the selected server and Home into branch reads', async () => {
+        const { buildWorktreeSelectionListSteps } = await import('./buildWorktreeSelectionListSteps');
+        const repoScmBranchServiceModule = await import('@/scm/repository/repoScmBranchService');
+        const fetchBranches = repoScmBranchServiceModule.repoScmBranchService
+            .fetchBranchesForMachinePath as ReturnType<typeof vi.fn>;
+        fetchBranches.mockResolvedValueOnce([]);
+
+        const rootStep = buildWorktreeSelectionListSteps({
+            snapshot: makeSnapshot({ rootPath: '~/repo' }),
+            currentDirPath: '~/repo',
+            serverId: 'server-b',
+            machineId: 'machine-a',
+            machinePath: '~/repo',
+            machineHomeDir: '/Users/server-b',
+            rowIconColor: TEST_ROW_ICON_COLOR,
+            nowMs: 1_700_000_000_000,
+            worktreeNameSuggestion: WORKTREE_NAME_SUGGESTION,
+            onSelectCurrentDir: vi.fn(),
+            onSelectExistingWorktree: vi.fn(),
+            onCreateWorktreeWithName: vi.fn(),
+            onReuseExistingWorktreeForBranch: vi.fn(),
+        });
+
+        const createStep = requireCreateWorktreeStep(rootStep);
+        const localSection = requireDynamicSection(createStep, 'worktree:branches:local');
+        await localSection.resolve('', new AbortController().signal);
+
+        expect(fetchBranches).toHaveBeenCalledWith({
+            serverId: 'server-b',
+            machineId: 'machine-a',
+            path: '~/repo',
+            homeDir: '/Users/server-b',
+            includeRemotes: false,
+        });
+    });
+
     it('exposes a root step with quick-actions, an existing-worktrees section, and a create-worktree drilldown', async () => {
         const { buildWorktreeSelectionListSteps } = await import('./buildWorktreeSelectionListSteps');
         const onSelectCurrentDir = vi.fn();

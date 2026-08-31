@@ -20,8 +20,8 @@ import { getTempData, storeTempData } from '@/utils/sessions/tempDataStore';
 import { ProfilesList } from '@/components/profiles/ProfilesList';
 import {
     readUiAiLaunchProfilesForLegacyUi,
-    removeAiLaunchProfile,
 } from '@/sync/domains/profiles/aiLaunchProfileCollection';
+import { useDeleteAiLaunchProfile } from '@/sync/store/settingsWriters';
 import { SecretRequirementModal, type SecretRequirementModalResult } from '@/components/secrets/requirements';
 import { useSavedSecretsMutable } from '@/components/secrets/useSavedSecretsMutable';
 import { getSecretSatisfaction } from '@/utils/secrets/secretSatisfaction';
@@ -59,7 +59,8 @@ export default React.memo(function ProfilePickerScreen() {
     const useProfiles = useSetting('useProfiles');
     const [secrets, setSecrets] = useSavedSecretsMutable();
     const [secretBindingsByProfileId, setSecretBindingsByProfileId] = useCurrentSecretBindingsByProfileIdMutable();
-    const [rawProfiles, setRawProfiles] = useSettingMutable('profiles');
+    const rawProfiles = useSetting('profiles');
+    const deleteAiLaunchProfile = useDeleteAiLaunchProfile();
     const profiles = React.useMemo(() => readUiAiLaunchProfilesForLegacyUi(rawProfiles), [rawProfiles]);
     const [favoriteProfileIds, setFavoriteProfileIds] = useSettingMutable('favoriteProfiles');
     const settings = useSettings() ?? settingsDefaults;
@@ -417,15 +418,21 @@ export default React.memo(function ProfilePickerScreen() {
                 {
                     text: t('profiles.delete.confirm'),
                     style: 'destructive',
-                    onPress: () => {
-                        // Only custom profiles live in `profiles` setting.
-                        setRawProfiles(removeAiLaunchProfile(rawProfiles, profile.id) as AIBackendProfile[]);
-                        if (selectedId === profile.id) setParamsOnPreviousAndClose({ profileId: '' });
+                    onPress: async () => {
+                        try {
+                            await deleteAiLaunchProfile(profile.id);
+                            if (selectedId === profile.id) setParamsOnPreviousAndClose({ profileId: '' });
+                        } catch (error) {
+                            Modal.alert(
+                                t('common.error'),
+                                error instanceof Error ? error.message : t('common.error'),
+                            );
+                        }
                     },
                 },
             ],
         );
-    }, [rawProfiles, selectedId, setParamsOnPreviousAndClose, setRawProfiles]);
+    }, [deleteAiLaunchProfile, selectedId, setParamsOnPreviousAndClose]);
 
     const handleBackPress = React.useCallback(() => {
         navigation.goBack();

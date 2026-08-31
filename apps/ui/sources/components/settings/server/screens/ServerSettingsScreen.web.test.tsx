@@ -63,6 +63,9 @@ vi.mock('@/components/settings/server/sections/AddTargetsSection', () => ({
 vi.mock('@/components/settings/server/sections/ServerGroupsSection', () => ({
     ServerGroupsSection: (props: any) => React.createElement('ServerGroupsSection', props),
 }));
+vi.mock('@/components/settings/server/sections/HomeDeviceApprovalSection', () => ({
+    HomeDeviceApprovalSection: (props: any) => React.createElement('HomeDeviceApprovalSection', props),
+}));
 
 vi.mock('@/components/settings/server/RelayDriftActionCard', () => ({
     RelayDriftActionCard: (props: any) => React.createElement('RelayDriftActionCard', props),

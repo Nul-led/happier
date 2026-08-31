@@ -5,12 +5,12 @@ import {
     PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
     PEER_TCP_TUNNEL_STREAM_PATH,
     type FeatureDecision,
-    type PeerTcpTunnelFrameV1,
     type PeerTcpTunnelOpenResponseV1,
     type PeerTcpTunnelOpenV1,
     type PeerTcpTunnelOpenV2,
     type PeerTcpTunnelRelayEnvelope,
 } from '@happier-dev/protocol';
+import type { PeerTcpTunnelFrame } from '@happier-dev/peer-transport/duplexFrames';
 
 import {
     resolveTcpTunnelRouteDecision,
@@ -39,27 +39,27 @@ export type OpenPeerTcpTunnelClientResult =
       }>;
 
 export type PeerTcpTunnelClientStream = Readonly<{
-    sendFrame: (frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>) => Promise<void> | void;
-    onFrame: (handler: (frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>) => void) => () => void;
+    sendFrame: (frame: PeerTcpTunnelFrame) => Promise<void> | void;
+    onFrame: (handler: (frame: PeerTcpTunnelFrame) => void) => () => void;
     sendSubstreamOpen?: (substreamId: string) => Promise<void> | void;
     sendSubstreamDataFrame?: (
         substreamId: string,
         frame: Readonly<{
             tunnelId: string;
-            direction: Extract<PeerTcpTunnelFrameV1, { kind: 'data' }>['direction'];
+            direction: Extract<PeerTcpTunnelFrame, { kind: 'data' }>['direction'];
             sequence: number;
             payloadBytes: Uint8Array;
         }>,
     ) => Promise<void> | void;
     sendSubstreamFrame?: (
         substreamId: string,
-        frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>,
+        frame: PeerTcpTunnelFrame,
     ) => Promise<void> | void;
     onSubstreamFrame?: (
         handler: (
             event: Readonly<{
                 substreamId: string;
-                frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>;
+                frame: PeerTcpTunnelFrame;
             }>,
         ) => void,
     ) => () => void;
@@ -139,7 +139,7 @@ export async function openPeerTcpTunnel(input: Readonly<{
         const openServerRelayStream = input.openServerRelayStream
             ?? (
                 relayScopeUserId && relaySocket
-                    ? (request: Readonly<{ open: PeerTcpTunnelOpenV1 }>) => openPeerTcpTunnelRelayStream({
+                    ? (request: Readonly<{ open: PeerTcpTunnelOpenV1; signal: AbortSignal | null }>) => openPeerTcpTunnelRelayStream({
                         scopeUserId: relayScopeUserId,
                         relaySocketId: relaySocket.socketId,
                         open: request.open,
@@ -191,6 +191,7 @@ export async function openPeerTcpTunnel(input: Readonly<{
                 ? (request: Readonly<{
                     open: PeerTcpTunnelDirectOpen;
                     response: PeerTcpTunnelOpenResponseV1;
+                    signal: AbortSignal | null;
                 }>) => openPeerTcpTunnelLoopbackStream({
                     endpointUrl: loopbackEndpointUrl,
                     open: request.open,

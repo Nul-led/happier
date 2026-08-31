@@ -364,7 +364,7 @@ vi.mock('@/components/ui/lists/Item', () => ({
                 onPress: props.onPress,
                 accessibilityRole: props.accessibilityRole,
                 accessibilityLiveRegion: props.accessibilityLiveRegion,
-                accessibilityLabel: props.title,
+                accessibilityLabel: props.accessibilityLabel ?? props.title,
                 subtitle: props.subtitle,
                 detail: props.detail,
                 disabled: props.disabled,
@@ -1361,6 +1361,10 @@ describe('AutomationDetailScreen', () => {
             deferredRunNow.resolve();
             await deferredRunNow.promise;
         });
+
+        const acknowledgedRunNow = screen.findByProps({ testID: 'automation-detail-run-now' });
+        expect(acknowledgedRunNow.props.accessibilityLiveRegion).toBe('polite');
+        expect(acknowledgedRunNow.props.accessibilityLabel).toBe('Run now. common.success');
     });
 
     it('does not surface a completed run-now state after the detail route is reused', async () => {

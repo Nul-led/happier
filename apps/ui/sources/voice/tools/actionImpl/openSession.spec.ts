@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { installVoiceToolActionImplCommonModuleMocks } from './voiceToolActionImplTestHelpers';
+import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServerSwitch';
 
-const setActiveServerAndSwitch = vi.fn(async (_params: any) => true);
+const setActiveServerAndSwitch = vi.fn(async (_params: any): Promise<ActiveServerSwitchResult> => 'switched');
 const routerNavigate = vi.fn();
 const refreshFromActiveServer = vi.fn(async () => {});
 const setPrimaryActionSessionForVoiceTool = vi.fn(async (_params: any) => ({
@@ -101,7 +102,8 @@ vi.mock('./sessionTargets', () => ({
 
 describe('openSessionForVoiceTool', () => {
   beforeEach(() => {
-    setActiveServerAndSwitch.mockClear();
+    setActiveServerAndSwitch.mockReset();
+    setActiveServerAndSwitch.mockResolvedValue('switched');
     routerNavigate.mockClear();
     refreshFromActiveServer.mockClear();
     setPrimaryActionSessionForVoiceTool.mockClear();
@@ -135,7 +137,7 @@ describe('openSessionForVoiceTool', () => {
   });
 
   it('fails without mutating voice targets when cross-server switching fails', async () => {
-    setActiveServerAndSwitch.mockRejectedValueOnce(new Error('switch_failed'));
+    setActiveServerAndSwitch.mockResolvedValueOnce('blocked');
 
     const { openSessionForVoiceTool } = await import('./openSession');
 

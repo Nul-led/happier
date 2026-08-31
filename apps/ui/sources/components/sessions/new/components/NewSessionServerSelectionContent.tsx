@@ -8,15 +8,23 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemListStatic } from '@/components/ui/lists/ItemList';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
-import { useSetting } from '@/sync/domains/state/storage';
+import { useSettings } from '@/sync/domains/state/storage';
+import { useHomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
-import { listServerProfiles } from '@/sync/domains/server/serverProfiles';
+import { listServerProfiles, resolveServerProfileScopeId } from '@/sync/domains/server/serverProfiles';
 import { resolveActiveServerSelectionFromRawSettings } from '@/sync/domains/server/selection/serverSelectionResolution';
+import {
+    listServerProfileScopeIds,
+    normalizeServerSelectionSettingsForProfileScopeIds,
+} from '@/sync/domains/server/selection/serverSelectionProfileScopeIds';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { useAuth } from '@/auth/context/AuthContext';
 import { promptSignedOutServerSwitchConfirmation } from '@/components/settings/server/modals/ServerSwitchAuthPrompt';
+import { setActiveServerAndSwitch } from '@/sync/domains/server/activeServerSwitch';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { buildNewSessionPickerFallbackHref, pickNewSessionRouteParams, setNewSessionPickerReturnParams } from '@/components/sessions/new/navigation/setNewSessionPickerReturnParams';
+import { buildNewSessionAuthContinuationRootHref } from '@/components/sessions/new/navigation/newSessionAuthContinuation';
 import { Icon } from '@/components/ui/icons/Icon';
 
 type ServerSelectionParams = Readonly<{
@@ -96,14 +104,18 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
     } = props;
     const router = useRouter();
     const navigation = useNavigation();
+    const authContext = useAuth();
     const params = useLocalSearchParams<ServerSelectionParams>();
     const currentRouteParams = React.useMemo(() => {
         return pickNewSessionRouteParams(params);
     }, [params]);
     const pickerFallbackHref = React.useMemo(() => buildNewSessionPickerFallbackHref(params), [params]);
-    const serverSelectionGroups = useSetting('serverSelectionGroups');
-    const serverSelectionActiveTargetKind = useSetting('serverSelectionActiveTargetKind');
-    const serverSelectionActiveTargetId = useSetting('serverSelectionActiveTargetId');
+    const accountSettings = useSettings();
+    const {
+        serverSelectionGroups,
+        serverSelectionActiveTargetKind,
+        serverSelectionActiveTargetId,
+    } = useHomeViewSelectionSettings(accountSettings);
 
     const activeServer = getActiveServerSnapshot();
     const serverProfiles = React.useMemo(() => {
@@ -115,14 +127,15 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
     }, [activeServer.generation]);
 
     const resolvedTarget = React.useMemo(() => {
+        const settings = normalizeServerSelectionSettingsForProfileScopeIds({
+            serverSelectionGroups,
+            serverSelectionActiveTargetKind,
+            serverSelectionActiveTargetId,
+        }, serverProfiles);
         return resolveActiveServerSelectionFromRawSettings({
             activeServerId: activeServer.serverId,
-            availableServerIds: serverProfiles.map((profile) => profile.id),
-            settings: {
-                serverSelectionGroups,
-                serverSelectionActiveTargetKind,
-                serverSelectionActiveTargetId,
-            },
+            availableServerIds: listServerProfileScopeIds(serverProfiles),
+            settings,
         });
     }, [
         activeServer.serverId,
@@ -136,7 +149,10 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
     const filteredServers = React.useMemo(() => {
         if (allowedServerIds.length === 0) return [];
         const allowed = new Set(allowedServerIds);
-        return serverProfiles.filter((profile) => allowed.has(profile.id));
+        return serverProfiles.flatMap((profile) => {
+            const serverId = resolveServerProfileScopeId(profile);
+            return allowed.has(serverId) ? [{ profile, serverId }] : [];
+        });
     }, [allowedServerIds, serverProfiles]);
 
     const selectedServerId = React.useMemo(() => {
@@ -154,11 +170,13 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
         const nextServerId = String(serverId ?? '').trim();
         if (!nextServerId) return { allowed: true, signedOut: false };
 
-        const profile = serverProfiles.find((srv) => srv.id === nextServerId) ?? null;
+        const profile = serverProfiles.find((srv) => (
+            resolveServerProfileScopeId(srv) === nextServerId || srv.id === nextServerId
+        )) ?? null;
         if (!profile) return { allowed: true, signedOut: false };
 
         try {
-            const creds = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, { serverId: profile.id });
+            const creds = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, { serverId: nextServerId });
             if (creds) return { allowed: true, signedOut: false };
         } catch {
             return { allowed: true, signedOut: false };
@@ -195,7 +213,16 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
             const auth = await confirmSignedOutTarget(serverId);
             if (!auth.allowed) return;
             if (auth.signedOut) {
-                router.replace('/');
+                const switchResult = await setActiveServerAndSwitch({
+                    serverId,
+                    scope: 'tab',
+                    refreshAuth: authContext.refreshFromActiveServer,
+                });
+                if (switchResult === 'blocked') return;
+                router.replace(buildNewSessionAuthContinuationRootHref({
+                    currentRouteParams,
+                    targetServerId: serverId,
+                }));
                 if (dismissOnSelection) {
                     onClose();
                 }
@@ -203,7 +230,7 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
             }
             commitSelectedServer(serverId);
         })(), { tag: 'NewSessionServerSelectionContent.selectServer' });
-    }, [commitSelectedServer, confirmSignedOutTarget, dismissOnSelection, onClose, router]);
+    }, [authContext.refreshFromActiveServer, commitSelectedServer, confirmSignedOutTarget, currentRouteParams, dismissOnSelection, onClose, router]);
 
     const handleClose = React.useCallback(() => {
         onClose();
@@ -234,13 +261,13 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
                 containerStyle={styles.listContent}
             >
                 <ItemGroup selectableItemCountOverride={filteredServers.length}>
-                    {filteredServers.map((target) => {
-                        const isSelected = target.id === selectedServerId;
+                    {filteredServers.map(({ profile, serverId }) => {
+                        const isSelected = serverId === selectedServerId;
                         return (
                             <Item
-                                key={target.id}
-                                title={target.name}
-                                subtitle={target.serverUrl}
+                                key={serverId}
+                                title={profile.name}
+                                subtitle={profile.serverUrl}
                                 icon={(
                                     <Icon
                                         name="hard-drives"
@@ -249,7 +276,7 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
                                     />
                                 )}
                                 selected={isSelected}
-                                onPress={() => handleServerPress(target.id)}
+                                onPress={() => handleServerPress(serverId)}
                                 showChevron={false}
                             />
                         );

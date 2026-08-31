@@ -91,14 +91,17 @@ export type PluginNativeArtifactResourceRegistrar = Readonly<{
         policyTable: HostedWebAssetNativePolicyTableV1;
     }>) => Promise<PluginNativeArtifactResourceRegistrationResult>;
     /**
-     * Synchronous logical-retirement acknowledgement. It returns true only
-     * when the native adapter has synchronously accepted (or enqueued through
-     * its already-admitted transport) token denial; Artifact then retracts JS
-     * currentness before returning. Native handlers must fail closed as soon
-     * as that denial is observed; adapters with a direct tombstone may retain
+     * Logical-retirement acknowledgement. It returns true — synchronously for
+     * an Expo `Function` adapter, or through a settled promise — only when the
+     * native adapter has accepted (or enqueued through its already-admitted
+     * transport) token denial. The canonical registry keeps its bookkeeping
+     * indexed until that acknowledgement settles true; a resolved false or a
+     * rejection is not acknowledgement and re-enters the existing
+     * diagnostics/retry owner. Native handlers must fail closed as soon as
+     * that denial is observed; adapters with a direct tombstone may retain
      * the stronger immediate rejection guarantee.
      */
-    unregister: (token: string) => boolean;
+    unregister: (token: string) => boolean | Promise<boolean>;
 }>;
 
 export type PluginNativeArtifactResourceHandle = Readonly<{
@@ -157,6 +160,7 @@ type Registration = {
     persistentIdentity: PluginUiPersistentArtifactIdentity;
     nativeRegistered: boolean;
     nativeRegistrationPending: boolean;
+    nativeUnregisterPending: boolean;
     revoked: boolean;
     subscriptions: Array<Readonly<{ dispose: () => void }>>;
     listeners: Set<() => void>;
@@ -478,19 +482,44 @@ export function createPluginNativeArtifactResourceRegistry(input: Readonly<{
         // A register call can resolve after a lease event. Keep this existing
         // token indexed until it establishes whether native accepted it.
         if (registration.nativeRegistrationPending) return false;
-        if (registration.nativeRegistered) {
-            let acknowledged = false;
-            try {
-                acknowledged = input.registrar.unregister(registration.token) === true;
-            } catch {
-                acknowledged = false;
-            }
-            if (!acknowledged) {
-                input.onNativeTeardownDiagnostic?.('native_artifact_unregister_not_acknowledged');
-                return false;
-            }
-            registration.nativeRegistered = false;
+        // One async acknowledgement at a time; its settlement owns completion.
+        if (registration.nativeUnregisterPending) return false;
+        if (!registration.nativeRegistered) {
+            removeRegistration(registration);
+            return true;
         }
+        let acknowledgement: boolean | Promise<boolean>;
+        try {
+            acknowledgement = input.registrar.unregister(registration.token);
+        } catch {
+            input.onNativeTeardownDiagnostic?.('native_artifact_unregister_not_acknowledged');
+            return false;
+        }
+        if (typeof acknowledgement !== 'boolean') {
+            // An async adapter settles at its own boundary. Registry
+            // bookkeeping stays indexed until the promise resolves true; a
+            // resolved false or a rejection re-enters the existing
+            // diagnostics/retry owner below.
+            registration.nativeUnregisterPending = true;
+            void Promise.resolve(acknowledgement).then((acknowledged) => {
+                registration.nativeUnregisterPending = false;
+                if (acknowledged === true) {
+                    registration.nativeRegistered = false;
+                    removeRegistration(registration);
+                    return;
+                }
+                input.onNativeTeardownDiagnostic?.('native_artifact_unregister_not_acknowledged');
+            }, () => {
+                registration.nativeUnregisterPending = false;
+                input.onNativeTeardownDiagnostic?.('native_artifact_unregister_not_acknowledged');
+            });
+            return false;
+        }
+        if (acknowledgement !== true) {
+            input.onNativeTeardownDiagnostic?.('native_artifact_unregister_not_acknowledged');
+            return false;
+        }
+        registration.nativeRegistered = false;
         removeRegistration(registration);
         return true;
     };
@@ -625,6 +654,7 @@ export function createPluginNativeArtifactResourceRegistry(input: Readonly<{
                 persistentIdentity: identity,
                 nativeRegistered: false,
                 nativeRegistrationPending: false,
+                nativeUnregisterPending: false,
                 revoked: false,
                 subscriptions: [],
                 listeners: new Set(),

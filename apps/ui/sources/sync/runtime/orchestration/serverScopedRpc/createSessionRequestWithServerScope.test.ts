@@ -162,11 +162,15 @@ describe('createSessionRequestWithServerScope', () => {
         createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
         runtimeFetchMock.mockResolvedValue(new Response(null, { status: 200 }));
 
-        const request = await resolveSessionRequestForServerAccountScope({
+        const authority = await resolveSessionRequestForServerAccountScope({
             scope: { serverId: ownerServer.id, accountId: 'account-owner' },
             activeRequest: async () => { throw new Error('must not substitute active authority'); },
         });
-        await request('/v2/sessions/s1/pending', { method: 'POST', body: 'exact-body' });
+        try {
+            await authority.request('/v2/sessions/s1/pending', { method: 'POST', body: 'exact-body' });
+        } finally {
+            await authority.release();
+        }
 
         const call = runtimeFetchMock.mock.calls.find(([input]) =>
             String(input?.url).includes('/v2/sessions/s1/pending'));

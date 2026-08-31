@@ -34,7 +34,7 @@ export function readSessionRunnerRuntimeStateFromMetadata(metadata: unknown): Se
     return parsed.success ? parsed.data : null;
 }
 
-export function readStaleSessionRunnerRuntimeState(input: Readonly<{
+export function readSessionRunnerRuntimeStateForTarget(input: Readonly<{
     metadata: unknown;
     sessionId?: string | null;
     machineId?: string | null;
@@ -47,6 +47,17 @@ export function readStaleSessionRunnerRuntimeState(input: Readonly<{
     const targetMachineId = readNonEmptyString(input.machineId);
     const stateMachineId = readNonEmptyString(state.machineId);
     if (targetMachineId && stateMachineId !== targetMachineId) return null;
+    return state;
+}
+
+export function readStaleSessionRunnerRuntimeState(input: Readonly<{
+    metadata: unknown;
+    sessionId?: string | null;
+    machineId?: string | null;
+}>): SessionRunnerRuntimeStateV1 | null {
+    const state = readSessionRunnerRuntimeStateForTarget(input);
+    if (!state) return null;
+    const stateMachineId = readNonEmptyString(state.machineId);
     if (state.versionState !== 'stale') return null;
     const restartAvailable = state.plannedRestart.supported === true
         && state.plannedRestart.eligible === true

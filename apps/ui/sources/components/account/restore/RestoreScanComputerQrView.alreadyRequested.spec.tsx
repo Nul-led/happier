@@ -101,7 +101,23 @@ vi.mock('@/constants/Typography', () => ({
 
 vi.mock('@/auth/pairing/pairingUrl', () => ({
     buildPairingDeepLink: () => 'happier:///pair?v=1&pairId=p&secret=s',
-    parsePairingDeepLink: () => ({ pairId: 'pair_123', secret: 'secret_123', serverUrl: null }),
+    parsePairingDeepLink: () => null,
+    parseHomeQrInviteDeepLink: () => ({
+        invite: {
+            v: 2,
+            intent: 'home_device',
+            pairId: 'pair_123',
+            home: {
+                v: 1,
+                homeServerIdentityId: 'srv_test',
+                canonicalServerUrl: 'https://stack.example.test',
+                endpoints: [{ kind: 'https', url: 'https://stack.example.test' }],
+            },
+            qrSecretBase64Url: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc',
+            issuedAtMs: Date.now() - 1_000,
+            expiresAtMs: Date.now() + 60_000,
+        },
+    }),
 }));
 
 vi.mock('@/sync/api/account/apiPairingAuth', () => ({
@@ -109,16 +125,12 @@ vi.mock('@/sync/api/account/apiPairingAuth', () => ({
 }));
 
 vi.mock('@/auth/flows/qrStart', () => ({
-    generateAuthKeyPair: () => ({ publicKey: new Uint8Array([1]), secretKey: new Uint8Array([2]) }),
+    generateAuthKeyPair: () => ({ publicKey: new Uint8Array(32).fill(1), secretKey: new Uint8Array(32).fill(2) }),
     authQRStart: vi.fn(async () => true),
 }));
 
 vi.mock('@/auth/flows/qrWait', () => ({
     authQRWait: vi.fn(async () => null),
-}));
-
-vi.mock('@/encryption/base64', () => ({
-    encodeBase64: () => 'x',
 }));
 
 let lastScannerProps: any = null;
@@ -146,7 +158,7 @@ describe('RestoreScanComputerQrView (already requested)', () => {
             expect(typeof lastScannerProps?.onScan).toBe('function');
 
             await act(async () => {
-                await lastScannerProps.onScan('happier:///pair?v=1&pairId=pair_123&secret=secret_123');
+                await lastScannerProps.onScan('happier:///pair?v=2&data=canonical-v2-fixture');
             });
 
             expect(modalAlertAsyncSpy).toHaveBeenCalledWith(

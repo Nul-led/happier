@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
 import { renderScreen } from '@/dev/testkit';
 import { installServerSettingsHooksCommonModuleMocks } from './serverSettingsHooksTestHelpers';
+import type { HomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 
 
 installServerSettingsHooksCommonModuleMocks({
@@ -85,6 +86,16 @@ function makeServerProfile(id: string, name: string, serverUrl: string): ServerP
     };
 }
 
+function createHomeViewSetter(initial: HomeViewSelectionSettings) {
+    let current = initial;
+    const setHomeViewSelectionSettings = vi.fn((
+        update: (value: HomeViewSelectionSettings) => HomeViewSelectionSettings,
+    ) => {
+        current = update(current);
+    });
+    return { setHomeViewSelectionSettings, getCurrent: () => current };
+}
+
 describe('useServerSettingsGroupActions', () => {
     const mountedHookCleanups: Array<() => Promise<void>> = [];
 
@@ -107,11 +118,14 @@ describe('useServerSettingsGroupActions', () => {
     });
 
     it('seeds default selection when deleting the active server group', async () => {
+        const networkBoundary = vi.spyOn(globalThis, 'fetch');
         const { useServerSettingsGroupActions } = await import('./useServerSettingsGroupActions');
         const activeServerId = 'server-a';
-        const setServerSelectionActiveTargetKind = vi.fn();
-        const setServerSelectionActiveTargetId = vi.fn();
-        const setServerSelectionGroups = vi.fn();
+        const homeView = createHomeViewSetter({
+            serverSelectionGroups: [{ id: 'grp', name: 'Group', serverIds: ['server-a', 'server-b'], presentation: 'grouped' }],
+            serverSelectionActiveTargetKind: 'group',
+            serverSelectionActiveTargetId: 'grp',
+        });
         const setRevision = vi.fn();
         const serverA = makeServerProfile('server-a', 'Server A', 'http://localhost:3013');
         const serverB = makeServerProfile('server-b', 'Server B', 'http://localhost:3012');
@@ -127,27 +141,32 @@ describe('useServerSettingsGroupActions', () => {
             activeGroupId: 'grp',
             groupPresentation: 'grouped',
             setRevision: setRevision as unknown as React.Dispatch<React.SetStateAction<number>>,
-            onSwitchServerById: vi.fn(async () => {}),
+            onSwitchServerById: vi.fn(async () => 'switched' as const),
             onAfterSignedOutSwitch: vi.fn(),
-            setServerSelectionActiveTargetKind,
-            setServerSelectionActiveTargetId,
-            setServerSelectionGroups,
+            setHomeViewSelectionSettings: homeView.setHomeViewSelectionSettings,
         }));
         mountedHookCleanups.push(actions.__cleanup);
 
         await actions.onRemoveGroup({ id: 'grp', name: 'Group', serverIds: ['server-a', 'server-b'], presentation: 'grouped' });
 
-        expect(setServerSelectionGroups).toHaveBeenCalledTimes(1);
-        expect(setServerSelectionActiveTargetKind).toHaveBeenCalledWith('server');
-        expect(setServerSelectionActiveTargetId).toHaveBeenCalledWith(activeServerId);
+        expect(homeView.setHomeViewSelectionSettings).toHaveBeenCalledTimes(1);
+        expect(homeView.getCurrent()).toMatchObject({
+            serverSelectionGroups: [],
+            serverSelectionActiveTargetKind: 'server',
+            serverSelectionActiveTargetId: activeServerId,
+        });
+        expect(networkBoundary).not.toHaveBeenCalled();
+        networkBoundary.mockRestore();
     });
 
     it('switching to a server selects an explicit server target and disables group mode', async () => {
         const { useServerSettingsGroupActions } = await import('./useServerSettingsGroupActions');
-        const setServerSelectionActiveTargetKind = vi.fn();
-        const setServerSelectionActiveTargetId = vi.fn();
-        const setServerSelectionGroups = vi.fn();
-        const onSwitchServerById = vi.fn(async () => {});
+        const homeView = createHomeViewSetter({
+            serverSelectionGroups: [],
+            serverSelectionActiveTargetKind: 'server',
+            serverSelectionActiveTargetId: 'server-a',
+        });
+        const onSwitchServerById = vi.fn(async () => 'switched' as const);
         const setRevision = vi.fn();
         const serverA = makeServerProfile('server-a', 'Server A', 'http://localhost:3013');
         const serverB = makeServerProfile('server-b', 'Server B', 'http://localhost:3012');
@@ -165,26 +184,29 @@ describe('useServerSettingsGroupActions', () => {
             setRevision: setRevision as unknown as React.Dispatch<React.SetStateAction<number>>,
             onSwitchServerById,
             onAfterSignedOutSwitch: vi.fn(),
-            setServerSelectionActiveTargetKind,
-            setServerSelectionActiveTargetId,
-            setServerSelectionGroups,
+            setHomeViewSelectionSettings: homeView.setHomeViewSelectionSettings,
         }));
         mountedHookCleanups.push(actions.__cleanup);
 
         await actions.onSwitchGroup({ id: 'grp', name: 'Group', serverIds: ['server-a', 'server-b'], presentation: 'grouped' });
 
-        expect(setServerSelectionActiveTargetKind).toHaveBeenCalledWith('group');
-        expect(setServerSelectionActiveTargetId).toHaveBeenCalledWith('grp');
+        expect(homeView.setHomeViewSelectionSettings).toHaveBeenCalledTimes(1);
+        expect(homeView.getCurrent()).toMatchObject({
+            serverSelectionActiveTargetKind: 'group',
+            serverSelectionActiveTargetId: 'grp',
+        });
         expect(onSwitchServerById).not.toHaveBeenCalled();
         expect(setRevision).toHaveBeenCalled();
     });
 
     it('checks signed-out confirmation against identity-backed group server ids', async () => {
         const { useServerSettingsGroupActions } = await import('./useServerSettingsGroupActions');
-        const setServerSelectionActiveTargetKind = vi.fn();
-        const setServerSelectionActiveTargetId = vi.fn();
-        const setServerSelectionGroups = vi.fn();
-        const onSwitchServerById = vi.fn(async () => {});
+        const homeView = createHomeViewSetter({
+            serverSelectionGroups: [],
+            serverSelectionActiveTargetKind: 'server',
+            serverSelectionActiveTargetId: 'srv-a',
+        });
+        const onSwitchServerById = vi.fn(async () => 'switched' as const);
         const setRevision = vi.fn();
         const onAfterSignedOutSwitch = vi.fn();
         const serverA = {
@@ -209,27 +231,69 @@ describe('useServerSettingsGroupActions', () => {
             setRevision: setRevision as unknown as React.Dispatch<React.SetStateAction<number>>,
             onSwitchServerById,
             onAfterSignedOutSwitch,
-            setServerSelectionActiveTargetKind,
-            setServerSelectionActiveTargetId,
-            setServerSelectionGroups,
+            setHomeViewSelectionSettings: homeView.setHomeViewSelectionSettings,
         }));
         mountedHookCleanups.push(actions.__cleanup);
 
         await actions.onSwitchGroup({ id: 'grp', name: 'Group', serverIds: ['srv-b'], presentation: 'grouped' });
 
         expect(promptSignedOutServerSwitchConfirmationMock).toHaveBeenCalledTimes(1);
-        expect(setServerSelectionActiveTargetKind).toHaveBeenCalledWith('group');
-        expect(setServerSelectionActiveTargetId).toHaveBeenCalledWith('grp');
+        expect(homeView.getCurrent()).toMatchObject({
+            serverSelectionActiveTargetKind: 'group',
+            serverSelectionActiveTargetId: 'grp',
+        });
         expect(onSwitchServerById).toHaveBeenCalledWith('srv-b');
         expect(onAfterSignedOutSwitch).toHaveBeenCalledTimes(1);
     });
 
+    it('keeps the current HomeView target unchanged when custody blocks the group focus switch', async () => {
+        const { useServerSettingsGroupActions } = await import('./useServerSettingsGroupActions');
+        const homeView = createHomeViewSetter({
+            serverSelectionGroups: [],
+            serverSelectionActiveTargetKind: 'server',
+            serverSelectionActiveTargetId: 'server-a',
+        });
+        const onSwitchServerById = vi.fn(async () => 'blocked' as const);
+        const setRevision = vi.fn();
+        const serverA = makeServerProfile('server-a', 'Server A', 'http://localhost:3013');
+        const serverB = makeServerProfile('server-b', 'Server B', 'http://localhost:3012');
+
+        const actions = await renderHook(() => useServerSettingsGroupActions({
+            servers: [serverA, serverB],
+            activeServerId: 'server-a',
+            validServerIds: new Set(['server-a', 'server-b']),
+            authStatusByServerId: { 'server-b': 'signedIn' },
+            normalizedGroupProfiles: [
+                { id: 'grp-b', name: 'Group B', serverIds: ['server-b'], presentation: 'grouped' } as const,
+            ],
+            activeGroupId: null,
+            groupPresentation: 'grouped',
+            setRevision: setRevision as unknown as React.Dispatch<React.SetStateAction<number>>,
+            onSwitchServerById,
+            onAfterSignedOutSwitch: vi.fn(),
+            setHomeViewSelectionSettings: homeView.setHomeViewSelectionSettings,
+        }));
+        mountedHookCleanups.push(actions.__cleanup);
+
+        await actions.onSwitchGroup({ id: 'grp-b', name: 'Group B', serverIds: ['server-b'], presentation: 'grouped' });
+
+        expect(onSwitchServerById).toHaveBeenCalledWith('server-b');
+        expect(homeView.setHomeViewSelectionSettings).not.toHaveBeenCalled();
+        expect(homeView.getCurrent()).toMatchObject({
+            serverSelectionActiveTargetKind: 'server',
+            serverSelectionActiveTargetId: 'server-a',
+        });
+        expect(setRevision).not.toHaveBeenCalled();
+    });
+
     it('creates a server group from the add-server-group flow', async () => {
         const { useServerSettingsGroupActions } = await import('./useServerSettingsGroupActions');
-        const setServerSelectionActiveTargetKind = vi.fn();
-        const setServerSelectionActiveTargetId = vi.fn();
-        const setServerSelectionGroups = vi.fn();
-        const onSwitchServerById = vi.fn(async () => {});
+        const homeView = createHomeViewSetter({
+            serverSelectionGroups: [],
+            serverSelectionActiveTargetKind: 'server',
+            serverSelectionActiveTargetId: 'server-a',
+        });
+        const onSwitchServerById = vi.fn(async () => 'switched' as const);
         const setRevision = vi.fn();
         const serverA = makeServerProfile('server-a', 'Server A', 'http://localhost:3013');
         const serverB = makeServerProfile('server-b', 'Server B', 'http://localhost:3012');
@@ -245,9 +309,7 @@ describe('useServerSettingsGroupActions', () => {
             setRevision: setRevision as unknown as React.Dispatch<React.SetStateAction<number>>,
             onSwitchServerById,
             onAfterSignedOutSwitch: vi.fn(),
-            setServerSelectionActiveTargetKind,
-            setServerSelectionActiveTargetId,
-            setServerSelectionGroups,
+            setHomeViewSelectionSettings: homeView.setHomeViewSelectionSettings,
         }));
         mountedHookCleanups.push(actions.__cleanup);
 
@@ -257,9 +319,11 @@ describe('useServerSettingsGroupActions', () => {
         });
 
         expect(created).toBe(true);
-        expect(setServerSelectionGroups).toHaveBeenCalledTimes(1);
-        expect(setServerSelectionActiveTargetKind).toHaveBeenCalledWith('group');
-        expect(setServerSelectionActiveTargetId).toHaveBeenCalled();
+        expect(homeView.setHomeViewSelectionSettings).toHaveBeenCalledTimes(1);
+        expect(homeView.getCurrent()).toMatchObject({
+            serverSelectionActiveTargetKind: 'group',
+            serverSelectionActiveTargetId: 'my-group',
+        });
         expect(setRevision).toHaveBeenCalled();
     });
 });

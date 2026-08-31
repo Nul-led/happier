@@ -31,7 +31,7 @@ import {
   stripLegacyAttachmentsBlock,
   unwrapLegacyThinkingWrapper,
 } from '@/components/sessions/transcript/messageSelection/resolveSelectableMessageText';
-import { renderStructuredMessage, StructuredMessageBlock } from '@/components/sessions/transcript/structured/StructuredMessageBlock';
+import { renderStructuredMessage } from '@/components/sessions/transcript/structured/StructuredMessageBlock';
 import type { StructuredMessageRendererParams } from '@/components/sessions/transcript/structured/structuredMessageRegistry';
 import { useRouter } from 'expo-router';
 import { buildSessionFileDeepLink } from '@/utils/url/sessionFileDeepLink';
@@ -816,6 +816,13 @@ function UserTextBlock(props: {
               messageId={props.message.id}
               attachments={composerAttachments}
             />
+            {structuredReferences.length > 0 ? (
+              <StructuredReferencesRow
+                sessionId={props.sessionId}
+                references={structuredReferences}
+                fileOpenEnabled={props.canOpenFiles}
+              />
+            ) : null}
             {isDiscarded ? (
               <Text selectable style={styles.discardedCommittedMessageLabel}>{t('message.discarded')}</Text>
             ) : null}
@@ -937,13 +944,6 @@ function UserTextBlock(props: {
             radius={TRANSCRIPT_MESSAGE_HIGHLIGHT_RADIUS}
             style={[styles.userMessageBubble, isDiscarded ? styles.userMessageBubbleDiscarded : null]}
           >
-            <StructuredMessageBlock
-              message={props.message as any}
-	              sessionId={props.sessionId}
-                  interaction={props.interaction}
-	              onJumpToAnchor={handleJumpToAnchor}
-	              debugInformationEnabled={props.messageDisplayCommon.debugInformationEnabled}
-	            />
             <MarkdownView markdown={renderedMarkdownText} renderCacheKey={buildMessageMarkdownRenderCacheKey(props.message.id, props.messageRevision)} onOptionPress={handleOptionPress} onOptionLongPress={handleOptionLongPress} onLinkPress={handleMarkdownLinkPress} selectable={true} profile="transcript" textStyle={styles.transcriptMarkdownText} />
             {attachmentsMeta ? (
               <AttachmentsInlineImages
@@ -1545,7 +1545,7 @@ function AgentTextBlock(props: {
             )
           )
         )}
-        {structuredReferencesDeferred.length > 0 && !isStructuredOnly ? (
+        {structuredReferencesDeferred.length > 0 ? (
           <StructuredReferencesRow
             sessionId={props.sessionId}
             references={structuredReferencesDeferred}

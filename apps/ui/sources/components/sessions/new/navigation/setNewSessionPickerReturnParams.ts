@@ -17,9 +17,10 @@ type NavigationStateLike = Readonly<{
     routes?: ReadonlyArray<RouteLike>;
 }>;
 
-type RouteParamValue = string | number | null | undefined | Array<string | number>;
+export type NewSessionRouteParamValue = string | number | null | undefined | Array<string | number>;
 
-type RouteParams = Record<string, RouteParamValue>;
+export type NewSessionRouteParams = Record<string, NewSessionRouteParamValue>;
+type RouteParams = NewSessionRouteParams;
 type UnknownRouteParams = Record<string, unknown>;
 
 // Expo Router / React Navigation expose wide generic surface areas here.
@@ -63,7 +64,7 @@ function isRouteParamArray(value: unknown): value is Array<string | number> {
     return Array.isArray(value) && value.every((entry) => typeof entry === 'string' || typeof entry === 'number');
 }
 
-function isRouteParamValue(value: unknown): value is RouteParamValue {
+function isRouteParamValue(value: unknown): value is NewSessionRouteParamValue {
     return value == null
         || typeof value === 'string'
         || typeof value === 'number'

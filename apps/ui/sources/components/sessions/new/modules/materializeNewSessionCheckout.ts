@@ -6,6 +6,7 @@ export interface MaterializeNewSessionCheckoutParams {
     machineId: string;
     selectedPath: string;
     serverId?: string | null;
+    machineHomeDir?: string | null;
     checkoutCreationDraft?: NewSessionCheckoutCreationDraft | null;
 }
 
@@ -36,6 +37,7 @@ export async function materializeNewSessionCheckout(
     const worktreeResult = await repoScmWorktreeService.createWorktreeForMachinePath({
         machineId: params.machineId,
         path: params.selectedPath,
+        ...(params.machineHomeDir !== undefined ? { homeDir: params.machineHomeDir } : {}),
         displayName: params.checkoutCreationDraft?.displayName ?? null,
         baseRef: params.checkoutCreationDraft?.baseRef ?? null,
         branchMode: params.checkoutCreationDraft?.branchMode ?? 'new',

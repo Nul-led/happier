@@ -83,6 +83,8 @@ vi.mock('@/sync/domains/state/storage', async () => {
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     listServerProfiles: () => guidanceState.serverProfiles,
+    loadHomeViewState: () => null,
+    subscribeHomeViewState: () => () => {},
 }));
 
 vi.mock('@/hooks/server/useServerProfilesGeneration', () => ({

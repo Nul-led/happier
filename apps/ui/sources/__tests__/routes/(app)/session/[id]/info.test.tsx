@@ -18,6 +18,7 @@ import type {
 import { createUseSettingMock } from '@/dev/testkit/mocks/storage';
 import { SessionOrganizationContentEnvelopeSchema } from '@happier-dev/protocol';
 import { profileDefaults } from '@/sync/domains/profiles/profile';
+import { evaluatePluginUiPolicy } from '@/sync/domains/plugins/ui/policy';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -156,6 +157,7 @@ const useHappyActionMock = vi.hoisted(() =>
 const mockResolveAgentIdFromFlavor = vi.fn<(flavor: string | null | undefined) => string | undefined>(() => 'claude');
 const useSessionSpy = vi.fn<(sessionId: string) => any>(() => mockSession);
 let mockPluginUiProjection: any = null;
+let mockPluginUiPlatform: 'web' | 'desktop' | 'ios' | 'android' = 'web';
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
     return value != null && typeof value === 'object' && !Array.isArray(value);
@@ -345,6 +347,9 @@ installSessionRouteCommonModuleMocks({
                     if (key === 'backendEnabledByTargetKey') {
                         return backendEnabledByTargetKey;
                     }
+                    if (key === 'workspaceRefsV1' || key === 'workspaceSyncRelationshipsV1') {
+                        return [];
+                    }
                     return null;
                 } }),
                 useSessionOrganizationProjection: (serverId: string | null | undefined) =>
@@ -376,6 +381,36 @@ vi.mock('@/utils/navigation/safeRouterBack', () => ({
 }));
 
 vi.mock('@/components/ui/text/Text', () => ({ Text: (props: any) => React.createElement('Text', props, props.children) }));
+vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
+    DropdownMenu: (props: any) => {
+        const trigger = typeof props.trigger === 'function'
+            ? props.trigger({
+                open: props.open,
+                toggle: () => props.onOpenChange(!props.open),
+                openMenu: () => props.onOpenChange(true),
+                closeMenu: () => props.onOpenChange(false),
+                selectedItem: null,
+            })
+            : props.trigger ?? null;
+        const items = props.open
+            ? props.items.map((item: any) => React.createElement(
+                'DropdownMenuItem',
+                {
+                    key: item.id,
+                    testID: item.testID,
+                    accessibilityRole: 'button',
+                    accessibilityLabel: item.title,
+                    disabled: item.disabled,
+                    onPress: () => {
+                        if (!item.disabled) props.onSelect(item.id);
+                    },
+                },
+                item.title,
+            ))
+            : null;
+        return React.createElement('DropdownMenu', { open: props.open }, trigger, items);
+    },
+}));
 vi.mock('@/components/ui/lists/Item', () => ({
     Item: (props: any) => React.createElement('Item', { ...props, testID: props.testID ?? props.title }, props.children),
 }));
@@ -397,7 +432,7 @@ vi.mock('@/components/sessions/panes/useSessionPanePluginRuntime', () => ({
         interactionEnabled: true,
         machineId: 'machine-1',
         serverId: 'server-1',
-        platform: 'web',
+        platform: mockPluginUiPlatform,
     }),
 }));
 vi.mock('@/components/plugins/surfaces', () => ({ PluginInlineSurfaceHost: 'PluginInlineSurfaceHost' }));
@@ -430,7 +465,10 @@ vi.mock('@/agents/catalog/catalog', async (importOriginal) => {
     return {
         ...actual,
         DEFAULT_AGENT_ID: 'claude',
-        getAgentCore: () => mockAgentCore,
+        getAgentCore: () => ({
+            availability: { experimental: false },
+            ...mockAgentCore,
+        }),
         resolveAgentIdFromFlavor: (flavor: string | null | undefined) => mockResolveAgentIdFromFlavor(flavor),
     };
 });
@@ -509,7 +547,7 @@ vi.mock('@happier-dev/agents', async (importOriginal) => {
     return {
         ...actual,
         resolveAgentIdFromSessionMetadata: (metadata: Record<string, unknown> | null | undefined) => {
-            const runtimeDescriptor = (metadata?.runtimeDescriptorV1 ?? metadata?.agentRuntimeDescriptorV1) as any;
+            const runtimeDescriptor = metadata?.runtimeDescriptorV1 as any;
             if (typeof runtimeDescriptor?.agentId === 'string') return runtimeDescriptor.agentId;
             const flavor = typeof metadata?.flavor === 'string' ? metadata.flavor : null;
             return mockResolveAgentIdFromFlavor(flavor) ?? null;
@@ -551,6 +589,7 @@ describe('/session/[id]/info', () => {
         sessionIsConnected = true;
         localDevModeEnabled = false;
         mockPluginUiProjection = null;
+        mockPluginUiPlatform = 'web';
         routerPushSpy.mockReset();
         routerBackSpy.mockReset();
         safeRouterBackSpy.mockReset();
@@ -726,6 +765,126 @@ describe('/session/[id]/info', () => {
             machineId: 'machine-1',
             serverId: 'server-1',
             projectionInteractionEnabled: true,
+        });
+    });
+
+    it('projects declared session-info section availability through the canonical policy owner', async () => {
+        mockSession = {
+            id: 'session-1',
+            active: false,
+            accessLevel: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            seq: 1,
+            metadata: {},
+        };
+        const placement = { id: 'session-info-placement' };
+        const sectionBase = {
+            pluginId: 'acme.preview',
+            descriptorId: 'overview',
+            order: 10,
+            placement,
+            renderer: { kind: 'declarative' },
+            resource: { pluginId: 'acme.preview', localId: 'overview' },
+            actions: [],
+        };
+        const hiddenPlacement = { id: 'session-info-placement-hidden' };
+        const disabledPlacement = { id: 'session-info-placement-disabled' };
+        const enabledPlacement = { id: 'session-info-placement-enabled' };
+        mockPluginUiProjection = {
+            sessionInfoSectionsById: {
+                'sessionInfoSection:acme.preview:hidden': {
+                    ...sectionBase,
+                    id: 'sessionInfoSection:acme.preview:hidden',
+                    placement: hiddenPlacement,
+                    availability: {
+                        when: { fact: 'host.platform', operator: 'equals', value: 'ios' },
+                    },
+                },
+                'sessionInfoSection:acme.preview:disabled': {
+                    ...sectionBase,
+                    id: 'sessionInfoSection:acme.preview:disabled',
+                    order: 20,
+                    placement: disabledPlacement,
+                    availability: {
+                        disabledWhen: { fact: 'host.platform', operator: 'equals', value: 'web' },
+                        disabledReason: 'Disabled on web',
+                    },
+                },
+                'sessionInfoSection:acme.preview:enabled': {
+                    ...sectionBase,
+                    id: 'sessionInfoSection:acme.preview:enabled',
+                    order: 30,
+                    placement: enabledPlacement,
+                    availability: {
+                        when: { fact: 'session.exists', operator: 'equals', value: true },
+                    },
+                },
+            },
+        };
+
+        const screen = await renderInfoScreen();
+        const mounts = screen.findAllByType('PluginInlineSurfaceHost' as never);
+        expect(mounts).toHaveLength(2);
+        const byPlacementId = new Map(mounts.map((mount) => [
+            String(mount.props.placement.id),
+            mount.props,
+        ] as const));
+        expect(byPlacementId.has('session-info-placement-hidden')).toBe(false);
+        expect(byPlacementId.get('session-info-placement-disabled')).toMatchObject({
+            inlineMount: { role: 'sessionInfoSection' },
+            projectionInteractionEnabled: false,
+        });
+        expect(byPlacementId.get('session-info-placement-enabled')).toMatchObject({
+            inlineMount: { role: 'sessionInfoSection' },
+            projectionInteractionEnabled: true,
+        });
+        const mountedPolicyContext = byPlacementId.get('session-info-placement-enabled')?.policyContext;
+        expect(evaluatePluginUiPolicy({
+            availability: {
+                when: { fact: 'session.exists', operator: 'equals', value: true },
+            },
+        }, mountedPolicyContext ?? {})).toMatchObject({
+            visible: true,
+            enabled: true,
+        });
+    });
+
+    it('uses the mounted plugin runtime platform for Session-info policy facts', async () => {
+        mockSession = {
+            id: 'session-1',
+            active: false,
+            accessLevel: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            seq: 1,
+            metadata: {},
+        };
+        mockPluginUiPlatform = 'desktop';
+        mockPluginUiProjection = {
+            sessionInfoSectionsById: {
+                'sessionInfoSection:acme.preview:desktop': {
+                    id: 'sessionInfoSection:acme.preview:desktop',
+                    pluginId: 'acme.preview',
+                    descriptorId: 'desktop',
+                    order: 10,
+                    placement: { id: 'session-info-placement-desktop' },
+                    renderer: { kind: 'declarative' },
+                    resource: { pluginId: 'acme.preview', localId: 'desktop' },
+                    actions: [],
+                    availability: {
+                        when: { fact: 'host.platform', operator: 'equals', value: 'desktop' },
+                    },
+                },
+            },
+        };
+
+        const screen = await renderInfoScreen();
+        const mount = screen.findAllByType('PluginInlineSurfaceHost' as never)[0];
+        expect(mount?.props).toMatchObject({
+            placement: { id: 'session-info-placement-desktop' },
+            platform: 'desktop',
+            policyContext: { platform: 'desktop' },
         });
     });
 
@@ -1195,6 +1354,9 @@ describe('/session/[id]/info', () => {
         }));
 
         await screen.pressByTestIdAsync('session-info-session-tags-edit');
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
         await screen.pressByTestIdAsync('session-tags-menu-item:fixture-tag-1');
         expect(setSessionTagLabelsSpy).toHaveBeenCalledWith(expect.objectContaining({
             scope: expect.objectContaining({
@@ -1294,7 +1456,7 @@ describe('/session/[id]/info', () => {
         }));
     });
 
-    it('fails closed and hides the handoff quick action when server-routed transfer is the only transport the selected server advertises', async () => {
+    it('shows the handoff quick action when server-routed transfer is the only transport the selected server advertises', async () => {
         sessionHandoffFeatureEnabled = true;
         serverFeaturesSnapshot = {
             status: 'ready',
@@ -1338,7 +1500,7 @@ describe('/session/[id]/info', () => {
 
         const screen = await renderInfoScreen();
         const handoffItems = screen.findAllByType('Item' as any).filter((node: any) => node.props?.title === 'Hand off session');
-        expect(handoffItems).toHaveLength(0);
+        expect(handoffItems).toHaveLength(1);
     });
 
     it('reacts when machine-rpc direct-peer viability becomes available for the reachable machine target after metadata goes stale', async () => {
@@ -1513,7 +1675,7 @@ describe('/session/[id]/info', () => {
         expect(providerItem?.props.subtitle).toBe('QA ACP Stub Backend');
     });
 
-    it('shows the provider resume surfaces when the vendor resume id only exists in agentRuntimeDescriptorV1', async () => {
+    it('shows the provider resume surfaces from the current runtime and native resume identities', async () => {
         mockResolveAgentIdFromFlavor.mockReturnValue('opencode');
         mockAgentCore = {
             resume: {
@@ -1533,14 +1695,12 @@ describe('/session/[id]/info', () => {
             seq: 1,
             metadata: {
                 flavor: 'opencode',
-                agentRuntimeDescriptorV1: {
+                runtimeDescriptorV1: {
                     v: 1,
                     agentId: 'opencode',
-                    provider: {
-                        backendMode: 'server',
-                        providerSessionId: 'runtime-session-1234567890',
-                    },
+                    agent: { backendMode: 'server' },
                 },
+                nativeResumeIdentityV1: { v: 1, vendorResumeId: 'runtime-session-1234567890' },
             },
         };
 
@@ -1549,7 +1709,7 @@ describe('/session/[id]/info', () => {
         expect(screen.findByTestId('sessionInfo.copyResumeCommand')).toBeTruthy();
     });
 
-    it('infers the provider from agentRuntimeDescriptorV1 when flavor is missing', async () => {
+    it('infers the provider from the current runtime descriptor when flavor is missing', async () => {
         mockAgentCore = {
             resume: {
                 vendorResumeIdField: 'opencodeSessionId',
@@ -1567,14 +1727,12 @@ describe('/session/[id]/info', () => {
             updatedAt: Date.now(),
             seq: 1,
             metadata: {
-                agentRuntimeDescriptorV1: {
+                runtimeDescriptorV1: {
                     v: 1,
                     agentId: 'opencode',
-                    provider: {
-                        backendMode: 'server',
-                        providerSessionId: 'runtime-session-1234567890',
-                    },
+                    agent: { backendMode: 'server' },
                 },
+                nativeResumeIdentityV1: { v: 1, vendorResumeId: 'runtime-session-1234567890' },
             },
         };
 
@@ -1642,7 +1800,11 @@ describe('/session/[id]/info', () => {
                 backendTarget: { kind: 'backend', backendId: 'codex' },
                 profileId: 'profile-1',
                 transcriptStorage: 'direct',
-                codexBackendMode: 'appServer',
+                runtimeDescriptorV1: {
+                    v: 1,
+                    agentId: 'codex',
+                    agent: { backendMode: 'appServer' },
+                },
                 sessionModeOverrideV1: {
                     v: 1,
                     updatedAt: 100,
@@ -1676,20 +1838,24 @@ describe('/session/[id]/info', () => {
             machineId: 'machine-target',
             directory: '/workspace/repo',
             agentType: 'codex',
-            backendTarget: { kind: 'backend', backendId: 'codex' },
+            backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
             selectedProfileId: 'profile-1',
             transcriptStorage: 'direct',
             permissionMode: 'safe-yolo',
             modelSelection: {
                 v: 1,
                 ref: {
-                    agentTargetKey: 'backend:codex',
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
                     modelId: 'gpt-5',
                     providerConnectionId: null,
                 },
                 updatedAt: 102,
             },
-            codexBackendMode: 'appServer',
+            runtimeDescriptorV1: {
+                v: 1,
+                agentId: 'codex',
+                agent: { backendMode: 'appServer' },
+            },
             acpSessionModeId: 'plan',
         }));
     });
@@ -1750,11 +1916,9 @@ describe('/session/[id]/info', () => {
                 runtimeDescriptorV1: {
                     v: 1,
                     agentId: 'codex',
-                    provider: {
-                        backendMode: 'appServer',
-                        providerSessionId: 'codex-session-1',
-                    },
+                    agent: { backendMode: 'appServer' },
                 },
+                nativeResumeIdentityV1: { v: 1, vendorResumeId: 'codex-session-1' },
             },
         };
 

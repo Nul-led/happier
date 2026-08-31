@@ -118,6 +118,7 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
     onOpenLostAccess: () => void;
     onOpenSecretKeyLogin: () => void;
     onRestoreBackToAuth: () => void;
+    initialPairingLink: string | null;
     onLostAccessBackToAuth: () => void;
 
     onHostRelayLocalAdvance: () => void;
@@ -353,6 +354,7 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
                 <RestoreIndexEmbedded
                     onBack={params.onRestoreBackToAuth}
                     onOpenSecretKeyLogin={params.onOpenSecretKeyLogin}
+                    initialPairingLink={params.initialPairingLink}
                 />
             </View>
         );

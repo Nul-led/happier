@@ -21,6 +21,7 @@ import { storage } from '@/sync/domains/state/storageStore';
 import {
     useSetting,
     useActiveServerAccountScope,
+    useSettingsVersion,
 } from '@/sync/store/hooks';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 
@@ -171,6 +172,7 @@ export function useMachineAdministrationTargetSelection(
     options: MachineAdministrationTargetSelectionOptions = {},
 ): MachineAdministrationTargetSelectionV1 {
     const selections = useSetting('machineAdministrationSelectionsV1');
+    const settingsVersion = useSettingsVersion();
     const activeAccountScope = useActiveServerAccountScope();
     const storedTarget = selections.targetsByKey[selectionKey] ?? null;
     const selectedTargetServerMatchesActiveAccount = doesMachineAdministrationTargetMatchActiveAccount({
@@ -196,10 +198,11 @@ export function useMachineAdministrationTargetSelection(
 
     React.useEffect(() => {
         if (storedTarget || !allowSoleCandidate || targetState.kind !== 'online') return;
-        fireAndForget(persistMachineAdministrationSelectionMutation((current) => (
+        if (settingsVersion === null) return;
+        fireAndForget(persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
             setMachineAdministrationTargetPreference(current, selectionKey, targetState.target)
         )), { tag: 'useMachineAdministrationTargetSelection.initialize' });
-    }, [allowSoleCandidate, selectionKey, storedTarget, targetState]);
+    }, [allowSoleCandidate, selectionKey, settingsVersion, storedTarget, targetState]);
 
     const selectTarget = React.useCallback((target: MachineAdministrationTargetV1) => {
         const candidate = candidates.find((item) => (
@@ -207,16 +210,18 @@ export function useMachineAdministrationTargetSelection(
             && item.target.machineId === target.machineId
         ));
         if (!candidate || !isMachineAdministrationCandidateSelectable(candidate)) return;
-        fireAndForget(persistMachineAdministrationSelectionMutation((current) => (
+        if (settingsVersion === null) return;
+        fireAndForget(persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
             setMachineAdministrationTargetPreference(current, selectionKey, candidate.target)
         )), { tag: 'useMachineAdministrationTargetSelection.select' });
-    }, [candidates, selectionKey]);
+    }, [candidates, selectionKey, settingsVersion]);
 
     const clearTarget = React.useCallback(() => {
-        fireAndForget(persistMachineAdministrationSelectionMutation((current) => (
+        if (settingsVersion === null) return;
+        fireAndForget(persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
             clearMachineAdministrationTargetPreference(current, selectionKey)
         )), { tag: 'useMachineAdministrationTargetSelection.clear' });
-    }, [selectionKey]);
+    }, [selectionKey, settingsVersion]);
 
     const resolveExecutionTarget = React.useCallback(
         () => resolveFreshMachineAdministrationExecutionTarget(

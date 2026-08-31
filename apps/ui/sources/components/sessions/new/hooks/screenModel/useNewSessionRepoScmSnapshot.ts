@@ -27,6 +27,7 @@ import { pathBelongsToRepo } from '@/components/sessions/new/modules/worktreePat
  * immediately, refresh happens in the background).
  */
 export function useNewSessionRepoScmSnapshot(input: Readonly<{
+    serverId?: string | null;
     machineId: string | null;
     path: string;
     machineHomeDir?: string | null;
@@ -37,13 +38,17 @@ export function useNewSessionRepoScmSnapshot(input: Readonly<{
         const path = input.path.trim();
         if (!machineId || !path) return null;
         const light = scmRepositoryService.readCachedSnapshotForMachinePath({
+            ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
             machineId,
             path,
+            ...(input.machineHomeDir !== undefined ? { homeDir: input.machineHomeDir } : {}),
         });
         if (!light) return null;
         const enrichment = scmRepositoryService.readCachedWorktreesEnrichment({
+            ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
             machineId,
             path,
+            ...(input.machineHomeDir !== undefined ? { homeDir: input.machineHomeDir } : {}),
         });
         return enrichment ? mergeWorktreesEnrichmentIntoSnapshot(light, enrichment) : light;
     });
@@ -58,12 +63,16 @@ export function useNewSessionRepoScmSnapshot(input: Readonly<{
 
         let cancelled = false;
         const cachedLight = scmRepositoryService.readCachedSnapshotForMachinePath({
+            ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
             machineId,
             path,
+            ...(input.machineHomeDir !== undefined ? { homeDir: input.machineHomeDir } : {}),
         });
         const cachedEnrichment = scmRepositoryService.readCachedWorktreesEnrichment({
+            ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
             machineId,
             path,
+            ...(input.machineHomeDir !== undefined ? { homeDir: input.machineHomeDir } : {}),
         });
         const seededFromCache = cachedLight && cachedEnrichment
             ? mergeWorktreesEnrichmentIntoSnapshot(cachedLight, cachedEnrichment)
@@ -97,8 +106,10 @@ export function useNewSessionRepoScmSnapshot(input: Readonly<{
             try {
                 // STAGE 1: Light fetch (fast).
                 const lightSnapshot = await scmRepositoryService.fetchSnapshotForMachinePath({
+                    ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
                     machineId,
                     path,
+                    ...(input.machineHomeDir !== undefined ? { homeDir: input.machineHomeDir } : {}),
                 });
                 if (cancelled) return;
                 // Apply any cached enrichment immediately so the chip doesn't
@@ -113,8 +124,10 @@ export function useNewSessionRepoScmSnapshot(input: Readonly<{
                 if (worktreePaths.length === 0) return;
 
                 const enrichment = await scmRepositoryService.fetchWorktreesEnrichment({
+                    ...(input.serverId !== undefined ? { serverId: input.serverId } : {}),
                     machineId,
                     path,
+                    ...(input.machineHomeDir !== undefined ? { homeDir: input.machineHomeDir } : {}),
                     worktreePaths,
                 });
                 if (cancelled || !enrichment || !lightSnapshot) return;
@@ -129,7 +142,7 @@ export function useNewSessionRepoScmSnapshot(input: Readonly<{
         return () => {
             cancelled = true;
         };
-    }, [input.machineHomeDir, input.machineId, input.machinePlatform, input.path]);
+    }, [input.machineHomeDir, input.machineId, input.machinePlatform, input.path, input.serverId]);
 
     React.useEffect(() => {
         return refreshSnapshot();

@@ -49,6 +49,8 @@ const settingsState = vi.hoisted(() => ({
         acpCatalogSettingsV1: null as unknown,
     },
 }));
+const lastUsedProfileWriter = vi.hoisted(() => vi.fn());
+const applyProfileSaveSpy = vi.hoisted(() => vi.fn());
 type MachineContributionRegistryProjectionDescribeFn =
     typeof import('@/sync/ops/machineContributionRegistryProjection').machineContributionRegistryProjectionDescribe;
 const {
@@ -99,6 +101,9 @@ installPickerCommonModuleMocks({
                     if (key === 'profiles') {
                         return [[], vi.fn()];
                     }
+                    if (key === 'lastUsedProfile') {
+                        return [null, lastUsedProfileWriter];
+                    }
                     return [null, vi.fn()];
                 }),
                 useSettings: () => ({
@@ -127,6 +132,10 @@ vi.mock('@/components/profiles/edit', () => ({
         capturedFormPropsRef.current = props;
         return React.createElement('ProfileEditForm');
     },
+}));
+
+vi.mock('@/sync/store/settingsWriters', () => ({
+    useApplyProfileSave: () => applyProfileSaveSpy,
 }));
 
 vi.mock('expo-constants', () => ({
@@ -204,6 +213,8 @@ describe('ProfileEditScreen replace fallback', () => {
         }));
         machineContributionRegistryProjectionDescribe.mockReset();
         machineContributionRegistryProjectionDescribe.mockResolvedValue({ supported: false, reason: 'not-supported' });
+        lastUsedProfileWriter.mockReset();
+        applyProfileSaveSpy.mockReset();
     });
 
     afterEach(() => {
@@ -253,6 +264,7 @@ describe('ProfileEditScreen replace fallback', () => {
             } satisfies AiLaunchProfile);
         });
         expect(saved).toBe(true);
+        expect(lastUsedProfileWriter).not.toHaveBeenCalled();
 
         expect(machineContributionRegistryProjectionDescribe).toHaveBeenCalledWith('machine-2', expect.objectContaining({
             serverId: 'server-2',
@@ -265,8 +277,7 @@ describe('ProfileEditScreen replace fallback', () => {
         expect(args).toEqual(expect.objectContaining({
             pathname: '/new',
             params: expect.objectContaining({
-                agentType: 'claude',
-                backendTargetKey: 'backend:claude',
+                backendTargetKey: 'agent:happier.agent.claude/claude',
                 dataId: 'draft-1',
                 machineId: 'machine-2',
                 profileId: 'profile-new',
@@ -275,6 +286,12 @@ describe('ProfileEditScreen replace fallback', () => {
         }));
 
         const backendTarget = parseJsonRouteParam(args?.params?.backendTarget) as any;
-        expect(backendTarget).toMatchObject({ kind: 'backend', backendId: 'claude' });
+        expect(backendTarget).toEqual({
+            kind: 'agent',
+            identity: {
+                pluginId: 'happier.agent.claude',
+                localId: 'claude',
+            },
+        });
     });
 });

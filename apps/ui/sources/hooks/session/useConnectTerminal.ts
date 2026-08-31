@@ -4,27 +4,18 @@ import { useAuth } from '@/auth/context/AuthContext';
 import {
     TokenStorage,
     type AuthCredentials,
-    isTokenOnlyAuthCredentials,
 } from '@/auth/storage/tokenStorage';
-import { authApprove } from '@/auth/flows/approve';
-import {
-    buildTerminalResponseV1,
-    buildTerminalResponseV2,
-    buildTerminalResponseV3,
-    buildTerminalTokenOnlyResponseV3,
-} from '@/auth/terminal/terminalProvisioning';
+import { approveTerminalPairing } from '@/auth/terminal/approveTerminalPairing';
 import { Modal } from '@/modal';
 import { t } from '@/text';
-import { getActiveServerUrl } from '@/sync/domains/server/serverProfiles';
-import { isSameServerUrl, normalizeServerUrl, upsertActivateAndSwitchServer } from '@/sync/domains/server/activeServerSwitch';
+import { getActiveServerUrl, listServerProfiles } from '@/sync/domains/server/serverProfiles';
+import { normalizeServerUrl } from '@/sync/domains/server/activeServerSwitch';
+import { createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import { resolveEffectiveServerUrlOverride } from '@/sync/domains/server/url/serverUrlOverridePolicy';
 import { clearPendingTerminalConnect, setPendingTerminalConnect } from '@/sync/domains/pending/pendingTerminalConnect';
 import { buildTerminalConnectAuthRedirectHref, parseTerminalConnectUrl } from '@/utils/path/terminalConnectUrl';
-import { storage } from '@/sync/domains/state/storageStore';
 import { canUseCurrentDeviceQrScanner } from '@/utils/platform/qrScannerSupport';
-import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
-import { isRuntimeFeatureEnabled } from '@/sync/domains/features/featureDecisionInputs';
-import { resolveProvisioningMaterial } from '@/auth/terminal/resolveProvisioningMaterial';
+import { decodeBase64 } from '@/encryption/base64';
 
 interface UseConnectTerminalOptions {
     onSuccess?: () => void;
@@ -32,8 +23,33 @@ interface UseConnectTerminalOptions {
     allowLoopbackServerOverride?: boolean;
 }
 
-function hasTokenOnlyTerminalCredentials(credentials: AuthCredentials): boolean {
-    return isTokenOnlyAuthCredentials(credentials);
+type TerminalApprovalTarget = Readonly<{
+    endpointUrl: string;
+    serverId?: string;
+    credentials: AuthCredentials | null;
+}>;
+
+async function resolveTerminalApprovalTarget(params: Readonly<{
+    requestedEndpointUrl: string | null;
+    focusedEndpointUrl: string;
+    expectedServerIdentityId: string;
+}>): Promise<TerminalApprovalTarget> {
+    const endpointUrl = params.requestedEndpointUrl || params.focusedEndpointUrl;
+    if (!endpointUrl) throw new Error('Terminal pairing requires an explicit target server');
+    const targetKey = createServerUrlComparableKey(endpointUrl);
+    const matches = listServerProfiles()
+        .filter((profile) => (
+            profile.serverIdentityId?.trim() === params.expectedServerIdentityId
+            && (
+            createServerUrlComparableKey(profile.serverUrl) === targetKey
+            || createServerUrlComparableKey(profile.canonicalServerUrl ?? '') === targetKey
+            || createServerUrlComparableKey(profile.publicServerUrl ?? '') === targetKey
+            )
+        ));
+    if (matches.length !== 1) return { endpointUrl, credentials: null };
+    const serverId = params.expectedServerIdentityId;
+    const credentials = await TokenStorage.getCredentialsForServerUrl(endpointUrl, { serverId });
+    return { endpointUrl, serverId, credentials };
 }
 
 export function useConnectTerminal(options?: UseConnectTerminalOptions) {
@@ -49,7 +65,6 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
         
         setIsLoading(true);
         try {
-            let activeCredentials: AuthCredentials | null = auth.credentials;
             const currentServerUrl = normalizeServerUrl(getActiveServerUrl());
             const effectiveParsedServerUrl = resolveEffectiveServerUrlOverride({
                 requestedServerUrl: parsed.serverUrl,
@@ -57,32 +72,18 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
                 allowLoopbackOverride: options?.allowLoopbackServerOverride === true,
             });
 
-            if (effectiveParsedServerUrl) {
-                if (currentServerUrl && !isSameServerUrl(currentServerUrl, effectiveParsedServerUrl)) {
-                    setPendingTerminalConnect({
-                        publicKeyB64Url: parsed.publicKeyB64Url,
-                        serverUrl: effectiveParsedServerUrl,
-                        ...(parsed.pairing ? { pairing: parsed.pairing } : {}),
-                        ...(parsed.supportsTokenOnly ? { supportsTokenOnly: true } : {}),
-                    });
-                    await upsertActivateAndSwitchServer({
-                        serverUrl: effectiveParsedServerUrl,
-                        source: 'url',
-                        scope: 'device',
-                        refreshAuth: auth.refreshFromActiveServer,
-                    });
-                    activeCredentials = await TokenStorage.getCredentials();
-                }
-            }
-
-            if (!activeCredentials) {
-                activeCredentials = await TokenStorage.getCredentials();
-            }
+            const target = await resolveTerminalApprovalTarget({
+                requestedEndpointUrl: effectiveParsedServerUrl,
+                focusedEndpointUrl: currentServerUrl,
+                expectedServerIdentityId: parsed.serverIdentityId ?? '',
+            });
+            const activeCredentials = target.credentials;
 
             if (!activeCredentials) {
                 setPendingTerminalConnect({
                     publicKeyB64Url: parsed.publicKeyB64Url,
                     serverUrl: effectiveParsedServerUrl || currentServerUrl || getActiveServerUrl(),
+                    serverIdentityId: parsed.serverIdentityId ?? '',
                     ...(parsed.pairing ? { pairing: parsed.pairing } : {}),
                     ...(parsed.supportsTokenOnly ? { supportsTokenOnly: true } : {}),
                 });
@@ -97,71 +98,29 @@ export function useConnectTerminal(options?: UseConnectTerminalOptions) {
 
             const publicKey = decodeBase64(parsed.publicKeyB64Url, 'base64url');
 
-            const allowLegacySecretExportEnabled = Boolean(
-                storage.getState().settings?.terminalConnectLegacySecretExportEnabled,
-            );
-
             const pairingSecret = parsed.pairing
                 ? decodeBase64(parsed.pairing.secretB64Url, 'base64url')
                 : null;
-            let responseV2: Uint8Array;
-            let responseV1: Uint8Array | (() => Uint8Array);
-            if (hasTokenOnlyTerminalCredentials(activeCredentials)) {
-                if (!parsed.pairing || pairingSecret?.length !== 32 || parsed.supportsTokenOnly !== true) {
-                    throw new Error('Token-only terminal pairing requires an authenticated compatible reader');
-                }
-                const [accountMode, plaintextStorageEnabled, keylessAccountsEnabled] = await Promise.all([
-                    fetchAccountEncryptionMode(activeCredentials, { retry: 'none' }),
-                    isRuntimeFeatureEnabled({ featureId: 'encryption.plaintextStorage' }),
-                    isRuntimeFeatureEnabled({ featureId: 'e2ee.keylessAccounts' }),
-                ]);
-                if (
-                    accountMode.mode !== 'plain'
-                    || !plaintextStorageEnabled
-                    || !keylessAccountsEnabled
-                ) {
-                    throw new Error('Token-only terminal pairing is not permitted by the active account policy');
-                }
-                responseV2 = buildTerminalTokenOnlyResponseV3({
-                    terminalEphemeralPublicKey: publicKey,
-                    pairingSecret,
+            if (!parsed.pairing || pairingSecret?.length !== 32) {
+                // Every current approval seals a pairing-bound v3 response. Unbound V1/V2
+                // issuance is retired, so a requester without pairing context can only be
+                // served by upgrading the remote.
+                throw new Error('Terminal pairing requires an authenticated v3 pairing context');
+            }
+            const approvalResult = await approveTerminalPairing({
+                target: {
+                    endpointUrl: target.endpointUrl,
+                    ...(target.serverId ? { serverId: target.serverId } : {}),
+                },
+                requesterPublicKey: publicKey,
+                pairingContext: {
+                    secret: pairingSecret,
                     createdAtMs: parsed.pairing.createdAtMs,
                     expiresAtMs: parsed.pairing.expiresAtMs,
-                });
-                responseV1 = new Uint8Array();
-            } else {
-                const provisioningMaterial = resolveProvisioningMaterial(activeCredentials);
-                if (provisioningMaterial.type === 'tokenOnly') {
-                    throw new Error('Token-only terminal pairing requires an authenticated compatible reader');
-                }
-                const contentPrivateKey = provisioningMaterial.key;
-                responseV2 =
-                    parsed.pairing && pairingSecret?.length === 32
-                        ? buildTerminalResponseV3({
-                            contentPrivateKey,
-                            terminalEphemeralPublicKey: publicKey,
-                            pairingSecret,
-                            createdAtMs: parsed.pairing.createdAtMs,
-                            expiresAtMs: parsed.pairing.expiresAtMs,
-                        })
-                        : buildTerminalResponseV2({
-                            contentPrivateKey,
-                            terminalEphemeralPublicKey: publicKey,
-                        });
-
-                const legacyCredentials =
-                    isLegacyAuthCredentials(activeCredentials) ? activeCredentials : null;
-                responseV1 =
-                    allowLegacySecretExportEnabled && legacyCredentials
-                        ? () =>
-                            buildTerminalResponseV1({
-                                legacySecretB64Url: legacyCredentials.secret,
-                                terminalEphemeralPublicKey: publicKey,
-                            })
-                        : new Uint8Array();
-            }
-
-            const approvalResult = await authApprove(activeCredentials.token, publicKey, responseV1, responseV2);
+                },
+                targetCredentials: activeCredentials,
+                supportsTokenOnly: parsed.supportsTokenOnly === true,
+            });
 
             // If we successfully completed a pending connect, clear it.
             clearPendingTerminalConnect();

@@ -15,6 +15,12 @@ const settingsState = {
     serverSelectionActiveTargetId: 'grp-one' as string | null,
 };
 const storageState = settingsState as Record<string, unknown>;
+const homeViewState = {
+    version: 1 as const,
+    get groups() { return storageState.serverSelectionGroups as any[]; },
+    get activeTargetKind() { return storageState.serverSelectionActiveTargetKind as 'server' | 'group' | null; },
+    get activeTargetId() { return storageState.serverSelectionActiveTargetId as string | null; },
+};
 const useSettingMutableMock = ((key: string) => [
     storageState[key],
     (value: unknown) => {
@@ -76,10 +82,22 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
         { id: 'server-a', name: 'A', serverUrl: 'https://a.example.test', lastUsedAt: 0 },
         { id: 'server-b', name: 'B', serverUrl: 'https://b.example.test', lastUsedAt: 0 },
     ],
+    resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
     getActiveServerId: () => activeServerId,
     getDeviceDefaultServerId: () => 'server-a',
     getResetToDefaultServerId: () => 'server-a',
     subscribeActiveServer: vi.fn(() => () => {}),
+    getServerProfilesGeneration: () => 1,
+    subscribeServerProfiles: vi.fn(() => () => {}),
+    loadHomeViewState: () => homeViewState,
+    subscribeHomeViewState: () => () => {},
+    updateHomeViewState: vi.fn((update: (current: typeof homeViewState) => typeof homeViewState) => {
+        const next = update(homeViewState);
+        storageState.serverSelectionGroups = next.groups;
+        storageState.serverSelectionActiveTargetKind = next.activeTargetKind;
+        storageState.serverSelectionActiveTargetId = next.activeTargetId;
+        return next;
+    }),
     setActiveServerId: vi.fn(),
     upsertServerProfile: vi.fn(() => ({ id: 'server-a' })),
 }));
@@ -144,7 +162,7 @@ describe('useServerSettingsScreenController', () => {
         expect(value.activeTargetKey).toBe('group:grp-one');
     });
 
-    it('uses the active server target when a saved explicit server target is stale', async () => {
+    it('keeps a valid explicit Home target when another Home is focused', async () => {
         setActiveServerForTest('server-b');
         storageState.serverSelectionActiveTargetKind = 'server';
         storageState.serverSelectionActiveTargetId = 'server-a';
@@ -159,6 +177,6 @@ describe('useServerSettingsScreenController', () => {
 
         await renderScreen(React.createElement(Probe));
 
-        expect(value.activeTargetKey).toBe('server:server-b');
+        expect(value.activeTargetKey).toBe('server:server-a');
     });
 });

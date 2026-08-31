@@ -168,6 +168,28 @@ function buildCommandsWithPluginActions(input: Readonly<{
 }
 
 describe('buildCommandPaletteCommands', () => {
+  it('routes sign-out through the confirmed account-settings flow', async () => {
+    const push = vi.fn();
+    const logout = vi.fn(async () => {});
+    mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: {} };
+
+    const commands = buildCommandPaletteCommands({
+      sessionsById: {},
+      isDev: false,
+      activeSessionId: null,
+      features: { executionRunsEnabled: false, voiceEnabled: false, memorySearchEnabled: false },
+      nav: { push, openNewSession: () => {}, navigateToSession: () => {} },
+      auth: { logout },
+      actions: { execute: async () => ({ ok: true, result: {} }) },
+      alert: async () => {},
+    });
+
+    await commands.find((command) => command.id === 'sign-out')?.action();
+
+    expect(push).toHaveBeenCalledWith('/settings/account');
+    expect(logout).not.toHaveBeenCalled();
+  });
+
   it('delegates the new-session command to the caller-owned ordinary-entry callback', async () => {
     const openNewSession = vi.fn();
     mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: {} };

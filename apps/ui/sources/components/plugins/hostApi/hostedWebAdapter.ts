@@ -122,11 +122,6 @@ const CANONICAL_SUBSCRIPTION_METHODS = new Set<PluginUiHostMethodV1>(
     PLUGIN_UI_HOST_SUBSCRIPTION_METHODS_V1,
 );
 
-export type PluginHostedWebHostApiAuditEvent = Readonly<{
-    type: 'readyRecorded' | 'readyDuplicate' | 'readyStale' | 'readyTimedOut';
-    surface: PluginUiSurfaceContextV1;
-}>;
-
 /**
  * The mounted document owner lends this exact physical publisher only to a
  * factual Composer child. It addresses the bridge's existing guest-owned
@@ -248,7 +243,6 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
     /** The bound controller owns currentness; this adapter only consults it. */
     isCurrent?: () => boolean;
     onReadyStateChange?: (state: PluginUiHostReadyStateChange) => void;
-    audit?: (event: PluginHostedWebHostApiAuditEvent) => void;
     nowMs?: () => number;
 }>): PluginHostedWebHostApiBridgeHandler {
     const readyState = createPluginUiHostReadyStateStore({ surface: params.surface, nowMs: params.nowMs });
@@ -886,14 +880,12 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
             && params.surface.contributionId === envelope.contributionId
             && params.surface.surfaceId === envelope.surfaceId;
         if (!sessionlessInitialReady && !pluginUiSurfaceContextsMatch(params.surface, envelope)) {
-            params.audit?.({ type: 'readyStale', surface: params.surface });
             return createBridgeError(envelope, 'stale_surface');
         }
         if (!isCurrent()) {
             return createBridgeError(envelope, 'stale_surface');
         }
         if (sessionlessInitialReady && readyState.read().state !== 'pending') {
-            params.audit?.({ type: 'readyStale', surface: params.surface });
             return createBridgeError(envelope, 'stale_surface');
         }
         if (envelope.kind === 'hostApi') {
@@ -932,9 +924,6 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
                     updatedAtMs: recorded.snapshot.updatedAtMs,
                     diagnostics: [],
                 });
-                params.audit?.({ type: 'readyRecorded', surface: params.surface });
-            } else {
-                params.audit?.({ type: 'readyDuplicate', surface: params.surface });
             }
             return createBridgeResponse({
                 envelope,
@@ -1036,7 +1025,6 @@ export function createPluginHostedWebHostApiBridgeHandler(params: Readonly<{
                     updatedAtMs: snapshot.updatedAtMs,
                     diagnostics: snapshot.diagnostics,
                 });
-                params.audit?.({ type: 'readyTimedOut', surface: params.surface });
             }
             return snapshot;
         },

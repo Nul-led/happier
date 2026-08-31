@@ -35,15 +35,13 @@ describe('parsePairingDeepLink', () => {
 });
 
 describe('buildPairingDeepLink', () => {
-    it('builds canonical deep links with encoded values', () => {
-        expect(
+    it('refuses new V1 pairing issuance', () => {
+        expect(() =>
             buildPairingDeepLink({
                 pairId: 'pid123',
                 secret: 'sec_abc',
                 serverUrl: 'https://stack.example.test/path?x=1',
             }),
-        ).toBe(
-            'happier:///pair?v=1&pairId=pid123&secret=sec_abc&server=https%3A%2F%2Fstack.example.test%2Fpath%3Fx%3D1',
-        );
+        ).toThrowError(expect.objectContaining({ code: 'legacy_provisioning_unavailable' }));
     });
 });

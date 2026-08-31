@@ -2,16 +2,16 @@ import {
     decodePeerTcpTunnelBinaryFrameV2,
     encodeBase64,
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-    type PeerTcpTunnelFrameV1,
     type PeerTcpTunnelOpenResponseV1,
     type PeerTcpTunnelOpenV1,
 } from '@happier-dev/protocol';
+import type { PeerTcpTunnelFrame } from '@happier-dev/peer-transport/duplexFrames';
 import { describe, expect, it, vi } from 'vitest';
 
 type DynamicModule = Record<string, unknown>;
 type TestStream = Readonly<{
-    sendFrame: (frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>) => Promise<void> | void;
-    onFrame: (handler: (frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>) => void) => () => void;
+    sendFrame: (frame: PeerTcpTunnelFrame) => Promise<void> | void;
+    onFrame: (handler: (frame: PeerTcpTunnelFrame) => void) => () => void;
     close: () => Promise<void> | void;
 }>;
 type TestWebSocket = {
@@ -178,10 +178,10 @@ describe('openPeerTcpTunnelLoopbackStream', () => {
         }) as Promise<TestStream>;
         getSocket().onopen?.();
         const stream = await streamPromise;
-        const seen: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>[] = [];
+        const seen: PeerTcpTunnelFrame[] = [];
         stream.onFrame((frame) => seen.push(frame));
 
-        const frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }> = {
+        const frame: PeerTcpTunnelFrame = {
             v: 1,
             kind: 'ack',
             tunnelId: 'tun_1',
@@ -222,7 +222,7 @@ describe('openPeerTcpTunnelLoopbackStream', () => {
             tunnelId: 'tun_1',
             direction: 'client_to_daemon',
             sequence: 7,
-            payloadBase64,
+            payload: pcmBytes,
         });
 
         const sent = getSocket().sent[0];

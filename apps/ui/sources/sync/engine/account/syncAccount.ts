@@ -12,22 +12,89 @@ import {
 } from '@/sync/domains/settings/accountSettingsNormalization';
 import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { HappyError } from '@/utils/errors/errors';
-import { listServerProfiles } from '@/sync/domains/server/serverProfiles';
+import {
+    areServerProfileIdentifiersEquivalent,
+    listServerProfiles,
+    resolveServerProfileScopeId,
+    type ServerProfile,
+} from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { serverFetch } from '@/sync/http/client';
 import { isExpoPushNotificationChannelEnabled } from '@happier-dev/protocol';
-import { loadLastRegisteredExpoPushToken, saveLastRegisteredExpoPushToken } from '@/sync/domains/state/pushTokenRegistration';
+import {
+    loadRegisteredExpoPushTokenState,
+    saveExpoPushTokenGeneration,
+    saveLastRegisteredExpoPushToken,
+} from '@/sync/domains/state/pushTokenRegistration';
 import { readExpoPushToken, readPushPermission } from '@/activity/notifications/permission/pushNotificationAccess';
+import { loadAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
+import { createAccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
+import { parseToken } from '@/utils/auth/parseToken';
 import { createSessionRequestForExplicitServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import { fetchAccountEncryptionMode } from '@/sync/api/account/apiAccountEncryptionMode';
+import { readAccountSettingsBaseline } from '@/sync/engine/settings/accountSettingsBaseline';
+import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
+import { resolveServerScopedTransport } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedTransport';
+import { config } from '@/config';
+import { log as appLog } from '@/log';
 
-export async function fetchHomeNotificationSettings(home: { id: string; serverUrl: string }, credentials: AuthCredentials): Promise<unknown | null> {
-    const request = createSessionRequestForExplicitServerScope({ serverUrl: home.serverUrl, token: credentials.token });
-    const response = await request('/v2/account/settings', { method: 'GET' });
-    if (!response.ok) return null;
-    const payload: unknown = await response.json();
-    if (!payload || typeof payload !== 'object') return null;
-    const settings = (payload as Record<string, unknown>).settings;
-    return settings && typeof settings === 'object' ? settings : null;
+type HomeNotificationSettingsTarget = Readonly<{
+    id: string;
+    serverUrl: string;
+    serverIdentityId?: string | null;
+    legacyServerIds?: readonly string[];
+    runtimeOrigin?: string;
+}>;
+
+/**
+ * Resolve one Home's notification consent.
+ *
+ * The Home's live Account Settings are authoritative and are read through an
+ * explicit Home-targeted request (never the active-server transport). Only
+ * when that live read is unavailable — offline, unsupported, or a fail-closed
+ * unreadable envelope — does the Home's canonical persisted scoped projection
+ * apply as the last-known value. Null means neither source is available; the
+ * caller then applies the product default and records the registration as
+ * provisional.
+ */
+export async function fetchHomeNotificationSettings(
+    home: HomeNotificationSettingsTarget,
+    credentials: AuthCredentials,
+): Promise<unknown | null> {
+    // Live first: this Home answers for its own Account Settings through an
+    // explicit Home-targeted request. The mode comes from that Home's endpoint;
+    // it is never inferred from the credential or the envelope, and an E2EE
+    // envelope without usable material fails closed instead of opening.
+    try {
+        const request = createSessionRequestForExplicitServerScope({
+            serverUrl: home.serverUrl,
+            ...(home.runtimeOrigin ? { runtimeOrigin: home.runtimeOrigin } : {}),
+            token: credentials.token,
+        });
+        const encryptionMode = await fetchAccountEncryptionMode(credentials, { request });
+        const accountMode = encryptionMode.mode === 'plain' ? 'plain' : 'e2ee';
+        const encryption = accountMode === 'e2ee'
+            ? await createEncryptionFromAuthCredentials(credentials)
+            : null;
+        const baseline = await readAccountSettingsBaseline({
+            request,
+            credentials,
+            encryption,
+            accountMode,
+        });
+        return baseline.raw ?? {};
+    } catch {
+        // Live read unavailable: fall through to the last-known scoped value.
+    }
+    try {
+        const serverId = resolveServerProfileScopeId(home);
+        const scope = createAccountSettingsScope(serverId, parseToken(credentials.token));
+        if (!scope) return null;
+        const cached = loadAccountSettings(scope);
+        return cached.version === null ? null : cached.settings;
+    } catch {
+        return null;
+    }
 }
 
 export async function handleUpdateAccountSocketUpdate(params: {
@@ -228,198 +295,382 @@ function readAccountSettingsFromStore(): unknown {
     }
 }
 
-// Last successfully observed Home-scoped notification settings. This is a
-// projection cache only; Home remains authoritative and a missing entry uses
-// the product default provisionally until the Home can be queried again.
-const lastKnownHomeNotificationSettings = new Map<string, unknown>();
+type HomePushTransportProfile = Pick<ServerProfile,
+    | 'serverUrl'
+    | 'canonicalServerUrl'
+    | 'publicServerUrl'
+    | 'serverIdentityId'
+    | 'irohEndpoint'
+    | 'connectionDescriptorRevision'
+>;
 
-export async function registerPushTokenIfAvailable(params: {
+async function deletePushTokenThroughHomeTransport(params: Readonly<{
     credentials: AuthCredentials;
-    log: { log: (message: string) => void };
-    /**
-     * Account settings source. Defaults to the live store; injected by tests and by callers that
-     * already hold a settings snapshot.
-     */
-    getAccountSettings?: () => unknown;
-    /**
-     * Reads the notification settings owned by one Home. The caller must issue an
-     * explicit request against the supplied Home; returning null/undefined means
-     * that Home is currently offline and the last local value (or product default)
-     * should be used provisionally.
-     */
-    getHomeAccountSettings?: (home: { id: string; serverUrl: string }, credentials: AuthCredentials) => Promise<unknown | null | undefined>;
-}): Promise<void> {
-    const { credentials, log } = params;
+    token: string;
+    transport: Awaited<ReturnType<typeof resolveServerScopedTransport>>;
+}>): Promise<boolean> {
+    try {
+        await deletePushTokenApi(params.credentials, params.token, {
+            apiEndpoint: params.transport.canonicalServerUrl,
+            runtimeOrigin: params.transport.runtimeOrigin,
+        });
+        return true;
+    } catch {
+        return false;
+    }
+}
 
-    // Only register on mobile platforms
-    if (Platform.OS === 'web') {
-        return;
+export async function unregisterPushTokenForHomeBestEffort(params: Readonly<{
+    credentials: AuthCredentials;
+    token: string | null | undefined;
+    serverUrl: string;
+    profile?: HomePushTransportProfile;
+}>): Promise<boolean> {
+    const token = String(params.token ?? '').trim();
+    const serverUrl = String(params.serverUrl ?? '').trim();
+    if (!token || !serverUrl) return true;
+    const transport = await resolveServerScopedTransport({
+        profile: params.profile ?? { serverUrl },
+        credentials: params.credentials,
+    }).catch(() => null);
+    if (!transport) return false;
+    try {
+        return await deletePushTokenThroughHomeTransport({
+            credentials: params.credentials,
+            token,
+            transport,
+        });
+    } finally {
+        await transport.release().catch(() => undefined);
+    }
+}
+
+async function settlePendingExpoPushTokenBeforeAdvance(params: Readonly<{
+    profiles: readonly ServerProfile[];
+    credentials?: AuthCredentials | null;
+    observedToken: string;
+    currentToken: string | null;
+    cleanupPendingToken: string | null;
+}>): Promise<boolean> {
+    const {
+        profiles,
+        credentials,
+        observedToken,
+        currentToken,
+        cleanupPendingToken,
+    } = params;
+    if (!currentToken || !cleanupPendingToken || currentToken === observedToken) return true;
+
+    let activeServerId: string | null = null;
+    let activeServerUrl: string | null = null;
+    try {
+        const activeServer = getActiveServerSnapshot();
+        activeServerId = String(activeServer.serverId ?? '').trim() || null;
+        activeServerUrl = String(activeServer.serverUrl ?? '').trim().replace(/\/+$/, '') || null;
+    } catch {
+        activeServerId = null;
+        activeServerUrl = null;
     }
 
-    // Home notification consent is evaluated independently below for every
-    // credentialed profile. The focused account setting is only a fallback when
-    // a Home is offline or has not yet returned settings.
-    const readAccountSettings = params.getAccountSettings ?? readAccountSettingsFromStore;
+    let didProcessAnyHome = false;
+    let didCleanupFail = false;
+    let didEnumerateActiveServer = false;
+    for (const profile of profiles) {
+        const profileScopeId = resolveServerProfileScopeId(profile);
+        const isActiveProfile = activeServerId !== null
+            && areServerProfileIdentifiersEquivalent(profileScopeId, activeServerId);
+        didEnumerateActiveServer ||= isActiveProfile;
 
+        let serverCredentials = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, {
+            serverId: profileScopeId,
+        }).catch(() => null);
+        if (!serverCredentials && isActiveProfile && credentials) serverCredentials = credentials;
+        if (!serverCredentials) continue;
+        didProcessAnyHome = true;
+        const cleaned = await unregisterPushTokenForHomeBestEffort({
+            credentials: serverCredentials,
+            token: cleanupPendingToken,
+            serverUrl: profile.serverUrl,
+            profile,
+        });
+        didCleanupFail ||= !cleaned;
+    }
+
+    // Compatibility for a focused Home created before profile adoption.
+    if (!didEnumerateActiveServer && activeServerUrl && credentials) {
+        didProcessAnyHome = true;
+        const cleaned = await unregisterPushTokenForHomeBestEffort({
+            credentials,
+            token: cleanupPendingToken,
+            serverUrl: activeServerUrl,
+        });
+        didCleanupFail ||= !cleaned;
+    }
+
+    if (!didProcessAnyHome || didCleanupFail) return false;
+    saveLastRegisteredExpoPushToken(currentToken);
+    return true;
+}
+
+export async function registerPushTokenIfAvailable(params: {
+    credentials?: AuthCredentials | null;
+    log: { log: (message: string) => void };
+    getAccountSettings?: () => unknown;
+    getHomeAccountSettings?: (
+        home: HomeNotificationSettingsTarget,
+        credentials: AuthCredentials,
+    ) => Promise<unknown | null | undefined>;
+}): Promise<void> {
+    const { credentials, log } = params;
+    if (Platform.OS === 'web') return;
+
+    const readAccountSettings = params.getAccountSettings ?? readAccountSettingsFromStore;
+    const getHomeAccountSettings = params.getHomeAccountSettings ?? fetchHomeNotificationSettings;
     const permission = await readPushPermission();
     if (!permission.ok) {
         log.log(`Push notification runtime unavailable (${permission.reason}); skipping push token registration`);
         return;
     }
-
-    // Background registration never prompts. iOS grants exactly one system prompt per install, and
-    // spending it from a sync task gives the user no context to decide. The primed permission flow
-    // owns the ask; registration only consumes an already-granted permission.
     if (!permission.permission.granted) {
         log.log(`Push notification permission not granted (${permission.permission.status}); skipping push token registration`);
         return;
     }
-
     const tokenOutcome = await readExpoPushToken();
     if (!tokenOutcome.ok) {
         log.log(`Unable to read an Expo push token (${tokenOutcome.reason}); skipping push token registration`);
         return;
     }
 
-    // Register with server
     try {
         const profiles = listServerProfiles();
         const token = tokenOutcome.token;
-        const previousToken = loadLastRegisteredExpoPushToken();
-        const normalizeServerUrl = (serverUrl: string) => serverUrl.replace(/\/+$/, '');
+        let previousState = loadRegisteredExpoPushTokenState();
+        const didSettlePendingToken = await settlePendingExpoPushTokenBeforeAdvance({
+            profiles,
+            credentials,
+            observedToken: token,
+            currentToken: previousState.current,
+            cleanupPendingToken: previousState.cleanupPending,
+        });
+        if (!didSettlePendingToken) {
+            log.log('Push token rotation deferred until prior token cleanup succeeds');
+            return;
+        }
+        previousState = loadRegisteredExpoPushTokenState();
+        const cleanupPendingToken = previousState.current && previousState.current !== token
+            ? previousState.current
+            : previousState.cleanupPending;
+        saveExpoPushTokenGeneration({ current: token, cleanupPending: cleanupPendingToken });
+
+        let activeServerId: string | null = null;
         let activeServerUrl: string | null = null;
         try {
-            activeServerUrl = normalizeServerUrl(getActiveServerSnapshot().serverUrl);
+            const activeServer = getActiveServerSnapshot();
+            activeServerId = String(activeServer.serverId ?? '').trim() || null;
+            activeServerUrl = String(activeServer.serverUrl ?? '').trim().replace(/\/+$/, '') || null;
         } catch {
+            activeServerId = null;
             activeServerUrl = null;
         }
 
         let didRegisterAnyServer = false;
-        let didRegisterActiveServer = false;
-        for (const profile of profiles) {
-            let serverCredentials: AuthCredentials | null = null;
-            try {
-                serverCredentials = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, {
-                    serverId: profile.id,
-                });
-            } catch {
-                serverCredentials = null;
-            }
-            if (!serverCredentials) continue;
+        let didEnabledRegistrationFail = false;
+        let didTokenCleanupFail = false;
+        let didProcessAnyHome = false;
+        let didEnumerateActiveServer = false;
 
-            // Settings are Home-owned. Never apply the focused Home's setting to
-            // another profile. A missing response is an offline read: retain the
-            // local value for the focused Home, otherwise use the enabled product
-            // default and mark the registration provisional in the log.
-            let homeSettings: unknown = undefined;
-            let provisional = false;
-            const getHomeAccountSettings = params.getHomeAccountSettings;
-            if (getHomeAccountSettings) {
+        for (const profile of profiles) {
+            const profileScopeId = resolveServerProfileScopeId(profile);
+            const isActiveProfile = activeServerId !== null
+                && areServerProfileIdentifiersEquivalent(profileScopeId, activeServerId);
+            didEnumerateActiveServer ||= isActiveProfile;
+
+            let serverCredentials = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, {
+                serverId: profileScopeId,
+            }).catch(() => null);
+            if (!serverCredentials && isActiveProfile && credentials) serverCredentials = credentials;
+            if (!serverCredentials) continue;
+            didProcessAnyHome = true;
+
+            const transport = await resolveServerScopedTransport({ profile, credentials: serverCredentials }).catch(() => null);
+            if (!transport) {
+                didEnabledRegistrationFail = true;
+                continue;
+            }
+            try {
+                let homeSettings: unknown;
+                let provisional = false;
                 try {
-                    homeSettings = await getHomeAccountSettings(
-                        { id: profile.id, serverUrl: profile.serverUrl },
-                        serverCredentials,
-                    );
+                    homeSettings = await getHomeAccountSettings({
+                        id: profile.id,
+                        serverUrl: transport.canonicalServerUrl,
+                        serverIdentityId: profile.serverIdentityId,
+                        legacyServerIds: profile.legacyServerIds,
+                        runtimeOrigin: transport.runtimeOrigin,
+                    }, serverCredentials);
                 } catch {
                     homeSettings = undefined;
                 }
-            }
-            if (homeSettings == null) {
-                const cached = lastKnownHomeNotificationSettings.get(profile.id);
-                if (cached !== undefined) {
-                    homeSettings = cached;
-                } else {
-                    const isFocusedHome = activeServerUrl !== null
-                        && normalizeServerUrl(profile.serverUrl) === activeServerUrl;
-                    homeSettings = isFocusedHome ? readAccountSettings() : {};
+                if (homeSettings == null) {
+                    homeSettings = isActiveProfile ? readAccountSettings() : {};
+                    provisional = true;
                 }
-                provisional = true;
-            } else if (typeof profile.id === 'string' && profile.id.trim()) {
-                lastKnownHomeNotificationSettings.set(profile.id, homeSettings);
-            }
-            if (!isExpoPushNotificationChannelEnabled(homeSettings)) {
-                log.log(`Push notifications disabled for Home ${profile.serverUrl}; skipping push token registration`);
-                // Best-effort removal prevents a previously registered device
-                // target from surviving a Home-level opt-out.
-                try {
-                    await deletePushTokenApi(serverCredentials, token, {
-                        apiEndpoint: profile.serverUrl,
+
+                if (!isExpoPushNotificationChannelEnabled(homeSettings)) {
+                    log.log(`Push notifications disabled for Home ${profile.serverUrl}; skipping push token registration`);
+                    const cleanedCurrentToken = await deletePushTokenThroughHomeTransport({
+                        credentials: serverCredentials,
+                        token,
+                        transport,
                     });
-                } catch {
-                    // A disabled/offline Home must not block other registrations.
+                    didTokenCleanupFail = didTokenCleanupFail || !cleanedCurrentToken;
+                    if (cleanupPendingToken && cleanupPendingToken !== token) {
+                        const cleanedPendingToken = await deletePushTokenThroughHomeTransport({
+                            credentials: serverCredentials,
+                            token: cleanupPendingToken,
+                            transport,
+                        });
+                        didTokenCleanupFail = didTokenCleanupFail || !cleanedPendingToken;
+                    }
+                    continue;
                 }
-                continue;
-            }
 
-            try {
-                await registerPushTokenApi(serverCredentials, token, {
-                    serverId: profile.id,
-                    apiEndpoint: profile.serverUrl,
-                    clientServerUrl: profile.serverUrl,
-                    retry: 'none',
-                });
-                didRegisterAnyServer = true;
-                if (activeServerUrl && normalizeServerUrl(profile.serverUrl) === activeServerUrl) {
-                    didRegisterActiveServer = true;
+                try {
+                    await registerPushTokenApi(serverCredentials, token, {
+                        serverId: profileScopeId,
+                        apiEndpoint: transport.canonicalServerUrl,
+                        runtimeOrigin: transport.runtimeOrigin,
+                        clientServerUrl: transport.canonicalServerUrl,
+                        retry: 'none',
+                    });
+                    didRegisterAnyServer = true;
+                    if (cleanupPendingToken && cleanupPendingToken !== token) {
+                        const cleanedPendingToken = await deletePushTokenThroughHomeTransport({
+                            credentials: serverCredentials,
+                            token: cleanupPendingToken,
+                            transport,
+                        });
+                        didTokenCleanupFail = didTokenCleanupFail || !cleanedPendingToken;
+                    }
+                    if (provisional) log.log(`Push token registration provisional for Home ${profile.serverUrl}`);
+                } catch (error) {
+                    didEnabledRegistrationFail = true;
+                    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+                    log.log(`Failed to register push token for ${profile.serverUrl}: ${message}`);
                 }
-                if (provisional) {
-                    log.log(`Push token registration provisional for Home ${profile.serverUrl}`);
-                }
-            } catch (error) {
-                const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
-                log.log(`Failed to register push token for ${profile.serverUrl}: ${message}`);
-            }
-        }
-
-        // Preserve the legacy active-Home retry when its profile is not present
-        // (or its first attempt failed). The credentials argument is the focused
-        // Home's credential context supplied by Sync (Account Service credentials
-        // never enter this runtime path).
-        if (!didRegisterActiveServer && activeServerUrl) {
-            try {
-                await registerPushTokenApi(credentials, token, {
-                    clientServerUrl: activeServerUrl,
-                    retry: 'none',
-                });
-                didRegisterAnyServer = true;
-            } catch (error) {
-                const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
-                log.log(`Failed to register push token for ${activeServerUrl}: ${message}`);
+            } finally {
+                await transport.release().catch(() => undefined);
             }
         }
 
-        if (didRegisterAnyServer) {
+        // Compatibility for a focused Home created before profile adoption. Once
+        // the profile exists, its per-Home decision above is terminal for this cycle.
+        if (!didEnumerateActiveServer && activeServerUrl && credentials) {
+            didProcessAnyHome = true;
+            const transport = await resolveServerScopedTransport({
+                profile: { serverUrl: activeServerUrl },
+                credentials,
+            }).catch(() => null);
+            if (!transport) {
+                didEnabledRegistrationFail = true;
+            } else {
+                try {
+                    if (!isExpoPushNotificationChannelEnabled(readAccountSettings())) {
+                        log.log(`Push notifications disabled for Home ${activeServerUrl}; skipping push token registration`);
+                        const cleanedCurrentToken = await deletePushTokenThroughHomeTransport({ credentials, token, transport });
+                        didTokenCleanupFail = didTokenCleanupFail || !cleanedCurrentToken;
+                        if (cleanupPendingToken && cleanupPendingToken !== token) {
+                            const cleanedPendingToken = await deletePushTokenThroughHomeTransport({
+                                credentials,
+                                token: cleanupPendingToken,
+                                transport,
+                            });
+                            didTokenCleanupFail = didTokenCleanupFail || !cleanedPendingToken;
+                        }
+                    } else {
+                        try {
+                            await registerPushTokenApi(credentials, token, {
+                                apiEndpoint: transport.canonicalServerUrl,
+                                runtimeOrigin: transport.runtimeOrigin,
+                                clientServerUrl: transport.canonicalServerUrl,
+                                retry: 'none',
+                            });
+                            didRegisterAnyServer = true;
+                            if (cleanupPendingToken && cleanupPendingToken !== token) {
+                                const cleanedPendingToken = await deletePushTokenThroughHomeTransport({
+                                    credentials,
+                                    token: cleanupPendingToken,
+                                    transport,
+                                });
+                                didTokenCleanupFail = didTokenCleanupFail || !cleanedPendingToken;
+                            }
+                        } catch (error) {
+                            didEnabledRegistrationFail = true;
+                            const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+                            log.log(`Failed to register push token for ${activeServerUrl}: ${message}`);
+                        }
+                    }
+                } finally {
+                    await transport.release().catch(() => undefined);
+                }
+            }
+        }
+
+        if (didProcessAnyHome && !didEnabledRegistrationFail && !didTokenCleanupFail) {
             saveLastRegisteredExpoPushToken(token);
         }
-
-        // Best-effort cleanup when Expo rotates the token: remove the old token from servers we can still reach.
-        if (didRegisterAnyServer && previousToken && previousToken !== token) {
-            const unregisterPreviousToken = async (serverCredentials: AuthCredentials, apiEndpoint?: string) => {
-                try {
-                    await deletePushTokenApi(serverCredentials, previousToken, { apiEndpoint });
-                } catch {
-                    // best-effort; ignore
-                }
-            };
-
-            for (const profile of profiles) {
-                let serverCredentials: AuthCredentials | null = null;
-                try {
-                    serverCredentials = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, {
-                        serverId: profile.id,
-                    });
-                } catch {
-                    serverCredentials = null;
-                }
-                if (!serverCredentials) continue;
-                await unregisterPreviousToken(serverCredentials, profile.serverUrl);
-            }
-
-            await unregisterPreviousToken(credentials, activeServerUrl ?? undefined);
-        }
-        log.log('Push token registered successfully');
+        log.log(didRegisterAnyServer
+            ? 'Push token registered successfully'
+            : 'Failed to register push token: no Home registration succeeded');
     } catch (error) {
         const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
         log.log('Failed to register push token: ' + message);
     }
+}
+
+let devicePushReconcilerStarted = false;
+let devicePushReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+let devicePushReconcileInFlight = false;
+let devicePushReconcileAgain = false;
+
+async function runDevicePushTokenReconciliation(): Promise<void> {
+    if (!devicePushReconcilerStarted || devicePushReconcileInFlight) return;
+    devicePushReconcileInFlight = true;
+    try {
+        if (!__DEV__ || config.enableDevPushTokenRegistration === true) {
+            await registerPushTokenIfAvailable({ credentials: null, log: appLog });
+        }
+    } finally {
+        devicePushReconcileInFlight = false;
+        if (devicePushReconcilerStarted && devicePushReconcileAgain) {
+            devicePushReconcileAgain = false;
+            schedulePushTokenReconciliation();
+        }
+    }
+}
+
+export function startPushTokenReconciliation(): void {
+    devicePushReconcilerStarted = true;
+}
+
+export function stopPushTokenReconciliation(): void {
+    devicePushReconcilerStarted = false;
+    devicePushReconcileAgain = false;
+    if (devicePushReconcileTimer) {
+        clearTimeout(devicePushReconcileTimer);
+        devicePushReconcileTimer = null;
+    }
+}
+
+export function schedulePushTokenReconciliation(): void {
+    if (!devicePushReconcilerStarted) return;
+    if (devicePushReconcileInFlight) {
+        devicePushReconcileAgain = true;
+        return;
+    }
+    if (devicePushReconcileTimer) return;
+    devicePushReconcileTimer = setTimeout(() => {
+        devicePushReconcileTimer = null;
+        void runDevicePushTokenReconciliation();
+    }, 0);
 }

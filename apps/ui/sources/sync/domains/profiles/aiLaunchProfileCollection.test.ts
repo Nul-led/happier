@@ -7,6 +7,7 @@ import {
     readUiAiLaunchProfilesForLegacyUi,
     readUiAiLaunchProfiles,
     removeAiLaunchProfile,
+    removeAiLaunchProfileFromAccountSettings,
     replaceAiLaunchProfile,
 } from './aiLaunchProfileCollection';
 
@@ -89,5 +90,45 @@ describe('AI launch profile UI collection', () => {
         const raw = [legacy, future];
         expect(appendAiLaunchProfile(raw, slim)).toEqual([legacy, future, slim]);
         expect(() => appendAiLaunchProfile(raw, { ...slim, id: 'legacy' })).toThrow(/already exists/i);
+    });
+
+    it('removes one launch profile and all of its Account Settings residue atomically', () => {
+        const untouched = { nested: true };
+        const retainedOtherBindings = { OTHER_TOKEN: 'secret-other' };
+
+        expect(removeAiLaunchProfileFromAccountSettings({
+            profiles: [legacy, slim, future],
+            lastUsedProfile: 'legacy',
+            favoriteProfiles: ['legacy', 'slim'],
+            profileEnabledById: { legacy: false, slim: true },
+            secretBindingsByProfileId: {
+                legacy: { LEGACY_TOKEN: 'secret-legacy' },
+                slim: retainedOtherBindings,
+            },
+            untouched,
+        }, 'legacy')).toEqual({
+            profiles: [slim, future],
+            lastUsedProfile: null,
+            favoriteProfiles: ['slim'],
+            profileEnabledById: { slim: true },
+            secretBindingsByProfileId: { slim: retainedOtherBindings },
+            untouched,
+        });
+    });
+
+    it('preserves unrelated profile state and unknown root settings during deletion', () => {
+        const raw = {
+            profiles: [legacy, slim, future],
+            lastUsedProfile: 'slim',
+            favoriteProfiles: ['slim'],
+            profileEnabledById: { slim: true },
+            secretBindingsByProfileId: { slim: { TOKEN: 'secret-slim' } },
+            futureRoot: { opaque: true },
+        };
+
+        expect(removeAiLaunchProfileFromAccountSettings(raw, 'legacy')).toEqual({
+            ...raw,
+            profiles: [slim, future],
+        });
     });
 });

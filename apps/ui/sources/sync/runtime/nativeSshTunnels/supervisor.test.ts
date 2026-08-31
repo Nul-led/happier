@@ -612,4 +612,46 @@ describe('native SSH tunnel supervisor', () => {
         await expect(supervisor.ensureTunnel(createRequest())).rejects.toThrow('native_ssh_tunnel_suspended');
         expect(adapter.startLoopbackTunnel).not.toHaveBeenCalled();
     });
+
+    /**
+     * Shared-owner consolidation: a foreground re-probe that verifies a healthy
+     * lease invalidates stale runtime failure diagnostics. Before the SSH
+     * supervisor delegated to `createLoopbackTunnelSupervisor` this path only
+     * cleared the captive-portal reason and kept stale start diagnostics.
+     */
+    it('clears stale start diagnostics after a foreground re-probe verifies a healthy lease', async () => {
+        const loaded = await import('./supervisor').catch(() => null);
+        expect(loaded).not.toBeNull();
+
+        const error = Object.assign(new Error('Native SSH authentication failed.'), {
+            code: 'authentication-failed',
+        });
+        const supervisor = loaded!.createNativeSshTunnelSupervisor({
+            adapter: {
+                startLoopbackTunnel: vi.fn()
+                    .mockResolvedValueOnce({ nativeTunnelId: 'native-1', localPort: 49152 })
+                    .mockRejectedValueOnce(error),
+                stopLoopbackTunnel: vi.fn(async () => undefined),
+            },
+            probe: vi.fn(async () => ({ ok: true as const })),
+        });
+
+        await supervisor.ensureTunnel(createRequest());
+        await expect(supervisor.ensureTunnel({
+            ...createRequest(),
+            remoteHostId: 'host-b',
+            credentialsRef: {
+                remoteHostId: 'host-b',
+                credentialId: 'cred-b',
+                storage: 'session-memory' as const,
+            },
+        })).rejects.toBe(error);
+        expect(supervisor.listTunnels().platformLimitations.map((limitation) => limitation.reason))
+            .toContain('authentication-failed');
+
+        await supervisor.markForeground();
+
+        expect(supervisor.listTunnels().platformLimitations.map((limitation) => limitation.reason))
+            .not.toContain('authentication-failed');
+    });
 });

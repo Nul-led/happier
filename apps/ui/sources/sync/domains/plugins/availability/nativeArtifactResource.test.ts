@@ -526,6 +526,79 @@ describe('native Artifact resource bridge', () => {
         expect(register).toHaveBeenCalledTimes(2);
     });
 
+    it('completes retirement only when an async adapter acknowledgement settles true', async () => {
+        const first = await acquireFixtureLease();
+        const events: string[] = [];
+        let settleAcknowledgement: ((acknowledged: boolean) => void) | undefined;
+        const unregister = vi.fn((_token: string): boolean | Promise<boolean> => new Promise((resolve) => {
+            settleAcknowledgement = resolve;
+        }));
+        const diagnostic = vi.fn();
+        let nextId = 0;
+        const registry = createPluginNativeArtifactResourceRegistry({
+            registrar: Object.freeze({ register: async () => nativeRegistrationAccepted, unregister }),
+            createOpaqueId: () => `opaque-${++nextId}`,
+            onNativeTeardownDiagnostic: diagnostic,
+        });
+        const { lifetime } = createLifetime();
+        const persistent = Object.freeze({
+            scope,
+            store: createPersistentStore(events),
+            isCurrent: () => true,
+        });
+        const initial = await registry.materialize({
+            lease: first.lease,
+            persistent,
+            accountLifetime: lifetime,
+            isCurrent: () => true,
+            hostedWebPolicy: hostedWebPolicyInput(),
+        });
+        if (initial.kind !== 'available') throw new Error('expected initial native Artifact handle');
+        let locallyRevoked = false;
+        initial.handle.onRevoke(() => {
+            locallyRevoked = true;
+        });
+
+        first.readerStore.replace({ scope, snapshot: fixture(false).snapshot });
+        expect(locallyRevoked).toBe(true);
+        expect(unregister).toHaveBeenCalledTimes(1);
+        // The pending acknowledgement is not a failure.
+        expect(diagnostic).not.toHaveBeenCalled();
+
+        // A resolved false is not acknowledgement: the stale token stays
+        // indexed for the existing diagnostics/retry owner.
+        settleAcknowledgement?.(false);
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(diagnostic).toHaveBeenCalledTimes(1);
+        expect(unregister).toHaveBeenCalledTimes(1);
+
+        // The retry owner re-dispatches, and a settled acknowledgement
+        // completes the retirement instead of leaving it pending forever.
+        settleAcknowledgement = undefined;
+        unregister.mockImplementationOnce(() => Promise.resolve(true));
+        const replacement = await acquireFixtureLease();
+        await expect(registry.materialize({
+            lease: replacement.lease,
+            persistent,
+            accountLifetime: lifetime,
+            isCurrent: () => true,
+            hostedWebPolicy: hostedWebPolicyInput(),
+        })).resolves.toEqual({ kind: 'unavailable', code: 'native_artifact_revocation_pending' });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        await expect(registry.materialize({
+            lease: replacement.lease,
+            persistent,
+            accountLifetime: lifetime,
+            isCurrent: () => true,
+            hostedWebPolicy: hostedWebPolicyInput(),
+        })).resolves.toEqual(expect.objectContaining({ kind: 'available' }));
+        expect(unregister).toHaveBeenCalledTimes(2);
+        expect(diagnostic).toHaveBeenCalledTimes(1);
+    });
+
     it('does not replace or remove persistent bytes until native acknowledges token denial', async () => {
         const first = await acquireFixtureLease();
         const events: string[] = [];

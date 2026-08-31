@@ -15,6 +15,7 @@ import { useLocalSettings, useSettings } from '@/sync/domains/state/storage';
 import { useApplyLocalSettings, useApplySettings } from '@/sync/store/settingsWriters';
 import { t } from '@/text';
 import { sync } from '@/sync/sync';
+import { schedulePushTokenReconciliation } from '@/sync/engine/account/syncAccount';
 import { runPushNotificationPermissionPriming } from '@/activity/notifications/permission/pushNotificationPermissionPriming';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { fireAndForget } from '@/utils/system/fireAndForget';
@@ -43,6 +44,9 @@ import { NotificationSoundsSection } from './NotificationSoundsSection';
 import { NotificationTypesSection, type NotificationTypeEventId } from './NotificationTypesSection';
 import { NotificationWebhooksSection } from './NotificationWebhooksSection';
 import { buildWebhookNotificationSettingsDelta } from './notificationChannels';
+import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
+import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
+import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 
 export const NotificationsSettingsView = React.memo(function NotificationsSettingsView() {
     const router = useRouter();
@@ -50,6 +54,11 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
     const localSettings = useLocalSettings();
     const applySettings = useApplySettings();
     const applyLocalSettings = useApplyLocalSettings();
+    const activeServer = useActiveServerSnapshot();
+    useServerProfilesGeneration();
+    const activeHomeName = getServerProfileById(activeServer.serverId)?.name.trim()
+        || activeServer.serverUrl.trim()
+        || t('settingsNotifications.push.currentHome');
 
     const attentionPolicy = React.useMemo(
         () => accountSettingsParse(settings).attentionDeliveryPolicyV1,
@@ -109,6 +118,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 },
             },
         });
+        schedulePushTokenReconciliation();
         if (!enabled) return;
         // Enabling push here is the user's demonstrated intent, so it is the right moment to ask
         // the OS — framed in-app first. Registration itself never prompts, so without this the
@@ -288,6 +298,7 @@ export const NotificationsSettingsView = React.memo(function NotificationsSettin
                 previewSound={previewSound}
             />
             <NotificationPushSection
+                homeName={activeHomeName}
                 pushEnabled={pushEnabled}
                 setPushEnabled={setPushEnabled}
                 openPushTroubleshooting={openPushTroubleshooting}

@@ -54,7 +54,7 @@ export async function openSessionForVoiceTool(params: Readonly<{
           scope: 'device',
           refreshAuth: auth?.refreshFromActiveServer ?? null,
         });
-        if (switched !== true) {
+        if (switched === 'blocked') {
           return {
             ok: false,
             status: 'server_switch_failed',

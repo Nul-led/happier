@@ -27,7 +27,7 @@ type Props = CustomModalInjectedProps & Readonly<{
     status?: SessionHandoffStatus;
     operation?: ActionOperationSnapshotV1;
     onResume?: () => Promise<void> | void;
-    workspaceTransferEnabled?: boolean;
+    workspaceSyncEnabled?: boolean;
 }>;
 
 type HandoffStepId = 'prepare-session' | 'transfer-session' | 'transfer-workspace' | 'start-target' | 'finalize';
@@ -182,6 +182,11 @@ const BASE_HANDOFF_STEPS: readonly HandoffStep[] = [
     { id: 'start-target', label: 'Start on target' },
     { id: 'finalize', label: 'Finalize handoff' },
 ];
+
+function isRedundantOperationProgressLabel(label: string, stepLabel: string): boolean {
+    const normalize = (value: string) => value.toLowerCase().replace(/\btransferring\b/g, 'transfer').replace(/\s+/g, ' ').trim();
+    return normalize(label) === normalize(stepLabel);
+}
 
 function resolveOperationStepId(operation: ActionOperationSnapshotV1 | undefined): HandoffStepId {
     const progress = operation?.progress;
@@ -364,7 +369,7 @@ function translateCheckpoint(checkpoint: SessionHandoffProgressCheckpoint): stri
     }
 }
 
-export function SessionHandoffProgressModal({ setChrome, title, message, status, operation, onResume, workspaceTransferEnabled = false }: Props) {
+export function SessionHandoffProgressModal({ setChrome, title, message, status, operation, onResume, workspaceSyncEnabled = false }: Props) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
 
@@ -491,7 +496,7 @@ export function SessionHandoffProgressModal({ setChrome, title, message, status,
         ? Math.max(0, Math.min(1, determinateOperationProgress.current / determinateOperationProgress.total))
         : null;
     const operationProgressLabel = operationProgress?.label ?? null;
-    const operationSteps = BASE_HANDOFF_STEPS.filter((step) => workspaceTransferEnabled || step.id !== 'transfer-workspace');
+    const operationSteps = BASE_HANDOFF_STEPS.filter((step) => workspaceSyncEnabled || step.id !== 'transfer-workspace');
     const operationStepId = resolveOperationStepId(operation);
     const operationStepIndex = operationSteps.findIndex((step) => step.id === operationStepId);
     const resumeInFlightRef = React.useRef(false);
@@ -571,6 +576,9 @@ export function SessionHandoffProgressModal({ setChrome, title, message, status,
                                     </Text>
                                     {isCurrent && operationProgressFraction !== null ? (
                                         <>
+                                            {operationProgressLabel && !isRedundantOperationProgressLabel(operationProgressLabel, step.label) ? (
+                                                <Text style={styles.progressMetaText}>{operationProgressLabel}</Text>
+                                            ) : null}
                                             <View
                                                 testID="session-handoff-operation-progress-bar"
                                                 style={styles.progressTrack}

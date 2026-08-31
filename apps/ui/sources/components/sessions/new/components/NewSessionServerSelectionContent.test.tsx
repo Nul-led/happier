@@ -1,6 +1,6 @@
 import * as React from 'react';
 import type { ReactTestInstance } from 'react-test-renderer';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 
 import { createCapturingComponent, createPassThroughComponent, createPassThroughModule } from '@/dev/testkit/mocks/components';
@@ -11,6 +11,7 @@ import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
 import { createTextModuleMock } from '@/dev/testkit/mocks/text';
 import { createUnistylesMock } from '@/dev/testkit/mocks/unistyles';
 import { renderScreen } from '@/dev/testkit';
+import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServerSwitch';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -19,6 +20,16 @@ const capturedItems: Array<Record<string, unknown>> = [];
 const getCredentialsForServerUrlMock = vi.hoisted(() =>
     vi.fn(async () => ({ token: 'token', secret: 'secret' } as { token: string; secret: string } | null)),
 );
+const refreshFromActiveServerMock = vi.hoisted(() => vi.fn(async () => {}));
+const setActiveServerAndSwitchMock = vi.hoisted(() => vi.fn(
+    async (): Promise<ActiveServerSwitchResult> => 'switched',
+));
+const serverProfilesState = vi.hoisted(() => ({
+    value: [
+        { id: 'server-a', name: 'Server A', serverUrl: 'http://server-a.local' },
+        { id: 'server-b', name: 'Server B', serverUrl: 'http://server-b.local' },
+    ] as Array<{ id: string; name: string; serverUrl: string; serverIdentityId?: string }>,
+}));
 const expoRouterMock = createExpoRouterMock({
     params: { selectedId: 'server-a' },
     navigation: { dispatch: vi.fn(), getState: () => undefined },
@@ -90,15 +101,15 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
         generation: 1,
         serverId: 'server-a',
     }),
-    listServerProfiles: () => [
-        { id: 'server-a', name: 'Server A', serverUrl: 'http://server-a.local' },
-        { id: 'server-b', name: 'Server B', serverUrl: 'http://server-b.local' },
-    ],
+    listServerProfiles: () => serverProfilesState.value,
+    resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
+    loadHomeViewState: () => null,
+    subscribeHomeViewState: () => () => {},
 }));
 
 vi.mock('@/sync/domains/server/selection/serverSelectionResolution', () => ({
-    resolveActiveServerSelectionFromRawSettings: () => ({
-        allowedServerIds: ['server-a', 'server-b'],
+    resolveActiveServerSelectionFromRawSettings: (params: { availableServerIds: string[] }) => ({
+        allowedServerIds: params.availableServerIds,
     }),
 }));
 
@@ -106,6 +117,14 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
     TokenStorage: {
         getCredentialsForServerUrl: getCredentialsForServerUrlMock,
     },
+}));
+
+vi.mock('@/auth/context/AuthContext', () => ({
+    useAuth: () => ({ refreshFromActiveServer: refreshFromActiveServerMock }),
+}));
+
+vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
+    setActiveServerAndSwitch: setActiveServerAndSwitchMock,
 }));
 
 vi.mock('@/components/settings/server/modals/ServerSwitchAuthPrompt', () => ({
@@ -129,6 +148,19 @@ vi.mock('@/components/sessions/new/navigation/setNewSessionPickerReturnParams', 
 });
 
 describe('NewSessionServerSelectionContent', () => {
+    beforeEach(() => {
+        serverProfilesState.value = [
+            { id: 'server-a', name: 'Server A', serverUrl: 'http://server-a.local' },
+            { id: 'server-b', name: 'Server B', serverUrl: 'http://server-b.local' },
+        ];
+        getCredentialsForServerUrlMock.mockReset();
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: 'token', secret: 'secret' });
+        refreshFromActiveServerMock.mockClear();
+        setActiveServerAndSwitchMock.mockReset();
+        setActiveServerAndSwitchMock.mockResolvedValue('switched');
+        expoRouterMock.spies.replace.mockClear();
+    });
+
     it('prefers the explicit selected server over stale route params in popover mode', async () => {
         capturedItems.length = 0;
         getCredentialsForServerUrlMock.mockClear();
@@ -169,6 +201,88 @@ describe('NewSessionServerSelectionContent', () => {
         await serverBItem.onPress();
 
         expect(getCredentialsForServerUrlMock).toHaveBeenCalledWith('http://server-b.local', { serverId: 'server-b' });
+    });
+
+    it('carries a signed-out explicit Home target through tab-scoped authentication', async () => {
+        capturedItems.length = 0;
+        getCredentialsForServerUrlMock.mockResolvedValueOnce(null);
+        const { NewSessionServerSelectionContent } = await import('./NewSessionServerSelectionContent');
+
+        await renderScreen(<NewSessionServerSelectionContent
+            maxHeight={520}
+            onClose={() => {}}
+            selectedServerId="server-b"
+        />);
+
+        const serverBItem = capturedItems.find((item) => item.title === 'Server B');
+        if (!serverBItem || typeof serverBItem.onPress !== 'function') {
+            throw new Error('Expected Server B item with onPress handler');
+        }
+        await serverBItem.onPress();
+
+        await vi.waitFor(() => {
+            expect(setActiveServerAndSwitchMock).toHaveBeenCalledWith({
+                serverId: 'server-b',
+                scope: 'tab',
+                refreshAuth: refreshFromActiveServerMock,
+            });
+        });
+        expect(expoRouterMock.spies.replace).toHaveBeenCalledWith({
+            pathname: '/',
+            params: expect.objectContaining({
+                newSessionAuthContinuation: '1',
+                spawnServerId: 'server-b',
+            }),
+        });
+    });
+
+    it('does not mutate navigation when custody blocks a signed-out Home switch', async () => {
+        capturedItems.length = 0;
+        getCredentialsForServerUrlMock.mockResolvedValueOnce(null);
+        setActiveServerAndSwitchMock.mockResolvedValueOnce('blocked');
+        const { NewSessionServerSelectionContent } = await import('./NewSessionServerSelectionContent');
+
+        await renderScreen(<NewSessionServerSelectionContent
+            maxHeight={520}
+            onClose={() => {}}
+            selectedServerId="server-b"
+        />);
+
+        const serverBItem = capturedItems.find((item) => item.title === 'Server B');
+        if (!serverBItem || typeof serverBItem.onPress !== 'function') {
+            throw new Error('Expected Server B item with onPress handler');
+        }
+        await serverBItem.onPress();
+
+        await vi.waitFor(() => {
+            expect(setActiveServerAndSwitchMock).toHaveBeenCalledTimes(1);
+        });
+        expect(expoRouterMock.spies.replace).not.toHaveBeenCalled();
+    });
+
+    it('lists and selects a Home by stable identity when its local profile id differs', async () => {
+        serverProfilesState.value = [
+            { id: 'server-a', name: 'Server A', serverUrl: 'http://server-a.local' },
+            {
+                id: 'legacy-server-b',
+                serverIdentityId: 'srv_identity_b',
+                name: 'Server B',
+                serverUrl: 'http://server-b.local',
+            },
+        ];
+        capturedItems.length = 0;
+        const { NewSessionServerSelectionContent } = await import('./NewSessionServerSelectionContent');
+
+        await renderScreen(<NewSessionServerSelectionContent
+                    maxHeight={520}
+                    onClose={() => {}}
+                    selectedServerId="srv_identity_b"
+                />);
+
+        expect(capturedItems.map((item) => ({ title: item.title, selected: item.selected }))).toEqual([
+            { title: 'Server A', selected: false },
+            { title: 'Server B', selected: true },
+        ]);
     });
 
     it('caps the popover content without forcing every server picker to max height', async () => {

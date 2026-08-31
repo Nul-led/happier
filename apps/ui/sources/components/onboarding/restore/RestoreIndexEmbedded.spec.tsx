@@ -76,4 +76,27 @@ describe('RestoreIndexEmbedded', () => {
             });
         }
     });
+
+    it('forces the restore scanner and forwards an initial V2 pairing link unchanged', async () => {
+        vi.resetModules();
+        lastScanProps = null;
+        const initialPairingLink = 'happier:///pair?v=2&payload=opaque';
+        const { RestoreIndexEmbedded } = await import('./RestoreIndexEmbedded');
+
+        let tree!: renderer.ReactTestRenderer;
+        try {
+            await act(async () => {
+                tree = renderer.create(
+                    <RestoreIndexEmbedded onBack={vi.fn()} initialPairingLink={initialPairingLink} />,
+                );
+            });
+
+            expect(tree.root.findByType('scan')).toBeTruthy();
+            expect(lastScanProps?.initialPairingLink).toBe(initialPairingLink);
+        } finally {
+            act(() => {
+                tree?.unmount();
+            });
+        }
+    });
 });

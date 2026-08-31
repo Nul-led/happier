@@ -189,6 +189,7 @@ describe('emitSessionMetadataUpdateWithServerScope', () => {
 
         expect(createSocketSpy).toHaveBeenCalledWith({
             serverUrl: 'https://server-b.example.test',
+            reachabilityServerUrl: 'https://server-b.example.test',
             token: 'token-b',
             timeoutMs: 5000,
         });

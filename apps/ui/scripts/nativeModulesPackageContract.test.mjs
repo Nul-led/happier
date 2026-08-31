@@ -1293,6 +1293,65 @@ test('EAS build install scopes include active first-party native Expo modules', 
     }
 });
 
+test('iroh-native is composed into the UI and every EAS native install scope', async () => {
+    const uiPackageJson = await readJson(join(appRoot, 'package.json'));
+    assert.equal(uiPackageJson.dependencies?.['@happier-dev/iroh-native'], '0.0.0');
+
+    const easJsonPath = join(appRoot, 'eas.json');
+    const easJson = await readJson(easJsonPath);
+    for (const profileId of Object.keys(easJson?.build ?? {})) {
+        const env = resolveEasBuildProfileEnv({ easJsonPath, profileId });
+        assert.ok(
+            parseScopeTokens(env.HAPPIER_INSTALL_SCOPE).has('iroh-native'),
+            `Expected EAS profile ${profileId} HAPPIER_INSTALL_SCOPE to include iroh-native`,
+        );
+    }
+});
+
+test('Expo autolinking discovers iroh-native on iOS and Android', async () => {
+    for (const platform of ['ios', 'android']) {
+        const autolinkedModules = await searchAutolinkedModules(platform);
+        const entry = autolinkedModules['@happier-dev/iroh-native'];
+        assert.equal(typeof entry, 'object', `Expected iroh-native in ${platform} autolinking output`);
+        assert.equal(entry?.path, join(repoRoot, 'packages', 'iroh-native'));
+        assert.deepEqual(entry?.config, {
+            name: 'HappierIrohNative',
+            platforms: ['ios', 'android'],
+            ios: { modules: ['HappierIrohNativeModule'] },
+            android: { modules: ['dev.happier.iroh.HappierIrohNativeModule'] },
+        });
+    }
+});
+
+test('iroh-native mobile hosts own installation-scoped secure endpoint identity', async () => {
+    const irohPackageRoot = join(repoRoot, 'packages', 'iroh-native');
+    const publicTypes = await readText(join(irohPackageRoot, 'src', 'HappierIrohNative.types.ts'));
+    assert.doesNotMatch(publicTypes, /endpointSeed|seedBase64/);
+    const swift = await readText(join(irohPackageRoot, 'ios', 'HappierIrohNativeModule.swift'));
+    assert.match(swift, /kSecClassGenericPassword/);
+    assert.match(swift, /kSecAttrSynchronizable[^\n]*kCFBooleanFalse/);
+    assert.match(swift, /kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly/);
+    assert.match(swift, /SecRandomCopyBytes/);
+    assert.match(swift, /dev\.happier\.iroh\.endpoint-identity\.v1/);
+    assert.match(swift, /data\.count == 32/);
+    assert.doesNotMatch(swift, /SecItemDelete/);
+
+    const kotlin = await readText(join(irohPackageRoot, 'android', 'src', 'main', 'java', 'dev', 'happier', 'iroh', 'HappierIrohNativeModule.kt'));
+    assert.match(kotlin, /AndroidKeyStore/);
+    assert.match(kotlin, /KeyProperties\.BLOCK_MODE_GCM/);
+    assert.match(kotlin, /KeyProperties\.ENCRYPTION_PADDING_NONE/);
+    assert.match(kotlin, /MODE_PRIVATE/);
+    assert.match(kotlin, /dev\.happier\.iroh\.endpoint-identity\.v1/);
+    assert.match(kotlin, /seed\.size != 32/);
+    assert.doesNotMatch(kotlin, /deleteEntry\s*\(/);
+    assert.doesNotMatch(kotlin, /secretKey\.encoded|getEncoded\s*\(/);
+
+    for (const bridge of [swift, kotlin]) {
+        assert.match(bridge, /endpointSeedBase64/);
+        assert.doesNotMatch(bridge, /endpointKeyPath\s*[=:]/);
+    }
+});
+
 test('EAS profiles include terminal-native with validated shared gates and no approval-record flags', async () => {
     const easJsonPath = join(appRoot, 'eas.json');
     const easJson = await readJson(easJsonPath);

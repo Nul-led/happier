@@ -10,15 +10,16 @@ import { presentFirstKeyCredentialLifecycle } from '@/components/account/present
 import { retargetPendingTerminalConnectToServerUrl } from '@/sync/domains/pending/retargetPendingTerminalConnectToServerUrl';
 
 import type { ServerAuthStatus } from './useServerAuthStatusByServerId';
+import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServerSwitch';
 
 export function useServerSettingsServerProfileActions(params: Readonly<{
     authStatusByServerId: Readonly<Record<string, ServerAuthStatus>>;
-    onSwitchServerById: (serverId: string) => Promise<boolean>;
+    onSwitchServerById: (serverId: string, scope?: 'device' | 'tab') => Promise<ActiveServerSwitchResult>;
     onAfterSignedOutSwitch: () => void;
 
     setRevision: React.Dispatch<React.SetStateAction<number>>;
 }>) {
-    const onSwitchServer = React.useCallback(async (profile: ServerProfile) => {
+    const onSwitchServer = React.useCallback(async (profile: ServerProfile, scope: 'device' | 'tab' = 'device') => {
         const scopeId = resolveServerProfileScopeId(profile);
         let authStatus = params.authStatusByServerId[scopeId]
             ?? params.authStatusByServerId[profile.id]
@@ -37,8 +38,8 @@ export function useServerSettingsServerProfileActions(params: Readonly<{
         }
 
         const switched =
-            await params.onSwitchServerById(scopeId);
-        if (!switched) return;
+            await params.onSwitchServerById(scopeId, scope);
+        if (switched === 'blocked') return;
         retargetPendingTerminalConnectToServerUrl(profile.serverUrl);
         if (authStatus === 'signedOut') {
             params.onAfterSignedOutSwitch();

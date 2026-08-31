@@ -148,7 +148,6 @@ export function buildCommandPaletteCommands(
     activeSessionId,
     features,
     nav,
-    auth,
     actions,
     alert,
   } = params;
@@ -407,9 +406,7 @@ export function buildCommandPaletteCommands(
     subtitle: t('commandPalette.commands.signOutSubtitle'),
     icon: 'sign-out',
     category: t('commandPalette.commands.systemCategory'),
-    action: async () => {
-      await auth.logout();
-    },
+    action: () => nav.push('/settings/account'),
   });
 
   if (isDev) {

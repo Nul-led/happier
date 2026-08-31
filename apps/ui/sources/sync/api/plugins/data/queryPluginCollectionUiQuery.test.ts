@@ -64,6 +64,7 @@ async function loadClient(params?: Readonly<{
             headers: { 'Content-Type': 'application/json' },
         });
     });
+    const releaseAuthority = vi.fn(async () => undefined);
     const lifetime = {
         scope: { serverId: 'server-a', accountId: 'account-a' },
         isCurrent: () => current,
@@ -95,6 +96,7 @@ async function loadClient(params?: Readonly<{
             scope: lifetime.scope,
             context: {},
             request: transport,
+            release: releaseAuthority,
         }),
     }));
 
@@ -116,6 +118,7 @@ async function loadClient(params?: Readonly<{
     return {
         ...client,
         transport,
+        releaseAuthority,
         retire: () => { current = false; },
         retireScope: () => {
             current = false;
@@ -127,7 +130,7 @@ async function loadClient(params?: Readonly<{
 
 describe('queryActivePluginCollectionUiQuery', () => {
     it('uses one active Account-scoped authenticated request and returns only the validated projection', async () => {
-        const { queryActivePluginCollectionUiQuery, transport } = await loadClient();
+        const { queryActivePluginCollectionUiQuery, transport, releaseAuthority } = await loadClient();
 
         await expect(queryActivePluginCollectionUiQuery({ descriptor, request })).resolves.toEqual(response);
         const [path, init] = transport.mock.calls[0]!;
@@ -139,6 +142,7 @@ describe('queryActivePluginCollectionUiQuery', () => {
         expect(new Headers(init.headers).get(
             ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
         )).toBe(String(ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION));
+        expect(releaseAuthority).toHaveBeenCalledTimes(1);
     });
 
     it('returns the canonical invalid-query outcome from a 400 response', async () => {
@@ -233,6 +237,7 @@ describe('queryActivePluginCollectionUiQuery', () => {
 
         await expect(client.queryActivePluginCollectionUiQuery({ descriptor, request }))
             .rejects.toThrow('Active Account scope changed');
+        expect(client.releaseAuthority).toHaveBeenCalledTimes(1);
 
         const staleGeneration = await loadClient();
         staleGeneration.transport.mockImplementationOnce(async () => {
@@ -244,6 +249,7 @@ describe('queryActivePluginCollectionUiQuery', () => {
         });
         await expect(staleGeneration.queryActivePluginCollectionUiQuery({ descriptor, request }))
             .rejects.toThrow('Active server generation changed');
+        expect(staleGeneration.releaseAuthority).toHaveBeenCalledTimes(1);
     });
 
     it('coalesces matching content-free AccountChange invalidations and retires with the Account scope', async () => {

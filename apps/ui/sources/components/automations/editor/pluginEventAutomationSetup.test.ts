@@ -311,6 +311,24 @@ function durablePushEligibleEvent(): DaemonContributionRegistryProjectionAutomat
     });
 }
 
+/** A Gateway-backed source can only be authored through the socket arm. */
+function socketEligibleEvent(): DaemonContributionRegistryProjectionAutomationEligibleEventV1 {
+    const base = eligibleEvent();
+    return DaemonContributionRegistryProjectionAutomationEligibleEventV1Schema.parse({
+        ...base,
+        event: {
+            ...base.event,
+            automation: {
+                ...base.event.automation,
+                source: {
+                    ...base.event.automation.source,
+                    supportedObservationTransports: ['socket'],
+                },
+            },
+        },
+    });
+}
+
 function durablePushSetupParams(
     event: DaemonContributionRegistryProjectionAutomationEligibleEventV1,
 ): Omit<Parameters<typeof configurePluginEventAutomationSetup>[0], 'observationTransport'> {
@@ -942,6 +960,31 @@ describe('Plugin Event Automation setup orchestration', () => {
             },
             webhookRoutingSourceInstanceId: 'repository:42',
             setup: { kind: 'accountEndpointV1', credential: 'serverGenerated' },
+        });
+    });
+
+    it('preserves a socket-only Event selection through setup into the authored trigger', async () => {
+        const event = socketEligibleEvent();
+        const result = await configurePluginEventAutomationSetup({
+            ...durablePushSetupParams(event),
+            observationTransport: 'socket',
+        });
+
+        expect(result.kind).toBe('configured');
+        if (result.kind !== 'configured') throw new Error('expected configured Event setup');
+        const watcherOrigin = result.draft.resolveFreshWatcherOrigin();
+        if (!watcherOrigin) throw new Error('expected current watcher origin');
+        expect(buildPluginEventAutomationTriggerInput({
+            eligibleEvents: [event],
+            draft: result.draft.draft,
+            watcherOrigin: watcherOrigin.origin,
+        })?.observationTransport).toEqual({
+            kind: 'socket',
+            watcherMaterializationRef: {
+                machineId: MACHINE_ID,
+                materializationId: MATERIALIZATION_ID,
+                pluginId: PLUGIN_ID,
+            },
         });
     });
 

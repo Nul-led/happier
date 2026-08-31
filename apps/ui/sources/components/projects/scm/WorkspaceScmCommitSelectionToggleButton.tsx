@@ -179,6 +179,13 @@ export const WorkspaceScmCommitSelectionToggleButton = React.memo((props: Worksp
 
     const iconName: OcticonName = props.selectedForCommit ? 'check' : 'plus';
     const iconColor = props.selectedForCommit ? theme.colors.state.success.foreground : theme.colors.text.secondary;
+    const accessibilityLabel = isAtomicCommitStrategy(props.commitStrategy)
+        ? props.selectedForCommit
+            ? t('files.commitSelection.removeFromCommit')
+            : t('files.commitSelection.addToCommit')
+        : props.selectedForCommit
+            ? t('files.fileActions.unstageFile')
+            : t('files.fileActions.stageFile');
     const supported = React.useMemo(() => {
         if (isAtomicCommitStrategy(props.commitStrategy)) return true;
         const capabilities = props.snapshot?.capabilities;
@@ -193,9 +200,7 @@ export const WorkspaceScmCommitSelectionToggleButton = React.memo((props: Worksp
         <Pressable
             testID={`scm-commit-selection-toggle-${testIdSafePath}`}
             accessibilityRole="button"
-            accessibilityLabel={
-                props.selectedForCommit ? t('files.commitSelection.removeFromCommit') : t('files.commitSelection.addToCommit')
-            }
+            accessibilityLabel={accessibilityLabel}
             disabled={disabled}
             onPress={(event) => {
                 const maybeEvent = event as unknown as {

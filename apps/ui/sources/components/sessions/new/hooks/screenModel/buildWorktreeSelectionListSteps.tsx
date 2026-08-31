@@ -72,6 +72,8 @@ export type WorktreeSelectionListBuilderParams = Readonly<{
     snapshot: ScmWorkingSnapshot | null;
     /** Current selected path in the new-session screen; used to elide self-rows + reuse path matching. */
     currentDirPath: string;
+    /** Server that owns the selected machine; prevents same-id cross-server cache collisions. */
+    serverId?: string | null;
     /** Machine bound to the new-session screen; null disables branch loading. */
     machineId: string | null;
     /** Path on the machine used to scope branch queries (usually the repo root). */
@@ -446,8 +448,10 @@ function buildBranchesResolver(params: WorktreeSelectionListBuilderParams, opts:
             return { options: [] };
         }
         const branches = await repoScmBranchService.fetchBranchesForMachinePath({
+            ...(params.serverId !== undefined ? { serverId: params.serverId } : {}),
             machineId: params.machineId,
             path: params.machinePath,
+            ...(params.machineHomeDir !== undefined ? { homeDir: params.machineHomeDir } : {}),
             includeRemotes: opts.includeRemotes,
         });
         return {
@@ -483,7 +487,13 @@ function buildCreateWorktreeStep(params: WorktreeSelectionListBuilderParams): Se
         : null;
     const branchResolverKey = params.machineId === null
         ? 'no-machine'
-        : `${params.machineId}::${canonicalMachinePath ?? ''}`;
+        : JSON.stringify([
+            'worktree-branches',
+            params.serverId ?? null,
+            params.machineId,
+            params.machineHomeDir ?? null,
+            canonicalMachinePath ?? '',
+        ]);
 
     // FR4-8: the branch resolvers ignore the input seed (they always fetch the
     // full local/remote branch list for the bound machine+repo), so we explicitly

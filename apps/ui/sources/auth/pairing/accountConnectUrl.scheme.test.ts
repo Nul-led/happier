@@ -17,7 +17,9 @@ describe('accountConnectUrl scheme override', () => {
             parseAccountConnectDeepLink,
         } = await import('./accountConnectUrl');
 
-        expect(buildAccountConnectDeepLink({ publicKeyB64Url: 'abc123' })).toBe('happier-dev:///account?abc123');
+        expect(() => buildAccountConnectDeepLink({ publicKeyB64Url: 'abc123' })).toThrowError(
+            expect.objectContaining({ code: 'legacy_provisioning_unavailable' }),
+        );
         expect(buildAccountConnectRoutePath({ publicKeyB64Url: 'abc+123/=' })).toBe(
             '/account?accountConnectKey=abc%2B123%2F%3D',
         );

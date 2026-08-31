@@ -27,3 +27,44 @@ export function createPluginUiPolicyEvaluationContext(
     }
     return Object.freeze(merged);
 }
+
+export type PluginUiSessionPolicyFacts = Readonly<{
+    pluginEnabled: boolean;
+    sessionAgentId: string | null;
+    sessionState: string | null;
+    machineId: string | null;
+    projectId: string | null;
+    browserExists: boolean;
+}>;
+
+/**
+ * Projects the facts owned by a mounted Session into the one plugin policy
+ * context. Capability facts stay resolver-owned: callers must not infer them
+ * from presentation state or feature bits.
+ */
+export function createPluginUiSessionPolicyEvaluationContext(
+    context: PluginUiPolicyEvaluationContextInput,
+    facts: PluginUiSessionPolicyFacts,
+): PluginUiPolicyEvaluationContext {
+    const projectId = typeof facts.projectId === 'string' && facts.projectId.trim().length > 0
+        ? facts.projectId.trim()
+        : undefined;
+    return createPluginUiPolicyEvaluationContext(context, {
+        data: Object.freeze({
+            plugin: Object.freeze({ enabled: facts.pluginEnabled }),
+            session: Object.freeze({
+                exists: true,
+                ...(facts.sessionAgentId ? { agentId: facts.sessionAgentId } : {}),
+                ...(facts.sessionState ? { state: facts.sessionState } : {}),
+            }),
+            machine: Object.freeze({
+                ...(facts.machineId ? { id: facts.machineId } : {}),
+            }),
+            project: Object.freeze({
+                exists: projectId !== undefined,
+                ...(projectId ? { id: projectId } : {}),
+            }),
+            browser: Object.freeze({ exists: facts.browserExists }),
+        }),
+    });
+}

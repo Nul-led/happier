@@ -7,6 +7,7 @@ import {
 } from '@/sync/http/accountStoredContentCompatibility';
 
 import {
+    acquireServerReachabilitySupervisor,
     peekServerReachabilityScope,
     reportServerAuthFailed,
     reportServerUnreachable,
@@ -48,6 +49,8 @@ export async function runtimeFetchWithServerReachability(params: Readonly<{
     init: RequestInit;
     timeoutMs?: number;
     signal?: AbortSignal;
+    /** Verified request origin; reachability and auth audience remain keyed by serverUrl. */
+    runtimeOrigin?: string;
 }>): Promise<Response> {
     const targetUrl = tryParseUrl(params.url, params.serverUrl);
     const requestedCompatibilityDeclaration =
@@ -88,8 +91,9 @@ export async function runtimeFetchWithServerReachability(params: Readonly<{
     const hasAuth = Boolean(effectiveToken) || explicitAuthHeader.trim().length > 0;
     if (hasAuth) {
         const server = tryParseUrl(params.serverUrl);
-        const target = tryParseUrl(params.url, params.serverUrl);
-        if (!server || !target) {
+        const target = tryParseUrl(params.url, params.runtimeOrigin ?? params.serverUrl);
+        const allowedTransport = tryParseUrl(params.runtimeOrigin ?? params.serverUrl);
+        if (!server || !target || !allowedTransport) {
             const logSafeRequestUrl = redactUrlForError(params.url);
             const logSafeServerUrl = redactUrlForError(params.serverUrl);
             throw new Error(
@@ -105,21 +109,26 @@ export async function runtimeFetchWithServerReachability(params: Readonly<{
                 `(requestUrl=${logSafeRequestUrl}, serverUrl=${logSafeServerUrl})`,
             );
         }
-        if (server.origin !== target.origin) {
-            throw new Error(`Refused authenticated request to ${target.origin}; expected ${server.origin}`);
+        if (allowedTransport.origin !== target.origin) {
+            throw new Error(`Refused authenticated request to ${target.origin}; expected ${allowedTransport.origin}`);
         }
     }
 
-    await waitForServerReachable({
+    const reachability = await acquireServerReachabilitySupervisor({
         serverUrl: params.serverUrl,
         token: effectiveToken,
-        signal: params.signal ?? (params.init.signal ?? undefined),
-        timeoutMs: typeof params.timeoutMs === 'number' ? params.timeoutMs : readServerReachabilityWaitTimeoutMs(),
-        acceptAuthFailed: true,
+        ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
     });
-    const probeReportScope = peekServerReachabilityScope(params.serverUrl);
 
     try {
+        await waitForServerReachable({
+            serverUrl: params.serverUrl,
+            token: effectiveToken,
+            signal: params.signal ?? (params.init.signal ?? undefined),
+            timeoutMs: typeof params.timeoutMs === 'number' ? params.timeoutMs : readServerReachabilityWaitTimeoutMs(),
+            acceptAuthFailed: true,
+        });
+        const probeReportScope = peekServerReachabilityScope(params.serverUrl);
         const response = await runtimeFetch(params.url, {
             ...params.init,
             headers,
@@ -133,5 +142,7 @@ export async function runtimeFetchWithServerReachability(params: Readonly<{
     } catch (error) {
         reportServerUnreachable(params.serverUrl, error);
         throw error;
+    } finally {
+        await reachability.release();
     }
 }

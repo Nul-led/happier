@@ -3,6 +3,9 @@ import * as React from 'react';
 import { getServerSelectionTargetIconName, getServerSelectionTargetSubtitle } from '@/sync/domains/server/selection/serverSelectionTargets';
 import type { ServerSelectionTarget } from '@/sync/domains/server/selection/serverSelectionTypes';
 import { Icon } from '@/components/ui/icons/Icon';
+import { t } from '@/text';
+
+export type ConnectionTargetStatusFact = Readonly<{ label: string }>;
 
 type UseConnectionTargetActionsParams = Readonly<{
     targets: ReadonlyArray<ServerSelectionTarget>;
@@ -10,6 +13,9 @@ type UseConnectionTargetActionsParams = Readonly<{
     onSelectTarget: (target: ServerSelectionTarget) => void;
     selectedColor: string;
     iconColor: string;
+    statusByServerId?: Readonly<Record<string, ConnectionTargetStatusFact>>;
+    focusedServerId?: string | null;
+    defaultServerId?: string | null;
 }>;
 
 export function useConnectionTargetActions(params: UseConnectionTargetActionsParams) {
@@ -17,10 +23,20 @@ export function useConnectionTargetActions(params: UseConnectionTargetActionsPar
         return params.targets.map((target) => {
             const targetKey = `${target.kind}:${target.id}`;
             const isSelected = targetKey === params.activeTargetKey;
+            const facts = target.kind === 'server'
+                ? [
+                    getServerSelectionTargetSubtitle(target),
+                    target.serverId === params.focusedServerId ? t('server.active') : null,
+                    target.serverId === params.defaultServerId && target.serverId !== params.focusedServerId ? t('server.default') : null,
+                    params.statusByServerId?.[target.serverId]?.label ?? null,
+                ]
+                : [getServerSelectionTargetSubtitle(target), isSelected ? t('server.active') : null];
+            const visibleFacts = facts.filter((value): value is string => typeof value === 'string' && value.length > 0);
             return {
                 id: `target-use-${target.kind}-${target.id}`,
                 label: target.name,
-                subtitle: getServerSelectionTargetSubtitle(target),
+                subtitle: visibleFacts.join(' · '),
+                accessibilityLabel: [target.name, ...visibleFacts].join(', '),
                 icon: (
                     <Icon
                         name={getServerSelectionTargetIconName(target)}
@@ -38,5 +54,5 @@ export function useConnectionTargetActions(params: UseConnectionTargetActionsPar
                 },
             };
         });
-    }, [params.activeTargetKey, params.iconColor, params.onSelectTarget, params.selectedColor, params.targets]);
+    }, [params.activeTargetKey, params.defaultServerId, params.focusedServerId, params.iconColor, params.onSelectTarget, params.selectedColor, params.statusByServerId, params.targets]);
 }

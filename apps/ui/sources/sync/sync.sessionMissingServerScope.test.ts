@@ -406,6 +406,23 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         vi.clearAllMocks();
     });
 
+    it('does not publish an empty loaded transcript while the route owner is unresolved', async () => {
+        const sessionId = 'route_owner_race';
+        const { sync } = await import('./sync');
+        const syncInternals = sync as unknown as {
+            hasFetchedSessionsSnapshotForActiveServer: boolean;
+            activeServerSessionIds: Set<string>;
+            deferredMessagesFetchSessionIds: Set<string>;
+        };
+        syncInternals.hasFetchedSessionsSnapshotForActiveServer = true;
+        syncInternals.activeServerSessionIds = new Set<string>();
+        syncInternals.deferredMessagesFetchSessionIds = new Set<string>();
+
+        await expect((sync as any).fetchMessages(sessionId)).resolves.toBeUndefined();
+        expect(storage.getState().sessionMessages[sessionId]?.isLoaded).not.toBe(true);
+        expect(syncInternals.deferredMessagesFetchSessionIds.has(sessionId)).toBe(true);
+    });
+
     it('resets malformed or oversized cached external-session cursors and preserves a valid carrier', async () => {
         const { sync } = await import('./sync');
         const malformedSessionId = 'malformed-cached-external-cursor';
@@ -486,7 +503,6 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             subscribeHistorySources: () => () => {},
             resolveProviderLabel: () => 'Voice provider',
             deleteSession: async () => ({ success: true }),
-            canDeleteSession: () => true,
             retireLocalSession: (targetSessionId) => syncWithTranscriptRetirement.retireLocalSession(targetSessionId),
             runCarrierOperation: async (operation) => await operation(),
             now: () => new Date('2026-08-10T00:00:00.000Z'),
@@ -663,6 +679,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                 markRequestStarted();
                 return await heldPage;
             },
+            release: async () => undefined,
         } satisfies ServerAccountSessionRequestAuthority;
 
         const { sync } = await import('./sync');
@@ -1064,6 +1081,27 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(storage.getState().sessionMessages[sessionId]?.isLoaded).toBe(true);
         const messagesById = storage.getState().sessionMessages[sessionId]?.messagesById ?? {};
         expect(Object.values(messagesById).some((message) => message.kind === 'user-text' && message.text === 'hello direct')).toBe(true);
+    });
+
+    it('rebuilds an external transcript whose cached state is loaded but empty', async () => {
+        const sessionId = 'direct_loaded_empty';
+        storage.getState().applySessions([createExternalSession(sessionId)]);
+        storage.getState().applyMessagesLoaded(sessionId);
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce({
+            ok: true,
+            items: [{ id: 'recovered-msg', createdAtMs: 1, raw: { role: 'user', content: { type: 'text', text: 'recovered' } } }],
+            nextCursor: null,
+            hasMore: false,
+        });
+        machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({ ok: true, items: [], nextCursor: 'tail', truncated: false });
+        const { sync } = await import('./sync');
+        (sync as any).encryption = { getSessionEncryption: () => null };
+        (sync as any).activeServerSessionIds = new Set<string>([sessionId]);
+        (sync as any).hasFetchedSessionsSnapshotForActiveServer = true;
+
+        await expect((sync as any).fetchMessages(sessionId)).resolves.toBeUndefined();
+        expect(machineExternalSessionTranscriptPageMock).toHaveBeenCalled();
+        expect(Object.keys(storage.getState().sessionMessages[sessionId]?.messagesById ?? {})).toContain('recovered-msg');
     });
 
     it('loads direct session transcripts even when the active server snapshot does not yet know the linked session', async () => {
@@ -3874,7 +3912,6 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             (sync as any).sessionsSync,
             (sync as any).machinesSync,
             (sync as any).purchasesSync,
-            (sync as any).pushTokenSync,
             (sync as any).nativeUpdateSync,
         ];
         for (const unit of resumeUnits) {

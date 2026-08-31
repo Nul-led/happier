@@ -1,14 +1,12 @@
 import * as React from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { useAuth } from '@/auth/context/AuthContext';
 import { authAccountApprove } from '@/auth/flows/accountApprove';
-import { buildAccountLinkResponse } from '@/auth/flows/buildAccountLinkResponse';
 import { usePairingSession } from '@/hooks/auth/usePairingSession';
 import { pairingConsume } from '@/sync/api/account/apiPairingAuth';
 import { decodeBase64 } from '@/encryption/base64';
-import { parsePairingDeepLink } from '@/auth/pairing/pairingUrl';
 import { QRCode } from '@/components/qr/QRCode';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
@@ -16,13 +14,28 @@ import { Modal } from '@/modal';
 import { t } from '@/text';
 import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
 import { Typography } from '@/constants/Typography';
-import { getActiveServerUrl } from '@/sync/domains/server/serverProfiles';
-import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
-import { isLoopbackServerUrl } from '@/sync/domains/server/url/serverUrlClassification';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { CopiedPill } from '@/components/ui/copy/CopiedPill';
 import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
+import {
+    computeHomeQrConfirmationCodeV2,
+    deriveHomeQrBindingKeyV2,
+    verifyHomeQrBindingProofV2,
+} from '@happier-dev/protocol';
+import { resolveProvisioningMaterial } from '@/auth/terminal/resolveProvisioningMaterial';
+import {
+    buildTerminalResponseV3,
+    buildTerminalTokenOnlyResponseV3,
+} from '@/auth/terminal/terminalProvisioning';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import {
+    formatEnrollmentExpiry,
+    formatHomeEnrollmentTargetLabel,
+    formatPairingConfirmationCode,
+} from '@/auth/pairing/pairingPresentation';
+
+const ADD_PHONE_QR_SIZE = 240;
 
 const stylesheet = StyleSheet.create((theme) => ({
     scrollView: {
@@ -68,6 +81,24 @@ const stylesheet = StyleSheet.create((theme) => ({
         paddingVertical: 10,
         backgroundColor: theme.colors.surface.base,
     },
+    identityRow: {
+        marginTop: 14,
+        alignItems: 'center',
+    },
+    identityLabel: {
+        fontSize: 13,
+        color: theme.colors.text.secondary,
+        lineHeight: 18,
+        ...Typography.default(),
+    },
+    identityValue: {
+        marginTop: 3,
+        fontSize: 14,
+        color: theme.colors.text.primary,
+        lineHeight: 20,
+        textAlign: 'center',
+        ...Typography.default('semiBold'),
+    },
     linkText: {
         fontSize: 12,
         color: theme.colors.text.secondary,
@@ -105,13 +136,16 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     confirmCode: {
         marginTop: 10,
-        fontSize: 18,
+        fontSize: 28,
+        lineHeight: 34,
         color: theme.colors.text.primary,
-        letterSpacing: 1,
+        letterSpacing: 2,
+        fontVariant: ['tabular-nums'],
         ...Typography.mono(),
     },
     footer: {
         marginTop: 16,
+        gap: 12,
     },
 }));
 
@@ -123,13 +157,57 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
     const pairingState = pairingDecision?.state ?? 'unknown';
     const pairingEnabled = pairingState === 'enabled';
 
-    const { deepLink, status, isExpired, isStarting: starting, startPairing } = usePairingSession({
+    const {
+        deepLink,
+        status,
+        approvalContext,
+        isExpired,
+        isStarting: starting,
+        startPairing,
+        clearSession,
+    } = usePairingSession({
         enabled: pairingEnabled,
         isAuthenticated: auth.isAuthenticated,
     });
 
     const [approving, setApproving] = React.useState(false);
+    const [showLink, setShowLink] = React.useState(false);
     const copyFeedback = useTemporaryCopyFeedback();
+    const targetLabel = approvalContext
+        ? formatHomeEnrollmentTargetLabel(approvalContext.target.descriptor)
+        : null;
+
+    React.useEffect(() => {
+        setShowLink(false);
+    }, [deepLink]);
+
+    const verifiedRequest = React.useMemo(() => {
+        if (!status || status.state !== 'requested' || !approvalContext) return null;
+        if (status.pairId !== approvalContext.pairId) return null;
+        if (status.homeServerIdentityId !== approvalContext.target.descriptor.homeServerIdentityId) return null;
+        if (Date.parse(status.expiresAt) !== approvalContext.expiresAtMs) return null;
+        if (Date.now() < approvalContext.issuedAtMs || Date.now() >= approvalContext.expiresAtMs) return null;
+        let publicKey: Uint8Array;
+        try {
+            publicKey = decodeBase64(status.requestedPublicKey, 'base64');
+        } catch {
+            return null;
+        }
+        if (publicKey.length !== 32) return null;
+        const bindingParams = {
+            qrSecret: approvalContext.qrSecret,
+            pairId: approvalContext.pairId,
+            homeServerIdentityId: approvalContext.target.descriptor.homeServerIdentityId,
+            requesterPublicKey: publicKey,
+            expiresAtMs: approvalContext.expiresAtMs,
+        };
+        if (!status.bindingProof || !verifyHomeQrBindingProofV2(bindingParams, status.bindingProof)) return null;
+        return {
+            publicKey,
+            confirmCode: computeHomeQrConfirmationCodeV2(bindingParams),
+            expiresAtMs: approvalContext.expiresAtMs,
+        };
+    }, [approvalContext, status]);
 
     const startPairingWithAlert = React.useCallback(async () => {
         const res = await startPairing();
@@ -145,17 +223,37 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
     }, [auth.isAuthenticated, pairingEnabled, startPairingWithAlert]);
 
     const approve = React.useCallback(async () => {
-        if (!auth.credentials) return;
-        if (!status || status.state !== 'requested') return;
+        if (!status || status.state !== 'requested' || !approvalContext || !verifiedRequest) return;
 
         setApproving(true);
         try {
-            const requestedPublicKeyBytes = decodeBase64(status.requestedPublicKey, 'base64');
-            const encrypted = buildAccountLinkResponse(auth.credentials, requestedPublicKeyBytes);
+            const targetCredentials = await TokenStorage.getCredentialsForServerUrl(
+                approvalContext.target.descriptor.canonicalServerUrl,
+                { serverId: approvalContext.target.serverId },
+            );
+            if (!targetCredentials) {
+                throw new Error('Captured Home credentials are unavailable');
+            }
+            const material = resolveProvisioningMaterial(targetCredentials);
+            const common = {
+                terminalEphemeralPublicKey: verifiedRequest.publicKey,
+                pairingSecret: deriveHomeQrBindingKeyV2(approvalContext.qrSecret),
+                createdAtMs: approvalContext.issuedAtMs,
+                expiresAtMs: approvalContext.expiresAtMs,
+            };
+            const response = material.type === 'tokenOnly'
+                ? buildTerminalTokenOnlyResponseV3(common)
+                : buildTerminalResponseV3({ ...common, contentPrivateKey: material.key });
 
-            await authAccountApprove(auth.credentials.token, requestedPublicKeyBytes, encrypted);
-
-            await pairingConsume({ pairId: status.pairId }).catch(() => {});
+            await authAccountApprove({
+                token: targetCredentials.token,
+                target: approvalContext.target,
+                pairId: approvalContext.pairId,
+                publicKey: verifiedRequest.publicKey,
+                response,
+                homeServerIdentityId: approvalContext.target.descriptor.homeServerIdentityId,
+                responseKind: material.type,
+            });
 
             await Modal.alertAsync(t('common.success'), t('common.done'));
             void startPairingWithAlert();
@@ -164,19 +262,50 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
         } finally {
             setApproving(false);
         }
-    }, [auth.credentials, status, startPairingWithAlert]);
+    }, [approvalContext, status, startPairingWithAlert, verifiedRequest]);
+
+    const reject = React.useCallback(async () => {
+        if (!status || status.state !== 'requested' || !approvalContext || !verifiedRequest) return;
+
+        setApproving(true);
+        try {
+            const rejected = await pairingConsume(
+                { pairId: status.pairId, intent: 'reject' },
+                approvalContext.target,
+            );
+            if (!rejected.ok) {
+                throw new Error(`Failed to reject pairing session: ${rejected.status}`);
+            }
+            void startPairingWithAlert();
+        } catch {
+            await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
+        } finally {
+            setApproving(false);
+        }
+    }, [approvalContext, status, startPairingWithAlert, verifiedRequest]);
+
+    const cancel = React.useCallback(async () => {
+        if (!status || status.state !== 'pending' || !approvalContext) return;
+
+        setApproving(true);
+        try {
+            const cancelled = await pairingConsume(
+                { pairId: status.pairId, intent: 'cancel' },
+                approvalContext.target,
+            );
+            if (!cancelled.ok) {
+                throw new Error(`Failed to cancel pairing session: ${cancelled.status}`);
+            }
+            clearSession();
+        } catch {
+            await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
+        } finally {
+            setApproving(false);
+        }
+    }, [approvalContext, clearSession, status]);
 
     const isAuthenticated = auth.isAuthenticated;
     const canRenderPairing = pairingEnabled && isAuthenticated;
-    const showServerUrlNotEmbeddedHint = React.useMemo(() => {
-        if (!deepLink) return false;
-        const parsed = parsePairingDeepLink(deepLink);
-        if (!parsed) return false;
-        if (parsed.serverUrl) return false;
-
-        const active = canonicalizeServerUrl(getActiveServerUrl());
-        return Boolean(active) && isLoopbackServerUrl(active);
-    }, [deepLink]);
 
     return (
         <ScrollView style={styles.scrollView} contentContainerStyle={{ flexGrow: 1 }}>
@@ -205,14 +334,37 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
 
                     {canRenderPairing ? (
                         <>
+                            {targetLabel && approvalContext ? (
+                                <View style={styles.identityRow}>
+                                    <Text style={styles.identityLabel}>{t('common.home')}</Text>
+                                    <Text style={styles.identityValue} numberOfLines={2}>{targetLabel}</Text>
+                                    <Text style={styles.identityLabel}>
+                                        {t('connect.expiresAtLabel')}: {formatEnrollmentExpiry(approvalContext.expiresAtMs)}
+                                    </Text>
+                                </View>
+                            ) : null}
+
                             <View style={styles.qrBlock}>
-                                <View testID="add-phone-qr" style={{ width: 260, height: 260, alignItems: 'center', justifyContent: 'center' }}>
+                                <View
+                                    testID="add-phone-qr"
+                                    accessible
+                                    accessibilityLabel={targetLabel
+                                        ? `${t('connect.addPhoneQrInstructions')} ${t('common.home')}: ${targetLabel}`
+                                        : t('connect.addPhoneQrInstructions')}
+                                    style={{
+                                        width: ADD_PHONE_QR_SIZE,
+                                        maxWidth: '100%',
+                                        aspectRatio: 1,
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                    }}
+                                >
                                 {starting ? (
                                     <ActivitySpinner size="small" color={theme.colors.text.primary} />
                                 ) : deepLink ? (
                                     <QRCode
                                         data={deepLink}
-                                        size={260}
+                                        size={ADD_PHONE_QR_SIZE}
                                         foregroundColor={theme.colors.text.primary}
                                         backgroundColor={theme.colors.surface.base}
                                     />
@@ -224,60 +376,111 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
                                 </View>
                             </View>
 
-                            {deepLink ? (
-                                <Pressable
-                                    testID="add-phone-pairing-link"
-                                    accessibilityRole="button"
-                                    onPress={async () => {
-                                        const copied = await setClipboardStringSafe(deepLink);
-                                        if (!copied) {
-                                            await Modal.alertAsync(t('common.error'), t('items.failedToCopyToClipboard'));
-                                            return;
-                                        }
-                                        copyFeedback.markCopied();
-                                    }}
-                                    style={styles.linkRow}
-                                >
+                            {deepLink && showLink ? (
+                                <View testID="add-phone-pairing-link" style={styles.linkRow}>
                                     <Text style={styles.linkText} numberOfLines={3}>
                                         {deepLink}
                                     </Text>
                                     <CopiedPill visible={copyFeedback.isCopied()} testID="add-phone-pairing-link-copy-feedback" />
-                                </Pressable>
-                            ) : null}
-
-                            {deepLink && showServerUrlNotEmbeddedHint ? (
-                                <View testID="add-phone-server-url-hint" style={styles.requestCard}>
-                                    <Text style={styles.requestTitle}>{t('connect.serverUrlNotEmbeddedTitle')}</Text>
-                                    <Text style={styles.requestBody}>{t('connect.serverUrlNotEmbeddedBody')}</Text>
+                                    <View style={styles.linkActionsRow}>
+                                        <View style={styles.actionButton}>
+                                            <RoundButton
+                                                testID="add-phone-copy-link"
+                                                size="small"
+                                                title={t('common.copy')}
+                                                display="inverted"
+                                                action={async () => {
+                                                    const copied = await setClipboardStringSafe(deepLink);
+                                                    if (!copied) {
+                                                        await Modal.alertAsync(t('common.error'), t('items.failedToCopyToClipboard'));
+                                                        return;
+                                                    }
+                                                    copyFeedback.markCopied();
+                                                }}
+                                            />
+                                        </View>
+                                    </View>
                                 </View>
                             ) : null}
 
                             <View style={styles.linkActionsRow}>
+                                {deepLink && !showLink ? (
+                                    <View style={styles.actionButton}>
+                                        <RoundButton
+                                            testID="add-phone-show-link"
+                                            size="small"
+                                            title={t('connect.showPairingLink')}
+                                            action={async () => setShowLink(true)}
+                                            display="inverted"
+                                        />
+                                    </View>
+                                ) : null}
                                 <View style={styles.actionButton}>
                                     <RoundButton
+                                        testID="add-phone-generate"
                                         size="small"
                                         title={t('connect.generateNewQrCode')}
                                         action={startPairingWithAlert}
                                         display="inverted"
-                                        disabled={starting}
+                                        disabled={starting || approving || status !== null}
                                     />
                                 </View>
                             </View>
 
-                            {status?.state === 'requested' ? (
-                                <View testID="add-phone-request-card" style={styles.requestCard}>
+                            {status?.state === 'pending' && approvalContext ? (
+                                <View style={styles.footer}>
+                                    <RoundButton
+                                        testID="add-phone-cancel"
+                                        size="normal"
+                                        title={t('common.cancel')}
+                                        action={cancel}
+                                        display="inverted"
+                                        disabled={approving}
+                                        loading={approving}
+                                    />
+                                </View>
+                            ) : null}
+
+                            {status?.state === 'requested' && verifiedRequest ? (
+                                <View
+                                    testID="add-phone-request-card"
+                                    style={styles.requestCard}
+                                    accessibilityLiveRegion="polite"
+                                >
                                     <Text style={styles.requestTitle}>{t('connect.pairingRequestTitle')}</Text>
+                                    {targetLabel ? (
+                                        <Text style={styles.requestBody}>
+                                            {t('common.home')}: {targetLabel}
+                                        </Text>
+                                    ) : null}
                                     {status.requestedDeviceLabel ? (
                                         <Text style={styles.requestBody}>
                                             {t('connect.deviceLabel')}: <Text testID="add-phone-request-device-label">{status.requestedDeviceLabel}</Text>
                                         </Text>
                                     ) : null}
-                                    <Text style={[styles.requestBody, { marginTop: status.requestedDeviceLabel ? 10 : 0 }]}>
-                                        {t('connect.pairingRequestBody')}
+                                    <Text style={[styles.requestBody, { marginTop: 10 }]}>
+                                        {t('connect.expiresAtLabel')}: {formatEnrollmentExpiry(verifiedRequest.expiresAtMs)}
                                     </Text>
                                     <Text style={[styles.requestBody, { marginTop: 10 }]}>{t('connect.confirmCodeLabel')}</Text>
-                                    <Text testID="add-phone-request-confirm-code" style={styles.confirmCode}>{status.confirmCode}</Text>
+                                    <Text
+                                        testID="add-phone-request-confirm-code"
+                                        style={styles.confirmCode}
+                                        accessibilityLabel={`${t('connect.confirmCodeLabel')}: ${formatPairingConfirmationCode(verifiedRequest.confirmCode)}`}
+                                    >
+                                        {formatPairingConfirmationCode(verifiedRequest.confirmCode)}
+                                    </Text>
+                                    <Text style={[styles.requestBody, { marginTop: 10 }]}>
+                                        {t('connect.confirmCodeComparisonBody')}
+                                    </Text>
                                     <View style={styles.footer}>
+                                        <RoundButton
+                                            testID="add-phone-reject"
+                                            size="normal"
+                                            title={t('approvals.reject')}
+                                            action={reject}
+                                            display="inverted"
+                                            disabled={approving}
+                                        />
                                         <RoundButton
                                             testID="add-phone-approve"
                                             size="normal"

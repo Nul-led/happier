@@ -28,6 +28,11 @@ export function resolveAgentExecutionTargetForBackendTarget(params: Readonly<{
         'mergedBackendProjectionById' | 'mergedProviderProjectionById'
     > | null;
 }>): AgentExecutionTargetV1 | null {
+    const canonicalAgentTarget = AgentExecutionTargetV1Schema.safeParse(params.backendTarget);
+    if (canonicalAgentTarget.success) {
+        return canonicalAgentTarget.data;
+    }
+
     let backendTarget;
     try {
         backendTarget = readBackendTargetRefV2(params.backendTarget);

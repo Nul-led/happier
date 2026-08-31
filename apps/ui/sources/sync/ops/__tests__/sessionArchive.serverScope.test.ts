@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockRequest, mockResolveContext, mockRuntimeFetchWithServerReachability, mockStorageState } = vi.hoisted(() => ({
+const { mockRequest, mockResolveContext, mockRuntimeFetchWithServerReachability, mockRelease, mockStorageState } = vi.hoisted(() => ({
   mockRequest: vi.fn(),
   mockResolveContext: vi.fn(),
   mockRuntimeFetchWithServerReachability: vi.fn(),
+  mockRelease: vi.fn(async () => undefined),
   mockStorageState: {
     sessions: {},
     concurrentSessionListCacheByServerId: {},
@@ -58,6 +59,7 @@ describe('sessionArchiveWithServerScope', () => {
     mockRequest.mockReset();
     mockResolveContext.mockReset();
     mockRuntimeFetchWithServerReachability.mockReset();
+    mockRelease.mockClear();
     mockStorageState.sessions = {};
     mockStorageState.concurrentSessionListCacheByServerId = {};
     mockStorageState.applySessions.mockReset();
@@ -84,10 +86,13 @@ describe('sessionArchiveWithServerScope', () => {
     mockResolveContext.mockResolvedValue({
       scope: 'scoped',
       targetServerUrl: 'https://scoped.example',
+      runtimeOrigin: 'http://127.0.0.1:49152',
+      carrier: 'iroh',
       targetServerId: 'server-b',
       token: 'tok_scoped',
       timeoutMs: 1000,
       encryption: null,
+      release: mockRelease,
     });
     mockRuntimeFetchWithServerReachability.mockResolvedValue(makeResponse({ ok: true, json: { success: true, archivedAt: 11 } }));
 
@@ -97,17 +102,18 @@ describe('sessionArchiveWithServerScope', () => {
       expect.objectContaining({
         serverUrl: 'https://scoped.example',
         token: 'tok_scoped',
-        url: 'https://scoped.example/v2/sessions/sid-2/archive',
+        url: 'http://127.0.0.1:49152/v2/sessions/sid-2/archive',
+        runtimeOrigin: 'http://127.0.0.1:49152',
         timeoutMs: 1000,
         init: expect.objectContaining({
           method: 'POST',
-          headers: expect.objectContaining({
-            Authorization: 'Bearer tok_scoped',
-          }),
         }),
       }),
     );
+    expect(new Headers(mockRuntimeFetchWithServerReachability.mock.calls[0]?.[0]?.init?.headers).get('Authorization'))
+      .toBe('Bearer tok_scoped');
     expect(mockRequest).not.toHaveBeenCalled();
+    expect(mockRelease).toHaveBeenCalledTimes(1);
   });
 
   it('defaults a null serverId to the preferred owner server from local cache', async () => {

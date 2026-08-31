@@ -423,7 +423,9 @@ export async function configurePluginEventAutomationSetup(params: Readonly<{
             watcherOrigin: current.origin.origin,
             observation: webhookEndpoint
                 ? { kind: 'durablePush', webhookEndpointId: webhookEndpoint.endpoint.webhookEndpointId }
-                : { kind: 'checkpointedPull' },
+                : params.observationTransport === 'socket'
+                    ? { kind: 'socket' }
+                    : { kind: 'checkpointedPull' },
             filter: params.filter,
             maximumObservationAgeMs: params.maximumObservationAgeMs,
         });

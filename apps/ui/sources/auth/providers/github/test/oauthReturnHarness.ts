@@ -3,6 +3,7 @@ import { vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
 import type {
     AuthCredentials,
+    PendingAccountDirectoryAuth,
     PendingExternalAuth,
     PendingExternalConnect,
 } from '@/auth/storage/tokenStorage';
@@ -19,12 +20,16 @@ export const loginSpy = vi.fn<
 export const loginWithCredentialsSpy = vi.fn<
     (...args: unknown[]) => Promise<AuthCredentialLifecycleResult>
 >(async () => ({ kind: 'completed' }));
-export const getRandomBytesSpy = vi.fn(() => new Uint8Array(32).fill(9));
+export const getRandomBytesSpy = vi.fn((length = 32) => new Uint8Array(length).fill(9));
 export const upsertAndActivateServerSpy = vi.fn();
 export const trackAccountCreatedSpy = vi.fn();
 export const trackAccountRestoredSpy = vi.fn();
 export const resumeAccountEncryptionFirstKeyExternalAuthSpy =
     vi.fn(async () => ({ returnTo: '/settings/account' }));
+export const accountDirectoryCredentialSetSpy = vi.fn(async () => true);
+export const accountDirectoryCredentialGetSpy = vi.fn(async () => null as AuthCredentials | null);
+export const pendingAccountDirectoryAuthGetSpy = vi.fn(async () => null as PendingAccountDirectoryAuth | null);
+export const pendingAccountDirectoryAuthClearSpy = vi.fn(async () => true);
 const hoistedModal = vi.hoisted(() => ({
     show: vi.fn((config: { onRequestClose?: () => void }) => {
         config.onRequestClose?.();
@@ -59,6 +64,7 @@ let pendingExternalAuthState: PendingExternalAuth | null = {
 };
 let pendingExternalAuthServerMismatch = false;
 let pendingExternalConnectState: PendingExternalConnect | null = null;
+let pendingAccountDirectoryAuthState: PendingAccountDirectoryAuth | null = null;
 let storedCredentialsState: AuthCredentials | null = null;
 let authState: {
     isAuthenticated: boolean;
@@ -106,6 +112,10 @@ export function setPendingExternalAuthServerMismatch(next: boolean) {
 
 export function setPendingExternalConnectState(next: PendingExternalConnect | null) {
     pendingExternalConnectState = next;
+}
+
+export function setPendingAccountDirectoryAuthState(next: PendingAccountDirectoryAuth | null) {
+    pendingAccountDirectoryAuthState = next;
 }
 
 export function setStoredCredentialsState(next: AuthCredentials | null) {
@@ -170,8 +180,8 @@ vi.mock('@/sync/api/capabilities/sessionSharingSupport', () => ({
 }));
 
 vi.mock('@/platform/cryptoRandom', () => ({
-    getRandomBytes: () => getRandomBytesSpy(),
-    getRandomBytesAsync: async () => new Uint8Array(32).fill(9),
+    getRandomBytes: (length: number) => getRandomBytesSpy(length),
+    getRandomBytesAsync: async (length: number) => new Uint8Array(length).fill(9),
 }));
 
 vi.mock('@/auth/storage/tokenStorage', async () => {
@@ -186,23 +196,43 @@ vi.mock('@/auth/storage/tokenStorage', async () => {
             getPendingExternalConnect: async () => pendingExternalConnectState,
             clearPendingExternalConnect: clearPendingExternalConnectMock,
             getCredentials: async () => storedCredentialsState,
+            getPendingAccountDirectoryAuth: pendingAccountDirectoryAuthGetSpy,
+            clearPendingAccountDirectoryAuth: pendingAccountDirectoryAuthClearSpy,
+            accountDirectoryAuthCredentials: {
+                ...actual.TokenStorage.accountDirectoryAuthCredentials,
+                get: accountDirectoryCredentialGetSpy,
+                set: accountDirectoryCredentialSetSpy,
+            },
         },
     };
 });
 
-vi.mock('@/encryption/libsodium.lib', () => ({
-    default: {
-        crypto_sign_seed_keypair: (_seed: Uint8Array) => ({
-            publicKey: new Uint8Array(32).fill(1),
-            privateKey: new Uint8Array(64).fill(2),
-        }),
-        crypto_sign_detached: (_message: Uint8Array, _privateKey: Uint8Array) => new Uint8Array(64).fill(3),
-        crypto_box_seed_keypair: (_seed: Uint8Array) => ({
-            publicKey: new Uint8Array(32).fill(4),
-            privateKey: new Uint8Array(32).fill(5),
-        }),
-    },
-}));
+vi.mock('@/encryption/libsodium.lib', async () => {
+    const { deriveBoxPublicKeyFromSeed } = await vi.importActual<typeof import('@happier-dev/protocol')>('@happier-dev/protocol');
+    const tweetnacl = (
+        await vi.importActual<{ default: typeof import('tweetnacl') }>('tweetnacl')
+    ).default;
+    const boxSecretKey = new Uint8Array(32).fill(5);
+    const boxKeyPair = tweetnacl.box.keyPair.fromSecretKey(boxSecretKey);
+    return {
+        default: {
+            ready: Promise.resolve(),
+            crypto_sign_seed_keypair: (_seed: Uint8Array) => ({
+                publicKey: new Uint8Array(32).fill(1),
+                privateKey: new Uint8Array(64).fill(2),
+            }),
+            crypto_sign_detached: (_message: Uint8Array, _privateKey: Uint8Array) => new Uint8Array(64).fill(3),
+            crypto_box_seed_keypair: (_seed: Uint8Array) => ({
+                publicKey: deriveBoxPublicKeyFromSeed(boxSecretKey),
+                privateKey: boxSecretKey,
+            }),
+            crypto_box_keypair: () => ({
+                publicKey: boxKeyPair.publicKey,
+                privateKey: boxKeyPair.secretKey,
+            }),
+        },
+    };
+});
 
 export async function flushOAuthEffects(turns = 8): Promise<void> {
     for (let turn = 0; turn < turns; turn += 1) {
@@ -243,7 +273,7 @@ export function resetOAuthHarness() {
     loginWithCredentialsSpy.mockReset();
     loginWithCredentialsSpy.mockResolvedValue({ kind: 'completed' });
     getRandomBytesSpy.mockReset();
-    getRandomBytesSpy.mockImplementation(() => new Uint8Array(32).fill(9));
+    getRandomBytesSpy.mockImplementation((length = 32) => new Uint8Array(length).fill(9));
     upsertAndActivateServerSpy.mockReset();
     trackAccountCreatedSpy.mockReset();
     trackAccountRestoredSpy.mockReset();
@@ -251,6 +281,14 @@ export function resetOAuthHarness() {
     resumeAccountEncryptionFirstKeyExternalAuthSpy.mockResolvedValue({
         returnTo: '/settings/account',
     });
+    accountDirectoryCredentialSetSpy.mockReset();
+    accountDirectoryCredentialSetSpy.mockResolvedValue(true);
+    accountDirectoryCredentialGetSpy.mockReset();
+    accountDirectoryCredentialGetSpy.mockResolvedValue(null);
+    pendingAccountDirectoryAuthGetSpy.mockReset();
+    pendingAccountDirectoryAuthGetSpy.mockImplementation(async () => pendingAccountDirectoryAuthState);
+    pendingAccountDirectoryAuthClearSpy.mockReset();
+    pendingAccountDirectoryAuthClearSpy.mockResolvedValue(true);
     if (typeof modal.alert.mockReset === 'function') {
         modal.alert.mockReset();
     } else {
@@ -283,6 +321,7 @@ export function resetOAuthHarness() {
     });
     setPendingExternalAuthServerMismatch(false);
     setPendingExternalConnectState(null);
+    setPendingAccountDirectoryAuthState(null);
     setStoredCredentialsState(null);
     setAuthState({
         isAuthenticated: false,

@@ -67,6 +67,7 @@ export type VoiceHistoryPageResult = TranscriptOlderPageLoadResult;
 
 export type VoiceHistoryCapturedScope = Readonly<{
   key: string;
+  release?: () => void;
 }>;
 
 export type VoiceHistoryConsumerDeps<
@@ -232,6 +233,7 @@ export function createVoiceHistoryConsumer<
   };
 
   const resetBinding = () => {
+    capturedScope?.release?.();
     sessionId = null;
     scopeKey = null;
     capturedScope = null;
@@ -306,18 +308,25 @@ export function createVoiceHistoryConsumer<
       resetBinding();
       return null;
     }
-    const discoveredSessionId = String(await deps.discoverHistorySession(nextScope) ?? '').trim();
-    assertOperationCurrent(epoch);
-    if (deps.readScopeKey() !== nextScope.key) {
-      resetBinding();
-      throw new VoiceHistoryOperationSupersededError();
+    let retained = false;
+    try {
+      const discoveredSessionId = String(await deps.discoverHistorySession(nextScope) ?? '').trim();
+      assertOperationCurrent(epoch);
+      if (deps.readScopeKey() !== nextScope.key) {
+        resetBinding();
+        throw new VoiceHistoryOperationSupersededError();
+      }
+      capturedScope?.release?.();
+      scopeKey = nextScope.key;
+      capturedScope = nextScope;
+      retained = true;
+      sessionId = discoveredSessionId || null;
+      hasMore = null;
+      emit();
+      return sessionId;
+    } finally {
+      if (!retained) nextScope.release?.();
     }
-    scopeKey = nextScope.key;
-    capturedScope = nextScope;
-    sessionId = discoveredSessionId || null;
-    hasMore = null;
-    emit();
-    return sessionId;
   };
 
   const pageOnce = async (
@@ -357,6 +366,10 @@ export function createVoiceHistoryConsumer<
       return () => {
         listeners.delete(listener);
         unsubscribeSources();
+        if (listeners.size === 0 && capturedScope) {
+          operationEpoch += 1;
+          resetBinding();
+        }
       };
     },
     getRevision() {

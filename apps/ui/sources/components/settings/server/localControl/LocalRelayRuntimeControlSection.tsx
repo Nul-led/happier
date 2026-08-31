@@ -23,9 +23,20 @@ function resolveStatusSubtitle(status: ReturnType<typeof useLocalRelayRuntimeCon
         : t('settings.localRelayRuntime.statusRunningNeedsAttention');
 }
 
-export const LocalRelayRuntimeControlSection = React.memo(function LocalRelayRuntimeControlSection(props: Readonly<{
+type LocalRelayRuntimeControlSectionProps = Readonly<{
     runner?: SystemTaskRunner;
+    controller?: ReturnType<typeof useLocalRelayRuntimeControl>;
     onStatusChange?: (status: ReturnType<typeof useLocalRelayRuntimeControl>['status']) => void;
+    showProgress?: boolean;
+}>;
+
+function OwnedLocalRelayRuntimeControlSection(props: LocalRelayRuntimeControlSectionProps) {
+    const controller = useLocalRelayRuntimeControl({ ...(props.runner ? { runner: props.runner } : {}) });
+    return <LocalRelayRuntimeControlSectionContent {...props} controller={controller} />;
+}
+
+const LocalRelayRuntimeControlSectionContent = React.memo(function LocalRelayRuntimeControlSectionContent(props: LocalRelayRuntimeControlSectionProps & Readonly<{
+    controller: ReturnType<typeof useLocalRelayRuntimeControl>;
 }>) {
     const {
         activeTaskSnapshot,
@@ -37,9 +48,7 @@ export const LocalRelayRuntimeControlSection = React.memo(function LocalRelayRun
         startRelay,
         status,
         stopRelay,
-    } = useLocalRelayRuntimeControl({
-        ...(props.runner ? { runner: props.runner } : {}),
-    });
+    } = props.controller;
     const runner = props.runner ?? getDefaultSystemTaskRunner();
 
     const canStart = !isUnavailable && status?.installed === true && status.service.active !== true && !isBusy;
@@ -125,7 +134,7 @@ export const LocalRelayRuntimeControlSection = React.memo(function LocalRelayRun
                     />
                 ) : null}
             </ItemGroup>
-            {activeTaskSnapshot ? (
+            {activeTaskSnapshot && props.showProgress !== false ? (
                 <SystemTaskProgressCard
                     title={t('settings.localRelayRuntime.progressTitle')}
                     snapshot={activeTaskSnapshot}
@@ -134,4 +143,11 @@ export const LocalRelayRuntimeControlSection = React.memo(function LocalRelayRun
             ) : null}
         </>
     );
+});
+
+export const LocalRelayRuntimeControlSection = React.memo(function LocalRelayRuntimeControlSection(props: LocalRelayRuntimeControlSectionProps) {
+    if (props.controller) {
+        return <LocalRelayRuntimeControlSectionContent {...props} controller={props.controller} />;
+    }
+    return <OwnedLocalRelayRuntimeControlSection {...props} />;
 });

@@ -8,7 +8,7 @@ export function useNewSessionProfileActions(params: Readonly<{
     hasUserTouchedProfileSelectionRef: React.MutableRefObject<boolean>;
     setSelectedProfileId: React.Dispatch<React.SetStateAction<string | null>>;
     selectedProfileId: string | null;
-    deleteProfile: (profileId: string) => void;
+    deleteProfile: (profileId: string) => Promise<void>;
 }>): Readonly<{
     onPressDefaultEnvironment: () => void;
     handleDeleteProfile: (profile: AIBackendProfile) => void;
@@ -27,10 +27,17 @@ export function useNewSessionProfileActions(params: Readonly<{
                 {
                     text: t('profiles.delete.confirm'),
                     style: 'destructive',
-                    onPress: () => {
-                        params.deleteProfile(profile.id);
-                        if (params.selectedProfileId === profile.id) {
-                            params.setSelectedProfileId(null);
+                    onPress: async () => {
+                        try {
+                            await params.deleteProfile(profile.id);
+                            if (params.selectedProfileId === profile.id) {
+                                params.setSelectedProfileId(null);
+                            }
+                        } catch (error) {
+                            Modal.alert(
+                                t('common.error'),
+                                error instanceof Error ? error.message : t('common.error'),
+                            );
                         }
                     },
                 },

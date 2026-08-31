@@ -1,0 +1,1296 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
+import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
+import type { PersonalHomeFacts } from './personalHomeBootstrapTypes';
+
+/**
+ * Production-composition regression test for the Desktop Personal Home bootstrap.
+ *
+ * Real production seams exercised:
+ * - `usePersonalHomeBootstrapRuntime` with the REAL `useLocalRelayRuntimeControl`;
+ * - the REAL system-task spec builder (`buildLocalRelayRuntimeSystemTaskSpec`, including the
+ *   fixed `renderPersonalHomeRuntimeEnv` map) inside the REAL `createSystemTaskRunner`;
+ * - the REAL `waitForSystemTaskResult` wait path and `useSystemTaskSnapshot` store subscription;
+ * - the REAL `runPersonalHomeBootstrapFromSystemTasks` composition caller delegating to the REAL
+ *   `runPersonalHomeBootstrap` from `@happier-dev/cli-common/firstPartyRuntime`;
+ * - the REAL `serverProfiles`/`adoptHomeProfile` owner (arranged through
+ *   `upsertServerProfile`/`setActiveServerId`; internal profile logic is not a boundary).
+ *
+ * Mocked boundaries (genuine system boundaries only):
+ * - the system-task bridge (process/native boundary behind `createSystemTaskBridge`) — the only
+ *   mocked process boundary;
+ * - endpoint/network probes and the endpoint auth request;
+ * - Home-scoped secure token storage;
+ * - the daemon service boundary.
+ */
+const harness = vi.hoisted(() => {
+    const SYSTEM_TASK_PROTOCOL_VERSION = 1;
+    const CANONICAL_SERVER_URL = 'http://127.0.0.1:3005';
+    const HOME_B_IDENTITY = 'srv_home_b_identity';
+    const HOME_B_TOKEN = 'home-b-token';
+
+    type PersonalHomePurpose = Readonly<{ kind: 'personal-home'; canonicalServerUrl: string }>;
+    type RecordedTaskSpec = Readonly<{
+        seq: number;
+        taskId: string;
+        /** 'auto-refresh' = the hook's one mount status refresh; 'bootstrap' = started during the operation. */
+        phase: 'auto-refresh' | 'bootstrap';
+        kind: string;
+        params: Record<string, unknown>;
+    }>;
+    type RecordedResult = Readonly<{ taskId: string; kind: string; data: Record<string, unknown> }>;
+
+    const runtime = {
+        installed: false,
+        healthy: false,
+        serviceActive: false,
+        signupEnabled: false,
+        purpose: null as PersonalHomePurpose | null,
+        relayUrl: '',
+        version: null as string | null,
+    };
+
+    type DaemonRuntime = {
+        serviceInstalled: boolean;
+        daemonRunning: boolean;
+        needsAuth: boolean;
+        machineId: string | null;
+        daemonServerUrl: string | null;
+        daemonComparableKey: string | null;
+        daemonAccountId: string | null;
+        daemonMachineRegistered: boolean | null;
+    };
+
+    const daemonRuntime: DaemonRuntime = {
+        serviceInstalled: false,
+        daemonRunning: false,
+        needsAuth: true,
+        machineId: null,
+        daemonServerUrl: null,
+        daemonComparableKey: null,
+        daemonAccountId: null,
+        daemonMachineRegistered: null,
+    };
+    /** When set, status readbacks report this instead of the moved daemon state (wrong-Home injection). */
+    let daemonStatusOverride: DaemonRuntime | null = null;
+    /** When set, the override clears once the setup task approval succeeds (re-pair fixed the binding). */
+    let daemonStatusClearsOnApproval = false;
+    /** Render-time projection of the daemon-control hook; only readStatus() updates it (real-hook semantics). */
+    const daemonControl: { status: Record<string, unknown> | null } = { status: null };
+
+    const recordedSpecs: Array<RecordedTaskSpec> = [];
+    const recordedResults: Array<RecordedResult> = [];
+    const recordedPromptAnswers: Array<Readonly<{ taskId: string; answer: unknown }>> = [];
+    const endpointRequests: Array<Readonly<{ endpointUrl: string; serverId: string | null; path: string; authorization: string | null }>> = [];
+    const events: string[] = [];
+    const listeners = new Map<string, { onEvent: (payload: unknown) => void; onResult: (payload: unknown) => void }>();
+    const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+    const promptAnswerResolvers = new Map<string, (answer: unknown) => void>();
+    let nextTaskId = 0;
+    let nextTsMs = 0;
+    let bootstrapStarted = false;
+    let authPingFailureCount = 0;
+    /** /v1/features Home descriptor published by the endpoint feature probe; null = omitted. */
+    let publishedHomeConnectionDescriptor: Record<string, unknown> | null = null;
+
+    let credentialsStore: Readonly<{ token: string }> | null = null;
+    let persistedCredentials: Readonly<{ token: string }> | null = null;
+    const persistCalls: Array<Readonly<{ serverUrl: string; serverId: string | null; credentials: Record<string, string> }>> = [];
+    const endpointAuthCalls: Array<Readonly<{
+        endpointUrl: string;
+        canonicalServerUrl: string | undefined;
+        serverIdentityId: string | undefined;
+        secretBase64Url: string | null;
+    }>> = [];
+
+    // Home-scoped pending bootstrap-seed custody boundary state (the storage beneath the
+    // Home-scoped token-storage owner). Keyed by explicit canonical URL + stable identity.
+    const pendingSeedStore = new Map<string, Uint8Array>();
+    let pendingSeedWriteFailure = false;
+    let pendingSeedReadbackFailure = false;
+
+    // Simulated Home server account registry: a key-challenge account identity is fully
+    // determined by its signing seed's public key, so the registry is keyed by the exact seed
+    // bytes the endpoint auth call carried. Duplicate accounts are observable as registry size.
+    const serverAccountsBySeedBase64Url = new Map<string, string>();
+    /** When set, the endpoint commits the Account and then fails before the token returns. */
+    let failCreateAfterCommit = false;
+
+    function seedKey(serverUrl: string, options: Readonly<{ serverId?: string }> | undefined): string {
+        return `${serverUrl}|${options?.serverId ?? ''}`;
+    }
+
+    function seedBase64Url(seed: Uint8Array | undefined): string {
+        if (!seed) return '';
+        let binary = '';
+        for (const byte of seed) binary += String.fromCharCode(byte);
+        return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    }
+
+    function statusData(): Record<string, unknown> {
+        return {
+            installed: runtime.installed,
+            version: runtime.installed ? runtime.version : null,
+            relayUrl: runtime.installed ? runtime.relayUrl : '',
+            healthy: runtime.installed && runtime.healthy,
+            service: {
+                active: runtime.installed ? runtime.serviceActive : null,
+                enabled: runtime.installed ? true : null,
+            },
+            // The persisted Personal Home purpose survives every later task (moving runtime state).
+            ...(runtime.purpose ? {
+                purpose: runtime.purpose,
+                canonicalServerUrl: runtime.purpose.canonicalServerUrl,
+            } : {}),
+            anonymousSignupEnabled: runtime.purpose?.kind === 'personal-home' ? runtime.signupEnabled : null,
+            dataPresent: serverAccountsBySeedBase64Url.size > 0,
+        };
+    }
+
+    function readRecord(value: unknown): Record<string, unknown> {
+        return value && typeof value === 'object' && !Array.isArray(value)
+            ? value as Record<string, unknown>
+            : {};
+    }
+
+    function emitLater(taskId: string, kind: string, delayMs: number): void {
+        const timer = setTimeout(() => {
+            pendingTimers.delete(timer);
+            const listener = listeners.get(taskId);
+            const data = statusData();
+            recordedResults.push({ taskId, kind, data: JSON.parse(JSON.stringify(data)) as Record<string, unknown> });
+            events.push(`task:${kind}:result`);
+            listener?.onResult({
+                protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+                taskId,
+                ok: true,
+                data,
+            });
+        }, delayMs);
+        pendingTimers.add(timer);
+    }
+
+    function emitStepLater(taskId: string, stepId: string, delayMs: number): void {
+        const timer = setTimeout(() => {
+            pendingTimers.delete(timer);
+            nextTsMs += 10;
+            listeners.get(taskId)?.onEvent({
+                protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+                taskId,
+                tsMs: nextTsMs,
+                type: 'progress',
+                stepId,
+                message: 'Personal Home runtime task in progress',
+            });
+        }, delayMs);
+        pendingTimers.add(timer);
+    }
+
+    function daemonStatusData(): Record<string, unknown> {
+        const status = daemonStatusOverride ?? daemonRuntime;
+        return {
+            serviceInstalled: status.serviceInstalled,
+            daemonRunning: status.daemonRunning,
+            needsAuth: status.needsAuth,
+            machineId: status.machineId,
+            daemonServerUrl: status.daemonServerUrl,
+            daemonComparableKey: status.daemonComparableKey,
+            daemonAccountId: status.daemonAccountId,
+            daemonMachineRegistered: status.daemonMachineRegistered,
+        };
+    }
+
+    function markDaemonReadyForPersonalHome(relayUrl: string): void {
+        daemonRuntime.serviceInstalled = true;
+        daemonRuntime.daemonRunning = true;
+        daemonRuntime.needsAuth = false;
+        daemonRuntime.machineId = 'machine-home-b';
+        daemonRuntime.daemonServerUrl = relayUrl;
+        daemonRuntime.daemonComparableKey = relayUrl;
+        daemonRuntime.daemonAccountId = 'acct_home_b';
+        daemonRuntime.daemonMachineRegistered = true;
+    }
+
+    async function endpointRequest(input: Readonly<{ endpointUrl: string; serverId: string | null; path: string; authorization: string | null }>): Promise<Response> {
+        endpointRequests.push(input);
+        if (input.endpointUrl !== CANONICAL_SERVER_URL) {
+            return new Response(JSON.stringify({ error: 'wrong_endpoint' }), { status: 502 });
+        }
+        if (input.path.startsWith('/v1/account/profile')) {
+            if (input.authorization !== `Bearer ${HOME_B_TOKEN}`) {
+                return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 });
+            }
+            return new Response(JSON.stringify({ id: 'acct_home_b' }), { status: 200 });
+        }
+        if (input.path === '/v1/auth/response') {
+            if (input.authorization !== `Bearer ${HOME_B_TOKEN}`) {
+                return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 });
+            }
+            return new Response(JSON.stringify({ success: true }), { status: 200 });
+        }
+        // The real approval owner checks the pairing status at the explicit endpoint before it
+        // posts the response.
+        if (input.path.startsWith('/v1/auth/request/status')) {
+            return new Response(JSON.stringify({ status: 'pending', supportsV2: true }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ error: 'not_found' }), { status: 404 });
+    }
+
+    function applyInstallOrUpdate(params: Record<string, unknown>): void {
+        const purpose = readRecord(params.purpose);
+        if (purpose.kind !== 'personal-home' || typeof purpose.canonicalServerUrl !== 'string') {
+            throw new Error('manual bridge: installOrUpdate requires the personal-home purpose');
+        }
+        const env = readRecord(params.env);
+        runtime.installed = true;
+        runtime.healthy = true;
+        runtime.serviceActive = true;
+        runtime.purpose = { kind: 'personal-home', canonicalServerUrl: purpose.canonicalServerUrl };
+        runtime.relayUrl = purpose.canonicalServerUrl;
+        runtime.version = '0.3.0-manual-bridge';
+        runtime.signupEnabled = env.AUTH_ANONYMOUS_SIGNUP_ENABLED !== '0';
+    }
+
+    const makeManualBridge = () => ({
+        async start(spec: { kind: string; params?: unknown }): Promise<string> {
+            const taskId = `bridge-task-${++nextTaskId}`;
+            const params = JSON.parse(JSON.stringify(spec.params ?? {})) as Record<string, unknown>;
+            recordedSpecs.push({
+                seq: recordedSpecs.length + 1,
+                taskId,
+                phase: bootstrapStarted ? 'bootstrap' : 'auto-refresh',
+                kind: spec.kind,
+                params,
+            });
+            switch (spec.kind) {
+                case 'relay.runtime.installOrUpdate.v1':
+                    applyInstallOrUpdate(params);
+                    emitStepLater(taskId, 'relay.runtime.install', 4);
+                    emitLater(taskId, spec.kind, 14);
+                    break;
+                case 'relay.runtime.start.v1':
+                case 'relay.runtime.restart.v1':
+                    if (!runtime.installed) throw new Error('manual bridge: runtime is not installed');
+                    runtime.healthy = true;
+                    runtime.serviceActive = true;
+                    if (spec.kind === 'relay.runtime.restart.v1') emitStepLater(taskId, 'relay.runtime.restart', 4);
+                    emitLater(taskId, spec.kind, 14);
+                    break;
+                case 'relay.runtime.status.v1':
+                    emitLater(taskId, spec.kind, 8);
+                    break;
+                case 'setup.thisComputer.v1': {
+                    events.push('setup:thisComputer:started');
+                    // The runner subscribes to bridge events only after start() resolves, so the
+                    // blocking approval prompt is deferred exactly like the other emissions
+                    // (emitStepLater/emitLater); an immediate emit would be dropped.
+                    const promptTimer = setTimeout(() => {
+                        pendingTimers.delete(promptTimer);
+                        // hsetup seals the v3 token-only pairing response and asks the UI to post
+                        // it: a blocking prompt carrying only public/opaque material.
+                        nextTsMs += 10;
+                        listeners.get(taskId)?.onEvent({
+                            protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+                            taskId,
+                            tsMs: nextTsMs,
+                            type: 'prompt',
+                            stepId: 'setup.thisComputer.auth.request',
+                            message: 'Approve this computer in Happier to continue',
+                            data: {
+                                kind: 'authRequest',
+                                publicKey: 'pub-home-b',
+                                response: 'opaque-token-only-response',
+                                responseKind: 'tokenOnly',
+                                relayUrl: params.activeRelayUrl,
+                                webappUrl: params.activeWebappUrl,
+                            },
+                        });
+                    }, 4);
+                    pendingTimers.add(promptTimer);
+                    void (async () => {
+                        const answer = await new Promise((resolve) => {
+                            promptAnswerResolvers.set(taskId, resolve);
+                        });
+                        const approved = (answer as { approved?: unknown } | null)?.approved === true;
+                        events.push(`setup:thisComputer:answered:${approved ? 'approved' : 'declined'}`);
+                        if (approved && typeof params.activeRelayUrl === 'string') {
+                            markDaemonReadyForPersonalHome(params.activeRelayUrl);
+                        }
+                        if (approved && daemonStatusClearsOnApproval) {
+                            daemonStatusOverride = null;
+                            daemonStatusClearsOnApproval = false;
+                        }
+                        const data = { machineId: approved ? 'machine-home-b' : null };
+                        recordedResults.push({ taskId, kind: spec.kind, data });
+                        events.push(`task:${spec.kind}:result`);
+                        listeners.get(taskId)?.onResult({
+                            protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+                            taskId,
+                            ok: approved,
+                            ...(approved ? { data } : { error: { code: 'approval_required', message: 'Pairing was not approved.' } }),
+                        });
+                    })();
+                    break;
+                }
+                case 'daemon.service.status.v1': {
+                    events.push('daemon:status:read');
+                    const data = daemonStatusData();
+                    recordedResults.push({ taskId, kind: spec.kind, data: JSON.parse(JSON.stringify(data)) as Record<string, unknown> });
+                    const listener = listeners.get(taskId);
+                    listener?.onResult({
+                        protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+                        taskId,
+                        ok: true,
+                        data,
+                    });
+                    break;
+                }
+                default:
+                    listeners.get(taskId)?.onResult({
+                        protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+                        taskId,
+                        ok: false,
+                        error: { code: 'bridge_unexpected_task_kind', message: spec.kind },
+                    });
+            }
+            return taskId;
+        },
+        async subscribe(taskId: string, listenerSet: { onEvent: (payload: unknown) => void; onResult: (payload: unknown) => void }) {
+            listeners.set(taskId, listenerSet);
+            return () => {
+                listeners.delete(taskId);
+            };
+        },
+        async cancel(taskId: string): Promise<void> {
+            listeners.get(taskId)?.onResult({
+                protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+                taskId,
+                ok: false,
+                error: { code: 'cancelled', message: 'Task cancelled' },
+            });
+        },
+        async respond(taskId: string, answer: unknown): Promise<void> {
+            recordedPromptAnswers.push({ taskId, answer });
+            const resolver = promptAnswerResolvers.get(taskId);
+            if (resolver) {
+                promptAnswerResolvers.delete(taskId);
+                resolver(answer);
+            }
+        },
+    });
+
+    async function readDaemonStatusThroughBridge(): Promise<Record<string, unknown> | null> {
+        const bridge = makeManualBridge();
+        const taskId = await bridge.start({ kind: 'daemon.service.status.v1', params: {} });
+        return recordedResults.find((entry) => entry.taskId === taskId)?.data ?? null;
+    }
+
+    const authGetTokenAtEndpoint = vi.fn(async (params: {
+        endpointUrl: string;
+        canonicalServerUrl?: string;
+        serverIdentityId?: string;
+        secret?: Uint8Array;
+    }) => {
+        endpointAuthCalls.push({
+            endpointUrl: params.endpointUrl,
+            canonicalServerUrl: params.canonicalServerUrl,
+            serverIdentityId: params.serverIdentityId,
+            secretBase64Url: seedBase64Url(params.secret),
+        });
+        if (runtime.installed && runtime.purpose?.kind === 'personal-home' && runtime.signupEnabled === false) {
+            // Fresh unauthenticated signup attempt after closure: refused on the real endpoint path.
+            events.push('auth:endpoint-token:signup-closed');
+            throw Object.assign(new Error('anonymous signup is disabled'), { code: 'signup-disabled' });
+        }
+        // Simulated server commit: the account identity is the seed's public key. An account
+        // already committed for these exact bytes is reused instead of re-created.
+        const committedSeedKey = seedBase64Url(params.secret);
+        if (committedSeedKey && !serverAccountsBySeedBase64Url.has(committedSeedKey)) {
+            if (failCreateAfterCommit) {
+                serverAccountsBySeedBase64Url.set(committedSeedKey, `acct_${committedSeedKey.slice(0, 8)}`);
+                events.push('auth:endpoint-token:committed-then-crashed');
+                throw new Error('crashed after the server committed the Account, before token persistence');
+            }
+            serverAccountsBySeedBase64Url.set(committedSeedKey, `acct_${committedSeedKey.slice(0, 8)}`);
+        }
+        events.push('auth:endpoint-token:signup-open');
+        return { token: HOME_B_TOKEN };
+    });
+    const focusedAuthGetToken = vi.fn(async () => {
+        events.push('auth:focused-token');
+        throw new Error('focused auth must not be used during Personal Home bootstrap');
+    });
+
+    return {
+        CANONICAL_SERVER_URL,
+        HOME_B_IDENTITY,
+        HOME_B_TOKEN,
+        makeManualBridge,
+        markBootstrapStarted: () => {
+            bootstrapStarted = true;
+        },
+        recordedSpecs: () => recordedSpecs,
+        recordedResults: () => recordedResults,
+        events: () => [...events],
+        state: () => ({ ...runtime }),
+        resultForTask: (taskId: string) => recordedResults.find((entry) => entry.taskId === taskId)?.data ?? null,
+        endpointAuthCalls: () => endpointAuthCalls,
+        persistCalls: () => persistCalls,
+        persistedCredentials: () => persistedCredentials,
+        authGetTokenAtEndpoint,
+        focusedAuthGetToken,
+        recordedPromptAnswers: () => recordedPromptAnswers,
+        endpointRequests: () => endpointRequests,
+        endpointRequest,
+        setDaemonStatusOverride: (override: DaemonRuntime | null) => {
+            daemonStatusOverride = override;
+        },
+        setDaemonStatusOverrideClearsOnApproval: () => {
+            daemonStatusClearsOnApproval = true;
+        },
+        daemonFacts: () => ({ ...daemonRuntime }),
+        daemonControl,
+        readDaemonStatusThroughBridge,
+        reset() {
+            runtime.installed = false;
+            runtime.healthy = false;
+            runtime.serviceActive = false;
+            runtime.signupEnabled = false;
+            runtime.purpose = null;
+            runtime.relayUrl = '';
+            runtime.version = null;
+            daemonRuntime.serviceInstalled = false;
+            daemonRuntime.daemonRunning = false;
+            daemonRuntime.needsAuth = true;
+            daemonRuntime.machineId = null;
+            daemonRuntime.daemonServerUrl = null;
+            daemonRuntime.daemonComparableKey = null;
+            daemonRuntime.daemonAccountId = null;
+            daemonRuntime.daemonMachineRegistered = null;
+            daemonStatusOverride = null;
+            daemonStatusClearsOnApproval = false;
+            daemonControl.status = null;
+            recordedSpecs.length = 0;
+            recordedResults.length = 0;
+            recordedPromptAnswers.length = 0;
+            endpointRequests.length = 0;
+            events.length = 0;
+            bootstrapStarted = false;
+            for (const timer of pendingTimers) clearTimeout(timer);
+            pendingTimers.clear();
+            listeners.clear();
+            promptAnswerResolvers.clear();
+            credentialsStore = null;
+            persistedCredentials = null;
+            persistCalls.length = 0;
+            endpointAuthCalls.length = 0;
+            pendingSeedStore.clear();
+            pendingSeedWriteFailure = false;
+            pendingSeedReadbackFailure = false;
+            serverAccountsBySeedBase64Url.clear();
+            failCreateAfterCommit = false;
+            authPingFailureCount = 0;
+            publishedHomeConnectionDescriptor = null;
+            authGetTokenAtEndpoint.mockClear();
+            focusedAuthGetToken.mockClear();
+        },
+        // Storage/auth/probe side effects shared with the vi.mock factories below.
+        storage: {
+            readCredentials: async () => {
+                events.push('storage:read');
+                return credentialsStore;
+            },
+            getPendingSeed: async (serverUrl: string, options: Readonly<{ serverId?: string }> | undefined) => {
+                if (pendingSeedReadbackFailure) return null;
+                const seed = pendingSeedStore.get(seedKey(serverUrl, options));
+                return seed ? new Uint8Array(seed) : null;
+            },
+            setPendingSeed: async (
+                serverUrl: string,
+                options: Readonly<{ serverId?: string }> | undefined,
+                seed: Uint8Array,
+            ) => {
+                if (pendingSeedWriteFailure) return false;
+                pendingSeedStore.set(seedKey(serverUrl, options), new Uint8Array(seed));
+                return true;
+            },
+            clearPendingSeed: async (serverUrl: string, options: Readonly<{ serverId?: string }> | undefined) => {
+                pendingSeedStore.delete(seedKey(serverUrl, options));
+                return true;
+            },
+            persistCredentials: async (serverUrl: string, options: { serverId?: string }, credentials: { token: string }) => {
+                events.push('storage:persist');
+                persistCalls.push({
+                    serverUrl,
+                    serverId: options?.serverId ?? null,
+                    credentials: { ...credentials },
+                });
+                credentialsStore = { ...credentials };
+                persistedCredentials = { ...credentials };
+                return true;
+            },
+        },
+        serverAccounts: () => serverAccountsBySeedBase64Url,
+        pendingSeeds: () => [...pendingSeedStore.entries()].map(([key, seed]) => ({ key, seed })),
+        setPendingSeedWriteFailure(value: boolean) {
+            pendingSeedWriteFailure = value;
+        },
+        setPendingSeedReadbackFailure(value: boolean) {
+            pendingSeedReadbackFailure = value;
+        },
+        setFailCreateAfterCommit(value: boolean) {
+            failCreateAfterCommit = value;
+        },
+        probes: {
+            serverFeatures: async () => {
+                events.push('probe:endpoint');
+                if (!runtime.installed || !runtime.healthy) {
+                    return { status: 'error' as const, reason: 'network' as const };
+                }
+                return {
+                    status: 'ready' as const,
+                    serverIdentityId: HOME_B_IDENTITY,
+                    features: {
+                        capabilities: {
+                            serverIdentity: { serverIdentityId: HOME_B_IDENTITY },
+                            encryption: { storagePolicy: 'plaintext_only' },
+                            auth: {
+                                signup: {
+                                    methods: [{ id: 'anonymous', enabled: runtime.signupEnabled }],
+                                },
+                            },
+                        },
+                        ...(publishedHomeConnectionDescriptor
+                            ? { homeConnectionDescriptor: publishedHomeConnectionDescriptor }
+                            : {}),
+                    },
+                };
+            },
+            authPing: async (params: { endpoint: string; token: string }) => {
+                events.push('auth:ping');
+                if (authPingFailureCount > 0) {
+                    authPingFailureCount -= 1;
+                    return { status: 'auth_failed' as const, statusCode: 401 as const, errorMessage: 'unauthorized' };
+                }
+                if (params.token === credentialsStore?.token && runtime.installed && runtime.healthy) {
+                    return { status: 'ready' as const };
+                }
+                return { status: 'auth_failed' as const, statusCode: 401 as const, errorMessage: 'unauthorized' };
+            },
+            setNextAuthPingFailure(count: number) {
+                authPingFailureCount = count;
+            },
+            setPublishedHomeConnectionDescriptor(descriptor: Record<string, unknown> | null) {
+                publishedHomeConnectionDescriptor = descriptor;
+            },
+        },
+    };
+});
+
+// System-task bridge (process/native boundary): the REAL runner, spec builder and wait path stay
+// live above this mock; the bridge only records actual specs and moves the managed runtime state.
+vi.mock('@/components/systemTasks/createSystemTaskBridge', () => ({
+    createSystemTaskBridge: () => harness.makeManualBridge(),
+}));
+
+// Daemon service boundary (separate native process/service manager). The Personal Home
+// bootstrap must never drive the focused-Home repair/start actions. `status` mirrors the real
+// hook: a render-time projection updated only by the awaited readStatus(), which runs the
+// canonical daemon.service.status.v1 task through the bridge.
+vi.mock('@/components/settings/machines/localControl/useLocalDaemonControl', () => ({
+    useLocalDaemonControl: () => ({
+        activeTaskSnapshot: null,
+        canInstall: false,
+        canStart: false,
+        status: harness.daemonControl.status,
+        refreshStatus: async () => null,
+        readStatus: async () => {
+            const next = await harness.readDaemonStatusThroughBridge();
+            harness.daemonControl.status = next;
+            return next;
+        },
+        installBackgroundService: async () => {
+            throw new Error('focused daemon repair must not be used by Personal Home bootstrap');
+        },
+        repairBackgroundService: async () => {
+            throw new Error('focused daemon repair must not be used by Personal Home bootstrap');
+        },
+        startDaemonService: async () => {
+            throw new Error('focused daemon start must not be used by Personal Home bootstrap');
+        },
+    }),
+}));
+
+// Explicit-endpoint HTTP transport boundary. The focused-Home fetch must never be entered.
+vi.mock('@/sync/http/client', () => ({
+    serverFetch: async () => {
+        throw new Error('focused serverFetch must not be used by Personal Home bootstrap');
+    },
+    createServerFetchAtEndpoint: (params: { endpointUrl: string; serverId?: string }) => {
+        const endpointUrl = params.endpointUrl;
+        const serverId = params.serverId ?? null;
+        return async (path: string, init?: RequestInit) => {
+            const authorization = (init?.headers as Record<string, string> | undefined)?.Authorization ?? null;
+            return await harness.endpointRequest({ endpointUrl, serverId, path, authorization });
+        };
+    },
+}));
+
+// Endpoint auth request boundary. The focused-Home flow must never be entered by bootstrap.
+vi.mock('@/auth/flows/getToken', () => ({
+    authGetToken: harness.focusedAuthGetToken,
+    authGetTokenAtEndpoint: harness.authGetTokenAtEndpoint,
+}));
+
+// Home-scoped secure token storage boundary (native storage beneath the owner), including the
+// pending Personal Home bootstrap-seed custody used before the account-creating endpoint call.
+vi.mock('@/auth/storage/tokenStorage', () => ({
+    TokenStorage: {
+        getCredentialsForServerUrl: vi.fn(async () => await harness.storage.readCredentials()),
+        setCredentialsForServerUrl: vi.fn(async (
+            serverUrl: string,
+            options: Readonly<{ serverId?: string }>,
+            credentials: Readonly<{ token: string }>,
+        ) => await harness.storage.persistCredentials(serverUrl, options, credentials)),
+        getPendingPersonalHomeBootstrapSeed: vi.fn(async (
+            serverUrl: string,
+            options?: Readonly<{ serverId?: string }>,
+        ) => await harness.storage.getPendingSeed(serverUrl, options)),
+        setPendingPersonalHomeBootstrapSeed: vi.fn(async (
+            serverUrl: string,
+            options: Readonly<{ serverId?: string }> | undefined,
+            seed: Uint8Array,
+        ) => await harness.storage.setPendingSeed(serverUrl, options, seed)),
+        clearPendingPersonalHomeBootstrapSeed: vi.fn(async (
+            serverUrl: string,
+            options?: Readonly<{ serverId?: string }>,
+        ) => await harness.storage.clearPendingSeed(serverUrl, options)),
+    },
+}));
+
+// Endpoint/network feature probe boundary.
+vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
+    probeServerFeaturesAtUrl: vi.fn(async () => await harness.probes.serverFeatures()),
+}));
+
+// Endpoint/network authenticated probe boundary.
+vi.mock('@/sync/api/capabilities/probeAuthenticatedServerAuthPingEndpoint', () => ({
+    probeAuthenticatedServerAuthPingEndpoint: vi.fn(async (
+        params: Readonly<{ endpoint: string; token: string }>,
+    ) => await harness.probes.authPing(params)),
+}));
+
+async function resetProfileRegistry(): Promise<void> {
+    const profiles = await import('@/sync/domains/server/serverProfiles');
+    profiles.clearTabActiveServerId();
+    for (const profile of profiles.listServerProfiles()) profiles.removeServerProfile(profile.id);
+}
+
+const initialFacts: PersonalHomeFacts = {
+    hostIsDesktop: true,
+    isDesktopMainWindow: true,
+    explicitlySelectedOtherHome: false,
+    completedPersonalHomeProfile: null,
+    candidateLocalProfile: null,
+    relayRuntime: null,
+    localHomeReachability: 'unknown',
+    localHomeIdentity: null,
+    localHomeAuth: 'missing',
+    anonymousSignup: 'unknown',
+    daemon: null,
+    activeTask: null,
+};
+
+describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
+    beforeEach(async () => {
+        harness.reset();
+        await resetProfileRegistry();
+    });
+
+    afterEach(async () => {
+        standardCleanup();
+        await resetProfileRegistry();
+        harness.reset();
+    });
+
+    it('drives the real relay runtime control and bootstrap helper through the canonical ordered system-task sequence and ends healthy with signup closed', async () => {
+        // Arrange the unrelated focused Home A through the real profile owner.
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const focusedHome = profiles.upsertServerProfile({
+            serverUrl: 'https://home-a.example',
+            name: 'Focused Home A',
+            source: 'manual',
+        });
+        profiles.setActiveServerId(focusedHome.id);
+        const homeABefore: ServerProfile | null = profiles.getServerProfileById(focusedHome.id);
+        expect(homeABefore).not.toBeNull();
+
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+
+        // The real useLocalRelayRuntimeControl performs exactly one mount auto-refresh status
+        // read before the bootstrap operation starts; it is distinguished explicitly here.
+        expect(harness.recordedSpecs().map((spec) => [spec.phase, spec.kind])).toEqual([
+            ['auto-refresh', 'relay.runtime.status.v1'],
+        ]);
+
+        harness.markBootstrapStarted();
+        await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+        const eventsDuringBootstrap = harness.events();
+        await flushHookEffects({ cycles: 8 });
+
+        // 1. The actual specs crossed the bridge in the canonical ordered sequence.
+        const specs = harness.recordedSpecs();
+        const bootstrapSpecs = specs.filter((spec) => spec.phase === 'bootstrap');
+        expect(bootstrapSpecs[0]?.kind).toBe('relay.runtime.status.v1');
+        expect(harness.resultForTask(bootstrapSpecs[0]!.taskId)).toMatchObject({ installed: false, relayUrl: '' });
+        const mutations = bootstrapSpecs.filter((spec) => spec.kind !== 'relay.runtime.status.v1');
+        expect(mutations.map((spec) => spec.kind)).toEqual([
+            'relay.runtime.installOrUpdate.v1',
+            'relay.runtime.start.v1',
+            'relay.runtime.installOrUpdate.v1',
+            'relay.runtime.restart.v1',
+        ]);
+        const restartSpecIndex = bootstrapSpecs.findIndex((spec) => spec.kind === 'relay.runtime.restart.v1');
+        const readbackIndex = bootstrapSpecs.findIndex((spec, index) => (
+            index > restartSpecIndex && spec.kind === 'relay.runtime.status.v1'
+        ));
+        expect(readbackIndex).toBeGreaterThan(restartSpecIndex);
+        expect(bootstrapSpecs.slice(readbackIndex).every((spec) => spec.kind === 'relay.runtime.status.v1')).toBe(true);
+
+        // 2. Purpose/canonical URL and anonymous signup reached the task specs through the fixed
+        //    Personal Home env map (signup enabled during loopback bootstrap, then disabled).
+        expect(mutations.map((spec) => spec.params.env)).toMatchObject([
+            { AUTH_ANONYMOUS_SIGNUP_ENABLED: '1' },
+            { AUTH_ANONYMOUS_SIGNUP_ENABLED: '1' },
+            { AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
+            { AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
+        ]);
+        for (const spec of mutations) {
+            expect(spec.params.target).toEqual({ kind: 'local' });
+            expect(spec.params.mode).toBe('user');
+            expect(spec.params.purpose).toEqual({
+                kind: 'personal-home',
+                canonicalServerUrl: harness.CANONICAL_SERVER_URL,
+            });
+            expect(spec.params.env).toMatchObject({
+                HAPPIER_SERVER_HOST: '127.0.0.1',
+                PORT: '3005',
+                HAPPIER_PUBLIC_SERVER_URL: harness.CANONICAL_SERVER_URL,
+                HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
+                HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
+            });
+        }
+        for (const spec of bootstrapSpecs.filter((entry) => entry.kind === 'relay.runtime.status.v1')) {
+            expect(spec.params.purpose).toBeUndefined();
+            expect(spec.params.env).toBeUndefined();
+        }
+
+        // 3. The managed runtime ends installed, healthy, with anonymous signup disabled; the
+        //    post-restart status readback reports the persisted Personal Home purpose.
+        expect(harness.state()).toMatchObject({ installed: true, healthy: true, signupEnabled: false });
+        const readbackData = harness.resultForTask(bootstrapSpecs[readbackIndex]!.taskId);
+        expect(readbackData).toMatchObject({
+            installed: true,
+            healthy: true,
+            relayUrl: harness.CANONICAL_SERVER_URL,
+            purpose: { kind: 'personal-home', canonicalServerUrl: harness.CANONICAL_SERVER_URL },
+            anonymousSignupEnabled: false,
+            service: { active: true, enabled: true },
+        });
+        expect(harness.resultForTask(mutations[0]!.taskId)).toMatchObject({
+            installed: true,
+            healthy: true,
+            purpose: { kind: 'personal-home', canonicalServerUrl: harness.CANONICAL_SERVER_URL },
+            anonymousSignupEnabled: true,
+        });
+
+        // 4. Account auth is explicit-endpoint against the local Home, never focused auth.
+        //    Exactly one account creation and one live signup-refusal attempt (no duplicates).
+        const endpointAuthCalls = harness.endpointAuthCalls();
+        expect(endpointAuthCalls).toHaveLength(2);
+        for (const call of endpointAuthCalls) {
+            expect(call.endpointUrl).toBe(harness.CANONICAL_SERVER_URL);
+            expect(call.canonicalServerUrl).toBe(harness.CANONICAL_SERVER_URL);
+            expect(call.serverIdentityId).toBe(harness.HOME_B_IDENTITY);
+        }
+        expect(harness.focusedAuthGetToken).not.toHaveBeenCalled();
+
+        // 5. Stored credentials are exactly { token } — no secret material.
+        expect(harness.persistedCredentials()).toEqual({ token: harness.HOME_B_TOKEN });
+        expect(Object.keys(harness.persistedCredentials() ?? {})).toEqual(['token']);
+        expect(harness.persistCalls()).toHaveLength(1);
+        expect(harness.persistCalls()[0]).toMatchObject({
+            serverUrl: harness.CANONICAL_SERVER_URL,
+            serverId: harness.HOME_B_IDENTITY,
+        });
+
+        // 6. Adoption happens only after the verified signup refusal (post-restart) and the
+        //    authenticated readback. Ordering is observable through the boundary events; the
+        //    adopted profile itself is the completion receipt, which production persists only
+        //    after the refusal gate and authenticated access check pass (any earlier failure
+        //    rejects the operation and leaves no adopted profile behind).
+        const refusalAttemptIndex = eventsDuringBootstrap.indexOf('auth:endpoint-token:signup-closed');
+        const restartResultIndex = eventsDuringBootstrap.indexOf('task:relay.runtime.restart.v1:result');
+        const lastAuthPingIndex = eventsDuringBootstrap.lastIndexOf('auth:ping');
+        expect(restartResultIndex).toBeGreaterThan(-1);
+        expect(refusalAttemptIndex).toBeGreaterThan(restartResultIndex);
+        expect(lastAuthPingIndex).toBeGreaterThan(refusalAttemptIndex);
+        expect(eventsDuringBootstrap.filter((entry) => entry === 'auth:endpoint-token:signup-open')).toHaveLength(1);
+        const personalHomes = profiles.listServerProfiles().filter((profile) => profile.source === 'desktop-personal-home');
+        expect(personalHomes).toHaveLength(1);
+        expect(personalHomes[0]).toMatchObject({
+            serverUrl: harness.CANONICAL_SERVER_URL,
+            canonicalServerUrl: harness.CANONICAL_SERVER_URL,
+            serverIdentityId: harness.HOME_B_IDENTITY,
+        });
+
+        // 7. The unrelated focused Home A is unchanged and remains the focused Home; the real
+        //    profile owner performed no focus change and focused auth was never used.
+        const homeAAfter = profiles.getServerProfileById(focusedHome.id);
+        expect(JSON.stringify(homeAAfter)).toBe(JSON.stringify(homeABefore));
+        expect(profiles.getActiveServerSnapshot().serverId).toBe(focusedHome.id);
+        expect(eventsDuringBootstrap).not.toContain('auth:focused-token');
+
+        // Re-read facts through the real hook after completion: healthy runtime, closed signup,
+        // present auth, adopted profile — the shell-releasing invariants.
+        const facts = await hook.getCurrent().readFacts();
+        expect(facts.relayRuntime).toMatchObject({
+            installed: true,
+            healthy: true,
+            status: 'healthy',
+            anonymousSignupEnabled: false,
+            purpose: { kind: 'personal-home', canonicalServerUrl: harness.CANONICAL_SERVER_URL },
+        });
+        expect(facts.localHomeReachability).toBe('reachable');
+        expect(facts.localHomeIdentity).toBe(harness.HOME_B_IDENTITY);
+        expect(facts.anonymousSignup).toBe('disabled');
+        expect(facts.localHomeAuth).toBe('present');
+        expect(facts.completedPersonalHomeProfile).toMatchObject({
+            id: personalHomes[0]!.id,
+            source: 'desktop-personal-home',
+        });
+        expect(facts.candidateLocalProfile).toMatchObject({ id: personalHomes[0]!.id });
+
+        // A running daemon on the same endpoint but authenticated as ANOTHER account must not
+        // read as ready: prepare-computer has to actually run the setup task and re-pair it.
+        harness.setDaemonStatusOverride({
+            serviceInstalled: true,
+            daemonRunning: true,
+            needsAuth: false,
+            machineId: 'machine-home-a',
+            daemonServerUrl: harness.CANONICAL_SERVER_URL,
+            daemonComparableKey: harness.CANONICAL_SERVER_URL,
+            daemonAccountId: 'acct_home_a',
+            daemonMachineRegistered: true,
+        });
+        harness.setDaemonStatusOverrideClearsOnApproval();
+        const wrongAccountFacts = await hook.getCurrent().readFacts();
+        expect(wrongAccountFacts.daemon).toMatchObject({
+            daemonAccountId: 'acct_home_a',
+            servesPersonalHome: false,
+        });
+
+        // --- Post-shell daemon composition: one explicit setup.thisComputer.v1 for B. ---
+        harness.markBootstrapStarted();
+        const preparePromise = hook.getCurrent().operations['prepare-computer']?.(facts);
+        await flushHookEffects({ cycles: 40, turns: 6 });
+        await preparePromise;
+
+        // 8. Exactly one explicit setup task, carrying the explicit Home B URLs independent of
+        //    the still-focused Home A, with the full configure/auth/pair/install/start/verify scope.
+        const setupSpecs = harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1');
+        expect(setupSpecs).toHaveLength(1);
+        expect(setupSpecs[0]!.params).toMatchObject({
+            activeRelayUrl: harness.CANONICAL_SERVER_URL,
+            activeWebappUrl: harness.CANONICAL_SERVER_URL,
+            activeLocalRelayUrl: harness.CANONICAL_SERVER_URL,
+            installService: true,
+            startService: true,
+            verifyService: true,
+        });
+
+        // 9. The blocking token-only approval was answered through the explicit endpoint with
+        //    Home B's scoped token; the answer itself carries no credential or secret.
+        expect(harness.recordedPromptAnswers()).toEqual([
+            { taskId: setupSpecs[0]!.taskId, answer: { approved: true } },
+        ]);
+        const approvalRequests = harness.endpointRequests().filter((request) => request.path === '/v1/auth/response');
+        expect(approvalRequests).toHaveLength(1);
+        expect(approvalRequests[0]).toMatchObject({
+            endpointUrl: harness.CANONICAL_SERVER_URL,
+            authorization: `Bearer ${harness.HOME_B_TOKEN}`,
+        });
+        expect(harness.endpointRequests().every((request) => request.endpointUrl === harness.CANONICAL_SERVER_URL)).toBe(true);
+
+        // 10. A fresh daemon status readback ran after the setup result and verified installed,
+        //     running, authenticated, registered, machine identity, and Home B URL/account facts.
+        const statusTaskIndexes = harness.recordedSpecs()
+            .map((spec, index) => (spec.kind === 'daemon.service.status.v1' ? index : -1))
+            .filter((index) => index >= 0);
+        expect(statusTaskIndexes.length).toBeGreaterThanOrEqual(2);
+        const setupResultIndex = harness.events().indexOf('task:setup.thisComputer.v1:result');
+        const firstPostSetupStatusIndex = harness.events().indexOf('daemon:status:read', harness.events().indexOf('setup:thisComputer:answered:approved'));
+        expect(firstPostSetupStatusIndex).toBeGreaterThan(setupResultIndex);
+        const recordedSpecs = harness.recordedSpecs();
+        const lastStatusSpec = recordedSpecs[statusTaskIndexes.at(-1)!];
+        const readback = harness.resultForTask(lastStatusSpec.taskId);
+        expect(readback).toMatchObject({
+            serviceInstalled: true,
+            daemonRunning: true,
+            needsAuth: false,
+            machineId: 'machine-home-b',
+            daemonServerUrl: harness.CANONICAL_SERVER_URL,
+            daemonComparableKey: harness.CANONICAL_SERVER_URL,
+            daemonAccountId: 'acct_home_b',
+            daemonMachineRegistered: true,
+        });
+        // The account identity comparison crossed the explicit endpoint with Home B's token.
+        expect(harness.endpointRequests().some((request) => request.path.startsWith('/v1/account/profile'))).toBe(true);
+
+        // 11. No bearer or pairing secret ever enters task artifacts; credentials stay token-only.
+        const serializedSpecs = JSON.stringify(harness.recordedSpecs());
+        expect(serializedSpecs).not.toContain(harness.HOME_B_TOKEN);
+        expect(serializedSpecs.toLowerCase()).not.toMatch(/"(token|secret|pairingsecret|claimsecret|statefile)"/);
+        expect(JSON.stringify(harness.recordedPromptAnswers())).not.toContain(harness.HOME_B_TOKEN);
+
+        // 12. Idempotent: rerunning prepare-computer with a correct ready daemon starts no second
+        //     setup task and no second pairing.
+        const setupCountBefore = harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1').length;
+        const rerunFacts = await hook.getCurrent().readFacts();
+        await hook.getCurrent().operations['prepare-computer']?.(rerunFacts);
+        await flushHookEffects({ cycles: 10, turns: 4 });
+        const setupCountAfter = harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1').length;
+        expect(setupCountAfter).toBe(setupCountBefore);
+        expect(harness.recordedPromptAnswers()).toHaveLength(1);
+
+        // 13. The unrelated focused Home A remains focused and untouched after daemon setup.
+        expect(profiles.getServerProfileById(focusedHome.id)).toEqual(homeABefore);
+        expect(profiles.getActiveServerSnapshot().serverId).toBe(focusedHome.id);
+
+        // 14. Post-operation readFacts observes the fresh daemon facts through the daemon-control
+        //     owner: the correct post-task status yields daemonReady and a ready snapshot while
+        //     the shell stays released.
+        const factsAfterComputer = await hook.getCurrent().readFacts();
+        expect(factsAfterComputer.daemon).toMatchObject({
+            serviceInstalled: true,
+            daemonRunning: true,
+            needsAuth: false,
+            machineId: 'machine-home-b',
+            daemonServerUrl: harness.CANONICAL_SERVER_URL,
+            daemonAccountId: 'acct_home_b',
+            daemonMachineRegistered: true,
+            servesPersonalHome: true,
+        });
+        const { derivePersonalHomeBootstrapSnapshot } = await import('./derivePersonalHomeBootstrapSnapshot');
+        expect(derivePersonalHomeBootstrapSnapshot(factsAfterComputer)).toMatchObject({
+            shouldGateShell: false,
+            homeReady: true,
+            daemonReady: true,
+            phase: 'ready',
+        });
+
+        await hook.unmount();
+    });
+
+    it('rejects a daemon that is connected to another Home instead of accepting it for the Personal Home', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const focusedHome = profiles.upsertServerProfile({
+            serverUrl: 'https://home-a.example',
+            name: 'Focused Home A',
+            source: 'manual',
+        });
+        profiles.setActiveServerId(focusedHome.id);
+
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+        harness.markBootstrapStarted();
+        await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+        await flushHookEffects({ cycles: 8 });
+
+        // The managed daemon reports Home A as its connected Home BEFORE the production facts
+        // read: the derivation must never classify it as daemonReady for this Personal Home.
+        harness.setDaemonStatusOverride({
+            serviceInstalled: true,
+            daemonRunning: true,
+            needsAuth: false,
+            machineId: 'machine-home-a',
+            daemonServerUrl: 'https://home-a.example',
+            daemonComparableKey: 'https://home-a.example',
+            daemonAccountId: 'acct_home_a',
+            daemonMachineRegistered: true,
+        });
+        const facts = await hook.getCurrent().readFacts();
+        const { derivePersonalHomeBootstrapSnapshot } = await import('./derivePersonalHomeBootstrapSnapshot');
+        expect(derivePersonalHomeBootstrapSnapshot(facts).daemonReady).toBe(false);
+        harness.markBootstrapStarted();
+        const preparePromise = hook.getCurrent().operations['prepare-computer']?.(facts);
+        const prepareRejection = expect(preparePromise).rejects.toThrow(
+            /different Home|wrong Home|home-a\.example|connected/i,
+        );
+        await flushHookEffects({ cycles: 40, turns: 6 });
+        await prepareRejection;
+
+        // No Home B adoption of the wrong daemon: the recorded approval answer and setup result
+        // are preserved as facts for diagnosis, but the operation failed closed.
+        expect(harness.recordedPromptAnswers()).toEqual([
+            expect.objectContaining({ answer: { approved: true } }),
+        ]);
+
+        // Home readiness is untouched by the daemon failure: the shell stays usable and the
+        // operation remains retryable, while the daemon still reads as not-ready-for-this-Home.
+        const factsAfterFailure = await hook.getCurrent().readFacts();
+        expect(factsAfterFailure.relayRuntime).toMatchObject({ installed: true, healthy: true, status: 'healthy' });
+        expect(factsAfterFailure.localHomeAuth).toBe('present');
+        expect(factsAfterFailure.anonymousSignup).toBe('disabled');
+        expect(factsAfterFailure.daemon).toMatchObject({
+            daemonServerUrl: 'https://home-a.example',
+            daemonRunning: true,
+            servesPersonalHome: false,
+        });
+        expect(derivePersonalHomeBootstrapSnapshot(factsAfterFailure).daemonReady).toBe(false);
+        await hook.unmount();
+    });
+
+    it('rejects an identity/URL conflict before persisting Personal Home credentials or changing focused Home state', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const focusedHome = profiles.upsertServerProfile({
+            serverUrl: 'https://focused-home.example',
+            name: 'Focused Home A',
+            source: 'manual',
+        });
+        profiles.setServerProfileIdentityForUrl(focusedHome.serverUrl, harness.HOME_B_IDENTITY);
+        const conflictingUrlProfile = profiles.upsertServerProfile({
+            serverUrl: harness.CANONICAL_SERVER_URL,
+            name: 'Existing Home at Personal URL',
+            source: 'manual',
+        });
+        profiles.setServerProfileIdentityForUrl(conflictingUrlProfile.serverUrl, 'srv_conflicting_home_identity');
+        profiles.setActiveServerId(focusedHome.id);
+        profiles.saveHomeViewState({
+            version: 1,
+            groups: [{
+                id: 'focused-group',
+                name: 'Focused group',
+                serverIds: [focusedHome.id],
+            }],
+            activeTargetKind: 'server',
+            activeTargetId: focusedHome.id,
+        });
+        const focusedBefore = profiles.getActiveServerSnapshot();
+        const homeViewBefore = profiles.loadHomeViewState();
+
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+        harness.markBootstrapStarted();
+
+        await expect(hook.getCurrent().operations['prepare-home']?.(initialFacts)).rejects.toThrow(
+            'Home identity conflicts with URL',
+        );
+        await hook.unmount();
+
+        expect(harness.persistCalls()).toHaveLength(0);
+        expect(harness.persistedCredentials()).toBeNull();
+        expect(profiles.listServerProfiles().filter((profile) => profile.source === 'desktop-personal-home')).toHaveLength(0);
+        expect(profiles.getActiveServerSnapshot()).toEqual(focusedBefore);
+        expect(profiles.loadHomeViewState()).toEqual(homeViewBefore);
+    });
+
+    it('resumes after a real remount with retained data by using the exact committed-account seed once', async () => {
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+        let hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+
+        // First attempt: the server commits the Account, then the process fails before the
+        // token is persisted. No credential and no adoption receipt may survive.
+        harness.markBootstrapStarted();
+        harness.setFailCreateAfterCommit(true);
+        await expect(hook.getCurrent().operations['prepare-home']?.(initialFacts)).rejects.toThrow(
+            /committed the Account/i,
+        );
+        await flushHookEffects({ cycles: 8 });
+
+        const accountCallsAfterCrash = harness.endpointAuthCalls().length;
+        expect(accountCallsAfterCrash).toBe(1);
+        expect(harness.serverAccounts().size).toBe(1);
+        expect(harness.persistCalls()).toHaveLength(0);
+        expect(harness.persistedCredentials()).toBeNull();
+        // The pending seed stayed in Home custody across the crash: retry custody for this Home.
+        expect(harness.pendingSeeds()).toHaveLength(1);
+        expect(harness.pendingSeeds()[0]!.seed).toHaveLength(32);
+        const seedAfterCrash = new Uint8Array(harness.pendingSeeds()[0]!.seed);
+        await hook.unmount();
+
+        // A true renderer remount now observes retained Home data and no token. The exact pending
+        // seed is the only account-creation resume authority; no replacement seed is permitted.
+        harness.setFailCreateAfterCommit(false);
+        hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+        harness.markBootstrapStarted();
+        await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+        await flushHookEffects({ cycles: 8 });
+
+        const accountCalls = harness.endpointAuthCalls();
+        // Create, retry-create, and the post-closure refusal probe (which never commits).
+        expect(accountCalls).toHaveLength(3);
+        expect(harness.serverAccounts().size).toBe(1);
+        expect(harness.events().filter((entry) => entry === 'auth:endpoint-token:signup-open')).toHaveLength(1);
+        // The retried account-creating call carried byte-identical seed bytes.
+        expect(accountCalls[0]!.secretBase64Url).toBe(accountCalls[1]!.secretBase64Url);
+        const retrySeedBase64Url = accountCalls[1]!.secretBase64Url;
+        expect(retrySeedBase64Url).not.toBeNull();
+        if (!retrySeedBase64Url) throw new Error('Expected the retry to reuse the pending bootstrap seed.');
+        const retrySeedBytes = Uint8Array.from(
+            atob(retrySeedBase64Url.replace(/-/g, '+').replace(/_/g, '/')),
+            (character) => character.charCodeAt(0),
+        );
+        expect([...retrySeedBytes]).toEqual([...seedAfterCrash]);
+        expect(harness.persistCalls()).toHaveLength(1);
+        expect(harness.persistedCredentials()).toEqual({ token: harness.HOME_B_TOKEN });
+        // Final credentials persisted and authenticated: pending custody was released.
+        expect(harness.pendingSeeds()).toEqual([]);
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        expect(profiles.listServerProfiles().filter((profile) => profile.source === 'desktop-personal-home')).toHaveLength(1);
+
+        // The bootstrap seed never enters task artifacts or events.
+        const serializedArtifacts = JSON.stringify({
+            specs: harness.recordedSpecs(),
+            events: harness.events(),
+            answers: harness.recordedPromptAnswers(),
+        });
+        for (const call of accountCalls) {
+            expect(serializedArtifacts).not.toContain(call.secretBase64Url);
+        }
+        await hook.unmount();
+    });
+
+    it('creates zero accounts and zero account-creating network calls when seed custody write fails', async () => {
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+
+        harness.markBootstrapStarted();
+        harness.setPendingSeedWriteFailure(true);
+        await expect(hook.getCurrent().operations['prepare-home']?.(initialFacts)).rejects.toThrow(
+            /seed custody is unavailable/i,
+        );
+
+        expect(harness.endpointAuthCalls()).toEqual([]);
+        expect(harness.serverAccounts().size).toBe(0);
+        expect(harness.pendingSeeds()).toEqual([]);
+        expect(harness.persistCalls()).toHaveLength(0);
+        await hook.unmount();
+    });
+
+    it('creates zero accounts and zero account-creating network calls when the persisted seed readback cannot be verified', async () => {
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+
+        harness.markBootstrapStarted();
+        harness.setPendingSeedReadbackFailure(true);
+        await expect(hook.getCurrent().operations['prepare-home']?.(initialFacts)).rejects.toThrow(
+            /seed could not be verified/i,
+        );
+
+        expect(harness.endpointAuthCalls()).toEqual([]);
+        expect(harness.serverAccounts().size).toBe(0);
+        expect(harness.persistCalls()).toHaveLength(0);
+        await hook.unmount();
+    });
+
+    it('keeps pending custody through a failure after token persistence, then a retry verifies the credential and clears the seed without account creation', async () => {
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+
+        // First attempt completes account creation and persistence, then fails after the
+        // restart at the authenticated readback (simulated crash between persist and clear).
+        harness.markBootstrapStarted();
+        harness.probes.setNextAuthPingFailure(1);
+        await expect(hook.getCurrent().operations['prepare-home']?.(initialFacts)).rejects.toThrow();
+        await flushHookEffects({ cycles: 8 });
+
+        expect(harness.serverAccounts().size).toBe(1);
+        expect(harness.persistCalls()).toHaveLength(1);
+        expect(harness.persistedCredentials()).toEqual({ token: harness.HOME_B_TOKEN });
+        expect(harness.pendingSeeds()).toHaveLength(1);
+
+        // Retry: the persisted credential is read, verified, and the pending seed is cleared
+        // without any second account creation.
+        harness.probes.setNextAuthPingFailure(0);
+        harness.markBootstrapStarted();
+        await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+        await flushHookEffects({ cycles: 8 });
+
+        expect(harness.serverAccounts().size).toBe(1);
+        expect(harness.endpointAuthCalls().length).toBeGreaterThanOrEqual(2);
+        expect(harness.events().filter((entry) => entry === 'auth:endpoint-token:signup-open')).toHaveLength(1);
+        expect(harness.pendingSeeds()).toEqual([]);
+        expect(harness.persistCalls()).toHaveLength(1);
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        expect(profiles.listServerProfiles().filter((profile) => profile.source === 'desktop-personal-home')).toHaveLength(1);
+        await hook.unmount();
+    });
+
+    it('adopts the /v1/features Home descriptor through the real profile owner, and omits an identity-mismatched one', async () => {
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+
+        // Composed positive path: the descriptor published at /v1/features survives the real
+        // probe/parser, passes the identity check against the independently observed Home
+        // identity, and reaches the canonical adoption as the exact canonical descriptor.
+        harness.probes.setPublishedHomeConnectionDescriptor({
+            v: 1,
+            homeServerIdentityId: harness.HOME_B_IDENTITY,
+            canonicalServerUrl: harness.CANONICAL_SERVER_URL,
+            revision: 5,
+            endpoints: [
+                { kind: 'iroh', endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test'] },
+            ],
+        });
+        const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+        harness.markBootstrapStarted();
+        await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+        await flushHookEffects({ cycles: 8 });
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const adopted = profiles.listServerProfiles().filter((profile) => profile.source === 'desktop-personal-home');
+        expect(adopted).toHaveLength(1);
+        expect(adopted[0]).toMatchObject({
+            serverUrl: harness.CANONICAL_SERVER_URL,
+            canonicalServerUrl: harness.CANONICAL_SERVER_URL,
+            serverIdentityId: harness.HOME_B_IDENTITY,
+            // The persisted transport identity rides on the profile through adoption.
+            irohEndpoint: {
+                endpointId: 'a'.repeat(64),
+                relayUrls: ['https://relay.example.test'],
+            },
+            connectionDescriptorRevision: 5,
+        });
+        await hook.unmount();
+
+        // Fail-closed negative path on a fresh registry: a descriptor whose homeServerIdentityId
+        // disagrees with the independently observed server identity is rejected/omitted, and
+        // adoption keeps the exact legacy HTTPS descriptor behavior (no transport facts).
+        for (const profile of profiles.listServerProfiles()) profiles.removeServerProfile(profile.id);
+        harness.probes.setPublishedHomeConnectionDescriptor({
+            v: 1,
+            homeServerIdentityId: 'srv_other_home_identity',
+            canonicalServerUrl: harness.CANONICAL_SERVER_URL,
+            revision: 6,
+            endpoints: [
+                { kind: 'iroh', endpointId: 'b'.repeat(64) },
+            ],
+        });
+        harness.markBootstrapStarted();
+        const secondHook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+        await secondHook.getCurrent().operations['prepare-home']?.(initialFacts);
+        await flushHookEffects({ cycles: 8 });
+
+        const adoptedAfterMismatch = profiles.listServerProfiles().filter((profile) => profile.source === 'desktop-personal-home');
+        expect(adoptedAfterMismatch).toHaveLength(1);
+        expect(adoptedAfterMismatch[0]).toMatchObject({
+            serverUrl: harness.CANONICAL_SERVER_URL,
+            serverIdentityId: harness.HOME_B_IDENTITY,
+        });
+        expect(adoptedAfterMismatch[0]?.irohEndpoint).toBeUndefined();
+        expect(adoptedAfterMismatch[0]?.connectionDescriptorRevision).toBeUndefined();
+        await secondHook.unmount();
+    });
+});

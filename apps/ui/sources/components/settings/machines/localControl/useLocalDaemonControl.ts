@@ -1,7 +1,7 @@
 import * as React from 'react';
 import type { SystemTaskResult } from '@happier-dev/protocol';
 
-import { getDefaultSystemTaskRunner, useSystemTaskSnapshot } from '@/components/systemTasks';
+import { getDefaultSystemTaskRunner, useSystemTaskSnapshot, waitForSystemTaskResult } from '@/components/systemTasks';
 import type { SystemTaskRunState, SystemTaskRunner } from '@/components/systemTasks/types';
 import { isSystemTaskBridgeUnavailableError, readSystemTaskStartErrorMessage } from '@/components/systemTasks/systemTaskStartError';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
@@ -82,6 +82,36 @@ export function useLocalDaemonControl(options: Readonly<{
             setLastErrorMessage(null);
             setStatusTaskId(taskId);
             return taskId;
+        } catch (error) {
+            const message = readSystemTaskStartErrorMessage(error);
+            const unavailable = isSystemTaskBridgeUnavailableError(error);
+            setBridgeUnavailable(unavailable);
+            setLastErrorMessage(unavailable
+                ? t('settings.systemTaskBridgeUnavailable')
+                : (message ?? t('settings.systemTaskStartFailed')));
+            return null;
+        }
+    }, [isUnavailable, runner]);
+
+    /** Awaited authoritative status read: canonical parser, updates this hook's status state. */
+    const readStatus = React.useCallback(async (): Promise<LocalDaemonStatusData | null> => {
+        if (isUnavailable) {
+            return null;
+        }
+        try {
+            const taskId = await runner.start(buildLocalDaemonServiceSystemTaskSpec('daemon.service.status.v1'));
+            setBridgeUnavailable(false);
+            setLastErrorMessage(null);
+            setStatusTaskId(taskId);
+            const result = await waitForSystemTaskResult(runner, taskId);
+            const nextStatus = readLocalDaemonStatusData(result);
+            if (nextStatus) {
+                setLastStatus(nextStatus);
+                setLastErrorMessage(null);
+            } else {
+                setLastErrorMessage(readErrorMessage(result));
+            }
+            return nextStatus;
         } catch (error) {
             const message = readSystemTaskStartErrorMessage(error);
             const unavailable = isSystemTaskBridgeUnavailableError(error);
@@ -238,6 +268,7 @@ export function useLocalDaemonControl(options: Readonly<{
         canStart,
         lastErrorMessage,
         showInstallBackgroundService,
+        readStatus,
         refreshStatus,
         installBackgroundService: repairBackgroundService,
         repairBackgroundService,

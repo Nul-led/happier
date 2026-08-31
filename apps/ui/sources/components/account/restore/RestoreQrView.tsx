@@ -1,29 +1,18 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, ScrollView } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useAuth } from '@/auth/context/AuthContext';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Typography } from '@/constants/Typography';
-import { encodeBase64 } from '@/encryption/base64';
-import { generateAuthKeyPair, authQRStart } from '@/auth/flows/qrStart';
-import { authQRWait } from '@/auth/flows/qrWait';
-import { buildAccountConnectDeepLink } from '@/auth/pairing/accountConnectUrl';
-import { Modal } from '@/modal';
 import { t } from '@/text';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import { QRCode } from '@/components/qr/QRCode';
 import { getReadyServerFeatures } from '@/sync/api/capabilities/getReadyServerFeatures';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { getAuthProvider } from '@/auth/providers/registry';
 import type { RestoreRedirectReason, RestoreRedirectNotice } from '@/auth/providers/types';
 import { Text } from '@/components/ui/text/Text';
 import { canUseCurrentDeviceQrScanner } from '@/utils/platform/qrScannerSupport';
-import { trackAccountRestored } from '@/track';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
-import {
-    presentFirstKeyCredentialLifecycle,
-} from '@/components/account/presentFirstKeyCredentialLifecycle';
+
 
 const stylesheet = StyleSheet.create((theme) => ({
     scrollView: {
@@ -137,25 +126,13 @@ export type RestoreQrViewProps = Readonly<{
 }>;
 
 export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrViewProps) {
-    const { theme } = useUnistyles();
+    useUnistyles();
     const styles = stylesheet;
-    const auth = useAuth();
     const router = useRouter();
     const params = useLocalSearchParams() as Readonly<Record<string, string | string[] | undefined>>;
-    const [authReady, setAuthReady] = useState(false);
     const [providerResetEnabled, setProviderResetEnabled] = useState(false);
-    const isCancelledRef = useRef(false);
-    const handleBack = React.useCallback(() => {
-        if (props.onBack) {
-            props.onBack();
-            return;
-        }
-        router.back();
-    }, [props.onBack, router]);
-
     const embedded = props.embedded === true;
     const canOpenScanner = typeof props.onOpenScanQr === 'function' && canUseCurrentDeviceQrScanner();
-    const qrSize = embedded ? 220 : 260;
     const scrollViewStyle: StyleProp<ViewStyle> = embedded
         ? [styles.scrollView, { backgroundColor: 'transparent' }]
         : styles.scrollView;
@@ -170,8 +147,6 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
         return provider.getRestoreRedirectNotice({ reason });
     }, [params]);
 
-    const keypair = React.useMemo(() => generateAuthKeyPair(), []);
-
     useEffect(() => {
         let mounted = true;
         fireAndForget((async () => {
@@ -184,56 +159,6 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
         };
     }, []);
 
-    useEffect(() => {
-        const startQRAuth = async () => {
-            try {
-                const success = await authQRStart(keypair);
-                if (!success) {
-                    Modal.alert(t('common.error'), t('errors.authenticationFailed'));
-                    return;
-                }
-
-                setAuthReady(true);
-
-                const credentials = await authQRWait(
-                    keypair,
-                    undefined,
-                    () => isCancelledRef.current,
-                );
-
-                if (credentials && !isCancelledRef.current) {
-                    await presentFirstKeyCredentialLifecycle({
-                        run: async () =>
-                            await auth.loginWithCredentials(credentials),
-                        onCompleted: () => {
-                            trackAccountRestored();
-                            if (!isCancelledRef.current) {
-                                handleBack();
-                            }
-                        },
-                    });
-                } else if (!isCancelledRef.current) {
-                    Modal.alert(t('common.error'), t('errors.authenticationFailed'));
-                }
-
-            } catch {
-                if (!isCancelledRef.current) {
-                    Modal.alert(t('common.error'), t('errors.authenticationFailed'));
-                }
-            } finally {
-                if (!isCancelledRef.current) {
-                    setAuthReady(false);
-                }
-            }
-        };
-
-        startQRAuth();
-
-        return () => {
-            isCancelledRef.current = true;
-        };
-    }, [keypair]);
-
     const content = (
         <View style={[styles.container, embedded ? styles.embeddedContainer : null]}>
             <View style={[styles.contentWrapper, embedded ? styles.embeddedContentWrapper : null]}>
@@ -245,23 +170,8 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
                 ) : null}
 
                 <Text style={[styles.sectionLead, embedded ? styles.embeddedSectionLead : null]}>
-                    {t('connect.restoreQrInstructions')}
+                    {t('connect.legacyAccountQrUnavailable')}
                 </Text>
-
-                <View style={[styles.qrBlock, embedded ? styles.embeddedQrBlock : null]}>
-                    {!authReady ? (
-                        <View style={{ width: qrSize, height: qrSize, alignItems: 'center', justifyContent: 'center' }}>
-                            <ActivitySpinner size="small" color={theme.colors.text.primary} />
-                        </View>
-                    ) : (
-                        <QRCode
-                            data={buildAccountConnectDeepLink({ publicKeyB64Url: encodeBase64(keypair.publicKey, 'base64url') })}
-                            size={qrSize}
-                            foregroundColor={theme.colors.text.primary}
-                            backgroundColor={theme.colors.surface.base}
-                        />
-                    )}
-                </View>
 
                 <View style={[styles.footer, embedded ? styles.embeddedFooter : null]}>
                     {canOpenScanner ? (

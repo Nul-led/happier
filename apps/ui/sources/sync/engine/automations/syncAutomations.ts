@@ -13,13 +13,15 @@ import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 
 export async function fetchAndApplyAutomations(params: {
     credentials: AuthCredentials | null | undefined;
-    applyAutomations: (automations: AutomationDefinition[], nextCursor: string | null) => void;
+    applyAutomations: (automations: AutomationDefinition[], nextCursor: string | null) => number | null;
     appendAutomations?: (
         expectedCursor: string,
+        expectedTraversalToken: number,
         automations: AutomationDefinition[],
         nextCursor: string | null,
-    ) => void;
+    ) => boolean;
     cursor?: string;
+    traversalToken?: number;
     loadedAutomationRunIds?: readonly string[];
     /**
      * The list refresh restates the newest Run page for lists that are already
@@ -33,12 +35,12 @@ export async function fetchAndApplyAutomations(params: {
     ) => void;
     runsLimit?: number;
     shouldContinue?: () => boolean;
-}): Promise<{ nextCursor: string | null }> {
+}): Promise<{ nextCursor: string | null; traversalToken: number | null }> {
     const shouldContinue = params.shouldContinue ?? (() => true);
     if (!params.credentials) {
-        return { nextCursor: null };
+        return { nextCursor: null, traversalToken: null };
     }
-    if (!shouldContinue()) return { nextCursor: null };
+    if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
 
     const { serverId } = getActiveServerSnapshot();
     const automationsEnabled = await isRuntimeFeatureEnabled({
@@ -47,35 +49,44 @@ export async function fetchAndApplyAutomations(params: {
         timeoutMs: 400,
     });
     if (!automationsEnabled) {
-        return { nextCursor: null };
+        return { nextCursor: null, traversalToken: null };
     }
-    if (!shouldContinue()) return { nextCursor: null };
+    if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
 
     const result = await listAutomationDefinitions(params.credentials, {
         ...(params.cursor ? { cursor: params.cursor } : {}),
     });
-    if (!shouldContinue()) return { nextCursor: null };
+    if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
     const automations = result.automations.map(createAutomationDefinitionSummary);
-    if (!shouldContinue()) return { nextCursor: null };
+    if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
+    let traversalToken: number | null;
     if (params.cursor) {
-        params.appendAutomations?.(params.cursor, automations, result.nextCursor);
+        if (params.traversalToken === undefined || !params.appendAutomations?.(
+            params.cursor,
+            params.traversalToken,
+            automations,
+            result.nextCursor,
+        )) {
+            return { nextCursor: null, traversalToken: null };
+        }
+        traversalToken = result.nextCursor === null ? null : params.traversalToken;
     } else {
-        params.applyAutomations(automations, result.nextCursor);
+        traversalToken = params.applyAutomations(automations, result.nextCursor);
     }
 
     if (params.cursor || !params.refreshAutomationRunsWindow) {
-        return { nextCursor: result.nextCursor };
+        return { nextCursor: result.nextCursor, traversalToken };
     }
 
     const loadedAutomationRunIds = Array.from(new Set(params.loadedAutomationRunIds ?? []));
     if (loadedAutomationRunIds.length === 0) {
-        return { nextCursor: result.nextCursor };
+        return { nextCursor: result.nextCursor, traversalToken };
     }
 
     const rowIds = new Set(automations.map((automation) => automation.id));
     const idsToRefresh = loadedAutomationRunIds.filter((automationId) => rowIds.has(automationId));
     if (idsToRefresh.length === 0) {
-        return { nextCursor: result.nextCursor };
+        return { nextCursor: result.nextCursor, traversalToken };
     }
 
     const limit = params.runsLimit ?? 20;
@@ -99,7 +110,7 @@ export async function fetchAndApplyAutomations(params: {
         }),
         loadSyncTuning().automationDefinitionDetailHydrationConcurrencyLimit,
     );
-    return { nextCursor: result.nextCursor };
+    return { nextCursor: result.nextCursor, traversalToken };
 }
 
 export async function fetchAndApplyAutomationRuns(params: {
@@ -107,20 +118,26 @@ export async function fetchAndApplyAutomationRuns(params: {
     automationId: string;
     limit?: number;
     cursor?: string;
-    setAutomationRuns: (automationId: string, runs: AutomationDefinitionRun[], nextCursor: string | null) => void;
+    traversalToken?: number;
+    setAutomationRuns: (
+        automationId: string,
+        runs: AutomationDefinitionRun[],
+        nextCursor: string | null,
+    ) => number | null;
     appendAutomationRuns: (
         automationId: string,
         expectedCursor: string,
+        expectedTraversalToken: number,
         runs: AutomationDefinitionRun[],
         nextCursor: string | null,
-    ) => void;
+    ) => boolean;
     shouldContinue?: () => boolean;
-}): Promise<{ nextCursor: string | null }> {
+}): Promise<{ nextCursor: string | null; traversalToken: number | null }> {
     const shouldContinue = params.shouldContinue ?? (() => true);
     if (!params.credentials) {
-        return { nextCursor: null };
+        return { nextCursor: null, traversalToken: null };
     }
-    if (!shouldContinue()) return { nextCursor: null };
+    if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
 
     const { serverId } = getActiveServerSnapshot();
     const automationsEnabled = await isRuntimeFeatureEnabled({
@@ -129,9 +146,9 @@ export async function fetchAndApplyAutomationRuns(params: {
         timeoutMs: 400,
     });
     if (!automationsEnabled) {
-        return { nextCursor: null };
+        return { nextCursor: null, traversalToken: null };
     }
-    if (!shouldContinue()) return { nextCursor: null };
+    if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
 
     const result = await listAutomationDefinitionRuns({
         credentials: params.credentials,
@@ -139,11 +156,21 @@ export async function fetchAndApplyAutomationRuns(params: {
         limit: params.limit,
         cursor: params.cursor,
     });
-    if (!shouldContinue()) return { nextCursor: null };
+    if (!shouldContinue()) return { nextCursor: null, traversalToken: null };
+    let traversalToken: number | null;
     if (params.cursor) {
-        params.appendAutomationRuns(params.automationId, params.cursor, result.runs, result.nextCursor);
+        if (params.traversalToken === undefined || !params.appendAutomationRuns(
+            params.automationId,
+            params.cursor,
+            params.traversalToken,
+            result.runs,
+            result.nextCursor,
+        )) {
+            return { nextCursor: null, traversalToken: null };
+        }
+        traversalToken = result.nextCursor === null ? null : params.traversalToken;
     } else {
-        params.setAutomationRuns(params.automationId, result.runs, result.nextCursor);
+        traversalToken = params.setAutomationRuns(params.automationId, result.runs, result.nextCursor);
     }
-    return { nextCursor: result.nextCursor };
+    return { nextCursor: result.nextCursor, traversalToken };
 }

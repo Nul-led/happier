@@ -119,6 +119,10 @@ import { readUiAiLaunchProfilesForLegacyUi } from '@/sync/domains/profiles/aiLau
 import { Icon } from '@/components/ui/icons/Icon';
 import { useSessionPanePluginRuntime } from '@/components/sessions/panes/useSessionPanePluginRuntime';
 import { PluginInlineSurfaceHost } from '@/components/plugins/surfaces';
+import { evaluatePluginUiPolicy } from '@/sync/domains/plugins/ui/policy';
+import { usePluginUiSessionPolicyEvaluationContext } from '@/components/sessions/model/usePluginUiSessionPolicyEvaluationContext';
+import { WorkspaceSyncRelationshipList } from '@/components/workspaces/sync/WorkspaceSyncRelationshipList';
+import { resolveSessionWorkspaceDisplayPresentation } from '@/sync/domains/session/listing/sessionWorkspaceDisplayPresentation';
 
 type RawJsonSectionId = 'agentState' | 'metadata' | 'sessionStatus' | 'session';
 type RawJsonSnapshot = Readonly<{
@@ -166,7 +170,7 @@ function buildSessionInfoMoveTargets(params: Readonly<{
         workspace: params.workspace,
     }).map((folder) => ({
             id: `session-info-move-folder:${folder.folderId}`,
-            kind: 'folder',
+            kind: 'folder' as const,
             label: folder.title,
             disabled: false,
             result: SESSION_INFO_IDLE_MOVE_RESULT,
@@ -186,10 +190,6 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const router = useRouter();
     const profile = useProfile();
     const pluginRuntime = useSessionPanePluginRuntime({ sessionId: session.id });
-    const sessionInfoSections = React.useMemo(() => (
-        Object.values(pluginRuntime.pluginUiProjection?.sessionInfoSectionsById ?? {})
-            .sort((left, right) => (left.order ?? 0) - (right.order ?? 0) || left.id.localeCompare(right.id))
-    ), [pluginRuntime.pluginUiProjection?.sessionInfoSectionsById]);
     const localDevModeEnabled = useLocalSetting('devModeEnabled');
     const devModeEnabled = isSessionDebugInformationEnabled(localDevModeEnabled);
     const sessionName = getSessionName(session);
@@ -221,6 +221,12 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
     const actionsSettingsV1 = useSetting('actionsSettingsV1');
     const sessionReplayEnabled = useSetting('sessionReplayEnabled') === true;
     const settings = useSettings();
+    const workspaceRefsV1 = useSetting('workspaceRefsV1');
+    const workspaceDisplay = React.useMemo(() => resolveSessionWorkspaceDisplayPresentation({
+        serverId: sessionServerId,
+        metadata,
+        workspaceRefs: Array.isArray(workspaceRefsV1) ? workspaceRefsV1 : [],
+    }), [metadata, sessionServerId, workspaceRefsV1]);
     const hideInactiveSessions = useSetting('hideInactiveSessions') === true;
     const { openMoveSheet } = useSessionListMoveSheet();
     const sharingSupported = useSessionSharingSupport();
@@ -246,6 +252,31 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
         projection: daemonMergedProjectionInputs?.pluginProjectionV2,
         agentId: resolveAgentIdFromSessionMetadata(metadata),
     }), [daemonMergedProjectionInputs?.pluginProjectionV2, metadata]);
+    // The mounted Session owns these availability facts. Feature decisions
+    // reuse the exact Session server snapshot and canonical feature owner;
+    // Session capability ids remain unknown until an exact capability owner
+    // supplies them rather than being inferred from presentation state.
+    const pluginPolicyContext = usePluginUiSessionPolicyEvaluationContext({
+        platform: pluginRuntime.platform,
+        settings,
+        serverId: sessionServerId,
+        serverFeaturesSnapshot: serverSnapshot,
+        facts: {
+            pluginEnabled: true,
+            sessionAgentId: agentId,
+            sessionState: sessionStatus.state,
+            machineId: pluginRuntime.machineId,
+            projectId: null,
+            browserExists: false,
+        },
+    });
+    const sessionInfoSections = React.useMemo(() => (
+        Object.values(pluginRuntime.pluginUiProjection?.sessionInfoSectionsById ?? {})
+            .map((section) => ({ section, policy: evaluatePluginUiPolicy(section, pluginPolicyContext) }))
+            .filter((entry) => entry.policy.visible)
+            .sort((left, right) => ((left.section.order ?? 0) - (right.section.order ?? 0))
+                || left.section.id.localeCompare(right.section.id))
+    ), [pluginRuntime.pluginUiProjection?.sessionInfoSectionsById, pluginPolicyContext]);
     const sessionActionDefaultBackend = React.useMemo(
         () => resolveSessionActionDefaultBackend({
             session,
@@ -894,7 +925,7 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
 
                 <SessionRetentionNotice sessionId={session.id} />
 
-                {sessionInfoSections.map((section) => (
+                {sessionInfoSections.map(({ section, policy }) => (
                     <View
                         key={section.id}
                         style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%', paddingHorizontal: 16, marginBottom: 8 }}
@@ -908,7 +939,9 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                             pluginUiProjection={pluginRuntime.pluginUiProjection}
                             platform={pluginRuntime.platform}
                             projectionInteractionEnabled={pluginRuntime.phase === 'current'
-                                && pluginRuntime.interactionEnabled === true}
+                                && pluginRuntime.interactionEnabled === true
+                                && policy.enabled}
+                            policyContext={pluginPolicyContext}
                         />
                     </View>
                 ))}
@@ -954,6 +987,8 @@ function SessionInfoContent({ session, sessionServerId, sourceMachineIdForHandof
                         showChevron={false}
                     />
                 </ItemGroup>
+
+                <WorkspaceSyncRelationshipList workspaceRefId={workspaceDisplay.workspaceRefId} />
 
                 {/* Quick Actions */}
                 <ItemGroup title={t('sessionInfo.quickActions')}>

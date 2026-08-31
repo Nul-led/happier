@@ -109,7 +109,7 @@ describe('activeServerSwitch device scope', () => {
             scope: 'device',
         });
 
-        expect(switched).toBe(true);
+        expect(switched).toBe('switched');
         expect(profiles.getTabActiveServerId()).toBeNull();
         expect(profiles.getDeviceDefaultServerId()).toBe(tabProfile.id);
         expect(profiles.getActiveServerId()).toBe(tabProfile.id);
@@ -137,7 +137,7 @@ describe('activeServerSwitch device scope', () => {
             scope: 'device',
         });
 
-        expect(switched).toBe(true);
+        expect(switched).toBe('switched');
         expect(profiles.getTabActiveServerId()).toBeNull();
         expect(profiles.getDeviceDefaultServerId()).toBe(tabProfile.id);
         expect(profiles.getActiveServerUrl()).toBe('https://tab.example.test');
@@ -160,7 +160,7 @@ describe('activeServerSwitch device scope', () => {
             scope: 'device',
         });
 
-        expect(switched).toBe(false);
+        expect(switched).toBe('already_active');
         expect(profiles.getActiveServerId()).toBe('srv_identity_123');
         expect(profiles.getDeviceDefaultServerId()).toBe(profile.id);
     });
@@ -192,13 +192,130 @@ describe('activeServerSwitch device scope', () => {
             refreshAuth,
         });
 
-        expect(switched).toBe(false);
+        expect(switched).toBe('blocked');
         expect(presentCredentialLifecycleSpy).toHaveBeenCalledTimes(1);
         expect(guardCredentialMutationSpy).toHaveBeenCalledTimes(1);
         expect(profiles.getActiveServerId()).toBe(activeProfile.id);
         expect(profiles.getDeviceDefaultServerId()).toBe(activeProfile.id);
         expect(switchConnectionToActiveServerSpy).not.toHaveBeenCalled();
         expect(refreshAuth).not.toHaveBeenCalled();
+    });
+
+    it('restores device and tab focus and reapplies the prior connection when target readiness rejects', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        stubWebRuntime('https://origin.example.test');
+
+        const targetFailure = new Error('iroh identity verification failed');
+        switchConnectionToActiveServerSpy
+            .mockRejectedValueOnce(targetFailure)
+            .mockResolvedValueOnce(null);
+        const { profiles, switches } = await importFreshServerModules();
+        const deviceProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://device.example.test',
+            name: 'Device',
+        });
+        const tabProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://tab.example.test',
+            name: 'Tab',
+        });
+        const targetProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://target.example.test',
+            name: 'Target',
+        });
+        profiles.setActiveServerId(deviceProfile.id, { scope: 'device' });
+        profiles.setActiveServerId(tabProfile.id, { scope: 'tab' });
+        const priorActive = profiles.getActiveServerSnapshot();
+        const refreshAuth = vi.fn(async () => {});
+
+        await expect(switches.setActiveServerAndSwitch({
+            serverId: targetProfile.id,
+            scope: 'device',
+            refreshAuth,
+        })).rejects.toBe(targetFailure);
+
+        expect(profiles.getDeviceDefaultServerId()).toBe(deviceProfile.id);
+        expect(profiles.getTabActiveServerId()).toBe(tabProfile.id);
+        const { generation: priorGeneration, ...priorActiveTarget } = priorActive;
+        const { generation: restoredGeneration, ...restoredActiveTarget } = profiles.getActiveServerSnapshot();
+        expect(restoredActiveTarget).toEqual(priorActiveTarget);
+        expect(restoredGeneration).toBeGreaterThan(priorGeneration);
+        expect(switchConnectionToActiveServerSpy).toHaveBeenCalledTimes(2);
+        expect(refreshAuth).not.toHaveBeenCalled();
+    });
+
+    it('restores device and tab focus and reapplies the prior connection when auth refresh rejects', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        stubWebRuntime('https://origin.example.test');
+
+        const refreshFailure = new Error('active server auth refresh failed');
+        const { profiles, switches } = await importFreshServerModules();
+        const deviceProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://device.example.test',
+            name: 'Device',
+        });
+        const tabProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://tab.example.test',
+            name: 'Tab',
+        });
+        const targetProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://target.example.test',
+            name: 'Target',
+        });
+        profiles.setActiveServerId(deviceProfile.id, { scope: 'device' });
+        profiles.setActiveServerId(tabProfile.id, { scope: 'tab' });
+        const priorActive = profiles.getActiveServerSnapshot();
+        const refreshAuth = vi.fn(async () => {
+            throw refreshFailure;
+        });
+
+        await expect(switches.setActiveServerAndSwitch({
+            serverId: targetProfile.id,
+            scope: 'device',
+            refreshAuth,
+        })).rejects.toBe(refreshFailure);
+
+        expect(refreshAuth).toHaveBeenCalledTimes(1);
+        expect(profiles.getDeviceDefaultServerId()).toBe(deviceProfile.id);
+        expect(profiles.getTabActiveServerId()).toBe(tabProfile.id);
+        const { generation: priorGeneration, ...priorActiveTarget } = priorActive;
+        const { generation: restoredGeneration, ...restoredActiveTarget } = profiles.getActiveServerSnapshot();
+        expect(restoredActiveTarget).toEqual(priorActiveTarget);
+        expect(restoredGeneration).toBeGreaterThan(priorGeneration);
+        expect(switchConnectionToActiveServerSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps the target failure visible when reapplying the prior connection also fails', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        stubWebRuntime('https://origin.example.test');
+
+        const targetFailure = new Error('target readiness failed');
+        const rollbackFailure = new Error('prior connection reapply failed');
+        switchConnectionToActiveServerSpy
+            .mockRejectedValueOnce(targetFailure)
+            .mockRejectedValueOnce(rollbackFailure);
+        const { profiles, switches } = await importFreshServerModules();
+        const activeProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://active.example.test',
+            name: 'Active',
+        });
+        const targetProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://target.example.test',
+            name: 'Target',
+        });
+        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+
+        const switchPromise = switches.setActiveServerAndSwitch({
+            serverId: targetProfile.id,
+            scope: 'tab',
+        });
+
+        await expect(switchPromise).rejects.toEqual(expect.objectContaining({
+            name: 'AggregateError',
+            errors: [targetFailure, rollbackFailure],
+        }));
+        expect(profiles.getDeviceDefaultServerId()).toBe(activeProfile.id);
+        expect(profiles.getTabActiveServerId()).toBeNull();
+        expect(profiles.getActiveServerId()).toBe(activeProfile.id);
     });
 
     it('surfaces retained marked custody after switching to its server', async () => {
@@ -228,7 +345,7 @@ describe('activeServerSwitch device scope', () => {
             scope: 'device',
         });
 
-        expect(switched).toBe(true);
+        expect(switched).toBe('switched');
         expect(profiles.getActiveServerId()).toBe(targetProfile.id);
         expect(presentCredentialLifecycleSpy).toHaveBeenCalledTimes(2);
         expect(guardCredentialMutationSpy).toHaveBeenNthCalledWith(2, {

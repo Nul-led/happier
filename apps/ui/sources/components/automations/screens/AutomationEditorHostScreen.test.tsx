@@ -37,6 +37,10 @@ const latestEditorProps = vi.hoisted(() => ({
     value: null as any,
 }));
 
+vi.mock('@react-navigation/native', () => ({
+    usePreventRemove: () => undefined,
+}));
+
 vi.mock('@/components/automations/editor/AutomationPluralEditorScreen', () => ({
     AutomationPluralEditorScreen: (props: any) => {
         latestEditorProps.value = props;
@@ -368,6 +372,25 @@ describe('AutomationEditorHostScreen', () => {
         expect(screen).toBeDefined();
     });
 
+    it('keeps a hydrated editor draft until the user explicitly discards it before canceling', async () => {
+        await mountHost({});
+        await flushRender();
+
+        const editor = latestEditorProps.value;
+        await act(async () => editor.onChange({
+            ...editor.value,
+            name: 'Unsaved automation name',
+        }));
+
+        await act(async () => latestEditorProps.value.onCancel());
+        expect(routerBackSpy).not.toHaveBeenCalled();
+        expect(modalAlertSpy).toHaveBeenCalledTimes(1);
+
+        const buttons = modalAlertSpy.mock.calls[0]?.[2] as Array<{ onPress?: () => void }>;
+        await act(async () => buttons[0]?.onPress?.());
+        expect(routerBackSpy).toHaveBeenCalledTimes(1);
+    });
+
     it('retires the mounted server-bound draft when the active account scope changes', async () => {
         const screen = await mountHost({});
         await flushRender();
@@ -460,7 +483,7 @@ describe('AutomationEditorHostScreen', () => {
         expect(modalAlertSpy).not.toHaveBeenCalled();
     });
 
-    it('refuses to save a changed lifecycle row whose source turn is no longer current', async () => {
+    it('allows disabling a historical lifecycle row without retargeting its completed source turn', async () => {
         await mountHost({});
         await flushRender();
 
@@ -477,12 +500,9 @@ describe('AutomationEditorHostScreen', () => {
         await act(async () => editor.onSubmit());
         await flushRender();
 
-        expect(syncSpies.saveAutomationEditorDraft).not.toHaveBeenCalled();
-        expect(syncSpies.refreshSessions).toHaveBeenCalled();
-        expect(modalAlertSpy).toHaveBeenCalledWith(
-            'automations.exactTurn.staleTitle',
-            'automations.exactTurn.staleBody',
-        );
+        expect(syncSpies.saveAutomationEditorDraft).toHaveBeenCalledTimes(1);
+        expect(syncSpies.refreshSessions).not.toHaveBeenCalled();
+        expect(modalAlertSpy).not.toHaveBeenCalled();
     });
 
     it('presents the existing-session target as non-selectable so the source always differs', async () => {

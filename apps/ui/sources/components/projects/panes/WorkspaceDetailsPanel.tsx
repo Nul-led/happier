@@ -50,6 +50,8 @@ import { createWorkspaceDetailsSurfaceRenderers } from './details/surfaces/works
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolveNewSessionDraftRouteIdentity } from '@/components/sessions/new/navigation/newSessionDraftRouteIdentity';
 import { buildNewSessionLaunchRouteParams } from '@/components/sessions/new/navigation/newSessionRouteParams';
+import { WorkspaceSyncRelationshipList } from '@/components/workspaces/sync/WorkspaceSyncRelationshipList';
+import { createWorkspaceSyncConflictDetailsTab } from '@/components/workspaces/sync/workspaceSyncConflictDetailsTab';
 
 export type WorkspaceDetailsPanelHeaderActionRenderParams = Readonly<{
     iconButtonStyle: Readonly<Record<string, unknown>>;
@@ -192,6 +194,9 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
     const openBrowserLaunchpadTab = React.useCallback(() => {
         pane.openDetailsTab(createBrowserLaunchpadDetailsTab(), { intent: 'pinned' });
     }, [pane]);
+    const openWorkspaceSyncConflicts = React.useCallback((summary: Parameters<typeof createWorkspaceSyncConflictDetailsTab>[0]) => {
+        pane.openDetailsTab(createWorkspaceSyncConflictDetailsTab(summary, props.workspaceRef.id), { intent: 'pinned' });
+    }, [pane, props.workspaceRef.id]);
 
     const renderEmptyState = React.useCallback(() => (
         <ItemList testID="project-details-info" containerStyle={{ paddingTop: 12 }}>
@@ -200,6 +205,7 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
                 <Item title={t('projects.detail.fields.machine')} detail={machineName} mode="info" />
                 <Item title={t('projects.detail.fields.path')} detail={displayPath} mode="info" copy={displayPath} />
             </ItemGroup>
+            <WorkspaceSyncRelationshipList workspaceRefId={props.workspaceRef.id} onOpenConflicts={openWorkspaceSyncConflicts} />
             {props.renderEmptyStateSupplementaryContent ? props.renderEmptyStateSupplementaryContent() : null}
             <View style={{ alignItems: 'center', paddingHorizontal: 24, paddingTop: 6 }}>
                 <Text style={{ color: theme.colors.text.secondary, fontSize: 13, ...Typography.default(), textAlign: 'center', maxWidth: 680 }}>
@@ -225,8 +231,9 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
                 <Item title={t('projects.detail.fields.machine')} detail={machineName} mode="info" />
                 <Item title={t('projects.detail.fields.path')} detail={displayPath} mode="info" copy={displayPath} />
             </ItemGroup>
+            <WorkspaceSyncRelationshipList workspaceRefId={props.workspaceRef.id} onOpenConflicts={openWorkspaceSyncConflicts} />
         </ItemList>
-    ), [displayName, displayPath, machineName]);
+    ), [displayName, displayPath, machineName, openWorkspaceSyncConflicts, props.workspaceRef.id]);
 
     const detailsSurfaceScope = React.useMemo<DetailsSurfaceScopeV1>(() => ({
         kind: 'project',

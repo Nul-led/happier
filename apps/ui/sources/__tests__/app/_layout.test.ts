@@ -149,6 +149,7 @@ vi.mock('@/constants/Typography', () => {
             default: () => ({}),
             header: () => ({}),
             mono: () => ({}),
+            rowMeta: () => ({}),
         },
     };
 });

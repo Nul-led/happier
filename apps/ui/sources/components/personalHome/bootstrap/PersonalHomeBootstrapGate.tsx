@@ -3,6 +3,7 @@ import * as React from 'react';
 import { isDesktopOverlayWindowContext } from '@/desktop/window/isDesktopOverlayWindowContext';
 
 import { PersonalHomeSetupSurface } from '../setup/PersonalHomeSetupSurface';
+import { PersonalHomeRecoveryStrip } from './PersonalHomeRecoveryStrip';
 import type { PersonalHomeBootstrapOperation, PersonalHomeFacts } from './personalHomeBootstrapTypes';
 import {
     isPersonalHomeDesktopHost,
@@ -18,7 +19,10 @@ export type PersonalHomeBootstrapGateProps = Readonly<{
     initialFacts?: PersonalHomeFacts | null;
     isDesktopHost?: boolean;
     isDesktopMainWindow?: boolean;
+    /** Explicit recovery/callback routes must remain reachable before setup completes. */
+    bypass?: boolean;
     onUseExisting?: () => void;
+    useExistingRuntimeOperation?: PersonalHomeBootstrapOperationRunner;
     onUseAnotherHome?: () => void;
     onOpenDetails?: () => void;
     setupSurface?: (props: React.ComponentProps<typeof PersonalHomeSetupSurface>) => React.ReactNode;
@@ -28,6 +32,7 @@ function passThroughFacts(): Promise<PersonalHomeFacts> {
     return Promise.resolve({
         hostIsDesktop: false,
         isDesktopMainWindow: false,
+        explicitlySelectedOtherHome: false,
         completedPersonalHomeProfile: null,
         candidateLocalProfile: null,
         relayRuntime: null,
@@ -48,16 +53,42 @@ function passThroughFacts(): Promise<PersonalHomeFacts> {
 export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps): React.ReactElement {
     const isDesktop = props.isDesktopHost ?? isPersonalHomeDesktopHost();
     const isMainWindow = props.isDesktopMainWindow ?? !isDesktopOverlayWindowContext();
-    const enabled = isDesktop && isMainWindow && props.readFacts != null;
+    const enabled = isDesktop && isMainWindow && props.bypass !== true && props.readFacts != null;
     const controller = usePersonalHomeBootstrapController({
         readFacts: props.readFacts ?? passThroughFacts,
         operations: props.operations,
         initialFacts: props.initialFacts,
         enabled,
     });
+    const handleUseExisting = React.useCallback(() => {
+        if (props.useExistingRuntimeOperation) {
+            void controller.execute(props.useExistingRuntimeOperation);
+            return;
+        }
+        props.onUseExisting?.();
+    }, [controller.execute, props.onUseExisting, props.useExistingRuntimeOperation]);
 
     if (!enabled || !controller.snapshot.shouldGateShell) {
-        return <>{props.children}</>;
+        // The shell is released once Home readiness is derived from facts. A post-shell daemon
+        // failure stays scoped to a recovery strip in the same frame; the first-run gate never
+        // reopens for it.
+        const showPostShellRecovery = enabled
+            && controller.error != null
+            && controller.snapshot.homeReady
+            && controller.snapshot.shouldGateShell === false;
+        return (
+            <>
+                {props.children}
+                {showPostShellRecovery ? (
+                    <PersonalHomeRecoveryStrip
+                        kind={controller.facts?.completedPersonalHomeProfile ? 'computer' : 'profile'}
+                        activeTask={controller.facts?.activeTask ?? null}
+                        onOpenDetails={props.onOpenDetails}
+                        onRetry={controller.retry}
+                    />
+                ) : null}
+            </>
+        );
     }
 
     const setupProps: React.ComponentProps<typeof PersonalHomeSetupSurface> = {
@@ -65,7 +96,9 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
         activeTask: controller.facts?.activeTask ?? null,
         onRetry: controller.retry,
         onOpenDetails: props.onOpenDetails,
-        onUseExisting: props.onUseExisting,
+        onUseExisting: props.useExistingRuntimeOperation || props.onUseExisting
+            ? handleUseExisting
+            : undefined,
         onUseAnotherHome: props.onUseAnotherHome,
     };
     return (

@@ -19,6 +19,7 @@ const SET_BOUNDS_COMMAND = 'desktop_hosted_artifact_set_bounds';
 const POST_MESSAGE_COMMAND = 'desktop_hosted_artifact_post_message';
 const GO_BACK_COMMAND = 'desktop_hosted_artifact_go_back';
 const CLOSE_VIEW_COMMAND = 'desktop_hosted_artifact_close_view';
+const DESKTOP_ARTIFACT_VIEW_UNAVAILABLE = 'desktop_hosted_artifact_view_unavailable';
 
 type DesktopArtifactBridge = Readonly<{
     expectedOrigin: string;
@@ -111,6 +112,18 @@ function isOpenedResult(value: unknown): boolean {
     return isRecord(value) && value.kind === 'opened' && hasExactlyKeys(value, ['kind']);
 }
 
+function readViewCommandFailureCode(value: unknown): string | null {
+    if (isRecord(value) && value.kind === 'ok' && hasExactlyKeys(value, ['kind'])) return null;
+    if (isRecord(value)
+        && value.kind === 'unavailable'
+        && typeof value.code === 'string'
+        && value.code.length > 0
+        && hasExactlyKeys(value, ['kind', 'code'])) {
+        return value.code;
+    }
+    return DESKTOP_ARTIFACT_VIEW_UNAVAILABLE;
+}
+
 function readGoBackHandledResult(value: unknown): boolean | null {
     return isRecord(value)
         && value.kind === 'handled'
@@ -180,6 +193,13 @@ function PluginHostedArtifactDesktopViewLifetime(props: DesktopArtifactViewProps
     const loadStateRef = React.useRef(props.nativeArtifactLoadState ?? 'loading');
     loadStateRef.current = props.nativeArtifactLoadState ?? 'loading';
 
+    const retireFailedNativeArtifact = React.useCallback((code: string) => {
+        if (!mountedRef.current) return;
+        mountedRef.current = false;
+        pendingGuestMessagesRef.current = [];
+        callbacksRef.current.onNativeArtifactLoadError?.({ nativeEvent: { code } });
+    }, []);
+
     const dispatchGuestMessage = React.useCallback((message: GuestMessage) => {
         if (!viewId || !openedRef.current || !mountedRef.current) return;
         void invokeDesktopHost<unknown>(POST_MESSAGE_COMMAND, {
@@ -188,8 +208,13 @@ function PluginHostedArtifactDesktopViewLifetime(props: DesktopArtifactViewProps
                 token: props.artifact.artifactHandleToken,
                 message,
             },
-        }).catch(() => undefined);
-    }, [props.artifact.artifactHandleToken, viewId]);
+        }).then((result) => {
+            const failureCode = readViewCommandFailureCode(result);
+            if (failureCode) retireFailedNativeArtifact(failureCode);
+        }, () => {
+            retireFailedNativeArtifact(DESKTOP_ARTIFACT_VIEW_UNAVAILABLE);
+        });
+    }, [props.artifact.artifactHandleToken, retireFailedNativeArtifact, viewId]);
 
     const postGuestMessage = React.useCallback((message: GuestMessage) => {
         if (!viewId || !mountedRef.current) return;
@@ -234,7 +259,7 @@ function PluginHostedArtifactDesktopViewLifetime(props: DesktopArtifactViewProps
             return;
         }
         if (event.kind === 'error') {
-            callbacksRef.current.onNativeArtifactLoadError?.({ nativeEvent: event });
+            retireFailedNativeArtifact(event.code);
             return;
         }
         if (event.kind !== 'message') return;
@@ -251,7 +276,7 @@ function PluginHostedArtifactDesktopViewLifetime(props: DesktopArtifactViewProps
             const parsed = PluginHostedWebBridgeResponseEnvelopeV1Schema.safeParse(value);
             if (parsed.success) postGuestMessage(parsed.data);
         }).catch(() => undefined);
-    }, [postGuestMessage, viewId]);
+    }, [postGuestMessage, retireFailedNativeArtifact, viewId]);
 
     React.useEffect(() => {
         const attach = props.bridge?.attachHostMessages;

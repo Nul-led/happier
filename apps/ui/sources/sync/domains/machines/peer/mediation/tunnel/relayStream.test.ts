@@ -6,19 +6,19 @@ import {
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
     PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
     PeerTcpTunnelRelayBinaryEnvelopeV2Schema,
-    type PeerTcpTunnelFrameV1,
     type PeerTcpTunnelOpenV1,
     type PeerTcpTunnelRelayEnvelope,
 } from '@happier-dev/protocol';
+import type { PeerTcpTunnelFrame } from '@happier-dev/peer-transport/duplexFrames';
 import { describe, expect, it, vi } from 'vitest';
 
 type DynamicModule = Record<string, unknown>;
 type TestStream = Readonly<{
-    sendFrame: (frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>) => Promise<void> | void;
-    onFrame: (handler: (frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>) => void) => () => void;
+    sendFrame: (frame: PeerTcpTunnelFrame) => Promise<void> | void;
+    onFrame: (handler: (frame: PeerTcpTunnelFrame) => void) => () => void;
     onSubstreamFrame?: (handler: (event: Readonly<{
         substreamId: string;
-        frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>;
+        frame: PeerTcpTunnelFrame;
     }>) => void) => () => void;
     close: () => Promise<void> | void;
 }>;
@@ -186,10 +186,10 @@ describe('openPeerTcpTunnelRelayStream', () => {
                 };
             },
         }) as TestStream;
-        const seen: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>[] = [];
+        const seen: PeerTcpTunnelFrame[] = [];
         stream.onFrame((frame) => seen.push(frame));
 
-        const frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }> = {
+        const frame: PeerTcpTunnelFrame = {
             v: 1,
             kind: 'ack',
             tunnelId: 'tun_1',
@@ -257,7 +257,7 @@ describe('openPeerTcpTunnelRelayStream', () => {
             tunnelId: 'tun_1',
             direction: 'client_to_daemon',
             sequence: 9,
-            payloadBase64,
+            payload: pcmBytes,
         });
 
         const binaryEnvelope = sent.at(-1)?.envelope;

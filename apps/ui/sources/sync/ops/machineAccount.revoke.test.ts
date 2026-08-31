@@ -78,15 +78,14 @@ describe('machineRevokeWithProviderCleanup', () => {
             }],
             secretBindingsByConnectionId: { pc_a: { byMachineId: { revoked: { apiKey: 'secret-a' }, kept: { apiKey: 'secret-b' } } } },
         });
-        const mutateAccountSettings = vi.fn(async (
-            mutate: (current: Readonly<Record<string, unknown>>) => Record<string, unknown>,
-        ) => {
+        const mutateAccountSettingsOnce = vi.fn(async ({ mutate }: any) => {
             const next = mutate({ providerSettingsV1: settings });
-            settings = ProviderSettingsV1Schema.parse(next.providerSettingsV1);
+            settings = ProviderSettingsV1Schema.parse(next.settings.providerSettingsV1);
+            return { status: 'applied' as const, settingsVersion: 2, value: next.value };
         });
-        await expect(machineRevokeWithProviderCleanup('revoked', {
+        await expect(machineRevokeWithProviderCleanup('revoked', 1, {
             revoke: vi.fn(async () => ({ ok: true as const })),
-            mutateAccountSettings,
+            mutateAccountSettingsOnce,
         })).resolves.toEqual({ ok: true, machineAlreadyRevoked: false, providerCleanup: 'complete' });
         expect(settings.machineGrants).toEqual([]);
         expect(settings.connections[0]?.endpointOverridesByMachineId).toEqual({
@@ -111,26 +110,25 @@ describe('machineRevokeWithProviderCleanup', () => {
                 },
             }],
         });
-        const mutateAccountSettings = vi.fn()
+        const mutateAccountSettingsOnce = vi.fn()
             .mockRejectedValueOnce(new Error('offline'))
-            .mockImplementationOnce(async (
-                mutate: (current: Readonly<Record<string, unknown>>) => Record<string, unknown>,
-            ) => {
-                mutate({ providerSettingsV1: settings });
+            .mockImplementationOnce(async ({ mutate }: any) => {
+                const next = mutate({ providerSettingsV1: settings });
+                return { status: 'applied', settingsVersion: 2, value: next.value };
             });
         const revoke = vi.fn()
             .mockResolvedValueOnce({ ok: true })
             .mockResolvedValueOnce({ ok: false, status: 410, error: 'machine_revoked' });
-        const deps = { revoke, mutateAccountSettings };
-        await expect(machineRevokeWithProviderCleanup('revoked', deps)).resolves.toEqual({
+        const deps = { revoke, mutateAccountSettingsOnce };
+        await expect(machineRevokeWithProviderCleanup('revoked', 1, deps)).resolves.toEqual({
             ok: false, status: 503, error: 'provider_cleanup_pending', machineRevoked: true, providerCleanup: 'pending', retryable: true,
         });
-        await expect(machineRevokeWithProviderCleanup('revoked', deps)).resolves.toEqual({
+        await expect(machineRevokeWithProviderCleanup('revoked', 1, deps)).resolves.toEqual({
             ok: true, machineAlreadyRevoked: true, providerCleanup: 'complete',
         });
     });
 
-    it('recomputes cleanup against the canonical CAS winner and preserves concurrent Provider changes', async () => {
+    it('reports a conflict without replaying Provider cleanup against a later winner', async () => {
         const initial = ProviderSettingsV1Schema.parse({
             ...DEFAULT_PROVIDER_SETTINGS_V1,
             connections: [{
@@ -152,24 +150,20 @@ describe('machineRevokeWithProviderCleanup', () => {
                 pc_a: [{ id: 'concurrent/model', addedAt: 9 }],
             },
         });
-        let committed = initial;
-        const mutateAccountSettings = vi.fn(async (
-            mutate: (current: Readonly<Record<string, unknown>>) => Record<string, unknown>,
-        ) => {
-            mutate({ providerSettingsV1: initial }); // first CAS candidate loses to the concurrent writer
-            committed = ProviderSettingsV1Schema.parse(
-                mutate({ providerSettingsV1: concurrentWinner }).providerSettingsV1,
-            ); // retry must derive from the winner
+        const mutateAccountSettingsOnce = vi.fn(async ({ mutate }: any) => {
+            mutate({ providerSettingsV1: initial });
+            return { status: 'conflict' as const, currentSettingsVersion: 2 };
         });
 
-        await expect(machineRevokeWithProviderCleanup('revoked', {
+        await expect(machineRevokeWithProviderCleanup('revoked', 1, {
             revoke: vi.fn(async () => ({ ok: true as const })),
-            mutateAccountSettings,
+            mutateAccountSettingsOnce,
         })).resolves.toEqual({
-            ok: true, machineAlreadyRevoked: false, providerCleanup: 'complete',
+            ok: false, status: 503, error: 'provider_cleanup_pending', machineRevoked: true,
+            providerCleanup: 'pending', retryable: true,
         });
-        expect(committed.machineGrants).toEqual([]);
-        expect(readOwnRecordValue(committed.manualModelsByConnectionId, 'pc_a')).toEqual([
+        expect(mutateAccountSettingsOnce).toHaveBeenCalledTimes(1);
+        expect(readOwnRecordValue(concurrentWinner.manualModelsByConnectionId, 'pc_a')).toEqual([
             { id: 'concurrent/model', addedAt: 9 },
         ]);
     });
@@ -188,15 +182,15 @@ describe('machineRevokeWithProviderCleanup', () => {
             providerSettingsV1: futureSubtree,
         };
         const before = JSON.stringify(raw.providerSettingsV1);
-        const mutateAccountSettings = vi.fn(async (
-            mutate: (current: Readonly<Record<string, unknown>>) => Record<string, unknown>,
-        ) => {
-            raw = mutate(raw);
+        const mutateAccountSettingsOnce = vi.fn(async ({ mutate }: any) => {
+            const next = mutate(raw);
+            raw = next.settings;
+            return { status: 'applied' as const, settingsVersion: 2, value: next.value };
         });
 
-        await expect(machineRevokeWithProviderCleanup('revoked', {
+        await expect(machineRevokeWithProviderCleanup('revoked', 1, {
             revoke: vi.fn(async () => ({ ok: true as const })),
-            mutateAccountSettings,
+            mutateAccountSettingsOnce,
         })).resolves.toMatchObject({
             ok: false,
             machineRevoked: true,
@@ -210,15 +204,15 @@ describe('machineRevokeWithProviderCleanup', () => {
     it('leaves a malformed Provider subtree byte-for-byte untouched', async () => {
         const malformed = Object.freeze({ v: 1, connections: 'not-a-list' });
         let raw: Record<string, unknown> = { providerSettingsV1: malformed };
-        const mutateAccountSettings = vi.fn(async (
-            mutate: (current: Readonly<Record<string, unknown>>) => Record<string, unknown>,
-        ) => {
-            raw = mutate(raw);
+        const mutateAccountSettingsOnce = vi.fn(async ({ mutate }: any) => {
+            const next = mutate(raw);
+            raw = next.settings;
+            return { status: 'applied' as const, settingsVersion: 2, value: next.value };
         });
 
-        await expect(machineRevokeWithProviderCleanup('revoked', {
+        await expect(machineRevokeWithProviderCleanup('revoked', 1, {
             revoke: vi.fn(async () => ({ ok: true as const })),
-            mutateAccountSettings,
+            mutateAccountSettingsOnce,
         })).resolves.toMatchObject({
             ok: false,
             machineRevoked: true,

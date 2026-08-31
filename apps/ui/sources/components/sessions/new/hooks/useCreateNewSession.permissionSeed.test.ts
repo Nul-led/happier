@@ -66,6 +66,28 @@ type SessionSpawnNewSuccessResult = Extract<SessionSpawnNewResultV1, Readonly<{ 
 
 type AutomationEditorSaveCapture = AutomationEditorDraft | null;
 
+function createCompatibleTestProfile(id = 'profile-test') {
+    return AIBackendProfileSchema.parse({
+        id,
+        name: 'Profile Test',
+        description: undefined,
+        environmentVariables: [],
+        envVarRequirements: [],
+        compatibility: {},
+        defaultPermissionModeByAgent: {},
+        defaultPermissionModeByTargetKey: {},
+        defaultPersistenceModeByAgent: {},
+        defaultPersistenceModeByTargetKey: {},
+        compatibilityByTargetKey: {
+            [buildBackendTargetKey({ kind: 'builtInAgent', agentId: 'codex' })]: true,
+        },
+        isBuiltIn: false,
+        createdAt: 1,
+        updatedAt: 1,
+        version: '1.0.0',
+    });
+}
+
 function createScheduleAutomationDraft(params: Readonly<{
     name: string;
     description?: string;
@@ -349,18 +371,6 @@ async function setupUseCreateNewSessionHarness() {
     // above are both for server-a/account-a, so mount that scope through the
     // incumbent store owner instead of registering a test-only reader.
     scopeStorage.setState({ profileScope: { serverId: 'server-a', accountId: 'account-a' } });
-    vi.doMock('@/sync/domains/server/selection/serverSelectionResolver', () => ({
-        resolveNewSessionServerTarget: vi.fn((params: { requestedServerId?: string | null; allowedServerIds: string[] }) => ({
-            targetServerId:
-                params.requestedServerId && params.allowedServerIds.includes(params.requestedServerId)
-                    ? params.requestedServerId
-                    : params.allowedServerIds[0] ?? null,
-            rejectedRequestedServerId:
-                params.requestedServerId && !params.allowedServerIds.includes(params.requestedServerId)
-                    ? params.requestedServerId
-                    : null,
-        })),
-    }));
     vi.doMock('@/sync/domains/profiles/profileUtils', () => ({
         getBuiltInProfile: vi.fn(() => null),
     }));
@@ -1162,7 +1172,7 @@ describe('useCreateNewSession permission seeding', () => {
         });
     });
 
-    it('falls back to active server when targetServerId is outside the allowed target server IDs', async () => {
+    it('does not call the active Home when upstream rejects an explicit device-global target', async () => {
         const {
             useCreateNewSession,
             modalAlertSpy,
@@ -1205,8 +1215,8 @@ describe('useCreateNewSession permission seeding', () => {
                 selectedSecretIdByProfileIdByEnvVarName: {},
                 sessionOnlySecretValueByProfileIdByEnvVarName: {},
                 selectedMachineCapabilities: null,
-                targetServerId: 'server-c',
-                allowedTargetServerIds: ['server-a'],
+                targetServerId: null,
+                allowedTargetServerIds: [],
             });
 
             handleCreateSession = hook.handleCreateSession as () => Promise<void>;
@@ -1219,9 +1229,8 @@ describe('useCreateNewSession permission seeding', () => {
             await handleCreateSession?.();
         });
 
-        expect(modalAlertSpy).not.toHaveBeenCalledWith('common.error', 'newSession.serverSelectionUnavailable');
-        expect(captured.value).not.toBeNull();
-        expect(captured.value?.executionTarget.serverId).toBe('server-a');
+        expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'newSession.failedToStart');
+        expect(captured.value).toBeNull();
     });
 
     it('admits scoped repo-native first prompts atomically through the strict Action', async () => {
@@ -2139,6 +2148,147 @@ describe('useCreateNewSession permission seeding', () => {
             initialInput: { text: 'PROMPT' },
         }));
         expect(syncSendMessageSpy).not.toHaveBeenCalled();
+    });
+
+    it('records the selected profile only after Session creation succeeds', async () => {
+        const {
+            useCreateNewSession,
+            applySettingsSpy,
+            mockSessionSpawnSuccess,
+            sessionSpawnNewRpcSpy,
+        } = await setupUseCreateNewSessionHarness();
+
+        let handleCreateSession: null | (() => Promise<void>) = null;
+        const machineEnvPresence: UseMachineEnvPresenceResult = {
+            isPreviewEnvSupported: false,
+            isLoading: false,
+            meta: {},
+            refreshedAt: null,
+            refresh: () => {},
+        };
+
+        function Test() {
+            const hook = useCreateNewSession({
+                launchIntentSignature: 'test-launch-intent',
+                router: { push: vi.fn(), replace: vi.fn() },
+                selectedMachineId: 'm1',
+                selectedPath: '/tmp',
+                selectedMachine: { metadata: {} },
+                setIsCreating: vi.fn(),
+                setIsResumeSupportChecking: vi.fn(),
+                settings: { experiments: false } as unknown as Settings,
+                useProfiles: true,
+                selectedProfileId: 'profile-test',
+                profileMap: new Map([['profile-test', createCompatibleTestProfile()]]),
+                recentMachinePaths: [],
+                agentType: 'codex',
+                permissionMode: 'acceptEdits' as unknown as PermissionMode,
+                modelMode: 'default' as ModelMode,
+                promptStore: createNewSessionPromptStore('PROMPT'),
+                resumeSessionId: '',
+                agentNewSessionOptions: null,
+                machineEnvPresence,
+                secrets: [],
+                secretBindingsByProfileId: {},
+                selectedSecretIdByProfileIdByEnvVarName: {},
+                sessionOnlySecretValueByProfileIdByEnvVarName: {},
+                selectedMachineCapabilities: null,
+                targetServerId: 'server-a',
+                allowedTargetServerIds: ['server-a'],
+            });
+            handleCreateSession = hook.handleCreateSession as () => Promise<void>;
+            return React.createElement('View');
+        }
+
+        await renderScreen(React.createElement(Test));
+        await act(async () => {
+            await handleCreateSession?.();
+        });
+
+        expect(sessionSpawnNewRpcSpy).toHaveBeenCalledOnce();
+        expect(applySettingsSpy.mock.calls).not.toContainEqual([
+            expect.objectContaining({ lastUsedProfile: 'profile-test' }),
+        ]);
+
+        mockSessionSpawnSuccess('sess_profile_success');
+        await act(async () => {
+            await handleCreateSession?.();
+        });
+
+        const lastUsedProfileCall = applySettingsSpy.mock.calls.find(
+            ([delta]) => (delta as Record<string, unknown>).lastUsedProfile === 'profile-test',
+        );
+        expect(lastUsedProfileCall).toBeDefined();
+        expect(applySettingsSpy.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+            sessionSpawnNewRpcSpy.mock.invocationCallOrder.at(-1) ?? Number.MAX_SAFE_INTEGER,
+        );
+    });
+
+    it('does not record an invalid profile selection as last used', async () => {
+        const {
+            useCreateNewSession,
+            applySettingsSpy,
+            sessionSpawnNewRpcSpy,
+        } = await setupUseCreateNewSessionHarness();
+
+        let handleCreateSession: null | (() => Promise<void>) = null;
+        const incompatibleProfile = AIBackendProfileSchema.parse({
+            ...createCompatibleTestProfile(),
+            compatibilityByTargetKey: {
+                [buildBackendTargetKey({ kind: 'builtInAgent', agentId: 'codex' })]: false,
+                [buildBackendTargetKey({ kind: 'builtInAgent', agentId: 'claude' })]: true,
+            },
+        });
+        const machineEnvPresence: UseMachineEnvPresenceResult = {
+            isPreviewEnvSupported: false,
+            isLoading: false,
+            meta: {},
+            refreshedAt: null,
+            refresh: () => {},
+        };
+
+        function Test() {
+            const hook = useCreateNewSession({
+                launchIntentSignature: 'test-launch-intent',
+                router: { push: vi.fn(), replace: vi.fn() },
+                selectedMachineId: 'm1',
+                selectedPath: '/tmp',
+                selectedMachine: { metadata: {} },
+                setIsCreating: vi.fn(),
+                setIsResumeSupportChecking: vi.fn(),
+                settings: { experiments: false } as unknown as Settings,
+                useProfiles: true,
+                selectedProfileId: 'profile-test',
+                profileMap: new Map([['profile-test', incompatibleProfile]]),
+                recentMachinePaths: [],
+                agentType: 'codex',
+                permissionMode: 'acceptEdits' as unknown as PermissionMode,
+                modelMode: 'default' as ModelMode,
+                promptStore: createNewSessionPromptStore('PROMPT'),
+                resumeSessionId: '',
+                agentNewSessionOptions: null,
+                machineEnvPresence,
+                secrets: [],
+                secretBindingsByProfileId: {},
+                selectedSecretIdByProfileIdByEnvVarName: {},
+                sessionOnlySecretValueByProfileIdByEnvVarName: {},
+                selectedMachineCapabilities: null,
+                targetServerId: 'server-a',
+                allowedTargetServerIds: ['server-a'],
+            });
+            handleCreateSession = hook.handleCreateSession as () => Promise<void>;
+            return React.createElement('View');
+        }
+
+        await renderScreen(React.createElement(Test));
+        await act(async () => {
+            await handleCreateSession?.();
+        });
+
+        expect(sessionSpawnNewRpcSpy).not.toHaveBeenCalled();
+        expect(applySettingsSpy.mock.calls).not.toContainEqual([
+            expect.objectContaining({ lastUsedProfile: 'profile-test' }),
+        ]);
     });
 
     it('blocks creation when the selected profile is incompatible with the current backend target', async () => {

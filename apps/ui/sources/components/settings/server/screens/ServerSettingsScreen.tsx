@@ -11,18 +11,23 @@ import { KeyboardAwareScrollView } from '@/components/ui/keyboardAvoidance';
 import { SavedServersSection } from '@/components/settings/server/sections/SavedServersSection';
 import { AddTargetsSection } from '@/components/settings/server/sections/AddTargetsSection';
 import { ServerGroupsSection } from '@/components/settings/server/sections/ServerGroupsSection';
+import { HomeDeviceApprovalSection } from '@/components/settings/server/sections/HomeDeviceApprovalSection';
 import { ServerRetentionSection } from '@/components/settings/server/sections/ServerRetentionSection';
 import { RelayDriftActionCard } from '@/components/settings/server/RelayDriftActionCard';
 import { LocalRelayRuntimeControlSection } from '@/components/settings/server/localControl/LocalRelayRuntimeControlSection';
-import { PersonalHomeRuntimeControlSection } from '@/components/settings/server/localControl/PersonalHomeRuntimeControlSection';
+import { PersonalHomeRuntimeControlSection, type PersonalHomeRuntimeControlOperations } from '@/components/settings/server/localControl/PersonalHomeRuntimeControlSection';
+import { runRelayRuntimeUninstallTask } from '@/components/settings/server/localControl/useLocalRelayRuntimeControl';
+import { getDefaultSystemTaskRunner } from '@/components/systemTasks';
 import { LocalRelayAccessControlSection } from '@/components/settings/server/localControl/LocalRelayAccessControlSection';
 import { resolveKnownLocalRelayUrl } from '@/sync/domains/server/url/resolveKnownLocalRelayUrl';
-import { resolveServerProfileScopeId } from '@/sync/domains/server/serverProfiles';
 import { useServerSettingsScreenController } from '@/components/settings/server/hooks/useServerSettingsScreenController';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { resolveSetupSurfacePolicy } from '@/sync/domains/server/setup/setupSurfacePolicy';
 import { t } from '@/text';
 import { buildRelaySetupWizardHref } from '@/utils/routes/setupWizardHref';
+import { invokeDesktopHost } from '@/utils/platform/desktopHost';
+import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
+import { resolveHomeMemorySearchReadiness } from '@/sync/domains/memory/useMemorySearchProvider';
 
 const stylesheet = StyleSheet.create((_theme) => ({
     itemListContainer: {
@@ -57,13 +62,43 @@ export function ServerSettingsScreen() {
         activeServerUrl: controller.activeServerUrl,
         activeLocalRelayUrl: controller.activeLocalRelayUrl,
     }), [controller.activeLocalRelayUrl, controller.activeServerUrl]);
-    const activeProfile = React.useMemo(
-        () => controller.servers.find((profile) => (
-            profile.id === controller.activeServerId
-            || resolveServerProfileScopeId(profile) === controller.activeServerId
-        )) ?? null,
-        [controller.activeServerId, controller.servers],
+    // The managed Home runtime is this machine's local runtime, not the focused profile's;
+    // it is found across all saved profiles and its section never changes focus.
+    const personalHomeProfile = React.useMemo(
+        () => controller.servers.find((profile) => profile.source === 'desktop-personal-home') ?? null,
+        [controller.servers],
     );
+    const personalHomeFeatures = useServerFeaturesSnapshotForServerId(personalHomeProfile?.id, {
+        enabled: personalHomeProfile !== null,
+    });
+    const personalHomeSearchReadiness = React.useMemo(() => resolveHomeMemorySearchReadiness(
+        personalHomeFeatures.status === 'ready'
+            ? personalHomeFeatures.features.capabilities.homeSearch
+            : undefined,
+    ), [personalHomeFeatures]);
+    const personalHomeOperations = React.useMemo<PersonalHomeRuntimeControlOperations | undefined>(() => {
+        if (!personalHomeProfile) return undefined;
+        const openPath = async (path: string) => {
+            const normalizedPath = path.trim();
+            if (!normalizedPath) throw new Error(t('settings.systemTaskOpenLogsFailed'));
+            await invokeDesktopHost('system_tasks_open_log_path', { path: normalizedPath });
+        };
+        return {
+            removeProfile: async () => {
+                await controller.onRemoveServer(personalHomeProfile);
+            },
+            uninstallRuntime: async () => {
+                await runRelayRuntimeUninstallTask(getDefaultSystemTaskRunner());
+            },
+            openDataLocation: openPath,
+            openLogs: openPath,
+            revealBackupOutput: async (path: string) => {
+                const normalizedPath = path.trim();
+                if (!normalizedPath) throw new Error(t('settings.systemTaskOpenLogsFailed'));
+                await openPath(normalizedPath);
+            },
+        };
+    }, [controller.onRemoveServer, personalHomeProfile]);
     const handleLocalRelayStatusChange = React.useCallback((status: Readonly<{ relayUrl: string }> | null | undefined) => {
         const nextRelayUrl = typeof status?.relayUrl === 'string' && status.relayUrl.trim().length > 0
             ? status.relayUrl.trim()
@@ -101,6 +136,7 @@ export function ServerSettingsScreen() {
                         deviceDefaultServerId={controller.deviceDefaultServerId}
                         activeTargetKey={controller.activeTargetKey}
                         authStatusByServerId={controller.authStatusByServerId}
+                        connectionStatusByServerId={controller.connectionStatusByServerId}
                         onSwitch={controller.onSwitchServer}
                         onSwitchGroup={controller.onSwitchGroup}
                         onRenameGroup={controller.onRenameGroup}
@@ -108,6 +144,8 @@ export function ServerSettingsScreen() {
                         onRename={controller.onRenameServer}
                         onRemove={controller.onRemoveServer}
                     />
+
+                    <HomeDeviceApprovalSection homes={controller.servers} />
 
                     <ServerRetentionSection serverId={controller.activeServerId || null} />
 
@@ -124,16 +162,11 @@ export function ServerSettingsScreen() {
 
                     {isDesktop && setupPolicy.relay.allowLocalRelayHost ? (
                         <>
-                            {activeProfile?.source === 'desktop-personal-home' ? (
+                            {personalHomeProfile ? (
                                 <PersonalHomeRuntimeControlSection
                                     onStatusChange={handleLocalRelayStatusChange}
-                                    operations={{
-                                        // Profile removal is the existing settings/profile owner;
-                                        // runtime uninstall and data erase are supplied by Lane 07.
-                                        removeProfile: async () => {
-                                            await controller.onRemoveServer(activeProfile);
-                                        },
-                                    }}
+                                    operations={personalHomeOperations}
+                                    searchReadiness={personalHomeSearchReadiness}
                                 />
                             ) : (
                                 <LocalRelayRuntimeControlSection onStatusChange={handleLocalRelayStatusChange} />

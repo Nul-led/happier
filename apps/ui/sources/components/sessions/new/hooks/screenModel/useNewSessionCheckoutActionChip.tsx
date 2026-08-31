@@ -96,6 +96,7 @@ export function useNewSessionCheckoutActionChip(params: Readonly<{
     checkoutPickerOpen: boolean;
     setCheckoutPickerOpen: React.Dispatch<React.SetStateAction<boolean>>;
     checkoutCreationDraft: NewSessionCheckoutCreationDraft | null;
+    serverId?: string | null;
     selectedMachineId: string | null;
     selectedPath: string;
     setSelectedPath: React.Dispatch<React.SetStateAction<string>>;
@@ -211,6 +212,7 @@ export function useNewSessionCheckoutActionChip(params: Readonly<{
         const rootStep = buildWorktreeSelectionListSteps({
             snapshot: params.repoScmSnapshot,
             currentDirPath: currentPathOption?.kind === 'current_path' ? currentPathOption.path : params.selectedPath,
+            ...(params.serverId !== undefined ? { serverId: params.serverId } : {}),
             machineId: params.selectedMachineId,
             machinePath: params.repoScmSnapshot?.repo.rootPath ?? params.selectedPath,
             machineHomeDir: params.machineHomeDir ?? null,
@@ -273,6 +275,7 @@ export function useNewSessionCheckoutActionChip(params: Readonly<{
         params.pendingGitWorktreeSourceKindRef,
         params.repoScmSnapshot,
         params.router,
+        params.serverId,
         params.selectedMachineId,
         params.selectedPath,
         params.setCheckoutCreationDraft,

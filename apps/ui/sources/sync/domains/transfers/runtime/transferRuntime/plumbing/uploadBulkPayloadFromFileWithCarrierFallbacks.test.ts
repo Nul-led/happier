@@ -83,6 +83,221 @@ describe('uploadBulkPayloadFromFileWithCarrierFallbacks', () => {
         expect(close).toHaveBeenCalledTimes(1);
     });
 
+    it('uploads through the acquired machine-carrier HTTP origin and releases the lease', async () => {
+        prepareDirectImportMock.mockResolvedValueOnce({
+            success: true,
+            uploadId: 'direct-upload-machine-carrier',
+            destDisplayPath: '/repo/hello.txt',
+            expectedSizeBytes: 5,
+            chunkSizeBytes: 5,
+            recipientPublicKeyBase64: Buffer.alloc(32, 9).toString('base64'),
+            expiresAt: 5_000,
+            endpointCandidates: [{
+                kind: 'http',
+                url: 'http://10.44.0.8:46001/machine-transfers/direct/imports/direct-upload-machine-carrier?grant=kept',
+                expiresAt: 5_000,
+            }],
+        });
+        const relay = createRelay();
+        const release = vi.fn(async () => undefined);
+        const acquireMachineCarrierHttpLease = vi.fn(async () => ({
+            localOrigin: 'http://127.0.0.1:48123',
+            release,
+        }));
+        const requests: Array<{ url: string; method: string; body: string | null }> = [];
+        setRuntimeFetch(async (input, init) => {
+            const url = String(input);
+            requests.push({
+                url,
+                method: String(init?.method ?? 'GET'),
+                body: typeof init?.body === 'string' ? init.body : null,
+            });
+            if (url.includes('/chunks/0')) {
+                return new Response(JSON.stringify({ success: true }), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' },
+                });
+            }
+            return new Response(JSON.stringify({
+                success: true,
+                finalized: { success: true, path: '/repo/hello.txt', sizeBytes: 5 },
+                sha256: 'sha256:direct',
+            }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+            });
+        });
+        const result = await uploadBulkPayloadFromFileWithCarrierFallbacks<UploadResult>({
+            machineId: 'machine-remote',
+            fileReader: createReader(async () => {}),
+            directImportRequest: { t: 'session_file_upload_v1', workingDirectory: '/repo', path: '/repo/hello.txt', sizeBytes: 5, overwrite: true },
+            relay,
+            machineCarrierRequired: true,
+            machineCarrierOperationId: 'transfer-1',
+            acquireMachineCarrierHttpLease,
+        });
+        expect(result).toEqual({
+            success: true,
+            path: '/repo/hello.txt',
+            sizeBytes: 5,
+            sha256: 'sha256:direct',
+        });
+        expect(acquireMachineCarrierHttpLease).toHaveBeenCalledWith({
+            operationId: 'transfer-1',
+            machineId: 'machine-remote',
+            flow: 'file_transfer',
+            maxBytes: 5,
+            signal: undefined,
+        });
+        expect(requests.map((request) => request.url)).toEqual([
+            'http://127.0.0.1:48123/machine-transfers/direct/imports/direct-upload-machine-carrier/chunks/0?grant=kept',
+            'http://127.0.0.1:48123/machine-transfers/direct/imports/direct-upload-machine-carrier/finalize?grant=kept',
+        ]);
+        expect(JSON.parse(requests[0]?.body ?? '{}')).toMatchObject({
+            payloadBase64: expect.any(String),
+            encryptedDataKeyEnvelopeBase64: expect.any(String),
+        });
+        expect(relay.init).not.toHaveBeenCalled();
+        expect(release).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails closed without acquisition and never attempts an advertised endpoint or fallback', async () => {
+        prepareDirectImportMock.mockResolvedValueOnce({ success: false, error: 'must not prepare' });
+        const relay = createRelay();
+        const fetch = vi.fn();
+        setRuntimeFetch(fetch);
+
+        const result = await uploadBulkPayloadFromFileWithCarrierFallbacks<UploadResult>({
+            machineId: 'machine-remote',
+            fileReader: createReader(async () => {}),
+            directImportRequest: { t: 'session_file_upload_v1', workingDirectory: '/repo', path: '/repo/hello.txt', sizeBytes: 5, overwrite: true },
+            relay,
+            machineCarrierRequired: true,
+            machineCarrierOperationId: 'transfer-missing',
+        });
+
+        expect(result).toMatchObject({ success: false, errorCode: 'machine_carrier_unavailable' });
+        expect(prepareDirectImportMock).not.toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+        expect(relay.init).not.toHaveBeenCalled();
+    });
+
+    it('maps lease acquisition rejection to the typed machine-carrier failure without transfer attempts', async () => {
+        const relay = createRelay();
+        const fetch = vi.fn();
+        setRuntimeFetch(fetch);
+
+        const result = await uploadBulkPayloadFromFileWithCarrierFallbacks<UploadResult>({
+            machineId: 'machine-remote',
+            fileReader: createReader(async () => {}),
+            directImportRequest: { t: 'session_file_upload_v1', workingDirectory: '/repo', path: '/repo/hello.txt', sizeBytes: 5, overwrite: true },
+            relay,
+            machineCarrierRequired: true,
+            acquireMachineCarrierHttpLease: async () => { throw new Error('native unavailable'); },
+        });
+
+        expect(result).toMatchObject({ success: false, errorCode: 'machine_carrier_transport_failed' });
+        expect(prepareDirectImportMock).not.toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+        expect(relay.init).not.toHaveBeenCalled();
+    });
+
+    it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+        'fails closed instead of fabricating an invalid machine-carrier byte bound %s',
+        async (sizeBytes) => {
+            const acquireMachineCarrierHttpLease = vi.fn();
+            const relay = createRelay();
+            const result = await uploadBulkPayloadFromFileWithCarrierFallbacks<UploadResult>({
+                machineId: 'machine-remote',
+                fileReader: {
+                    ...createReader(async () => {}),
+                    sizeBytes,
+                },
+                directImportRequest: { t: 'session_file_upload_v1', workingDirectory: '/repo', path: '/repo/hello.txt', sizeBytes, overwrite: true },
+                relay,
+                machineCarrierRequired: true,
+                acquireMachineCarrierHttpLease,
+            });
+
+            expect(result).toMatchObject({ success: false, errorCode: 'machine_carrier_unavailable' });
+            expect(acquireMachineCarrierHttpLease).not.toHaveBeenCalled();
+            expect(prepareDirectImportMock).not.toHaveBeenCalled();
+            expect(relay.init).not.toHaveBeenCalled();
+        },
+    );
+
+    it('preserves an empty upload by binding its single-use grant to one byte', async () => {
+        const acquireMachineCarrierHttpLease = vi.fn(async () => {
+            throw new Error('stop after grant input');
+        });
+        const relay = createRelay();
+        const result = await uploadBulkPayloadFromFileWithCarrierFallbacks<UploadResult>({
+            machineId: 'machine-remote',
+            fileReader: {
+                ...createReader(async () => {}),
+                sizeBytes: 0,
+            },
+            directImportRequest: { t: 'session_file_upload_v1', workingDirectory: '/repo', path: '/repo/empty.txt', sizeBytes: 0, overwrite: true },
+            relay,
+            machineCarrierRequired: true,
+            acquireMachineCarrierHttpLease,
+        });
+
+        expect(result).toMatchObject({ success: false, errorCode: 'machine_carrier_transport_failed' });
+        expect(acquireMachineCarrierHttpLease).toHaveBeenCalledWith(expect.objectContaining({ maxBytes: 1 }));
+        expect(prepareDirectImportMock).not.toHaveBeenCalled();
+        expect(relay.init).not.toHaveBeenCalled();
+    });
+
+    it('releases an acquired lease once when the caller is already aborted', async () => {
+        const controller = new AbortController();
+        controller.abort(new Error('canceled'));
+        const release = vi.fn(async () => undefined);
+        const relay = createRelay();
+        prepareDirectImportMock.mockRejectedValueOnce(controller.signal.reason);
+
+        const result = await uploadBulkPayloadFromFileWithCarrierFallbacks<UploadResult>({
+            machineId: 'machine-remote',
+            fileReader: createReader(async () => {}),
+            directImportRequest: { t: 'session_file_upload_v1', workingDirectory: '/repo', path: '/repo/hello.txt', sizeBytes: 5, overwrite: true },
+            relay,
+            signal: controller.signal,
+            machineCarrierRequired: true,
+            acquireMachineCarrierHttpLease: async () => ({ localOrigin: 'http://127.0.0.1:48129', release }),
+        });
+
+        expect(result.success).toBe(false);
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(relay.init).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        'http://10.0.0.9:48123',
+        'https://127.0.0.1:48123',
+        'http://user:password@127.0.0.1:48123',
+        'http://127.0.0.1:48123/not-an-origin',
+    ])('rejects invalid machine lease origin %s, releases it once, and attempts no transfer carrier', async (localOrigin) => {
+        const release = vi.fn(async () => undefined);
+        const relay = createRelay();
+        const fetch = vi.fn();
+        setRuntimeFetch(fetch);
+
+        const result = await uploadBulkPayloadFromFileWithCarrierFallbacks<UploadResult>({
+            machineId: 'machine-remote',
+            fileReader: createReader(async () => {}),
+            directImportRequest: { t: 'session_file_upload_v1', workingDirectory: '/repo', path: '/repo/hello.txt', sizeBytes: 5, overwrite: true },
+            relay,
+            machineCarrierRequired: true,
+            acquireMachineCarrierHttpLease: async () => ({ localOrigin, release }),
+        });
+
+        expect(result).toMatchObject({ success: false, errorCode: 'machine_carrier_transport_failed' });
+        expect(prepareDirectImportMock).not.toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+        expect(relay.init).not.toHaveBeenCalled();
+        expect(release).toHaveBeenCalledTimes(1);
+    });
+
     it('rejects a predecessor LAN HTTP candidate, aborts its allocation, then falls back to relay', async () => {
         prepareDirectImportMock
             .mockResolvedValueOnce({

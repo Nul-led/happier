@@ -86,10 +86,11 @@ export async function eraseCurrentAccountPluginData(
     const retirement = captured.lifetime.onRetire(abort);
     options?.signal?.addEventListener('abort', abort, { once: true });
     if (options?.signal?.aborted) abort();
+    let authority: Awaited<ReturnType<typeof captureSessionRequestAuthorityForServerAccountScope>> | null = null;
     try {
         if (controller.signal.aborted || !isCurrent(captured)) return unavailable();
 
-        const authority = await captureSessionRequestAuthorityForServerAccountScope({
+        authority = await captureSessionRequestAuthorityForServerAccountScope({
             scope: captured.lifetime.scope,
             activeRequest: (path, init) => apiSocket.request(path, init),
         });
@@ -128,6 +129,7 @@ export async function eraseCurrentAccountPluginData(
     } catch {
         return unavailable();
     } finally {
+        await authority?.release?.();
         options?.signal?.removeEventListener('abort', abort);
         retirement.dispose();
     }

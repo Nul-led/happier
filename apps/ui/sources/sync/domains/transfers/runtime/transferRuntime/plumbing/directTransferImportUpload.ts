@@ -33,6 +33,7 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
     timeoutMs?: number | null;
     signal?: AbortSignal | null;
     onProgress?: ((progress: Readonly<{ uploadedBytes: number; totalBytes: number }>) => void) | null;
+    httpOriginOverride?: string | null;
 }>): Promise<TResponse | BulkTransferFailureResponse | TransferFinalizeRecoveryFailure<TResponse>> {
     const prepared = await prepareDirectImportSession({
         machineId: params.machineId,
@@ -40,6 +41,7 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
         request: params.request,
         timeoutMs: params.timeoutMs ?? null,
         signal: params.signal ?? null,
+        httpOriginOverride: params.httpOriginOverride ?? null,
     });
     if (prepared.success !== true) {
         if (prepared.error === 'Direct import endpoints unavailable') {

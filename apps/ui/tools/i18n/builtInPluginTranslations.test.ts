@@ -128,6 +128,22 @@ function unwrapObject(node: ts.Expression): ts.ObjectLiteralExpression | null {
     return null;
 }
 
+function unwrapRowsArray(node: ts.Expression): ts.ArrayLiteralExpression | null {
+    if (ts.isArrayLiteralExpression(node)) return node;
+    if (ts.isCallExpression(node)) {
+        // A manifest may project its locale rows through a catalog helper (the
+        // triage sources wrap theirs in the shared source-settings projector).
+        // The literal rows remain the author-owned portion this source
+        // validator can inspect; helper-projected keys retain their owner
+        // tests in `@happier-dev/triage-sources`.
+        for (const argument of [...node.arguments].reverse()) {
+            const rows = unwrapRowsArray(argument);
+            if (rows !== null) return rows;
+        }
+    }
+    return null;
+}
+
 function stringValue(node: ts.Expression): string | null {
     if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
@@ -178,12 +194,16 @@ function readInlineManifestBundles(file: string): readonly Bundle[] {
     );
     let bundles: Bundle[] | null = null;
     function visit(node: ts.Node): void {
-        if (bundles || !ts.isPropertyAssignment(node) || propertyName(node.name) !== 'translations'
-            || !ts.isArrayLiteralExpression(node.initializer)) {
+        if (bundles || !ts.isPropertyAssignment(node) || propertyName(node.name) !== 'translations') {
             ts.forEachChild(node, visit);
             return;
         }
-        const parsed = node.initializer.elements.map((element): Bundle | null => {
+        const rows = unwrapRowsArray(node.initializer);
+        if (rows === null) {
+            ts.forEachChild(node, visit);
+            return;
+        }
+        const parsed = rows.elements.map((element): Bundle | null => {
             const object = unwrapObject(element as ts.Expression);
             if (!object) return null;
             const localeProperty = object.properties.find((property) => ts.isPropertyAssignment(property) && propertyName(property.name) === 'locale');

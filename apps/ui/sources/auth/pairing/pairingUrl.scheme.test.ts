@@ -13,15 +13,13 @@ describe('pairingUrl scheme override', () => {
 
         const { buildPairingDeepLink, parsePairingDeepLink } = await import('./pairingUrl');
 
-        expect(
+        expect(() =>
             buildPairingDeepLink({
                 pairId: 'pid123',
                 secret: 'sec_abc',
                 serverUrl: 'https://stack.example.test/path?x=1',
             }),
-        ).toBe(
-            'happier-dev:///pair?v=1&pairId=pid123&secret=sec_abc&server=https%3A%2F%2Fstack.example.test%2Fpath%3Fx%3D1',
-        );
+        ).toThrowError(expect.objectContaining({ code: 'legacy_provisioning_unavailable' }));
 
         expect(
             parsePairingDeepLink('happier-dev:///pair?v=1&pairId=pid123&secret=sec_abc&server=https%3A%2F%2Fstack.example.test'),
@@ -64,7 +62,9 @@ describe('pairingUrl scheme override', () => {
 
         const { buildPairingDeepLink, parsePairingDeepLink } = await import('./pairingUrl');
 
-        expect(buildPairingDeepLink({ pairId: 'pid123', secret: 'sec_abc' })).toBe('my-team-app:///pair?v=1&pairId=pid123&secret=sec_abc');
+        expect(() => buildPairingDeepLink({ pairId: 'pid123', secret: 'sec_abc' })).toThrowError(
+            expect.objectContaining({ code: 'legacy_provisioning_unavailable' }),
+        );
         expect(parsePairingDeepLink('my-team-app:///pair?v=1&pairId=pid123&secret=sec_abc')).toEqual({
             pairId: 'pid123',
             secret: 'sec_abc',

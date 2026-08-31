@@ -11,10 +11,17 @@ import { Modal } from '@/modal';
 import { HappyError } from '@/utils/errors/errors';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { t } from '@/text';
-import { TokenStorage } from '@/auth/storage/tokenStorage';
+import {
+    TokenStorage,
+    normalizeAccountDirectoryEndpoint,
+    type PendingAccountDirectoryAuth,
+} from '@/auth/storage/tokenStorage';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { authChallenge } from '@/auth/flows/challenge';
-import { serverFetch } from '@/sync/http/client';
+import {
+    createServerFetchAtEndpoint,
+    serverFetch,
+} from '@/sync/http/client';
 import { isSessionSharingSupported } from '@/sync/api/capabilities/sessionSharingSupport';
 import { getAuthProvider } from '@/auth/providers/registry';
 import { buildContentKeyBinding } from '@/auth/oauth/contentKeyBinding';
@@ -28,15 +35,296 @@ import { WizardModalShell } from '@/components/onboarding/ui/WizardModalShell';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import {
+    createAccountDirectorySession,
+    parseAccountDirectoryCapability,
+} from '@/sync/domains/accountDirectory/accountDirectorySession';
+import { refreshAccountHomeDirectory } from '@/sync/ops/accountDirectory/refreshAccountHomeDirectory';
+import { enrollPreferredDirectoryHome } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
+import { provisionAuthenticatedHomeLink } from '@/sync/ops/accountDirectory/provisionAuthenticatedHomeLink';
+import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
+import {
     guardAccountEncryptionFirstKeyCredentialMutation,
     resumeAccountEncryptionFirstKeyExternalAuth,
 } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
 import {
     presentFirstKeyCredentialLifecycle,
 } from '@/components/account/presentFirstKeyCredentialLifecycle';
+import {
+    AccountServiceOAuthJourney,
+    type AccountServiceOAuthFailure,
+    type AccountServiceOAuthJourneyState,
+    type AccountServiceOAuthStage,
+} from '@/components/account/auth/AccountServiceOAuthJourney';
 
 const ACCOUNT_ENCRYPTION_FIRST_KEY_PURPOSE =
     'account_encryption_first_key';
+const ACCOUNT_DIRECTORY_PURPOSE = 'account_directory';
+
+type AccountDirectoryOAuthReturnInput = Readonly<{
+    providerId: string;
+    purpose: string | null;
+    credentialTarget: string | null;
+    endpointUrl: string | null;
+    serverIdentityId: string | null;
+    pendingKey: string;
+    mode: string | null;
+    pending: PendingAccountDirectoryAuth | null;
+    signal?: AbortSignal;
+    onStage?: (stage: AccountServiceOAuthStage) => void;
+    onCredentialCommitStarted?: () => void;
+}>;
+
+type AccountDirectoryOAuthReturnResult = Readonly<{
+    ok: boolean;
+    returnTo: string;
+    error?: string;
+    preservePending?: boolean;
+    signedIn?: boolean;
+}>;
+
+function normalizeAccountDirectoryIdentityParam(value: string | null): string | null {
+    const normalized = String(value ?? '').trim();
+    return normalized || null;
+}
+
+/**
+ * Complete a Directory OAuth continuation against the endpoint captured in
+ * the dedicated pending record.  This helper deliberately has no AuthContext,
+ * active-server, or focus dependencies.
+ */
+async function finalizeAccountDirectoryOAuthReturn(
+    input: AccountDirectoryOAuthReturnInput,
+): Promise<AccountDirectoryOAuthReturnResult> {
+    const cancelled = (): AccountDirectoryOAuthReturnResult => ({
+        ok: false,
+        returnTo: '/settings/account',
+        error: 'cancelled',
+        preservePending: true,
+    });
+    const pending = input.pending;
+    const endpoint = normalizeAccountDirectoryEndpoint(input.endpointUrl ?? '');
+    const callbackIdentity = normalizeAccountDirectoryIdentityParam(input.serverIdentityId);
+    const pendingEndpoint = pending
+        ? normalizeAccountDirectoryEndpoint(pending.endpoint)
+        : null;
+    const pendingIdentity = pending
+        ? normalizeAccountDirectoryIdentityParam(pending.serverIdentityId ?? null)
+        : null;
+    const callbackPendingKey = input.pendingKey.trim();
+    const persistedPendingKey = pending?.pending?.trim() ?? '';
+    const returnTo = normalizeInternalReturnTo(pending?.returnTo) ?? '/settings/account';
+
+    // Purpose, endpoint, identity, provider, and pending handle are all bound
+    // to the server-created continuation.  Any mismatch is rejected before a
+    // request or credential write can occur.
+    if (
+        input.purpose !== ACCOUNT_DIRECTORY_PURPOSE
+        || input.credentialTarget !== ACCOUNT_DIRECTORY_PURPOSE
+        || !endpoint
+        || !pending
+        || !pendingEndpoint
+        || pendingEndpoint !== endpoint
+        || !pendingIdentity
+        || !callbackIdentity
+        || pendingIdentity !== callbackIdentity
+        || pending.provider.trim().toLowerCase() !== input.providerId
+        || pending.purpose !== ACCOUNT_DIRECTORY_PURPOSE
+        || (input.mode !== 'keyed' && input.mode !== 'keyless')
+        || pending.mode !== input.mode
+        || !callbackPendingKey
+        || (
+            persistedPendingKey.length > 0
+            && persistedPendingKey !== callbackPendingKey
+        )
+    ) {
+        return { ok: false, returnTo, error: 'invalid-pending' };
+    }
+    if (Date.now() >= pending.expiresAt) {
+        return { ok: false, returnTo, error: 'request-expired' };
+    }
+    if (input.signal?.aborted) return cancelled();
+
+    // The callback can outlive endpoint reconfiguration. Re-probe the exact URL
+    // before exchanging or persisting authority and require the same stable
+    // Account Service identity captured by the pending continuation.
+    let observedCapability: ReturnType<typeof parseAccountDirectoryCapability> = null;
+    input.onStage?.('verifying_service');
+    try {
+        const observed = await probeServerFeaturesAtUrl({ endpointUrl: endpoint, force: true });
+        const observedIdentity = observed.status === 'ready'
+            ? normalizeAccountDirectoryIdentityParam(observed.serverIdentityId ?? null)
+            : null;
+        if (observed.status !== 'ready') {
+            return { ok: false, returnTo, error: 'service-unavailable', preservePending: true };
+        }
+        if (observedIdentity !== callbackIdentity) {
+            return { ok: false, returnTo, error: 'identity-changed', preservePending: true };
+        }
+        observedCapability = parseAccountDirectoryCapability(
+            observed.features.capabilities.accountDirectory,
+        );
+    } catch {
+        return { ok: false, returnTo, error: 'service-unavailable', preservePending: true };
+    }
+    if (input.signal?.aborted) return cancelled();
+
+    const mode = pending.mode;
+    const fetchAtEndpoint = createServerFetchAtEndpoint({
+        endpointUrl: endpoint,
+        ...(callbackIdentity ? { serverId: callbackIdentity } : {}),
+        credentials: null,
+    });
+
+    let payload: Record<string, string>;
+    let path: string;
+    if (mode === 'keyless') {
+        if (!pending.proof) {
+            return { ok: false, returnTo, error: 'invalid-pending' };
+        }
+        path = `/v1/auth/external/${encodeURIComponent(input.providerId)}/finalize-keyless`;
+        payload = {
+            pending: callbackPendingKey,
+            proof: pending.proof,
+        };
+    } else {
+        if (!pending.secret) {
+            return { ok: false, returnTo, error: 'invalid-pending' };
+        }
+        let secretBytes: Uint8Array;
+        try {
+            secretBytes = decodeBase64(pending.secret, 'base64url');
+        } catch {
+            return { ok: false, returnTo, error: 'invalid-pending' };
+        }
+        const { challenge, signature, publicKey } = authChallenge(secretBytes);
+        path = `/v1/auth/external/${encodeURIComponent(input.providerId)}/finalize`;
+        payload = {
+            pending: callbackPendingKey,
+            publicKey: encodeBase64(publicKey),
+            challenge: encodeBase64(challenge),
+            signature: encodeBase64(signature),
+            ...(pending.proof ? { proof: pending.proof } : {}),
+        };
+    }
+
+    let response: Response;
+    input.onStage?.('signing_in');
+    try {
+        response = await fetchAtEndpoint(
+            path,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: input.signal,
+            },
+            { includeAuth: false, retry: 'none' },
+        );
+    } catch {
+        return { ok: false, returnTo, error: 'token-exchange-failed' };
+    }
+    if (input.signal?.aborted) return cancelled();
+    const json = await response.json().catch(() => ({}));
+    if (input.signal?.aborted) return cancelled();
+    const token =
+        json
+        && typeof json === 'object'
+        && !Array.isArray(json)
+        && typeof (json as { token?: unknown }).token === 'string'
+            ? (json as { token: string }).token.trim()
+            : '';
+    if (!response.ok || !token) {
+        const serverError =
+            json
+            && typeof json === 'object'
+            && !Array.isArray(json)
+            && typeof (json as { error?: unknown }).error === 'string'
+                ? (json as { error: string }).error
+                : 'token-exchange-failed';
+        return { ok: false, returnTo, error: serverError };
+    }
+
+    const target = {
+        endpoint,
+        ...(callbackIdentity ? { serverIdentityId: callbackIdentity } : {}),
+    };
+    if (input.signal?.aborted) return cancelled();
+    input.onCredentialCommitStarted?.();
+    input.onStage?.('saving_credentials');
+    const stored = await TokenStorage.accountDirectoryAuthCredentials
+        .set(target, { token });
+    if (!stored) {
+        return { ok: false, returnTo, error: 'credential-storage-failed' };
+    }
+    await TokenStorage.clearPendingAccountDirectoryAuth(target);
+    // Credential persistence is the commit boundary. A failed best-effort
+    // cleanup must not misreport that successful sign-in as unsaved; the
+    // short-lived continuation remains unusable server-side and expires.
+    input.onStage?.('signed_in');
+    if (input.signal?.aborted) return cancelled();
+
+    // This callback is the production composition root for Account Service
+    // discovery. A captured Home must be linked before the continuation is
+    // accepted; later refresh/enrollment remains retryable from settings and
+    // never invalidates the stored Directory credential or an existing Home.
+    if (observedCapability?.homeDirectory !== true) {
+        return { ok: true, returnTo, signedIn: true };
+    }
+    const session = createAccountDirectorySession(target, { capability: observedCapability });
+    if (pending.homeServerIdentityId) {
+        input.onStage?.('connecting_home');
+        try {
+            const provisioned = await provisionAuthenticatedHomeLink({
+                session,
+                homeServerIdentityId: pending.homeServerIdentityId,
+                issuerServerIdentityId: callbackIdentity,
+                capability: observedCapability,
+            });
+            if (provisioned.kind !== 'linked') {
+                return { ok: false, returnTo, error: 'home-link-provisioning-failed', signedIn: true };
+            }
+        } catch {
+            return { ok: false, returnTo, error: 'home-link-provisioning-failed', signedIn: true };
+        }
+    }
+
+    input.onStage?.('finding_homes');
+    try {
+        const refreshed = await refreshAccountHomeDirectory(session);
+        if (refreshed.status !== 'ready') {
+            return { ok: false, returnTo, error: 'directory-refresh-failed', signedIn: true };
+        }
+    } catch {
+        return { ok: false, returnTo, error: 'directory-refresh-failed', signedIn: true };
+    }
+    if (input.signal?.aborted) return cancelled();
+    if (observedCapability.homeEnrollment !== true) {
+        return { ok: true, returnTo, signedIn: true };
+    }
+
+    input.onStage?.('connecting_home');
+    let enrollment: Awaited<ReturnType<typeof enrollPreferredDirectoryHome>>;
+    try {
+        enrollment = await enrollPreferredDirectoryHome(session);
+    } catch {
+        return { ok: false, returnTo, error: 'home-enrollment-failed', signedIn: true };
+    }
+    if (enrollment.kind === 'approval_required') {
+        input.onStage?.('waiting_approval');
+        return { ok: true, returnTo: '/settings/server', signedIn: true };
+    }
+    if (enrollment.kind === 'enrolled') {
+        input.onStage?.('home_added');
+        return { ok: true, returnTo, signedIn: true };
+    }
+    if (
+        enrollment.kind === 'unavailable'
+        && enrollment.reason === 'no_preferred_home'
+    ) {
+        return { ok: true, returnTo, signedIn: true };
+    }
+    return { ok: false, returnTo, error: 'home-enrollment-failed', signedIn: true };
+}
 
 async function guardOrdinaryAuthIngress(
 ): Promise<AuthCredentialLifecycleResult> {
@@ -92,8 +380,24 @@ function mapFinalizeErrorToMessage(code: string): string {
             return mapUsernameErrorToMessage(code);
         case 'invalid-pending':
             return t('errors.oauthStateMismatch');
+        case 'home-link-provisioning-failed':
+            return t('errors.operationFailed');
         default:
             return t('errors.tokenExchangeFailed');
+    }
+}
+
+function mapAccountDirectoryFailure(code: string): AccountServiceOAuthFailure {
+    switch (code) {
+        case 'request-expired': return 'request_expired';
+        case 'identity-changed': return 'identity_changed';
+        case 'service-unavailable': return 'service_unavailable';
+        case 'credential-storage-failed': return 'credential_storage_failed';
+        case 'home-link-provisioning-failed': return 'home_link_failed';
+        case 'directory-refresh-failed': return 'directory_refresh_failed';
+        case 'home-enrollment-failed': return 'home_enrollment_failed';
+        case 'invalid-pending': return 'invalid_request';
+        default: return 'token_exchange_failed';
     }
 }
 
@@ -179,6 +483,14 @@ export default function OAuthProviderReturn() {
     const [usernameHint, setUsernameHint] = React.useState<string | null>(null);
     const [usernameValue, setUsernameValue] = React.useState<string>('');
     const [provisioningChoiceOpen, setProvisioningChoiceOpen] = React.useState(false);
+    const [accountDirectoryJourney, setAccountDirectoryJourney] =
+        React.useState<AccountServiceOAuthJourneyState | null>(null);
+    const accountDirectoryAttemptRef = React.useRef<null | Readonly<{
+        controller: AbortController;
+        target: Readonly<{ endpoint: string; serverIdentityId?: string }> | null;
+        returnTo: string;
+    }>>(null);
+    const accountDirectoryCredentialCommitStartedRef = React.useRef(false);
     const pendingAuthContextRef = React.useRef<null | Readonly<{
         providerId: string;
         providerName: string;
@@ -212,6 +524,17 @@ export default function OAuthProviderReturn() {
     const resolvedProvisioningModes = paramString(params, 'provisioningModes');
     const resolvedAccountMode = paramString(params, 'accountMode');
     const resolvedPurpose = paramString(params, 'purpose');
+    const resolvedCredentialTarget = paramString(params, 'credentialTarget');
+    const resolvedEndpointUrl =
+        paramString(params, 'endpointUrl')
+        ?? paramString(params, 'endpoint');
+    const resolvedEndpointIdentity =
+        paramString(params, 'endpointServerIdentityId')
+        ?? paramString(params, 'serverIdentityId')
+        ?? paramString(params, 'serverId');
+    const resolvedDirectoryReturn =
+        resolvedPurpose === ACCOUNT_DIRECTORY_PURPOSE
+        || resolvedCredentialTarget === ACCOUNT_DIRECTORY_PURPOSE;
 
     const finalizeAuth = React.useCallback((params: { mode: 'plain' | 'e2ee' }) => {
         const ctx = pendingAuthContextRef.current;
@@ -485,6 +808,142 @@ export default function OAuthProviderReturn() {
         };
 
         fireAndForget((async () => {
+            const directoryEndpoint = normalizeAccountDirectoryEndpoint(
+                resolvedEndpointUrl ?? '',
+            );
+            const directoryIdentity = normalizeAccountDirectoryIdentityParam(
+                resolvedEndpointIdentity,
+            );
+            const directoryTarget = directoryEndpoint
+                ? {
+                    endpoint: directoryEndpoint,
+                    ...(directoryIdentity
+                        ? { serverIdentityId: directoryIdentity }
+                        : {}),
+                }
+                : null;
+            // A Directory marker/purpose is a separate callback family. Read
+            // only its dedicated continuation namespace; never let a malformed
+            // Directory return fall through to the Home pending reader.
+            const pendingDirectoryAuth =
+                resolvedDirectoryReturn && directoryTarget
+                    ? await TokenStorage
+                        .getPendingAccountDirectoryAuth(directoryTarget, {
+                            includeExpired: true,
+                        })
+                        .catch(() => null)
+                    : null;
+
+            if (resolvedDirectoryReturn) {
+                const directoryReturnTo =
+                    normalizeInternalReturnTo(pendingDirectoryAuth?.returnTo)
+                    ?? '/settings/account';
+                const directoryProvider = providerId
+                    ? getAuthProvider(providerId)
+                    : null;
+                const providerName = directoryProvider?.displayName ?? providerId;
+                accountDirectoryAttemptRef.current = {
+                    controller,
+                    target: directoryTarget,
+                    returnTo: directoryReturnTo,
+                };
+                accountDirectoryCredentialCommitStartedRef.current = false;
+                const safeSetDirectoryJourney = (
+                    state: AccountServiceOAuthJourneyState,
+                ) => {
+                    if (disposed || controller.signal.aborted) return;
+                    setAccountDirectoryJourney(state);
+                };
+                const setDirectoryStage = (stage: AccountServiceOAuthStage) => {
+                    safeSetDirectoryJourney({
+                        kind: 'progress',
+                        stage,
+                        providerName,
+                        endpointUrl: directoryEndpoint ?? resolvedEndpointUrl ?? '',
+                    });
+                };
+                setDirectoryStage('verifying_service');
+                safeSetBusy(true);
+                try {
+                    if (error) {
+                        if (directoryTarget) {
+                            await TokenStorage
+                                .clearPendingAccountDirectoryAuth(directoryTarget)
+                                .catch(() => false);
+                        }
+                        safeSetDirectoryJourney({
+                            kind: 'error',
+                            failure: 'provider_failed',
+                            signedIn: false,
+                            providerName,
+                            endpointUrl: directoryEndpoint ?? resolvedEndpointUrl ?? '',
+                        });
+                        return;
+                    }
+
+                    if (
+                        flow !== 'auth'
+                        || !providerId
+                        || !directoryProvider
+                    ) {
+                        if (directoryTarget) {
+                            await TokenStorage
+                                .clearPendingAccountDirectoryAuth(directoryTarget)
+                                .catch(() => false);
+                        }
+                        safeSetDirectoryJourney({
+                            kind: 'error',
+                            failure: 'invalid_request',
+                            signedIn: false,
+                            providerName,
+                            endpointUrl: directoryEndpoint ?? resolvedEndpointUrl ?? '',
+                        });
+                        return;
+                    }
+
+                    const result = await finalizeAccountDirectoryOAuthReturn({
+                        providerId,
+                        purpose: resolvedPurpose,
+                        credentialTarget: resolvedCredentialTarget,
+                        endpointUrl: resolvedEndpointUrl,
+                        serverIdentityId: resolvedEndpointIdentity,
+                        pendingKey: resolvedPending,
+                        mode: resolvedMode,
+                        pending: pendingDirectoryAuth,
+                        signal: controller.signal,
+                        onStage: setDirectoryStage,
+                        onCredentialCommitStarted: () => {
+                            accountDirectoryCredentialCommitStartedRef.current = true;
+                        },
+                    });
+                    if (controller.signal.aborted) return;
+                    if (result.ok) {
+                        safeReplace(result.returnTo);
+                        return;
+                    }
+
+                    // A failed or tampered continuation is single-use from the
+                    // client perspective. Clear only the target namespace.
+                    if (directoryTarget && result.preservePending !== true) {
+                        await TokenStorage
+                            .clearPendingAccountDirectoryAuth(directoryTarget)
+                            .catch(() => false);
+                    }
+                    safeSetDirectoryJourney({
+                        kind: 'error',
+                        failure: mapAccountDirectoryFailure(
+                            result.error ?? 'token-exchange-failed',
+                        ),
+                        signedIn: result.signedIn === true,
+                        providerName,
+                        endpointUrl: directoryEndpoint ?? resolvedEndpointUrl ?? '',
+                    });
+                } finally {
+                    safeSetBusy(false);
+                }
+                return;
+            }
+
             const pendingAuthStateForFlow =
                 flow === 'auth'
                     ? await TokenStorage
@@ -822,6 +1281,10 @@ export default function OAuthProviderReturn() {
         resolvedLogin,
         resolvedReason,
         resolvedPurpose,
+        resolvedCredentialTarget,
+        resolvedEndpointUrl,
+        resolvedEndpointIdentity,
+        resolvedDirectoryReturn,
         auth.login,
         auth.loginWithCredentials,
         resolvedFlow === 'auth' ? '' : auth.credentials?.token ?? '',
@@ -829,6 +1292,42 @@ export default function OAuthProviderReturn() {
 
     const handleBack = React.useCallback(() => {
         safeRouterBack({ router, fallbackHref: '/' });
+    }, [router]);
+
+    const cancelAccountDirectoryJourney = React.useCallback(async () => {
+        if (accountDirectoryCredentialCommitStartedRef.current) return;
+        const attempt = accountDirectoryAttemptRef.current;
+        attempt?.controller.abort('account-service-oauth-cancelled');
+        const fallbackEndpoint = normalizeAccountDirectoryEndpoint(
+            resolvedEndpointUrl ?? '',
+        );
+        const fallbackIdentity = normalizeAccountDirectoryIdentityParam(
+            resolvedEndpointIdentity,
+        );
+        const target = attempt?.target ?? (fallbackEndpoint
+            ? {
+                endpoint: fallbackEndpoint,
+                ...(fallbackIdentity
+                    ? { serverIdentityId: fallbackIdentity }
+                    : {}),
+            }
+            : null);
+        if (target) {
+            await TokenStorage
+                .clearPendingAccountDirectoryAuth(target)
+                .catch(() => false);
+        }
+        accountDirectoryAttemptRef.current = null;
+        accountDirectoryCredentialCommitStartedRef.current = false;
+        router.replace(attempt?.returnTo ?? '/settings/account');
+    }, [resolvedEndpointIdentity, resolvedEndpointUrl, router]);
+
+    const recoverAccountDirectoryJourney = React.useCallback(() => {
+        const returnTo = accountDirectoryAttemptRef.current?.returnTo
+            ?? '/settings/account';
+        accountDirectoryAttemptRef.current = null;
+        accountDirectoryCredentialCommitStartedRef.current = false;
+        router.replace(returnTo);
     }, [router]);
 
     const wizardTitle =
@@ -940,6 +1439,48 @@ export default function OAuthProviderReturn() {
             {busy ? <ActivitySpinner size="small" /> : null}
         </View>
     );
+
+    const visibleAccountDirectoryJourney = resolvedDirectoryReturn
+        ? accountDirectoryJourney ?? {
+                kind: 'progress' as const,
+                stage: 'verifying_service' as const,
+                providerName: getAuthProvider(resolvedProviderId)?.displayName
+                    ?? resolvedProviderId,
+                endpointUrl: normalizeAccountDirectoryEndpoint(
+                    resolvedEndpointUrl ?? '',
+                ) ?? resolvedEndpointUrl ?? '',
+            }
+        : null;
+
+    if (visibleAccountDirectoryJourney) {
+        const canCancel = visibleAccountDirectoryJourney.kind === 'progress'
+            && (
+                visibleAccountDirectoryJourney.stage === 'verifying_service'
+                || visibleAccountDirectoryJourney.stage === 'signing_in'
+            );
+        return (
+            <WizardModalShell
+                testID="oauth-return-wizard"
+                stepIndex={0}
+                stepCount={1}
+                title={t('settingsAccount.accountServiceOAuth.title')}
+                showBack={false}
+                showSkip={false}
+                onSecondary={canCancel ? cancelAccountDirectoryJourney : undefined}
+                secondaryLabel={t('common.cancel')}
+                footerHint={canCancel ? (
+                    <Text testID="oauth-account-directory-cancel-note">
+                        {t('settingsAccount.accountServiceOAuth.cancelNote')}
+                    </Text>
+                ) : undefined}
+            >
+                <AccountServiceOAuthJourney
+                    state={visibleAccountDirectoryJourney}
+                    onRecovery={recoverAccountDirectoryJourney}
+                />
+            </WizardModalShell>
+        );
+    }
 
     return (
         <WizardModalShell

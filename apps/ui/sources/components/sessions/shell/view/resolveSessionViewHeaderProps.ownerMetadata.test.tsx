@@ -132,6 +132,43 @@ function createManyPluginHeaderProjection(actionCount: number) {
 }
 
 describe('resolveSessionViewHeaderProps owner metadata', () => {
+    it('keeps a deduplicated workspace conflict discoverable from the session header', () => {
+        const session = createSessionFixture({ id: 'workspace-conflict-header' });
+        const onOpenWorkspaceSyncConflicts = () => {};
+        const result = resolveSessionViewHeaderProps({
+            isDataReady: true,
+            session,
+            sessionId: session.id,
+            sessionInfoHref: '/session/workspace-conflict-header/info',
+            sessionRunsHref: '/session/workspace-conflict-header/runs',
+            sessionAutomationsHref: '/session/workspace-conflict-header/automations',
+            paneScopeId: 'pane-1',
+            windowWidth: 390,
+            sessionAutomationsEnabledCount: 0,
+            sessionExecutionRunsSupported: false,
+            showAutomations: false,
+            shouldShowSubagentsButton: false,
+            subagentActiveCount: 0,
+            navigateWithBlurOnWeb: (action) => action(),
+            handleHeaderExtraItemSelect: () => false,
+            router: { push: () => {}, navigate: () => {} },
+            actionIconColor: '#000',
+            headerTintColor: '#000',
+            statusErrorColor: '#f00',
+            externalSessionRuntime: null,
+            workspaceSyncConflictCount: 1,
+            onOpenWorkspaceSyncConflicts,
+        });
+        const children = React.Children.toArray(
+            (result.rightElement as React.ReactElement<{ children?: React.ReactNode }>).props.children,
+        );
+        const conflictButton = children.find((child) => React.isValidElement<{ accessibilityLabel?: string }>(child)
+            && child.props.accessibilityLabel === 'Open 1 workspace conflict');
+
+        expect(conflictButton).toBeDefined();
+        expect((conflictButton as React.ReactElement<{ onPress?: () => void }>).props.onPress).toBe(onOpenWorkspaceSyncConflicts);
+    });
+
     it('keeps one direct plugin action but moves a large ordered header contribution list into overflow', () => {
         const session = createSessionFixture({ id: 'plugin-header-layout' });
         const input = {

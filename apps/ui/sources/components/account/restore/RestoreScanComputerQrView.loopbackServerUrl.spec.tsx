@@ -66,6 +66,7 @@ vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
 vi.mock('@/auth/pairing/pairingUrl', () => ({
     buildPairingDeepLink: () => 'happier:///pair?v=1&pairId=p&secret=s&server=http%3A%2F%2Flocalhost%3A53288',
     parsePairingDeepLink: () => ({ pairId: 'p', secret: 's', serverUrl: 'http://localhost:53288' }),
+    parseHomeQrInviteDeepLink: () => null,
 }));
 
 vi.mock('@/auth/flows/qrStart', () => ({
@@ -94,7 +95,7 @@ vi.mock('@/components/qr/QrCodeScannerView', () => ({
 }));
 
 describe('RestoreScanComputerQrView (loopback serverUrl)', () => {
-    it('does not switch to localhost and shows a server-setup hint when pairing returns not_found', async () => {
+    it('recognizes the retired V1 link only to show safe Home-QR recovery guidance', async () => {
         vi.resetModules();
         upsertActivateAndSwitchServerSpy.mockClear();
         modalAlertAsyncSpy.mockClear();
@@ -116,8 +117,9 @@ describe('RestoreScanComputerQrView (loopback serverUrl)', () => {
 
             expect(upsertActivateAndSwitchServerSpy).not.toHaveBeenCalled();
             expect(modalAlertAsyncSpy).toHaveBeenCalledWith(
-                'connect.serverUrlNotEmbeddedTitle',
-                'connect.serverUrlNotEmbeddedBody',
+                'connect.restoreAccount',
+                'connect.legacyAccountQrUnavailable',
+                expect.any(Array),
             );
         } finally {
             act(() => {

@@ -22,7 +22,7 @@ import { PostHogProvider } from 'posthog-react-native';
 import * as Sentry from '@sentry/react-native';
 import { tracking } from '@/track/tracking';
 import { SettingsAnalyticsRuntime } from '@/track/settingsAnalytics/SettingsAnalyticsRuntime';
-import { syncRestore } from '@/sync/sync';
+import { restoreConnectionToActiveServer } from '@/sync/runtime/orchestration/connectionManager';
 import { storage } from '@/sync/domains/state/storage';
 import {
     clearSessionSurfaceVisibilityForNonSessionRoute,
@@ -709,7 +709,7 @@ function AppBoot(props: {
             sodiumReady: sodium.ready,
             resolveCredentials: () => resolveBootCredentials(Platform.OS),
             prepareWarmCache: prepareWarmCacheStorage,
-            restoreSync: isDesktopActivityOverlayWindow ? null : syncRestore,
+            restoreSync: isDesktopActivityOverlayWindow ? null : restoreConnectionToActiveServer,
             onReady: (state) => {
                 if (cancelled) return;
                 setInitState(state);
@@ -778,6 +778,13 @@ function AppBoot(props: {
     const shouldUseRootDesktopDragSurface =
         effectiveAppShellChromeHost === 'unauth-shell'
         || effectiveAppShellChromeHost === 'narrow-desktop-fallback';
+    const routeContent = isDesktopOverlayWindow ? <SidebarNavigator /> : (
+        <RealtimeProvider>
+            <VoiceEnergyAppProvider>
+                <SidebarNavigator />
+            </VoiceEnergyAppProvider>
+        </RealtimeProvider>
+    );
 
     const appShell = (
         <View style={{ flex: 1, position: 'relative' }}>
@@ -799,7 +806,9 @@ function AppBoot(props: {
                 </View>
             ) : null}
             <View style={{ flex: 1 }}>
-                <SidebarNavigator />
+                <PersonalHomeBootstrapRuntimeMount>
+                    {routeContent}
+                </PersonalHomeBootstrapRuntimeMount>
             </View>
         </View>
     );
@@ -818,28 +827,17 @@ function AppBoot(props: {
             <HorizontalSafeAreaWrapper>
                 <MainAppTabStateProvider>
                     <CurrentUiContextProvider>
-                        {isDesktopOverlayWindow ? appShellWithRootDesktopDragSurface : (
-                            <RealtimeProvider>
-                                <VoiceEnergyAppProvider>
-                                    {appShellWithRootDesktopDragSurface}
-                                </VoiceEnergyAppProvider>
-                            </RealtimeProvider>
-                        )}
+                        {appShellWithRootDesktopDragSurface}
                     </CurrentUiContextProvider>
                 </MainAppTabStateProvider>
             </HorizontalSafeAreaWrapper>
         </ThemePreferenceTransitionHost>
     );
     /*
-     * The Voice energy bus wraps the ROOT layout, not the `(app)` route layout.
-     *
-     * `SidebarNavigator` is mounted here at :810 and its drawer content renders
-     * `<VoiceSurface variant="sidebar" />`, which sits STRICTLY ABOVE the nested
-     * route layout. Mounting the provider there left the sidebar surface outside
-     * it, so `useVoiceEnergy` threw and took the whole app to the crash boundary
-     * on desktop web — while the phone mount (inside the route layout) worked,
-     * which is exactly what hid it. Every unit test supplies the provider itself,
-     * so none of them could catch a missing production mount site.
+     * Voice/realtime still wrap `SidebarNavigator`, whose drawer renders the sidebar voice
+     * surface above the nested route layout. They intentionally live inside the Personal Home
+     * content gate: the stable root canvas/chrome stays mounted during bootstrap, while
+     * auth-dependent route, realtime, and voice hooks are not constructed before Home readiness.
      */
     let providers = (
         <SafeAreaProvider initialMetrics={initialWindowMetrics}>
@@ -856,9 +854,7 @@ function AppBoot(props: {
                             <StatusBarProvider />
                             <AppPaneModalProvider>
                                 <CommandPaletteProvider>
-                                    <PersonalHomeBootstrapRuntimeMount>
-                                        {appContent}
-                                    </PersonalHomeBootstrapRuntimeMount>
+                                    {appContent}
                                 </CommandPaletteProvider>
                             </AppPaneModalProvider>
                         </ThemeProvider>

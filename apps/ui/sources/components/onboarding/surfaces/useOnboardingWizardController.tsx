@@ -770,6 +770,12 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         setRelayAccessTarget(null);
         setRelayAccessShareUrl(null);
         dispatch({ type: 'wizard/setParsedScanPayload', parsedScanPayload: parsed });
+        if (parsed.kind === 'home_qr_invite') {
+            dispatch({ type: 'wizard/setAuthIntent', authIntent: 'restore' });
+            dispatch({ type: 'wizard/setScanStepEnabled', enabled: false });
+            dispatch({ type: 'wizard/goToStep', stepId: 'auth_restore' });
+            return;
+        }
         if (parsed.kind === 'pairing_link' && parsed.serverUrl == null) {
             dispatch({ type: 'wizard/setRelaySelection', relaySelection: { choiceId: 'customUrl', serverUrl: null, relayProfileId: null, locked: true } });
             dispatch({ type: 'wizard/setScanStepEnabled', enabled: false });
@@ -1307,6 +1313,15 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         relayAccessShareUrl,
         relayAccessTarget,
     });
+    const initialPairingLink =
+        state.parsedScanPayload
+        && typeof state.parsedScanPayload === 'object'
+        && 'kind' in state.parsedScanPayload
+        && state.parsedScanPayload.kind === 'home_qr_invite'
+        && 'rawLink' in state.parsedScanPayload
+        && typeof state.parsedScanPayload.rawLink === 'string'
+            ? state.parsedScanPayload.rawLink
+            : null;
     const relaySelectBody = renderWizardChoiceList({
         accessibilityLabel: t('setupOnboarding.preAuthTitle'),
         items: [
@@ -1323,6 +1338,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         layout: props.layout,
         isDesktopShell: props.isDesktopShell,
         authEntryOptions: props.authEntryOptions,
+        initialPairingLink,
         canScanQr,
         welcomeHasKnownRelay,
         welcomeHasAuthActions,
@@ -1380,7 +1396,10 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         onOpenRestore: handleOpenRestore,
         onOpenLostAccess: handleOpenLostAccess,
         onOpenSecretKeyLogin: handleOpenSecretKeyLogin,
-        onRestoreBackToAuth: () => dispatch({ type: 'wizard/back' }),
+        onRestoreBackToAuth: () => {
+            dispatch({ type: 'wizard/setParsedScanPayload', parsedScanPayload: null });
+            dispatch({ type: 'wizard/back' });
+        },
         onLostAccessBackToAuth: () => dispatch({ type: 'wizard/back' }),
         onHostRelayLocalAdvance: () => dispatch({ type: 'wizard/goToStep', stepId: 'relay_access' }),
         onRelayAccessAdvance: handleRelayAccessAdvance,

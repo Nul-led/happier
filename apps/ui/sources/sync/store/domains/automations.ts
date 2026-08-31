@@ -14,6 +14,16 @@ import type { StoreGet, StoreSet } from './_shared';
 
 const AUTOMATION_RUNS_MAX_ENTRIES_PER_AUTOMATION = loadSyncTuning().automationRunsMaxEntriesPerAutomation;
 
+type AutomationDefinitionTraversal = Readonly<{
+    nextCursor: string;
+    automations: Record<string, AutomationDefinition>;
+}>;
+
+type AutomationRunTraversal = Readonly<{
+    nextCursor: string;
+    runs: AutomationDefinitionRun[];
+}>;
+
 function retainCurrentDefinitionDetail(params: Readonly<{
     previous: AutomationDefinition | undefined;
     incoming: AutomationDefinition;
@@ -48,17 +58,24 @@ export type AutomationsDomain = {
     automations: Record<string, AutomationDefinition>;
     automationDefinitionNextCursor: string | null;
     automationDefinitionWindowExtended: boolean;
+    automationDefinitionTraversal: AutomationDefinitionTraversal | null;
     automationRunsByAutomationId: Record<string, AutomationDefinitionRun[]>;
     automationRunNextCursorByAutomationId: Record<string, string | null>;
-    applyAutomations: (automations: AutomationDefinition[], nextCursor?: string | null) => void;
+    automationRunTraversalsByAutomationId: Record<string, AutomationRunTraversal>;
+    applyAutomations: (automations: AutomationDefinition[], nextCursor?: string | null) => number | null;
     appendAutomations: (
         expectedCursor: string,
+        expectedTraversalToken: number,
         automations: AutomationDefinition[],
         nextCursor: string | null,
-    ) => void;
+    ) => boolean;
     upsertAutomation: (automation: AutomationDefinition) => void;
     removeAutomation: (automationId: string) => void;
-    setAutomationRuns: (automationId: string, runs: AutomationDefinitionRun[], nextCursor: string | null) => void;
+    setAutomationRuns: (
+        automationId: string,
+        runs: AutomationDefinitionRun[],
+        nextCursor: string | null,
+    ) => number | null;
     refreshAutomationRunsWindow: (
         automationId: string,
         runs: AutomationDefinitionRun[],
@@ -67,9 +84,10 @@ export type AutomationsDomain = {
     appendAutomationRuns: (
         automationId: string,
         expectedCursor: string,
+        expectedTraversalToken: number,
         runs: AutomationDefinitionRun[],
         nextCursor: string | null,
-    ) => void;
+    ) => boolean;
     upsertAutomationRun: (run: AutomationDefinitionRun) => void;
 };
 
@@ -90,6 +108,57 @@ function mergeRunsNewestFirst(runs: AutomationDefinitionRun[]): AutomationDefini
             }
             return right.updatedAt - left.updatedAt;
         });
+}
+
+function indexAutomations(automations: AutomationDefinition[]): Record<string, AutomationDefinition> {
+    return Object.fromEntries(automations.map((automation) => [automation.id, automation]));
+}
+
+function mergeAutomationDefinitions(
+    previous: Record<string, AutomationDefinition>,
+    incoming: AutomationDefinition[],
+): Record<string, AutomationDefinition> {
+    const next = { ...previous };
+    for (const automation of incoming) {
+        next[automation.id] = retainCurrentDefinitionDetail({
+            previous: previous[automation.id],
+            incoming: automation,
+        });
+    }
+    return next;
+}
+
+function replaceAutomationDefinitions(
+    previous: Record<string, AutomationDefinition>,
+    incoming: AutomationDefinition[],
+): Record<string, AutomationDefinition> {
+    const next: Record<string, AutomationDefinition> = {};
+    for (const automation of incoming) {
+        next[automation.id] = retainCurrentDefinitionDetail({
+            previous: previous[automation.id],
+            incoming: automation,
+        });
+    }
+    return next;
+}
+
+function retainAutomationRunMembership(
+    automationIds: ReadonlySet<string>,
+    runsByAutomationId: Record<string, AutomationDefinitionRun[]>,
+    cursorsByAutomationId: Record<string, string | null>,
+    traversalsByAutomationId: Record<string, AutomationRunTraversal>,
+) {
+    return {
+        automationRunsByAutomationId: Object.fromEntries(
+            Object.entries(runsByAutomationId).filter(([automationId]) => automationIds.has(automationId)),
+        ),
+        automationRunNextCursorByAutomationId: Object.fromEntries(
+            Object.entries(cursorsByAutomationId).filter(([automationId]) => automationIds.has(automationId)),
+        ),
+        automationRunTraversalsByAutomationId: Object.fromEntries(
+            Object.entries(traversalsByAutomationId).filter(([automationId]) => automationIds.has(automationId)),
+        ),
+    };
 }
 
 /**
@@ -142,62 +211,98 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
     set: StoreSet<S>;
     get: StoreGet<S>;
 }): AutomationsDomain {
+    let nextTraversalToken = 0;
+    let definitionTraversalToken: number | null = null;
+    const runTraversalTokensByAutomationId = new Map<string, number>();
+
     return {
         automations: {},
         automationDefinitionNextCursor: null,
         automationDefinitionWindowExtended: false,
+        automationDefinitionTraversal: null,
         automationRunsByAutomationId: {},
         automationRunNextCursorByAutomationId: {},
-        applyAutomations: (automations, nextCursor) =>
+        automationRunTraversalsByAutomationId: {},
+        applyAutomations: (automations, nextCursor) => {
+            const traversalToken = nextCursor === null || nextCursor === undefined
+                ? null
+                : ++nextTraversalToken;
+            definitionTraversalToken = traversalToken;
             set((state) => {
-                const next: Record<string, AutomationDefinition> = {};
-                for (const automation of automations) {
-                    next[automation.id] = retainCurrentDefinitionDetail({
-                        previous: state.automations[automation.id],
-                        incoming: automation,
-                    });
-                }
-                // Preserve an explicitly traversed tail during a first-page
-                // refresh, but restart continuation from the fresh first
-                // page. Keeping the predecessor tail cursor would skip rows
-                // inserted ahead of that cursor while this client was
-                // offline (including more than one new page). Replaying
-                // already-retained pages is harmless because this store is
-                // identity-keyed; skipping new definitions is not. A null
-                // fresh cursor proves the first page is the complete current
-                // catalog, so the ordinary replacement branch can also drop
-                // stale predecessor tail rows.
-                if (state.automationDefinitionWindowExtended && nextCursor !== null) {
+                const freshPage = indexAutomations(automations);
+                if (nextCursor !== null && nextCursor !== undefined) {
+                    // Keep the last-known-good window while a fresh traversal
+                    // is incomplete. Only the full terminal traversal can
+                    // authoritatively retire a remotely deleted definition.
                     return {
                         ...state,
-                        automations: { ...state.automations, ...next },
+                        automations: mergeAutomationDefinitions(state.automations, automations),
                         automationDefinitionNextCursor: nextCursor,
+                        automationDefinitionWindowExtended: true,
+                        automationDefinitionTraversal: { nextCursor, automations: freshPage },
+                    };
+                }
+                const replacement = replaceAutomationDefinitions(state.automations, automations);
+                return {
+                    ...state,
+                    automations: replacement,
+                    automationDefinitionNextCursor: null,
+                    automationDefinitionWindowExtended: false,
+                    automationDefinitionTraversal: null,
+                    ...retainAutomationRunMembership(
+                        new Set(Object.keys(replacement)),
+                        state.automationRunsByAutomationId,
+                        state.automationRunNextCursorByAutomationId,
+                        state.automationRunTraversalsByAutomationId,
+                    ),
+                };
+            });
+            return traversalToken;
+        },
+        appendAutomations: (expectedCursor, expectedTraversalToken, automations, nextCursor) => {
+            let accepted = false;
+            set((state) => {
+                if (
+                    state.automationDefinitionNextCursor !== expectedCursor
+                    || definitionTraversalToken !== expectedTraversalToken
+                ) return state;
+                const traversal = state.automationDefinitionTraversal;
+                if (!traversal || traversal.nextCursor !== expectedCursor) return state;
+                const traversedAutomations = { ...traversal.automations, ...indexAutomations(automations) };
+                accepted = true;
+                if (nextCursor === null) {
+                    definitionTraversalToken = null;
+                    const replacement = replaceAutomationDefinitions(
+                        state.automations,
+                        Object.values(traversedAutomations),
+                    );
+                    return {
+                        ...state,
+                        automations: replacement,
+                        automationDefinitionNextCursor: null,
+                        automationDefinitionWindowExtended: false,
+                        automationDefinitionTraversal: null,
+                        ...retainAutomationRunMembership(
+                            new Set(Object.keys(replacement)),
+                            state.automationRunsByAutomationId,
+                            state.automationRunNextCursorByAutomationId,
+                            state.automationRunTraversalsByAutomationId,
+                        ),
                     };
                 }
                 return {
                     ...state,
-                    automations: next,
-                    automationDefinitionNextCursor: nextCursor ?? null,
-                    automationDefinitionWindowExtended: false,
-                };
-            }),
-        appendAutomations: (expectedCursor, automations, nextCursor) =>
-            set((state) => {
-                if (state.automationDefinitionNextCursor !== expectedCursor) return state;
-                const next = { ...state.automations };
-                for (const automation of automations) {
-                    next[automation.id] = retainCurrentDefinitionDetail({
-                        previous: state.automations[automation.id],
-                        incoming: automation,
-                    });
-                }
-                return {
-                    ...state,
-                    automations: next,
+                    automations: mergeAutomationDefinitions(state.automations, automations),
                     automationDefinitionNextCursor: nextCursor,
                     automationDefinitionWindowExtended: true,
+                    automationDefinitionTraversal: {
+                        nextCursor,
+                        automations: traversedAutomations,
+                    },
                 };
-            }),
+            });
+            return accepted;
+        },
         upsertAutomation: (automation) =>
             set((state) => ({
                 ...state,
@@ -205,33 +310,100 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                     ...state.automations,
                     [automation.id]: automation,
                 },
+                automationDefinitionTraversal: state.automationDefinitionTraversal
+                    ? {
+                        ...state.automationDefinitionTraversal,
+                        automations: {
+                            ...state.automationDefinitionTraversal.automations,
+                            [automation.id]: automation,
+                        },
+                    }
+                    : null,
             })),
-        removeAutomation: (automationId) =>
+        removeAutomation: (automationId) => {
+            runTraversalTokensByAutomationId.delete(automationId);
             set((state) => {
                 const nextAutomations = { ...state.automations };
                 const nextRunsByAutomationId = { ...state.automationRunsByAutomationId };
                 const nextRunCursorsByAutomationId = { ...state.automationRunNextCursorByAutomationId };
+                const nextRunTraversalsByAutomationId = { ...state.automationRunTraversalsByAutomationId };
                 delete nextAutomations[automationId];
                 delete nextRunsByAutomationId[automationId];
                 delete nextRunCursorsByAutomationId[automationId];
+                delete nextRunTraversalsByAutomationId[automationId];
+                const nextDefinitionTraversal = state.automationDefinitionTraversal
+                    ? {
+                        ...state.automationDefinitionTraversal,
+                        automations: { ...state.automationDefinitionTraversal.automations },
+                    }
+                    : null;
+                if (nextDefinitionTraversal) delete nextDefinitionTraversal.automations[automationId];
                 return {
                     ...state,
                     automations: nextAutomations,
                     automationRunsByAutomationId: nextRunsByAutomationId,
                     automationRunNextCursorByAutomationId: nextRunCursorsByAutomationId,
+                    automationRunTraversalsByAutomationId: nextRunTraversalsByAutomationId,
+                    automationDefinitionTraversal: nextDefinitionTraversal,
                 };
-            }),
-        setAutomationRuns: (automationId, runs, nextCursor) =>
-            set((state) => seedAutomationRunWindow(state, automationId, runs, nextCursor)),
+            });
+        },
+        setAutomationRuns: (automationId, runs, nextCursor) => {
+            const traversalToken = nextCursor === null ? null : ++nextTraversalToken;
+            if (traversalToken === null) runTraversalTokensByAutomationId.delete(automationId);
+            else runTraversalTokensByAutomationId.set(automationId, traversalToken);
+            set((state) => {
+                const nextTraversals = { ...state.automationRunTraversalsByAutomationId };
+                if (nextCursor === null) {
+                    delete nextTraversals[automationId];
+                    return {
+                        ...seedAutomationRunWindow(state, automationId, runs, nextCursor),
+                        automationRunTraversalsByAutomationId: nextTraversals,
+                    };
+                }
+                const existing = state.automationRunsByAutomationId[automationId] ?? [];
+                return {
+                    ...state,
+                    automationRunsByAutomationId: {
+                        ...state.automationRunsByAutomationId,
+                        [automationId]: existing.length === 0
+                            ? retainPassiveRunWindow(runs)
+                            : mergeRunsNewestFirst([...existing, ...runs]),
+                    },
+                    automationRunNextCursorByAutomationId: {
+                        ...state.automationRunNextCursorByAutomationId,
+                        [automationId]: nextCursor,
+                    },
+                    automationRunTraversalsByAutomationId: {
+                        ...nextTraversals,
+                        [automationId]: { nextCursor, runs },
+                    },
+                };
+            });
+            return traversalToken;
+        },
         refreshAutomationRunsWindow: (automationId, runs, nextCursor) =>
             set((state) => {
                 const existing = state.automationRunsByAutomationId[automationId] ?? [];
+                const traversal = state.automationRunTraversalsByAutomationId[automationId];
+                const nextTraversals = traversal
+                    ? {
+                        ...state.automationRunTraversalsByAutomationId,
+                        [automationId]: {
+                            ...traversal,
+                            runs: mergeRunsNewestFirst([...traversal.runs, ...runs]),
+                        },
+                    }
+                    : state.automationRunTraversalsByAutomationId;
                 // A window no larger than the page the server just returned is
                 // the passive projection: re-seeding it is exactly what the
                 // reader would see by reopening the Automation, and everything
                 // it drops is still reachable through the fresh continuation.
                 if (existing.length <= runs.length) {
-                    return seedAutomationRunWindow(state, automationId, runs, nextCursor);
+                    return {
+                        ...seedAutomationRunWindow(state, automationId, runs, nextCursor),
+                        automationRunTraversalsByAutomationId: nextTraversals,
+                    };
                 }
                 // A larger window is a traversal the reader paid for page by
                 // page, and the cursor it holds is the authoritative server
@@ -245,14 +417,40 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                         ...state.automationRunsByAutomationId,
                         [automationId]: mergeRunsNewestFirst([...existing, ...runs]),
                     },
+                    automationRunTraversalsByAutomationId: nextTraversals,
                 };
             }),
-        appendAutomationRuns: (automationId, expectedCursor, runs, nextCursor) =>
+        appendAutomationRuns: (automationId, expectedCursor, expectedTraversalToken, runs, nextCursor) => {
+            let accepted = false;
             set((state) => {
-                if (state.automationRunNextCursorByAutomationId[automationId] !== expectedCursor) {
+                if (
+                    state.automationRunNextCursorByAutomationId[automationId] !== expectedCursor
+                    || runTraversalTokensByAutomationId.get(automationId) !== expectedTraversalToken
+                ) {
                     return state;
                 }
+                const traversal = state.automationRunTraversalsByAutomationId[automationId];
+                if (!traversal || traversal.nextCursor !== expectedCursor) return state;
                 const existing = state.automationRunsByAutomationId[automationId] ?? [];
+                const traversedRuns = mergeRunsNewestFirst([...traversal.runs, ...runs]);
+                const nextTraversals = { ...state.automationRunTraversalsByAutomationId };
+                accepted = true;
+                if (nextCursor === null) {
+                    runTraversalTokensByAutomationId.delete(automationId);
+                    delete nextTraversals[automationId];
+                    return {
+                        ...state,
+                        automationRunsByAutomationId: {
+                            ...state.automationRunsByAutomationId,
+                            [automationId]: traversedRuns,
+                        },
+                        automationRunNextCursorByAutomationId: {
+                            ...state.automationRunNextCursorByAutomationId,
+                            [automationId]: null,
+                        },
+                        automationRunTraversalsByAutomationId: nextTraversals,
+                    };
+                }
                 // An explicit page is what the reader asked to see, so it is
                 // retained in full and the server's continuation is recorded
                 // verbatim. Deriving the continuation from the passive window
@@ -271,19 +469,35 @@ export function createAutomationsDomain<S extends AutomationsDomain>({
                         ...state.automationRunNextCursorByAutomationId,
                         [automationId]: nextCursor,
                     },
+                    automationRunTraversalsByAutomationId: {
+                        ...nextTraversals,
+                        [automationId]: { nextCursor, runs: traversedRuns },
+                    },
                 };
-            }),
+            });
+            return accepted;
+        },
         upsertAutomationRun: (run) =>
             set((state) => {
                 const existing = state.automationRunsByAutomationId[run.automationId] ?? [];
                 const filtered = existing.filter((entry) => entry.id !== run.id);
                 const next = retainPassiveRunWindow([run, ...filtered], existing.length);
+                const traversal = state.automationRunTraversalsByAutomationId[run.automationId];
                 return {
                     ...state,
                     automationRunsByAutomationId: {
                         ...state.automationRunsByAutomationId,
                         [run.automationId]: next,
                     },
+                    automationRunTraversalsByAutomationId: traversal
+                        ? {
+                            ...state.automationRunTraversalsByAutomationId,
+                            [run.automationId]: {
+                                ...traversal,
+                                runs: mergeRunsNewestFirst([...traversal.runs, run]),
+                            },
+                        }
+                        : state.automationRunTraversalsByAutomationId,
                 };
             }),
     };

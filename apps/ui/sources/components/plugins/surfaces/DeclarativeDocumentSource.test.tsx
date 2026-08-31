@@ -8,6 +8,7 @@ import {
 import { PluginUiArtifactDigestV1Schema } from '@happier-dev/protocol/plugins/ui';
 import {
     MAX_PLUGIN_DECLARATIVE_DOCUMENT_RESOURCE_BYTES_V1,
+    PluginDeclarativeProjectedModelV1Schema,
     type PluginDeclarativePreparedTargetedSurfaceInventoryEntryV1,
 } from '@happier-dev/protocol';
 
@@ -64,7 +65,6 @@ const staticModel: Model = Object.freeze({
         settings: Object.freeze([]),
         uiQueries: Object.freeze([]),
     }),
-    nodes: Object.freeze([{ kind: 'text', path: 'root', order: 0, text: 'Static dashboard' }]),
     root: Object.freeze({ kind: 'text', path: 'root', order: 0, text: 'Static dashboard' }),
 });
 
@@ -165,17 +165,23 @@ function readText(model: unknown): string | null {
 
 function readAction(model: unknown): string | null {
     if (!model || typeof model !== 'object' || Array.isArray(model)) return null;
-    const nodes = (model as Readonly<Record<string, unknown>>).nodes;
-    if (!Array.isArray(nodes)) return null;
-    for (const nodeValue of nodes) {
-        if (!nodeValue || typeof nodeValue !== 'object' || Array.isArray(nodeValue)) continue;
+    const visit = (nodeValue: unknown): string | null => {
+        if (!nodeValue || typeof nodeValue !== 'object' || Array.isArray(nodeValue)) return null;
         const node = nodeValue as Readonly<Record<string, unknown>>;
         const action = node.action;
-        if (!action || typeof action !== 'object' || Array.isArray(action)) continue;
-        const qualifiedId = (action as Readonly<Record<string, unknown>>).qualifiedId;
-        if (typeof qualifiedId === 'string') return qualifiedId;
-    }
-    return null;
+        if (action && typeof action === 'object' && !Array.isArray(action)) {
+            const qualifiedId = (action as Readonly<Record<string, unknown>>).qualifiedId;
+            if (typeof qualifiedId === 'string') return qualifiedId;
+        }
+        if (Array.isArray(node.children)) {
+            for (const child of node.children) {
+                const qualifiedId = visit(child);
+                if (qualifiedId !== null) return qualifiedId;
+            }
+        }
+        return visit(node.fallback);
+    };
+    return visit((model as Readonly<Record<string, unknown>>).root);
 }
 
 function readCollectionQuery(model: unknown): string | null {
@@ -412,6 +418,7 @@ function Probe(props: Readonly<{
         secondaryCommand: readCollectionCommand(source.model, 'secondaryCommands'),
         targetedSurfaceInstanceKey: readTargetedSurfaceInstanceKey(source.model),
         targetedSurfaceGeneration: readTargetedSurfaceGeneration(source.model),
+        strictProjectedModel: PluginDeclarativeProjectedModelV1Schema.safeParse(source.model).success,
         invalidDocument: source.invalidDocument,
         sourceError: source.sourceError,
         documentPresentation: source.presentation,
@@ -492,6 +499,7 @@ describe('useDeclarativeDocumentSource', () => {
 
         expect(tree.root.findByType('output').props).toMatchObject({
             value: 'Live dashboard',
+            strictProjectedModel: true,
             freshness: 'fresh',
             pending: 'idle',
             subscription: 'unsupported',

@@ -308,7 +308,11 @@ function createAccountAvailabilityReader(input: Pick<
             kind: 'unavailable',
             code: 'account_availability_not_loaded',
         }),
-        readCurrentCollectionCapability: () => ({
+        readCurrentAccountDataCapability: () => ({
+            kind: 'unavailable',
+            code: 'account_availability_not_loaded',
+        }),
+        readCurrentAccountKvCapability: () => ({
             kind: 'unavailable',
             code: 'account_availability_not_loaded',
         }),

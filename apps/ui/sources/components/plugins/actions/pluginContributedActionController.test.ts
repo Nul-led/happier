@@ -44,7 +44,7 @@ import {
     createPluginContributedActionController,
     type PluginContributedActionCurrentSnapshot,
 } from './pluginContributedActionController';
-import { DEFAULT_INVOCATION_TIMEOUT_MS } from '@/components/appShell/plugins/pluginUiInvocationHost';
+import { PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS } from '@/components/plugins/hostApi/interactionLifetime';
 
 const MACHINE_ID = 'machine-a';
 const SERVER_ID = 'server-a';
@@ -1021,7 +1021,7 @@ describe('plugin contributed Action controller', () => {
             if (deadlineOpened.kind !== 'form') throw new Error('expected form Action');
 
             deadlineOpened.form.replaceInput({ token: 'keep-while-filling-form' });
-            await vi.advanceTimersByTimeAsync(DEFAULT_INVOCATION_TIMEOUT_MS);
+            await vi.advanceTimersByTimeAsync(PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS);
             expect(deadlineOpened.form.isRetired()).toBe(false);
             expect(deadlineOpened.form.getInput()).toEqual({ token: 'keep-while-filling-form' });
         } finally {
@@ -2046,7 +2046,7 @@ describe('plugin contributed Action controller', () => {
             expect(handlerSignal).toBeDefined();
             expect(handlerSignal?.aborted).toBe(false);
 
-            await vi.advanceTimersByTimeAsync(DEFAULT_INVOCATION_TIMEOUT_MS);
+            await vi.advanceTimersByTimeAsync(PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS);
 
             expect(handlerSignal?.aborted).toBe(true);
             settleDispatch({ ok: true, result: { completed: true } });

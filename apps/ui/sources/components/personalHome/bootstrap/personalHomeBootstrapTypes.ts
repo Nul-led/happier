@@ -27,9 +27,14 @@ export type NormalizedSetupDetail = Readonly<{
 
 export type RelayRuntimeStatusSnapshot = Readonly<{
     installed: boolean;
+    dataPresent?: boolean;
     healthy?: boolean | null;
     serviceActive?: boolean | null;
     status?: 'absent' | 'installing' | 'stopped' | 'healthy' | 'unhealthy' | 'needs-repair';
+    purpose?: Readonly<{ kind: 'personal-home'; canonicalServerUrl: string }>
+        | Readonly<{ kind: 'generic' }>
+        | null;
+    anonymousSignupEnabled?: boolean | null;
     error?: string | null;
 }>;
 
@@ -40,11 +45,23 @@ export type LocalDaemonStatus = Readonly<{
     machineId: string | null;
     daemonMachineRegistered?: boolean | null;
     error?: string | null;
+    /** Raw daemon readback binding, used only for the Personal Home target-verification projection. */
+    daemonServerUrl?: string | null;
+    daemonComparableKey?: string | null;
+    daemonAccountId?: string | null;
+    /**
+     * Personal Home target-verification projection: true only when the daemon's connected URL
+     * and account identity are proven to serve this Personal Home. Absent/false means readiness
+     * is unproven and the prepare-computer operation must run or retry.
+     */
+    servesPersonalHome?: boolean | null;
 }>;
 
 export type PersonalHomeFacts = Readonly<{
     hostIsDesktop: boolean;
     isDesktopMainWindow: boolean;
+    /** A durable, explicit selection of a different Home releases first-run Personal Home setup. */
+    explicitlySelectedOtherHome: boolean;
     completedPersonalHomeProfile: ServerProfile | null;
     candidateLocalProfile: ServerProfile | null;
     relayRuntime: RelayRuntimeStatusSnapshot | null;
@@ -72,10 +89,3 @@ export type PersonalHomeBootstrapOperation =
     | 'connect-app'
     | 'close-signup'
     | 'prepare-computer';
-
-export type PersonalHomeRegistration = Readonly<{
-    homeServerIdentityId: string;
-    canonicalServerUrl: string;
-    localServerUrl: string;
-    profileId: string;
-}>;

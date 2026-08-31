@@ -206,8 +206,9 @@ async function executeCapturedActivePluginCollectionUiQuery(
     const signals = [captured.signal, options?.signal];
     for (const signal of signals) signal?.addEventListener('abort', abort, { once: true });
     if (signals.some((signal) => signal?.aborted)) abort();
+    let authority: Awaited<ReturnType<typeof captureSessionRequestAuthorityForServerAccountScope>> | null = null;
     try {
-        const authority = await captureSessionRequestAuthorityForServerAccountScope({
+        authority = await captureSessionRequestAuthorityForServerAccountScope({
             scope: captured.lifetime.scope,
             activeRequest: (path, init) => apiSocket.request(path, init),
         });
@@ -241,6 +242,7 @@ async function executeCapturedActivePluginCollectionUiQuery(
         validateResponseIdentity(validated, request);
         return validated;
     } finally {
+        await authority?.release?.();
         for (const signal of signals) signal?.removeEventListener('abort', abort);
         retirement.dispose();
     }

@@ -48,6 +48,7 @@ const genericViewportEffect: TranscriptLifecycleHostScrollObservationPlan['gener
                 isPinned: true,
                 offsetY: 0,
                 shouldRestoreViewport: false,
+                shouldPersistViewport: false,
             },
         },
         drain: {
@@ -67,6 +68,7 @@ const genericViewportEffect: TranscriptLifecycleHostScrollObservationPlan['gener
             isPinned: true,
             offsetY: 0,
             shouldRestoreViewport: false,
+            shouldPersistViewport: false,
         },
         wantsPinned: true,
     },

@@ -7,7 +7,7 @@ export async function promptAccountConnectApprovalRequired(): Promise<AccountCon
     let action: AccountConnectApprovalGuidanceAction = 'dismiss';
     await Modal.alertAsync(
         t('connect.restoreAccount'),
-        t('connect.restoreQrInstructions'),
+        t('connect.legacyAccountQrUnavailable'),
         [
             { text: t('common.cancel'), style: 'cancel' },
             {

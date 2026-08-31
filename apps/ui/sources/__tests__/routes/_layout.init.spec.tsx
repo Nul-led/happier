@@ -14,6 +14,7 @@ import { installRouteRootCommonModuleMocks } from './routeRootTestHelpers';
 
 const loadAsyncMock = vi.fn();
 const syncRestoreMock = vi.fn(async () => {});
+const restoreConnectionToActiveServerMock = vi.fn(async () => {});
 const hideAsyncMock = vi.fn(async () => {});
 let mockedPlatformOS: string = 'web';
 let mockedPathname = '/';
@@ -151,6 +152,7 @@ vi.mock('@/boot/resolveBootCredentials', () => ({
 
 vi.mock('@/utils/platform/desktopHost', () => ({
     isDesktopHost: () => shellChromeState.isDesktopHost,
+    desktopHostKind: () => shellChromeState.isDesktopHost ? 'tauri' : null,
     invokeDesktopHost: vi.fn(),
     listenDesktopHostEvent: vi.fn(),
 }));
@@ -398,6 +400,10 @@ vi.mock('@/track/settingsAnalytics/SettingsAnalyticsRuntime', () => {
 
 vi.mock('@/sync/sync', () => ({
     syncRestore: syncRestoreMock,
+}));
+
+vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+    restoreConnectionToActiveServer: restoreConnectionToActiveServerMock,
 }));
 
 vi.mock('@/track/useTrackScreens', () => ({
@@ -673,8 +679,9 @@ describe('app/_layout init resilience', () => {
 
         expect(screen.findAllByType('RealtimeProvider' as any)).toHaveLength(0);
         expect(screen.findAllByType('SidebarNavigator' as any)).toHaveLength(1);
-        expect(syncRestoreMock).toHaveBeenCalledTimes(1);
-        expect(syncRestoreMock).toHaveBeenCalledWith(bootCredentialsState.value);
+        expect(restoreConnectionToActiveServerMock).toHaveBeenCalledTimes(1);
+        expect(restoreConnectionToActiveServerMock).toHaveBeenCalledWith(bootCredentialsState.value);
+        expect(syncRestoreMock).not.toHaveBeenCalled();
     });
 
     it('does not mount desktop fallback shell chrome inside the dedicated desktop overlay window', async () => {

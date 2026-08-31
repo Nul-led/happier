@@ -312,4 +312,53 @@ describe('serverScopedRpcSocketPool', () => {
         await pool.stopAll();
         pool.resetForTests();
     });
+
+    it('removes and destroys the exact idle entry so token rotation cannot accumulate stale sockets', async () => {
+        const first = createFakeSocket();
+        const second = createFakeSocket();
+        const createdSockets: unknown[] = [];
+        const createSocketSpy = vi.fn(() => {
+            const next = createdSockets.length === 0 ? first.socket : second.socket;
+            createdSockets.push(next);
+            return next;
+        });
+
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: () => createSocketSpy(),
+            reachability: {
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 0,
+        });
+
+        const client: ScopedSocketClient = await pool.acquire({
+            serverUrl: 'https://server.example.test',
+            token: 'token-a',
+            timeoutMs: 1_000,
+        });
+        expect(first.connectSpy).toHaveBeenCalledTimes(1);
+
+        // Idle teardown must detach the socket AND remove the exact pool entry, so the
+        // next acquire for the same Home constructs a fresh entry instead of reusing a
+        // torn-down socket (which is how token rotation accumulated stale entries).
+        client.disconnect();
+        await vi.waitFor(() => {
+            expect(first.disconnectSpy).toHaveBeenCalled();
+        });
+
+        await pool.acquire({ serverUrl: 'https://server.example.test', token: 'token-a', timeoutMs: 1_000 });
+        expect(createSocketSpy).toHaveBeenCalledTimes(2);
+        expect(second.connectSpy).toHaveBeenCalledTimes(1);
+
+        // stopAll must clear the exact map: a later acquire starts from a fresh entry.
+        await pool.stopAll();
+        await pool.acquire({ serverUrl: 'https://server.example.test', token: 'token-a', timeoutMs: 1_000 });
+        expect(createSocketSpy).toHaveBeenCalledTimes(3);
+        expect(second.connectSpy).toHaveBeenCalledTimes(2);
+
+        pool.resetForTests();
+    });
 });

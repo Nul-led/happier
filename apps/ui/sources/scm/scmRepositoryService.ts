@@ -27,6 +27,7 @@ const DEFAULT_MAX_REPO_ENRICHMENT_CACHE_ENTRIES = 32;
 const DEFAULT_MAX_PER_REPO_ENRICHMENT_ENTRIES = 64;
 
 type RepoSnapshotRequestContext = Readonly<{
+    repoIdentityPrefix: string;
     machineId: string;
     resolvedPath: string;
     includeWorktreeStatus: boolean;
@@ -288,6 +289,7 @@ export class ScmRepositoryService {
     }
 
     private resolveCachedRepoIdentityKeyForMachinePath(input: Readonly<{
+        repoIdentityPrefix: string;
         machineId: string;
         resolvedPath: string;
         repoIdentityKey: string;
@@ -312,8 +314,9 @@ export class ScmRepositoryService {
 
         let bestMatchKey: string | null = null;
         let bestMatchRootLen = -1;
+        const repoIdentityPrefix = `${input.repoIdentityPrefix}:`;
         for (const [candidateKey, candidateSnapshot] of this.repoSnapshotCache) {
-            if (!candidateKey.startsWith(`${input.machineId}:`)) {
+            if (!candidateKey.startsWith(repoIdentityPrefix)) {
                 continue;
             }
             if (!candidateSnapshot?.repo?.isRepo) {
@@ -358,7 +361,11 @@ export class ScmRepositoryService {
     }
 
     private isPotentialSameRepoRequest(a: RepoSnapshotRequestContext, b: RepoSnapshotRequestContext): boolean {
-        if (a.machineId !== b.machineId || a.includeWorktreeStatus !== b.includeWorktreeStatus) {
+        if (
+            a.repoIdentityPrefix !== b.repoIdentityPrefix
+            || a.machineId !== b.machineId
+            || a.includeWorktreeStatus !== b.includeWorktreeStatus
+        ) {
             return false;
         }
         if (
@@ -495,6 +502,7 @@ export class ScmRepositoryService {
         }, {
             requestContext: request.machineId
                 ? {
+                    repoIdentityPrefix: request.machineId,
                     machineId: request.machineId,
                     resolvedPath: request.resolvedPath,
                     includeWorktreeStatus: false,
@@ -507,6 +515,7 @@ export class ScmRepositoryService {
         serverId?: string | null;
         machineId: string;
         path: string;
+        homeDir?: string | null;
         includeWorktreeStatus?: boolean;
     }>): Promise<UiScmWorkingSnapshot | null> {
         const request = resolveRepoScmMachinePathRequest(input);
@@ -521,11 +530,12 @@ export class ScmRepositoryService {
                 cwd: request.resolvedPath,
                 ...(includeWorktreeStatus ? { includeWorktreeStatus: true } : {}),
             };
-            const response = input.serverId
-                ? await machineScmStatusSnapshot(request.machineId, snapshotRequest, { serverId: input.serverId })
+            const serverId = typeof input.serverId === 'string' ? input.serverId.trim() : '';
+            const response = serverId
+                ? await machineScmStatusSnapshot(request.machineId, snapshotRequest, { serverId })
                 : await machineScmStatusSnapshot(request.machineId, snapshotRequest);
             const projectKey = resolveCanonicalScmProjectKey({
-                fallbackProjectKey: request.repoIdentityKey,
+                fallbackProjectKey: `${request.machineId}:${request.resolvedPath}`,
                 machineId: request.machineId,
                 snapshot: readSuccessfulSnapshot(response) ?? null,
             });
@@ -536,10 +546,15 @@ export class ScmRepositoryService {
                 emptyRootPath: request.resolvedPath,
             });
         }, {
-            canonicalIdentityKeyOverride: includeWorktreeStatus
-                ? (snapshot) => this.applyStatusCacheNamespace(snapshot?.projectKey ?? request.repoIdentityKey, true)
-                : undefined,
+            canonicalIdentityKeyOverride: (snapshot) => {
+                const snapshotRootPath = normalizeFileSystemPath(snapshot?.repo.rootPath);
+                const scopedIdentityKey = snapshotRootPath
+                    ? `${request.repoIdentityPrefix}:${snapshotRootPath}`
+                    : request.repoIdentityKey;
+                return this.applyStatusCacheNamespace(scopedIdentityKey, includeWorktreeStatus);
+            },
             requestContext: {
+                repoIdentityPrefix: request.repoIdentityPrefix,
                 machineId: request.machineId,
                 resolvedPath: request.resolvedPath,
                 includeWorktreeStatus,
@@ -548,8 +563,10 @@ export class ScmRepositoryService {
     }
 
     readCachedSnapshotForMachinePath(input: Readonly<{
+        serverId?: string | null;
         machineId: string;
         path: string;
+        homeDir?: string | null;
         includeWorktreeStatus?: boolean;
     }>): UiScmWorkingSnapshot | null {
         const request = resolveRepoScmMachinePathRequest(input);
@@ -564,6 +581,7 @@ export class ScmRepositoryService {
             if (direct) return direct;
             const aliasedLightweightKey =
                 this.resolveCachedRepoIdentityKeyForMachinePath({
+                    repoIdentityPrefix: request.repoIdentityPrefix,
                     machineId: request.machineId,
                     resolvedPath: request.resolvedPath,
                     repoIdentityKey: request.repoIdentityKey,
@@ -576,6 +594,7 @@ export class ScmRepositoryService {
 
         const resolvedCacheKey =
             this.resolveCachedRepoIdentityKeyForMachinePath({
+                repoIdentityPrefix: request.repoIdentityPrefix,
                 machineId: request.machineId,
                 resolvedPath: request.resolvedPath,
                 repoIdentityKey: request.repoIdentityKey,
@@ -620,6 +639,7 @@ export class ScmRepositoryService {
     }
 
     private resolveWorktreesEnrichmentCacheKey(input: Readonly<{
+        repoIdentityPrefix: string;
         machineId: string;
         resolvedPath: string;
         repoIdentityKey: string;
@@ -633,6 +653,7 @@ export class ScmRepositoryService {
     }
 
     private resolveCachedWorktreesEnrichmentKeyForMachinePath(input: Readonly<{
+        repoIdentityPrefix: string;
         machineId: string;
         resolvedPath: string;
         repoIdentityKey: string;
@@ -647,7 +668,7 @@ export class ScmRepositoryService {
             return null;
         }
 
-        const machinePrefix = `${input.machineId}:`;
+        const machinePrefix = `${input.repoIdentityPrefix}:`;
         let bestMatchKey: string | null = null;
         let bestMatchRootLen = -1;
         for (const candidateKey of Array.from(this.worktreesEnrichmentCacheKeys)) {
@@ -685,14 +706,13 @@ export class ScmRepositoryService {
     }
 
     async fetchWorktreesEnrichment(input: Readonly<{
+        serverId?: string | null;
         machineId: string;
         path: string;
+        homeDir?: string | null;
         worktreePaths: ReadonlyArray<string>;
     }>): Promise<ScmWorktreeEnrichmentEntry[] | null> {
-        const request = resolveRepoScmMachinePathRequest({
-            machineId: input.machineId,
-            path: input.path,
-        });
+        const request = resolveRepoScmMachinePathRequest(input);
         if (!request) return null;
 
         const cacheKey = this.resolveWorktreesEnrichmentCacheKey(request);
@@ -704,17 +724,29 @@ export class ScmRepositoryService {
             try {
                 const entries: ScmWorktreeEnrichmentEntry[] = [];
                 for (const worktreePaths of chunkWorktreePathsForEnrichment(input.worktreePaths)) {
-                    const response = await runMachineScmRpc<
-                        ScmWorktreesEnrichmentResponse,
-                        ScmWorktreesEnrichmentRequest
-                    >(
-                        request.machineId,
-                        RPC_METHODS.SCM_WORKTREES_ENRICHMENT,
-                        {
-                            cwd: request.resolvedPath,
-                            worktreePaths: [...worktreePaths],
-                        },
-                    );
+                    const enrichmentRequest = {
+                        cwd: request.resolvedPath,
+                        worktreePaths: [...worktreePaths],
+                    };
+                    const serverId = typeof input.serverId === 'string' ? input.serverId.trim() : '';
+                    const response = serverId
+                        ? await runMachineScmRpc<
+                            ScmWorktreesEnrichmentResponse,
+                            ScmWorktreesEnrichmentRequest
+                        >(
+                            request.machineId,
+                            RPC_METHODS.SCM_WORKTREES_ENRICHMENT,
+                            enrichmentRequest,
+                            { serverId },
+                        )
+                        : await runMachineScmRpc<
+                            ScmWorktreesEnrichmentResponse,
+                            ScmWorktreesEnrichmentRequest
+                        >(
+                            request.machineId,
+                            RPC_METHODS.SCM_WORKTREES_ENRICHMENT,
+                            enrichmentRequest,
+                        );
                     if (!response || response.success !== true || !response.worktrees) {
                         return null;
                     }
@@ -754,13 +786,16 @@ export class ScmRepositoryService {
     }
 
     readCachedWorktreesEnrichment(input: Readonly<{
+        serverId?: string | null;
         machineId: string;
         path: string;
+        homeDir?: string | null;
         worktreePaths?: ReadonlyArray<string>;
     }>): ScmWorktreeEnrichmentEntry[] | null {
         const request = resolveRepoScmMachinePathRequest(input);
         if (!request) return null;
         const cacheKey = this.resolveCachedWorktreesEnrichmentKeyForMachinePath({
+            repoIdentityPrefix: request.repoIdentityPrefix,
             machineId: request.machineId,
             resolvedPath: request.resolvedPath,
             repoIdentityKey: request.repoIdentityKey,
@@ -799,6 +834,7 @@ export class ScmRepositoryService {
         const resolvedCacheKey =
             request.machineId
                 ? this.resolveCachedRepoIdentityKeyForMachinePath({
+                    repoIdentityPrefix: request.machineId,
                     machineId: request.machineId,
                     resolvedPath: request.resolvedPath,
                     repoIdentityKey: request.repoIdentityKey,

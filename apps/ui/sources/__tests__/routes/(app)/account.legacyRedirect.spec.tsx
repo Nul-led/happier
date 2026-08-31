@@ -86,18 +86,19 @@ describe('Legacy /account route', () => {
         }
     });
 
-    it('approves an account-connect request with the existing authenticated flow before opening settings', async () => {
+    it('retires an authenticated account-connect request to the canonical Home QR display', async () => {
         isAuthenticated = true;
         localSearchParams = { accountConnectKey: 'abc+123/=', server: 'https://ignored.example' };
-        processAuthUrlSpy.mockResolvedValueOnce(true);
+        promptAccountConnectApprovalRequiredSpy.mockResolvedValueOnce('showQr');
         const Screen = (await import('@/app/(app)/account')).default;
 
         let tree: ReturnType<typeof renderer.create> | undefined;
         try {
             tree = (await renderScreen(<Screen />)).tree;
 
-            expect(processAuthUrlSpy).toHaveBeenCalledWith('happier:///account?abc+123/=');
-            expect(routerReplaceSpy).toHaveBeenCalledWith('/settings/account');
+            expect(processAuthUrlSpy).not.toHaveBeenCalled();
+            expect(promptAccountConnectApprovalRequiredSpy).toHaveBeenCalledOnce();
+            expect(routerReplaceSpy).toHaveBeenCalledWith('/settings/add-phone');
         } finally {
             act(() => {
                 tree?.unmount();
@@ -133,7 +134,7 @@ describe('Legacy /account route', () => {
 
             expect(processAuthUrlSpy).not.toHaveBeenCalled();
             expect(promptAccountConnectApprovalRequiredSpy).toHaveBeenCalledOnce();
-            expect(routerReplaceSpy).toHaveBeenCalledWith('/restore/show-qr');
+            expect(routerReplaceSpy).toHaveBeenCalledWith('/restore');
         } finally {
             act(() => {
                 tree?.unmount();

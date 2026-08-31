@@ -119,7 +119,7 @@ describe('fetchAndApplyAutomations', () => {
     });
 
     it('applies content-free summaries and refreshes already-loaded Event runs through the current API', async () => {
-        const applyAutomations = vi.fn();
+        const applyAutomations = vi.fn(() => null);
         const refreshAutomationRunsWindow = vi.fn();
 
         await fetchAndApplyAutomations({
@@ -150,7 +150,7 @@ describe('fetchAndApplyAutomations', () => {
     });
 
     it('does not turn a list refresh into a private direct-detail fanout', async () => {
-        const applyAutomations = vi.fn();
+        const applyAutomations = vi.fn(() => null);
 
         await fetchAndApplyAutomations({
             credentials: { accessToken: 'token' } as any,
@@ -164,7 +164,7 @@ describe('fetchAndApplyAutomations', () => {
     });
 
     it('refreshes already-loaded run lists through the shared request-concurrency owner', async () => {
-        const applyAutomations = vi.fn();
+        const applyAutomations = vi.fn(() => null);
         const refreshAutomationRunsWindow = vi.fn();
         const loadedAutomationRunIds = Array.from({ length: 20 }, (_unused, index) => `event-${index + 1}`);
         listAutomationDefinitionsMock.mockResolvedValue({
@@ -198,7 +198,7 @@ describe('fetchAndApplyAutomations', () => {
     });
 
     it('drops fetched automations when the captured sync scope is stale before apply', async () => {
-        const applyAutomations = vi.fn();
+        const applyAutomations = vi.fn(() => null);
         const refreshAutomationRunsWindow = vi.fn();
 
         await fetchAndApplyAutomations({
@@ -219,12 +219,13 @@ describe('fetchAndApplyAutomations', () => {
             automations: [{ ...eventSummary, id: 'event-2' }],
             nextCursor: 'cursor-2',
         });
-        const applyAutomations = vi.fn();
-        const appendAutomations = vi.fn();
+        const applyAutomations = vi.fn(() => null);
+        const appendAutomations = vi.fn(() => true);
 
         await fetchAndApplyAutomations({
             credentials: { accessToken: 'token' } as any,
             cursor: 'cursor-1',
+            traversalToken: 7,
             applyAutomations,
             appendAutomations,
         });
@@ -236,10 +237,36 @@ describe('fetchAndApplyAutomations', () => {
         expect(applyAutomations).not.toHaveBeenCalled();
         expect(appendAutomations).toHaveBeenCalledWith(
             'cursor-1',
+            7,
             [expect.objectContaining({ id: 'event-2' })],
             'cursor-2',
         );
         expect(listAutomationDefinitionRunsMock).not.toHaveBeenCalled();
+    });
+
+    it('does not apply a second-page result after the Account sync scope rejoins', async () => {
+        let currentScope = true;
+        listAutomationDefinitionsMock.mockImplementation(async () => {
+            currentScope = false;
+            return {
+                automations: [{ ...eventSummary, id: 'event-from-prior-account' }],
+                nextCursor: null,
+            };
+        });
+        const applyAutomations = vi.fn(() => null);
+        const appendAutomations = vi.fn(() => true);
+
+        await fetchAndApplyAutomations({
+            credentials: { accessToken: 'token' } as any,
+            cursor: 'prior-account-page-2',
+            traversalToken: 7,
+            shouldContinue: () => currentScope,
+            applyAutomations,
+            appendAutomations,
+        });
+
+        expect(applyAutomations).not.toHaveBeenCalled();
+        expect(appendAutomations).not.toHaveBeenCalled();
     });
 });
 
@@ -250,14 +277,15 @@ describe('fetchAndApplyAutomationRuns', () => {
             nextCursor: null,
         });
         isRuntimeFeatureEnabledMock.mockResolvedValue(true);
-        const setAutomationRuns = vi.fn();
-        const appendAutomationRuns = vi.fn();
+        const setAutomationRuns = vi.fn(() => null);
+        const appendAutomationRuns = vi.fn(() => true);
 
         const result = await fetchAndApplyAutomationRuns({
             credentials: { accessToken: 'token' } as any,
             automationId: 'event-1',
             limit: 20,
             cursor: 'opaque-root-page',
+            traversalToken: 7,
             setAutomationRuns,
             appendAutomationRuns,
         });
@@ -269,7 +297,7 @@ describe('fetchAndApplyAutomationRuns', () => {
             cursor: 'opaque-root-page',
         });
         expect(setAutomationRuns).not.toHaveBeenCalled();
-        expect(appendAutomationRuns).toHaveBeenCalledWith('event-1', 'opaque-root-page', [eventRun], null);
-        expect(result).toEqual({ nextCursor: null });
+        expect(appendAutomationRuns).toHaveBeenCalledWith('event-1', 'opaque-root-page', 7, [eventRun], null);
+        expect(result).toEqual({ nextCursor: null, traversalToken: null });
     });
 });

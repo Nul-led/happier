@@ -1,25 +1,39 @@
 import * as React from 'react';
+import { useRouter, useSegments } from 'expo-router';
 
-import { useAuth } from '@/auth/context/AuthContext';
-import { authGetToken } from '@/auth/flows/getToken';
+import { getCurrentAuth } from '@/auth/context/AuthContext';
+import { isPublicRouteForUnauthenticated } from '@/auth/routing/authRouting';
+import { authGetTokenAtEndpoint } from '@/auth/flows/getToken';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
-import { encodeBase64 } from '@/encryption/base64';
 import { getRandomBytesAsync } from '@/platform/cryptoRandom';
+import { getDefaultSystemTaskRunner, waitForSystemTaskResult } from '@/components/systemTasks';
+import { buildLocalMachineSetupSystemTaskSpec } from '@/components/systemTasks/buildLocalMachineSetupSystemTaskSpec';
+import { useThisComputerSetupTask } from '@/components/systemTasks/useThisComputerSetupTask';
+import type { SystemTaskAuthRequestApproval } from '@/components/systemTasks/approveSystemTaskAuthRequestPrompt';
 import { useLocalDaemonControl } from '@/components/settings/machines/localControl/useLocalDaemonControl';
 import { useLocalRelayRuntimeControl } from '@/components/settings/server/localControl/useLocalRelayRuntimeControl';
-import { getServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
+import { createServerFetchAtEndpoint } from '@/sync/http/client';
+import {
+    probeServerFeaturesAtUrl,
+    type ServerFeaturesSnapshot,
+} from '@/sync/api/capabilities/serverFeaturesClient';
 import { probeAuthenticatedServerAuthPingEndpoint } from '@/sync/api/capabilities/probeAuthenticatedServerAuthPingEndpoint';
 import {
-    getActiveServerSnapshot,
-    upsertServerProfileOnly,
-} from '@/sync/domains/server/serverRuntime';
-import {
+    adoptHomeProfile,
+    getServerProfileById,
     listServerProfiles,
-    setActiveServerId,
+    preflightHomeProfileAdoption,
     type ServerProfile,
 } from '@/sync/domains/server/serverProfiles';
+import {
+    activateServerProfileIfSelectionImplicit,
+    getActiveServerSnapshot,
+} from '@/sync/domains/server/serverRuntime';
 import { canonicalizeServerUrl, createServerUrlComparableKey } from '@/sync/domains/server/url/serverUrlCanonical';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
+import { HappyError } from '@/utils/errors/errors';
+import { desktopHostKind } from '@/utils/platform/desktopHost';
+import { isDesktopOverlayWindowContext } from '@/desktop/window/isDesktopOverlayWindowContext';
 
 import { createPersonalHomeBootstrapFacts } from './personalHomeBootstrapFacts';
 import type {
@@ -28,22 +42,52 @@ import type {
     RelayRuntimeStatusSnapshot,
 } from './personalHomeBootstrapTypes';
 import { PersonalHomeBootstrapGate } from './PersonalHomeBootstrapGate';
+import {
+    runPersonalHomeBootstrapFromSystemTasks,
+    type PersonalHomeEndpointSnapshot,
+} from './runPersonalHomeBootstrapFromSystemTasks';
 import type { PersonalHomeBootstrapOperationRunner } from './usePersonalHomeBootstrapController';
 
 const DEFAULT_PERSONAL_HOME_URL = 'http://127.0.0.1:3005';
 
-export class PersonalHomeBootstrapBlockedError extends Error {
-    readonly code = 'personal_home_endpoint_unavailable';
-
-    constructor(message: string) {
-        super(message);
-        this.name = 'PersonalHomeBootstrapBlockedError';
-    }
+export function shouldBypassPersonalHomeBootstrapForSegments(segments: readonly string[]): boolean {
+    const normalized = segments.filter((segment) => !(segment.startsWith('(') && segment.endsWith(')')));
+    if (normalized.length === 0 || normalized[0] === 'index') return false;
+    return isPublicRouteForUnauthenticated([...segments]);
 }
 
 function normalizeUrl(value: unknown): string {
     const raw = String(value ?? '').trim();
     return canonicalizeServerUrl(raw) || raw.replace(/\/+$/u, '');
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+        if (left[index] !== right[index]) return false;
+    }
+    return true;
+}
+
+function isExactTokenOnlyCredential(
+    value: unknown,
+    expectedToken: string,
+): value is Readonly<{ token: string }> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const record = value as Record<string, unknown>;
+    return Object.keys(record).length === 1 && record.token === expectedToken;
+}
+
+/** Reads the account identity at the explicit endpoint with this Home's scoped token only. */
+async function readAccountIdAtEndpoint(endpointUrl: string, token: string): Promise<string | null> {
+    const fetchAt = createServerFetchAtEndpoint({ endpointUrl, credentials: null });
+    const response = await fetchAt('/v1/account/profile', {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${token}` },
+    }, { includeAuth: false });
+    if (!response.ok) return null;
+    const data = await response.json() as { id?: unknown };
+    return typeof data?.id === 'string' && data.id.trim() ? data.id.trim() : null;
 }
 
 function profileMatchesUrl(profile: ServerProfile, url: string): boolean {
@@ -65,14 +109,17 @@ function mapRelayStatus(status: ReturnType<typeof useLocalRelayRuntimeControl>['
                 : 'unhealthy';
     return {
         installed: status.installed,
+        dataPresent: status.dataPresent,
         healthy: status.healthy,
         serviceActive: active,
         status: state,
+        purpose: status.purpose,
+        anonymousSignupEnabled: status.anonymousSignupEnabled,
         ...(error ? { error } : {}),
     };
 }
 
-function readAnonymousSignup(features: Awaited<ReturnType<typeof getServerFeaturesSnapshot>>): 'enabled' | 'disabled' | 'unknown' {
+function readAnonymousSignup(features: ServerFeaturesSnapshot): 'enabled' | 'disabled' | 'unknown' {
     if (features.status !== 'ready') return 'unknown';
     const methods = features.features.capabilities.auth.signup?.methods;
     if (!Array.isArray(methods)) return 'unknown';
@@ -80,18 +127,77 @@ function readAnonymousSignup(features: Awaited<ReturnType<typeof getServerFeatur
     return anonymous ? (anonymous.enabled ? 'enabled' : 'disabled') : 'unknown';
 }
 
+async function probePersonalHomeEndpoint(endpoint: string): Promise<PersonalHomeEndpointSnapshot> {
+    const features = await probeServerFeaturesAtUrl({
+        endpointUrl: endpoint,
+        force: true,
+    });
+    if (features.status !== 'ready') {
+        return {
+            status: features.status === 'error' ? 'unreachable' : 'unknown',
+        };
+    }
+    const serverIdentityId = String(
+        features.serverIdentityId
+        ?? features.features.capabilities.serverIdentity.serverIdentityId
+        ?? '',
+    ).trim();
+    if (!serverIdentityId) return { status: 'unknown' };
+    // Fail closed: a /v1/features descriptor is carried only when its Home
+    // identity agrees with the independently observed server identity.
+    const descriptor = features.features.homeConnectionDescriptor;
+    const homeConnectionDescriptor = descriptor?.homeServerIdentityId === serverIdentityId
+        ? descriptor
+        : undefined;
+    return {
+        status: 'ready',
+        serverIdentityId,
+        storagePolicy: features.features.capabilities.encryption.storagePolicy,
+        anonymousSignup: readAnonymousSignup(features),
+        ...(homeConnectionDescriptor ? { homeConnectionDescriptor } : {}),
+    };
+}
+
+async function probeAnonymousSignupRefused(endpoint: string): Promise<boolean> {
+    const endpointSnapshot = await probePersonalHomeEndpoint(endpoint);
+    if (endpointSnapshot.status !== 'ready' || endpointSnapshot.anonymousSignup !== 'disabled') {
+        return false;
+    }
+
+    try {
+        await authGetTokenAtEndpoint({
+            endpointUrl: endpoint,
+            canonicalServerUrl: endpoint,
+            serverIdentityId: endpointSnapshot.serverIdentityId,
+            secret: await getRandomBytesAsync(32),
+            requireKeyChallengeV2: true,
+        });
+        return false;
+    } catch (error) {
+        const code = error instanceof HappyError
+            ? error.code
+            : error && typeof error === 'object' && 'code' in error
+                ? (error as { code?: unknown }).code
+                : undefined;
+        if (code === 'signup-disabled') {
+            return true;
+        }
+        throw error;
+    }
+}
+
 export type PersonalHomeBootstrapRuntime = Readonly<{
     readFacts: () => Promise<PersonalHomeFacts>;
     operations: Partial<Record<PersonalHomeBootstrapOperation, PersonalHomeBootstrapOperationRunner>>;
+    useExistingRuntime: PersonalHomeBootstrapOperationRunner;
+    localServerUrl: string;
 }>;
 
 /**
  * Composes the existing runtime, Home profile, auth-storage and daemon owners for the
- * Desktop bootstrap gate. It deliberately does not own any state or switch a focused Home
- * except when the local profile is the first Home on the device.
+ * Desktop bootstrap gate. It deliberately does not own any state or switch the focused Home.
  */
 export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime {
-    const auth = useAuth();
     const relay = useLocalRelayRuntimeControl();
     const daemon = useLocalDaemonControl();
     const resolveLocalUrl = React.useCallback(() => {
@@ -103,26 +209,69 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
         return normalizeUrl(local?.canonicalServerUrl ?? local?.serverUrl) || DEFAULT_PERSONAL_HOME_URL;
     }, [relay.status]);
 
+    // The existing local-machine setup task is the single daemon-setup owner. Token-only pairing
+    // prompts are answered through the explicit Personal Home endpoint with its Home-scoped
+    // token-only credential; the focused Home is never consulted.
+    const setupRelayUrl = resolveLocalUrl();
+    const setupHomeIdentity = React.useMemo(() => {
+        if (!setupRelayUrl) return null;
+        const profiles = listServerProfiles();
+        const local = profiles.find((profile) => profile.source === 'desktop-personal-home' && profileMatchesUrl(profile, setupRelayUrl))
+            ?? profiles.find((profile) => profileMatchesUrl(profile, setupRelayUrl));
+        return local?.serverIdentityId?.trim() || null;
+    }, [setupRelayUrl]);
+    const setupTask = useThisComputerSetupTask({
+        ...(setupRelayUrl ? {
+            authRequestApproval: {
+                expectedRelayUrl: setupRelayUrl,
+                ...(setupHomeIdentity ? { serverId: setupHomeIdentity } : {}),
+            } satisfies SystemTaskAuthRequestApproval,
+        } : {}),
+    });
+    const startSetupTask = setupTask.start;
+    const setupTaskActiveSnapshot = setupTask.activeTaskSnapshot;
+    // Daemon status is read through the daemon-control owner: one parser, one status state.
+    const readDaemonStatus = daemon.readStatus;
+
     const readFacts = React.useCallback(async (): Promise<PersonalHomeFacts> => {
         const profiles = listServerProfiles();
         const localUrl = resolveLocalUrl();
         const candidate = profiles.find((profile) => profileMatchesUrl(profile, localUrl)) ?? null;
         const completed = profiles.find((profile) => profile.source === 'desktop-personal-home' && profileMatchesUrl(profile, localUrl)) ?? null;
+        const activeSelection = getActiveServerSnapshot();
+        const activeProfile = getServerProfileById(activeSelection.serverId);
+        const explicitlySelectedOtherHome = activeSelection.isSelectionExplicit === true
+            && activeProfile != null
+            && !profileMatchesUrl(activeProfile, localUrl);
+        const relayRuntime = mapRelayStatus(relay.status, relay.lastErrorMessage);
         let localHomeReachability: PersonalHomeFacts['localHomeReachability'] = 'unknown';
         let localHomeIdentity = candidate?.serverIdentityId ?? null;
-        let anonymousSignup: PersonalHomeFacts['anonymousSignup'] = 'unknown';
+        let anonymousSignup: PersonalHomeFacts['anonymousSignup'] = relayRuntime?.anonymousSignupEnabled === true
+            ? 'enabled'
+            : relayRuntime?.anonymousSignupEnabled === false
+                ? 'disabled'
+                : 'unknown';
         let localHomeAuth: PersonalHomeFacts['localHomeAuth'] = 'missing';
 
-        if (candidate) {
-            const features = await getServerFeaturesSnapshot({ serverId: candidate.id, force: true }).catch(() => null);
+        if (relayRuntime?.installed || candidate || completed) {
+            const features = await probeServerFeaturesAtUrl({
+                endpointUrl: localUrl,
+                ...(localHomeIdentity ? { serverId: localHomeIdentity } : {}),
+                force: true,
+            }).catch(() => null);
             if (features?.status === 'ready') {
                 localHomeReachability = 'reachable';
-                localHomeIdentity = features.features.capabilities.serverIdentity.serverIdentityId ?? localHomeIdentity;
+                localHomeIdentity = features.serverIdentityId
+                    ?? features.features.capabilities.serverIdentity.serverIdentityId
+                    ?? localHomeIdentity;
                 anonymousSignup = readAnonymousSignup(features);
             } else if (features) {
                 localHomeReachability = 'unreachable';
             }
-            const credentials = await TokenStorage.getCredentialsForServerUrl(localUrl, candidate.serverIdentityId ? { serverId: candidate.serverIdentityId } : {});
+            const credentials = await TokenStorage.getCredentialsForServerUrl(
+                localUrl,
+                localHomeIdentity ? { serverId: localHomeIdentity } : {},
+            );
             if (credentials?.token) {
                 const probe = await probeAuthenticatedServerAuthPingEndpoint({ endpoint: localUrl, token: credentials.token });
                 localHomeAuth = probe.status === 'ready' ? 'present' : probe.status === 'auth_failed' ? 'invalid' : 'unknown';
@@ -130,89 +279,420 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
             }
         }
 
-        const activeTask: SystemTaskRunState | null = relay.activeTaskSnapshot ?? daemon.activeTaskSnapshot ?? null;
+        // Daemon facts are read through the awaited daemon-control owner so they are fresh at
+        // call time rather than a stale render-time projection, then verified against this
+        // Personal Home: readiness requires the daemon's URL and account identity to match.
+        const daemonStatus = await readDaemonStatus().catch(() => null);
+        let daemonFacts: PersonalHomeFacts['daemon'] = daemonStatus;
+        if (daemonStatus) {
+            const connectedUrl = daemonStatus.daemonComparableKey ?? daemonStatus.daemonServerUrl ?? '';
+            const connectedKey = connectedUrl
+                ? (createServerUrlComparableKey(connectedUrl) || normalizeUrl(connectedUrl))
+                : null;
+            const localKey = createServerUrlComparableKey(localUrl) || normalizeUrl(localUrl);
+            const urlMatches = Boolean(connectedKey) && connectedKey === localKey;
+            let accountMatches: boolean | null = null;
+            if (urlMatches && daemonStatus.daemonAccountId) {
+                const daemonCredentials = await TokenStorage.getCredentialsForServerUrl(
+                    localUrl,
+                    localHomeIdentity ? { serverId: localHomeIdentity } : {},
+                ).catch(() => null);
+                const daemonToken = typeof daemonCredentials?.token === 'string' && daemonCredentials.token.trim()
+                    ? daemonCredentials.token.trim()
+                    : '';
+                const accountId = daemonToken
+                    ? await readAccountIdAtEndpoint(localUrl, daemonToken).catch(() => null)
+                    : null;
+                accountMatches = accountId != null && accountId === daemonStatus.daemonAccountId;
+            }
+            daemonFacts = {
+                ...daemonStatus,
+                servesPersonalHome: urlMatches === true
+                    && Boolean(daemonStatus.daemonAccountId)
+                    && accountMatches === true,
+            };
+        }
+        const activeTask: SystemTaskRunState | null = relay.activeTaskSnapshot
+            ?? daemon.activeTaskSnapshot
+            ?? setupTaskActiveSnapshot
+            ?? null;
         return createPersonalHomeBootstrapFacts({
             hostIsDesktop: true,
             isDesktopMainWindow: true,
+            explicitlySelectedOtherHome,
             completedPersonalHomeProfile: completed,
             candidateLocalProfile: candidate,
-            relayRuntime: mapRelayStatus(relay.status, relay.lastErrorMessage),
+            relayRuntime,
             localHomeReachability,
             localHomeIdentity,
             localHomeAuth,
             anonymousSignup,
-            daemon: daemon.status,
+            daemon: daemonFacts,
             activeTask,
         });
-    }, [daemon.activeTaskSnapshot, daemon.status, relay.activeTaskSnapshot, relay.lastErrorMessage, relay.status, resolveLocalUrl]);
+    }, [
+        daemon.activeTaskSnapshot,
+        readDaemonStatus,
+        relay.activeTaskSnapshot,
+        relay.lastErrorMessage,
+        relay.status,
+        resolveLocalUrl,
+        setupTaskActiveSnapshot,
+    ]);
 
-    const prepareHome = React.useCallback<PersonalHomeBootstrapOperationRunner>(async () => {
-        const canonicalServerUrl = resolveLocalUrl();
-        const taskId = await relay.runTask('relay.runtime.installOrUpdate.v1', {
-            purpose: { kind: 'personal-home', canonicalServerUrl },
+    const runRelayTaskAndWait = relay.runTaskAndWait;
+    const runBootstrapWithDisposition = React.useCallback(async (
+        existingRuntimeDisposition?: 'use-this-local-home',
+    ): Promise<void> => {
+        const result = await runPersonalHomeBootstrapFromSystemTasks({
+            initialServerUrl: resolveLocalUrl(),
+            ...(existingRuntimeDisposition ? { existingRuntimeDisposition } : {}),
+            deps: {
+                runRelayTask: async (kind, options) => await runRelayTaskAndWait(kind, options),
+                probeEndpoint: probePersonalHomeEndpoint,
+                readCredentials: async ({ serverUrl, serverIdentityId }) => (
+                    await TokenStorage.getCredentialsForServerUrl(serverUrl, { serverId: serverIdentityId })
+                ),
+                createLocalAccount: async ({
+                    endpoint,
+                    canonicalServerUrl,
+                    serverIdentityId,
+                    resumePendingSeedOnly,
+                }) => {
+                    const custodyTarget = { serverId: serverIdentityId };
+                    let seed = await TokenStorage.getPendingPersonalHomeBootstrapSeed(
+                        canonicalServerUrl,
+                        custodyTarget,
+                    );
+                    if (!seed) {
+                        if (resumePendingSeedOnly) {
+                            throw new Error('Personal Home pending seed custody is unavailable for retained data.');
+                        }
+                        const generatedSeed = await getRandomBytesAsync(32);
+                        if (!(await TokenStorage.setPendingPersonalHomeBootstrapSeed(
+                            canonicalServerUrl,
+                            custodyTarget,
+                            generatedSeed,
+                        ))) {
+                            throw new Error('Personal Home seed custody is unavailable.');
+                        }
+                        const verifiedSeed = await TokenStorage.getPendingPersonalHomeBootstrapSeed(
+                            canonicalServerUrl,
+                            custodyTarget,
+                        );
+                        if (!verifiedSeed || !equalBytes(verifiedSeed, generatedSeed)) {
+                            throw new Error('Personal Home bootstrap seed could not be verified.');
+                        }
+                        seed = verifiedSeed;
+                    }
+                    return await authGetTokenAtEndpoint({
+                        endpointUrl: endpoint,
+                        canonicalServerUrl,
+                        serverIdentityId,
+                        secret: seed,
+                        requireKeyChallengeV2: true,
+                    });
+                },
+                hasPendingBootstrapSeed: async ({ serverUrl, serverIdentityId }) => (
+                    await TokenStorage.getPendingPersonalHomeBootstrapSeed(
+                        serverUrl,
+                        { serverId: serverIdentityId },
+                    )
+                ) !== null,
+                persistCredentials: async ({ serverUrl, serverIdentityId, credentials }) => {
+                    const target = preflightHomeProfileAdoption({
+                        descriptor: {
+                            serverUrl,
+                            canonicalServerUrl: serverUrl,
+                            homeServerIdentityId: serverIdentityId,
+                        },
+                        source: 'desktop-personal-home',
+                        preserveUserLabel: true,
+                    });
+                    if (!target.serverIdentityId) {
+                        throw new Error('Personal Home credential persistence requires a stable identity.');
+                    }
+                    const credentialTarget = { serverId: target.serverIdentityId };
+                    if (!(await TokenStorage.setCredentialsForServerUrl(
+                        target.canonicalServerUrl,
+                        credentialTarget,
+                        credentials,
+                    ))) {
+                        return false;
+                    }
+                    const readback = await TokenStorage.getCredentialsForServerUrl(
+                        target.canonicalServerUrl,
+                        credentialTarget,
+                    );
+                    return isExactTokenOnlyCredential(readback, credentials.token);
+                },
+                verifyAuthenticatedAccess: async ({ endpoint, token }) => (
+                    await probeAuthenticatedServerAuthPingEndpoint({ endpoint, token })
+                ).status === 'ready',
+                clearPendingBootstrapSeed: async ({ serverUrl, serverIdentityId }) => (
+                    await TokenStorage.clearPendingPersonalHomeBootstrapSeed(
+                        serverUrl,
+                        { serverId: serverIdentityId },
+                    )
+                ),
+                preflightCompletedProfile: ({ canonicalServerUrl, localServerUrl, serverIdentityId, source }) => {
+                    preflightHomeProfileAdoption({
+                        descriptor: {
+                            serverUrl: localServerUrl,
+                            canonicalServerUrl,
+                            homeServerIdentityId: serverIdentityId,
+                        },
+                        source,
+                        preserveUserLabel: true,
+                    });
+                },
+                probeAnonymousSignupRefused: async ({ endpoint }) => (
+                    await probeAnonymousSignupRefused(endpoint)
+                ),
+                adoptCompletedProfile: async ({ canonicalServerUrl, localServerUrl, serverIdentityId, source, connectionDescriptor }) => {
+                    const credentials = await TokenStorage.getCredentialsForServerUrl(
+                        canonicalServerUrl,
+                        { serverId: serverIdentityId },
+                    );
+                    const token = typeof credentials?.token === 'string' ? credentials.token.trim() : '';
+                    if (!token || !isExactTokenOnlyCredential(credentials, token)) {
+                        throw new Error('Verified Personal Home credentials are unavailable for profile adoption.');
+                    }
+                    return await adoptHomeProfile({
+                        // The canonical /v1/features descriptor when present; otherwise the
+                        // exact legacy HTTPS descriptor behavior for this loopback Home.
+                        descriptor: connectionDescriptor ?? {
+                            serverUrl: localServerUrl,
+                            canonicalServerUrl,
+                            homeServerIdentityId: serverIdentityId,
+                        },
+                        source,
+                        preserveUserLabel: true,
+                    });
+                },
+            },
         });
-        if (!taskId) throw new PersonalHomeBootstrapBlockedError('Personal Home runtime task is unavailable.');
-    }, [relay, resolveLocalUrl]);
+        activateServerProfileIfSelectionImplicit(result.profileId);
+        // Credential/profile writes are non-focusing. Ask the existing auth owner to re-read the
+        // selected Home. The profile owner activates the first local Home only while selection
+        // remains implicit; an explicit device or tab selection stays unchanged.
+        await getCurrentAuth()?.refreshFromActiveServer();
+    }, [resolveLocalUrl, runRelayTaskAndWait]);
+    const runBootstrap = React.useCallback<PersonalHomeBootstrapOperationRunner>(async () => {
+        await runBootstrapWithDisposition();
+    }, [runBootstrapWithDisposition]);
+    const useExistingRuntime = React.useCallback<PersonalHomeBootstrapOperationRunner>(async () => {
+        await runBootstrapWithDisposition('use-this-local-home');
+    }, [runBootstrapWithDisposition]);
 
-    const connectApp = React.useCallback<PersonalHomeBootstrapOperationRunner>(async (facts) => {
-        const localUrl = normalizeUrl(facts.relayRuntime ? resolveLocalUrl() : DEFAULT_PERSONAL_HOME_URL);
-        const profilesBefore = listServerProfiles();
-        const profile = facts.candidateLocalProfile ?? profilesBefore.find((entry) => profileMatchesUrl(entry, localUrl))
-            // Profile classification is a completion receipt owned by the profile lane. Keep the
-            // initial adoption write ordinary until the runtime/auth/sign-up facts are verified.
-            ?? upsertServerProfileOnly({ serverUrl: localUrl });
-        const credentials = await TokenStorage.getCredentialsForServerUrl(localUrl, profile.serverIdentityId ? { serverId: profile.serverIdentityId } : {});
-        if (credentials?.token) return;
+    const prepareComputer = React.useCallback<PersonalHomeBootstrapOperationRunner>(async (facts) => {
+        const runner = getDefaultSystemTaskRunner();
+        const localUrl = resolveLocalUrl();
+        const localUrlKey = createServerUrlComparableKey(localUrl) || normalizeUrl(localUrl);
+        const identity = facts.localHomeIdentity
+            ?? facts.completedPersonalHomeProfile?.serverIdentityId
+            ?? null;
+        const daemonMatchesHomeUrl = (status: {
+            daemonComparableKey?: string | null;
+            daemonServerUrl?: string | null;
+        } | null): boolean => {
+            if (!status) return false;
+            const connectedUrl = status.daemonComparableKey ?? status.daemonServerUrl ?? '';
+            if (!connectedUrl) return false;
+            return (createServerUrlComparableKey(connectedUrl) || normalizeUrl(connectedUrl)) === localUrlKey;
+        };
 
-        const active = getActiveServerSnapshot();
-        const unrelatedProfiles = profilesBefore.some((entry) => !profileMatchesUrl(entry, localUrl));
-        if (unrelatedProfiles && normalizeUrl(active.serverUrl) !== localUrl) {
-            throw new PersonalHomeBootstrapBlockedError('Local Home authentication requires an explicit endpoint while another Home is focused.');
+        // The expected account identity is derived from this Home's scoped token against the
+        // explicit endpoint BEFORE the idempotence check: a daemon on the same endpoint that is
+        // authenticated as another account must never read as ready for this Home.
+        const homeCredentials = await TokenStorage.getCredentialsForServerUrl(
+            localUrl,
+            identity ? { serverId: identity } : {},
+        );
+        const homeToken = typeof homeCredentials?.token === 'string' && homeCredentials.token.trim()
+            ? homeCredentials.token.trim()
+            : '';
+        const expectedAccountId = homeToken
+            ? await readAccountIdAtEndpoint(localUrl, homeToken).catch(() => null)
+            : null;
+        if (!expectedAccountId) {
+            throw new Error('Could not verify the Personal Home account for the daemon on this computer.');
         }
 
-        if (!profileMatchesUrl(profile, active.serverUrl)) {
-            setActiveServerId(profile.id);
-        }
-        const secret = await getRandomBytesAsync(32);
-        const token = await authGetToken(secret);
-        const encodedSecret = encodeBase64(secret, 'base64url');
-        if (!await TokenStorage.setCredentialsForServerUrl(localUrl, { token, secret: encodedSecret }, profile.serverIdentityId ? { serverId: profile.serverIdentityId } : {})) {
-            throw new Error('Failed to save Personal Home credentials.');
-        }
-        await auth.login(token, encodedSecret);
-    }, [auth, resolveLocalUrl]);
+        const daemonReadyForHome = (status: {
+            serviceInstalled?: boolean | null;
+            daemonRunning?: boolean | null;
+            needsAuth?: boolean | null;
+            error?: string | null;
+            machineId?: string | null;
+            daemonMachineRegistered?: boolean | null;
+            daemonAccountId?: string | null;
+            daemonComparableKey?: string | null;
+            daemonServerUrl?: string | null;
+        } | null): boolean =>
+            status != null
+            && status.serviceInstalled === true
+            && status.daemonRunning === true
+            && status.needsAuth !== true
+            && !status.error
+            && Boolean(status.machineId)
+            && status.daemonMachineRegistered !== false
+            && daemonMatchesHomeUrl(status)
+            && status.daemonAccountId === expectedAccountId;
 
-    const closeSignup = React.useCallback<PersonalHomeBootstrapOperationRunner>(async () => {
-        const canonicalServerUrl = resolveLocalUrl();
-        // Persist the managed server.env policy through the canonical installer before restart.
-        const writeTaskId = await relay.runTask('relay.runtime.installOrUpdate.v1', {
-            purpose: { kind: 'personal-home', canonicalServerUrl },
-            anonymousSignupEnabled: false,
-        });
-        if (!writeTaskId) throw new PersonalHomeBootstrapBlockedError('Personal Home signup policy update is unavailable.');
-        const taskId = await relay.runTask('relay.runtime.start.v1', {
-            purpose: { kind: 'personal-home', canonicalServerUrl },
-            anonymousSignupEnabled: false,
-        });
-        if (!taskId) throw new PersonalHomeBootstrapBlockedError('Personal Home signup-closure task is unavailable.');
-    }, [relay, resolveLocalUrl]);
+        const verifyStatusForHome = (verified: {
+            serviceInstalled?: boolean | null;
+            daemonRunning?: boolean | null;
+            needsAuth?: boolean | null;
+            error?: string | null;
+            machineId?: string | null;
+            daemonMachineRegistered?: boolean | null;
+            daemonAccountId?: string | null;
+            daemonComparableKey?: string | null;
+            daemonServerUrl?: string | null;
+        }): void => {
+            const connectedUrl = verified.daemonComparableKey ?? verified.daemonServerUrl ?? '';
+            if (!daemonMatchesHomeUrl(verified) && connectedUrl) {
+                throw new Error(`The daemon on this computer is connected to a different Home (${connectedUrl}).`);
+            }
+            if (!daemonReadyForHome(verified)) {
+                if (verified.daemonAccountId && verified.daemonAccountId !== expectedAccountId) {
+                    throw new Error(`The daemon on this computer is connected to a different Home (account ${verified.daemonAccountId}).`);
+                }
+                throw new Error('Background service did not reach a ready state for this Home.');
+            }
+            if (verified.daemonMachineRegistered === false) {
+                throw new Error('The Personal Home daemon machine is not registered yet.');
+            }
+        };
 
-    const prepareComputer = React.useCallback<PersonalHomeBootstrapOperationRunner>(async () => {
-        if (daemon.canInstall) await daemon.installBackgroundService();
-        if (daemon.canStart) await daemon.startDaemonService();
-        else if (daemon.status?.serviceInstalled === true && daemon.status.daemonRunning !== true && !daemon.status.needsAuth) {
-            await daemon.startDaemonService();
+        // Authoritative daemon facts through the daemon-control owner decide idempotence.
+        let status = await readDaemonStatus().catch(() => null);
+        if (!daemonReadyForHome(status)) {
+            // Absent, unhealthy, unverified, or paired with another Home or account: run the
+            // existing configure/auth/pair/install/start/verify task against this Home's
+            // explicit descriptor. This replaces the focused-Home repair/start path.
+            const taskId = await startSetupTask(buildLocalMachineSetupSystemTaskSpec({
+                activeRelayUrl: localUrl,
+                activeWebappUrl: localUrl,
+                activeLocalRelayUrl: localUrl,
+                installService: true,
+                startService: true,
+                verifyService: true,
+            }));
+            const result = await waitForSystemTaskResult(runner, taskId);
+            if (!result.ok) {
+                throw new Error(result.error.message);
+            }
+            // Fresh post-task readback: task events are diagnostics, not readiness facts.
+            status = await readDaemonStatus().catch(() => null);
         }
-    }, [daemon]);
 
-    return { readFacts, operations: { 'prepare-home': prepareHome, 'connect-app': connectApp, 'close-signup': closeSignup, 'prepare-computer': prepareComputer } };
+        if (!status) {
+            throw new Error('Background service did not reach a ready state for this Home.');
+        }
+        verifyStatusForHome(status);
+    }, [readDaemonStatus, resolveLocalUrl, startSetupTask]);
+
+    const operations = React.useMemo<PersonalHomeBootstrapRuntime['operations']>(() => ({
+        'prepare-home': runBootstrap,
+        'connect-app': runBootstrap,
+        'close-signup': runBootstrap,
+        'prepare-computer': prepareComputer,
+    }), [prepareComputer, runBootstrap]);
+
+    return {
+        readFacts,
+        operations,
+        useExistingRuntime,
+        localServerUrl: resolveLocalUrl(),
+    };
+}
+
+function shouldRouteExistingRuntimeToGenericHome(error: unknown): boolean {
+    const code = error && typeof error === 'object' && 'code' in error
+        ? (error as { code?: unknown }).code
+        : null;
+    return code === 'personal_home_existing_runtime_conflict'
+        || code === 'personal_home_credentials_unverified';
+}
+
+function completedProfileInitialFacts(profile: ServerProfile): PersonalHomeFacts {
+    return createPersonalHomeBootstrapFacts({
+        hostIsDesktop: true,
+        isDesktopMainWindow: true,
+        explicitlySelectedOtherHome: false,
+        completedPersonalHomeProfile: profile,
+        candidateLocalProfile: profile,
+        relayRuntime: null,
+        localHomeReachability: 'unknown',
+        localHomeIdentity: profile.serverIdentityId ?? null,
+        localHomeAuth: 'unknown',
+        anonymousSignup: 'unknown',
+        daemon: null,
+        activeTask: null,
+    });
+}
+
+function PersonalHomeBootstrapRuntimeInner(props: Readonly<{
+    children: React.ReactNode;
+    initialFacts?: PersonalHomeFacts;
+}>): React.ReactElement {
+    const runtime = usePersonalHomeBootstrapRuntime();
+    const router = useRouter();
+    const useExistingRuntime = React.useCallback<PersonalHomeBootstrapOperationRunner>(async (facts) => {
+        try {
+            await runtime.useExistingRuntime(facts);
+        } catch (error) {
+            if (shouldRouteExistingRuntimeToGenericHome(error)) {
+                router.push(`/server?url=${encodeURIComponent(runtime.localServerUrl)}&auto=1`);
+                return;
+            }
+            throw error;
+        }
+    }, [router, runtime.localServerUrl, runtime.useExistingRuntime]);
+    const useAnotherHome = React.useCallback(() => {
+        router.push('/server');
+    }, [router]);
+    return (
+        <PersonalHomeBootstrapGate
+            bypass={false}
+            readFacts={runtime.readFacts}
+            operations={runtime.operations}
+            initialFacts={props.initialFacts}
+            useExistingRuntimeOperation={useExistingRuntime}
+            onUseAnotherHome={useAnotherHome}
+        >
+            {props.children}
+        </PersonalHomeBootstrapGate>
+    );
+}
+
+function EligibleDesktopPersonalHomeBootstrapRuntime(props: Readonly<{ children: React.ReactNode }>): React.ReactElement {
+    const segments = useSegments();
+    if (shouldBypassPersonalHomeBootstrapForSegments(segments)) return <>{props.children}</>;
+
+    const completedProfile = listServerProfiles().find((profile) => profile.source === 'desktop-personal-home');
+    return (
+        <PersonalHomeBootstrapRuntimeInner
+            initialFacts={completedProfile ? completedProfileInitialFacts(completedProfile) : undefined}
+        >
+            {props.children}
+        </PersonalHomeBootstrapRuntimeInner>
+    );
 }
 
 export function PersonalHomeBootstrapRuntimeMount(props: Readonly<{ children: React.ReactNode }>): React.ReactElement {
-    const runtime = usePersonalHomeBootstrapRuntime();
+    // This guard must stay outside the runtime component. Unsupported desktop hosts,
+    // off-Desktop runtimes, and overlay windows render without constructing relay, daemon,
+    // TokenStorage, network, or bootstrap-controller hooks. Tauri is currently the only host
+    // with the native system-task commands required by Personal Home bootstrap.
+    // A durable profile instead seeds synchronous ready facts into that same controller: children
+    // render on the first pass while normal health/auth/daemon recovery continues in the shell.
+    if (desktopHostKind() !== 'tauri' || isDesktopOverlayWindowContext()) return <>{props.children}</>;
     return (
-        <PersonalHomeBootstrapGate readFacts={runtime.readFacts} operations={runtime.operations}>
+        <EligibleDesktopPersonalHomeBootstrapRuntime>
             {props.children}
-        </PersonalHomeBootstrapGate>
+        </EligibleDesktopPersonalHomeBootstrapRuntime>
     );
 }

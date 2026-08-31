@@ -19,7 +19,7 @@ import {
     buildMachineDisplaysByIdFromMachineList,
     buildSessionListIndexWithServerScope,
 } from '@/sync/store/sessionListIndex/buildSessionListIndexWithServerScope';
-import { runtimeFetchWithServerReachability } from '@/sync/runtime/connectivity/serverReachabilityRuntimeFetch';
+import { createSessionRequestForResolvedServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
 import { resolvePreferredServerIdForSessionId } from '@/sync/runtime/orchestration/serverScopedRpc/resolvePreferredServerIdForSessionId';
 import { resolveServerScopedSessionContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedSessionContext';
 import { nowServerMs } from '@/sync/runtime/time';
@@ -47,7 +47,7 @@ async function requestSessionReadState(params: Readonly<{
     sessionId: string;
     readState: SessionManualReadState;
     serverId?: string | null;
-}>): Promise<Readonly<{ response: Response; targetServerId: string }>> {
+}>): Promise<Readonly<{ response: Response; targetServerId: string; release: () => Promise<void> }>> {
     const context = await resolveServerScopedSessionContext({
         serverId: params.serverId ?? resolvePreferredServerIdForSessionId(params.sessionId) ?? null,
     });
@@ -55,30 +55,20 @@ async function requestSessionReadState(params: Readonly<{
     const body = JSON.stringify({ state: params.readState });
     const headers = { 'Content-Type': 'application/json' };
 
-    if (context.scope === 'scoped') {
+    try {
+        const response = await createSessionRequestForResolvedServerScope({
+            context,
+            activeRequest: (requestPath, init) => apiSocket.request(requestPath, init),
+        })(path, { method: 'POST', headers, body });
         return {
-            response: await runtimeFetchWithServerReachability({
-                serverUrl: context.targetServerUrl,
-                token: context.token,
-                url: `${context.targetServerUrl}${path}`,
-                init: {
-                    method: 'POST',
-                    headers: {
-                        Authorization: `Bearer ${context.token}`,
-                        ...headers,
-                    },
-                    body,
-                },
-                timeoutMs: context.timeoutMs,
-            }),
-            targetServerId: context.targetServerId,
+            response,
+            targetServerId: context.scope === 'scoped' ? context.targetServerId : getActiveServerSnapshot().serverId,
+            release: context.scope === 'scoped' ? (context.release ?? (async () => undefined)) : async () => undefined,
         };
+    } catch (error) {
+        if (context.scope === 'scoped') await context.release?.();
+        throw error;
     }
-
-    return {
-        response: await apiSocket.request(path, { method: 'POST', headers, body }),
-        targetServerId: getActiveServerSnapshot().serverId,
-    };
 }
 
 function parseReadStateRouteResponse(json: unknown, fallbackReadState: SessionManualReadState): {
@@ -314,11 +304,13 @@ export async function sessionSetManualReadStateWithServerScope(
     opts?: Readonly<{ serverId?: string | null }>,
 ): Promise<SessionSetManualReadStateResponse> {
     try {
-        const { response, targetServerId } = await requestSessionReadState({
+        const request = await requestSessionReadState({
             sessionId,
             readState,
             serverId: opts?.serverId ?? null,
         });
+        try {
+        const { response, targetServerId } = request;
         if (!response.ok) {
             const message = await response.text().catch(() => '');
             return { success: false, message: message || 'Failed to update session read state' };
@@ -349,6 +341,9 @@ export async function sessionSetManualReadStateWithServerScope(
             lastViewedSessionSeq: parsed.lastViewedSessionSeq,
             didChange: parsed.didChange,
         };
+        } finally {
+            await request.release();
+        }
     } catch (error) {
         return { success: false, message: error instanceof Error ? error.message : 'Unknown error' };
     }

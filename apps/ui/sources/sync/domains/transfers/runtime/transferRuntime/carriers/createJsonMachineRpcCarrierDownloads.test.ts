@@ -19,7 +19,56 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
 }));
 
 describe('downloadJsonPayloadViaMachineTransferCarriers', () => {
+    it('threads the acquired machine HTTP origin through the production JSON carrier composition', async () => {
+        directExportDownloadMock.mockReset();
+        relayJsonDownloadMock.mockReset();
+        machineRpcWithServerScopeMock.mockReset();
+        directExportDownloadMock.mockResolvedValueOnce({ ok: true, payload: { ok: true } });
+        const release = vi.fn(async () => undefined);
+        const acquireMachineCarrierHttpLease = vi.fn(async () => ({
+            localOrigin: 'http://127.0.0.1:48127',
+            release,
+        }));
+
+        const { downloadJsonPayloadViaMachineTransferCarriers } = await import('./createJsonMachineRpcCarrierDownloads');
+        const result = await downloadJsonPayloadViaMachineTransferCarriers({
+            machineId: 'machine-1',
+            serverId: 'server-a',
+            preferScoped: true,
+            payloadWithRecipient: (recipientPublicKeyBase64: string) => ({ recipientPublicKeyBase64 }),
+            initMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_INIT,
+            chunkMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_CHUNK,
+            finalizeMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_FINALIZE,
+            abortMethod: RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_ABORT,
+            directExportRequest: {
+                t: 'prompt_asset_download_v1',
+                assetTypeId: 'agents.skill',
+                scope: 'user',
+                externalRef: { name: 'skill-a' },
+            },
+            parsePayload: (value) => value as { ok: true },
+            machineCarrierRequired: true,
+            machineCarrierOperationId: 'prompt-asset-1',
+            acquireMachineCarrierHttpLease,
+        });
+
+        expect(result).toEqual({ ok: true, payload: { ok: true } });
+        expect(directExportDownloadMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-1',
+            httpOriginOverride: 'http://127.0.0.1:48127',
+        }));
+        expect(acquireMachineCarrierHttpLease).toHaveBeenCalledWith(expect.objectContaining({
+            maxBytes: 2_500_000,
+        }));
+        expect(relayJsonDownloadMock).not.toHaveBeenCalled();
+        expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
+        expect(release).toHaveBeenCalledTimes(1);
+    });
+
     it('falls back to the relay carrier after direct export failure and wires scoped init/finalize rpc calls', async () => {
+        directExportDownloadMock.mockReset();
+        relayJsonDownloadMock.mockReset();
+        machineRpcWithServerScopeMock.mockReset();
         directExportDownloadMock.mockResolvedValueOnce({
             ok: false,
             error: 'Direct export unavailable',
@@ -113,6 +162,9 @@ describe('downloadJsonPayloadViaMachineTransferCarriers', () => {
     });
 
     it('falls back to chunk rpc after direct export and relay failures', async () => {
+        directExportDownloadMock.mockReset();
+        relayJsonDownloadMock.mockReset();
+        machineRpcWithServerScopeMock.mockReset();
         directExportDownloadMock.mockResolvedValueOnce({
             ok: false,
             error: 'Direct export unavailable',

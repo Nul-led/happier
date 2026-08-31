@@ -21,6 +21,7 @@ type SavedServersSectionProps = Readonly<{
     deviceDefaultServerId?: string | null;
     activeTargetKey?: string | null;
     authStatusByServerId: Record<string, 'signedIn' | 'signedOut' | 'unknown'>;
+    connectionStatusByServerId?: Readonly<Record<string, 'connected' | 'connecting' | 'disconnected' | 'error' | 'unknown'>>;
     onSwitch: (profile: ServerProfile, scope?: 'tab' | 'device') => Promise<void> | void;
     onSwitchGroup?: (profile: ServerSelectionGroup) => Promise<void> | void;
     onRenameGroup?: (profile: ServerSelectionGroup) => Promise<void> | void;
@@ -105,11 +106,22 @@ export function SavedServersSection(props: SavedServersSectionProps) {
                     : formatSavedServerRetentionSummary(
                         retentionPoliciesByServerId[scopeId] ?? retentionPoliciesByServerId[profile.id] ?? null,
                     );
-                const subtitle = [toServerUrlDisplay(profile.serverUrl), statusLabel, retentionSummary]
+                const connectionStatus = props.connectionStatusByServerId?.[scopeId] ?? props.connectionStatusByServerId?.[profile.id];
+                const connectionStatusLabel = authStatus === 'signedIn' && connectionStatus
+                    ? t(`status.${connectionStatus}` as 'status.connected' | 'status.connecting' | 'status.disconnected' | 'status.error' | 'status.unknown')
+                    : null;
+                const detail = isActive ? t('server.active') : isDeviceDefault ? t('server.default') : undefined;
+                const subtitle = [toServerUrlDisplay(profile.serverUrl), statusLabel, connectionStatusLabel, retentionSummary]
                     .filter((value): value is string => Boolean(value))
                     .join('\n');
                 const actions: ItemAction[] = Platform.OS === 'web'
                     ? [
+                        {
+                            id: 'switch-tab',
+                            title: t('server.switchForThisTab'),
+                            icon: 'arrows-left-right',
+                            onPress: () => props.onSwitch(profile, 'tab'),
+                        },
                         {
                             id: 'switch-device',
                             title: t('server.makeDefaultOnDevice'),
@@ -159,12 +171,15 @@ export function SavedServersSection(props: SavedServersSectionProps) {
                         key={profile.id}
                         testID={`saved-server-row-${profile.id}`}
                         title={profile.name}
+                        titleLines={1}
+                        titleEllipsizeMode="tail"
                         subtitle={subtitle}
                         subtitleLines={0}
                         icon={<Icon name="hard-drives" size={16} color={theme.colors.text.secondary} />}
                         selected={isActive}
                         showChevron={false}
-                        detail={isActive ? t('server.active') : isDeviceDefault ? t('server.default') : undefined}
+                        detail={detail}
+                        accessibilityLabel={[profile.name, detail, statusLabel, connectionStatusLabel].filter(Boolean).join(', ')}
                         onPress={supportsWholeRowPress ? () => props.onSwitch(profile, 'device') : undefined}
                         rightElement={(
                             <ItemRowActions

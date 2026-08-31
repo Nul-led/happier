@@ -21,6 +21,10 @@ import {
 import { handleUiBrowserRecordingCaptureFrameRequest } from '@/sync/domains/browser/recording/reverseCaptureHandler';
 import { serverFetch, StaleServerGenerationError } from '@/sync/http/client';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import {
+    getServerProfileById,
+    subscribeActiveServerRuntimeOrigin,
+} from '@/sync/domains/server/serverProfiles';
 import { resolveSocketIoTransports } from '@/sync/runtime/socketIoTransports';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { storage } from '@/sync/domains/state/storage';
@@ -255,6 +259,7 @@ class ApiSocket {
     private pendingReconnectNotification = false;
     private reachabilityUnsubscribe: (() => void) | null = null;
     private reachabilityServerUrl: string | null = null;
+    private runtimeOriginUnsubscribe: (() => void) | null = null;
     private socketTransport: ManagedConnectionTransport | null = null;
     private detachSocketTransportListeners: Array<() => void> = [];
     // Inbound machine-scoped reverse-RPC handlers, keyed by the FULL prefixed method
@@ -283,7 +288,22 @@ class ApiSocket {
         }
         const endpoint = this.config.endpoint;
         const token = this.config.token;
-        const serverUrl = resolveActiveServerRuntimeOrigin(getActiveServerSnapshot()) || canonicalizeServerUrl(endpoint) || endpoint;
+        const snapshot = getActiveServerSnapshot();
+        const serverUrl = canonicalizeServerUrl(endpoint) || endpoint;
+        const runtimeOrigin = resolveActiveServerRuntimeOrigin(snapshot) || serverUrl;
+        const focusedProfile = getServerProfileById(snapshot.serverId);
+        const hasIndependentHttpsIngress = (() => {
+            try {
+                return new URL(String(focusedProfile?.publicServerUrl ?? '')).protocol === 'https:';
+            } catch {
+                return false;
+            }
+        })();
+        const awaitsVerifiedIrohOrigin = Boolean(
+            focusedProfile?.irohEndpoint
+            && !snapshot.runtimeOrigin
+            && !hasIndependentHttpsIngress,
+        );
 
         if (this.reachabilityUnsubscribe && this.reachabilityServerUrl && this.reachabilityServerUrl !== serverUrl) {
             const previousServerUrl = this.reachabilityServerUrl;
@@ -301,12 +321,36 @@ class ApiSocket {
             });
         }
 
-        void startServerReachabilitySupervisor({ serverUrl, token });
+        if (!this.runtimeOriginUnsubscribe) {
+            this.runtimeOriginUnsubscribe = subscribeActiveServerRuntimeOrigin((nextSnapshot) => {
+                if (!this.config || canonicalizeServerUrl(this.config.endpoint) !== canonicalizeServerUrl(nextSnapshot.serverUrl)) return;
+                const nextRuntimeOrigin = resolveActiveServerRuntimeOrigin(nextSnapshot) || this.config.endpoint;
+                void startServerReachabilitySupervisor({
+                    serverUrl: this.config.endpoint,
+                    token: this.config.token,
+                    ...(canonicalizeServerUrl(nextRuntimeOrigin) === canonicalizeServerUrl(this.config.endpoint)
+                        ? {}
+                        : { runtimeOrigin: nextRuntimeOrigin }),
+                }).then(() => {
+                    if (this.currentConnectionState.phase === 'online') this.handleReachabilityStateChange(this.currentConnectionState);
+                });
+            });
+        }
+
+        if (awaitsVerifiedIrohOrigin) return;
+
+        void startServerReachabilitySupervisor({
+            serverUrl,
+            token,
+            ...(canonicalizeServerUrl(runtimeOrigin) === canonicalizeServerUrl(serverUrl) ? {} : { runtimeOrigin }),
+        });
     }
 
     disconnect() {
         const previousServerUrl = this.reachabilityServerUrl;
         this.reachabilityUnsubscribe?.();
+        this.runtimeOriginUnsubscribe?.();
+        this.runtimeOriginUnsubscribe = null;
         this.reachabilityUnsubscribe = null;
         this.reachabilityServerUrl = null;
         if (previousServerUrl) {
@@ -764,7 +808,12 @@ class ApiSocket {
             this.config.token = newToken;
 
             const serverUrl = canonicalizeServerUrl(this.config.endpoint) || this.config.endpoint;
-            void startServerReachabilitySupervisor({ serverUrl, token: newToken });
+            const runtimeOrigin = resolveActiveServerRuntimeOrigin(getActiveServerSnapshot()) || serverUrl;
+            void startServerReachabilitySupervisor({
+                serverUrl,
+                token: newToken,
+                ...(canonicalizeServerUrl(runtimeOrigin) === canonicalizeServerUrl(serverUrl) ? {} : { runtimeOrigin }),
+            });
 
             if (this.socket) {
                 this.disconnect();

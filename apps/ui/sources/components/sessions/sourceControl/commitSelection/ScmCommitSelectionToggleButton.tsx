@@ -12,6 +12,7 @@ import { toTestIdSafeValue } from '@/utils/ui/toTestIdSafeValue';
 import { ActivitySpinner, iconMatchedSpinnerSize } from '@/components/ui/feedback/ActivitySpinner';
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { Icon } from '@/components/ui/icons/Icon';
+import { isAtomicCommitStrategy } from '@/scm/settings/commitStrategy';
 
 export type ScmCommitSelectionToggleButtonProps = Readonly<{
     sessionId: string;
@@ -33,15 +34,20 @@ export const ScmCommitSelectionToggleButton = React.memo((props: ScmCommitSelect
 
     const iconName = props.selectedForCommit ? 'check' : 'plus';
     const iconColor = props.selectedForCommit ? theme.colors.state.success.foreground : theme.colors.text.secondary;
+    const accessibilityLabel = isAtomicCommitStrategy(props.commitStrategy)
+        ? props.selectedForCommit
+            ? t('files.commitSelection.removeFromCommit')
+            : t('files.commitSelection.addToCommit')
+        : props.selectedForCommit
+            ? t('files.fileActions.unstageFile')
+            : t('files.fileActions.stageFile');
 
     return (
         <IconButton
             variant="plain"
             size={28}
             testID={`scm-commit-selection-toggle-${toTestIdSafeValue(props.file.fullPath)}`}
-            accessibilityLabel={
-                props.selectedForCommit ? t('files.commitSelection.removeFromCommit') : t('files.commitSelection.addToCommit')
-            }
+            accessibilityLabel={accessibilityLabel}
             disabled={busy || !props.scmWriteEnabled}
             icon={busy
                 ? <ActivitySpinner size={iconMatchedSpinnerSize(COMMIT_TOGGLE_ICON_SIZE_PX)} color={theme.colors.text.secondary} />

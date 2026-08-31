@@ -113,7 +113,9 @@ export async function resolveServerScopedRelaySocket<TPayload>(params: Readonly<
     }
 
     const socket = await createEphemeralServerSocketClient({
-        serverUrl: context.targetServerUrl,
+        serverUrl: context.runtimeOrigin ?? context.targetServerUrl,
+        reachabilityServerUrl: context.targetServerUrl,
+        ...(context.carrier ? { carrier: context.carrier } : {}),
         token: context.token,
         timeoutMs: context.timeoutMs,
     });
@@ -129,6 +131,7 @@ export async function resolveServerScopedRelaySocket<TPayload>(params: Readonly<
         onEnvelope: scopedTransport.on,
         disconnect: () => {
             socket.disconnect();
+            void context.release?.();
         },
     };
 }

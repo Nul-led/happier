@@ -805,6 +805,70 @@ describe('ScmRepositoryService.fetchWorktreesEnrichment', () => {
 });
 
 describe('ScmRepositoryService.fetchSnapshotForMachinePath', () => {
+    it('scopes target-Home reads and caches by server when machine ids collide', async () => {
+        vi.spyOn(storage, 'getState').mockReturnValue({
+            machines: {
+                'machine-a': {
+                    id: 'machine-a',
+                    metadata: { homeDir: '/wrong-active-home' },
+                },
+            },
+        } as any);
+        vi.mocked(machineScmStatusSnapshot).mockImplementation(async (_machineId, _request, options) => ({
+            success: true,
+            snapshot: makeScmSnapshot({
+                projectKey: '',
+                repo: {
+                    isRepo: true,
+                    rootPath: '/Users/shared/repo',
+                    backendId: 'git',
+                    mode: '.git',
+                    worktrees: [],
+                },
+                branch: {
+                    head: options?.serverId === 'server-a' ? 'from-a' : 'from-b',
+                    upstream: null,
+                    ahead: 0,
+                    behind: 0,
+                    detached: false,
+                },
+            }),
+        } as any));
+
+        const service = new ScmRepositoryService();
+        await service.fetchSnapshotForMachinePath({
+            serverId: 'server-a',
+            machineId: 'machine-a',
+            path: '~/repo',
+            homeDir: '/Users/shared',
+        });
+        await service.fetchSnapshotForMachinePath({
+            serverId: 'server-b',
+            machineId: 'machine-a',
+            path: '~/repo',
+            homeDir: '/Users/shared',
+        });
+
+        expect(machineScmStatusSnapshot).toHaveBeenNthCalledWith(1, 'machine-a', {
+            cwd: '/Users/shared/repo',
+        }, { serverId: 'server-a' });
+        expect(machineScmStatusSnapshot).toHaveBeenNthCalledWith(2, 'machine-a', {
+            cwd: '/Users/shared/repo',
+        }, { serverId: 'server-b' });
+        expect(service.readCachedSnapshotForMachinePath({
+            serverId: 'server-a',
+            machineId: 'machine-a',
+            path: '~/repo',
+            homeDir: '/Users/shared',
+        })?.branch.head).toBe('from-a');
+        expect(service.readCachedSnapshotForMachinePath({
+            serverId: 'server-b',
+            machineId: 'machine-a',
+            path: '~/repo',
+            homeDir: '/Users/shared',
+        })?.branch.head).toBe('from-b');
+    });
+
     it('fetches and normalizes a repo snapshot through machine/path SCM without requiring a session', async () => {
         vi.spyOn(storage, 'getState').mockReturnValue({
             machines: {

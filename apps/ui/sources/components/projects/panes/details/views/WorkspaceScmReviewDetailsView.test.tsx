@@ -7,6 +7,9 @@ import type { ReviewCommentV1 } from '@happier-dev/protocol';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+let reviewCommentsFeatureEnabled = true;
+let scmWriteOperationsFeatureEnabled = true;
+
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock({
@@ -37,8 +40,11 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
             if (key === 'wrapLinesInDiffs') return true;
             if (key === 'showLineNumbers') return true;
             if (key === 'scmReviewMaxFiles') return 25;
+            if (key === 'scmCommitStrategy') return 'git_staging';
             return undefined;
         },
+        useWorkspaceScmCommitSelectionPaths: () => [],
+        useWorkspaceScmCommitSelectionPatches: () => [],
         useWorkspaceReviewCommentsDrafts: () => [
             {
                 id: 'draft-1',
@@ -64,7 +70,11 @@ vi.mock('@/sync/domains/state/storage', async (importOriginal) => {
 });
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
-    useFeatureEnabled: (featureId: string) => featureId === 'files.reviewComments',
+    useFeatureEnabled: (featureId: string) => {
+        if (featureId === 'files.reviewComments') return reviewCommentsFeatureEnabled;
+        if (featureId === 'scm.writeOperations') return scmWriteOperationsFeatureEnabled;
+        return false;
+    },
 }));
 
 vi.mock('@/agents/registry/generatedBundledPluginEntries.uiBehaviorOverrides', () => ({
@@ -115,7 +125,7 @@ const workspaceSnapshotMock = {
         },
     ],
     branch: { head: null, upstream: null, ahead: 0, behind: 0, detached: false },
-    capabilities: {},
+    capabilities: { writeInclude: true, writeExclude: true },
 };
 const machineScmDiffFileSpy = vi.fn<(machineId: string, request: any) => Promise<any>>(async () => ({
     success: true,
@@ -199,6 +209,8 @@ function jsonResponse(body: unknown): Response {
 
 describe('WorkspaceScmReviewDetailsView', () => {
     beforeEach(() => {
+        reviewCommentsFeatureEnabled = true;
+        scmWriteOperationsFeatureEnabled = true;
         useWorkspaceScmSnapshotControllerSpy.mockClear();
         machineScmDiffFileSpy.mockClear();
         changedFilesReviewSpy.mockClear();
@@ -329,5 +341,35 @@ describe('WorkspaceScmReviewDetailsView', () => {
         const [path] = serverFetchSpy.mock.calls.find(([calledPath]) => String(calledPath).startsWith('/v1/reviews/comments?')) ?? [];
         expect(String(path)).toContain('/v1/reviews/comments?');
         expect(String(path)).toContain('workspaceId=wr_1');
+    });
+
+    it('offers the workspace staging action directly in the review list', async () => {
+        reviewCommentsFeatureEnabled = false;
+        const { WorkspaceScmReviewDetailsView } = await import('./WorkspaceScmReviewDetailsView');
+        const { WorkspaceScmCommitSelectionToggleButton } = await import('@/components/projects/scm/WorkspaceScmCommitSelectionToggleButton');
+        await renderScreen(
+            <WorkspaceScmReviewDetailsView
+                scopeId="project:wr_1"
+                workspaceRefId="wr_1"
+                workspaceCacheKey="wk_1"
+                machineId="m1"
+                rootPath="/repo"
+                serverId="s1"
+            />,
+        );
+
+        const reviewProps = changedFilesReviewSpy.mock.calls.at(-1)?.[0];
+        expect(typeof reviewProps.renderFileActions).toBe('function');
+        const file = reviewProps.allRepositoryChangedFiles[0];
+        const action = reviewProps.renderFileActions(file);
+        expect(action.type).toBe(WorkspaceScmCommitSelectionToggleButton);
+        expect(action.props).toEqual(expect.objectContaining({
+            scope: { serverId: 's1', machineId: 'm1', rootPath: '/repo' },
+            snapshot: workspaceSnapshotMock,
+            scmWriteEnabled: true,
+            commitStrategy: 'git_staging',
+            file,
+            selectedForCommit: false,
+        }));
     });
 });

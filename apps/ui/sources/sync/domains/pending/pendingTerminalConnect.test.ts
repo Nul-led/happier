@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { StorageState } from '@/sync/store/types';
+import { fromRecord, toRecord } from './pendingTerminalConnect.shared';
 
 async function importFresh() {
     vi.resetModules();
@@ -29,6 +30,24 @@ describe('pendingTerminalConnect', () => {
         vi.restoreAllMocks();
     });
 
+    it('rejects missing or malformed stable Home identity in pending state', () => {
+        expect(toRecord({
+            publicKeyB64Url: 'key',
+            serverUrl: 'https://stack.example.test',
+        } as never)).toBeNull();
+        expect(toRecord({
+            publicKeyB64Url: 'key',
+            serverUrl: 'https://stack.example.test',
+            serverIdentityId: 'not a stable identity',
+        })).toBeNull();
+        expect(fromRecord({
+            publicKeyB64Url: 'key',
+            serverUrl: 'https://stack.example.test',
+            serverIdentityId: 'not a stable identity',
+            createdAtMs: Date.now(),
+        })).toBeNull();
+    });
+
     it('round-trips a pending terminal connect payload', async () => {
         const { setPendingTerminalConnect, getPendingTerminalConnect } = await importFresh();
 
@@ -38,6 +57,7 @@ describe('pendingTerminalConnect', () => {
         setPendingTerminalConnect({
             publicKeyB64Url: 'abcDEF_123-zzz',
             serverUrl: 'https://stack.example.test',
+            serverIdentityId: 'srv_stack',
             supportsTokenOnly: true,
             pairing: {
                 secretB64Url: 'pairing-secret',
@@ -49,6 +69,7 @@ describe('pendingTerminalConnect', () => {
         expect(getPendingTerminalConnect()).toEqual({
             publicKeyB64Url: 'abcDEF_123-zzz',
             serverUrl: 'https://stack.example.test',
+            serverIdentityId: 'srv_stack',
             supportsTokenOnly: true,
             pairing: {
                 secretB64Url: 'pairing-secret',
@@ -67,10 +88,12 @@ describe('pendingTerminalConnect', () => {
         setPendingTerminalConnect({
             publicKeyB64Url: 'abcDEF_123-zzz',
             serverUrl: 'https://stack.example.test',
+            serverIdentityId: 'srv_stack',
         });
         expect(getPendingTerminalConnect()).toEqual({
             publicKeyB64Url: 'abcDEF_123-zzz',
             serverUrl: 'https://stack.example.test',
+            serverIdentityId: 'srv_stack',
         });
 
         vi.spyOn(Date, 'now').mockReturnValue(now + 60 * 60 * 1000);
@@ -85,6 +108,7 @@ describe('pendingTerminalConnect', () => {
         setPendingTerminalConnect({
             publicKeyB64Url: 'key-a',
             serverUrl: 'https://server-a.example.test',
+            serverIdentityId: 'srv_a',
         });
 
         await activateServerAccount('https://server-b.example.test', 'account-a');
@@ -93,17 +117,20 @@ describe('pendingTerminalConnect', () => {
         setPendingTerminalConnect({
             publicKeyB64Url: 'key-b',
             serverUrl: 'https://server-b.example.test',
+            serverIdentityId: 'srv_b',
         });
 
         expect(getPendingTerminalConnect()).toEqual({
             publicKeyB64Url: 'key-b',
             serverUrl: 'https://server-b.example.test',
+            serverIdentityId: 'srv_b',
         });
 
         await activateServerAccount('https://server-a.example.test', 'account-a');
         expect(getPendingTerminalConnect()).toEqual({
             publicKeyB64Url: 'key-a',
             serverUrl: 'https://server-a.example.test',
+            serverIdentityId: 'srv_a',
         });
     });
 
@@ -115,6 +142,7 @@ describe('pendingTerminalConnect', () => {
         setPendingTerminalConnect({
             publicKeyB64Url: 'key-a',
             serverUrl: 'https://shared.example.test',
+            serverIdentityId: 'srv_shared',
         });
 
         await activateServerAccount('https://shared.example.test', 'account-b');
@@ -123,17 +151,20 @@ describe('pendingTerminalConnect', () => {
         setPendingTerminalConnect({
             publicKeyB64Url: 'key-b',
             serverUrl: 'https://shared.example.test',
+            serverIdentityId: 'srv_shared',
         });
 
         expect(getPendingTerminalConnect()).toEqual({
             publicKeyB64Url: 'key-b',
             serverUrl: 'https://shared.example.test',
+            serverIdentityId: 'srv_shared',
         });
 
         await activateServerAccount('https://shared.example.test', 'account-a');
         expect(getPendingTerminalConnect()).toEqual({
             publicKeyB64Url: 'key-a',
             serverUrl: 'https://shared.example.test',
+            serverIdentityId: 'srv_shared',
         });
     });
 
@@ -151,6 +182,7 @@ describe('pendingTerminalConnect', () => {
         setPendingTerminalConnect({
             publicKeyB64Url: 'key-identity',
             serverUrl: 'https://identity-terminal.example.test',
+            serverIdentityId: 'srv_identity_terminal',
         });
 
         setServerProfileIdentityForUrl('https://identity-terminal.example.test', 'srv_identity_terminal');
@@ -165,6 +197,7 @@ describe('pendingTerminalConnect', () => {
         expect(getPendingTerminalConnect()).toEqual({
             publicKeyB64Url: 'key-identity',
             serverUrl: 'https://identity-terminal.example.test',
+            serverIdentityId: 'srv_identity_terminal',
         });
         registerStorageStateReader(() => ({ profileScope: legacyScope } as unknown as StorageState));
         expect(getPendingTerminalConnect()).toBeNull();

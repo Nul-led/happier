@@ -205,8 +205,9 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         pendingTerminalConnectMock.current = {
             publicKeyB64Url: 'abc123',
             serverUrl: 'https://wrong.example.test',
+            serverIdentityId: 'srv_original_home',
         };
-        const onSwitchServerById = vi.fn(async () => true);
+        const onSwitchServerById = vi.fn(async () => 'switched' as const);
         const setRevision = vi.fn();
         const profile = {
             id: 'server-correct',
@@ -232,16 +233,18 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         expect(pendingTerminalConnectMock.set).toHaveBeenCalledWith({
             publicKeyB64Url: 'abc123',
             serverUrl: 'https://correct.example.test',
+            serverIdentityId: 'srv_original_home',
         });
-        expect(onSwitchServerById).toHaveBeenCalledWith('server-correct');
+        expect(onSwitchServerById).toHaveBeenCalledWith('server-correct', 'device');
     });
 
     it('does not retarget pending terminal state when custody blocks the server switch', async () => {
         pendingTerminalConnectMock.current = {
             publicKeyB64Url: 'abc123',
             serverUrl: 'https://active.example.test',
+            serverIdentityId: 'srv_original_home',
         };
-        const onSwitchServerById = vi.fn(async () => false);
+        const onSwitchServerById = vi.fn(async () => 'blocked' as const);
         const setRevision = vi.fn();
         const profile = {
             id: 'server-blocked',
@@ -264,7 +267,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
 
         await actions.onSwitchServer(profile);
 
-        expect(onSwitchServerById).toHaveBeenCalledWith('server-blocked');
+        expect(onSwitchServerById).toHaveBeenCalledWith('server-blocked', 'device');
         expect(pendingTerminalConnectMock.set).not.toHaveBeenCalled();
         expect(setRevision).not.toHaveBeenCalled();
     });
@@ -273,8 +276,9 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         pendingTerminalConnectMock.current = {
             publicKeyB64Url: 'abc123',
             serverUrl: 'https://wrong.example.test',
+            serverIdentityId: 'srv_original_home',
         };
-        const onSwitchServerById = vi.fn(async () => true);
+        const onSwitchServerById = vi.fn(async () => 'switched' as const);
         const setRevision = vi.fn();
         const profile = {
             id: 'server-host-derived',
@@ -301,7 +305,8 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         expect(pendingTerminalConnectMock.set).toHaveBeenCalledWith({
             publicKeyB64Url: 'abc123',
             serverUrl: 'https://correct.example.test',
+            serverIdentityId: 'srv_original_home',
         });
-        expect(onSwitchServerById).toHaveBeenCalledWith('srv_identity_correct');
+        expect(onSwitchServerById).toHaveBeenCalledWith('srv_identity_correct', 'device');
     });
 });

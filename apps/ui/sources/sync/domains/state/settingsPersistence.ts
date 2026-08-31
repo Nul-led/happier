@@ -1,6 +1,8 @@
 import { localSettingsDefaults, localSettingsParse, type LocalSettings } from '../settings/localSettings';
 import { purchasesDefaults, purchasesParse, type Purchases } from '../purchases/purchases';
 import type { Settings } from '../settings/settings';
+import { loadHomeViewState } from '../server/serverProfiles';
+import { stripServerSelectionSettingsProjection } from '../server/selection/serverSelectionSettingsAdapter';
 import { getPersistenceStorage } from './persistenceStorage';
 
 function settingsKey(): string {
@@ -33,7 +35,10 @@ export function loadSettings(): { settings: unknown; version: number | null } {
 
 export function saveSettings(settings: Settings, version: number) {
     const mmkv = getPersistenceStorage();
-    mmkv.set(settingsKey(), JSON.stringify({ settings, version }));
+    const persistedSettings = loadHomeViewState()
+        ? stripServerSelectionSettingsProjection(settings)
+        : settings;
+    mmkv.set(settingsKey(), JSON.stringify({ settings: persistedSettings, version }));
 }
 
 export function loadLocalSettings(): LocalSettings {

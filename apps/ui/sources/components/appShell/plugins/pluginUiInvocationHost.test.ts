@@ -23,9 +23,9 @@ import type { PluginReactNativeBundleCacheIdentity } from '@/sync/domains/plugin
 
 import {
     createAppShellPluginUiInvocationHost,
-    DEFAULT_INVOCATION_TIMEOUT_MS,
     type AppShellPluginUiActionExecute,
 } from './pluginUiInvocationHost';
+import { PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS } from '@/components/plugins/hostApi/interactionLifetime';
 
 const DAEMON_ACTION: PluginProjectedActionV2 = {
     id: 'mint-session',
@@ -423,7 +423,7 @@ describe('AppShell plugin UI invocation host', () => {
             qualifiedActionId: 'acme.voice/mint-session',
             input: null,
             executionSurface: 'voice',
-            timeoutMs: DEFAULT_INVOCATION_TIMEOUT_MS,
+            timeoutMs: PLUGIN_PRESENT_USER_INTERACTION_DEADLINE_MS,
             signal: expect.any(AbortSignal),
         });
     });

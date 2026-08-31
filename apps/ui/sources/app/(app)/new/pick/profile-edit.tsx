@@ -9,7 +9,7 @@ import { t } from '@/text';
 import { LaunchProfileEditForm } from '@/components/profiles/edit';
 import { type AIBackendProfile } from '@/sync/domains/profiles/profileCompatibility';
 import { layout } from '@/components/ui/layout/layout';
-import { useSetting, useSettingMutable, useSettings } from '@/sync/domains/state/storage';
+import { useSetting, useSettings } from '@/sync/domains/state/storage';
 import { DEFAULT_PROFILES, getBuiltInProfile, getBuiltInProfileNameKey, resolveProfileById } from '@/sync/domains/profiles/profileUtils';
 import { convertBuiltInProfileToCustom, createEmptyCustomProfile, duplicateProfileForEdit } from '@/sync/domains/profiles/profileMutations';
 import { Modal } from '@/modal';
@@ -105,7 +105,6 @@ export default React.memo(function ProfileEditScreen() {
     const rawProfiles = useSetting('profiles');
     const launchProfiles = React.useMemo(() => readUiAiLaunchProfiles(rawProfiles), [rawProfiles]);
     const applyProfileSave = useApplyProfileSave();
-    const [, setLastUsedProfile] = useSettingMutable('lastUsedProfile');
     const [isDirty, setIsDirty] = React.useState(false);
     const isDirtyRef = React.useRef(false);
     const saveRef = React.useRef<(() => boolean) | null>(null);
@@ -258,9 +257,7 @@ export default React.memo(function ProfileEditScreen() {
             ...(!isLaunchProfileV2(updatedProfile) && secretBindings !== undefined ? { secretBindings } : {}),
         });
 
-        // Update last used profile for convenience in other screens.
         if (isNewProfile) {
-            setLastUsedProfile(profileToSave.id);
             // For newly created profiles (including "Save As" from a built-in profile), prefer passing the id
             // back to the previous picker route (if present). The picker already knows how to forward the
             // selection to /new and close itself. This avoids stacking /new on top of /new (wizard case).

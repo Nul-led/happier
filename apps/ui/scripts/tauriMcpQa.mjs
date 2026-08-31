@@ -215,7 +215,8 @@ export function planExpectsExpoWebRuntime({ plan, env = process.env } = {}) {
 
 export function resolveExpoBootstrapPolicy({ plan } = {}) {
   if (plan?.keepRunning === true) return true;
-  return String(plan?.qaScenario?.id ?? '').trim().toLowerCase() === 'activity-surfaces';
+  const scenario = String(plan?.qaScenario?.id ?? '').trim().toLowerCase();
+  return scenario === 'activity-surfaces' || scenario === 'personal-home';
 }
 
 export async function resolveReusableAttachableTauriApp({
@@ -256,13 +257,16 @@ export function shouldReuseAttachableTauriApp({ plan } = {}) {
     return false;
   }
 
-  return String(plan?.qaScenario?.id ?? '').trim().toLowerCase() !== 'activity-surfaces';
+  const scenario = String(plan?.qaScenario?.id ?? '').trim().toLowerCase();
+  return scenario !== 'activity-surfaces' && scenario !== 'personal-home';
 }
 
 export function resolveTauriMcpQaAttachWaitOptions({ plan } = {}) {
   if (
     plan?.runSelectedScenario
-    && String(plan?.qaScenario?.id ?? '').trim().toLowerCase() === 'activity-surfaces'
+    && ['activity-surfaces', 'personal-home'].includes(
+      String(plan?.qaScenario?.id ?? '').trim().toLowerCase(),
+    )
   ) {
     return {
       maxAttempts: activitySurfacesAttachWaitMaxAttempts,
@@ -441,7 +445,9 @@ export function resolveTauriMcpQaRunMode({ argv = [], env = process.env } = {}) 
   const args = Array.isArray(argv) ? argv : [];
   const keepRunning = args.includes('--serve') || readBooleanEnv(env.HAPPIER_TAURI_QA_KEEP_RUNNING, false);
   const requestedScenarioEnv = String(env.HAPPIER_TAURI_QA_SCENARIO ?? '').trim().toLowerCase();
-  const requestedScenario = args.includes('--activity-surfaces') || requestedScenarioEnv === 'activity-surfaces'
+  const requestedScenario = args.includes('--personal-home') || requestedScenarioEnv === 'personal-home'
+    ? 'personal-home'
+    : args.includes('--activity-surfaces') || requestedScenarioEnv === 'activity-surfaces'
     ? 'activity-surfaces'
     : (args.includes('--desktop-sidebar-chrome') || requestedScenarioEnv === 'desktop-sidebar-chrome'
         ? 'desktop-sidebar-chrome'
@@ -483,6 +489,27 @@ export function resolveTauriQaScenarioEnvOverrides({ requestedScenario, env = pr
     overrides.HAPPIER_STACK_TAURI_IDENTIFIER = identifier;
   }
   return overrides;
+}
+
+export function assertPersonalHomeQaLaunchIsolation({ plan, env = process.env } = {}) {
+  if (String(plan?.qaScenario?.id ?? '').trim().toLowerCase() !== 'personal-home') {
+    return;
+  }
+
+  if (String(env.HAPPIER_TAURI_PERSONAL_HOME_QA_DEDICATED_RUNTIME ?? '').trim() !== '1') {
+    throw new Error(
+      '[tauri-qa] Personal Home loaded QA requires a dedicated OS user or VM because the production stable service name is user-global. Set HAPPIER_TAURI_PERSONAL_HOME_QA_DEDICATED_RUNTIME=1 only on that isolated target.',
+    );
+  }
+
+  const stackName = String(env.HAPPIER_STACK_STACK ?? '').trim();
+  if (!stackName || (!stackName.includes('lane03') && !stackName.includes('personal-home'))) {
+    throw new Error('[tauri-qa] Personal Home loaded QA requires an explicit Lane 03 / personal-home stack name.');
+  }
+  const identifier = String(env.HAPPIER_STACK_TAURI_IDENTIFIER ?? '').trim();
+  if (identifier !== `com.happier.stack.${stackName}`) {
+    throw new Error('[tauri-qa] Personal Home loaded QA requires the exact stack-owned Tauri identifier.');
+  }
 }
 
 export function createTauriMcpQaExitTracker() {
@@ -560,9 +587,12 @@ export async function resolveTauriMcpQaPlan({
   };
   const runtimeState = runtimeStateOverride ?? (stackName ? await readStackRuntimeStateFile(getStackRuntimeStatePath(stackName)) : null);
   const defaultPort = Number(resolvedEnv.HAPPIER_STACK_TAURI_DEV_PORT ?? 8081);
-  const stackTauriWebRuntimeServerUrl =
-    (await resolveStackTauriWebRuntimeServerUrl({ env: resolvedEnv }))
-    || resolveRuntimeServerUrlFromRuntimeState(runtimeState);
+  // A fresh Personal Home scenario must exercise the Desktop bootstrap owner. Injecting the
+  // controlled stack's ordinary server would select a different Home before that owner mounts.
+  const stackTauriWebRuntimeServerUrl = runMode.requestedScenario === 'personal-home'
+    ? ''
+    : (await resolveStackTauriWebRuntimeServerUrl({ env: resolvedEnv }))
+      || resolveRuntimeServerUrlFromRuntimeState(runtimeState);
 
   const qaScenarioEnvOverrides = (() => {
     const explicitWaitForExpo = String(resolvedEnv.HAPPIER_STACK_TAURI_WAIT_FOR_EXPO ?? '').trim();
@@ -613,6 +643,12 @@ export async function resolveTauriMcpQaPlan({
       ? {
           id: 'desktop-sidebar-chrome',
           script: 'scripts/qa/tauriDesktopSidebarChromeMcpQa.mjs',
+          envOverrides: qaScenarioEnvOverrides,
+        }
+    : runMode.requestedScenario === 'personal-home'
+      ? {
+          id: 'personal-home',
+          script: 'scripts/qa/tauriPersonalHomeMcpQa.mjs',
           envOverrides: qaScenarioEnvOverrides,
         }
     : {
@@ -764,6 +800,7 @@ function printUsage() {
     '  --serve  Keep the app + MCP server running (do not run one-shot wizard QA)',
     '  --activity-surfaces  Run the native desktop activity-surfaces QA capture',
     '  --desktop-sidebar-chrome  Run the native desktop sidebar chrome QA capture',
+    '  --personal-home  Run the loaded Desktop Personal Home bootstrap scenario',
     '  --no-wizard  Do not run the one-shot onboarding wizard capture',
     '  --tee-logs  Also print child process logs to stdout/stderr',
     '',
@@ -830,6 +867,8 @@ async function main(argv = process.argv.slice(2)) {
     );
     return;
   }
+
+  assertPersonalHomeQaLaunchIsolation({ plan, env: effectiveEnv });
 
   const children = [];
   await ensureTauriMcpQaLaunchArtifacts({ plan });

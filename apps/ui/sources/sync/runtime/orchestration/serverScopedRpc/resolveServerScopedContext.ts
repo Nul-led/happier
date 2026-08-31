@@ -9,6 +9,7 @@ import {
     resolveServerProfileScopeIdForIdentifier,
 } from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { resolveServerScopedTransport } from './resolveServerScopedTransport';
 
 import type { ResolvedServerRpcContext, ScopedRpcEncryptionContext } from './serverScopedRpcTypes';
 
@@ -60,12 +61,19 @@ export async function resolveServerScopedContext(params: Readonly<{
         ? null
         : await createEncryptionFromAuthCredentials(credentials) as ScopedRpcEncryptionContext;
 
+    const transport = await resolveServerScopedTransport({
+        profile: targetProfile,
+        credentials,
+    });
     return {
         scope: 'scoped',
         machineId,
         timeoutMs,
         targetServerId: resolvedTargetServerId,
-        targetServerUrl: targetProfile.serverUrl,
+        targetServerUrl: transport.canonicalServerUrl,
+        runtimeOrigin: transport.runtimeOrigin,
+        carrier: transport.carrier,
+        release: transport.release,
         token: credentials.token,
         encryption,
     };

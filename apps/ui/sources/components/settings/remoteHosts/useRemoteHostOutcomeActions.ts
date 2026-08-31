@@ -303,7 +303,7 @@ export function useRemoteHostOutcomeActions(options: Readonly<{
         }
 
         if (result.ok) {
-            persistRemoteHostAfterRemoteSshCompletion({
+            const persistence = persistRemoteHostAfterRemoteSshCompletion({
                 managementEnabled: true,
                 secretMaterialEnabled: options.secretMaterialAllowed,
                 remoteHostsRaw: options.remoteHostsRaw,
@@ -318,6 +318,20 @@ export function useRemoteHostOutcomeActions(options: Readonly<{
                 privateKeyMaterialDraft: '',
                 completion: readBootstrapCompletion(result.data),
             });
+            persistence.then(
+                () => {
+                    setActiveTaskId(null);
+                    setActiveTaskHostId(null);
+                    setActiveTaskConfig(null);
+                    setActiveTaskTitle(null);
+                    setActiveTaskKind(null);
+                },
+                (error: unknown) => {
+                    const message = error instanceof Error ? error.message : String(error ?? '');
+                    Modal.alert(t('common.error'), message || t('settings.remoteHostsSetupAsMachineFailed'));
+                },
+            );
+            return;
         } else {
             const message = result.error.message || t('settings.remoteHostsSetupAsMachineFailed');
             Modal.alert(t('common.error'), message);

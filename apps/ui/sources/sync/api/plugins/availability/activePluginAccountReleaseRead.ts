@@ -22,6 +22,7 @@ type AvailabilityReleaseReadServerSnapshot = Readonly<{
 
 type AvailabilityReleaseReadRequestAuthority = Readonly<{
     request: (path: string, init?: RequestInit) => Promise<Response>;
+    release?: () => Promise<void>;
 }>;
 
 export type ActivePluginAccountReleaseReaderDependencies = Readonly<{
@@ -60,7 +61,7 @@ function defaultDependencies(): ActivePluginAccountReleaseReaderDependencies {
                 scope,
                 activeRequest: (path, init) => apiSocket.request(path, init),
             });
-            return Object.freeze({ request: authority.request });
+            return Object.freeze({ request: authority.request, release: authority.release });
         },
     };
 }
@@ -121,6 +122,7 @@ export function createActivePluginAccountReleaseReader(
 
             const controller = new AbortController();
             const retirement = lifetime.onRetire(() => controller.abort());
+            let authority: AvailabilityReleaseReadRequestAuthority | null = null;
             try {
                 const beforeAuthority = currentnessCode({
                     lifetime,
@@ -131,7 +133,6 @@ export function createActivePluginAccountReleaseReader(
                     return unavailable(beforeAuthority ?? 'account_scope_changed');
                 }
 
-                let authority: AvailabilityReleaseReadRequestAuthority;
                 try {
                     authority = await dependencies.captureRequestAuthority(lifetime.scope);
                 } catch {
@@ -208,6 +209,7 @@ export function createActivePluginAccountReleaseReader(
                     facts: output.data.facts,
                 });
             } finally {
+                await authority?.release?.();
                 retirement.dispose();
             }
         },

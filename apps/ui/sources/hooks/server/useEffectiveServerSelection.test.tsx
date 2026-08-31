@@ -40,6 +40,8 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     listServerProfiles: () => state.serverProfiles,
     resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
+    loadHomeViewState: () => null,
+    subscribeHomeViewState: () => () => {},
 }));
 
 const storageMock = createStorageModuleStub({

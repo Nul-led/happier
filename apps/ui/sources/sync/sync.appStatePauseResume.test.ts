@@ -230,7 +230,6 @@ describe('sync AppState pause/resume', () => {
             'friendsSync',
             'friendRequestsSync',
             'feedSync',
-            'pushTokenSync',
             'nativeUpdateSync',
         ]) {
             (sync as any)[field] = syncUnit;

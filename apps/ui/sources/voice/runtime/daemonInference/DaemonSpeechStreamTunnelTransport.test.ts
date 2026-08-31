@@ -13,10 +13,10 @@ import {
   encodePeerApplicationEncryptedFrameV1,
   openEncryptedDataKeyEnvelopeV1,
   type DaemonVoiceInferenceSttStreamStartRequest,
-  type PeerTcpTunnelFrameV1,
   type PeerTcpTunnelOpenResponseV1,
   type PeerTcpTunnelOpenV1,
 } from '@happier-dev/protocol';
+import type { PeerTcpTunnelFrame } from '@happier-dev/peer-transport/duplexFrames';
 import { describe, expect, it, vi } from 'vitest';
 
 import { encodeBase64 } from '@/encryption/base64';
@@ -37,7 +37,7 @@ type TestWebSocket = {
   close: () => void;
 };
 type TestStream = Readonly<{
-  sendFrame: (frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>) => Promise<void> | void;
+  sendFrame: (frame: PeerTcpTunnelFrame) => Promise<void> | void;
   close: () => Promise<void> | void;
 }>;
 
@@ -232,12 +232,12 @@ describe('DaemonSpeechStreamTunnelTransport', () => {
         frame: {
           v: 1, kind: 'data', tunnelId: 'tun_voice', direction: 'daemon_to_client',
           sequence: outbound.sequence,
-          payloadBase64: encodeBase64(encodePeerApplicationEncryptedFrameV1({
+          payload: encodePeerApplicationEncryptedFrameV1({
             v: 1,
             kind: encrypted.kind,
             nonceBase64Url: encodeProtocolBase64(responseNonce, 'base64url'),
             ciphertextBase64Url: encodeProtocolBase64(responseCiphertext, 'base64url'),
-          })),
+          }),
         },
       });
       } catch (error) {
@@ -363,7 +363,7 @@ describe('DaemonSpeechStreamTunnelTransport', () => {
 
     let substreamHandler: ((event: Readonly<{
       substreamId: string;
-      frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>;
+      frame: import('@happier-dev/peer-transport/duplexFrames').PeerTcpTunnelFrame;
     }>) => void) | null = null;
     const transport = createTransport({
       tunnelId: 'tun_voice',
@@ -419,7 +419,7 @@ describe('DaemonSpeechStreamTunnelTransport', () => {
 
     let substreamHandler: ((event: Readonly<{
       substreamId: string;
-      frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>;
+      frame: PeerTcpTunnelFrame;
     }>) => void) | null = null;
     const sendSubstreamDataFrame = vi.fn(async () => {
       queueMicrotask(() => {
@@ -441,7 +441,7 @@ describe('DaemonSpeechStreamTunnelTransport', () => {
             tunnelId: 'tun_voice',
             direction: 'daemon_to_client',
             sequence: 5,
-            payloadBase64: encodeBase64(new TextEncoder().encode(JSON.stringify(response))),
+            payload: new TextEncoder().encode(JSON.stringify(response)),
           },
         });
       });

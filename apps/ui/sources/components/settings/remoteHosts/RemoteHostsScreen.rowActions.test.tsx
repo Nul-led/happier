@@ -238,7 +238,17 @@ describe('RemoteHostsScreen row actions', () => {
 
         expect(screen.findByTestId('testConnection')).toBeTruthy();
         expect(screen.findByTestId('installOrUpdateCli')).toBeTruthy();
+        expect(screen.findByTestId('personalHome.erase')).toBeTruthy();
         expect(screen.findByTestId('edit')).toBeTruthy();
         expect(screen.findByTestId('remove')).toBeTruthy();
+
+        await screen.pressByTestIdAsync('personalHome.erase');
+        expect(startMock).toHaveBeenCalledWith(expect.objectContaining({
+            kind: 'remote.ssh.manageHost.v1',
+            params: expect.objectContaining({
+                action: 'personalHome.erase',
+                relayRuntime: { channel: expect.any(String), mode: 'user' },
+            }),
+        }));
     });
 });

@@ -54,6 +54,8 @@ vi.mock('expo-camera', () => ({
   useCameraPermissions: () => [{ granted: true }, vi.fn(async () => ({ granted: true }))],
 }));
 
+vi.mock('expo-device', () => ({ isDevice: true }));
+
 vi.mock('@/utils/platform/platform', () => ({
   isRunningOnMac: () => false,
 }));
@@ -74,10 +76,6 @@ vi.mock('@/encryption/base64', () => ({
 
 vi.mock('@/encryption/libsodium', () => ({
   encryptBox: vi.fn(() => new Uint8Array([9, 9, 9])),
-}));
-
-vi.mock('@/auth/flows/buildAccountLinkResponse', () => ({
-  buildAccountLinkResponse: vi.fn(() => ({ t: 'stub' })),
 }));
 
 vi.mock('@/auth/flows/accountApprove', () => ({
@@ -195,7 +193,7 @@ describe('useConnectAccount (scanner lifecycle)', () => {
     expect(modalAlertSpy).toHaveBeenCalled();
   });
 
-  it('accepts account URLs that match the configured app scheme', async () => {
+  it('recognizes legacy account URLs only to show canonical Home QR guidance', async () => {
     vi.doMock('expo-constants', () => ({
       default: {
         expoConfig: {
@@ -220,7 +218,11 @@ describe('useConnectAccount (scanner lifecycle)', () => {
     await act(async () => {
       ok = await hookApi!.processAuthUrl('happier-dev:///account?abc123');
     });
-    expect(ok).toBe(true);
-    expect(modalAlertSpy).not.toHaveBeenCalledWith('common.error', 'modals.invalidAuthUrl', expect.anything());
+    expect(ok).toBe(false);
+    expect(modalAlertSpy).toHaveBeenCalledWith(
+      'common.unavailable',
+      'connect.legacyAccountQrUnavailable',
+      expect.anything(),
+    );
   });
 });

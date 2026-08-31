@@ -114,7 +114,6 @@ async function createResumableSync(
         sessionsSync: createSyncUnitStub(),
         machinesSync: createSyncUnitStub(),
         purchasesSync: createSyncUnitStub(),
-        pushTokenSync: createSyncUnitStub(),
         nativeUpdateSync: createSyncUnitStub(),
     };
     for (const [field, unit] of Object.entries(units)) {
@@ -193,8 +192,6 @@ describe('sync foreground ephemeral recovery', () => {
 
         expect(units.sessionsSync.invalidateCoalesced).not.toHaveBeenCalled();
         expect(units.machinesSync.invalidateCoalesced).not.toHaveBeenCalled();
-        // The unconditional tail of the resume pipeline still runs.
-        expect(units.pushTokenSync.invalidateCoalesced).toHaveBeenCalledTimes(1);
     });
 
     it('still refreshes the unit the changes catch-up did not cover', async () => {
@@ -215,7 +212,5 @@ describe('sync foreground ephemeral recovery', () => {
 
         expect(units.sessionsSync.invalidateCoalesced).not.toHaveBeenCalled();
         expect(units.machinesSync.invalidateCoalesced).not.toHaveBeenCalled();
-        // The unconditional tail of the resume pipeline still runs.
-        expect(units.pushTokenSync.invalidateCoalesced).toHaveBeenCalledTimes(1);
     });
 });

@@ -4,6 +4,7 @@ import {
     removeProviderMachineStateV1,
     writeProviderSettingsToAccountSettingsV1,
 } from '@happier-dev/protocol';
+import type { OneShotAccountSettingsMutationResult } from '@/sync/engine/settings/syncSettings';
 
 export type MachineRevokeFromAccountResult =
     | { ok: true }
@@ -67,11 +68,16 @@ export type MachineRevokeWithProviderCleanupResult =
  */
 export async function machineRevokeWithProviderCleanup(
     machineId: string,
+    expectedSettingsVersion: number | null,
     dependencies: Readonly<{
         revoke(id: string): Promise<MachineRevokeFromAccountResult>;
-        mutateAccountSettings(
-            mutate: (raw: Readonly<Record<string, unknown>>) => Record<string, unknown>,
-        ): Promise<void>;
+        mutateAccountSettingsOnce<T>(input: Readonly<{
+            expectedSettingsVersion: number;
+            mutate: (raw: Readonly<Record<string, unknown>>) => Readonly<{
+                settings: Record<string, unknown>;
+                value: T;
+            }>;
+        }>): Promise<OneShotAccountSettingsMutationResult<T>>;
     }>,
 ): Promise<MachineRevokeWithProviderCleanupResult> {
     const id = String(machineId ?? '').trim();
@@ -80,22 +86,62 @@ export async function machineRevokeWithProviderCleanup(
     const machineAlreadyRevoked = !revoked.ok && revoked.status === 410 && revoked.error === 'machine_revoked';
     if (!revoked.ok && !machineAlreadyRevoked) return revoked;
 
-    let cleanupNeeded = false;
-    let settingsUnreadable = false;
+    if (expectedSettingsVersion === null) {
+        return {
+            ok: false,
+            status: 503,
+            error: 'provider_cleanup_pending',
+            machineRevoked: true,
+            providerCleanup: 'pending',
+            retryable: true,
+        };
+    }
     try {
-        await dependencies.mutateAccountSettings((raw) => {
-            const basis = readProviderSettingsMutationBasisV1(raw);
-            if (basis.status === 'refused') {
-                settingsUnreadable = true;
-                return raw as Record<string, unknown>;
-            }
-            settingsUnreadable = false;
-            const next = removeProviderMachineStateV1(basis.settings, id);
-            cleanupNeeded = JSON.stringify(next) !== JSON.stringify(basis.settings);
-            return cleanupNeeded
-                ? writeProviderSettingsToAccountSettingsV1(raw, next)
-                : raw as Record<string, unknown>;
+        const mutation = await dependencies.mutateAccountSettingsOnce({
+            expectedSettingsVersion,
+            mutate: (raw) => {
+                const basis = readProviderSettingsMutationBasisV1(raw);
+                if (basis.status === 'refused') {
+                    return {
+                        settings: raw as Record<string, unknown>,
+                        value: { cleanupNeeded: false, settingsUnreadable: true },
+                    };
+                }
+                const next = removeProviderMachineStateV1(basis.settings, id);
+                const cleanupNeeded = JSON.stringify(next) !== JSON.stringify(basis.settings);
+                return {
+                    settings: cleanupNeeded
+                        ? writeProviderSettingsToAccountSettingsV1(raw, next)
+                        : raw as Record<string, unknown>,
+                    value: { cleanupNeeded, settingsUnreadable: false },
+                };
+            },
         });
+        if (mutation.status !== 'applied') {
+            return {
+                ok: false,
+                status: 503,
+                error: 'provider_cleanup_pending',
+                machineRevoked: true,
+                providerCleanup: 'pending',
+                retryable: true,
+            };
+        }
+        if (mutation.value.settingsUnreadable) {
+            return {
+                ok: false,
+                status: 409,
+                error: 'provider_settings_unreadable',
+                machineRevoked: true,
+                providerCleanup: 'pending',
+                retryable: false,
+            };
+        }
+        return {
+            ok: true,
+            machineAlreadyRevoked,
+            providerCleanup: mutation.value.cleanupNeeded ? 'complete' : 'not_needed',
+        };
     } catch {
         return {
             ok: false,
@@ -106,21 +152,6 @@ export async function machineRevokeWithProviderCleanup(
             retryable: true,
         };
     }
-    if (settingsUnreadable) {
-        return {
-            ok: false,
-            status: 409,
-            error: 'provider_settings_unreadable',
-            machineRevoked: true,
-            providerCleanup: 'pending',
-            retryable: false,
-        };
-    }
-    return {
-        ok: true,
-        machineAlreadyRevoked,
-        providerCleanup: cleanupNeeded ? 'complete' : 'not_needed',
-    };
 }
 
 export async function machineReplaceInAccount(params: Readonly<{

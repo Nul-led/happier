@@ -21,6 +21,7 @@ import type { ExistingSessionAuthoringSnapshotSession } from './sessionAuthoring
 import {
     buildNewSessionAuthoringDraft,
     buildNewSessionTempDataFromAuthoringDraft,
+    rekeyCompatibilityModelSelection,
 } from './sessionAuthoringDraftAdapters';
 
 function readMetadataRecord(metadata: unknown): Record<string, unknown> {
@@ -62,19 +63,22 @@ export function buildNewSessionTempDataFromSessionConfiguration(params: Readonly
     const metadata = readSessionOwnerMetadataView(params.session);
     const directoryOverride = normalizeOptionalString(params.directoryOverride);
     const draft = buildNewSessionAuthoringDraft({
+        executionTarget: null,
         directory: directoryOverride ?? snapshot.directory,
         checkoutCreationDraft: null,
+        organizationPlacement: { folderId: null, tagIds: [] },
         prompt: '',
         displayText: '',
-        agentId: snapshot.agentId,
-        backendTarget: snapshot.backendTarget,
+        agentTarget: snapshot.agentTarget,
         transcriptStorage: snapshot.transcriptStorage,
         profileId: snapshot.profileId,
         environmentVariables: null,
         resumeSessionId: null,
         permissionMode: snapshot.permissionMode,
         permissionModeUpdatedAt: snapshot.permissionModeUpdatedAt,
-        modelSelection: snapshot.modelSelection,
+        modelSelection: snapshot.agentTarget
+            ? rekeyCompatibilityModelSelection(snapshot.modelSelection, snapshot.agentTarget)
+            : snapshot.modelSelection,
         mcpSelection: snapshot.mcpSelection,
         connectedServices: snapshot.connectedServices,
         terminal: snapshot.terminal,

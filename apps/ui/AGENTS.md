@@ -92,4 +92,4 @@ Details: `../../docs/agents-catalog.md` and `../../docs/providers.md`.
 - Do not create inline mock families for boundaries already owned by the testkit, including `expo-router`, `@/text`, `@/modal`, `react-native`, `react-native-unistyles`, and storage.
 - Exercise real UI/domain logic below those boundaries and assert observable behavior rather than copy, raw styles, implementation details, or incidental calls.
 - Render and inspect incremental visual changes. For device QA, pin the loaded bundle with a full Metro reload, Fast Refresh off, and a module probe when bundle identity matters.
-- Use `skills/happier-testing` for browser/device live gates and known memory-heavy suite guidance.
+- Use `.agents/skills/happier-testing` for browser/device live gates and known memory-heavy suite guidance.

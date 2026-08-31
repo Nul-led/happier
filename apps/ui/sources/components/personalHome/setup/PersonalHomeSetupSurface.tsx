@@ -13,10 +13,10 @@ import type { PersonalHomeBootstrapSnapshot } from '../bootstrap/personalHomeBoo
 import { PersonalHomeExistingRuntimeDecision } from './PersonalHomeExistingRuntimeDecision';
 import { PersonalHomeSetupFailure } from './PersonalHomeSetupFailure';
 import { PersonalHomeSetupProgress } from './PersonalHomeSetupProgress';
-import { personalHomeCopy } from './personalHomeCopy';
 
 const styles = StyleSheet.create((theme) => ({
     root: { flex: 1, backgroundColor: theme.colors.background.canvas },
+    scroll: { flex: 1 },
     scrollContent: { flexGrow: 1, width: '100%', maxWidth: 720, alignSelf: 'center', paddingHorizontal: 32, paddingVertical: 36 },
     header: { gap: 12, marginBottom: 30 },
     mark: { width: 42, height: 42, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.button.primary.background },
@@ -31,12 +31,25 @@ const styles = StyleSheet.create((theme) => ({
 function phaseCopy(snapshot: PersonalHomeBootstrapSnapshot): string {
     switch (snapshot.phase) {
         case 'checking': return t('common.loading');
-        case 'preparing-home': return personalHomeCopy('preparingHomeStatus', 'Getting your local Home ready.');
-        case 'connecting-app': return personalHomeCopy('connectingAppStatus', 'Connecting Happier to your Home.');
-        case 'closing-signup': return personalHomeCopy('closingSignupStatus', 'Securing your Home before it becomes available.');
-        case 'preparing-computer': return personalHomeCopy('preparingComputerStatus', 'Your Home is ready. Preparing this computer in the background.');
-        case 'blocked': return personalHomeCopy('blockedStatus', 'Setup needs your attention before we continue.');
-        case 'ready': return personalHomeCopy('readyStatus', 'Your Home is ready.');
+        case 'preparing-home': return t('personalHome.bootstrap.preparingHomeStatus');
+        case 'connecting-app': return t('personalHome.bootstrap.connectingAppStatus');
+        case 'closing-signup': return t('personalHome.bootstrap.closingSignupStatus');
+        case 'preparing-computer': return t('personalHome.bootstrap.preparingComputerStatus');
+        case 'blocked': return t('personalHome.bootstrap.blockedStatus');
+        case 'ready': return t('personalHome.bootstrap.readyStatus');
+    }
+}
+
+type FocusableAction = React.ElementRef<typeof Pressable> & Readonly<{ focus?: () => void }>;
+
+function focusAction(target: React.ElementRef<typeof Pressable> | null): void {
+    const focus = (target as FocusableAction | null)?.focus;
+    if (typeof focus === 'function') {
+        try {
+            focus.call(target);
+        } catch {
+            // Some native/test hosts expose a ref without a usable focus handle.
+        }
     }
 }
 
@@ -50,18 +63,54 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
 }>) {
     const { theme } = useUnistyles();
     const [detailsOpen, setDetailsOpen] = React.useState(false);
+    const retryRef = React.useRef<React.ElementRef<typeof Pressable>>(null);
+    const detailsRef = React.useRef<React.ElementRef<typeof Pressable>>(null);
+    const useExistingRef = React.useRef<React.ElementRef<typeof Pressable>>(null);
+    const focusedRecoveryStateRef = React.useRef<string | null>(null);
     const hasFailure = props.snapshot.phase === 'blocked';
     const showExistingDecision = props.snapshot.action === 'choose-existing-runtime';
+    const showFailure = hasFailure && (!showExistingDecision || props.snapshot.detail?.retryable === true);
     const showDetails = detailsOpen && props.activeTask != null;
+    const toggleDetails = React.useCallback(() => setDetailsOpen((value) => !value), []);
+    const failureDetailsAction = props.onOpenDetails ?? (props.activeTask ? toggleDetails : undefined);
+    const recoveryFocusState = showExistingDecision && props.onUseExisting && props.onUseAnotherHome
+        ? 'existing-runtime'
+        : hasFailure && props.snapshot.action === 'retry' && props.onRetry
+            ? 'retry'
+            : hasFailure && failureDetailsAction
+                ? 'details'
+                : null;
+
+    React.useEffect(() => {
+        if (recoveryFocusState === null) {
+            focusedRecoveryStateRef.current = null;
+            return;
+        }
+        if (focusedRecoveryStateRef.current === recoveryFocusState) return;
+        focusedRecoveryStateRef.current = recoveryFocusState;
+        if (recoveryFocusState === 'existing-runtime') {
+            focusAction(useExistingRef.current);
+        } else if (recoveryFocusState === 'retry') {
+            focusAction(retryRef.current);
+        } else {
+            focusAction(detailsRef.current);
+        }
+    }, [recoveryFocusState]);
+
     return (
         <View style={styles.root} testID="personal-home-setup-surface">
-            <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-                <View style={styles.header} accessibilityLiveRegion="polite">
-                    <View style={styles.mark} accessibilityElementsHidden>
+            <ScrollView
+                style={styles.scroll}
+                contentContainerStyle={styles.scrollContent}
+                contentInsetAdjustmentBehavior="automatic"
+                keyboardShouldPersistTaps="handled"
+            >
+                <View style={styles.header}>
+                    <View style={styles.mark} accessible={false} accessibilityElementsHidden>
                         <Icon name="house" size={ICON_SIZE.lg} color={theme.colors.button.primary.tint} />
                     </View>
                     <Text style={styles.title} accessibilityRole="header">
-                        {personalHomeCopy('title', t('setupOnboarding.screenTitle'))}
+                        {t('personalHome.bootstrap.title')}
                     </Text>
                     <Text testID="personal-home-bootstrap-phase" accessibilityLiveRegion="polite" style={styles.status}>{phaseCopy(props.snapshot)}</Text>
                 </View>
@@ -72,26 +121,28 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
 
                 {showExistingDecision && props.onUseExisting && props.onUseAnotherHome ? (
                     <PersonalHomeExistingRuntimeDecision
+                        primaryActionRef={useExistingRef}
                         onUseExisting={props.onUseExisting}
                         onUseAnotherHome={props.onUseAnotherHome}
                     />
                 ) : null}
 
-                {hasFailure ? (
+                {showFailure ? (
                     <PersonalHomeSetupFailure
-                        detail={props.snapshot.detail}
+                        retryRef={retryRef}
+                        detailsRef={detailsRef}
                         onRetry={props.snapshot.action === 'retry' ? props.onRetry : undefined}
-                        onOpenDetails={props.onOpenDetails ?? (() => setDetailsOpen((value) => !value))}
+                        onOpenDetails={failureDetailsAction}
                     />
                 ) : null}
 
-                {props.activeTask ? (
+                {props.activeTask && !hasFailure ? (
                     <Pressable
                         testID="personal-home-bootstrap-details-toggle"
                         accessibilityRole="button"
                         accessibilityLabel={t('common.details')}
                         accessibilityState={{ expanded: detailsOpen }}
-                        onPress={() => setDetailsOpen((value) => !value)}
+                        onPress={toggleDetails}
                         style={styles.detailsButton}
                     >
                         <Text style={styles.detailsText}>{detailsOpen ? t('common.collapse') : t('common.details')}</Text>

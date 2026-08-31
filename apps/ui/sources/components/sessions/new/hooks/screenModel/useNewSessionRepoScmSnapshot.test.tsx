@@ -87,6 +87,49 @@ function makeSnapshot(partial?: Partial<ScmWorkingSnapshot>): ScmWorkingSnapshot
 }
 
 describe('useNewSessionRepoScmSnapshot', () => {
+    it('carries the selected server and Home through every cache and SCM read', async () => {
+        readCachedSnapshotForMachinePathMock.mockReset();
+        readCachedWorktreesEnrichmentMock.mockReset();
+        fetchSnapshotForMachinePathMock.mockReset();
+        fetchWorktreesEnrichmentMock.mockReset();
+        readCachedSnapshotForMachinePathMock.mockReturnValue(null);
+        readCachedWorktreesEnrichmentMock.mockReturnValue(null);
+        fetchSnapshotForMachinePathMock.mockResolvedValue(null);
+        fetchWorktreesEnrichmentMock.mockResolvedValue(null);
+
+        const hook = await renderHook(() => useNewSessionRepoScmSnapshot({
+            serverId: 'server-b',
+            machineId: 'machine-a',
+            path: '~/repo',
+            machineHomeDir: '/Users/server-b',
+        }));
+        await flushHookEffects();
+
+        expect(readCachedSnapshotForMachinePathMock).toHaveBeenCalledWith({
+            serverId: 'server-b',
+            machineId: 'machine-a',
+            path: '~/repo',
+            homeDir: '/Users/server-b',
+        });
+        expect(readCachedWorktreesEnrichmentMock).toHaveBeenCalledWith({
+            serverId: 'server-b',
+            machineId: 'machine-a',
+            path: '~/repo',
+            homeDir: '/Users/server-b',
+        });
+        expect(fetchSnapshotForMachinePathMock).toHaveBeenCalledWith({
+            serverId: 'server-b',
+            machineId: 'machine-a',
+            path: '~/repo',
+            homeDir: '/Users/server-b',
+        });
+        await hook.unmount();
+        readCachedSnapshotForMachinePathMock.mockClear();
+        readCachedWorktreesEnrichmentMock.mockClear();
+        fetchSnapshotForMachinePathMock.mockClear();
+        fetchWorktreesEnrichmentMock.mockClear();
+    });
+
     it('seeds the hook from the cached light snapshot while the refresh request is still in flight', async () => {
         const cachedSnapshot = makeSnapshot({ fetchedAt: 1 });
         let resolveFetch: ((value: ScmWorkingSnapshot | null) => void) | null = null;

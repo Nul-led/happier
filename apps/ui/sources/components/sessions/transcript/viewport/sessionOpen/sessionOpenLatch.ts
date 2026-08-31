@@ -174,11 +174,11 @@ export function createSessionOpenLatch(): SessionOpenLatch {
                 phase = 'done';
                 return decision();
             }
-            if (!facts.isLoaded || facts.itemCount <= 0) {
+            if (!facts.isLoaded) {
                 phase = 'awaiting-data';
                 return decision();
             }
-            if (facts.layoutHeight <= 0 || facts.contentHeight <= 0) {
+            if (facts.layoutHeight <= 0 || (facts.contentHeight <= 0 && facts.itemCount > 0)) {
                 phase = 'awaiting-layout';
                 return decision();
             }

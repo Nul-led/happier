@@ -98,7 +98,7 @@ describe('app native SSH tunnel runtime', () => {
         expect(snapshots[0]?.leases.map((lease) => lease.leaseId)).toEqual(['lease-a']);
         expect(firstRuntime.listTunnels().leases).toEqual([]);
 
-        loaded!.disposeNativeSshTunnelRuntime();
+        await loaded!.disposeNativeSshTunnelRuntime();
     });
 
     it('degrades leases on background AppState changes and re-probes on foreground', async () => {
@@ -153,7 +153,7 @@ describe('app native SSH tunnel runtime', () => {
 
         await expect(runtime.ensureTunnel(createRequest())).rejects.toThrow('native_ssh_tunnel_suspended');
         expect(supervisor.ensureTunnel).not.toHaveBeenCalled();
-        loaded!.disposeNativeSshTunnelRuntime();
+        await loaded!.disposeNativeSshTunnelRuntime();
     });
 
     it('keys credential material by the full credential ref and clears it when the lease is released', async () => {
@@ -207,7 +207,7 @@ describe('app native SSH tunnel runtime', () => {
                 password: 'secret-b',
             },
         });
-        loaded!.disposeNativeSshTunnelRuntime();
+        await loaded!.disposeNativeSshTunnelRuntime();
     });
 
     it('keeps credential material while a shared lease remains retained', async () => {
@@ -249,7 +249,7 @@ describe('app native SSH tunnel runtime', () => {
 
         await runtime.releaseTunnel('lease-a');
         expect(loaded!.readNativeSshTunnelCredentialResolution(credentialsRef)).toBeNull();
-        loaded!.disposeNativeSshTunnelRuntime();
+        await loaded!.disposeNativeSshTunnelRuntime();
     });
 
     it('clears every credential ref that reused the same lease after final release', async () => {
@@ -313,7 +313,7 @@ describe('app native SSH tunnel runtime', () => {
         await runtime.releaseTunnel('lease-a');
         expect(loaded!.readNativeSshTunnelCredentialResolution(firstRef)).toBeNull();
         expect(loaded!.readNativeSshTunnelCredentialResolution(secondRef)).toBeNull();
-        loaded!.disposeNativeSshTunnelRuntime();
+        await loaded!.disposeNativeSshTunnelRuntime();
     });
 
     it('clears credential material when tunnel establishment fails', async () => {
@@ -341,7 +341,7 @@ describe('app native SSH tunnel runtime', () => {
         await expect(runtime.ensureTunnel(createRequest())).rejects.toThrow('native_ssh_tunnel_probe_failed');
 
         expect(loaded!.readNativeSshTunnelCredentialResolution(credentialsRef)).toBeNull();
-        loaded!.disposeNativeSshTunnelRuntime();
+        await loaded!.disposeNativeSshTunnelRuntime();
     });
 
     it('clears credential material when final native tunnel release fails', async () => {
@@ -371,6 +371,6 @@ describe('app native SSH tunnel runtime', () => {
         await expect(runtime.releaseTunnel('lease-a')).rejects.toThrow('native_stop_failed');
 
         expect(loaded!.readNativeSshTunnelCredentialResolution(credentialsRef)).toBeNull();
-        loaded!.disposeNativeSshTunnelRuntime();
+        await loaded!.disposeNativeSshTunnelRuntime();
     });
 });

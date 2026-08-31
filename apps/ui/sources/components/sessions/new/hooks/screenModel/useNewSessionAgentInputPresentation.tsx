@@ -33,7 +33,7 @@ type ThemeLike = Readonly<{
     }>;
 }>;
 
-function buildExtraActionChipsSignature(params: Readonly<{
+export function buildExtraActionChipsSignature(params: Readonly<{
     chips: ReadonlyArray<AgentInputExtraActionChip>;
     agentType: string;
     backendTarget: unknown;
@@ -46,6 +46,7 @@ function buildExtraActionChipsSignature(params: Readonly<{
             checkoutPickerOpen: params.checkoutPickerOpen,
             chips: params.chips.map((chip) => ({
                 key: chip.key,
+                stabilityKey: chip.stabilityKey ?? null,
                 controlId: chip.controlId ?? null,
                 labelPolicy: chip.labelPolicy ?? null,
                 collapsedOptionsTitle: chip.collapsedOptionsPopover?.title ?? null,
@@ -199,6 +200,7 @@ export function useNewSessionAgentInputPresentation(params: Readonly<{
         checkoutPickerOpen: params.checkoutPickerOpen,
         setCheckoutPickerOpen: params.setCheckoutPickerOpen,
         checkoutCreationDraft: params.checkoutCreationDraft,
+        serverId: params.targetServerId,
         selectedMachineId: params.selectedMachineId,
         machineHomeDir: params.selectedMachine?.metadata?.homeDir ?? null,
         machinePlatform: params.selectedMachine?.metadata?.platform ?? null,

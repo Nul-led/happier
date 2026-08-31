@@ -287,6 +287,8 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
         serverId: params.serverId ?? null,
         timeoutMs: params.timeoutMs,
     });
+    const ownsContext = !params.authority;
+    try {
 
     if (context.scope === 'active') {
         const request = params.activeRequest;
@@ -346,6 +348,7 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
     const request = params.authority?.request
         ?? createSessionRequestForExplicitServerScope({
             serverUrl: context.targetServerUrl,
+            ...(context.runtimeOrigin ? { runtimeOrigin: context.runtimeOrigin } : {}),
             token: context.token,
         });
     const accountCurrentnessSource =
@@ -391,4 +394,7 @@ export async function fetchSessionByIdWithServerScope(params: Readonly<{
         encryption: scopedEncryption,
         sessionId: params.sessionId,
     });
+    } finally {
+        if (ownsContext && context.scope === 'scoped') await context.release?.();
+    }
 }

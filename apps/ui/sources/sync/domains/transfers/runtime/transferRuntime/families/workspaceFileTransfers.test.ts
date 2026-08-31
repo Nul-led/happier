@@ -140,6 +140,73 @@ describe('workspaceFileTransfers', () => {
         );
     });
 
+    it('pins workspace file download to the acquired machine HTTP origin and releases once', async () => {
+        directExportDownloadMock.mockResolvedValueOnce({ ok: true, name: 'a.txt', sizeBytes: 3 });
+        const release = vi.fn(async () => undefined);
+        const cleanup = vi.fn(async () => undefined);
+        const acquireMachineCarrierHttpLease = vi.fn(async () => ({
+            localOrigin: 'http://localhost:48128',
+            release,
+        }));
+
+        const { downloadDaemonWorkspaceFileToDestination } = await import('./workspaceFileTransfers');
+        const result = await downloadDaemonWorkspaceFileToDestination({
+            machineId: 'machine-1',
+            rootPath: '/repo',
+            request: { path: 'a.txt', asZip: false },
+            destination: {
+                writeBytes: async () => undefined,
+                close: async () => undefined,
+                cleanup,
+            },
+            machineCarrierRequired: true,
+            machineCarrierOperationId: 'workspace-download-1',
+            acquireMachineCarrierHttpLease,
+        });
+
+        expect(result).toEqual({ ok: true, name: 'a.txt', sizeBytes: 3 });
+        expect(directExportDownloadMock).toHaveBeenCalledWith(expect.objectContaining({
+            httpOriginOverride: 'http://localhost:48128',
+        }));
+        expect(relayDownloadMock).not.toHaveBeenCalled();
+        expect(bulkDownloadMock).not.toHaveBeenCalled();
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(cleanup).not.toHaveBeenCalled();
+        expect(acquireMachineCarrierHttpLease).toHaveBeenCalledWith(expect.objectContaining({
+            operationId: 'workspace-download-1',
+            maxBytes: 3,
+        }));
+    });
+
+    it('does not fall back when a required workspace machine-carrier download fails', async () => {
+        directExportDownloadMock.mockRejectedValueOnce(new Error('tunnel closed'));
+        const release = vi.fn(async () => undefined);
+        const cleanup = vi.fn(async () => undefined);
+
+        const { downloadDaemonWorkspaceFileToDestination } = await import('./workspaceFileTransfers');
+        const result = await downloadDaemonWorkspaceFileToDestination({
+            machineId: 'machine-1',
+            rootPath: '/repo',
+            request: { path: 'a.txt', asZip: false },
+            destination: {
+                writeBytes: async () => undefined,
+                close: async () => undefined,
+                cleanup,
+            },
+            machineCarrierRequired: true,
+            acquireMachineCarrierHttpLease: async () => ({
+                localOrigin: 'http://127.0.0.1:48130',
+                release,
+            }),
+        });
+
+        expect(result).toMatchObject({ ok: false, errorCode: 'machine_carrier_transport_failed' });
+        expect(relayDownloadMock).not.toHaveBeenCalled();
+        expect(bulkDownloadMock).not.toHaveBeenCalled();
+        expect(release).toHaveBeenCalledTimes(1);
+        expect(cleanup).toHaveBeenCalledTimes(1);
+    });
+
     it('rejects file-download destinations that cannot be cleaned up between carrier retries', async () => {
         const { downloadDaemonWorkspaceFileToDestination } = await import('./workspaceFileTransfers');
         const result = await downloadDaemonWorkspaceFileToDestination({

@@ -196,6 +196,7 @@ export function createFollowUpSpawnedSessionWithServerScope(deps?: Readonly<{
 
         try {
             const context = await resolveContext({ serverId: params.targetServerId ?? null });
+            try {
             const sendScopedMessage = deps?.sendSessionMessageWithServerScope
                 ?? createServerScopedSessionSendMessage({
                     resolveContext: async () => context,
@@ -269,6 +270,9 @@ export function createFollowUpSpawnedSessionWithServerScope(deps?: Readonly<{
                 if (!result.ok) {
                     throw new Error(result.error || 'Failed to send message');
                 }
+            }
+            } finally {
+                if (context.scope === 'scoped') await context.release?.();
             }
         } catch (error) {
             throw attachRecoverableFollowUpPayload(error, recoverablePayload);

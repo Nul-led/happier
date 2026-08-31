@@ -1,11 +1,22 @@
-import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import {
+    normalizeAccountDirectoryEndpoint,
+    type AuthCredentials,
+} from '@/auth/storage/tokenStorage';
 import { HappyError } from '@/utils/errors/errors';
 import { backoff } from '@/utils/timing/time';
 import { serverFetch } from '@/sync/http/client';
 import { t } from '@/text';
 
-import type { AuthProvider } from '@/auth/providers/types';
-import type { AuthProviderId } from '@happier-dev/protocol';
+import type {
+    AccountDirectoryOAuthRequestContext,
+    AccountDirectoryOAuthStart,
+    AuthProvider,
+    ExternalAuthStartInput,
+} from '@/auth/providers/types';
+import {
+    ExternalOAuthParamsResponseSchema,
+    type AuthProviderId,
+} from '@happier-dev/protocol';
 
 const OAUTH_NOT_CONFIGURED_ERROR = 'oauth_not_configured';
 
@@ -19,6 +30,104 @@ export function createExternalOAuthProvider(params: {
 }): AuthProvider {
     const providerId = params.id.toString().trim().toLowerCase();
     const providerName = params.displayName;
+
+    async function getExternalAuthUrl(input: ExternalAuthStartInput): Promise<string>;
+    async function getExternalAuthUrl(
+        input: ExternalAuthStartInput,
+        context: AccountDirectoryOAuthRequestContext,
+    ): Promise<AccountDirectoryOAuthStart>;
+    async function getExternalAuthUrl(
+        input: ExternalAuthStartInput,
+        context?: AccountDirectoryOAuthRequestContext,
+    ): Promise<string | AccountDirectoryOAuthStart> {
+        const query =
+            input.mode === 'keyless'
+                ? (() => {
+                      const normalizedProofHash = String(input.proofHash ?? '').trim();
+                      if (!normalizedProofHash) throw new Error('external-auth-unavailable');
+                      return `mode=keyless&proofHash=${encodeURIComponent(normalizedProofHash)}`;
+                  })()
+                : (() => {
+                      if ('proofHash' in input) {
+                          const normalizedProofHash = String(input.proofHash ?? '').trim();
+                          if (!normalizedProofHash) throw new Error('external-auth-unavailable');
+                          const normalizedPublicKey =
+                              typeof input.publicKey === 'string' ? String(input.publicKey).trim() : '';
+                          const publicKeyPart = normalizedPublicKey
+                              ? `&publicKey=${encodeURIComponent(normalizedPublicKey)}`
+                              : '';
+                          return `proofHash=${encodeURIComponent(normalizedProofHash)}${publicKeyPart}`;
+                      }
+
+                      const normalizedPublicKey = String(input.publicKey ?? '').trim();
+                      if (!normalizedPublicKey) throw new Error('external-auth-unavailable');
+                      // Legacy Home auth omits mode=keyed. The explicit Account
+                      // Directory contract is versioned and requires the mode.
+                      return `${context ? 'mode=keyed&' : ''}publicKey=${encodeURIComponent(normalizedPublicKey)}`;
+                  })();
+        const restrictedContextQuery = context
+            ? [
+                `purpose=${encodeURIComponent(context.purpose)}`,
+                `endpointUrl=${encodeURIComponent(context.endpointUrl)}`,
+                `endpointServerIdentityId=${encodeURIComponent(context.endpointServerIdentityId)}`,
+            ].join('&')
+            : '';
+        const request = context?.request ?? serverFetch;
+        const response = await request(
+            `/v1/auth/external/${encodeURIComponent(providerId)}/params?${query}${restrictedContextQuery ? `&${restrictedContextQuery}` : ''}`,
+            undefined,
+            context
+                ? { includeAuth: false, retry: 'none' }
+                : { includeAuth: false },
+        );
+        if (!response.ok) {
+            if (response.status === 400) {
+                const error = await response.json().catch(() => null);
+                if (error?.error === OAUTH_NOT_CONFIGURED_ERROR) {
+                    throw new HappyError(`${providerName} OAuth is not configured on this server.`, false, {
+                        status: 400,
+                        kind: 'config',
+                    });
+                }
+            }
+            throw new Error('external-auth-unavailable');
+        }
+        const parsed = ExternalOAuthParamsResponseSchema.safeParse(
+            await response.json().catch(() => null),
+        );
+        if (!parsed.success) throw new Error('external-auth-unavailable');
+        if (!context) return parsed.data.url;
+        if (!('purpose' in parsed.data)) {
+            throw new Error('external-auth-unavailable');
+        }
+        const row = parsed.data;
+
+        const expectedEndpointUrl = normalizeAccountDirectoryEndpoint(context.endpointUrl);
+        const endpointUrl = normalizeAccountDirectoryEndpoint(row.endpointUrl);
+        const expectedIdentity = context.endpointServerIdentityId.trim();
+        const endpointServerIdentityId = row.endpointServerIdentityId.trim();
+        const expiresAt = Date.parse(row.expiresAt);
+        if (
+            row.purpose !== 'account_directory'
+            || row.credentialTarget !== 'account_directory'
+            || !expectedEndpointUrl
+            || endpointUrl !== expectedEndpointUrl
+            || !expectedIdentity
+            || endpointServerIdentityId !== expectedIdentity
+            || !Number.isFinite(expiresAt)
+            || expiresAt <= Date.now()
+        ) {
+            throw new Error('external-auth-unavailable');
+        }
+        return {
+            url: row.url,
+            purpose: 'account_directory',
+            credentialTarget: 'account_directory',
+            endpointUrl,
+            endpointServerIdentityId,
+            expiresAt,
+        };
+    }
 
     return Object.freeze({
         id: providerId,
@@ -35,55 +144,7 @@ export function createExternalOAuthProvider(params: {
                     body: t('connect.externalAuthVerifiedBody', { provider: providerName }),
                 };
             },
-        getExternalAuthUrl: async (input) => {
-            const query =
-                input.mode === 'keyless'
-                    ? (() => {
-                          const normalizedProofHash = String(input.proofHash ?? '').trim();
-                          if (!normalizedProofHash) throw new Error('external-auth-unavailable');
-                          return `mode=keyless&proofHash=${encodeURIComponent(normalizedProofHash)}`;
-                      })()
-                    : (() => {
-                          if ('proofHash' in input) {
-                              const normalizedProofHash = String(input.proofHash ?? '').trim();
-                              if (!normalizedProofHash) throw new Error('external-auth-unavailable');
-                              // Universal proofHash auth-start: allow keyed flows to bind the pending record even
-                              // when provisioning will ultimately require a key.
-                              const normalizedPublicKey =
-                                  typeof input.publicKey === 'string' ? String(input.publicKey).trim() : '';
-                              const publicKeyPart = normalizedPublicKey ? `&publicKey=${encodeURIComponent(normalizedPublicKey)}` : '';
-                              return `proofHash=${encodeURIComponent(normalizedProofHash)}${publicKeyPart}`;
-                          }
-
-                          const normalizedPublicKey = String(input.publicKey ?? '').trim();
-                          if (!normalizedPublicKey) throw new Error('external-auth-unavailable');
-                          // Backward compatibility: omit mode=keyed for older servers.
-                          return `publicKey=${encodeURIComponent(normalizedPublicKey)}`;
-                      })();
-
-            const response = await serverFetch(
-                `/v1/auth/external/${encodeURIComponent(providerId)}/params?${query}`,
-                undefined,
-                { includeAuth: false },
-            );
-            if (!response.ok) {
-                if (response.status === 400) {
-                    const error = await response.json().catch(() => null);
-                    if (error?.error === OAUTH_NOT_CONFIGURED_ERROR) {
-                        throw new HappyError(`${providerName} OAuth is not configured on this server.`, false, {
-                            status: 400,
-                            kind: 'config',
-                        });
-                    }
-                }
-                throw new Error('external-auth-unavailable');
-            }
-            const data = (await response.json()) as any;
-            if (!data?.url) {
-                throw new Error('external-auth-unavailable');
-            }
-            return String(data.url);
-        },
+        getExternalAuthUrl,
         getConnectUrl: async (credentials: AuthCredentials) => {
             return await backoff(async () => {
                 const response = await serverFetch(

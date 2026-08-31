@@ -41,6 +41,75 @@ describe('removeServerProfileUiAction', () => {
         localStorageHandle.restore();
     });
 
+    it('removes only the target profile and credential before best-effort push cleanup settles', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const localStorageHandle = installLocalStorageMock();
+        let releaseCleanup!: () => void;
+        const cleanupGate = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+        const fetchSpy = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+            if (init?.method === 'DELETE') await cleanupGate;
+            return Response.json({ success: true });
+        });
+        vi.stubGlobal('fetch', fetchSpy);
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const removedProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://removed.example.test',
+            name: 'Removed',
+        });
+        const retainedProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://retained.example.test',
+            name: 'Retained',
+        });
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        await TokenStorage.setCredentialsForServerUrl(
+            removedProfile.serverUrl,
+            { serverId: removedProfile.id },
+            { token: 'removed-token', secret: 'removed-secret' },
+        );
+        await TokenStorage.setCredentialsForServerUrl(
+            retainedProfile.serverUrl,
+            { serverId: retainedProfile.id },
+            { token: 'retained-token', secret: 'retained-secret' },
+        );
+        const { saveExpoPushTokenGeneration } = await import('@/sync/domains/state/pushTokenRegistration');
+        saveExpoPushTokenGeneration({
+            current: 'ExponentPushToken[current]',
+            cleanupPending: 'ExponentPushToken[last]',
+        });
+
+        const { removeServerProfileUiAction } = await import('./removeServerProfileUiAction');
+        const removal = removeServerProfileUiAction({
+            profileId: removedProfile.id,
+            serverUrl: removedProfile.serverUrl,
+        });
+        await vi.waitFor(() => expect(fetchSpy.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(true));
+
+        expect(profiles.getServerProfileById(removedProfile.id)).toBeNull();
+        expect(profiles.getServerProfileById(retainedProfile.id)).not.toBeNull();
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            removedProfile.serverUrl,
+            { serverId: removedProfile.id },
+        )).resolves.toBeNull();
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            retainedProfile.serverUrl,
+            { serverId: retainedProfile.id },
+        )).resolves.toMatchObject({ token: 'retained-token' });
+
+        releaseCleanup();
+        await removal;
+
+        const deleteCalls = fetchSpy.mock.calls.filter(([, init]) => init?.method === 'DELETE');
+        expect(deleteCalls).toHaveLength(2);
+        expect(new Set(deleteCalls.map(([url]) => String(url)))).toEqual(new Set([
+            'https://removed.example.test/v1/push-tokens/ExponentPushToken%5Bcurrent%5D',
+            'https://removed.example.test/v1/push-tokens/ExponentPushToken%5Blast%5D',
+        ]));
+        expect(new Headers(deleteCalls[0]?.[1]?.headers).get('Authorization')).toBe('Bearer removed-token');
+
+        localStorageHandle.restore();
+    });
+
     it('blocks marked nonactive server removal before credentials or the profile are mutated', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const localStorageHandle = installLocalStorageMock();

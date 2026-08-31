@@ -3,8 +3,10 @@ import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverSc
 
 import { downloadBulkJsonPayloadViaDirectExport } from '../plumbing/directTransferExportDownload';
 import { downloadBulkJsonPayloadViaServerRelay } from '../plumbing/downloadBulkJsonPayloadViaServerRelay';
+import { resolveBulkTransferJsonMaxBytes } from '../plumbing/resolveBulkTransferJsonMaxBytes';
 import { downloadBulkJsonPayloadViaMachineRpc } from './downloadBulkJsonPayloadViaMachineRpc';
 import { downloadJsonPayloadWithCarrierFallbacks } from './downloadJsonPayloadWithCarrierFallbacks';
+import type { AcquireMachineCarrierHttpLease, MachineCarrierTransferFlow } from '../plumbing/machineCarrierHttpLease';
 
 type JsonDownloadInitSuccess = Readonly<{
     success: true;
@@ -42,6 +44,11 @@ type MachineJsonCarrierDownloadParams<TPayload, TPayloadWithRecipient extends ob
     finalizeMethod: string;
     abortMethod: string;
     parsePayload: (value: unknown) => TPayload | null;
+    signal?: AbortSignal | null;
+    machineCarrierRequired?: boolean;
+    machineCarrierOperationId?: string;
+    machineCarrierFlow?: MachineCarrierTransferFlow;
+    acquireMachineCarrierHttpLease?: AcquireMachineCarrierHttpLease | null;
 }>;
 
 async function callScopedMachineDownloadRpc<TResponse extends { success: boolean }, TPayload>(params: Readonly<{
@@ -74,12 +81,14 @@ export async function downloadJsonPayloadViaMachineTransferCarriers<
     }>,
 ) {
     return await downloadJsonPayloadWithCarrierFallbacks({
-        downloadViaDirectExport: async () => await downloadBulkJsonPayloadViaDirectExport({
+        downloadViaDirectExport: async (httpOriginOverride) => await downloadBulkJsonPayloadViaDirectExport({
             machineId: params.machineId,
             serverId: params.serverId,
             timeoutMs: params.timeoutMs,
             request: params.directExportRequest,
             parsePayload: params.parsePayload,
+            signal: params.signal ?? null,
+            httpOriginOverride: httpOriginOverride ?? null,
         }),
         downloadViaServerRelay: async () => await downloadBulkJsonPayloadViaServerRelay<TPayload>({
             machineId: params.machineId,
@@ -146,5 +155,12 @@ export async function downloadJsonPayloadViaMachineTransferCarriers<
             }),
             parsePayload: params.parsePayload,
         }),
+        machineCarrierRequired: params.machineCarrierRequired,
+        machineCarrierOperationId: params.machineCarrierOperationId,
+        machineId: params.machineId,
+        machineCarrierFlow: params.machineCarrierFlow,
+        machineCarrierMaxBytes: resolveBulkTransferJsonMaxBytes(null),
+        signal: params.signal ?? null,
+        acquireMachineCarrierHttpLease: params.acquireMachineCarrierHttpLease ?? null,
     });
 }

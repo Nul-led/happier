@@ -210,6 +210,8 @@ export function hasAgentInputCollapsedOptionsPopoverContent(
 
 export type AgentInputExtraActionChip = Readonly<{
     key: string;
+    /** Data revision for render/popover closures retained by presentation owners. */
+    stabilityKey?: string | number | boolean | null;
     controlId?: AgentInputControlId;
     /**
      * Determines whether the label should be shown in auto chip density mode.

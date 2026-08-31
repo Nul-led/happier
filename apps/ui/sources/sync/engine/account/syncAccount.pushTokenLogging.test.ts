@@ -36,8 +36,18 @@ vi.mock('@/sync/api/session/apiPush', () => ({
     deletePushToken: mocks.deletePushToken,
 }));
 
+// The canonical registration path reads each Home's notification settings through an
+// explicit Home-targeted request. Resolve it as an offline Home (no settings payload)
+// so per-Home consent falls back to the last-known/product-default semantics.
+vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
+    runtimeFetchWithServerReachability: vi.fn(async () => Response.json({ success: true })),
+}));
+
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     listServerProfiles: mocks.listServerProfiles,
+    areServerProfileIdentifiersEquivalent: (left: unknown, right: unknown) => String(left ?? '') === String(right ?? ''),
+    resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) =>
+        profile.serverIdentityId ?? profile.id,
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
@@ -100,7 +110,7 @@ afterEach(() => {
 describe('registerPushTokenIfAvailable logging', () => {
     it('does not log the raw push token', async () => {
         await arrangeNotifications();
-        mocks.listServerProfiles.mockReturnValue([{ serverUrl: 'https://active.example.test' }]);
+        mocks.listServerProfiles.mockReturnValue([{ id: 'active', serverUrl: 'https://active.example.test' }]);
         const { messages, log } = collectLogs();
         const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
@@ -116,8 +126,8 @@ describe('registerPushTokenIfAvailable logging', () => {
     it('continues registration for remaining profiles when the first profile fails', async () => {
         await arrangeNotifications();
         mocks.listServerProfiles.mockReturnValue([
-            { serverUrl: 'https://s1.example.test' },
-            { serverUrl: 'https://s2.example.test' },
+            { id: 's1', serverUrl: 'https://s1.example.test' },
+            { id: 's2', serverUrl: 'https://s2.example.test' },
         ]);
         mocks.getActiveServerSnapshot.mockReturnValue({
             serverId: 's2',
@@ -150,11 +160,11 @@ describe('registerPushTokenIfAvailable logging', () => {
         expect(messages.join('\n')).not.toContain(secretPushToken);
     });
 
-    it('falls back to active-server credentials when the active profile registration fails', async () => {
+    it('does not retry an enumerated active Home when its registration fails', async () => {
         await arrangeNotifications();
         mocks.listServerProfiles.mockReturnValue([
-            { serverUrl: 'https://s1.example.test' },
-            { serverUrl: 'https://s2.example.test' },
+            { id: 's1', serverUrl: 'https://s1.example.test' },
+            { id: 's2', serverUrl: 'https://s2.example.test' },
         ]);
         mocks.getActiveServerSnapshot.mockReturnValue({
             serverId: 's2',
@@ -164,8 +174,7 @@ describe('registerPushTokenIfAvailable logging', () => {
         });
         mocks.registerPushToken
             .mockResolvedValueOnce({ ok: true })
-            .mockRejectedValueOnce(new Error('active profile failed'))
-            .mockResolvedValueOnce({ ok: true });
+            .mockRejectedValueOnce(new Error('active profile failed'));
         const { messages, log } = collectLogs();
         const { registerPushTokenIfAvailable } = await import('./syncAccount');
 
@@ -174,7 +183,7 @@ describe('registerPushTokenIfAvailable logging', () => {
             log,
         });
 
-        expect(mocks.registerPushToken).toHaveBeenCalledTimes(3);
+        expect(mocks.registerPushToken).toHaveBeenCalledTimes(2);
         expect(mocks.registerPushToken.mock.calls[0]?.[2]).toMatchObject({
             apiEndpoint: 'https://s1.example.test',
             clientServerUrl: 'https://s1.example.test',
@@ -183,18 +192,13 @@ describe('registerPushTokenIfAvailable logging', () => {
             apiEndpoint: 'https://s2.example.test',
             clientServerUrl: 'https://s2.example.test',
         });
-        expect(mocks.registerPushToken.mock.calls[2]?.[0]).toEqual({
-            token: 'active-server-token',
-            secret: 'active-server-secret',
-        });
-        expect(mocks.registerPushToken.mock.calls[2]?.[2]).toMatchObject({ clientServerUrl: 'https://s2.example.test' });
         expect(messages.join('\n')).toContain('Push token registered successfully');
         expect(messages.join('\n')).not.toContain(secretPushToken);
     });
 
     it('registers active-server credentials when active server is missing from profiles', async () => {
         await arrangeNotifications();
-        mocks.listServerProfiles.mockReturnValue([{ serverUrl: 'https://profile.example.test' }]);
+        mocks.listServerProfiles.mockReturnValue([{ id: 'profile', serverUrl: 'https://profile.example.test' }]);
         mocks.getActiveServerSnapshot.mockReturnValue({
             serverId: 'active',
             serverUrl: 'https://active.example.test',
@@ -214,8 +218,9 @@ describe('registerPushTokenIfAvailable logging', () => {
             log,
         });
 
-        // One for the profile registration pass, one for best-effort token rotation cleanup.
-        expect(mocks.getCredentialsForServerUrl).toHaveBeenCalledTimes(2);
+        // Credential resolution is one decision per enumerated Home; rotation
+        // reuses that exact decision instead of reading a second possibly changed value.
+        expect(mocks.getCredentialsForServerUrl).toHaveBeenCalledTimes(1);
         expect(mocks.registerPushToken).toHaveBeenCalledTimes(2);
         expect(mocks.registerPushToken.mock.calls[0]?.[2]).toMatchObject({
             apiEndpoint: 'https://profile.example.test',
@@ -228,7 +233,7 @@ describe('registerPushTokenIfAvailable logging', () => {
         expect(mocks.deletePushToken).toHaveBeenCalledWith(
             { token: 'active-server-token', secret: 'active-server-secret' },
             'ExponentPushToken[old-token]',
-            { apiEndpoint: 'https://active.example.test' },
+            { apiEndpoint: 'https://active.example.test', runtimeOrigin: 'https://active.example.test' },
         );
         expect(messages.join('\n')).toContain('Push token registered successfully');
         expect(messages.join('\n')).not.toContain(secretPushToken);
@@ -237,8 +242,8 @@ describe('registerPushTokenIfAvailable logging', () => {
     it('logs an overall failure when all profile attempts and fallback fail', async () => {
         await arrangeNotifications();
         mocks.listServerProfiles.mockReturnValue([
-            { serverUrl: 'https://s1.example.test' },
-            { serverUrl: 'https://s2.example.test' },
+            { id: 's1', serverUrl: 'https://s1.example.test' },
+            { id: 's2', serverUrl: 'https://s2.example.test' },
         ]);
         mocks.getActiveServerSnapshot.mockReturnValue({
             serverId: 's2',
@@ -258,7 +263,7 @@ describe('registerPushTokenIfAvailable logging', () => {
             log,
         });
 
-        expect(mocks.registerPushToken).toHaveBeenCalledTimes(3);
+        expect(mocks.registerPushToken).toHaveBeenCalledTimes(2);
         expect(messages.join('\n')).toContain('Failed to register push token for https://s1.example.test');
         expect(messages.join('\n')).toContain('Failed to register push token for https://s2.example.test');
         expect(messages.join('\n')).toContain('Failed to register push token:');

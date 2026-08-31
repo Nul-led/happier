@@ -23,10 +23,11 @@ describe('parseTerminalConnectUrl', () => {
 
     it('parses complete authenticated-pairing context', () => {
         expect(parseTerminalConnectUrl(
-            'happier://terminal?key=abc&pairingSecret=secret&createdAt=1000&expiresAt=61000&supportsTokenOnly=1',
+            'happier://terminal?key=abc&pairingSecret=secret&createdAt=1000&expiresAt=61000&serverIdentityId=srv_home_expected&supportsTokenOnly=1',
         )).toEqual({
             publicKeyB64Url: 'abc',
             serverUrl: null,
+            serverIdentityId: 'srv_home_expected',
             pairing: {
                 secretB64Url: 'secret',
                 createdAtMs: 1000,
@@ -36,17 +37,20 @@ describe('parseTerminalConnectUrl', () => {
         });
     });
 
-    it('ignores incomplete or invalid authenticated-pairing context for compatibility', () => {
-        expect(parseTerminalConnectUrl('happier://terminal?key=abc&pairingSecret=secret')).toEqual({
-            publicKeyB64Url: 'abc',
-            serverUrl: null,
-        });
+    it('rejects incomplete authenticated-pairing context', () => {
+        expect(parseTerminalConnectUrl('happier://terminal?key=abc&pairingSecret=secret')).toBeNull();
         expect(parseTerminalConnectUrl(
             'happier://terminal?key=abc&pairingSecret=secret&createdAt=61000&expiresAt=1000',
-        )).toEqual({
-            publicKeyB64Url: 'abc',
-            serverUrl: null,
-        });
+        )).toBeNull();
+    });
+
+    it('rejects authenticated pairing with missing or malformed Home identity', () => {
+        expect(parseTerminalConnectUrl(
+            'happier://terminal?key=abc&pairingSecret=secret&createdAt=1000&expiresAt=61000',
+        )).toBeNull();
+        expect(parseTerminalConnectUrl(
+            'happier://terminal?key=abc&pairingSecret=secret&createdAt=1000&expiresAt=61000&serverIdentityId=bad%20identity',
+        )).toBeNull();
     });
 
     it('parses terminal connect web URLs with hash parameters', () => {
@@ -110,9 +114,10 @@ describe('buildTerminalConnectDeepLink', () => {
                 createdAtMs: 1000,
                 expiresAtMs: 61000,
             },
+            serverIdentityId: 'srv_home_expected',
             supportsTokenOnly: true,
         })).toBe(
-            'happier://terminal?key=abc&pairingSecret=secret&createdAt=1000&expiresAt=61000&supportsTokenOnly=1',
+            'happier://terminal?key=abc&pairingSecret=secret&createdAt=1000&expiresAt=61000&serverIdentityId=srv_home_expected&supportsTokenOnly=1',
         );
     });
 
@@ -124,10 +129,7 @@ describe('buildTerminalConnectDeepLink', () => {
         })).toBe('happier://terminal?abc');
         expect(parseTerminalConnectUrl(
             'happier://terminal?key=abc&supportsTokenOnly=1',
-        )).toEqual({
-            publicKeyB64Url: 'abc',
-            serverUrl: null,
-        });
+        )).toBeNull();
     });
 
     it('falls back to legacy format when server URL is missing', () => {

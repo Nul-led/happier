@@ -4,7 +4,7 @@ import { useUnistyles } from 'react-native-unistyles';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Switch } from '@/components/ui/forms/Switch';
-import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
+import { resolveServerProfileScopeId, type ServerProfile } from '@/sync/domains/server/serverProfiles';
 import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
@@ -48,9 +48,10 @@ export function ServerGroupsSection(props: ServerGroupsSectionProps) {
                 showChevron={false}
                 onPress={props.onToggleGroupPresentation}
             />
-            {props.groupSelectionEnabled && !props.activeServerGroupId
+            {props.groupSelectionEnabled && props.activeServerGroupId
                 ? props.servers.map((profile) => {
-                    const selected = props.selectedGroupServerIds.has(profile.id);
+                    const scopeId = resolveServerProfileScopeId(profile);
+                    const selected = props.selectedGroupServerIds.has(scopeId);
                     return (
                         <Item
                             key={`multi-server-${profile.id}`}
@@ -65,7 +66,7 @@ export function ServerGroupsSection(props: ServerGroupsSectionProps) {
                                 />
                             )}
                             showChevron={false}
-                            onPress={() => props.onToggleGroupServer(profile.id)}
+                            onPress={() => props.onToggleGroupServer(scopeId)}
                         />
                     );
                 })

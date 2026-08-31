@@ -245,12 +245,12 @@ export type PluginAccountAvailabilityCollectionContractAdmission =
 
 /**
  * An opaque current-release fact for renderer admission. It answers only
- * whether direct Account Collection reads/watch have at least one exact,
- * enabled release contract to target; callers never receive a contract list
- * or mutation grant from this method. Exact contract selection and CAS remain
- * with the Data owner.
+ * whether the enabled release admits direct Account Data through an exact
+ * Collection contract or required Account-KV access; callers receive neither
+ * declarations nor mutation authority. Exact contract selection and CAS
+ * remain with the Data owner.
  */
-export type PluginAccountAvailabilityCollectionCapabilityAdmission =
+export type PluginAccountAvailabilityDataCapabilityAdmission =
     | Readonly<{
         kind: 'available';
         availabilityCursor: number;
@@ -262,7 +262,27 @@ export type PluginAccountAvailabilityCollectionCapabilityAdmission =
             | 'account_availability_scope_mismatch'
             | 'artifact_not_current'
             | 'artifact_slot_ambiguous'
-            | 'collection_not_current';
+            | 'account_data_not_current';
+    }>;
+
+/**
+ * Exact current-release admission for the Account KV operation surface.
+ * Collection contracts intentionally do not satisfy this capability: KV
+ * requires the release's explicit required `storage.account` declaration.
+ */
+export type PluginAccountAvailabilityAccountKvAdmission =
+    | Readonly<{
+        kind: 'available';
+        availabilityCursor: number;
+    }>
+    | Readonly<{
+        kind: 'unavailable';
+        code:
+            | 'account_availability_not_loaded'
+            | 'account_availability_scope_mismatch'
+            | 'artifact_not_current'
+            | 'artifact_slot_ambiguous'
+            | 'account_kv_not_current';
     }>;
 
 /**
@@ -345,13 +365,20 @@ export type PluginAccountAvailabilityReader = Readonly<{
         collectionId: string;
     }>) => PluginAccountAvailabilityCollectionContractAdmission;
     /**
-     * Current enabled-release capability for direct Account Collection UI.
-     * This is intentionally an opaque presence fact, not a reconstructed
-     * contract inventory or a mutation authorization.
+     * Current enabled-release capability for direct Account Data UI. This is
+     * intentionally an opaque presence fact, not a reconstructed declaration,
+     * contract inventory, or mutation authorization.
      */
-    readCurrentCollectionCapability: (input: Readonly<{
+    readCurrentAccountDataCapability: (input: Readonly<{
         pluginId: string;
-    }>) => PluginAccountAvailabilityCollectionCapabilityAdmission;
+    }>) => PluginAccountAvailabilityDataCapabilityAdmission;
+    /**
+     * Current enabled-release admission for Account KV operations. This is
+     * re-read for every operation and conveys no Collection authority.
+     */
+    readCurrentAccountKvCapability: (input: Readonly<{
+        pluginId: string;
+    }>) => PluginAccountAvailabilityAccountKvAdmission;
     /**
      * Reads the current normalized release declaration for Account-only
      * Settings recovery. Activation remains a separate daemon concern.
@@ -965,17 +992,46 @@ function readCurrentCollectionContractAdmission(
     });
 }
 
-function readCurrentCollectionCapabilityAdmission(
+function releaseRequiresAccountKv(manifest: PluginPortableReleaseManifestV1): boolean {
+    return manifest.hostAccess.required.some(
+        (request) => request.capability === 'storage.account',
+    );
+}
+
+function readCurrentAccountDataCapabilityAdmission(
     state: AvailabilityProjectionState | null,
     scope: ServerAccountScope,
     input: Readonly<{ pluginId: string }>,
-): PluginAccountAvailabilityCollectionCapabilityAdmission {
+): PluginAccountAvailabilityDataCapabilityAdmission {
     const current = readCurrentReleaseAdmission(state, scope, input.pluginId);
     if (current.kind !== 'available') {
         return Object.freeze({ kind: 'unavailable', code: current.code });
     }
-    if (!current.intent.enabled || current.release.collectionContracts.length === 0) {
-        return Object.freeze({ kind: 'unavailable', code: 'collection_not_current' });
+    const accountKvDeclared = releaseRequiresAccountKv(current.release.normalizedManifest);
+    if (
+        !current.intent.enabled
+        || (current.release.collectionContracts.length === 0 && !accountKvDeclared)
+    ) {
+        return Object.freeze({ kind: 'unavailable', code: 'account_data_not_current' });
+    }
+    return Object.freeze({
+        kind: 'available',
+        availabilityCursor: current.availabilityCursor,
+    });
+}
+
+function readCurrentAccountKvCapabilityAdmission(
+    state: AvailabilityProjectionState | null,
+    scope: ServerAccountScope,
+    input: Readonly<{ pluginId: string }>,
+): PluginAccountAvailabilityAccountKvAdmission {
+    const current = readCurrentReleaseAdmission(state, scope, input.pluginId);
+    if (current.kind !== 'available') {
+        return Object.freeze({ kind: 'unavailable', code: current.code });
+    }
+    const accountKvDeclared = releaseRequiresAccountKv(current.release.normalizedManifest);
+    if (!current.intent.enabled || !accountKvDeclared) {
+        return Object.freeze({ kind: 'unavailable', code: 'account_kv_not_current' });
     }
     return Object.freeze({
         kind: 'available',
@@ -1025,7 +1081,12 @@ function createBoundReader(input: Readonly<{
             input.scope,
             collection,
         ),
-        readCurrentCollectionCapability: (plugin) => readCurrentCollectionCapabilityAdmission(
+        readCurrentAccountDataCapability: (plugin) => readCurrentAccountDataCapabilityAdmission(
+            input.readState(),
+            input.scope,
+            plugin,
+        ),
+        readCurrentAccountKvCapability: (plugin) => readCurrentAccountKvCapabilityAdmission(
             input.readState(),
             input.scope,
             plugin,
