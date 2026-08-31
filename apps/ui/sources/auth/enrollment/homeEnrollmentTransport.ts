@@ -1,4 +1,7 @@
-import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+import {
+    HomeApplicationOriginV1Schema,
+    type HomeConnectionDescriptorV1,
+} from '@happier-dev/protocol';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { createServerFetchAtEndpoint, type ServerFetch } from '@/sync/http/client';
 import { acquireIrohHomeRuntimeOrigin } from '@/sync/runtime/nativeIrohTunnels/runtime';
@@ -33,25 +36,11 @@ export type HomeEnrollmentTransportResolution =
         reason: HomeEnrollmentTransportFailureReason;
     }>;
 
-function isLoopbackHostname(hostname: string): boolean {
-    const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
-    return normalized === 'localhost'
-        || normalized === '127.0.0.1'
-        || normalized === '::1'
-        || normalized.endsWith('.localhost');
-}
-
 function approvedApplicationOrigin(rawUrl: string): string | null {
-    try {
-        const parsed = new URL(rawUrl);
-        if (parsed.username || parsed.password || parsed.search || parsed.hash) return null;
-        if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname))) {
-            return null;
-        }
-        return parsed.toString().replace(/\/+$/, '');
-    } catch {
-        return null;
-    }
+    const parsed = HomeApplicationOriginV1Schema.safeParse(rawUrl);
+    return parsed.success
+        ? new URL(parsed.data).toString().replace(/\/+$/, '')
+        : null;
 }
 
 /**

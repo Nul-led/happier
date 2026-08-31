@@ -89,15 +89,6 @@ export async function enrollPreferredDirectoryHome(
             clientSecretKey: keyPair.privateKey,
             assertion,
         });
-        if (result.kind === 'transient') {
-            // This production boundary retains only Home approval continuations.
-            // Release a transient carrier before projecting it to the existing
-            // retryable failure outcome used by settings and OAuth callers.
-            await result.cancel();
-            const failed = { kind: 'failed' } as const;
-            publishPending(failed);
-            return failed;
-        }
         publishPending(result);
         return result;
     } catch (error) {

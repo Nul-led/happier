@@ -10,6 +10,7 @@ import {
     type HomeDeviceApprovalTarget,
 } from '@/auth/approval/homeDeviceApprovalClient';
 import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
+import { ENROLLMENT_POLL_IDLE_DELAY_MS } from '@/auth/enrollment/enrollmentPollingBackoff';
 import {
     formatEnrollmentExpiry,
     formatHomeEnrollmentTargetLabel,
@@ -31,6 +32,7 @@ import {
 } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
 import type { HomeLoginContinuationResult } from '@/sync/ops/accountDirectory/homeLoginApproval';
 import { t } from '@/text';
+import { startRuntimeActiveGatedInterval } from '@/utils/runtime/isRuntimeActive';
 
 type PendingApproval = Readonly<{
     home: ServerProfile;
@@ -46,6 +48,15 @@ type StatusAnnouncement = Readonly<{
     revision: number;
     text: string;
 }>;
+
+type ApprovalLoadMode = 'interactive' | 'poll';
+
+function approvalSnapshotKey(items: readonly PendingApproval[]): string {
+    return items
+        .map(({ home, approval }) => `${home.id}:${approval.approvalId}`)
+        .sort()
+        .join('|');
+}
 
 function HomeApprovalAccessibilityStatus({ announcement }: Readonly<{
     announcement: StatusAnnouncement;
@@ -87,7 +98,7 @@ function pendingEnrollmentResultAnnouncement(
     result: HomeLoginContinuationResult | null | void,
 ): string {
     const prefix = `${homeName}. `;
-    if (!result || result.kind === 'failed' || result.kind === 'transport_unavailable' || result.kind === 'transient') {
+    if (!result || result.kind === 'failed' || result.kind === 'transport_unavailable') {
         return `${prefix}${t('errors.operationFailed')}. ${t('common.retry')}`;
     }
     if (result.kind === 'enrolled') return `${prefix}${t('connect.homeAddedPreservedFocusBody')}`;
@@ -143,38 +154,69 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
         revision: 0,
         text: t('common.loading'),
     });
+    const mountedRef = React.useRef(false);
+    const approvalItemsRef = React.useRef<readonly PendingApproval[]>([]);
+    const approvalSnapshotKeyRef = React.useRef<string | null>(null);
+    const approvalRefreshInFlightRef = React.useRef(false);
+    const automaticPollInFlightRef = React.useRef(false);
     const pendingEnrollment = React.useSyncExternalStore(
         subscribePendingPreferredHomeEnrollment,
         getPendingPreferredHomeEnrollment,
         getPendingPreferredHomeEnrollment,
     );
     const publishAnnouncement = React.useCallback((text: string) => {
+        if (!mountedRef.current) return;
         setAnnouncement((current) => ({ revision: current.revision + 1, text }));
     }, []);
 
-    const load = React.useCallback(async () => {
-        setState((current) => ({ kind: 'loading', items: current.items }));
-        const results = await Promise.all(homes.map(async (home) => ({
-            home,
-            result: await withHomeApprovalTarget(
+    const load = React.useCallback(async (mode: ApprovalLoadMode = 'interactive') => {
+        if (approvalRefreshInFlightRef.current) return;
+        approvalRefreshInFlightRef.current = true;
+        if (mode === 'interactive' && mountedRef.current) {
+            setState((current) => ({ kind: 'loading', items: current.items }));
+        }
+        try {
+            const results = await Promise.all(homes.map(async (home) => ({
                 home,
-                { ok: false, reason: 'request_failed', status: 0 } as const,
-                listHomeDeviceApprovals,
-            ),
-        })));
-        const failed = results.some(({ result }) => !result.ok && result.reason !== 'unauthorized');
-        const items = results.flatMap(({ home, result }) => result.ok
-            ? result.items.map((approval) => ({ home, approval }))
-            : []);
-        setState({ kind: failed ? 'error' : 'ready', items });
-        publishAnnouncement(
-            failed
-                ? t('approvals.loadError')
-                : items.length === 0
-                    ? t('inbox.emptyDescription')
-                    : `${t('approvals.title')}: ${items.map(({ home }) => home.name).join(', ')}`,
-        );
+                result: await withHomeApprovalTarget(
+                    home,
+                    { ok: false, reason: 'request_failed', status: 0 } as const,
+                    listHomeDeviceApprovals,
+                ),
+            })));
+            if (!mountedRef.current) return;
+
+            const failed = results.some(({ result }) => !result.ok && result.reason !== 'unauthorized');
+            if (failed && mode === 'poll') return;
+
+            const items = results.flatMap(({ home, result }) => result.ok
+                ? result.items.map((approval) => ({ home, approval }))
+                : []);
+            const nextSnapshotKey = approvalSnapshotKey(items);
+            const changed = nextSnapshotKey !== approvalSnapshotKeyRef.current;
+            if (mode === 'poll' && !changed) return;
+
+            approvalItemsRef.current = items;
+            approvalSnapshotKeyRef.current = nextSnapshotKey;
+            setState({ kind: failed ? 'error' : 'ready', items });
+            publishAnnouncement(
+                failed
+                    ? t('approvals.loadError')
+                    : items.length === 0
+                        ? t('inbox.emptyDescription')
+                        : `${t('approvals.title')}: ${items.map(({ home }) => home.name).join(', ')}`,
+            );
+        } finally {
+            approvalRefreshInFlightRef.current = false;
+        }
     }, [homes, publishAnnouncement]);
+
+    React.useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+        };
+    }, []);
 
     React.useEffect(() => {
         void load();
@@ -201,13 +243,13 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
             return;
         }
         setDecisionErrorKeys((current) => current.filter((candidate) => candidate !== key));
-        setState((current) => ({
-            kind: 'ready',
-            items: current.items.filter((candidate) => (
-                candidate.approval.approvalId !== item.approval.approvalId
-                || candidate.home.id !== item.home.id
-            )),
-        }));
+        const remainingItems = approvalItemsRef.current.filter((candidate) => (
+            candidate.approval.approvalId !== item.approval.approvalId
+            || candidate.home.id !== item.home.id
+        ));
+        approvalItemsRef.current = remainingItems;
+        approvalSnapshotKeyRef.current = approvalSnapshotKey(remainingItems);
+        setState({ kind: 'ready', items: remainingItems });
         publishAnnouncement(`${t(`approvals.status.${decision === 'approve' ? 'approved' : 'rejected'}`)}: ${item.home.name}`);
     }, [load, publishAnnouncement]);
 
@@ -250,6 +292,29 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
         ? formatEnrollmentExpiry(pendingEnrollment.expiresAtMs)
         : '';
     const pendingEnrollmentBusy = busyKeys.includes('pending-enrollment');
+
+    const poll = React.useCallback(async () => {
+        if (automaticPollInFlightRef.current) return;
+        automaticPollInFlightRef.current = true;
+        try {
+            await load('poll');
+            if (!pendingEnrollment) return;
+            const result = await resumePendingPreferredHomeEnrollment();
+            if (!mountedRef.current || !result || result.kind === 'approval_required') return;
+            publishAnnouncement(pendingEnrollmentResultAnnouncement(pendingEnrollmentName, result));
+        } catch {
+            // The visible pending card and manual Retry remain available. The next
+            // active-screen cadence tick may retry through the same continuation owner.
+        } finally {
+            automaticPollInFlightRef.current = false;
+        }
+    }, [load, pendingEnrollment, pendingEnrollmentName, publishAnnouncement]);
+
+    React.useEffect(() => startRuntimeActiveGatedInterval(
+        () => void poll(),
+        ENROLLMENT_POLL_IDLE_DELAY_MS,
+    ), [poll]);
+
     const pendingEnrollmentGroup = pendingEnrollment ? (
         <ItemGroup title={t('common.home')}>
             <Item

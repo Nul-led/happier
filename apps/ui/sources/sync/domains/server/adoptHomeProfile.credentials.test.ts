@@ -234,6 +234,40 @@ describe('adoptHomeProfileWithCredentials', () => {
         expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
     });
 
+    it('rolls back an exact credential write when the owning enrollment attempt is cancelled before profile adoption', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_cancelled_${Date.now()}_${Math.random()}`;
+        const profiles = await import('./serverProfiles');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        let cancelled = false;
+        const rollback = vi.fn(async () => true);
+        setCredentialsForServerUrlWithRollbackMock.mockImplementationOnce(async () => {
+            cancelled = true;
+            return {
+                serverUrl: 'https://home-b.test',
+                serverId: 'srv_home_b',
+                rollback,
+            };
+        });
+
+        await expect(adoptHomeProfileWithCredentials({
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_home_b',
+                canonicalServerUrl: 'https://home-b.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+            },
+            source: 'account-directory',
+            credentials: { token: 'must-roll-back' },
+            shouldCancel: () => cancelled,
+        })).rejects.toThrow('Home credential adoption cancelled');
+
+        expect(rollback).toHaveBeenCalledOnce();
+        expect(profiles.listServerProfiles()).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ serverIdentityId: 'srv_home_b' }),
+        ]));
+    });
+
     it('uses a nonempty Directory hint for a new profile and preserves an existing user label', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_suggested_name_${Date.now()}_${Math.random()}`;
         const profiles = await import('./serverProfiles');

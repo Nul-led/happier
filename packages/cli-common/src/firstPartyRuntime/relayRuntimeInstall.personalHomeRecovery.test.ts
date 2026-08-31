@@ -138,11 +138,17 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
         assertPersonalHomeStopped: async () => undefined,
         env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
         runServiceCommands: true,
+        skipHealthCheck: true,
         createPersonalHomeRestorePoint: (async (context: { happierVersion: string | null }) => {
           expect(context.happierVersion).toBe('0.2.0-installed');
           events.push('restore-point:create');
           return {
+            backup: {
+              path: join(homeDir, 'restore-point.tar'),
+              manifest: { homeServerIdentityId: 'home-expected' },
+            },
             restore: async () => events.push('restore-point:restore'),
+            finalize: async () => ({ outcome: 'none', removedPaths: [] }),
             dispose: async () => {
               const state = JSON.parse(await readFile(statePath, 'utf8')) as { version?: string };
               expect(state.version).toBe('0.3.0-test');
@@ -282,6 +288,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
         assertPersonalHomeStopped: async () => undefined,
         env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
         runServiceCommands: true,
+        skipHealthCheck: true,
         createPersonalHomeRestorePoint: async () => ({
           backup: { path: restorePointPath, manifest },
           restore: async () => {

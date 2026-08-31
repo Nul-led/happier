@@ -9,7 +9,7 @@ import {
     resolveServerProfileForPortableIdentity,
 } from '@/sync/domains/server/serverProfiles';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
-import { resolveDirectoryHomeTransport } from './resolveDirectoryHomeTransport';
+import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
 
 export type AuthenticatedHomeLinkProvisionResult =
     | Readonly<{ kind: 'linked'; homeServerIdentityId: string }>
@@ -70,12 +70,13 @@ export async function provisionAuthenticatedHomeLink(
     if (!credentials) {
         return { kind: 'unavailable', reason: 'home_credentials_unavailable' };
     }
-    const transport = await resolveDirectoryHomeTransport(descriptor, {
+    const resolvedTransport = await resolveHomeEnrollmentTransport(descriptor, {
         verification: { kind: 'authenticated', token: credentials.token },
     });
-    if (!transport.ok) {
+    if (!resolvedTransport.ok) {
         return { kind: 'unavailable', reason: 'home_transport_unavailable' };
     }
+    const transport = resolvedTransport.transport;
     try {
         const account = await input.session.readAccountSummary();
         await putHomeDirectoryLink(

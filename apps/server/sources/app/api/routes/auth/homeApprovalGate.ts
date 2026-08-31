@@ -19,7 +19,7 @@ export type HomeApprovalGate = {
         deviceLabel: string | null;
         approvalId?: string;
     }): Promise<
-        | { kind: "allowed" }
+        | { kind: "allowed"; approvedRequest?: { approvalId: string; bindingProof: string } }
         | { kind: "approval_required"; request: { approvalId: string; deviceLabel: string | null; expiresAtMs: number } }
         | { kind: "rejected" | "expired" | "already_decided" }
     >;
@@ -83,7 +83,13 @@ export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): Ho
                     recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "rejected" });
                     return { kind: "rejected" };
                 }
-                return { kind: "allowed" };
+                return {
+                    kind: "allowed",
+                    approvedRequest: {
+                        approvalId: row.id,
+                        bindingProof: input.approvalBindingProof,
+                    },
+                };
             }
 
             return inTx(async (tx) => {

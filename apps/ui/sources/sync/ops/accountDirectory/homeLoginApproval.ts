@@ -19,8 +19,10 @@ import {
 } from '@/auth/storage/tokenStorage';
 import { decodeBase64 } from '@/encryption/base64';
 import { decryptBox } from '@/encryption/libsodium';
-import { resolveDirectoryHomeTransport } from './resolveDirectoryHomeTransport';
-import type { HomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
+import {
+    resolveHomeEnrollmentTransport,
+    type HomeEnrollmentTransportFailureReason,
+} from '@/auth/enrollment/homeEnrollmentTransport';
 import { adoptHomeProfileWithCredentials } from '@/sync/domains/server/adoptHomeProfile';
 
 /**
@@ -37,11 +39,6 @@ export type HomeLoginContinuationResult =
         homeServerIdentityId: string;
         approvalId: string;
         expiresAtMs: number;
-        resume: () => Promise<HomeLoginContinuationResult>;
-        cancel: () => Promise<HomeLoginContinuationResult>;
-    }>
-    | Readonly<{
-        kind: 'transient';
         resume: () => Promise<HomeLoginContinuationResult>;
         cancel: () => Promise<HomeLoginContinuationResult>;
     }>
@@ -92,10 +89,50 @@ function terminalRedemptionError(error: unknown): HomeLoginContinuationResult | 
     return null;
 }
 
+type HomeLoginApprovalContinuation = Extract<
+    HomeLoginContinuationResult,
+    { kind: 'approval_required' }
+>;
+
+function presentTransportFailure(
+    reason: HomeEnrollmentTransportFailureReason,
+): Extract<HomeLoginContinuationResult, { kind: 'transport_unavailable' }> {
+    return {
+        kind: 'transport_unavailable',
+        reason: reason === 'iroh_transport_unavailable'
+            ? 'iroh_target_transport_unavailable'
+            : 'no_approved_endpoint',
+    };
+}
+
+function createApprovalContinuation(
+    input: Readonly<{
+        home: AccountDirectoryHomeEntryV1;
+        clientSecretKey: Uint8Array;
+        assertion: HomeLoginAssertionV1;
+        shouldCancel?: () => boolean;
+    }>,
+    approvalId: string,
+    expiresAtMs: number,
+): HomeLoginApprovalContinuation {
+    return {
+        kind: 'approval_required',
+        homeServerIdentityId: input.home.connectionDescriptor.homeServerIdentityId,
+        approvalId,
+        expiresAtMs,
+        resume: async () => await continueHomeLoginEnrollment({
+            ...input,
+            approvalId,
+            approvalExpiresAtMs: expiresAtMs,
+        }),
+        cancel: async () => ({ kind: 'cancelled' }),
+    };
+}
+
 /**
- * Attempt assertion enrollment once. Approval and transient results retain the exact
- * assertion/client key/approval id in a smallest explicit resume operation. Scheduling and
- * polling remain Lane 05 UI concerns rather than an Account Directory background loop.
+ * Attempt assertion enrollment once. Approval retains only assertion-bound state and reacquires
+ * transport for each explicit resume. Scheduling and polling remain Lane 05 UI concerns rather
+ * than an Account Directory background loop.
  */
 export async function continueHomeLoginEnrollment(input: Readonly<{
     home: AccountDirectoryHomeEntryV1;
@@ -104,91 +141,69 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
     approvalId?: string;
     approvalExpiresAtMs?: number;
     shouldCancel?: () => boolean;
-    /** A previously obtained redemption can be consumed without issuing it twice. */
-    initialRedemption?: HomeLoginRedemptionResultV1;
-    /** Retained only by approval/transient continuations; callers never resolve a second carrier. */
-    transport?: HomeEnrollmentTransport;
 }>): Promise<HomeLoginContinuationResult> {
     const descriptor = input.home.connectionDescriptor;
     const targetIdentity = descriptor.homeServerIdentityId;
-    const closeInputTransport = async <T extends HomeLoginContinuationResult>(result: T): Promise<T> => {
-        await input.transport?.close().catch(() => {});
-        return result;
-    };
-    if (input.assertion.audienceHomeServerIdentityId !== targetIdentity) return await closeInputTransport({ kind: 'failed' });
-    if (input.clientSecretKey.byteLength !== 32) return await closeInputTransport({ kind: 'failed' });
-    if (input.shouldCancel?.()) return await closeInputTransport({ kind: 'cancelled' });
+    if (input.assertion.audienceHomeServerIdentityId !== targetIdentity) return { kind: 'failed' };
+    if (input.clientSecretKey.byteLength !== 32) return { kind: 'failed' };
+    if (input.shouldCancel?.()) return { kind: 'cancelled' };
     if (input.approvalExpiresAtMs !== undefined && Date.now() >= input.approvalExpiresAtMs) {
-        return await closeInputTransport({ kind: 'expired' });
+        return { kind: 'expired' };
     }
-    let transport: HomeEnrollmentTransport;
-    if (input.transport) {
-        transport = input.transport;
-    } else {
-        const resolved = await resolveDirectoryHomeTransport(descriptor);
-        if (!resolved.ok) return { kind: 'transport_unavailable', reason: resolved.reason };
-        transport = resolved;
-    }
-    const terminal = async <T extends HomeLoginContinuationResult>(result: T): Promise<T> => {
-        await transport.close().catch(() => {});
-        return result;
-    };
-    const cancelled = async (): Promise<HomeLoginContinuationResult> => await terminal({ kind: 'cancelled' });
 
-    let redemption = input.initialRedemption;
-    if (!redemption) {
-        try {
-            redemption = await redeemHomeLoginAssertion(transport, input.assertion, {
-                ...(input.approvalId ? { approvalId: input.approvalId } : {}),
-            });
-        } catch (error) {
-            const terminalError = terminalRedemptionError(error);
-            if (terminalError) return await terminal(terminalError);
-            return {
-                kind: 'transient',
-                resume: async () => await continueHomeLoginEnrollment({
-                    ...input,
-                    transport,
-                    initialRedemption: undefined,
-                }),
-                cancel: cancelled,
-            };
+    const resolved = await resolveHomeEnrollmentTransport(descriptor);
+    if (!resolved.ok) {
+        if (
+            resolved.reason === 'iroh_transport_unavailable'
+            && input.approvalId
+            && input.approvalExpiresAtMs !== undefined
+        ) {
+            return createApprovalContinuation(input, input.approvalId, input.approvalExpiresAtMs);
         }
+        return presentTransportFailure(resolved.reason);
+    }
+
+    const transport = resolved.transport;
+    let redemption: HomeLoginRedemptionResultV1;
+    try {
+        redemption = await redeemHomeLoginAssertion(transport, input.assertion, {
+            ...(input.approvalId ? { approvalId: input.approvalId } : {}),
+        });
+    } catch (error) {
+        const terminalError = terminalRedemptionError(error);
+        if (terminalError) return terminalError;
+        if (input.approvalId && input.approvalExpiresAtMs !== undefined) {
+            return createApprovalContinuation(input, input.approvalId, input.approvalExpiresAtMs);
+        }
+        return { kind: 'failed' };
+    } finally {
+        await transport.close().catch(() => {});
     }
 
     if ('approvalId' in redemption) {
-        if (redemption.homeServerIdentityId !== targetIdentity) return await terminal({ kind: 'failed' });
+        if (redemption.homeServerIdentityId !== targetIdentity) return { kind: 'failed' };
         const resolvedApprovalId = input.approvalId ?? redemption.approvalId;
-        if (resolvedApprovalId !== redemption.approvalId) return await terminal({ kind: 'failed' });
-        if (redemption.expiresAtMs <= Date.now()) return await terminal({ kind: 'expired' });
-        return {
-            kind: 'approval_required',
-            homeServerIdentityId: targetIdentity,
-            approvalId: resolvedApprovalId,
-            expiresAtMs: redemption.expiresAtMs,
-            resume: async () => await continueHomeLoginEnrollment({
-                ...input,
-                transport,
-                approvalId: resolvedApprovalId,
-                approvalExpiresAtMs: redemption.expiresAtMs,
-                initialRedemption: undefined,
-            }),
-            cancel: cancelled,
-        };
+        if (resolvedApprovalId !== redemption.approvalId) return { kind: 'failed' };
+        const approvalExpiresAtMs = Math.min(
+            input.approvalExpiresAtMs ?? redemption.expiresAtMs,
+            redemption.expiresAtMs,
+        );
+        if (approvalExpiresAtMs <= Date.now()) return { kind: 'expired' };
+        return createApprovalContinuation(input, resolvedApprovalId, approvalExpiresAtMs);
     }
 
-    if (redemption.homeServerIdentityId !== targetIdentity) return await terminal({ kind: 'failed' });
+    if (redemption.homeServerIdentityId !== targetIdentity) return { kind: 'failed' };
     // The locked wire field names the redemption window, not the lifetime of
     // the durable Home credential carried inside the sealed envelope.
     const redemptionExpiresAtMs = redemption.expiresAtMs;
     if (redemptionExpiresAtMs <= redemption.issuedAtMs || redemptionExpiresAtMs <= Date.now()) {
-        return await terminal({ kind: 'failed' });
+        return { kind: 'failed' };
     }
     const credentials = decodeSealedHomeCredentials(
         redemption.sealedHomeTokenBase64Url,
         input.clientSecretKey,
     );
-    if (!credentials) return await terminal({ kind: 'failed' });
+    if (!credentials) return { kind: 'failed' };
 
     try {
         await adoptHomeProfileWithCredentials({
@@ -199,7 +214,7 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
             credentials,
         });
     } catch {
-        return await terminal({ kind: 'failed' });
+        return { kind: 'failed' };
     }
-    return await terminal({ kind: 'enrolled', homeServerIdentityId: targetIdentity });
+    return { kind: 'enrolled', homeServerIdentityId: targetIdentity };
 }

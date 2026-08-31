@@ -22,6 +22,7 @@ import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch'
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { encryptBox } from '@/encryption/libsodium';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { renderScreen } from '@/dev/testkit';
 import type { PreferredDirectoryHomeEnrollmentResult } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
 
 const accountDirectoryComposition = vi.hoisted(() => ({
@@ -990,52 +991,210 @@ describe('oauth/[provider] return (Account Directory)', () => {
         });
     });
 
-    it('routes an approval-required enrollment to the resumable Home settings surface', async () => {
+    it('runs the real callback and settings continuation through approval to non-focusing Home adoption', async () => {
+        accountDirectoryComposition.useRealOwners = true;
+        const credentialStoreSpy = vi.spyOn(TokenStorage, 'setCredentialsForServerUrlWithRollback');
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `oauth_directory_approval_${Date.now()}_${Math.random()}`;
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const enrollmentOwner = await import('@/sync/ops/accountDirectory/enrollPreferredDirectoryHome');
+        const focused = profiles.upsertServerProfile({
+            serverUrl: 'https://home-a.test',
+            name: 'Home A',
+            source: 'manual',
+        });
+        profiles.setActiveServerId(focused.id);
+        profiles.saveHomeViewState({
+            version: 1,
+            activeTargetKind: 'server',
+            activeTargetId: focused.id,
+            groups: [{ id: 'g', name: 'Homes', serverIds: [focused.id] }],
+        });
+        const activeBefore = profiles.getActiveServerSnapshot();
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
+        const directoryIdentity = 'srv_directory';
+        const homeIdentity = 'srv_home_b';
+        const homeUrl = 'https://home-b.test';
+        probeServerFeaturesAtUrlSpy.mockResolvedValue({
+            status: 'ready',
+            serverIdentityId: directoryIdentity,
+            features: { capabilities: { accountDirectory: supportedCapability } },
+        });
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
             purpose: 'account_directory',
             credentialTarget: 'account_directory',
             endpointUrl: endpoint,
-            endpointServerIdentityId: 'directory-1',
+            endpointServerIdentityId: directoryIdentity,
             pending: 'directory-pending',
             mode: 'keyless',
         });
         setPendingAccountDirectoryAuthState({
             endpoint,
-            serverIdentityId: 'directory-1',
+            serverIdentityId: directoryIdentity,
             provider: 'github',
             purpose: 'account_directory',
             pending: 'directory-pending',
             createdAt: now - 100,
-            expiresAt: now + 60_000,
+            expiresAt: now + 5 * 60_000,
             mode: 'keyless',
             proof: 'directory-proof',
+            returnTo: '/settings/account',
         });
-        enrollPreferredDirectoryHomeSpy.mockResolvedValueOnce({
-            kind: 'approval_required',
-            homeServerIdentityId: 'home-b',
-            approvalId: 'approval-1',
-            expiresAtMs: now + 60_000,
-            resume: vi.fn(),
-            cancel: vi.fn(),
+        accountDirectoryCredentialGetSpy.mockResolvedValue({ token: 'directory-token' });
+
+        let requestedBoxPublicKeyBase64: string | null = null;
+        let homeLoginCalls = 0;
+        const fetchMock = vi.fn(async (requestInput: RequestInfo | URL, requestInit?: RequestInit) => {
+            const url = requestInput instanceof Request ? requestInput.url : String(requestInput);
+            if (url.includes('/finalize-keyless')) {
+                return new Response(JSON.stringify({ token: 'directory-token' }), { status: 200 });
+            }
+            if (url.endsWith('/v1/account-directory/me')) {
+                return new Response(JSON.stringify({
+                    v: 1,
+                    accountId: 'account-1',
+                    displayName: null,
+                    avatar: null,
+                    linkedAuthenticationMethods: [],
+                }), { status: 200 });
+            }
+            if (url.endsWith('/v1/account-directory/homes')) {
+                return new Response(JSON.stringify({
+                    v: 1,
+                    homes: [{
+                        v: 1,
+                        homeServerIdentityId: homeIdentity,
+                        canonicalServerUrl: homeUrl,
+                        label: 'Home B',
+                        preferred: true,
+                        connectionDescriptor: {
+                            v: 1,
+                            homeServerIdentityId: homeIdentity,
+                            canonicalServerUrl: homeUrl,
+                            revision: 1,
+                            endpoints: [{ kind: 'https', url: homeUrl }],
+                        },
+                        createdAtMs: now,
+                        updatedAtMs: now,
+                    }],
+                    preferredHomeServerIdentityId: homeIdentity,
+                }), { status: 200 });
+            }
+            if (url.includes('/login-assertion')) {
+                const request = requestInput instanceof Request
+                    ? requestInput.clone()
+                    : new Request(requestInput, requestInit);
+                const body = await request.json() as { clientBoxPublicKeyBase64?: unknown };
+                if (typeof body.clientBoxPublicKeyBase64 !== 'string') {
+                    throw new Error('Missing client box public key');
+                }
+                requestedBoxPublicKeyBase64 = body.clientBoxPublicKeyBase64;
+                return new Response(JSON.stringify({
+                    v: 1,
+                    purpose: 'happier.home-login',
+                    issuerServerIdentityId: directoryIdentity,
+                    issuerSubjectId: 'account-1',
+                    audienceHomeServerIdentityId: homeIdentity,
+                    clientBoxPublicKeyBase64: requestedBoxPublicKeyBase64,
+                    issuedAtMs: now,
+                    expiresAtMs: now + 2 * 60_000,
+                    keyId: 'a'.repeat(64),
+                    signatureBase64Url: encodeBase64(new Uint8Array(64), 'base64url'),
+                }), { status: 200 });
+            }
+            if (url.endsWith('/v1/auth/home-login')) {
+                homeLoginCalls += 1;
+                if (homeLoginCalls === 1) {
+                    return new Response(JSON.stringify({
+                        v: 1,
+                        outcome: 'approval_required',
+                        homeServerIdentityId: homeIdentity,
+                        approvalId: 'approval-1',
+                        deviceLabel: null,
+                        expiresAtMs: now + 60_000,
+                    }), { status: 202 });
+                }
+                if (!requestedBoxPublicKeyBase64) {
+                    throw new Error('Home login was retried without the requester key');
+                }
+                const sealedHomeTokenBase64Url = encodeBase64(
+                    encryptBox(
+                        new TextEncoder().encode(JSON.stringify({ token: 'home-b-token' })),
+                        decodeBase64(requestedBoxPublicKeyBase64, 'base64'),
+                    ),
+                    'base64url',
+                );
+                return new Response(JSON.stringify({
+                    v: 1,
+                    homeServerIdentityId: homeIdentity,
+                    sealedHomeTokenBase64Url,
+                    issuedAtMs: now,
+                    expiresAtMs: now + 2 * 60_000,
+                }), { status: 200 });
+            }
+            throw new Error(`Unexpected request: ${url}`);
         });
-        setRuntimeFetch(vi.fn(async () => new Response(JSON.stringify({ token: 'directory-token' }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-        })) as unknown as typeof fetch);
+        setRuntimeFetch(fetchMock as unknown as typeof fetch);
 
         await runWithOAuthScreen(async () => {
-            await flushOAuthEffects(12);
+            await flushOAuthEffects(20);
             await vi.waitFor(() => {
-                expect(enrollPreferredDirectoryHomeSpy).toHaveBeenCalled();
+                expect(accountDirectoryComposition.enrollmentResult).toMatchObject({
+                    kind: 'approval_required',
+                    homeServerIdentityId: homeIdentity,
+                    approvalId: 'approval-1',
+                });
             });
-            expect(enrollPreferredDirectoryHomeSpy).toHaveBeenCalledWith(expect.anything());
             expect(replaceSpy).toHaveBeenCalledWith('/settings/server');
+            expect(enrollmentOwner.getPendingPreferredHomeEnrollment()).toMatchObject({
+                kind: 'approval_required',
+                homeServerIdentityId: homeIdentity,
+                approvalId: 'approval-1',
+            });
             expect(upsertAndActivateServerSpy).not.toHaveBeenCalled();
         });
+
+        const homeB = profiles.listServerProfiles().find((profile) => (
+            profile.serverIdentityId === homeIdentity
+        ));
+        expect(homeB).toBeTruthy();
+        const { HomeDeviceApprovalSection } = await import(
+            '@/components/settings/server/sections/HomeDeviceApprovalSection'
+        );
+        const settings = await renderScreen(<HomeDeviceApprovalSection homes={[homeB!]} />);
+        try {
+            await vi.waitFor(() => {
+                expect(settings.findByTestId('settings.server.homeEnrollment.pending.retry')).toBeTruthy();
+            });
+            const retry = settings.findByTestId('settings.server.homeEnrollment.pending.retry')!;
+            await act(async () => {
+                retry.props.onPress();
+            });
+            await vi.waitFor(() => {
+                expect(credentialStoreSpy).toHaveBeenCalledWith(
+                    homeUrl,
+                    { serverId: homeIdentity },
+                    { token: 'home-b-token' },
+                );
+            });
+
+            expect(homeLoginCalls).toBe(2);
+            expect(enrollmentOwner.getPendingPreferredHomeEnrollment()).toBeNull();
+            expect(profiles.getActiveServerSnapshot()).toMatchObject({
+                serverId: activeBefore.serverId,
+                serverUrl: activeBefore.serverUrl,
+            });
+            expect(profiles.loadHomeViewState()).toMatchObject({
+                activeTargetId: focused.id,
+                groups: [{ id: 'g', serverIds: [focused.id] }],
+            });
+            expect(loginWithCredentialsSpy).not.toHaveBeenCalled();
+            expect(upsertAndActivateServerSpy).not.toHaveBeenCalled();
+        } finally {
+            act(() => settings.tree.unmount());
+        }
     });
 
     it('uses the existing keyed finalizer when the server selects keyed provisioning for a new Account', async () => {

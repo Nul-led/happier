@@ -31,6 +31,7 @@ const loginWithKeyMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => (
 const probeServerFeaturesAtUrlMock = vi.hoisted(() => vi.fn());
 const clearPendingAccountDirectoryAuthMock = vi.hoisted(() => vi.fn(async () => true));
 const getCredentialsMock = vi.hoisted(() => vi.fn(async () => null as { token: string } | null));
+const credentialMutationListeners = vi.hoisted(() => new Set<() => void>());
 const provisionAuthenticatedHomeLinkMock = vi.hoisted(() => vi.fn(
     async (..._args: unknown[]): Promise<Record<string, unknown>> => ({ kind: 'linked', homeServerIdentityId: 'srv_home_a' }),
 ));
@@ -47,13 +48,34 @@ const session = vi.hoisted(() => ({
         refreshedAtMs: null as number | null,
         error: null as unknown,
     },
-    subscribe: vi.fn((_listener: (snapshot: unknown) => void) => () => {}),
+    listeners: new Set<(snapshot: unknown) => void>(),
+    subscribe: vi.fn((listener: (snapshot: unknown) => void) => {
+        session.listeners.add(listener);
+        return () => session.listeners.delete(listener);
+    }),
     logout: logoutMock,
     setPreferredHome: setPreferredHomeMock,
     deleteHome: deleteHomeMock,
     refresh: sessionRefreshMock,
 }));
 const createAccountDirectorySessionMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => session));
+const cancelPendingPreferredHomeEnrollmentMock = vi.hoisted(() => vi.fn(async () => {}));
+const pendingEnrollmentState = vi.hoisted(() => ({
+    value: null as null | Readonly<{
+        kind: 'approval_required';
+        homeServerIdentityId: string;
+        approvalId: string;
+        expiresAtMs: number;
+        resume: () => Promise<unknown>;
+        cancel: () => Promise<unknown>;
+    }>,
+    listeners: new Set<() => void>(),
+}));
+
+function publishSessionSnapshot(next: typeof session.snapshot): void {
+    session.snapshot = next;
+    for (const listener of session.listeners) listener(next);
+}
 
 vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
@@ -97,6 +119,10 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
         getCredentialsForServerUrl: getCredentialsMock,
         clearPendingAccountDirectoryAuth: clearPendingAccountDirectoryAuthMock,
     },
+    subscribeHomeCredentialMutations: (listener: () => void) => {
+        credentialMutationListeners.add(listener);
+        return () => credentialMutationListeners.delete(listener);
+    },
 }));
 
 vi.mock('@/sync/ops/accountDirectory/provisionAuthenticatedHomeLink', () => ({
@@ -112,7 +138,22 @@ vi.mock('@/sync/ops/accountDirectory/refreshAccountHomeDirectory', () => ({
 }));
 
 vi.mock('@/sync/ops/accountDirectory/enrollPreferredDirectoryHome', () => ({
-    enrollPreferredDirectoryHome: enrollMock,
+    enrollPreferredDirectoryHome: async (...args: unknown[]) => {
+        const result = await enrollMock(...args);
+        pendingEnrollmentState.value = result?.kind === 'approval_required' ? result : null;
+        for (const listener of pendingEnrollmentState.listeners) listener();
+        return result;
+    },
+    cancelPendingPreferredHomeEnrollment: async () => {
+        await cancelPendingPreferredHomeEnrollmentMock();
+        pendingEnrollmentState.value = null;
+        for (const listener of pendingEnrollmentState.listeners) listener();
+    },
+    getPendingPreferredHomeEnrollment: () => pendingEnrollmentState.value,
+    subscribePendingPreferredHomeEnrollment: (listener: () => void) => {
+        pendingEnrollmentState.listeners.add(listener);
+        return () => pendingEnrollmentState.listeners.delete(listener);
+    },
 }));
 
 const promptMock = vi.hoisted(() => vi.fn(async () => 'https://new-accounts.example.test'));
@@ -139,7 +180,12 @@ describe('AccountServiceSettingsSection', () => {
     beforeEach(() => {
         credentialGetMock.mockClear();
         refreshMock.mockClear();
-        enrollMock.mockClear();
+        enrollMock.mockReset();
+        enrollMock.mockResolvedValue({ kind: 'enrolled', homeServerIdentityId: 'home-b' });
+        cancelPendingPreferredHomeEnrollmentMock.mockClear();
+        pendingEnrollmentState.value = null;
+        pendingEnrollmentState.listeners.clear();
+        credentialMutationListeners.clear();
         logoutMock.mockClear();
         createAccountDirectorySessionMock.mockClear();
         startOAuthMock.mockClear();
@@ -204,6 +250,8 @@ describe('AccountServiceSettingsSection', () => {
             homeServerIdentityId: 'home-a',
             preferredHomeServerIdentityId: 'home-b',
         });
+        session.listeners.clear();
+        session.subscribe.mockClear();
         session.snapshot = {
             endpoint: 'https://accounts.example.test',
             status: 'idle',
@@ -214,7 +262,7 @@ describe('AccountServiceSettingsSection', () => {
             error: null,
         };
         refreshMock.mockImplementation(async () => {
-            session.snapshot = {
+            publishSessionSnapshot({
                 endpoint: 'https://accounts.example.test',
                 status: 'ready',
                 account: null,
@@ -255,7 +303,7 @@ describe('AccountServiceSettingsSection', () => {
                 preferredHomeServerIdentityId: 'home-b',
                 refreshedAtMs: 1,
                 error: null,
-            };
+            });
             return session.snapshot;
         });
         sessionRefreshMock.mockReset();

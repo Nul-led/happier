@@ -410,7 +410,7 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
         deviceLabel: string | null;
         approvalId?: string;
     }>) => Promise<
-        | { kind: "allowed" }
+        | { kind: "allowed"; approvedRequest?: { approvalId: string; bindingProof: string } }
         | { kind: "approval_required"; request: { approvalId: string; deviceLabel: string | null; expiresAtMs: number } }
         | { kind: "rejected" | "expired" | "already_decided" }
     > };
@@ -485,6 +485,26 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
             throw new AccountDirectoryError("assertion_issuer_untrusted");
         }
         validateAssertionAgainstLink(assertion, currentLink, params.nowMs);
+        if (decision.approvedRequest) {
+            const currentBindingProof = createHomeLoginApprovalBindingProof(assertion, currentLink);
+            if (currentBindingProof !== decision.approvedRequest.bindingProof) {
+                throw new AccountDirectoryError("home_unavailable", "Home approval no longer matches the current directory link");
+            }
+            const currentApproval = await tx.authPairingSession.findFirst({
+                where: {
+                    id: decision.approvedRequest.approvalId,
+                    accountId: currentLink.accountId,
+                    flow: "account_assertion",
+                    approvalStatus: "approved",
+                    expiresAt: { gt: new Date() },
+                    requestedBindingProof: currentBindingProof,
+                },
+                select: { id: true },
+            });
+            if (!currentApproval) {
+                throw new AccountDirectoryError("home_unavailable", "Home approval is no longer current");
+            }
+        }
         return issueHomeToken(tx, currentLink.accountId);
     });
     const tokenUtf8Bytes = new TextEncoder().encode(token);
