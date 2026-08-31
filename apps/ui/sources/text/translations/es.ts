@@ -508,6 +508,11 @@ const sessionHandoffTranslationExtensions = {
       message: 'La transferencia detendrá esta sesión en esta máquina antes de transferirla a la máquina seleccionada.',
       confirm: 'Transferir y detener aquí',
     },
+    mirrorConfirmation: {
+      title: '¿Replicar exactamente este espacio de trabajo?',
+      message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `Replica ${sourcePath} de ${sourceMachine} en ${targetPath} de ${targetMachine}. Los archivos que solo existan en el destino pueden eliminarse permanentemente.`,
+      confirm: 'Replicar y permitir eliminaciones',
+    },
     progress: {
       title: 'Transfiriendo sesion',
       message: 'Preparando la maquina de destino y moviendo el estado de la sesion.',

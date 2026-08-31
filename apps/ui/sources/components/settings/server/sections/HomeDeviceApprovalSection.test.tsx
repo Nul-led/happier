@@ -164,8 +164,10 @@ afterEach(() => {
     getCredentialsForServerUrlMock.mockResolvedValue({ token: 'home-b-full-credential' });
     pendingEnrollmentSnapshot.current = null;
     pendingEnrollmentListeners.clear();
-    resumePendingEnrollmentMock.mockClear();
-    cancelPendingEnrollmentMock.mockClear();
+    resumePendingEnrollmentMock.mockReset();
+    resumePendingEnrollmentMock.mockResolvedValue(null);
+    cancelPendingEnrollmentMock.mockReset();
+    cancelPendingEnrollmentMock.mockResolvedValue(undefined);
 });
 
 describe('HomeDeviceApprovalSection', () => {
@@ -291,6 +293,43 @@ describe('HomeDeviceApprovalSection', () => {
         expect(resumePendingEnrollmentMock).toHaveBeenCalledTimes(1);
     });
 
+    it('expires a mounted pending enrollment once and does not poll it again', async () => {
+        vi.useFakeTimers();
+        pendingEnrollmentSnapshot.current = {
+            kind: 'approval_required',
+            homeServerIdentityId: 'srv_home_b',
+            approvalId: 'approval-pending',
+            expiresAtMs: Date.now() + 1_000,
+            resume: async () => { throw new Error('not called directly'); },
+            cancel: async () => { throw new Error('not called directly'); },
+        };
+        listMock.mockResolvedValue({ ok: true, items: [] });
+        resolveTransportMock.mockResolvedValue({ ok: true, transport: createTransport() });
+        resumePendingEnrollmentMock.mockImplementation(async () => {
+            publishPendingEnrollment(null);
+            return { kind: 'expired' };
+        });
+
+        const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
+        const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        await React.act(async () => {
+            await vi.advanceTimersByTimeAsync(1_000);
+            await flushHookEffects({ cycles: 3, turns: 2 });
+        });
+
+        expect(resumePendingEnrollmentMock).toHaveBeenCalledTimes(1);
+        expect(screen.findByTestId('settings.server.homeEnrollment.pending')).toBeNull();
+        expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
+            .toBe('Home B. approvals.status.expired. connect.startAgain');
+
+        await React.act(async () => {
+            await vi.advanceTimersByTimeAsync(5_000);
+        });
+        expect(resumePendingEnrollmentMock).toHaveBeenCalledTimes(1);
+    });
+
     it('presents a pending enrollment with its Home target, expiry, and separate retry and cancel actions', async () => {
         const expiresAtMs = Date.parse('2030-01-02T03:04:05.000Z');
         pendingEnrollmentSnapshot.current = {
@@ -324,11 +363,11 @@ describe('HomeDeviceApprovalSection', () => {
         expect(retry?.props.title).toBe('common.retry');
         expect(screen.findByTestId('settings.server.homeEnrollment.pending.cancel')?.props.title).toBe('common.cancel');
         await React.act(async () => {
-            retry?.props.onPress();
+            screen.pressByTestId('settings.server.homeEnrollment.pending.retry');
             await flushHookEffects({ cycles: 2, turns: 2 });
         });
         await React.act(async () => {
-            screen.findByTestId('settings.server.homeEnrollment.pending.cancel')?.props.onPress();
+            screen.pressByTestId('settings.server.homeEnrollment.pending.cancel');
             await flushHookEffects({ cycles: 2, turns: 2 });
         });
         expect(resumePendingEnrollmentMock).toHaveBeenCalledTimes(1);

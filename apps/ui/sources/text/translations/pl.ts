@@ -506,6 +506,11 @@ const sessionHandoffTranslationExtensions = {
       message: 'Przekazanie zatrzyma tę sesję na tym urządzeniu przed przeniesieniem jej na wybrane urządzenie.',
       confirm: 'Przekaż i zatrzymaj tutaj',
     },
+    mirrorConfirmation: {
+      title: 'Dokładnie odzwierciedlić ten obszar roboczy?',
+      message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `Odzwierciedl ${sourcePath} z ${sourceMachine} w ${targetPath} na ${targetMachine}. Pliki istniejące tylko w miejscu docelowym mogą zostać trwale usunięte.`,
+      confirm: 'Odzwierciedl i zezwól na usuwanie',
+    },
     progress: {
       title: 'Przekazywanie sesji',
       message: 'Przygotowujemy maszynę docelową i przenosimy stan sesji.',

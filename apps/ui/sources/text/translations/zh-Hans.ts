@@ -511,6 +511,11 @@ const sessionHandoffTranslationExtensions = {
       message: '开始移交前，Happier 会先在这台设备上停止此会话，然后再将其转移到所选设备。',
       confirm: '在此停止并移交',
     },
+    mirrorConfirmation: {
+      title: '要完全镜像此工作区吗？',
+      message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `将 ${sourceMachine} 上的 ${sourcePath} 镜像到 ${targetMachine} 上的 ${targetPath}。仅存在于目标位置的文件可能会被永久删除。`,
+      confirm: '镜像并允许删除',
+    },
     progress: {
       title: '正在移交会话',
       message: '正在准备目标机器并迁移会话状态。',

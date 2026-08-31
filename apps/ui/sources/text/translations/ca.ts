@@ -506,6 +506,11 @@ const sessionHandoffTranslationExtensions = {
       message: 'La transferència aturarà aquesta sessió en aquesta màquina abans de transferir-la a la màquina seleccionada.',
       confirm: 'Transferir i aturar aquí',
     },
+    mirrorConfirmation: {
+      title: 'Vols replicar exactament aquest espai de treball?',
+      message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `Replica ${sourcePath} de ${sourceMachine} a ${targetPath} a ${targetMachine}. Els fitxers que només existeixin a la destinació es poden eliminar permanentment.`,
+      confirm: 'Replicar i permetre eliminacions',
+    },
     progress: {
       title: 'Transferint la sessio',
       message: 'S esta preparant la maquina de destinacio i movent l estat de la sessio.',

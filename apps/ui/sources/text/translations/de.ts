@@ -5993,6 +5993,11 @@ export const de: TranslationStructure = {
             message: 'Beim Übergeben wird diese Session auf diesem Rechner gestoppt, bevor sie auf den gewählten Rechner wandert.',
             confirm: 'Übergeben und hier stoppen',
         },
+        mirrorConfirmation: {
+            title: 'Diesen Workspace exakt spiegeln?',
+            message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `Spiegle ${sourcePath} von ${sourceMachine} nach ${targetPath} auf ${targetMachine}. Dateien, die nur am Ziel vorhanden sind, können dauerhaft gelöscht werden.`,
+            confirm: 'Spiegeln und Löschen erlauben',
+        },
         progress: {
             title: 'Session wird übergeben',
             message: 'Der Zielrechner wird vorbereitet und der Session-Zustand verschoben.',

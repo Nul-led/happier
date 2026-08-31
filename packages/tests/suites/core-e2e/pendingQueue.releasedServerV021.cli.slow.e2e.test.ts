@@ -107,7 +107,7 @@ describeReleasedServer(releasedServerSuiteName, () => {
     server = null;
   });
 
-  it('continues only a didWrite:true exact lookup to one provider handoff and keeps didWrite:false at zero effect', async () => {
+  it('keeps ordinary Home auth/features/session compatible while continuing only didWrite:true queue entries', async () => {
     if (releasedServerArtifact.status !== 'ready') throw new Error(releasedServerArtifact.reason);
     const testDir = run.testDir('pending-queue-released-server-v0-2-1-cli');
     server = await startReleasedServerLight({
@@ -117,6 +117,34 @@ describeReleasedServer(releasedServerSuiteName, () => {
       expectedArchiveSha256: releasedServerArtifact.expectedArchiveSha256,
     });
     const auth = await createTestAuth(server.baseUrl);
+    const { probeServerFeaturesAtUrl } = await import('@/sync/api/capabilities/serverFeaturesClient');
+    const {
+      createAccountDirectorySession,
+      parseAccountDirectoryCapability,
+    } = await import('@/sync/domains/accountDirectory/accountDirectorySession');
+    const features = await probeServerFeaturesAtUrl({
+      endpointUrl: server.baseUrl,
+      force: true,
+      timeoutMs: 20_000,
+    });
+    expect(features.status).toBe('ready');
+    if (features.status !== 'ready') throw new Error('released server feature probe did not become ready');
+
+    // server-v0.2.1 predates Account Directory. The current reader must accept
+    // that additive absence and the canonical Directory session must stop
+    // before issuing any Directory request.
+    const directoryCapability = parseAccountDirectoryCapability(
+      features.features.capabilities.accountDirectory,
+    );
+    expect(directoryCapability).toBeNull();
+    const directorySession = createAccountDirectorySession(
+      { endpoint: server.baseUrl },
+      { capability: features.features.capabilities.accountDirectory as never },
+    );
+    await expect(directorySession.refresh()).resolves.toMatchObject({
+      status: 'unsupported',
+      homes: [],
+    });
 
     cliHome = resolve(testDir, 'cli-home');
     const workspaceDir = resolve(testDir, 'workspace');
@@ -299,6 +327,8 @@ describeReleasedServer(releasedServerSuiteName, () => {
       'utf8',
     );
     const exactLookupUrls = requestUrlsFromServerLog(releasedServerLog);
+    expect(exactLookupUrls).toContain('/v1/features');
+    expect(exactLookupUrls.some((url) => url.startsWith('/v1/account-directory/'))).toBe(false);
     const positiveLookupUrl = `/v2/sessions/${sessionId}/messages/by-local-id/${positiveLocalId}`;
     const collidingLookupUrl = `/v2/sessions/${sessionId}/messages/by-local-id/${collidingLocalId}`;
     expect(exactLookupUrls.filter((url) => url === positiveLookupUrl)).toHaveLength(1);

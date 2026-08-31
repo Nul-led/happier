@@ -599,6 +599,28 @@ describe('AccountServiceSettingsSection', () => {
         openUrl.mockRestore();
     });
 
+    it('projects the same Home approval result after key login as refresh enrollment', async () => {
+        credentialGetMock.mockResolvedValueOnce(null);
+        promptMock.mockResolvedValueOnce('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+        enrollMock.mockResolvedValueOnce({
+            kind: 'approval_required',
+            homeServerIdentityId: 'home-b',
+            approvalId: 'approval-home-b',
+            expiresAtMs: Date.now() + 60_000,
+            resume: vi.fn(async () => ({ kind: 'cancelled' })),
+            cancel: vi.fn(async () => ({ kind: 'cancelled' })),
+        });
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-key-login')).not.toBeNull());
+
+        await screen.pressByTestIdAsync('settings-account-service-key-login');
+
+        await vi.waitFor(() => expect(
+            screen.findAllByTestId('settings-account-service-home-home-b')
+                .find((node) => typeof node.props.detail === 'string')?.props.detail,
+        ).toContain(t('settingsAccount.accountServiceHomeApprovalRequired')));
+    });
+
     it('captures the focused authenticated Home identity into the Directory OAuth start', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const focused = profiles.upsertServerProfile({
@@ -1000,14 +1022,167 @@ describe('AccountServiceSettingsSection', () => {
         provisionAuthenticatedHomeLinkMock.mockClear();
         enrollMock.mockClear();
         getCredentialsMock.mockClear();
+        sessionRefreshMock.mockImplementationOnce(async () => {
+            publishSessionSnapshot({
+                ...session.snapshot,
+                homes: session.snapshot.homes.map((home) => ({
+                    ...home,
+                    preferred: home.homeServerIdentityId === 'home-a',
+                })),
+                preferredHomeServerIdentityId: 'home-a',
+            });
+            return session.snapshot;
+        });
+        enrollMock.mockImplementationOnce(async (requestedSession: typeof session) => {
+            expect(requestedSession.snapshot.preferredHomeServerIdentityId).toBe('home-a');
+            return {
+                kind: 'approval_required',
+                homeServerIdentityId: 'home-a',
+                approvalId: 'approval-home-a',
+                expiresAtMs: Date.now() + 60_000,
+                resume: vi.fn(async () => ({ kind: 'cancelled' })),
+                cancel: vi.fn(async () => ({ kind: 'cancelled' })),
+            };
+        });
         await screen.pressByTestIdAsync('settings-account-service-home-home-a-set-preferred');
 
         expect(setPreferredHomeMock).toHaveBeenCalledWith('home-a');
         expect(sessionRefreshMock).toHaveBeenCalledOnce();
         expect(provisionAuthenticatedHomeLinkMock).not.toHaveBeenCalled();
-        expect(enrollMock).not.toHaveBeenCalled();
+        expect(enrollMock).toHaveBeenCalledWith(session, expect.objectContaining({
+            shouldCancel: expect.any(Function),
+        }));
         expect(getCredentialsMock).not.toHaveBeenCalled();
+        expect(screen.findAllByTestId('settings-account-service-home-home-a')
+            .find((node) => typeof node.props.detail === 'string')?.props.detail)
+            .toContain(t('settingsAccount.accountServiceHomeApprovalRequired'));
+        expect(screen.findAllByTestId('settings-account-service-home-home-b')
+            .find((node) => typeof node.props.detail === 'string')?.props.detail ?? '')
+            .not.toContain(t('settingsAccount.accountServiceHomeApprovalRequired'));
         expect(profiles.getActiveServerSnapshot().serverId).toBe(focusedServerId);
+    });
+
+    it('projects a preferred Home enrollment failure on that row without mutating focus', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const focusedServerId = profiles.getActiveServerSnapshot().serverId;
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await screen.pressByTestIdAsync('settings-account-service-refresh');
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a-set-preferred')).not.toBeNull());
+        sessionRefreshMock.mockImplementationOnce(async () => {
+            publishSessionSnapshot({
+                ...session.snapshot,
+                homes: session.snapshot.homes.map((home) => ({
+                    ...home,
+                    preferred: home.homeServerIdentityId === 'home-a',
+                })),
+                preferredHomeServerIdentityId: 'home-a',
+            });
+            return session.snapshot;
+        });
+        enrollMock.mockResolvedValueOnce({ kind: 'failed', error: new Error('offline') });
+
+        await screen.pressByTestIdAsync('settings-account-service-home-home-a-set-preferred');
+
+        expect(screen.findAllByTestId('settings-account-service-home-home-a')
+            .find((node) => typeof node.props.detail === 'string')?.props.detail)
+            .toContain(t('settingsAccount.accountServiceHomeConnectionFailed'));
+        expect(profiles.getActiveServerSnapshot().serverId).toBe(focusedServerId);
+    });
+
+    it('derives durable enrollment from the canonical Home profile and credential storage', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        await profiles.adoptHomeProfile({
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'home-b',
+                canonicalServerUrl: 'https://home-b.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+            },
+            source: 'account-directory',
+            preserveUserLabel: true,
+            suggestedName: 'Home B',
+        });
+        getCredentialsMock.mockResolvedValue({ token: 'durable-home-b-token' });
+        enrollMock.mockResolvedValueOnce({ kind: 'failed', error: new Error('late retry failed') });
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+
+        await screen.pressByTestIdAsync('settings-account-service-refresh');
+
+        await vi.waitFor(() => expect(screen.findAllByTestId('settings-account-service-home-home-b')
+            .find((node) => typeof node.props.detail === 'string')?.props.detail)
+            .toContain(t('settingsAccount.accountServiceHomeConnected')));
+    });
+
+    it('invalidates a late refresh when the selected Account Service identity changes', async () => {
+        let resolveRefresh: ((value: typeof session.snapshot) => void) | null = null;
+        refreshMock.mockImplementationOnce((_session, options?: { shouldCancel?: () => boolean }) => new Promise((resolve) => {
+            resolveRefresh = (snapshot) => {
+                expect(options?.shouldCancel?.()).toBe(true);
+                resolve(snapshot);
+            };
+        }));
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-refresh')).not.toBeNull());
+        const refreshPress = screen.pressByTestIdAsync('settings-account-service-refresh');
+        await vi.waitFor(() => expect(refreshMock).toHaveBeenCalledOnce());
+
+        act(() => {
+            endpointState.endpoint = {
+                url: 'https://accounts.example.test',
+                serverIdentityId: 'directory-2',
+                displayName: 'Replacement Account Service',
+                source: 'user',
+            };
+            for (const listener of endpointState.listeners) listener();
+        });
+        await vi.waitFor(() => expect(cancelPendingPreferredHomeEnrollmentMock).toHaveBeenCalled());
+        await act(async () => resolveRefresh?.(session.snapshot));
+        await refreshPress;
+
+        expect(enrollMock).not.toHaveBeenCalled();
+        expect(screen.findByTestId('settings-account-service-home-home-a')).toBeNull();
+    });
+
+    it('disconnect cancels preferred enrollment and prevents its late result from projecting', async () => {
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await screen.pressByTestIdAsync('settings-account-service-refresh');
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a-set-preferred')).not.toBeNull());
+        sessionRefreshMock.mockImplementationOnce(async () => {
+            publishSessionSnapshot({
+                ...session.snapshot,
+                homes: session.snapshot.homes.map((home) => ({
+                    ...home,
+                    preferred: home.homeServerIdentityId === 'home-a',
+                })),
+                preferredHomeServerIdentityId: 'home-a',
+            });
+            return session.snapshot;
+        });
+        let resolveEnrollment: ((value: unknown) => void) | null = null;
+        enrollMock.mockImplementationOnce((_session, options?: { shouldCancel?: () => boolean }) => new Promise((resolve) => {
+            resolveEnrollment = (value) => {
+                expect(options?.shouldCancel?.()).toBe(true);
+                resolve(value);
+            };
+        }));
+        const preferredPress = screen.pressByTestIdAsync('settings-account-service-home-home-a-set-preferred');
+        await vi.waitFor(() => expect(enrollMock).toHaveBeenCalled());
+
+        await screen.pressByTestIdAsync('settings-account-service-disconnect');
+        await act(async () => resolveEnrollment?.({
+            kind: 'approval_required',
+            homeServerIdentityId: 'home-a',
+            approvalId: 'late-approval',
+            expiresAtMs: Date.now() + 60_000,
+            resume: vi.fn(async () => ({ kind: 'cancelled' })),
+            cancel: vi.fn(async () => ({ kind: 'cancelled' })),
+        }));
+        await preferredPress;
+
+        expect(cancelPendingPreferredHomeEnrollmentMock).toHaveBeenCalled();
+        expect(screen.findByTestId('settings-account-service-home-home-a')).toBeNull();
+        expect(screen.getTextContent()).not.toContain(t('settingsAccount.accountServiceHomeApprovalRequired'));
     });
 
     it('removes only the Directory entry, then refreshes while preserving local Home state', async () => {

@@ -6032,6 +6032,11 @@ export const en = {
             message: 'Handoff will stop this session on this machine before transferring it to the selected machine.',
             confirm: 'Hand off and stop here',
         },
+        mirrorConfirmation: {
+            title: 'Mirror this workspace exactly?',
+            message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `Mirror ${sourcePath} from ${sourceMachine} to ${targetPath} on ${targetMachine}. Files that exist only at the destination may be permanently removed.`,
+            confirm: 'Mirror and allow removals',
+        },
         progress: {
             title: 'Handing off session',
             message: 'Preparing the target machine and moving the session state.',

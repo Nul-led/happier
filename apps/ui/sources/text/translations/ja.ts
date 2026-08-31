@@ -513,6 +513,11 @@ const sessionHandoffTranslationExtensions = {
       message: 'ハンドオフを開始すると、選択したマシンへ転送する前にこのマシン上のセッションを停止します。',
       confirm: 'ここで停止してハンドオフ',
     },
+    mirrorConfirmation: {
+      title: 'このワークスペースを完全にミラーしますか？',
+      message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `${sourceMachine} の ${sourcePath} を ${targetMachine} の ${targetPath} にミラーします。移行先にのみ存在するファイルは完全に削除される場合があります。`,
+      confirm: 'ミラーして削除を許可',
+    },
     progress: {
       title: 'セッションを引き継ぎ中',
       message: '対象のマシンを準備し、セッションの状態を移動しています。',

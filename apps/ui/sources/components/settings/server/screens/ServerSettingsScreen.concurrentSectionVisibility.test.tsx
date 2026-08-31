@@ -290,12 +290,15 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
         // Path opening goes through the existing contained desktop-host bridge.
         await operations.openDataLocation('/home/.happier/self-host/data');
         await operations.openLogs('/home/.happier/self-host/logs');
-        await operations.revealBackupOutput('/home/.happier/self-host/data/backups/personal-home-x.tar');
+        await operations.revealBackupOutput('/mnt/external-backups/personal-home-x.tar');
         const openCalls = desktopHostMock.invocations.filter((entry) => entry.command === 'system_tasks_open_log_path');
         expect(openCalls.map((entry) => entry.args?.path)).toEqual([
             '/home/.happier/self-host/data',
             '/home/.happier/self-host/logs',
-            '/home/.happier/self-host/data/backups/personal-home-x.tar',
+        ]);
+        const revealCalls = desktopHostMock.invocations.filter((entry) => entry.command === 'system_tasks_reveal_output_path');
+        expect(revealCalls.map((entry) => entry.args?.path)).toEqual([
+            '/mnt/external-backups/personal-home-x.tar',
         ]);
     });
 

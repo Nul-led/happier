@@ -822,4 +822,43 @@ mod tests {
         assert!(error.contains("outside the allowed root"));
         let _ = fs::remove_dir_all(temp_dir);
     }
+
+    #[test]
+    fn normalize_system_task_output_path_accepts_an_existing_external_path() {
+        let temp_dir = create_temp_dir("system-task-output-path");
+        let output_path = temp_dir.join("personal-home-backup.tar");
+        fs::write(&output_path, "backup").expect("output file should write");
+
+        let normalized = super::normalize_system_task_output_path(
+            &output_path.display().to_string(),
+        )
+        .expect("existing external output should normalize");
+
+        assert_eq!(
+            normalized,
+            std::fs::canonicalize(&output_path).expect("canonicalize should work")
+        );
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn normalize_system_task_output_path_rejects_relative_paths() {
+        let error = super::normalize_system_task_output_path("backups/personal-home.tar")
+            .expect_err("relative output paths should be rejected");
+        assert!(error.contains("absolute"));
+    }
+
+    #[test]
+    fn normalize_system_task_output_path_rejects_missing_paths() {
+        let temp_dir = create_temp_dir("missing-system-task-output-path");
+        let missing_path = temp_dir.join("missing.tar");
+
+        let error = super::normalize_system_task_output_path(
+            &missing_path.display().to_string(),
+        )
+        .expect_err("missing output paths should be rejected");
+
+        assert!(error.contains("does not exist"));
+        let _ = fs::remove_dir_all(temp_dir);
+    }
 }

@@ -29,7 +29,9 @@ vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
     acquireIrohHomeRuntimeOrigin: (input: unknown) => acquireIrohHomeRuntimeOriginMock(input),
 }));
 
-const setCredentialsForServerUrlMock = vi.hoisted(() => vi.fn(async () => true));
+const setCredentialsForServerUrlMock = vi.hoisted(() => vi.fn(async () => ({
+    rollback: vi.fn(async () => {}),
+})));
 const getCredentialsForServerUrlMock = vi.hoisted(() => vi.fn(async () => ({ token: 'home-a-full-credential' })));
 
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
@@ -38,7 +40,7 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
         ...actual,
         TokenStorage: {
             ...actual.TokenStorage,
-            setCredentialsForServerUrl: (...args: unknown[]) => setCredentialsForServerUrlMock(...args),
+            setCredentialsForServerUrlWithRollback: (...args: unknown[]) => setCredentialsForServerUrlMock(...args),
             getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlMock(...args),
         },
     };
@@ -606,7 +608,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
 
         expect(result).toEqual({
             kind: 'transport_unavailable',
-            reason: 'iroh_target_transport_unavailable',
+            reason: 'iroh_transport_unavailable',
         });
         expect(createServerFetchAtEndpointMock).not.toHaveBeenCalled();
         expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();

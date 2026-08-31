@@ -44,7 +44,7 @@ export type HomeLoginContinuationResult =
     }>
     | Readonly<{
         kind: 'transport_unavailable';
-        reason: 'iroh_target_transport_unavailable' | 'no_approved_endpoint';
+        reason: HomeEnrollmentTransportFailureReason;
     }>
     | Readonly<{ kind: 'rejected' }>
     | Readonly<{ kind: 'expired' }>
@@ -93,17 +93,6 @@ type HomeLoginApprovalContinuation = Extract<
     HomeLoginContinuationResult,
     { kind: 'approval_required' }
 >;
-
-function presentTransportFailure(
-    reason: HomeEnrollmentTransportFailureReason,
-): Extract<HomeLoginContinuationResult, { kind: 'transport_unavailable' }> {
-    return {
-        kind: 'transport_unavailable',
-        reason: reason === 'iroh_transport_unavailable'
-            ? 'iroh_target_transport_unavailable'
-            : 'no_approved_endpoint',
-    };
-}
 
 function createApprovalContinuation(
     input: Readonly<{
@@ -160,7 +149,7 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
         ) {
             return createApprovalContinuation(input, input.approvalId, input.approvalExpiresAtMs);
         }
-        return presentTransportFailure(resolved.reason);
+        return { kind: 'transport_unavailable', reason: resolved.reason };
     }
 
     const transport = resolved.transport;

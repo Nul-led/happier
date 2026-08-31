@@ -557,6 +557,11 @@ const sessionHandoffTranslationExtensions = {
       message: 'A transferência vai parar esta sessão nesta máquina antes de transferi-la para a máquina selecionada.',
       confirm: 'Transferir e parar aqui',
     },
+    mirrorConfirmation: {
+      title: 'Espelhar este espaço de trabalho exatamente?',
+      message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `Espelhe ${sourcePath} de ${sourceMachine} para ${targetPath} em ${targetMachine}. Os arquivos que existem apenas no destino podem ser removidos permanentemente.`,
+      confirm: 'Espelhar e permitir remoções',
+    },
     progress: {
       title: 'Transferindo sessao',
       message: 'Preparando a maquina de destino e movendo o estado da sessao.',

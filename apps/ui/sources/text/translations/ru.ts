@@ -510,6 +510,11 @@ const sessionHandoffTranslationExtensions = {
       message: 'Перед передачей на выбранное устройство Happier остановит этот сеанс на текущем устройстве.',
       confirm: 'Передать и остановить здесь',
     },
+    mirrorConfirmation: {
+      title: 'Создать точную копию рабочего пространства?',
+      message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `Скопировать ${sourcePath} с ${sourceMachine} в ${targetPath} на ${targetMachine}. Файлы, существующие только в месте назначения, могут быть удалены безвозвратно.`,
+      confirm: 'Копировать и разрешить удаление',
+    },
     progress: {
       title: 'Передача сессии',
       message: 'Подготавливаем целевую машину и переносим состояние сессии.',

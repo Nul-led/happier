@@ -508,6 +508,11 @@ const sessionHandoffTranslationExtensions = {
       message: 'Le transfert arrêtera cette session sur cette machine avant de la déplacer vers la machine sélectionnée.',
       confirm: 'Transférer et arrêter ici',
     },
+    mirrorConfirmation: {
+      title: 'Reproduire exactement ce workspace ?',
+      message: ({ sourceMachine, sourcePath, targetMachine, targetPath }: { sourceMachine: string; sourcePath: string; targetMachine: string; targetPath: string }) => `Reproduis ${sourcePath} depuis ${sourceMachine} vers ${targetPath} sur ${targetMachine}. Les fichiers présents uniquement sur la destination peuvent être supprimés définitivement.`,
+      confirm: 'Reproduire et autoriser les suppressions',
+    },
     progress: {
       title: 'Transfert de la session',
       message: 'Préparation de la machine cible et déplacement de l’état de la session.',

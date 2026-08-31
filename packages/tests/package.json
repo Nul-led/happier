@@ -11,7 +11,7 @@
     "test:core:fast": "node scripts/run-vitest-with-heartbeat.mjs --config vitest.core.fast.config.ts",
     "test:core:slow": "node scripts/run-vitest-with-heartbeat.mjs --config vitest.core.slow.config.ts $(find suites/core-e2e -name '*.slow.e2e.test.ts' -print | sort)",
     "prepare:compat:released-server-v0.2.1": "tsx scripts/prepare-released-server-v0.2.1.ts",
-    "test:compat:released-server-v0.2.1": "yarn -s prepare:compat:released-server-v0.2.1 && node scripts/run-vitest-with-heartbeat.mjs --config vitest.core.slow.config.ts suites/core-e2e/pendingQueue.releasedServerV021.cli.slow.e2e.test.ts && node scripts/run-playwright-with-heartbeat.mjs --config playwright.ui.config.mjs suites/ui-e2e/pendingQueue.releasedServerV021.firstPrompt.spec.ts",
+    "test:compat:released-server-v0.2.1": "yarn -s prepare:compat:released-server-v0.2.1 && node scripts/run-vitest-with-heartbeat.mjs --config vitest.core.config.ts suites/contracts/releasedV021.clientReaders.test.ts && node scripts/run-vitest-with-heartbeat.mjs --config vitest.core.slow.config.ts suites/core-e2e/pendingQueue.releasedServerV021.cli.slow.e2e.test.ts && node scripts/run-playwright-with-heartbeat.mjs --config playwright.ui.config.mjs suites/ui-e2e/pendingQueue.releasedServerV021.firstPrompt.spec.ts",
     "test:contracts:runtime-activity": "node scripts/run-runtime-activity-projection-parity.mjs",
     "build:plugin-platform:candidate": "node scripts/plugin-platform/build-packed-author-candidate.mjs",
     "build:plugin-platform:natural": "node scripts/plugin-platform/build-packed-author-candidate.mjs --mode natural",
