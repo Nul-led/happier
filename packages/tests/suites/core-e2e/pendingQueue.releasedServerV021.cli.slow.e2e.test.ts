@@ -117,10 +117,12 @@ describeReleasedServer(releasedServerSuiteName, () => {
       expectedArchiveSha256: releasedServerArtifact.expectedArchiveSha256,
     });
     const auth = await createTestAuth(server.baseUrl);
+    // @ts-expect-error -- this composed suite's Vitest config maps @/ to UI source; the package-wide TS program maps it to CLI source.
     const { probeServerFeaturesAtUrl } = await import('@/sync/api/capabilities/serverFeaturesClient');
     const {
       createAccountDirectorySession,
       parseAccountDirectoryCapability,
+    // @ts-expect-error -- this composed suite's Vitest config maps @/ to UI source; the package-wide TS program maps it to CLI source.
     } = await import('@/sync/domains/accountDirectory/accountDirectorySession');
     const features = await probeServerFeaturesAtUrl({
       endpointUrl: server.baseUrl,

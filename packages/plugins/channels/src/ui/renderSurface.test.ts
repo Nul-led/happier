@@ -1609,7 +1609,7 @@ describe('Channels mounted provider setup recovery', () => {
       expect(createCalls[1]?.selectedActionInput).toEqual(selectedActionInput);
       expect(createCalls[2]?.input).toEqual(createCalls[1]?.input);
       expect(createCalls[2]?.selectedActionInput).toEqual(selectedActionInput);
-      expect(selectionLifetimeSignal?.aborted).toBe(true);
+      await vi.waitFor(() => expect(selectionLifetimeSignal?.aborted).toBe(true));
       const ensureCalls = executeAction.mock.calls
         .map(([request]) => request)
         .filter((request) => request.action === 'plugin.webhook.endpoint.ensure');

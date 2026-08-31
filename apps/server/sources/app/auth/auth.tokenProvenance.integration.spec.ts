@@ -71,6 +71,59 @@ describe("auth token provenance (integration)", () => {
         }
     });
 
+    it("signs and projects the closed present-user authentication method without inferring it from token kind", async () => {
+        const account = await db.account.create({
+            data: { publicKey: "auth-provenance-authentication-methods" },
+            select: { id: true },
+        });
+        const methods = [
+            "key_challenge_v1",
+            "key_challenge_v2",
+            "oauth_provider",
+            "trusted_pairing",
+            "mtls",
+        ] as const;
+
+        for (const authenticationMethod of methods) {
+            const token = await auth.createToken(account.id, undefined, {
+                kind: "account",
+                authority: "present_user",
+                authenticationMethod,
+            } as Parameters<typeof auth.createToken>[2]);
+            expect(decodeJwtPayload(token)).toMatchObject({
+                provenance: {
+                    v: 1,
+                    kind: "account",
+                    authority: "present_user",
+                    authenticationMethod,
+                },
+            });
+            await expect(auth.verifyToken(token)).resolves.toMatchObject({
+                userId: account.id,
+                authTokenKind: "account",
+                authority: "present_user",
+                authenticationMethod,
+                legacy: false,
+            });
+        }
+
+        const unmarkedCurrentToken = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
+        expect(decodeJwtPayload(unmarkedCurrentToken)).toMatchObject({
+            provenance: {
+                v: 1,
+                kind: "account",
+                authority: "present_user",
+            },
+        });
+        await expect(auth.verifyToken(unmarkedCurrentToken)).resolves.toMatchObject({
+            authenticationMethod: undefined,
+            legacy: false,
+        });
+    });
+
     it("requires an explicit complete provenance decision and rejects non-canonical pairings at mint time", async () => {
         const account = await db.account.create({
             data: { publicKey: "auth-provenance-explicit-mint" },

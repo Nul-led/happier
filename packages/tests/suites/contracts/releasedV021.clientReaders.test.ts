@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// @ts-expect-error -- this compatibility suite's Vitest config maps @/ to UI source; the package-wide TS program maps it to CLI source.
 import { scopedStorageId } from '@/utils/system/storageScope';
 
 const RELEASED_CLIENT_V0_2_1_COMMIT = 'b1d15a8a9c241737d1ca9b167459901e6259173a';
@@ -58,6 +59,7 @@ describe(`released client v0.2.1 reader compatibility (${RELEASED_CLIENT_V0_2_1_
     });
     vi.resetModules();
 
+    // @ts-expect-error -- runtime Vitest alias resolves the current UI reader; see the package alias note above.
     const profiles = await import('@/sync/domains/server/serverProfiles');
     expect(profiles.getActiveServerSnapshot()).toMatchObject({
       serverId: 'stack.example.test',
@@ -70,6 +72,7 @@ describe(`released client v0.2.1 reader compatibility (${RELEASED_CLIENT_V0_2_1_
   });
 
   it('accepts the independently released V1 QR writer output through the current reader', async () => {
+    // @ts-expect-error -- runtime Vitest alias resolves the current UI reader; see the package alias note above.
     const { parsePairingDeepLink } = await import('@/auth/pairing/pairingUrl');
 
     // Exact golden output asserted by cli-v0.2.1's pairingUrl.scheme.test.ts.
