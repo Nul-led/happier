@@ -19646,6 +19646,7 @@ describe('startDaemonSessionControlRuntime', () => {
                         startedBy: 'daemon',
                         happySessionId: 'sess-temporary-throttle',
                         pid: 999_999_123,
+                        activeTurnId: 'turn-temporary-throttle',
                         vendorResumeId: 'codex-thread-stale',
                         spawnOptions: {
                             directory: '/tmp/project',
@@ -19697,6 +19698,12 @@ describe('startDaemonSessionControlRuntime', () => {
             });
 
             const controlServerInput = vi.mocked(startDaemonControlServer).mock.calls.at(-1)?.[0];
+            sendSessionMessageMock.mockResolvedValueOnce({
+                ok: true,
+                sessionId: 'sess-temporary-throttle',
+                localId: 'connected-service-continuation:test',
+                waited: false,
+            });
             await expect(controlServerInput?.handleConnectedServiceRuntimeAuthFailure?.({
                 sessionId: 'sess-temporary-throttle',
                 switchesThisTurn: 0,
@@ -19737,7 +19744,12 @@ describe('startDaemonSessionControlRuntime', () => {
                     resume: 'codex-thread-stale',
                 }),
             }));
-            expect(materializeNextPendingQueueV2MessageViaHttp).not.toHaveBeenCalled();
+            expect(sendSessionMessageMock).toHaveBeenCalledWith(expect.objectContaining({
+                idOrPrefix: 'sess-temporary-throttle',
+                message: 'Continue where you left off',
+                pendingAdmissionMode: 'continuation_if_no_queued_user_input',
+                resumeInactiveSession: false,
+            }));
 
             await runtime.stopControlServer();
         } finally {

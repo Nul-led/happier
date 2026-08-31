@@ -456,6 +456,30 @@ describe('PersonalHomeOperations facade', () => {
     }
   });
 
+  it('restarts a previously running Home when erase stop throws after stopping it', { timeout: 60_000 }, async () => {
+    const { root, layout } = await fixture('erase-partial-stop');
+    try {
+      let running = true;
+      const events: string[] = [];
+      const confirm = vi.fn(async () => true);
+      const { deps } = makeDeps(layout, {
+        lifecycle: {
+          isRunning: async () => running,
+          stop: async () => { events.push('home:stop'); running = false; throw new Error('partial stop'); },
+          start: async () => { events.push('home:start'); running = true; },
+          healthCheck: async () => true,
+        },
+      });
+
+      await expect(createPersonalHomeOperations(deps).erase({ confirm })).rejects.toThrow('partial stop');
+      expect(events).toEqual(['home:stop', 'home:start']);
+      expect(running).toBe(true);
+      expect(confirm).not.toHaveBeenCalled();
+      await expect(readFile(layout.databasePath, 'utf8')).resolves.toBe('sqlite-fixture');
+      await expect(readFile(layout.masterSecretPath, 'utf8')).resolves.toBe('master-secret-fixture');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it('deletes only the captured locked layout when ambient path resolution changes after confirmation', { timeout: 60_000 }, async () => {
     const first = await fixture('erase-layout-first');
     const second = await fixture('erase-layout-second');
