@@ -111,7 +111,7 @@ describe("startSocket RPC activation", () => {
             },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);

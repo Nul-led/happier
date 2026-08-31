@@ -37,13 +37,21 @@ describe("auth (token cache)", () => {
         const { auth } = await import("./auth");
         await auth.init();
 
-        const firstToken = await auth.createToken("user-1");
+        const firstToken = await auth.createToken(
+            "user-1",
+            undefined,
+            { kind: "account", authority: "present_user" },
+        );
         await auth.verifyToken(firstToken);
         expect(auth.getCacheStats().size).toBe(1);
 
         vi.advanceTimersByTime(1500);
 
-        const secondToken = await auth.createToken("user-2");
+        const secondToken = await auth.createToken(
+            "user-2",
+            undefined,
+            { kind: "account", authority: "present_user" },
+        );
         await auth.verifyToken(secondToken);
         expect(auth.getCacheStats().size).toBe(1);
     });
@@ -57,9 +65,21 @@ describe("auth (token cache)", () => {
         const { auth } = await import("./auth");
         await auth.init();
 
-        const firstToken = await auth.createToken("user-1");
-        const secondToken = await auth.createToken("user-2");
-        const thirdToken = await auth.createToken("user-3");
+        const firstToken = await auth.createToken(
+            "user-1",
+            undefined,
+            { kind: "account", authority: "present_user" },
+        );
+        const secondToken = await auth.createToken(
+            "user-2",
+            undefined,
+            { kind: "account", authority: "present_user" },
+        );
+        const thirdToken = await auth.createToken(
+            "user-3",
+            undefined,
+            { kind: "account", authority: "present_user" },
+        );
         await auth.verifyToken(firstToken);
         await auth.verifyToken(secondToken);
         await auth.verifyToken(thirdToken);

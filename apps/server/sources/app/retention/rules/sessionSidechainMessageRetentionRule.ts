@@ -2,6 +2,7 @@ import { readFromSimpleCache, writeToSimpleCache } from '@/storage/cache/simpleC
 import { createRecoverableExternalSessionHistoricalImportMessageWhere } from '@/app/session/externalSessionHistoricalImportCommand';
 import { db } from '@/storage/db';
 import { inTx } from '@/storage/inTx';
+import { notifySessionTranscriptMutationAfterCommit } from '@/app/session/sessionTranscriptMutationObserver';
 
 const SIDECHAIN_RETENTION_CURSOR_KEY = 'server.retention.session-sidechain-messages.cursor.v1';
 
@@ -217,6 +218,17 @@ async function deleteExpiredSidechainBatch(params: {
                 },
             },
         });
+        if (result.count > 0) {
+            const survivors = await tx.sessionMessage.findMany({
+                where: { id: { in: rows.map((row) => row.id) } },
+                select: { id: true },
+            });
+            const survivorIds = new Set(survivors.map((row) => row.id));
+            notifySessionTranscriptMutationAfterCommit(tx, {
+                kind: 'remove-messages',
+                messageIds: rows.map((row) => row.id).filter((id) => !survivorIds.has(id)),
+            });
+        }
         return { deleted: result.count, protected: false };
     }, { isolationLevel: 'ReadCommitted' });
 }

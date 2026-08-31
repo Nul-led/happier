@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
+const transactionHarness = vi.hoisted(() => ({ afterCommit: [] as Array<() => void> }));
+vi.mock('@/storage/inTx', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/storage/inTx')>(),
+    afterTx: (_tx: unknown, callback: () => void) => transactionHarness.afterCommit.push(callback),
+}));
+
 import type { Tx } from '@/storage/inTx';
 
 import { deleteSessionTree } from './deleteSessionTree';
@@ -54,5 +60,6 @@ describe('deleteSessionTree', () => {
         expect(updateSession.mock.invocationCallOrder[0]!).toBeLessThan(
             deleteMessages.mock.invocationCallOrder[0]!,
         );
+        expect(transactionHarness.afterCommit).toHaveLength(1);
     });
 });

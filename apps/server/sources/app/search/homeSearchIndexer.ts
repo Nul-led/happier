@@ -1,4 +1,4 @@
-import { openHomeSearchDb, type HomeSearchDb, type HomeSearchMessage } from './homeSearchDb';
+import type { HomeSearchDb, HomeSearchMessage } from './homeSearchDb';
 
 export type HomeSearchCanonicalMessage = Readonly<{
     id: string;
@@ -10,17 +10,27 @@ export type HomeSearchCanonicalMessage = Readonly<{
     content: unknown;
 }>;
 
-export type HomeSearchCanonicalReader = () => Promise<readonly HomeSearchCanonicalMessage[]>;
+export type HomeSearchCanonicalPageReader = (input: Readonly<{ afterId?: string; limit: number }>) => Promise<Readonly<{
+    messages: readonly HomeSearchCanonicalMessage[];
+    nextAfterId?: string;
+}>>;
 
-function readSearchableText(content: unknown): string {
+function readPlainEnvelopeValue(content: unknown): string {
     if (typeof content === 'string') return content;
     if (!content || typeof content !== 'object') return '';
     const value = content as Record<string, unknown>;
-    if (value.t === 'plain') return readSearchableText(value.v);
     if (typeof value.text === 'string') return value.text;
     if (typeof value.message === 'string') return value.message;
-    if (Array.isArray(value.content)) return value.content.map(readSearchableText).filter(Boolean).join('\n');
+    if (Array.isArray(value.content)) return value.content.map(readPlainEnvelopeValue).filter(Boolean).join('\n');
+    if (value.content && typeof value.content === 'object') return readPlainEnvelopeValue(value.content);
+    if (value.data && typeof value.data === 'object') return readPlainEnvelopeValue(value.data);
     return '';
+}
+
+function readSearchableText(content: unknown): string {
+    if (!content || typeof content !== 'object') return '';
+    const envelope = content as Record<string, unknown>;
+    return envelope.t === 'plain' ? readPlainEnvelopeValue(envelope.v) : '';
 }
 
 function toIndexedMessage(message: HomeSearchCanonicalMessage): HomeSearchMessage {
@@ -35,87 +45,124 @@ function toIndexedMessage(message: HomeSearchCanonicalMessage): HomeSearchMessag
     };
 }
 
+type QueuedMutation =
+    | Readonly<{ kind: 'upsert'; message: HomeSearchCanonicalMessage }>
+    | Readonly<{ kind: 'remove-messages'; messageIds: readonly string[] }>
+    | Readonly<{ kind: 'remove-session'; sessionId: string }>;
+
 export type HomeSearchIndexer = Readonly<{
+    ready(): boolean;
+    whenReady(): Promise<void>;
     reconcile(): Promise<{ indexed: number; removed: number }>;
     notify(message: HomeSearchCanonicalMessage): void;
+    removeMessages(messageIds: readonly string[]): void;
     removeSession(sessionId: string): void;
     start(): void;
-    stop(): void;
-    close(): void;
+    stop(): Promise<void>;
 }>;
 
-export async function createHomeSearchIndexer(params: Readonly<{
-    dbPath: string;
-    readCanonicalMessages: HomeSearchCanonicalReader;
-    intervalMs?: number;
-}>): Promise<HomeSearchIndexer> {
-    const db = await openHomeSearchDb({ dbPath: params.dbPath });
-    let timer: ReturnType<typeof setInterval> | null = null;
-    let reconcileInFlight: Promise<{ indexed: number; removed: number }> | null = null;
+const RECONCILE_PAGE_SIZE = 250;
 
-    const reconcile = async (): Promise<{ indexed: number; removed: number }> => {
-        if (reconcileInFlight) return reconcileInFlight;
-        reconcileInFlight = (async () => {
-            const rows = await params.readCanonicalMessages();
-            const previousCount = db.count();
-            const indexedIds = new Set<string>();
-            db.clear();
-            const watermarks = new Map<string, number>();
-            for (const row of rows) {
-                const message = toIndexedMessage(row);
-                if (!message.text.trim()) continue;
-                db.upsert(message);
-                indexedIds.add(message.id);
-                watermarks.set(message.sessionId, Math.max(watermarks.get(message.sessionId) ?? 0, message.seq));
+/** Serializes the full startup projection and live after-commit mutations over one FTS database. */
+export function createHomeSearchIndexer(params: Readonly<{
+    db: HomeSearchDb;
+    readCanonicalMessagesPage: HomeSearchCanonicalPageReader;
+    onFailure?: (error: unknown) => void;
+}>): HomeSearchIndexer {
+    const pendingBeforeStart: QueuedMutation[] = [];
+    let started = false;
+    let stopped = false;
+    let isReady = false;
+    let tail: Promise<void> = Promise.resolve();
+    let initialReconcile: Promise<void> | null = null;
+
+    const markFailed = (error: unknown) => {
+        isReady = false;
+        params.onFailure?.(error);
+    };
+    const applyMutation = (mutation: QueuedMutation) => {
+        if (mutation.kind === 'remove-session') {
+            params.db.removeSession(mutation.sessionId);
+            return;
+        }
+        if (mutation.kind === 'remove-messages') {
+            for (const messageId of mutation.messageIds) params.db.remove(messageId);
+            return;
+        }
+        const indexed = toIndexedMessage(mutation.message);
+        if (indexed.text.trim()) params.db.upsert(indexed);
+        else params.db.remove(indexed.id);
+        params.db.setWatermark(indexed.sessionId, indexed.seq);
+    };
+    const enqueue = (mutation: QueuedMutation) => {
+        if (stopped) return;
+        if (!started) {
+            if (isReady) {
+                queueMicrotask(() => {
+                    try { applyMutation(mutation); } catch (error) { markFailed(error); }
+                });
+                return;
             }
-            for (const [sessionId, seq] of watermarks) db.setWatermark(sessionId, seq);
-            return { indexed: indexedIds.size, removed: Math.max(0, previousCount - indexedIds.size) };
-        })().finally(() => {
-            reconcileInFlight = null;
-        });
-        return reconcileInFlight;
+            pendingBeforeStart.push(mutation);
+            return;
+        }
+        tail = tail.then(() => applyMutation(mutation)).catch(markFailed);
+    };
+    const runReconcile = async (): Promise<{ indexed: number; removed: number }> => {
+        isReady = false;
+        const previousCount = params.db.count();
+        params.db.clear();
+        let indexed = 0;
+        let afterId: string | undefined;
+        const watermarks = new Map<string, number>();
+        do {
+            const page = await params.readCanonicalMessagesPage({ afterId, limit: RECONCILE_PAGE_SIZE });
+            for (const row of page.messages) {
+                const message = toIndexedMessage(row);
+                if (message.text.trim()) {
+                    params.db.upsert(message);
+                    indexed += 1;
+                }
+                watermarks.set(row.sessionId, Math.max(watermarks.get(row.sessionId) ?? 0, row.seq));
+            }
+            if (page.nextAfterId && page.nextAfterId === afterId) throw new Error('Canonical transcript pagination did not advance');
+            afterId = page.nextAfterId;
+        } while (afterId);
+        for (const [sessionId, seq] of watermarks) params.db.setWatermark(sessionId, seq);
+        return { indexed, removed: Math.max(0, previousCount - indexed) };
     };
 
     return {
-        reconcile,
-        notify(message) {
-            // Notifications are deliberately fire-and-forget: transcript writes must not wait
-            // on the rebuildable derived index. Startup reconciliation remains the durable path.
-            queueMicrotask(() => {
-                try {
-                    const indexed = toIndexedMessage(message);
-                    if (indexed.text.trim()) db.upsert(indexed);
-                    db.setWatermark(indexed.sessionId, indexed.seq);
-                } catch {
-                    // A later reconciliation repairs failed best-effort notifications.
-                }
-            });
+        ready: () => isReady,
+        whenReady: () => initialReconcile ?? Promise.resolve(),
+        async reconcile() {
+            const work = tail.then(runReconcile);
+            tail = work.then(() => undefined).catch(markFailed);
+            const result = await work;
+            isReady = true;
+            return result;
         },
-        removeSession(sessionId) {
-            db.removeSession(sessionId);
+        notify(message) { enqueue({ kind: 'upsert', message }); },
+        removeMessages(messageIds) {
+            if (messageIds.length > 0) enqueue({ kind: 'remove-messages', messageIds: [...messageIds] });
         },
+        removeSession(sessionId) { enqueue({ kind: 'remove-session', sessionId }); },
         start() {
-            if (timer) return;
-            const intervalMs = Math.max(1_000, Math.trunc(params.intervalMs ?? 30_000));
-            timer = setInterval(() => {
-                void reconcile().catch(() => undefined);
-            }, intervalMs);
-            void reconcile().catch(() => undefined);
+            if (started || stopped) return;
+            started = true;
+            tail = tail.then(runReconcile).then(() => {
+                for (const mutation of pendingBeforeStart.splice(0)) applyMutation(mutation);
+                isReady = true;
+            }).catch(markFailed);
+            initialReconcile = tail;
         },
-        stop() {
-            if (!timer) return;
-            clearInterval(timer);
-            timer = null;
-        },
-        close() {
-            if (timer) clearInterval(timer);
-            timer = null;
-            db.close();
+        async stop() {
+            stopped = true;
+            await tail.catch(() => undefined);
         },
     };
 }
 
-/** Exposed for the service and tests without making the content parser public API. */
 export function extractHomeSearchText(content: unknown): string {
     return readSearchableText(content);
 }

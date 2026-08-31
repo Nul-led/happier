@@ -1,9 +1,12 @@
 import * as privacyKit from "privacy-kit";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { db } from "@/storage/db";
 import { auth } from "@/app/auth/auth";
-import { resolveAuthPolicyFromEnv } from "@/app/auth/authPolicy";
+import {
+    resolveAuthKeyChallengeV2Requirement,
+    resolveAuthPolicyFromEnv,
+} from "@/app/auth/authPolicy";
 import { enforceLoginEligibility } from "@/app/auth/enforceLoginEligibility";
 import { type Fastify } from "../../types";
 import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
@@ -30,9 +33,29 @@ import { resolveConfiguredCanonicalServerUrl } from "@/app/serverUrls/effectiveS
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 
 const KEY_CHALLENGE_V2_TTL_MS = 5 * 60_000;
+const ACCOUNT_DIRECTORY_CHALLENGE_ID_PREFIX = "account_directory:";
 const KeyChallengeV2UnavailableResponseSchema = z.object({
     error: z.literal("key_challenge_v2_unavailable"),
 });
+const KeyChallengeV2RequiredResponseSchema = z.object({
+    error: z.literal("key_challenge_v2_required"),
+});
+const KeyChallengeAuthResponseSchemas: Record<number, z.ZodTypeAny> = {
+    426: KeyChallengeV2RequiredResponseSchema,
+};
+
+/**
+ * The challenge audience is derived exclusively from the configured stable
+ * server URL. Request Host, optional public-ingress metadata, and ephemeral
+ * runtime/Iroh origins are deliberately not inputs to this function.
+ */
+export function resolveStableKeyChallengeV2AudienceOrigin(
+    env: NodeJS.ProcessEnv,
+): string | null {
+    return canonicalizeKeyChallengeV2AudienceOrigin(
+        resolveConfiguredCanonicalServerUrl(env),
+    );
+}
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
     return left.byteLength === right.byteLength
@@ -51,7 +74,46 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 export function registerKeyChallengeAuthRoute(app: Fastify): void {
-    app.post('/v1/auth/challenge', {
+    const ordinaryHomeRequiresKeyChallengeV2 =
+        resolveAuthKeyChallengeV2Requirement(process.env);
+    registerKeyChallengeAuthRoutesForPurpose(app, {
+        challengePath: "/v1/auth/challenge",
+        redeemPath: "/v1/auth",
+        tokenKind: "account",
+        requireKeyChallengeV2: ordinaryHomeRequiresKeyChallengeV2,
+    });
+    registerKeyChallengeAuthRoutesForPurpose(app, {
+        challengePath: "/v1/auth/account-directory/challenge",
+        redeemPath: "/v1/auth/account-directory",
+        tokenKind: "account_directory",
+        requireKeyChallengeV2: true,
+    });
+}
+
+type KeyChallengeRoutePurpose = Readonly<{
+    challengePath: string;
+    redeemPath: string;
+    tokenKind: "account" | "account_directory";
+    requireKeyChallengeV2: boolean;
+}>;
+
+function isChallengeIdForPurpose(
+    challengeId: string,
+    tokenKind: KeyChallengeRoutePurpose["tokenKind"],
+): boolean {
+    const isAccountDirectoryChallenge = challengeId.startsWith(
+        ACCOUNT_DIRECTORY_CHALLENGE_ID_PREFIX,
+    );
+    return tokenKind === "account_directory"
+        ? isAccountDirectoryChallenge
+        : !isAccountDirectoryChallenge;
+}
+
+function registerKeyChallengeAuthRoutesForPurpose(
+    app: Fastify,
+    purpose: KeyChallengeRoutePurpose,
+): void {
+    app.post(purpose.challengePath, {
         config: {
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.keyChallenge.issue"),
         },
@@ -63,9 +125,7 @@ export function registerKeyChallengeAuthRoute(app: Fastify): void {
             },
         },
     }, async (request, reply) => {
-        const audienceOrigin = canonicalizeKeyChallengeV2AudienceOrigin(
-            resolveConfiguredCanonicalServerUrl(process.env),
-        );
+        const audienceOrigin = resolveStableKeyChallengeV2AudienceOrigin(process.env);
         if (!audienceOrigin) {
             return reply.code(503).send({ error: "key_challenge_v2_unavailable" });
         }
@@ -80,6 +140,9 @@ export function registerKeyChallengeAuthRoute(app: Fastify): void {
         const audienceServerIdentityId = await getOrCreateServerIdentityId(process.env);
         const challenge = await db.keyChallengeV2.create({
             data: {
+                ...(purpose.tokenKind === "account_directory"
+                    ? { id: `${ACCOUNT_DIRECTORY_CHALLENGE_ID_PREFIX}${randomUUID()}` }
+                    : {}),
                 nonce: privacyKit.encodeBase64(new Uint8Array(randomBytes(32))),
                 issuedAt,
                 expiresAt,
@@ -113,15 +176,20 @@ export function registerKeyChallengeAuthRoute(app: Fastify): void {
         });
     });
 
-    app.post('/v1/auth', {
+    app.post(purpose.redeemPath, {
         config: {
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.keyChallenge.redeem"),
         },
         schema: {
             body: KeyChallengeAuthRequestSchema,
+            response: KeyChallengeAuthResponseSchemas,
         }
     }, async (request, reply) => {
         const authRequest = request.body;
+        const isV2AuthRequest = isKeyChallengeV2AuthRequest(authRequest);
+        if (!isV2AuthRequest && purpose.tokenKind === "account_directory") {
+            return reply.code(426).send({ error: "key_challenge_v2_required" });
+        }
         const tweetnacl = (await import("tweetnacl")).default;
         if (String(authRequest.publicKey).length > 512) {
             return reply.code(401).send({ error: 'Invalid public key' });
@@ -150,7 +218,10 @@ export function registerKeyChallengeAuthRoute(app: Fastify): void {
 
         let signingInput: Uint8Array;
         let v2ChallengeId: string | null = null;
-        if (isKeyChallengeV2AuthRequest(authRequest)) {
+        if (isV2AuthRequest) {
+            if (!isChallengeIdForPurpose(authRequest.challengeId, purpose.tokenKind)) {
+                return reply.code(401).send({ error: 'Invalid signature' });
+            }
             const challenge = await db.keyChallengeV2.findUnique({
                 where: { id: authRequest.challengeId },
                 select: {
@@ -165,9 +236,7 @@ export function registerKeyChallengeAuthRoute(app: Fastify): void {
                 },
             });
             const now = new Date();
-            const configuredAudienceOrigin = canonicalizeKeyChallengeV2AudienceOrigin(
-                resolveConfiguredCanonicalServerUrl(process.env),
-            );
+            const configuredAudienceOrigin = resolveStableKeyChallengeV2AudienceOrigin(process.env);
             const currentServerIdentityId = configuredAudienceOrigin
                 ? await getOrCreateServerIdentityId(process.env)
                 : null;
@@ -178,10 +247,8 @@ export function registerKeyChallengeAuthRoute(app: Fastify): void {
                 || !configuredAudienceOrigin
                 || challenge.audienceOrigin !== configuredAudienceOrigin
                 || !currentServerIdentityId
-                || (
-                    challenge.audienceServerIdentityId
-                    && challenge.audienceServerIdentityId !== currentServerIdentityId
-                )
+                || !challenge.audienceServerIdentityId
+                || challenge.audienceServerIdentityId !== currentServerIdentityId
                 || (challenge.expectedAccountId ?? undefined)
                     !== (authRequest.expectedAccountId ?? undefined)
             ) {
@@ -194,9 +261,7 @@ export function registerKeyChallengeAuthRoute(app: Fastify): void {
                 expiresAt: challenge.expiresAt.toISOString(),
                 audience: {
                     origin: challenge.audienceOrigin,
-                    ...(challenge.audienceServerIdentityId
-                        ? { serverIdentityId: challenge.audienceServerIdentityId }
-                        : {}),
+                    serverIdentityId: challenge.audienceServerIdentityId,
                 },
                 ...(challenge.expectedAccountId
                     ? { expectedAccountId: challenge.expectedAccountId }
@@ -208,6 +273,9 @@ export function registerKeyChallengeAuthRoute(app: Fastify): void {
             // stable/preview client artifact or the current remote-dev predecessor can emit it.
             // Remove only after that release frontier no longer needs v1; clients do not
             // advertise their challenge version. Return the typed update requirement here then.
+            if (purpose.requireKeyChallengeV2) {
+                return reply.code(426).send({ error: "key_challenge_v2_required" });
+            }
             if (String(authRequest.challenge).length > 4096) {
                 return reply.code(401).send({ error: 'Invalid signature' });
             }
@@ -342,7 +410,11 @@ export function registerKeyChallengeAuthRoute(app: Fastify): void {
             }
             return reply.send({
                 success: true,
-                token: await auth.createToken(expectedAccount.id),
+                token: await auth.createToken(
+                    expectedAccount.id,
+                    undefined,
+                    { kind: purpose.tokenKind, authority: "present_user" },
+                ),
             });
         }
 
@@ -488,7 +560,11 @@ export function registerKeyChallengeAuthRoute(app: Fastify): void {
         }
         return reply.send({
             success: true,
-            token: await auth.createToken(user.id)
+            token: await auth.createToken(
+                user.id,
+                undefined,
+                { kind: purpose.tokenKind, authority: "present_user" },
+            )
         });
     });
 }

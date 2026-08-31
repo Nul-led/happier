@@ -4,6 +4,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
 import * as privacyKit from "privacy-kit";
 import tweetnacl from "tweetnacl";
+import {
+    sealTerminalProvisioningV3Payload,
+    sealTerminalProvisioningV3TokenOnlyPayload,
+} from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
 import { auth } from "@/app/auth/auth";
@@ -56,6 +60,39 @@ function sha256Base64Url(bytes: Uint8Array): string {
     return digest.toString("base64url");
 }
 
+function createTerminalProvisioningResponse(params: Readonly<{
+    kind: "tokenOnly" | "dataKey";
+    recipientPublicKey: Uint8Array;
+}>): string {
+    const pairingSecret = new Uint8Array(randomBytes(32));
+    const createdAtMs = Date.now() - 1_000;
+    const expiresAtMs = Date.now() + 60_000;
+    const payload = params.kind === "tokenOnly"
+        ? sealTerminalProvisioningV3TokenOnlyPayload({
+            terminalEphemeralPublicKey: params.recipientPublicKey,
+            pairingSecret,
+            createdAtMs,
+            expiresAtMs,
+            randomBytes: (length) => new Uint8Array(randomBytes(length)),
+        })
+        : sealTerminalProvisioningV3Payload({
+            contentPrivateKey: new Uint8Array(randomBytes(32)),
+            terminalEphemeralPublicKey: params.recipientPublicKey,
+            pairingSecret,
+            createdAtMs,
+            expiresAtMs,
+            randomBytes: (length) => new Uint8Array(randomBytes(length)),
+        });
+    return privacyKit.encodeBase64(new Uint8Array(payload));
+}
+
+async function markSignedInAccountPlain(signInBody: Readonly<{ publicKey: string }>): Promise<void> {
+    await db.account.update({
+        where: { publicKey: privacyKit.encodeHex(privacyKit.decodeBase64(signInBody.publicKey)) },
+        data: { encryptionMode: "plain" },
+    });
+}
+
 describe("authRoutes (terminal auth request) (integration)", () => {
     let harness: LightSqliteHarness;
 
@@ -66,7 +103,6 @@ describe("authRoutes (terminal auth request) (integration)", () => {
             initEncrypt: true,
             env: {
                 TERMINAL_AUTH_REQUEST_TTL_SECONDS: "900",
-                TERMINAL_AUTH_CLAIM_RETRY_WINDOW_SECONDS: "60",
             },
         });
     }, 120_000);
@@ -120,6 +156,33 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         expect(remaining).toBeNull();
 
         await app.close();
+    });
+
+    it("opportunistically deletes at most 32 expired terminal-auth rows without deleting live rows", async () => {
+        const expiredAt = new Date(Date.now() - 901_000);
+        await db.terminalAuthRequest.createMany({
+            data: Array.from({ length: 33 }, (_, index) => ({
+                publicKey: `expired-terminal-auth-${index}`,
+                createdAt: expiredAt,
+            })),
+        });
+        const live = await db.terminalAuthRequest.create({
+            data: { publicKey: "live-terminal-auth", createdAt: new Date() },
+        });
+        const requester = createTerminalKeypair();
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const response = await app.inject({
+            method: "POST",
+            url: "/v1/auth/request",
+            payload: { publicKey: requester.publicKeyBase64, supportsV2: true },
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(await db.terminalAuthRequest.count({ where: { createdAt: { lt: new Date(Date.now() - 900_000) } } })).toBe(1);
+        expect(await db.terminalAuthRequest.findUnique({ where: { id: live.id } })).toBeTruthy();
     });
 
     it("returns not_found from /v1/auth/request/status when the request exceeded TTL and deletes it", async () => {
@@ -234,7 +297,7 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         await app.close();
     });
 
-    it("allows claiming an authorized request with the correct claim secret and returns token + response", async () => {
+    it("allows one claim with the correct secret and rejects a second claim as consumed", async () => {
         harness.resetEnv({
             HAPPIER_SERVER_IDENTITY_ID: "srv_authClaimIdentity",
         });
@@ -253,8 +316,9 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         const { token } = signInRes.json() as any;
         expect(typeof token).toBe("string");
         expect(token.length).toBeGreaterThan(10);
+        await markSignedInAccountPlain(signInBody);
 
-        const { publicKeyBase64 } = createTerminalKeypair();
+        const { publicKeyRaw, publicKeyBase64 } = createTerminalKeypair();
         const claimSecret = new Uint8Array(randomBytes(32));
         const claimSecretB64Url = encodeBase64Url(claimSecret);
         const claimSecretHash = sha256Base64Url(claimSecret);
@@ -271,7 +335,11 @@ describe("authRoutes (terminal auth request) (integration)", () => {
             method: "POST",
             url: "/v1/auth/response",
             headers: { authorization: `Bearer ${token}` },
-            payload: { publicKey: publicKeyBase64, response: "hello" },
+            payload: {
+                publicKey: publicKeyBase64,
+                response: createTerminalProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: publicKeyRaw }),
+                responseKind: "tokenOnly",
+            },
         });
         expect(approveRes.statusCode).toBe(200);
         expect(approveRes.json()).toEqual({ success: true });
@@ -293,11 +361,19 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         expect(claimJson).toEqual({
             state: "authorized",
             token: expect.any(String),
-            response: "hello",
+            response: expect.any(String),
             serverIdentityId: "srv_authClaimIdentity",
         });
         expect(claimJson.token.length).toBeGreaterThan(10);
         expect(claimJson.token).not.toBe(token);
+
+        const repeatedClaimRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/request/claim",
+            payload: { publicKey: publicKeyBase64, claimSecret: claimSecretB64Url },
+        });
+        expect(repeatedClaimRes.statusCode).toBe(410);
+        expect(repeatedClaimRes.json()).toEqual({ error: "consumed" });
 
         const row = await db.terminalAuthRequest.findUnique({
             where: { publicKey: privacyKit.encodeHex(privacyKit.decodeBase64(publicKeyBase64)) },
@@ -307,16 +383,91 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         await app.close();
     });
 
+    it("keeps an authorized request claimable when token minting fails before claim publication", async () => {
+        harness.resetEnv({
+            HAPPIER_SERVER_IDENTITY_ID: "srv_authClaimRetryIdentity",
+        });
+        const { body: signInBody } = createSignInRequest();
+
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const signInRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth",
+            payload: signInBody,
+        });
+        expect(signInRes.statusCode).toBe(200);
+        const { token } = signInRes.json() as { token: string };
+        await markSignedInAccountPlain(signInBody);
+
+        const { publicKeyRaw, publicKeyBase64 } = createTerminalKeypair();
+        const claimSecret = new Uint8Array(randomBytes(32));
+        const claimSecretB64Url = encodeBase64Url(claimSecret);
+        const claimSecretHash = sha256Base64Url(claimSecret);
+
+        expect((await app.inject({
+            method: "POST",
+            url: "/v1/auth/request",
+            payload: { publicKey: publicKeyBase64, supportsV2: true, claimSecretHash },
+        })).statusCode).toBe(200);
+        expect((await app.inject({
+            method: "POST",
+            url: "/v1/auth/response",
+            headers: { authorization: `Bearer ${token}` },
+            payload: {
+                publicKey: publicKeyBase64,
+                response: createTerminalProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: publicKeyRaw }),
+                responseKind: "tokenOnly",
+            },
+        })).statusCode).toBe(200);
+
+        const createTokenSpy = vi.spyOn(auth, "createToken")
+            .mockRejectedValueOnce(new Error("injected terminal claim mint failure"));
+        try {
+            const failedClaim = await app.inject({
+                method: "POST",
+                url: "/v1/auth/request/claim",
+                payload: { publicKey: publicKeyBase64, claimSecret: claimSecretB64Url },
+            });
+            expect(failedClaim.statusCode).toBe(500);
+
+            const afterFailure = await db.terminalAuthRequest.findUnique({
+                where: { publicKey: privacyKit.encodeHex(privacyKit.decodeBase64(publicKeyBase64)) },
+                select: { claimedAt: true },
+            });
+            expect(afterFailure?.claimedAt).toBeNull();
+
+            const retry = await app.inject({
+                method: "POST",
+                url: "/v1/auth/request/claim",
+                payload: { publicKey: publicKeyBase64, claimSecret: claimSecretB64Url },
+            });
+            expect(retry.statusCode).toBe(200);
+            expect(retry.json()).toEqual({
+                state: "authorized",
+                token: expect.any(String),
+                response: expect.any(String),
+                serverIdentityId: "srv_authClaimRetryIdentity",
+            });
+        } finally {
+            createTokenSpy.mockRestore();
+        }
+
+        await app.close();
+    });
+
     it("requires a present user to approve a terminal-auth request before its successor token can be polled", async () => {
         const account = await db.account.create({
-            data: { publicKey: `pk-terminal-approval-${Date.now()}` },
+            data: { publicKey: `pk-terminal-approval-${Date.now()}`, encryptionMode: "plain" },
             select: { id: true },
         });
         const [presentUserToken, terminalAutomationToken] = await Promise.all([
-            auth.createToken(account.id),
-            auth.createToken(account.id, { session: "terminal-automation" }),
+            auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
+            auth.createToken(account.id, { session: "terminal-automation" }, { kind: "terminal", authority: "account_automation" }),
         ]);
-        const { publicKeyBase64 } = createTerminalKeypair();
+        const { publicKeyRaw, publicKeyBase64 } = createTerminalKeypair();
 
         const app = createTestApp();
         authRoutes(app as any);
@@ -347,11 +498,13 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         expect(stillRequested.statusCode).toBe(200);
         expect(stillRequested.json()).toEqual({ state: "requested" });
 
+        const response = createTerminalProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: publicKeyRaw });
+
         const presentUserResponse = await app.inject({
             method: "POST",
             url: "/v1/auth/response",
             headers: { authorization: `Bearer ${presentUserToken}` },
-            payload: { publicKey: publicKeyBase64, response: "present user approved" },
+            payload: { publicKey: publicKeyBase64, response, responseKind: "tokenOnly" },
         });
         expect(presentUserResponse.statusCode).toBe(200);
         expect(presentUserResponse.json()).toEqual({ success: true });
@@ -365,10 +518,105 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         expect(authorized.json()).toMatchObject({
             state: "authorized",
             token: expect.any(String),
-            response: "present user approved",
+            response,
         });
 
         await app.close();
+    });
+
+    it("applies the canonical account-mode policy to terminal-v3 approval responses", async () => {
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
+        const terminal = createTerminalKeypair();
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const request = await app.inject({
+            method: "POST",
+            url: "/v1/auth/request",
+            payload: { publicKey: terminal.publicKeyBase64, supportsV2: true },
+        });
+        expect(request.statusCode).toBe(200);
+
+        const mismatched = await app.inject({
+            method: "POST",
+            url: "/v1/auth/response",
+            headers: { authorization: `Bearer ${token}` },
+            payload: {
+                publicKey: terminal.publicKeyBase64,
+                response: createTerminalProvisioningResponse({ kind: "dataKey", recipientPublicKey: terminal.publicKeyRaw }),
+                responseKind: "dataKey",
+            },
+        });
+        expect(mismatched.statusCode).toBe(409);
+        expect(mismatched.json()).toEqual({ error: "provisioning_kind_mismatch" });
+
+        const malformed = await app.inject({
+            method: "POST",
+            url: "/v1/auth/response",
+            headers: { authorization: `Bearer ${token}` },
+            payload: {
+                publicKey: terminal.publicKeyBase64,
+                response: privacyKit.encodeBase64(new TextEncoder().encode("raw legacy secret")),
+                responseKind: "tokenOnly",
+            },
+        });
+        expect(malformed.statusCode).toBe(400);
+        expect(malformed.json()).toEqual({ error: "invalid_provisioning_response" });
+
+        const response = createTerminalProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: terminal.publicKeyRaw });
+        const nonCanonicalResponse = response.replace(/=+$/u, "");
+        expect(nonCanonicalResponse).not.toBe(response);
+        const nonCanonical = await app.inject({
+            method: "POST",
+            url: "/v1/auth/response",
+            headers: { authorization: `Bearer ${token}` },
+            payload: {
+                publicKey: terminal.publicKeyBase64,
+                response: nonCanonicalResponse,
+                responseKind: "tokenOnly",
+            },
+        });
+        expect(nonCanonical.statusCode).toBe(400);
+        expect(nonCanonical.json()).toEqual({ error: "invalid_provisioning_response" });
+
+        const accepted = await app.inject({
+            method: "POST",
+            url: "/v1/auth/response",
+            headers: { authorization: `Bearer ${token}` },
+            payload: {
+                publicKey: terminal.publicKeyBase64,
+                response,
+                responseKind: "tokenOnly",
+            },
+        });
+        expect(accepted.statusCode).toBe(200);
+        expect(accepted.json()).toEqual({ success: true });
+
+        const repeated = await app.inject({
+            method: "POST",
+            url: "/v1/auth/response",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { publicKey: terminal.publicKeyBase64, response, responseKind: "tokenOnly" },
+        });
+        expect(repeated.statusCode).toBe(200);
+
+        const conflicting = await app.inject({
+            method: "POST",
+            url: "/v1/auth/response",
+            headers: { authorization: `Bearer ${token}` },
+            payload: {
+                publicKey: terminal.publicKeyBase64,
+                response: createTerminalProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: terminal.publicKeyRaw }),
+                responseKind: "tokenOnly",
+            },
+        });
+        expect(conflicting.statusCode).toBe(409);
+        expect(conflicting.json()).toEqual({ error: "already_completed" });
     });
 
     it("returns consumed when the claim write loses a race after eligibility checks", async () => {
@@ -385,8 +633,9 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         });
         expect(signInRes.statusCode).toBe(200);
         const { token } = signInRes.json() as any;
+        await markSignedInAccountPlain(signInBody);
 
-        const { publicKeyBase64 } = createTerminalKeypair();
+        const { publicKeyRaw, publicKeyBase64 } = createTerminalKeypair();
         const claimSecret = new Uint8Array(randomBytes(32));
         const claimSecretB64Url = encodeBase64Url(claimSecret);
         const claimSecretHash = sha256Base64Url(claimSecret);
@@ -402,7 +651,11 @@ describe("authRoutes (terminal auth request) (integration)", () => {
             method: "POST",
             url: "/v1/auth/response",
             headers: { authorization: `Bearer ${token}` },
-            payload: { publicKey: publicKeyBase64, response: "hello" },
+            payload: {
+                publicKey: publicKeyBase64,
+                response: createTerminalProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: publicKeyRaw }),
+                responseKind: "tokenOnly",
+            },
         });
         expect(approveRes.statusCode).toBe(200);
 
@@ -546,8 +799,9 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         });
         expect(signInRes.statusCode).toBe(200);
         const { token } = signInRes.json() as any;
+        await markSignedInAccountPlain(signInBody);
 
-        const { publicKeyBase64 } = createTerminalKeypair();
+        const { publicKeyRaw, publicKeyBase64 } = createTerminalKeypair();
         const claimSecret = new Uint8Array(randomBytes(32));
         const claimSecretHash = sha256Base64Url(claimSecret);
 
@@ -562,7 +816,11 @@ describe("authRoutes (terminal auth request) (integration)", () => {
             method: "POST",
             url: "/v1/auth/response",
             headers: { authorization: `Bearer ${token}` },
-            payload: { publicKey: publicKeyBase64, response: "hello" },
+            payload: {
+                publicKey: publicKeyBase64,
+                response: createTerminalProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: publicKeyRaw }),
+                responseKind: "tokenOnly",
+            },
         });
 
         const wrongSecret = encodeBase64Url(new Uint8Array(randomBytes(32)));
@@ -573,64 +831,6 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         });
         expect(claimRes.statusCode).toBe(401);
         expect(claimRes.json()).toEqual({ error: "unauthorized" });
-
-        await app.close();
-    });
-
-    it("returns 410 consumed from /v1/auth/request/claim after the retry window elapses", async () => {
-        const { body: signInBody } = createSignInRequest();
-
-        const app = createTestApp();
-        authRoutes(app as any);
-        await app.ready();
-
-        const signInRes = await app.inject({
-            method: "POST",
-            url: "/v1/auth",
-            payload: signInBody,
-        });
-        expect(signInRes.statusCode).toBe(200);
-        const { token } = signInRes.json() as any;
-
-        const { publicKeyBase64 } = createTerminalKeypair();
-        const claimSecret = new Uint8Array(randomBytes(32));
-        const claimSecretB64Url = encodeBase64Url(claimSecret);
-        const claimSecretHash = sha256Base64Url(claimSecret);
-
-        const createRes = await app.inject({
-            method: "POST",
-            url: "/v1/auth/request",
-            payload: { publicKey: publicKeyBase64, supportsV2: true, claimSecretHash },
-        });
-        expect(createRes.statusCode).toBe(200);
-
-        await app.inject({
-            method: "POST",
-            url: "/v1/auth/response",
-            headers: { authorization: `Bearer ${token}` },
-            payload: { publicKey: publicKeyBase64, response: "hello" },
-        });
-
-        const row = await db.terminalAuthRequest.findUnique({
-            where: { publicKey: privacyKit.encodeHex(privacyKit.decodeBase64(publicKeyBase64)) },
-        });
-        expect(row).toBeTruthy();
-
-        await db.terminalAuthRequest.update({
-            where: { id: row!.id },
-            data: { claimedAt: new Date(Date.now() - 61_000) },
-        });
-
-        const claimRes = await app.inject({
-            method: "POST",
-            url: "/v1/auth/request/claim",
-            payload: { publicKey: publicKeyBase64, claimSecret: claimSecretB64Url },
-        });
-        expect(claimRes.statusCode).toBe(410);
-        expect(claimRes.json()).toEqual({ error: "consumed" });
-
-        const remaining = await db.terminalAuthRequest.findUnique({ where: { id: row!.id } });
-        expect(remaining).toBeNull();
 
         await app.close();
     });
@@ -682,7 +882,7 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         await app.close();
     });
 
-    it("keeps legacy behavior without claimSecretHash (token + response via /v1/auth/request) while enforcing TTL", async () => {
+    it("keeps claim-less polling while requiring a canonical v3 approval response", async () => {
         harness.resetEnv({
             HAPPIER_SERVER_IDENTITY_ID: "srv_authRequestIdentity",
         });
@@ -699,8 +899,9 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         });
         expect(signInRes.statusCode).toBe(200);
         const { token } = signInRes.json() as any;
+        await markSignedInAccountPlain(signInBody);
 
-        const { publicKeyBase64 } = createTerminalKeypair();
+        const { publicKeyRaw, publicKeyBase64 } = createTerminalKeypair();
 
         const createRes = await app.inject({
             method: "POST",
@@ -715,11 +916,16 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         });
         expect(createdRow?.claimSecretHash ?? null).toBeNull();
 
+        const response = createTerminalProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: publicKeyRaw });
         const approveRes = await app.inject({
             method: "POST",
             url: "/v1/auth/response",
             headers: { authorization: `Bearer ${token}` },
-            payload: { publicKey: publicKeyBase64, response: "hello" },
+            payload: {
+                publicKey: publicKeyBase64,
+                response,
+                responseKind: "tokenOnly",
+            },
         });
         expect(approveRes.statusCode).toBe(200);
 
@@ -737,7 +943,7 @@ describe("authRoutes (terminal auth request) (integration)", () => {
         expect(authorizedRes.json()).toEqual({
             state: "authorized",
             token: expect.any(String),
-            response: "hello",
+            response,
             serverIdentityId: "srv_authRequestIdentity",
         });
 

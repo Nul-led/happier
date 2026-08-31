@@ -17,6 +17,7 @@ import {
     type CancelledAutomationRunTxResult,
 } from "./automationRunService";
 import type { AutomationRunItem } from "./automationTypes";
+import { settleAutomationReplyHandoffsForRevokedMachineTx } from "./automationReplyHandoffService";
 
 export type AutomationMachineAssignmentRemovalResult = Readonly<{
     /** Live Automations whose definition-level assignment rows for this machine were removed. */
@@ -245,6 +246,12 @@ export async function removeAutomationMachineAssignmentsTx(
         accountId: params.accountId,
         machineId: params.machineId,
         accountEncryptionMode: accountFence.account.currentness.encryptionMode,
+    });
+    await settleAutomationReplyHandoffsForRevokedMachineTx({
+        tx: params.tx,
+        accountId: params.accountId,
+        machineId: params.machineId,
+        now,
     });
 
     return { affectedAutomationIds, disabledAutomationIds };

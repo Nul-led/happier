@@ -23,6 +23,22 @@ function createBinding() {
     };
 }
 
+function createLowOrderBinding() {
+    const signing = tweetnacl.sign.keyPair();
+    const contentPublicKey = new Uint8Array(tweetnacl.box.publicKeyLength);
+    const payload = Buffer.concat([
+        Buffer.from("Happy content key v1\u0000", "utf8"),
+        Buffer.from(contentPublicKey),
+    ]);
+    return {
+        accountPublicKeyHex: Buffer.from(signing.publicKey).toString("hex"),
+        contentPublicKey,
+        contentPublicKeySignature: new Uint8Array(
+            tweetnacl.sign.detached(payload, signing.secretKey),
+        ),
+    };
+}
+
 function createAccountClient(params: Readonly<{
     rows: ReadonlyArray<{
         publicKey: string;
@@ -50,6 +66,33 @@ function createAccountClient(params: Readonly<{
 }
 
 describe("accountContentKeyAdmission", () => {
+    it("rejects a correctly signed low-order content key before persistence", async () => {
+        const binding = createLowOrderBinding();
+        const client = createAccountClient({
+            rows: [{
+                publicKey: binding.accountPublicKeyHex,
+                contentPublicKey: null,
+                contentPublicKeySig: null,
+            }],
+        });
+
+        await expect(admitAccountContentKey(client.client, {
+            accountId: "account-1",
+            contentPublicKey: binding.contentPublicKey,
+            contentPublicKeySignature: binding.contentPublicKeySignature,
+        })).resolves.toEqual({ status: "invalid_binding" });
+        expect(client.updateMany).not.toHaveBeenCalled();
+        expect(deriveAccountEncryptionCurrentnessFromRow({
+            encryptionMode: "e2ee",
+            publicKey: binding.accountPublicKeyHex,
+            contentPublicKey: binding.contentPublicKey,
+            contentPublicKeySig: binding.contentPublicKeySignature,
+        })).toEqual({
+            status: "inconsistent",
+            reason: "invalid_content_key_binding",
+        });
+    });
+
     it("refuses an exact key whose stored non-null signature is invalid", async () => {
         const binding = createBinding();
         const client = createAccountClient({

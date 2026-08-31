@@ -5,9 +5,11 @@ import { createDbMocks, createDbTransactionMock, installDbModuleMock } from "../
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 
-const verifyToken = vi.fn(async () => null as any);
+const verifyTokenForRoute = vi.fn(async () => null as any);
 vi.mock("@/app/auth/auth", () => ({
-    auth: { verifyToken },
+    // Mock sits at the real production seam: registerPublicShareReadRoutes
+    // resolves optional bearers through auth.verifyTokenForRoute.
+    auth: { verifyTokenForRoute },
 }));
 
 // Mirrors the production logPublicShareAccess contract (accessLogger.ts) so
@@ -233,7 +235,7 @@ describe("publicShareRoutes optional auth (no reply-already-sent)", () => {
         const payload = await route.handler(route.createRequest(), reply);
 
         expect(route.app.authenticate).not.toHaveBeenCalled();
-        expect(verifyToken).toHaveBeenCalledTimes(2);
+        expect(verifyTokenForRoute).toHaveBeenCalledTimes(2);
         expect(reply.statusCode).toBe(200);
         expect(payload).toEqual(
             expect.objectContaining({
@@ -649,7 +651,7 @@ describe("publicShareRoutes optional auth (no reply-already-sent)", () => {
             expectedLoggedUserId: null,
         },
     ])("treats the public token as the only per-viewer authority for $label", async ({ verified, expectedLoggedUserId }) => {
-        verifyToken.mockResolvedValueOnce(verified);
+        verifyTokenForRoute.mockResolvedValueOnce(verified);
         txDbMocks.db.publicSessionShare.findUnique.mockResolvedValue({
             id: "ps1",
             sessionId: "s1",
@@ -785,7 +787,7 @@ describe("publicShareRoutes optional auth (no reply-already-sent)", () => {
         const payload = await route.handler(route.createRequest(), reply);
 
         expect(route.app.authenticate).not.toHaveBeenCalled();
-        expect(verifyToken).toHaveBeenCalledTimes(1);
+        expect(verifyTokenForRoute).toHaveBeenCalledTimes(1);
         expect(reply.statusCode).toBe(200);
         expect(txDbMocks.db.sessionMessage.findMany).toHaveBeenCalledWith(expect.objectContaining({
             where: {

@@ -802,6 +802,9 @@ describe("plugin Account data erasure", () => {
         });
         const terminalToken = await auth.createToken(accountId, {
             session: "terminal-auth-request",
+        }, {
+            kind: "terminal",
+            authority: "account_automation",
         });
 
         await withProductionAuthenticatedPluginDataApp(async (app) => {

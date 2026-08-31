@@ -111,7 +111,8 @@ CREATE TABLE "AutomationTrigger" (
 
 INSERT INTO "AutomationTrigger" ("id", "automationId", "kind", "enabled", "scheduleKind", "scheduleExpr", "everyMs", "timezone", "nextRunAt", "createdAt", "updatedAt")
 SELECT "id", "id", 'schedule', true, "scheduleKind", "scheduleExpr", "everyMs", "timezone", "nextRunAt", "createdAt", "updatedAt"
-FROM "Automation";
+FROM "Automation"
+WHERE "scheduleKind" IN ('cron', 'interval');
 
 CREATE TABLE "new_Automation" (
     "id" TEXT NOT NULL PRIMARY KEY,

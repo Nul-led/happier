@@ -30,6 +30,11 @@ function createClaim(attempt: number) {
         runId: "run-1",
         handoffId: "handoff-1",
         occurrenceKey: "A".repeat(43),
+        cause: {
+            kind: "conversation" as const,
+            occurrenceKey: "A".repeat(43),
+            occurredAt: NOW.getTime(),
+        },
         attempt,
         accountCurrentness: {
             mode: "plain" as const,

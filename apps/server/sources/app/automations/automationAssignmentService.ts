@@ -350,6 +350,11 @@ export async function listDaemonAssignments(params: {
             return {
                 ...row,
                 automation: { ...row.automation, runs },
+                // The released adapter consumes this explicit owner-provided
+                // projection rather than inferring a schedule from array order.
+                v2ScheduleTrigger: params.requireV2DefinitionRepresentability
+                    ? row.automation.triggers.find((trigger) => trigger.kind === "schedule") ?? null
+                    : null,
                 nextClaimAt: resolveAutomationAssignmentNextClaimAt({
                     schedules: row.automation.triggers
                         .filter((trigger) => trigger.kind === "schedule" && trigger.enabled)
@@ -390,6 +395,27 @@ export async function listDaemonAssignments(params: {
                 },
             },
         });
+    const frozenV2TriggerIds = params.requireV2DefinitionRepresentability
+        ? [...new Set(admittedRunAssignments.flatMap((assignment) => (
+            assignment.run.triggerId === null ? [] : [assignment.run.triggerId]
+        )))]
+        : [];
+    // A frozen released-V2 Run retains its own schedule identity even after
+    // that trigger is soft-deleted. It must never borrow `triggers[0]` from a
+    // mutable Definition, which can be a sibling trigger or no longer exist.
+    const frozenV2ScheduleTriggers = frozenV2TriggerIds.length === 0
+        ? []
+        : await db.automationTrigger.findMany({
+            where: {
+                id: { in: frozenV2TriggerIds },
+                kind: "schedule",
+                automation: { accountId: params.accountId },
+            },
+            select: automationAssignmentWakeTriggerSelect,
+        });
+    const frozenV2ScheduleTriggerById = new Map(
+        frozenV2ScheduleTriggers.map((trigger) => [trigger.id, trigger] as const),
+    );
     const admittedRunWakes: Array<(typeof activeAssignments)[number]> = [];
     for (const automation of frozenAutomations) {
         const assignments = frozenByAutomationId.get(automation.id) ?? [];
@@ -405,6 +431,12 @@ export async function listDaemonAssignments(params: {
             ...assignment.run,
             assignedToMachine: true,
         }));
+        const retainedDefinitionSchedule = representative.run.triggerId === null
+            ? (() => {
+                const schedules = automation.triggers.filter((trigger) => trigger.kind === "schedule");
+                return schedules.length === 1 ? schedules[0] : null;
+            })()
+            : null;
         admittedRunWakes.push({
             id: representative.run.id,
             machineId: representative.machineId,
@@ -412,6 +444,9 @@ export async function listDaemonAssignments(params: {
             priority: representative.priority,
             updatedAt: representative.run.updatedAt,
             automation: { ...automation, runs },
+            v2ScheduleTrigger: representative.run.triggerId === null
+                ? retainedDefinitionSchedule
+                : frozenV2ScheduleTriggerById.get(representative.run.triggerId) ?? null,
             nextClaimAt: resolveAutomationAssignmentNextClaimAt({ schedules: [], runs }),
         });
     }

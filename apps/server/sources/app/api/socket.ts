@@ -8,6 +8,7 @@ import {
 import { Server, Socket } from "socket.io";
 import { log } from "@/utils/logging/log";
 import { auth } from "@/app/auth/auth";
+import { isRestrictedAuthTokenKind } from "@/app/api/utils/apiTokenRouteAdmission";
 import {
     recordSocketAuthHandshake,
     recordSocketAuthHandshakeStageDuration,
@@ -437,12 +438,12 @@ export function startSocket(app: Fastify) {
         let releaseMachineOwnershipIfClaimed: (() => Promise<void>) | null = null;
         try {
             setHandshakeStage("verify-token");
-            const verified = await auth.verifyToken(token);
+            const verified = await auth.verifyTokenForRoute(token);
             if (!verified) {
                 observeHandshakeStage("error");
                 return rejectHandshake({ statusCode: 401, error: 'invalid-token' });
             }
-            if (verified.authTokenKind === "api_token") {
+            if (isRestrictedAuthTokenKind(verified.authTokenKind)) {
                 observeHandshakeStage("error");
                 return rejectHandshake({ statusCode: 401, error: 'invalid-token' });
             }
@@ -719,11 +720,11 @@ export function startSocket(app: Fastify) {
 
         try {
             await canonicalRoomJoin;
-            const currentVerified = await auth.verifyToken(token);
+            const currentVerified = await auth.verifyTokenForRoute(token);
             if (
                 !socket.connected
                 || !currentVerified
-                || currentVerified.authTokenKind === "api_token"
+                || isRestrictedAuthTokenKind(currentVerified.authTokenKind)
                 || currentVerified.userId !== userId
             ) {
                 await rejectPostConnectAdmission();

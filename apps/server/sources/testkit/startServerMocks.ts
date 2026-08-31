@@ -10,10 +10,13 @@ export const startPluginWebhookCredentialRetirementWorkerMock = vi.fn(
 
 export const START_SERVER_ENV_KEYS = [
   'SERVER_ROLE',
+  'PORT',
   'REDIS_URL',
   'DATABASE_URL',
   'HAPPY_SERVER_FLAVOR',
   'HAPPIER_SERVER_FLAVOR',
+  'HAPPIER_MANAGED_RELAY_PURPOSE',
+  'HAPPIER_PUBLIC_SERVER_URL',
   'HAPPY_DB_PROVIDER',
   'HAPPIER_DB_PROVIDER',
   'HAPPY_FILES_BACKEND',
@@ -32,6 +35,7 @@ export const START_SERVER_ENV_KEYS = [
   'HAPPIER_VOICE_PROVIDER_IDENTITY_BACKFILL_BATCH_DELAY_MS',
   'HAPPIER_VOICE_PROVIDER_IDENTITY_BACKFILL_INTERVAL_MS',
   'METRICS_ENABLED',
+  'AUTH_ANONYMOUS_SIGNUP_ENABLED',
 ] as const
 
 export function snapshotStartServerEnv(): EnvValues {
@@ -39,7 +43,13 @@ export function snapshotStartServerEnv(): EnvValues {
 }
 
 export function installStartServerCommonWiringMocks(): void {
-  vi.mock('@/app/api/api', () => ({ startApi: vi.fn(async () => {}) }))
+  // startApi returns the listening Fastify instance; the managed Home Iroh
+  // composition derives the actual bound port from its server address.
+  vi.mock('@/app/api/api', () => ({
+    startApi: vi.fn(async () => ({
+      server: { address: () => ({ address: '127.0.0.1', family: 'IPv4', port: 3005 }) },
+    })),
+  }))
   vi.mock('@/app/monitoring/metrics', () => ({ startMetricsServer: vi.fn(async () => true) }))
   vi.mock('@/app/monitoring/metrics/index', () => ({
     startDatabaseMetricsUpdater: vi.fn(() => {}),

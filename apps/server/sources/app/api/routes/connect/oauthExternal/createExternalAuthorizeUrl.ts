@@ -19,10 +19,13 @@ type ExternalAuthorizeFlowParams =
           env: NodeJS.ProcessEnv;
           publicKeyHex: string | null;
           proofHash: string | null;
-          purpose?: "account_encryption_first_key";
+          purpose?: "account_encryption_first_key" | "account_directory";
           userId?: string;
           requestDigest?:
               AccountEncryptionMigrateExternalAuthBindingDigestV1;
+          endpointUrl?: string;
+          endpointServerIdentityId?: string;
+          attemptExpiresAt?: Date;
           webAppOAuthReturnUrl?: string | null;
       }>
     | Readonly<{
@@ -36,6 +39,12 @@ type ExternalAuthorizeFlowParams =
 
 export async function createExternalAuthorizeUrl(params: ExternalAuthorizeFlowParams): Promise<string | null> {
     const ttlMs = resolveOauthStateAttemptTtlMsFromEnv(params.env);
+    const attemptExpiresAt = params.flow === "auth" && params.attemptExpiresAt
+        ? new Date(params.attemptExpiresAt.getTime())
+        : new Date(Date.now() + ttlMs);
+    if (!Number.isFinite(attemptExpiresAt.getTime())) {
+        throw new Error("Invalid OAuth state-attempt expiry");
+    }
     const pkceCodeVerifier = generatePkceVerifier(64);
     const codeChallenge = pkceChallengeS256(pkceCodeVerifier);
     const nonce = randomBytes(32).toString("base64url");
@@ -51,9 +60,16 @@ export async function createExternalAuthorizeUrl(params: ExternalAuthorizeFlowPa
                         provider: params.providerId,
                         pkceCodeVerifier,
                         nonce,
+                        ...(params.flow === "auth" && params.purpose === "account_directory"
+                            ? {
+                                purpose: params.purpose,
+                                endpointUrl: params.endpointUrl,
+                                endpointServerIdentityId: params.endpointServerIdentityId,
+                            }
+                            : {}),
                         ...(params.webAppOAuthReturnUrl ? { webAppOAuthReturnUrl: params.webAppOAuthReturnUrl } : {}),
                     }),
-                    expiresAt: new Date(Date.now() + ttlMs),
+                    expiresAt: attemptExpiresAt,
                 },
             });
             break;
@@ -77,6 +93,9 @@ export async function createExternalAuthorizeUrl(params: ExternalAuthorizeFlowPa
                       purpose: params.purpose,
                       userId: params.userId,
                       requestDigest: params.requestDigest,
+                      endpointUrl: params.endpointUrl,
+                      endpointServerIdentityId:
+                          params.endpointServerIdentityId,
                   } : {}),
               })
             : await auth.createOauthStateToken({

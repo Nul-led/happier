@@ -250,7 +250,14 @@ describe("plugin webhook delivery store exact-target admission", () => {
             webhookContributionId: "github-events",
             handlerActionId: "handle-webhook",
             sourceInstanceId: "source-1",
-            route: { currentCredential: { credentialVersionId: "credential-2" } },
+            route: {
+                currentCredential: { credentialVersionId: "credential-2" },
+                previousCredential: {
+                    credentialVersionId: "credential-1",
+                    state: "previous",
+                    acceptUntil: new Date("2026-08-12T00:00:00.000Z"),
+                },
+            },
         });
 
         await expect(admitPluginWebhookDeliveryV1({
@@ -282,6 +289,43 @@ describe("plugin webhook delivery store exact-target admission", () => {
             where: { id: "endpoint-1", providerConfirmedAt: null },
             data: { providerConfirmedAt: new Date("2026-08-11T00:00:00.000Z") },
         });
+    });
+
+    it("rejects a credential that was retired after signature verification and before durable admission", async () => {
+        // Signature streaming happens before this transaction. A superseded
+        // credential must be checked again here so Finish, expiry, and a later
+        // rotation cannot race a request that was already in flight.
+        mocks.tx.pluginWebhookEndpoint.findFirst.mockResolvedValue({
+            id: "endpoint-1",
+            accountId: "account-1",
+            pluginId: "acme.github",
+            routeId: "route-1",
+            revision: 2,
+            providerConfirmedAt: null,
+            targetMachineId: "machine-1",
+            targetMachineInstallationId: "installation-1",
+            targetMaterializationId: "materialization-1",
+            targetPluginVersion: "1.0.0",
+            webhookContributionId: "github-events",
+            handlerActionId: "handle-webhook",
+            sourceInstanceId: "source-1",
+            route: {
+                currentCredential: { credentialVersionId: "credential-2" },
+                previousCredential: null,
+            },
+        });
+
+        await expect(admitPluginWebhookDeliveryV1({
+            endpointId: "endpoint-1",
+            expectedEndpointRevision: 2,
+            routeId: "route-1",
+            verifierKind: "github_hmac_sha256_v1",
+            credentialVersionId: "credential-1",
+            deliveryIdentityDigest: "e".repeat(64),
+            stored: plainStoredEnvelope(),
+            now: new Date("2026-08-11T00:00:00.000Z"),
+        })).resolves.toEqual({ kind: "endpointUnavailable" });
+        expect(mocks.delivery.create).not.toHaveBeenCalled();
     });
 });
 

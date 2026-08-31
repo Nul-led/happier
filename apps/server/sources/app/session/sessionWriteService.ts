@@ -90,6 +90,7 @@ import {
 } from "@/app/session/metadata/sessionOwnerMetadataPersistence";
 import { admitCompletedParentTurnAutomationRunsTx } from "@/app/automations/automationSessionLifecycleAdmission";
 import { rejoinAutomationOccurrenceInsertRace } from "@/app/automations/automationOccurrencePersistence";
+import { notifySessionTranscriptMutationAfterCommit } from './sessionTranscriptMutationObserver';
 
 export {
     writeHistoricalSessionMessageBatch,
@@ -480,6 +481,7 @@ function isSessionMetadataNoOp(params: Readonly<{
 
 type SessionMessageWriteRow = {
     id: string;
+    sessionId: string;
     seq: number;
     localId: string | null;
     sidechainId: string | null;
@@ -503,6 +505,7 @@ type SessionMessageWriteRowInput = Omit<
 
 const SESSION_MESSAGE_WRITE_SELECT = {
     id: true,
+    sessionId: true,
     seq: true,
     localId: true,
     sidechainId: true,
@@ -530,11 +533,24 @@ async function updateSessionMessageAtCurrentRevisionInTx(params: Readonly<{
     data: Prisma.SessionMessageUpdateInput;
 }>) {
     try {
-        return await params.tx.sessionMessage.update({
+        const updated = await params.tx.sessionMessage.update({
             where: { id: params.id, rowRevision: params.rowRevision },
             data: params.data,
             select: SESSION_MESSAGE_WRITE_SELECT,
         });
+        notifySessionTranscriptMutationAfterCommit(params.tx, {
+            kind: 'upsert',
+            message: {
+                id: updated.id,
+                sessionId: updated.sessionId,
+                seq: updated.seq,
+                createdAtMs: updated.createdAt.getTime(),
+                updatedAtMs: updated.updatedAt.getTime(),
+                role: typeof updated.messageRole === 'string' ? updated.messageRole : null,
+                content: updated.content,
+            },
+        });
+        return updated;
     } catch (error) {
         if (isPrismaErrorCode(error, "P2025")) {
             throw new SessionMessageRowRevisionRaceError();

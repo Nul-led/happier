@@ -44,16 +44,81 @@ function normalizeText(value: string): string {
     return String(value ?? '').replace(/\u0000/gu, '').normalize('NFKC').trim();
 }
 
-function ftsQuery(value: string): string {
-    const terms = normalizeText(value)
-        .split(/\s+/u)
-        .map((term) => {
-            const prefix = term.endsWith('*');
-            const token = term.replace(/\*+$/u, '').replace(/"/gu, '""');
-            return token ? `"${token}"${prefix ? '*' : ''}` : '';
-        })
-        .filter(Boolean);
-    return terms.join(' AND ');
+// Unicode61 has no word segmentation for scripts written without inter-word spaces, so a
+// Chinese, Japanese, or Korean run becomes one giant token that no sub-word query can match.
+// Overlapping unigrams and bigrams restore sub-run searchability;
+// they are applied only to the derived FTS text, never to the stored message text.
+const CJK_RUN_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu;
+
+function segmentCjkRuns(value: string): string {
+    return value.replace(CJK_RUN_PATTERN, (run) => {
+        const chars = Array.from(run);
+        const terms = [...chars];
+        for (let i = 0; i + 1 < chars.length; i += 1) terms.push(chars[i]! + chars[i + 1]!);
+        return ` ${terms.join(' ')} `;
+    });
+}
+
+function buildFtsQuery(value: string): Readonly<{ match: string; snippetTerms: string[] }> {
+    const matchParts: string[] = [];
+    const snippetTerms: string[] = [];
+    for (const rawTerm of normalizeText(value).replace(/"/gu, ' ').split(/\s+/u)) {
+        const prefix = rawTerm.endsWith('*');
+        const displayTerm = rawTerm.replace(/\*+$/u, '');
+        if (!displayTerm) continue;
+        snippetTerms.push(displayTerm);
+        for (const token of segmentCjkRuns(displayTerm).split(/\s+/u).filter(Boolean)) {
+            matchParts.push(`"${token.replace(/"/gu, '""')}"${prefix ? '*' : ''}`);
+        }
+    }
+    return { match: matchParts.join(' AND '), snippetTerms };
+}
+
+const SNIPPET_WINDOW_CHARS = 160;
+
+function moveByCodePoints(text: string, from: number, count: number): number {
+    let index = from;
+    if (count < 0) {
+        for (let remaining = -count; remaining > 0 && index > 0; remaining -= 1) {
+            index -= 1;
+            const unit = text.charCodeAt(index);
+            if (index > 0 && unit >= 0xDC00 && unit <= 0xDFFF) index -= 1;
+        }
+        return index;
+    }
+    for (let remaining = count; remaining > 0 && index < text.length; remaining -= 1) {
+        const codePoint = text.codePointAt(index);
+        index += codePoint !== undefined && codePoint > 0xFFFF ? 2 : 1;
+    }
+    return index;
+}
+
+/** Renders the user-visible snippet from the pristine message text so segmented index text never leaks into results. */
+function buildSnippet(text: string, terms: readonly string[]): string {
+    const haystack = text.toLowerCase();
+    let matchStart = -1;
+    let matchLength = 0;
+    let matchedTerm = '';
+    for (const term of terms) {
+        const found = haystack.indexOf(term.toLowerCase());
+        if (found >= 0 && (matchStart < 0 || found < matchStart)) {
+            matchStart = found;
+            matchLength = term.length;
+            matchedTerm = term;
+        }
+    }
+    if (matchStart < 0) {
+        const end = moveByCodePoints(text, 0, SNIPPET_WINDOW_CHARS);
+        return end < text.length ? `${text.slice(0, end)}…` : text;
+    }
+    // Extend ASCII prefix matches (gam* -> gamma) to the end of the token they started.
+    if (/[A-Za-z0-9_*-]$/u.test(matchedTerm)) {
+        while (matchStart + matchLength < text.length && /[A-Za-z0-9_$-]/u.test(text[matchStart + matchLength]!)) matchLength += 1;
+    }
+    const matchEnd = matchStart + matchLength;
+    const start = moveByCodePoints(text, matchStart, -60);
+    const end = moveByCodePoints(text, matchEnd, 100);
+    return `${start > 0 ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
 }
 
 function boundedLimit(value: number | undefined): number {
@@ -129,11 +194,19 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
             role = excluded.role,
             text = excluded.text
     `);
+    const deleteMessage = db.prepare('DELETE FROM home_search_messages WHERE id = ?');
     const deleteFts = db.prepare('DELETE FROM home_search_fts WHERE id = ?');
     const insertFts = db.prepare(`
         INSERT INTO home_search_fts(id, session_id, seq, created_at_ms, role, text)
         VALUES (?, ?, ?, ?, ?, ?)
     `);
+    const deleteSessionMessages = db.prepare('DELETE FROM home_search_messages WHERE session_id = ?');
+    const deleteSessionFts = db.prepare('DELETE FROM home_search_fts WHERE session_id = ?');
+    const deleteMeta = db.prepare('DELETE FROM home_search_meta WHERE key = ?');
+    const countMessages = db.prepare('SELECT count(*) AS count FROM home_search_messages');
+    const setMeta = db.prepare(`INSERT INTO home_search_meta(key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
+    const getMeta = db.prepare('SELECT value FROM home_search_meta WHERE key = ?');
 
     const result: HomeSearchDb = {
         path,
@@ -152,7 +225,14 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
                     text,
                 );
                 deleteFts.run(message.id);
-                insertFts.run(message.id, message.sessionId, message.seq, message.createdAtMs, message.role ?? null, text);
+                insertFts.run(
+                    message.id,
+                    message.sessionId,
+                    message.seq,
+                    message.createdAtMs,
+                    message.role ?? null,
+                    segmentCjkRuns(text),
+                );
                 db.exec('COMMIT');
             } catch (error) {
                 db.exec('ROLLBACK');
@@ -162,7 +242,7 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
         remove(messageId) {
             db.exec('BEGIN IMMEDIATE');
             try {
-                db.prepare('DELETE FROM home_search_messages WHERE id = ?').run(messageId);
+                deleteMessage.run(messageId);
                 deleteFts.run(messageId);
                 db.exec('COMMIT');
             } catch (error) {
@@ -173,9 +253,9 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
         removeSession(sessionId) {
             db.exec('BEGIN IMMEDIATE');
             try {
-                db.prepare('DELETE FROM home_search_messages WHERE session_id = ?').run(sessionId);
-                db.prepare('DELETE FROM home_search_fts WHERE session_id = ?').run(sessionId);
-                db.prepare('DELETE FROM home_search_meta WHERE key = ?').run(`watermark:${sessionId}`);
+                deleteSessionMessages.run(sessionId);
+                deleteSessionFts.run(sessionId);
+                deleteMeta.run(`watermark:${sessionId}`);
                 db.exec('COMMIT');
             } catch (error) {
                 db.exec('ROLLBACK');
@@ -193,23 +273,22 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
             }
         },
         count() {
-            const row = db.prepare('SELECT count(*) AS count FROM home_search_messages').get() as { count?: number } | undefined;
+            const row = countMessages.get() as { count?: number } | undefined;
             return Number(row?.count ?? 0);
         },
         setWatermark(sessionId, seq) {
-            db.prepare(`INSERT INTO home_search_meta(key, value) VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(`watermark:${sessionId}`, String(Math.max(0, Math.trunc(seq))));
+            setMeta.run(`watermark:${sessionId}`, String(Math.max(0, Math.trunc(seq))));
         },
         getWatermark(sessionId) {
-            const row = db.prepare('SELECT value FROM home_search_meta WHERE key = ?').get(`watermark:${sessionId}`) as { value?: string } | undefined;
+            const row = getMeta.get(`watermark:${sessionId}`) as { value?: string } | undefined;
             const value = Number(row?.value);
             return Number.isSafeInteger(value) && value >= 0 ? value : 0;
         },
         search(input) {
-            const query = ftsQuery(input.query);
-            if (!query) return [];
+            const parsedQuery = buildFtsQuery(input.query);
+            if (!parsedQuery.match) return [];
             const whereParts: string[] = [];
-            const args: SQLInputValue[] = [query];
+            const args: SQLInputValue[] = [parsedQuery.match];
             if (input.sessionId) {
                 whereParts.push('f.session_id = ?');
                 args.push(input.sessionId);
@@ -222,18 +301,19 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
             args.push(boundedLimit(input.maxResults));
             const rows = db.prepare(`
                 SELECT f.id, f.session_id AS sessionId, f.seq, f.created_at_ms AS createdAtMs,
-                    f.role, f.text, snippet(home_search_fts, 5, '<mark>', '</mark>', '…', 24) AS snippet,
-                    bm25(home_search_fts) AS rank
+                    f.role, m.text, bm25(home_search_fts) AS rank
                 FROM home_search_fts f
+                JOIN home_search_messages m ON m.id = f.id
                 WHERE home_search_fts MATCH ?${where}
                 ORDER BY rank ASC, f.created_at_ms DESC, f.seq DESC
                 LIMIT ?
             `).all(...args) as Array<Record<string, unknown>>;
             return rows.map((row) => {
                 const rank = Number(row.rank);
-                const score = Number.isFinite(rank) ? 1 / (1 + Math.max(0, rank)) : 0;
+                const score = Number.isFinite(rank) ? 1 / (1 + Math.exp(rank)) : 0;
                 const seq = Number(row.seq);
                 const createdAtMs = Number(row.createdAtMs);
+                const text = String(row.text);
                 return {
                     id: String(row.id),
                     sessionId: String(row.sessionId),
@@ -242,8 +322,8 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
                     createdAtFromMs: createdAtMs,
                     createdAtToMs: createdAtMs,
                     role: typeof row.role === 'string' ? row.role : null,
-                    text: String(row.text),
-                    snippet: String(row.snippet || row.text),
+                    text,
+                    snippet: buildSnippet(text, parsedQuery.snippetTerms),
                     score,
                 } satisfies HomeSearchHit;
             });

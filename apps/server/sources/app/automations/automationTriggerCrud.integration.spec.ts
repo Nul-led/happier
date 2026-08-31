@@ -1006,4 +1006,90 @@ describe("automation trigger-set CRUD", () => {
             expect(run.causeTriggerRevision).toBe(admitted.causeTriggerRevision);
         }
     });
+
+    it("bounds V2 history to one raw Run window and advances with that raw cursor", async () => {
+        const account = await db.account.create({
+            data: { id: `account-${randomUUID()}`, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const automation = await createAutomation({
+            accountId: account.id,
+            input: {
+                automationId: randomUUID(),
+                name: "V2 raw history window",
+                enabled: false,
+                executionRecipe: executionRecipe(1),
+                triggers: [],
+            },
+        });
+        const templateCiphertext = JSON.stringify({
+            kind: "happier_automation_template_plain_v1",
+            payload: { prompt: "released V2" },
+        });
+        const v2Input = (invokedAt: number) => JSON.stringify({
+            kind: "happier_automation_run_execution_input_v1",
+            targetType: "new_session",
+            templateVersion: 1,
+            templateCiphertext,
+            origin: { kind: "manual", invokedAt },
+        });
+        const base = Date.now();
+        const [olderV2, newerV2, currentOnly] = await Promise.all([
+            db.automationRun.create({
+                data: {
+                    automationId: automation.id,
+                    accountId: account.id,
+                    state: "succeeded",
+                    causeKind: "manual",
+                    causeOccurredAt: new Date(base),
+                    executionInputEnvelope: v2Input(base),
+                    scheduledAt: new Date(base), dueAt: new Date(base), finishedAt: new Date(base),
+                    createdAt: new Date(base), updatedAt: new Date(base),
+                },
+                select: { id: true },
+            }),
+            db.automationRun.create({
+                data: {
+                    automationId: automation.id,
+                    accountId: account.id,
+                    state: "succeeded",
+                    causeKind: "manual",
+                    causeOccurredAt: new Date(base + 1),
+                    executionInputEnvelope: v2Input(base + 1),
+                    scheduledAt: new Date(base + 1), dueAt: new Date(base + 1), finishedAt: new Date(base + 1),
+                    createdAt: new Date(base + 1), updatedAt: new Date(base + 1),
+                },
+                select: { id: true },
+            }),
+            db.automationRun.create({
+                data: {
+                    automationId: automation.id,
+                    accountId: account.id,
+                    state: "succeeded",
+                    causeKind: "manual",
+                    causeOccurredAt: new Date(base + 2),
+                    executionInputEnvelope: JSON.stringify(executionRecipe(1)),
+                    scheduledAt: new Date(base + 2), dueAt: new Date(base + 2), finishedAt: new Date(base + 2),
+                    createdAt: new Date(base + 2), updatedAt: new Date(base + 2),
+                },
+                select: { id: true },
+            }),
+        ]);
+
+        const first = await listAutomationRuns({
+            accountId: account.id, automationId: automation.id, limit: 1,
+            requireV2RunRepresentability: true,
+        });
+        expect(first).toEqual({ runs: [], nextCursor: currentOnly.id });
+        const second = await listAutomationRuns({
+            accountId: account.id, automationId: automation.id, limit: 1,
+            cursor: first!.nextCursor,
+            requireV2RunRepresentability: true,
+        });
+        expect(second).toMatchObject({
+            runs: [expect.objectContaining({ id: newerV2.id })],
+            nextCursor: newerV2.id,
+        });
+        expect(olderV2.id).not.toBe(newerV2.id);
+    });
 });

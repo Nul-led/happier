@@ -11,6 +11,11 @@ import {
     type PeerTcpTunnelBinaryFrameHeaderV2,
     type PeerTcpTunnelRelayEnvelope,
 } from "@happier-dev/protocol";
+import {
+    createPeerTcpTunnelStreamSession,
+    decodePeerTcpTunnelBinaryFrameForSubstreamSession,
+    encodePeerTcpTunnelBinaryFrameForSubstream,
+} from "@happier-dev/peer-transport/duplexFrames";
 
 import { readMachineTunnelFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import { resolvePeerMediationGrantSigningConfig } from "@/app/machines/peer/mediation/mintDirectRouteGrantV1";
@@ -58,30 +63,25 @@ type PreviewSubstream = {
 };
 
 type QueuedRead =
-    | Readonly<{ kind: "chunk"; chunk: Uint8Array; onConsumed?: () => void }>
-    | Readonly<{ kind: "done" }>
-    | Readonly<{ kind: "error"; error: unknown }>;
+    | Readonly<{ kind: "chunk"; chunk: Uint8Array; onConsumed: () => void }>
+    | Readonly<{ kind: "done" }>;
 
 class AsyncByteQueue implements AsyncIterable<Uint8Array> {
     private readonly items: QueuedRead[] = [];
     private readonly waiters: ((item: QueuedRead) => void)[] = [];
     private closed = false;
 
-    push(chunk: Uint8Array, onConsumed?: () => void): void {
-        if (this.closed) return;
-        this.publish({ kind: "chunk", chunk, onConsumed });
+    push(chunk: Uint8Array): Promise<void> {
+        if (this.closed) return Promise.resolve();
+        return new Promise((resolve) => {
+            this.publish({ kind: "chunk", chunk, onConsumed: resolve });
+        });
     }
 
     close(): void {
         if (this.closed) return;
         this.closed = true;
         this.publish({ kind: "done" });
-    }
-
-    fail(error: unknown): void {
-        if (this.closed) return;
-        this.closed = true;
-        this.publish({ kind: "error", error });
     }
 
     private publish(item: QueuedRead): void {
@@ -106,11 +106,8 @@ class AsyncByteQueue implements AsyncIterable<Uint8Array> {
             const item = await this.nextItem();
             if (item.kind === "chunk") {
                 yield item.chunk;
-                item.onConsumed?.();
+                item.onConsumed();
                 continue;
-            }
-            if (item.kind === "error") {
-                throw item.error;
             }
             return;
         }
@@ -164,13 +161,17 @@ export function createLocalServicePreviewTunnelOpener(
         header: PeerTcpTunnelBinaryFrameHeaderV2,
         payload?: Uint8Array,
     ): void {
+        sendEncodedBinaryFrame(session, encodePeerTcpTunnelBinaryFrameV2({ header, payload }));
+    }
+
+    function sendEncodedBinaryFrame(session: PreviewTunnelSession, frame: Uint8Array): void {
         sendEnvelope(session, {
             v: 2,
             scopeUserId: session.accountId,
             sender: { kind: "user", socketId: session.transport.relaySocketId },
             recipient: { kind: "machine", machineId: session.preview.machineId },
             encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-            frame: encodePeerTcpTunnelBinaryFrameV2({ header, payload }),
+            frame,
         });
     }
 
@@ -339,30 +340,7 @@ export function createLocalServicePreviewTunnelOpener(
         const featureEnv = readMachineTunnelFeatureEnv(input.env);
         const substreamId = `preview_substream_${generateId()}`;
         const queue = new AsyncByteQueue();
-        let clientSequence = 0;
-        let daemonSequence = 0;
-        let clientAckedSequence = 0;
-        let clientWindowBytes = PEER_TCP_TUNNEL_DEFAULT_INITIAL_WINDOW_BYTES;
         let closed = false;
-        let waitForClientCredit: (() => void) | null = null;
-
-        function availableClientWindow(): number {
-            return Math.max(0, clientAckedSequence + clientWindowBytes - clientSequence);
-        }
-
-        function wakeClientCreditWaiter(): void {
-            const waiter = waitForClientCredit;
-            waitForClientCredit = null;
-            waiter?.();
-        }
-
-        async function waitForClientWindow(): Promise<void> {
-            while (availableClientWindow() <= 0 && !closed) {
-                await new Promise<void>((resolve) => {
-                    waitForClientCredit = resolve;
-                });
-            }
-        }
 
         function releaseStream(): void {
             if (closed) return;
@@ -370,11 +348,31 @@ export function createLocalServicePreviewTunnelOpener(
             queue.close();
             session.streams.delete(substreamId);
             session.activeStreams = Math.max(0, session.activeStreams - 1);
-            wakeClientCreditWaiter();
             if (session.activeStreams === 0) {
                 scheduleSessionIdleClose(key, session, featureEnv.maxIdleMs);
             }
         }
+
+        const frameSession = createPeerTcpTunnelStreamSession({
+            tunnelId: session.tunnelId,
+            outboundDirection: "client_to_daemon",
+            initialWindowBytes: PEER_TCP_TUNNEL_DEFAULT_INITIAL_WINDOW_BYTES,
+            maxFrameBytes: featureEnv.serverRoutedMaxFrameBytes,
+            maxDecodedPayloadBytes: featureEnv.serverRoutedMaxRawPayloadBytes,
+            maxSendChunkBytes: featureEnv.serverRoutedMaxRawPayloadBytes,
+            ackAfterBytes: 1,
+            connection: {
+                write: (bytes) => queue.push(bytes),
+                endWrite: () => queue.close(),
+                close: () => releaseStream(),
+            },
+            sendFrame: (frame) => {
+                sendEncodedBinaryFrame(session, encodePeerTcpTunnelBinaryFrameForSubstream({
+                    frame,
+                    substreamId,
+                }));
+            },
+        });
 
         const stream: PreviewSubstream = {
             substreamId,
@@ -388,44 +386,17 @@ export function createLocalServicePreviewTunnelOpener(
                 if (!decoded.ok || decoded.header.tunnelId !== session.tunnelId || decoded.header.substreamId !== substreamId) {
                     return;
                 }
-                if (decoded.header.kind === "ack" && decoded.header.direction === "client_to_daemon") {
-                    clientAckedSequence = decoded.header.ack ?? clientAckedSequence;
-                    clientWindowBytes = decoded.header.window ?? clientWindowBytes;
-                    wakeClientCreditWaiter();
-                    return;
-                }
-                if (decoded.header.kind === "data" && decoded.header.direction === "daemon_to_client") {
-                    if (decoded.header.sequence !== daemonSequence) {
-                        queue.fail(createTunnelUnavailableError("sequence_mismatch"));
-                        releaseStream();
-                        return;
-                    }
-                    daemonSequence += decoded.payload.byteLength;
-                    const ackSequence = daemonSequence;
-                    queue.push(decoded.payload, () => {
-                        if (session.closed) return;
-                        sendBinaryFrame(session, {
-                            version: 2,
-                            kind: "ack",
-                            tunnelId: session.tunnelId,
-                            substreamId,
-                            direction: "daemon_to_client",
-                            ack: ackSequence,
-                            window: PEER_TCP_TUNNEL_DEFAULT_INITIAL_WINDOW_BYTES,
-                            payloadLength: 0,
-                        });
-                    });
-                    return;
-                }
-                if (decoded.header.kind === "close" || decoded.header.kind === "abort") {
-                    releaseStream();
-                }
+                const frame = decodePeerTcpTunnelBinaryFrameForSubstreamSession({
+                    header: decoded.header,
+                    payload: decoded.payload,
+                });
+                if (!frame) return;
+                void frameSession.acceptFrame(frame).catch(() => releaseStream());
             },
             closeFromSession() {
                 if (closed) return;
                 closed = true;
                 queue.close();
-                wakeClientCreditWaiter();
             },
         };
 
@@ -439,78 +410,23 @@ export function createLocalServicePreviewTunnelOpener(
             payloadLength: 0,
         });
 
-        async function sendClientData(chunk: Uint8Array): Promise<void> {
-            for (let offset = 0; offset < chunk.byteLength;) {
-                await waitForClientWindow();
-                if (closed) return;
-                const available = availableClientWindow();
-                if (available <= 0) {
-                    continue;
-                }
-                const length = Math.min(
-                    chunk.byteLength - offset,
-                    available,
-                    featureEnv.serverRoutedMaxRawPayloadBytes,
-                );
-                const payload = chunk.subarray(offset, offset + length);
-                sendBinaryFrame(session, {
-                    version: 2,
-                    kind: "data",
-                    tunnelId: session.tunnelId,
-                    substreamId,
-                    direction: "client_to_daemon",
-                    sequence: clientSequence,
-                    payloadLength: payload.byteLength,
-                }, payload);
-                clientSequence += payload.byteLength;
-                offset += payload.byteLength;
-            }
-        }
-
         const tunnelStream: LocalServicePreviewTunnelStream = {
             tunnelId: session.tunnelId,
             substreamId,
             write: async (chunk) => {
-                await sendClientData(normalizeChunk(chunk));
+                const result = await frameSession.write(normalizeChunk(chunk));
+                if (!result.ok) throw createTunnelUnavailableError(result.reasonCode);
             },
-            endWrite: () => {
-                if (closed) return;
-                sendBinaryFrame(session, {
-                    version: 2,
-                    kind: "close",
-                    tunnelId: session.tunnelId,
-                    substreamId,
-                    direction: "client_to_daemon",
-                    halfClose: true,
-                    reasonCode: "client_write_complete",
-                    payloadLength: 0,
-                });
+            endWrite: async () => {
+                const result = await frameSession.endWrite("client_write_complete");
+                if (!result.ok) throw createTunnelUnavailableError(result.reasonCode);
             },
             read: () => queue,
-            close: () => {
-                if (closed) return;
-                sendBinaryFrame(session, {
-                    version: 2,
-                    kind: "close",
-                    tunnelId: session.tunnelId,
-                    substreamId,
-                    halfClose: false,
-                    reasonCode: "client_stream_closed",
-                    payloadLength: 0,
-                });
-                releaseStream();
+            close: async () => {
+                await frameSession.terminate("client_stream_closed");
             },
-            abort: (reasonCode) => {
-                if (closed) return;
-                sendBinaryFrame(session, {
-                    version: 2,
-                    kind: "abort",
-                    tunnelId: session.tunnelId,
-                    substreamId,
-                    reasonCode: reasonCode || "client_stream_aborted",
-                    payloadLength: 0,
-                });
-                releaseStream();
+            abort: async (reasonCode) => {
+                await frameSession.abort(reasonCode || "client_stream_aborted");
             },
         };
 

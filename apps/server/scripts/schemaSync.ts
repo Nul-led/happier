@@ -116,6 +116,10 @@ function generateProviderSchemaFromPostgres(
 
         body = annotateMySqlAccountApiTokenFields(body);
 
+        body = annotateMySqlAccountDirectoryFields(body);
+
+        body = annotateMySqlAccountAuthFields(body);
+
 	        // MySQL defaults `String` to VARCHAR(191), which is too small for our encrypted state blobs.
 	        body = body.replace(/^(\s*metadata\s+String\b)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
 	        body = body.replace(/^(\s*ownerMetadata\s+String\?)(?![^\n]*@db\.)/gm, "$1 @db.LongText");
@@ -563,6 +567,41 @@ function annotateMySqlAccountApiTokenFields(schemaBody: string): string {
     return schemaBody.replace(
         /^model\s+AccountApiToken\s+\{[\s\S]*?^\}\s*$/gm,
         (model) => model.replace(/^\s*(label\s+String)(?![^\n]*@db\.)/m, "    $1 @db.VarChar(256)"),
+    );
+}
+
+function annotateMySqlAccountDirectoryFields(schemaBody: string): string {
+    return schemaBody
+        .replace(
+            /^model\s+AccountHomeDirectoryEntry\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(
+                /^(\s*canonicalServerUrl\s+String)(?![^\n]*@db\.)/m,
+                "$1 @db.VarChar(512)",
+            ),
+        )
+        .replace(
+            /^model\s+AccountDirectoryLink\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model.replace(
+                /^(\s*issuerSubjectId\s+String)(?![^\n]*@db\.)/m,
+                "$1 @db.VarChar(256)",
+            ),
+        )
+        .replace(
+            /^model\s+AuthPairingSession\s+\{[\s\S]*?^\}\s*$/gm,
+            (model) => model
+                .replace(/^(\s*flow\s+String\s+@default\("direct_qr"\))(?![^\n]*@db\.)/m, "$1 @db.VarChar(32)")
+                .replace(/^(\s*requesterIssuerSubjectId\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(256)")
+                .replace(/^(\s*approvalStatus\s+String\?)(?![^\n]*@db\.)/m, "$1 @db.VarChar(16)"),
+        );
+}
+
+function annotateMySqlAccountAuthFields(schemaBody: string): string {
+    return schemaBody.replace(
+        /^model\s+AccountAuthRequest\s+\{[\s\S]*?^\}\s*$/gm,
+        (model) => model.replace(
+            /^(\s*tokenEncrypted\s+String\?)(?![^\n]*@db\.)/m,
+            "$1 @db.Text",
+        ),
     );
 }
 

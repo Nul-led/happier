@@ -1291,9 +1291,17 @@ describe("plugin Availability operations", () => {
     it("publishes and reads one mode-correct generic Artifact through a portable slot plus transient link compatibility", async () => {
         await seedAccountAndMachine();
         const service = operations();
+        const { graph, archive } = createBrowserArtifactArchive();
+        const slot = {
+            ...releaseFacts().uiSlots[0]!,
+            artifactDigest: graph.digest,
+        };
         await service.publishRelease({
             accountId: ACCOUNT_ID,
-            input: { facts: releaseFacts(), sourceClass: "registryPackage" },
+            input: {
+                facts: releaseFacts({ uiSlots: [slot] }),
+                sourceClass: "registryPackage",
+            },
         });
         await db.accountPluginIntent.create({
             data: {
@@ -1307,8 +1315,31 @@ describe("plugin Availability operations", () => {
             },
         });
         const artifactId = "00000000-0000-4000-8000-000000000001";
-        const slot = releaseFacts().uiSlots[0]!;
         const hostCompatibility = hostedArtifactLinkCompatibility();
+        const artifact = {
+            header: encodePlainArtifactStoredContent(archive.header),
+            body: encodePlainArtifactStoredContent({
+                body: encodePluginUiArtifactArchiveBodyV1(archive.body),
+            }),
+            dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+        };
+
+        await expect(service.publishUiArtifact({
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: {
+                release: RELEASE,
+                slot,
+                hostCompatibility,
+                artifactId,
+                artifact: {
+                    ...artifact,
+                    body: encodePlainArtifactStoredContent({ body: "malformed archive" }),
+                },
+            },
+        })).rejects.toMatchObject({ code: "plugin_ui_artifact_invalid_content" });
+        await expect(db.accountPluginUiArtifact.count()).resolves.toBe(0);
+        await expect(db.artifact.count()).resolves.toBe(0);
 
         const published = await service.publishUiArtifact({
             accountId: ACCOUNT_ID,
@@ -1318,11 +1349,7 @@ describe("plugin Availability operations", () => {
                 slot,
                 hostCompatibility,
                 artifactId,
-                artifact: {
-                    header: encodePlainArtifactStoredContent({ title: "Hosted" }),
-                    body: encodePlainArtifactStoredContent({ archive: "fixture" }),
-                    dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
-                },
+                artifact,
             },
         });
 
@@ -1348,8 +1375,8 @@ describe("plugin Availability operations", () => {
                 compatibility: hostCompatibility,
             },
             artifact: {
-                header: encodePlainArtifactStoredContent({ title: "Hosted" }),
-                body: encodePlainArtifactStoredContent({ archive: "fixture" }),
+                header: artifact.header,
+                body: artifact.body,
             },
         });
         await expect(service.readIntent({
@@ -1380,11 +1407,7 @@ describe("plugin Availability operations", () => {
                 slot,
                 hostCompatibility: hostedArtifactLinkCompatibility({ hostUiApiVersion: "2.0.0" }),
                 artifactId: "00000000-0000-4000-8000-000000000003",
-                artifact: {
-                    header: encodePlainArtifactStoredContent({ title: "Wrong host API" }),
-                    body: encodePlainArtifactStoredContent({ archive: "fixture" }),
-                    dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
-                },
+                artifact,
             },
         })).rejects.toMatchObject({ code: "plugin_release_content_conflict" });
         await expect(service.publishUiArtifact({
@@ -1395,11 +1418,7 @@ describe("plugin Availability operations", () => {
                 slot,
                 hostCompatibility,
                 artifactId: "00000000-0000-4000-8000-000000000002",
-                artifact: {
-                    header: encodePlainArtifactStoredContent({ title: "Hosted retry" }),
-                    body: encodePlainArtifactStoredContent({ archive: "different proposed id" }),
-                    dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
-                },
+                artifact,
             },
         })).resolves.toMatchObject({ outcome: "rejoined", link: { artifactId } });
         await expect(db.artifact.count()).resolves.toBe(1);
@@ -1454,13 +1473,21 @@ describe("plugin Availability operations", () => {
     it("refuses hosted publish and exact read while the operator has not enabled Artifact hosting", async () => {
         await seedAccountAndMachine();
         const hostingEnabled = operations();
+        const { graph, archive } = createBrowserArtifactArchive();
+        const slot = {
+            ...releaseFacts().uiSlots[0]!,
+            artifactDigest: graph.digest,
+        };
         const hostingDisabled = createPluginAvailabilityOperations({
             resolveHostingCapability: () => ({ enabled: false }),
             resolveServerIdentityId: async () => SERVER_IDENTITY_ID,
         });
         await hostingEnabled.publishRelease({
             accountId: ACCOUNT_ID,
-            input: { facts: releaseFacts(), sourceClass: "registryPackage" },
+            input: {
+                facts: releaseFacts({ uiSlots: [slot] }),
+                sourceClass: "registryPackage",
+            },
         });
         await db.accountPluginIntent.create({
             data: {
@@ -1473,7 +1500,6 @@ describe("plugin Availability operations", () => {
                 revision: BigInt(1),
             },
         });
-        const slot = releaseFacts().uiSlots[0]!;
         const artifactId = "00000000-0000-4000-8000-000000000009";
         const publishInput = {
             release: RELEASE,
@@ -1481,8 +1507,10 @@ describe("plugin Availability operations", () => {
             hostCompatibility: hostedArtifactLinkCompatibility(),
             artifactId,
             artifact: {
-                header: encodePlainArtifactStoredContent({ title: "Hosting disabled" }),
-                body: encodePlainArtifactStoredContent({ archive: "fixture" }),
+                header: encodePlainArtifactStoredContent(archive.header),
+                body: encodePlainArtifactStoredContent({
+                    body: encodePluginUiArtifactArchiveBodyV1(archive.body),
+                }),
                 dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
             },
         } as const;

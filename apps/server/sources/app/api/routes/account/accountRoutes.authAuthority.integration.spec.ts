@@ -61,7 +61,7 @@ describe("accountRoutes (direct-route auth authority) (integration)", () => {
             select: { id: true },
         });
         const [signedToken, pat] = await Promise.all([
-            auth.createToken(account.id),
+            auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
             auth.createApiToken({
                 accountId: account.id,
                 label: "Settings automation regression",

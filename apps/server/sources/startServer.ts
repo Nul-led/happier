@@ -2,6 +2,7 @@ import { startApi } from '@/app/api/api';
 import { startMetricsServer } from '@/app/monitoring/metrics';
 import { startDatabaseMetricsUpdater, setSocketAdapterModeInfo } from '@/app/monitoring/metrics/index';
 import { auth } from '@/app/auth/auth';
+import { isAnonymousSignupExplicitlyDisabled } from '@/app/auth/authPolicy';
 import { activityCache } from '@/app/presence/sessionCache';
 import { startTimeout } from '@/app/presence/timeout';
 import { initEncrypt } from '@/modules/encrypt';
@@ -56,8 +57,13 @@ import { expandHomeDirPath } from '@happier-dev/cli-common/path';
 import { readPresenceRedisWorkerConfigFromEnv } from '@/config/presence';
 import { initializeServerIdentityCache } from '@/app/serverIdentity/serverIdentity';
 import { stat } from 'node:fs/promises';
-import { writeStartupReceiptFromEnvironment } from '@/app/runtime/startupReceipt';
+import { resolveBoundServerListener, writeStartupReceiptFromEnvironment } from '@/app/runtime/startupReceipt';
 import { readPluginsFeatureEnv } from '@/app/features/catalog/readFeatureEnv';
+import {
+    ensureHomeIrohEndpoint,
+    stopHomeIrohEndpoint,
+} from '@/app/iroh/homeIrohEndpoint';
+import { verifyPersonalHomeExposureProof } from '@/app/iroh/personalHomeExposureProof';
 
 export type ServerFlavor = 'full' | 'light';
 export type ServerRole = 'all' | 'api' | 'worker';
@@ -375,11 +381,37 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
         // Expose health + metrics in all roles (metrics server can be disabled via METRICS_ENABLED=false).
         const metricsServerStarted = await startMetricsServer();
 
+        let apiListenerOwner: Awaited<ReturnType<typeof startApi>> | null = null;
         if (role === 'all' || role === 'api') {
             // Best-effort: infer a canonical public URL so capabilities.server can advertise it.
             // This is cached and single-flight so startup does not spawn redundant inference processes.
             void resolveCachedCanonicalPublicServerUrl(process.env).catch(() => null);
-            await startApi();
+            const api = await startApi();
+            apiListenerOwner = api;
+            const listener = resolveBoundServerListener(api);
+
+            // Managed Personal Home / server-light composition: expose the
+            // already-listening loopback API through one persistent Iroh Home
+            // acceptor fixed to 127.0.0.1:<actual bound port>. Never composed
+            // for the full server flavor, a worker-only role, a managed
+            // runtime whose canonical purpose is not Personal Home, or until
+            // the canonical auth-policy owner confirms anonymous signup was
+            // explicitly disabled. Composition always follows a successful
+            // API listen. Failures fail the Iroh composition closed and keep
+            // the ordinary HTTPS Home running; Iroh ingress shutdown is
+            // registered with a priority ahead of api:socket/api:http.
+            if (
+                flavor === 'light'
+                && process.env.HAPPIER_MANAGED_RELAY_PURPOSE === 'personal-home'
+                && isAnonymousSignupExplicitlyDisabled(process.env)
+                && await verifyPersonalHomeExposureProof({ env: process.env, listener })
+            ) {
+                await ensureHomeIrohEndpoint({
+                    env: process.env,
+                    apiPort: listener?.port ?? null,
+                });
+                onShutdown('iroh', () => stopHomeIrohEndpoint());
+            }
         }
 
         if (role === 'all' || role === 'worker') {
@@ -417,7 +449,7 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
         // Ready
         //
 
-        await writeStartupReceiptFromEnvironment(process.env);
+        await writeStartupReceiptFromEnvironment(process.env, apiListenerOwner);
         log('Ready');
         startupCompleted = true;
         await awaitShutdown();

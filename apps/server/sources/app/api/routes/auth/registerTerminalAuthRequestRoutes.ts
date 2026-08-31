@@ -11,8 +11,13 @@ import {
     PresentUserRequiredResponseSchema,
     requirePresentUser,
 } from "@/app/api/utils/requirePresentUser";
+import { inTx } from "@/storage/inTx";
+import { evaluateProvisioningResponsePolicy } from "./provisioningResponsePolicy";
+import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
+import { recordAuthEnrollmentOutcome } from "@/app/monitoring/metrics/authMetrics";
 
 const BASE64_URL_REGEX = /^[A-Za-z0-9_-]+$/;
+const EXPIRED_TERMINAL_AUTH_CLEANUP_LIMIT = 32;
 
 type IsTerminalAuthExpired = (createdAt: Date) => boolean;
 
@@ -21,20 +26,41 @@ type RegisterTerminalAuthRequestRoutesContext = {
     isTerminalAuthExpired: IsTerminalAuthExpired;
 };
 
-async function buildTerminalAuthAuthorizedPayload(params: {
+async function cleanupExpiredTerminalAuthRequests(params: Readonly<{
+    now: Date;
+    ttlMs: number;
+    excludeId?: string;
+}>): Promise<void> {
+    const expired = await db.terminalAuthRequest.findMany({
+        where: {
+            createdAt: { lt: new Date(params.now.getTime() - params.ttlMs) },
+            ...(params.excludeId ? { id: { not: params.excludeId } } : {}),
+        },
+        orderBy: { createdAt: "asc" },
+        take: EXPIRED_TERMINAL_AUTH_CLEANUP_LIMIT,
+        select: { id: true },
+    });
+    if (expired.length === 0) return;
+    await db.terminalAuthRequest.deleteMany({
+        where: { id: { in: expired.map((row) => row.id) } },
+    });
+}
+
+function buildTerminalAuthAuthorizedPayload(params: {
     token: string;
     response: string;
-}): Promise<{
+    serverIdentityId: string;
+}): {
     state: "authorized";
     token: string;
     response: string;
     serverIdentityId: string;
-}> {
+} {
     return {
         state: "authorized",
         token: params.token,
         response: params.response,
-        serverIdentityId: await getOrCreateServerIdentityId(process.env),
+        serverIdentityId: params.serverIdentityId,
     };
 }
 
@@ -45,6 +71,7 @@ export function registerTerminalAuthRequestRoutes(
     const { terminalAuthPolicy, isTerminalAuthExpired } = context;
 
     app.post('/v1/auth/request', {
+        config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.terminalRequest.poll") },
         schema: {
             body: z.object({
                 publicKey: z.string(),
@@ -72,16 +99,19 @@ export function registerTerminalAuthRequestRoutes(
     }, async (request, reply) => {
         const tweetnacl = (await import("tweetnacl")).default;
         if (String(request.body.publicKey).length > 512) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
             return reply.code(401).send({ error: 'Invalid public key' });
         }
         let publicKey: ReturnType<typeof privacyKit.decodeBase64>;
         try {
             publicKey = privacyKit.decodeBase64(request.body.publicKey);
         } catch {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
             return reply.code(401).send({ error: 'Invalid public key' });
         }
         const isValid = tweetnacl.box.publicKeyLength === publicKey.length;
         if (!isValid) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
             return reply.code(401).send({ error: 'Invalid public key' });
         }
 
@@ -94,13 +124,20 @@ export function registerTerminalAuthRequestRoutes(
         const existing = await db.terminalAuthRequest.findUnique({
             where: { publicKey: publicKeyHex },
         });
+        await cleanupExpiredTerminalAuthRequests({
+            now: new Date(),
+            ttlMs: terminalAuthPolicy.ttlMs,
+            excludeId: existing?.id,
+        }).catch(() => {});
 
         if (existing && isTerminalAuthExpired(existing.createdAt)) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "expired" });
             await db.terminalAuthRequest.delete({ where: { id: existing.id } }).catch(() => {});
             return reply.code(410).send({ error: "expired" as const });
         }
 
         if (existing && claimSecretHash && existing.claimSecretHash !== claimSecretHash) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "wrong_binding" });
             return reply.code(409).send({ error: "claim_mismatch" as const });
         }
 
@@ -126,10 +163,16 @@ export function registerTerminalAuthRequestRoutes(
             if (answer.claimSecretHash) {
                 return reply.send({ state: "authorized" as const });
             }
-            const token = await auth.createToken(answer.responseAccountId!, { session: answer.id });
-            return reply.send(await buildTerminalAuthAuthorizedPayload({
+            const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+            const token = await auth.createToken(
+                answer.responseAccountId!,
+                { session: answer.id },
+                { kind: "terminal", authority: "account_automation" },
+            );
+            return reply.send(buildTerminalAuthAuthorizedPayload({
                 token,
                 response: answer.response,
+                serverIdentityId,
             }));
         }
 
@@ -138,6 +181,7 @@ export function registerTerminalAuthRequestRoutes(
 
     // Get auth request status
     app.get('/v1/auth/request/status', {
+        config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.terminalRequest.status") },
         schema: {
             querystring: z.object({
                 publicKey: z.string(),
@@ -152,16 +196,19 @@ export function registerTerminalAuthRequestRoutes(
     }, async (request, reply) => {
         const tweetnacl = (await import("tweetnacl")).default;
         if (String(request.query.publicKey).length > 512) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
             return reply.send({ status: 'not_found', supportsV2: false });
         }
         let publicKey: ReturnType<typeof privacyKit.decodeBase64>;
         try {
             publicKey = privacyKit.decodeBase64(request.query.publicKey);
         } catch {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
             return reply.send({ status: 'not_found', supportsV2: false });
         }
         const isValid = tweetnacl.box.publicKeyLength === publicKey.length;
         if (!isValid) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
             return reply.send({ status: 'not_found', supportsV2: false });
         }
 
@@ -175,6 +222,7 @@ export function registerTerminalAuthRequestRoutes(
         }
 
         if (isTerminalAuthExpired(authRequest.createdAt)) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "expired" });
             await db.terminalAuthRequest.delete({ where: { id: authRequest.id } }).catch(() => {});
             return reply.send({ status: "not_found", supportsV2: false });
         }
@@ -187,6 +235,7 @@ export function registerTerminalAuthRequestRoutes(
     });
 
     app.post("/v1/auth/request/claim", {
+        config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.terminalRequest.claim") },
         schema: {
             body: z.object({
                 publicKey: z.string(),
@@ -210,16 +259,19 @@ export function registerTerminalAuthRequestRoutes(
     }, async (request, reply) => {
         const tweetnacl = (await import("tweetnacl")).default;
         if (String(request.body.publicKey).length > 512) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
             return reply.code(410).send({ error: "expired" as const });
         }
         let publicKey: ReturnType<typeof privacyKit.decodeBase64>;
         try {
             publicKey = privacyKit.decodeBase64(request.body.publicKey);
         } catch {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
             return reply.code(410).send({ error: "expired" as const });
         }
         const isValid = tweetnacl.box.publicKeyLength === publicKey.length;
         if (!isValid) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
             return reply.code(410).send({ error: "expired" as const });
         }
 
@@ -232,6 +284,7 @@ export function registerTerminalAuthRequestRoutes(
         }
 
         if (isTerminalAuthExpired(authRequest.createdAt)) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "expired" });
             await db.terminalAuthRequest.delete({ where: { id: authRequest.id } }).catch(() => {});
             return reply.code(410).send({ error: "expired" as const });
         }
@@ -249,6 +302,7 @@ export function registerTerminalAuthRequestRoutes(
 
         const computedHash = createHash("sha256").update(claimSecretBytes).digest("base64url");
         if (computedHash !== authRequest.claimSecretHash) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "wrong_proof" });
             return reply.code(401).send({ error: "unauthorized" as const });
         }
 
@@ -256,79 +310,165 @@ export function registerTerminalAuthRequestRoutes(
             return reply.send({ state: "requested" as const });
         }
 
-        const now = Date.now();
-        const claimedAtMs = authRequest.claimedAt ? authRequest.claimedAt.getTime() : null;
-        if (claimedAtMs != null && now - claimedAtMs > terminalAuthPolicy.claimRetryWindowMs) {
-            await db.terminalAuthRequest.delete({ where: { id: authRequest.id } }).catch(() => {});
+        // Resolve every fallible part of the response before publishing the one-shot
+        // claim. A failed identity lookup or token mint must leave the request retryable.
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+        const token = await auth.createToken(
+            authRequest.responseAccountId!,
+            { session: authRequest.id },
+            { kind: "terminal", authority: "account_automation" },
+        );
+        const authorizedPayload = buildTerminalAuthAuthorizedPayload({
+            token,
+            response: authRequest.response,
+            serverIdentityId,
+        });
+
+        const claimUpdate = await db.terminalAuthRequest.updateMany({
+            where: { id: authRequest.id, claimedAt: null },
+            data: { claimedAt: new Date() },
+        });
+        if (claimUpdate.count === 0) {
             return reply.code(410).send({ error: "consumed" as const });
         }
 
-        if (!authRequest.claimedAt) {
-            // Ensure single-consumer semantics, but allow best-effort retry within a short window.
-            const claimUpdate = await db.terminalAuthRequest.updateMany({
-                where: { id: authRequest.id, claimedAt: null },
-                data: { claimedAt: new Date(now) },
-            });
-            if (claimUpdate.count === 0) {
-                return reply.code(410).send({ error: "consumed" as const });
-            }
-        }
-
-        const token = await auth.createToken(authRequest.responseAccountId!, { session: authRequest.id });
-        return reply.send(await buildTerminalAuthAuthorizedPayload({
-            token,
-            response: authRequest.response,
-        }));
+        return reply.send(authorizedPayload);
     });
 
     // Approve auth request
     app.post('/v1/auth/response', {
+        config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.terminalRequest.complete") },
         preHandler: [app.authenticate, requirePresentUser],
         schema: {
             body: z.object({
                 response: z.string(),
-                publicKey: z.string()
-            }),
+                publicKey: z.string(),
+                responseKind: z.enum(["tokenOnly", "dataKey"]).optional(),
+            }).strict(),
             response: {
                 200: z.object({ success: z.literal(true) }),
+                400: z.object({ error: z.literal("invalid_provisioning_response") }),
                 401: z.object({ error: z.literal("Invalid public key") }),
                 403: PresentUserRequiredResponseSchema,
                 404: z.object({ error: z.literal("Request not found") }),
+                409: z.object({
+                    error: z.enum([
+                        "provisioning_kind_mismatch",
+                        "provisioning_material_unavailable",
+                        "legacy_provisioning_unavailable",
+                        "already_completed",
+                    ]),
+                }).strict(),
+                426: z.object({ error: z.literal("terminal_provisioning_update_required") }).strict(),
             },
         }
     }, async (request, reply) => {
         debug({ module: 'auth-response' }, `Auth response endpoint hit - user: ${request.userId}`);
         const tweetnacl = (await import("tweetnacl")).default;
         if (String(request.body.publicKey).length > 512) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
             return reply.code(401).send({ error: 'Invalid public key' });
         }
         let publicKey: ReturnType<typeof privacyKit.decodeBase64>;
         try {
             publicKey = privacyKit.decodeBase64(request.body.publicKey);
         } catch {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
             return reply.code(401).send({ error: 'Invalid public key' });
         }
         const isValid = tweetnacl.box.publicKeyLength === publicKey.length;
         if (!isValid) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
             return reply.code(401).send({ error: 'Invalid public key' });
         }
-        const publicKeyHex = privacyKit.encodeHex(publicKey);
-        const authRequest = await db.terminalAuthRequest.findUnique({
-            where: { publicKey: publicKeyHex }
-        });
-        if (!authRequest) {
-            return reply.code(404).send({ error: 'Request not found' });
+        const responseKind = request.body.responseKind;
+        if (!responseKind) {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "malformed_payload" });
+            return reply.code(426).send({ error: "terminal_provisioning_update_required" });
         }
-        if (isTerminalAuthExpired(authRequest.createdAt)) {
-            await db.terminalAuthRequest.delete({ where: { id: authRequest.id } }).catch(() => {});
+        const publicKeyHex = privacyKit.encodeHex(publicKey);
+        const outcome = await inTx(async (tx) => {
+            const authRequest = await tx.terminalAuthRequest.findUnique({
+                where: { publicKey: publicKeyHex },
+            });
+            if (!authRequest) return { status: "not_found" } as const;
+            if (isTerminalAuthExpired(authRequest.createdAt)) {
+                await tx.terminalAuthRequest.deleteMany({ where: { id: authRequest.id } });
+                return { status: "expired" } as const;
+            }
+            if (!authRequest.supportsV2) return { status: "update_required" } as const;
+
+            const account = await tx.account.findUnique({
+                where: { id: request.userId },
+                select: {
+                    publicKey: true,
+                    encryptionMode: true,
+                    contentPublicKey: true,
+                    contentPublicKeySig: true,
+                },
+            });
+            if (!account) return { status: "material_unavailable" } as const;
+            const policy = evaluateProvisioningResponsePolicy({
+                account,
+                responseBase64: request.body.response,
+                responseKind,
+            });
+            if (policy.status === "rejected") {
+                return { status: "policy_rejected", reason: policy.reason } as const;
+            }
+
+            if (authRequest.response !== null || authRequest.responseAccountId !== null) {
+                return authRequest.response === request.body.response
+                    && authRequest.responseAccountId === request.userId
+                    ? { status: "success" } as const
+                    : { status: "already_completed" } as const;
+            }
+            const completed = await tx.terminalAuthRequest.updateMany({
+                where: {
+                    id: authRequest.id,
+                    response: null,
+                    responseAccountId: null,
+                },
+                data: {
+                    response: request.body.response,
+                    responseAccountId: request.userId,
+                },
+            });
+            if (completed.count === 1) return { status: "success" } as const;
+            const raced = await tx.terminalAuthRequest.findUnique({
+                where: { id: authRequest.id },
+                select: { response: true, responseAccountId: true },
+            });
+            return raced?.response === request.body.response
+                && raced.responseAccountId === request.userId
+                ? { status: "success" } as const
+                : { status: "already_completed" } as const;
+        });
+
+        if (outcome.status === "success") {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "success" });
+            return reply.send({ success: true });
+        }
+        if (outcome.status === "expired") {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "expired" });
             return reply.code(404).send({ error: "Request not found" });
         }
-        if (!authRequest.response) {
-            await db.terminalAuthRequest.update({
-                where: { id: authRequest.id },
-                data: { response: request.body.response, responseAccountId: request.userId },
-            });
+        if (outcome.status === "not_found") return reply.code(404).send({ error: "Request not found" });
+        if (outcome.status === "update_required") {
+            return reply.code(426).send({ error: "terminal_provisioning_update_required" });
         }
-        return reply.send({ success: true });
+        if (outcome.status === "material_unavailable") {
+            return reply.code(409).send({ error: "provisioning_material_unavailable" });
+        }
+        if (outcome.status === "already_completed") {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "rejected" });
+            return reply.code(409).send({ error: "already_completed" });
+        }
+        recordAuthEnrollmentOutcome({
+            flow: "terminal",
+            outcome: outcome.reason === "invalid_provisioning_response" ? "malformed_payload" : "rejected",
+        });
+        const statusCode = outcome.reason === "invalid_provisioning_response" ? 400 : 409;
+        return reply.code(statusCode).send({ error: outcome.reason });
     });
 }

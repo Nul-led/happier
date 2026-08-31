@@ -168,7 +168,7 @@ describe("registerExternalActionRoutes (API-token provenance) (integration)", ()
             data: { publicKey: "external-action-on-request-admission" },
             select: { id: true },
         });
-        const signedToken = await auth.createToken(account.id);
+        const signedToken = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const parse = vi.fn();
         const dispatch = vi.fn(async () => dispatchedResponse({
             v: 1 as const,

@@ -1,9 +1,13 @@
 import Fastify from "fastify";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createHash } from "node:crypto";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
 import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
+import {
+    computeHomeQrBindingProofV2,
+    deriveHomeQrRendezvousSecretV2,
+    deriveHomeQrRendezvousVerifierV2,
+} from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
 import { auth } from "@/app/auth/auth";
@@ -11,6 +15,7 @@ import { authRoutes } from "./authRoutes";
 import { enableAuthentication } from "../../utils/enableAuthentication";
 import { createAppCloseTracker } from "../../testkit/appLifecycle";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { initializeServerIdentityCache } from "@/app/serverIdentity/serverIdentity";
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
 
@@ -24,10 +29,56 @@ function createTestApp() {
 }
 
 function createPhoneEphemeralKeypair() {
-    const kp = tweetnacl.box.keyPair();
+    const keypair = tweetnacl.box.keyPair();
     return {
-        publicKeyRaw: new Uint8Array(kp.publicKey),
-        publicKeyBase64: privacyKit.encodeBase64(new Uint8Array(kp.publicKey)),
+        publicKeyRaw: new Uint8Array(keypair.publicKey),
+        publicKeyBase64: privacyKit.encodeBase64(new Uint8Array(keypair.publicKey)),
+    };
+}
+
+function randomBase64Url32Bytes(): string {
+    return Buffer.from(tweetnacl.randomBytes(32)).toString("base64url");
+}
+
+function createQrPairingMaterial() {
+    const qrSecret = new Uint8Array(tweetnacl.randomBytes(32));
+    return {
+        qrSecret,
+        rendezvousSecret: Buffer.from(deriveHomeQrRendezvousSecretV2(qrSecret)).toString("base64url"),
+        rendezvousVerifier: Buffer.from(deriveHomeQrRendezvousVerifierV2(qrSecret)).toString("base64url"),
+    };
+}
+
+let localHomeServerIdentityId = "";
+
+function createPresentUserToken(accountId: string): Promise<string> {
+    return auth.createToken(accountId, undefined, { kind: "account", authority: "present_user" });
+}
+
+function createV2RequestPayload(input: {
+    pairId: string;
+    qrSecret: Uint8Array;
+    rendezvousSecret: string;
+    publicKey: string;
+    publicKeyRaw: Uint8Array;
+    expiresAtMs: number;
+    deviceLabel?: string;
+}, overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+        pairId: input.pairId,
+        secret: input.rendezvousSecret,
+        publicKey: input.publicKey,
+        bindingProof: computeHomeQrBindingProofV2({
+            qrSecret: input.qrSecret,
+            pairId: input.pairId,
+            homeServerIdentityId: localHomeServerIdentityId,
+            requesterPublicKey: input.publicKeyRaw,
+            expiresAtMs: input.expiresAtMs,
+        }),
+        homeServerIdentityId: localHomeServerIdentityId,
+        expiresAtMs: input.expiresAtMs,
+        ...(input.deviceLabel === undefined ? {} : { deviceLabel: input.deviceLabel }),
+        ...overrides,
     };
 }
 
@@ -39,11 +90,14 @@ describe("authRoutes (pairing auth) (integration)", () => {
             tempDirPrefix: "happier-auth-pairing-",
             initAuth: true,
             initEncrypt: true,
-            env: {
-                HAPPIER_FEATURE_AUTH_PAIRING__DESKTOP_QR_MOBILE_SCAN_ENABLED: "1",
-            },
+            env: { HAPPIER_FEATURE_AUTH_PAIRING__DESKTOP_QR_MOBILE_SCAN_ENABLED: "1" },
         });
     }, 120_000);
+
+    beforeEach(async () => {
+        localHomeServerIdentityId = await initializeServerIdentityCache(process.env) ?? "";
+        expect(localHomeServerIdentityId).not.toBe("");
+    });
 
     afterEach(async () => {
         await closeTrackedApps();
@@ -57,93 +111,237 @@ describe("authRoutes (pairing auth) (integration)", () => {
         await harness.close();
     });
 
-    it("requires auth for /v1/auth/pairing/start", async () => {
+    it("requires a full present-user credential and an exact rendezvous verifier to start", async () => {
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+        const unauthenticated = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            payload: { secretHash: randomBase64Url32Bytes() },
+        });
+        expect(unauthenticated.statusCode).toBe(401);
+
+        const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}` }, select: { id: true } });
+        const token = await createPresentUserToken(account.id);
+        const malformed = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { secretHash: "not-a-32-byte-verifier" },
+        });
+        expect(malformed.statusCode).toBe(400);
+    });
+
+    it("keeps independently issued direct-QR invitations live for the same account", async () => {
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const token = await createPresentUserToken(account.id);
         const app = createTestApp();
         authRoutes(app as any);
         await app.ready();
 
-        const res = await app.inject({
+        const first = await app.inject({
             method: "POST",
             url: "/v1/auth/pairing/start",
-            payload: { secretHash: "xxxxxxxx" },
+            headers: { authorization: `Bearer ${token}` },
+            payload: { secretHash: createQrPairingMaterial().rendezvousVerifier },
         });
-        expect(res.statusCode).toBe(401);
+        const second = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { secretHash: createQrPairingMaterial().rendezvousVerifier },
+        });
+        expect(first.statusCode).toBe(200);
+        expect(second.statusCode).toBe(200);
+
+        const firstStatus = await app.inject({
+            method: "GET",
+            url: `/v1/auth/pairing/status?pairId=${encodeURIComponent(String(first.json().pairId))}`,
+            headers: { authorization: `Bearer ${token}` },
+        });
+        expect(firstStatus.statusCode).toBe(200);
+        expect(firstStatus.json()).toMatchObject({
+            state: "pending",
+            pairId: first.json().pairId,
+        });
 
         await app.close();
     });
 
-    it("creates a pairing session, allows phone request, and exposes status to the owning account", async () => {
-        const account = await db.account.create({
-            data: { publicKey: `pk-${Date.now()}` },
-            select: { id: true },
-        });
-        const token = await auth.createToken(account.id);
-
+    it("admits only a same-account Home present user to start, inspect, and consume a direct-QR rendezvous", async () => {
+        const owner = await db.account.create({ data: { publicKey: `pk-${Date.now()}-admission-owner` }, select: { id: true } });
+        const other = await db.account.create({ data: { publicKey: `pk-${Date.now()}-admission-other` }, select: { id: true } });
+        const [presentUserToken, otherPresentUserToken, directoryToken, terminalToken, apiToken] = await Promise.all([
+            createPresentUserToken(owner.id),
+            createPresentUserToken(other.id),
+            auth.createToken(owner.id, undefined, { kind: "account_directory", authority: "present_user" }),
+            auth.createToken(owner.id, { session: "pairing-admission-terminal" }, { kind: "terminal", authority: "account_automation" }),
+            auth.createApiToken({ accountId: owner.id, label: "Pairing admission PAT" }),
+        ]);
+        const restrictedTokens = [directoryToken, terminalToken, apiToken.token];
         const app = createTestApp();
         authRoutes(app as any);
         await app.ready();
 
-        const secret = "secret-hash-123";
-        const secretHash = createHash("sha256").update(secret, "utf8").digest("base64url");
+        for (const token of restrictedTokens) {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/auth/pairing/start",
+                headers: { authorization: `Bearer ${token}` },
+                payload: { secretHash: createQrPairingMaterial().rendezvousVerifier },
+            });
+            expect(response.statusCode).toBe(403);
+            expect(response.json()).toEqual({ error: "present_user_required" });
+        }
+
+        const start = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${presentUserToken}` },
+            payload: { secretHash: createQrPairingMaterial().rendezvousVerifier },
+        });
+        expect(start.statusCode).toBe(200);
+        const pairId = String(start.json().pairId);
+
+        for (const token of restrictedTokens) {
+            const response = await app.inject({
+                method: "GET",
+                url: `/v1/auth/pairing/status?pairId=${encodeURIComponent(pairId)}`,
+                headers: { authorization: `Bearer ${token}` },
+            });
+            expect(response.statusCode).toBe(403);
+            expect(response.json()).toEqual({ error: "present_user_required" });
+        }
+        const wrongAccountStatus = await app.inject({
+            method: "GET",
+            url: `/v1/auth/pairing/status?pairId=${encodeURIComponent(pairId)}`,
+            headers: { authorization: `Bearer ${otherPresentUserToken}` },
+        });
+        expect(wrongAccountStatus.statusCode).toBe(404);
+        const ownerStatus = await app.inject({
+            method: "GET",
+            url: `/v1/auth/pairing/status?pairId=${encodeURIComponent(pairId)}`,
+            headers: { authorization: `Bearer ${presentUserToken}` },
+        });
+        expect(ownerStatus.statusCode).toBe(200);
+
+        for (const token of restrictedTokens) {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/auth/pairing/consume",
+                headers: { authorization: `Bearer ${token}` },
+                payload: { pairId },
+            });
+            expect(response.statusCode).toBe(403);
+            expect(response.json()).toEqual({ error: "present_user_required" });
+        }
+        const wrongAccountConsume = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/consume",
+            headers: { authorization: `Bearer ${otherPresentUserToken}` },
+            payload: { pairId },
+        });
+        expect(wrongAccountConsume.statusCode).toBe(404);
+        expect(await db.authPairingSession.findUnique({ where: { id: pairId } })).not.toBeNull();
+        const ownerConsume = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/consume",
+            headers: { authorization: `Bearer ${presentUserToken}` },
+            payload: { pairId },
+        });
+        expect(ownerConsume.statusCode).toBe(200);
+        expect(await db.authPairingSession.findUnique({ where: { id: pairId } })).toBeNull();
+    });
+
+    it("binds the exact V2 tuple, makes exact retries harmless, and returns proof through owner status", async () => {
+        const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-owner` }, select: { id: true } });
+        const otherAccount = await db.account.create({ data: { publicKey: `pk-${Date.now()}-other` }, select: { id: true } });
+        const token = await createPresentUserToken(account.id);
+        const otherToken = await createPresentUserToken(otherAccount.id);
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const material = createQrPairingMaterial();
         const startRes = await app.inject({
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash },
+            payload: { secretHash: material.rendezvousVerifier },
         });
         expect(startRes.statusCode).toBe(200);
-        const startJson = startRes.json() as any;
-        expect(typeof startJson.pairId).toBe("string");
-        expect(typeof startJson.expiresAt).toBe("string");
+        const pairId = String(startRes.json().pairId);
+        const expiresAtMs = Date.parse(String(startRes.json().expiresAt));
+        const requester = createPhoneEphemeralKeypair();
+        const validPayload = createV2RequestPayload({
+            pairId,
+            qrSecret: material.qrSecret,
+            rendezvousSecret: material.rendezvousSecret,
+            publicKey: requester.publicKeyBase64,
+            publicKeyRaw: requester.publicKeyRaw,
+            expiresAtMs,
+            deviceLabel: "  My   iPhone  ",
+        });
 
-        const pairId = String(startJson.pairId);
-        const { publicKeyBase64 } = createPhoneEphemeralKeypair();
-
-        const invalidKeyRes = await app.inject({
+        const missingProof = { ...validPayload };
+        delete missingProof.bindingProof;
+        expect((await app.inject({ method: "POST", url: "/v1/auth/pairing/request", payload: missingProof })).statusCode).toBe(400);
+        const missingHome = { ...validPayload };
+        delete missingHome.homeServerIdentityId;
+        expect((await app.inject({ method: "POST", url: "/v1/auth/pairing/request", payload: missingHome })).statusCode).toBe(400);
+        const missingExpiry = { ...validPayload };
+        delete missingExpiry.expiresAtMs;
+        expect((await app.inject({ method: "POST", url: "/v1/auth/pairing/request", payload: missingExpiry })).statusCode).toBe(400);
+        expect((await app.inject({
             method: "POST",
             url: "/v1/auth/pairing/request",
-            payload: { pairId, secret, publicKey: "not-base64!!", deviceLabel: "iPhone" },
-        });
-        expect(invalidKeyRes.statusCode).toBe(401);
-        expect(invalidKeyRes.json()).toEqual({ error: "Invalid public key" });
+            payload: { ...validPayload, bindingProof: Buffer.from(tweetnacl.randomBytes(31)).toString("base64url") },
+        })).statusCode).toBe(400);
+        expect((await app.inject({ method: "POST", url: "/v1/auth/pairing/request", payload: { ...validPayload, publicKey: "not-base64!!" } })).statusCode).toBe(401);
+        expect((await app.inject({ method: "POST", url: "/v1/auth/pairing/request", payload: { ...validPayload, secret: "short" } })).statusCode).toBe(400);
+        expect((await app.inject({ method: "POST", url: "/v1/auth/pairing/request", payload: { ...validPayload, smuggled: "field" } })).statusCode).toBe(400);
 
-        const badRes = await app.inject({
-            method: "POST",
-            url: "/v1/auth/pairing/request",
-            payload: { pairId, secret: "wrong", publicKey: publicKeyBase64, deviceLabel: "iPhone" },
-        });
-        expect(badRes.statusCode).toBe(404);
-
-        const tooLongSecretRes = await app.inject({
-            method: "POST",
-            url: "/v1/auth/pairing/request",
-            payload: { pairId, secret: "x".repeat(1_000), publicKey: publicKeyBase64, deviceLabel: "iPhone" },
-        });
-        expect(tooLongSecretRes.statusCode).toBe(400);
-
-        const requestRes = await app.inject({
-            method: "POST",
-            url: "/v1/auth/pairing/request",
-            payload: { pairId, secret, publicKey: publicKeyBase64, deviceLabel: "iPhone" },
-        });
+        const requestRes = await app.inject({ method: "POST", url: "/v1/auth/pairing/request", payload: validPayload });
         expect(requestRes.statusCode).toBe(200);
-        expect(requestRes.json()).toEqual({ state: "requested", confirmCode: expect.any(String) });
+        expect(requestRes.json()).toEqual({ state: "requested" });
+        const sameTupleRetry = await app.inject({ method: "POST", url: "/v1/auth/pairing/request", payload: validPayload });
+        expect(sameTupleRetry.statusCode).toBe(200);
+        expect(sameTupleRetry.json()).toEqual({ state: "requested" });
 
-        const tooLongDeviceLabelRes = await app.inject({
+        const changedProof = await app.inject({
             method: "POST",
             url: "/v1/auth/pairing/request",
-            payload: { pairId, secret, publicKey: publicKeyBase64, deviceLabel: "x".repeat(1_000) },
+            payload: { ...validPayload, bindingProof: randomBase64Url32Bytes() },
         });
-        expect(tooLongDeviceLabelRes.statusCode).toBe(400);
+        expect(changedProof.statusCode).toBe(409);
+        expect(changedProof.json()).toEqual({ error: "already_requested" });
 
-        const otherKey = createPhoneEphemeralKeypair();
-        const secondRes = await app.inject({
+        const otherRequester = createPhoneEphemeralKeypair();
+        const changedKey = await app.inject({
             method: "POST",
             url: "/v1/auth/pairing/request",
-            payload: { pairId, secret, publicKey: otherKey.publicKeyBase64, deviceLabel: "Other iPhone" },
+            payload: createV2RequestPayload({
+                pairId,
+                qrSecret: material.qrSecret,
+                rendezvousSecret: material.rendezvousSecret,
+                publicKey: otherRequester.publicKeyBase64,
+                publicKeyRaw: otherRequester.publicKeyRaw,
+                expiresAtMs,
+            }),
         });
-        expect(secondRes.statusCode).toBe(401);
-        expect(secondRes.json()).toEqual({ error: "already_requested" });
+        expect(changedKey.statusCode).toBe(409);
+        expect(changedKey.json()).toEqual({ error: "already_requested" });
+
+        const wrongOwnerStatus = await app.inject({
+            method: "GET",
+            url: `/v1/auth/pairing/status?pairId=${encodeURIComponent(pairId)}`,
+            headers: { authorization: `Bearer ${otherToken}` },
+        });
+        expect(wrongOwnerStatus.statusCode).toBe(404);
 
         const statusRes = await app.inject({
             method: "GET",
@@ -154,106 +352,381 @@ describe("authRoutes (pairing auth) (integration)", () => {
         expect(statusRes.json()).toEqual({
             state: "requested",
             pairId,
-            expiresAt: expect.any(String),
-            requestedPublicKey: publicKeyBase64,
-            requestedDeviceLabel: "iPhone",
-            confirmCode: expect.any(String),
+            expiresAt: new Date(expiresAtMs).toISOString(),
+            homeServerIdentityId: localHomeServerIdentityId,
+            requestedPublicKey: requester.publicKeyBase64,
+            bindingProof: validPayload.bindingProof,
+            requestedDeviceLabel: "My iPhone",
         });
-
-        await app.close();
     });
 
-    it("invalidates previous pairing sessions for the same account on start", async () => {
-        const account = await db.account.create({
-            data: { publicKey: `pk-${Date.now()}` },
-            select: { id: true },
-        });
-        const token = await auth.createToken(account.id);
-
+    it("rejects wrong rendezvous, Home, invite expiry, expired rows, and non-direct flows", async () => {
+        const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-negative` }, select: { id: true } });
+        const token = await createPresentUserToken(account.id);
         const app = createTestApp();
         authRoutes(app as any);
         await app.ready();
-
-        const secret1 = "secret-1";
-        const secretHash1 = createHash("sha256").update(secret1, "utf8").digest("base64url");
-        const start1 = await app.inject({
-            method: "POST",
-            url: "/v1/auth/pairing/start",
-            headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash: secretHash1 },
-        });
-        expect(start1.statusCode).toBe(200);
-        const pairId1 = String((start1.json() as any).pairId);
-
-        const secret2 = "secret-2";
-        const secretHash2 = createHash("sha256").update(secret2, "utf8").digest("base64url");
-        const start2 = await app.inject({
-            method: "POST",
-            url: "/v1/auth/pairing/start",
-            headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash: secretHash2 },
-        });
-        expect(start2.statusCode).toBe(200);
-        const pairId2 = String((start2.json() as any).pairId);
-        expect(pairId2).not.toBe(pairId1);
-
-        const oldStatus = await app.inject({
-            method: "GET",
-            url: `/v1/auth/pairing/status?pairId=${encodeURIComponent(pairId1)}`,
-            headers: { authorization: `Bearer ${token}` },
-        });
-        expect(oldStatus.statusCode).toBe(404);
-
-        const nextStatus = await app.inject({
-            method: "GET",
-            url: `/v1/auth/pairing/status?pairId=${encodeURIComponent(pairId2)}`,
-            headers: { authorization: `Bearer ${token}` },
-        });
-        expect(nextStatus.statusCode).toBe(200);
-        expect(nextStatus.json()).toEqual({ state: "pending", pairId: pairId2, expiresAt: expect.any(String) });
-
-        await app.close();
-    });
-
-    it("best-effort cleans up expired pairing sessions on start", async () => {
-        const accountA = await db.account.create({
-            data: { publicKey: `pk-${Date.now()}-a` },
-            select: { id: true },
-        });
-        const token = await auth.createToken(accountA.id);
-
-        const accountB = await db.account.create({
-            data: { publicKey: `pk-${Date.now()}-b` },
-            select: { id: true },
-        });
-
-        await db.authPairingSession.create({
-            data: {
-                accountId: accountB.id,
-                secretHash: "expired-secret-hash",
-                requestedPublicKey: null,
-                expiresAt: new Date(Date.now() - 60_000),
-            },
-        });
-
-        expect(await db.authPairingSession.count({ where: { accountId: accountB.id } })).toBe(1);
-
-        const app = createTestApp();
-        authRoutes(app as any);
-        await app.ready();
-
-        const secret = "cleanup-secret";
-        const secretHash = createHash("sha256").update(secret, "utf8").digest("base64url");
+        const material = createQrPairingMaterial();
         const startRes = await app.inject({
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash },
+            payload: { secretHash: material.rendezvousVerifier },
+        });
+        const pairId = String(startRes.json().pairId);
+        const expiresAtMs = Date.parse(String(startRes.json().expiresAt));
+        const requester = createPhoneEphemeralKeypair();
+        const baseInput = {
+            pairId,
+            qrSecret: material.qrSecret,
+            rendezvousSecret: material.rendezvousSecret,
+            publicKey: requester.publicKeyBase64,
+            publicKeyRaw: requester.publicKeyRaw,
+            expiresAtMs,
+        };
+
+        const wrongSecret = createQrPairingMaterial();
+        const wrongSecretRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/request",
+            payload: createV2RequestPayload({ ...baseInput, rendezvousSecret: wrongSecret.rendezvousSecret }),
+        });
+        expect(wrongSecretRes.statusCode).toBe(404);
+        const wrongHome = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/request",
+            payload: createV2RequestPayload(baseInput, { homeServerIdentityId: "srv_foreign_home" }),
+        });
+        expect(wrongHome.statusCode).toBe(403);
+        expect(wrongHome.json()).toEqual({ error: "wrong_home" });
+        const wrongExpiry = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/request",
+            payload: createV2RequestPayload({ ...baseInput, expiresAtMs: expiresAtMs + 1 }),
+        });
+        expect(wrongExpiry.statusCode).toBe(403);
+        expect(wrongExpiry.json()).toEqual({ error: "wrong_expiry" });
+
+        const expiredMaterial = createQrPairingMaterial();
+        const expiredRow = await db.authPairingSession.create({
+            data: { accountId: account.id, secretHash: expiredMaterial.rendezvousVerifier, expiresAt: new Date(Date.now() - 1_000), flow: "direct_qr" },
+        });
+        const expiredRequester = createPhoneEphemeralKeypair();
+        const expiredRequest = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/request",
+            payload: createV2RequestPayload({
+                pairId: expiredRow.id,
+                qrSecret: expiredMaterial.qrSecret,
+                rendezvousSecret: expiredMaterial.rendezvousSecret,
+                publicKey: expiredRequester.publicKeyBase64,
+                publicKeyRaw: expiredRequester.publicKeyRaw,
+                expiresAtMs: expiredRow.expiresAt.getTime(),
+            }),
+        });
+        expect(expiredRequest.statusCode).toBe(404);
+
+        const assertionRow = await db.authPairingSession.create({
+            data: {
+                accountId: account.id,
+                secretHash: material.rendezvousVerifier,
+                expiresAt: new Date(Date.now() + 120_000),
+                flow: "account_assertion",
+                requesterIssuerServerIdentityId: "srv_issuer",
+                requesterIssuerSubjectId: "issuer-subject",
+                approvalStatus: "pending",
+            },
+        });
+        const crossFlow = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/request",
+            payload: createV2RequestPayload({ ...baseInput, pairId: assertionRow.id, expiresAtMs: assertionRow.expiresAt.getTime() }),
+        });
+        expect(crossFlow.statusCode).toBe(404);
+    });
+
+    it("cleans only direct-QR rows when starting and preserves account-assertion approvals", async () => {
+        const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-cleanup` }, select: { id: true } });
+        const otherAccount = await db.account.create({ data: { publicKey: `pk-${Date.now()}-cleanup-other` }, select: { id: true } });
+        const token = await createPresentUserToken(account.id);
+        const expiredDirect = await db.authPairingSession.create({
+            data: { accountId: otherAccount.id, secretHash: randomBase64Url32Bytes(), expiresAt: new Date(Date.now() - 1_000), flow: "direct_qr" },
+        });
+        const assertionRow = await db.authPairingSession.create({
+            data: {
+                accountId: account.id,
+                secretHash: randomBase64Url32Bytes(),
+                requestedPublicKey: "requester-key",
+                expiresAt: new Date(Date.now() + 120_000),
+                flow: "account_assertion",
+                requesterIssuerServerIdentityId: "srv_issuer",
+                requesterIssuerSubjectId: "issuer-subject",
+                approvalStatus: "pending",
+            },
+        });
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+        const startRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { secretHash: createQrPairingMaterial().rendezvousVerifier },
         });
         expect(startRes.statusCode).toBe(200);
+        expect(await db.authPairingSession.findUnique({ where: { id: expiredDirect.id } })).toBeNull();
+        expect(await db.authPairingSession.findUnique({ where: { id: assertionRow.id } })).toMatchObject({ flow: "account_assertion", approvalStatus: "pending" });
+    });
 
-        expect(await db.authPairingSession.count({ where: { accountId: accountB.id } })).toBe(0);
+    it("atomically binds one requester tuple under concurrent substitution", async () => {
+        const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-race` }, select: { id: true } });
+        const token = await createPresentUserToken(account.id);
+        const material = createQrPairingMaterial();
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+        const startRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { secretHash: material.rendezvousVerifier },
+        });
+        const pairId = String(startRes.json().pairId);
+        const expiresAtMs = Date.parse(String(startRes.json().expiresAt));
+        const keyA = createPhoneEphemeralKeypair();
+        const keyB = createPhoneEphemeralKeypair();
+        const payloadFor = (key: ReturnType<typeof createPhoneEphemeralKeypair>) => createV2RequestPayload({
+            pairId,
+            qrSecret: material.qrSecret,
+            rendezvousSecret: material.rendezvousSecret,
+            publicKey: key.publicKeyBase64,
+            publicKeyRaw: key.publicKeyRaw,
+            expiresAtMs,
+        });
+        const [resA, resB] = await Promise.all([
+            app.inject({ method: "POST", url: "/v1/auth/pairing/request", payload: payloadFor(keyA) }),
+            app.inject({ method: "POST", url: "/v1/auth/pairing/request", payload: payloadFor(keyB) }),
+        ]);
+        expect([resA.statusCode, resB.statusCode].sort()).toEqual([200, 409]);
+        const row = await db.authPairingSession.findUnique({ where: { id: pairId } });
+        const winningKey = row?.requestedPublicKey === keyA.publicKeyBase64 ? keyA : keyB;
+        expect(row?.requestedPublicKey).toBe(winningKey.publicKeyBase64);
+        expect(row?.requestedBindingProof).toBe(payloadFor(winningKey).bindingProof);
+    });
 
-        await app.close();
+    it("consumes one live direct-QR row exactly once and never consumes expired or assertion rows", async () => {
+        const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-consume` }, select: { id: true } });
+        const token = await createPresentUserToken(account.id);
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+        const startRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { secretHash: createQrPairingMaterial().rendezvousVerifier },
+        });
+        const pairId = String(startRes.json().pairId);
+        const [resA, resB] = await Promise.all([
+            app.inject({ method: "POST", url: "/v1/auth/pairing/consume", headers: { authorization: `Bearer ${token}` }, payload: { pairId } }),
+            app.inject({ method: "POST", url: "/v1/auth/pairing/consume", headers: { authorization: `Bearer ${token}` }, payload: { pairId } }),
+        ]);
+        expect([resA.statusCode, resB.statusCode].sort()).toEqual([200, 404]);
+
+        const expiredRow = await db.authPairingSession.create({
+            data: { accountId: account.id, secretHash: randomBase64Url32Bytes(), expiresAt: new Date(Date.now() - 1_000), flow: "direct_qr" },
+        });
+        const expiredConsume = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/consume",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { pairId: expiredRow.id },
+        });
+        expect(expiredConsume.statusCode).toBe(404);
+
+        const assertionRow = await db.authPairingSession.create({
+            data: {
+                accountId: account.id,
+                secretHash: randomBase64Url32Bytes(),
+                expiresAt: new Date(Date.now() + 120_000),
+                flow: "account_assertion",
+                requesterIssuerServerIdentityId: "srv_issuer",
+                requesterIssuerSubjectId: "issuer-subject",
+                approvalStatus: "pending",
+            },
+        });
+        const assertionConsume = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/consume",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { pairId: assertionRow.id },
+        });
+        expect(assertionConsume.statusCode).toBe(404);
+        expect(await db.authPairingSession.findUnique({ where: { id: assertionRow.id } })).toMatchObject({ approvalStatus: "pending" });
+    });
+
+    it("atomically rejects a requested direct-QR row through the existing consume owner", async () => {
+        const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-reject` }, select: { id: true } });
+        const token = await createPresentUserToken(account.id);
+        const requestedPublicKey = privacyKit.encodeBase64(tweetnacl.box.keyPair().publicKey);
+        const row = await db.authPairingSession.create({
+            data: {
+                accountId: account.id,
+                secretHash: randomBase64Url32Bytes(),
+                requestedPublicKey,
+                requestedBindingProof: randomBase64Url32Bytes(),
+                requestedAt: new Date(),
+                expiresAt: new Date(Date.now() + 120_000),
+                flow: "direct_qr",
+            },
+        });
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const rejected = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/consume",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { pairId: row.id, intent: "reject" },
+        });
+
+        expect(rejected.statusCode).toBe(200);
+        expect(await db.authPairingSession.findUnique({ where: { id: row.id } })).toMatchObject({
+            approvalStatus: "rejected",
+            decidedAt: expect.any(Date),
+        });
+    });
+
+    it("retains older post-approval consume as cleanup instead of changing the approved decision", async () => {
+        const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-approved-cleanup` }, select: { id: true } });
+        const token = await createPresentUserToken(account.id);
+        const row = await db.authPairingSession.create({
+            data: {
+                accountId: account.id,
+                secretHash: randomBase64Url32Bytes(),
+                requestedPublicKey: privacyKit.encodeBase64(tweetnacl.box.keyPair().publicKey),
+                requestedBindingProof: randomBase64Url32Bytes(),
+                requestedAt: new Date(),
+                expiresAt: new Date(Date.now() + 120_000),
+                flow: "direct_qr",
+                approvalStatus: "approved",
+                decidedAt: new Date(),
+            },
+        });
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const cleanup = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/consume",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { pairId: row.id },
+        });
+
+        expect(cleanup.statusCode).toBe(200);
+        expect(await db.authPairingSession.findUnique({ where: { id: row.id } })).toBeNull();
+    });
+
+    it("reject intent fails as already decided when approval won and preserves the approved row", async () => {
+        const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-approved-reject` }, select: { id: true } });
+        const token = await createPresentUserToken(account.id);
+        const row = await db.authPairingSession.create({
+            data: {
+                accountId: account.id,
+                secretHash: randomBase64Url32Bytes(),
+                requestedPublicKey: privacyKit.encodeBase64(tweetnacl.box.keyPair().publicKey),
+                requestedBindingProof: randomBase64Url32Bytes(),
+                requestedAt: new Date(),
+                expiresAt: new Date(Date.now() + 120_000),
+                flow: "direct_qr",
+                approvalStatus: "approved",
+                decidedAt: new Date(),
+            },
+        });
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const rejected = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/consume",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { pairId: row.id, intent: "reject" },
+        });
+
+        expect(rejected.statusCode).toBe(409);
+        expect(rejected.json()).toEqual({ error: "already_decided" });
+        expect(await db.authPairingSession.findUnique({ where: { id: row.id } })).toMatchObject({
+            approvalStatus: "approved",
+        });
+    });
+
+    it("makes requester installation and explicit cancellation atomic and reports a winning request as terminally rejected", async () => {
+        const account = await db.account.create({
+            data: { publicKey: `pk-${Date.now()}-cancel-race`, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const token = await createPresentUserToken(account.id);
+        const material = createQrPairingMaterial();
+        const requester = createPhoneEphemeralKeypair();
+        await db.accountAuthRequest.create({
+            data: { publicKey: privacyKit.encodeHex(requester.publicKeyRaw) },
+        });
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const started = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { secretHash: material.rendezvousVerifier },
+        });
+        const pairId = String(started.json().pairId);
+        const expiresAtMs = Date.parse(String(started.json().expiresAt));
+        const requestPayload = createV2RequestPayload({
+            pairId,
+            qrSecret: material.qrSecret,
+            rendezvousSecret: material.rendezvousSecret,
+            publicKey: requester.publicKeyBase64,
+            publicKeyRaw: requester.publicKeyRaw,
+            expiresAtMs,
+        });
+
+        const [requested, cancelled] = await Promise.all([
+            app.inject({ method: "POST", url: "/v1/auth/pairing/request", payload: requestPayload }),
+            app.inject({
+                method: "POST",
+                url: "/v1/auth/pairing/consume",
+                headers: { authorization: `Bearer ${token}` },
+                payload: { pairId, intent: "cancel" },
+            }),
+        ]);
+
+        expect(cancelled.statusCode).toBe(200);
+        expect([200, 404]).toContain(requested.statusCode);
+        const pairing = await db.authPairingSession.findUnique({ where: { id: pairId } });
+        if (requested.statusCode === 200) {
+            expect(pairing).toMatchObject({
+                requestedPublicKey: requester.publicKeyBase64,
+                approvalStatus: "rejected",
+                decidedAt: expect.any(Date),
+            });
+            const terminalPoll = await app.inject({
+                method: "POST",
+                url: "/v2/auth/account/request",
+                payload: {
+                    publicKey: requester.publicKeyBase64,
+                    pairId,
+                    homeServerIdentityId: localHomeServerIdentityId,
+                },
+            });
+            expect(terminalPoll.statusCode).toBe(200);
+            expect(terminalPoll.json()).toEqual({ state: "rejected" });
+        } else {
+            expect(pairing).toBeNull();
+        }
     });
 });

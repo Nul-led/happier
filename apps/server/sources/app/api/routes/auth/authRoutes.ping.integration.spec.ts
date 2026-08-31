@@ -47,7 +47,7 @@ describe('authRoutes (auth ping) (integration)', () => {
             data: { publicKey: `pk-${Date.now()}` },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         const app = createTestApp();
         authRoutes(app as any);

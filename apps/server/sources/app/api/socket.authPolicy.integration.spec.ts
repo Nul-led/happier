@@ -206,7 +206,10 @@ describe("startSocket (auth policy enforcement)", () => {
             data: { publicKey: `pk-${Date.now()}` },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);
@@ -278,6 +281,65 @@ describe("startSocket (auth policy enforcement)", () => {
                     transports: ["websocket"],
                     reconnection: false,
                     auth: { token: apiToken.token, ...admission.auth },
+                });
+
+                try {
+                    const payload = await waitForConnectionFailure(socket);
+                    expect(payload.message, admission.name).toBe("invalid-token");
+                    expect(payload.data, admission.name).toEqual({
+                        error: "invalid-token",
+                        provider: undefined,
+                        statusCode: 401,
+                        owner: undefined,
+                    });
+                } finally {
+                    socket.close();
+                }
+            }
+        } finally {
+            await app.close();
+        }
+    }, 30_000);
+
+    it("rejects an Account Directory token before it can enter every generic Socket.IO admission family", async () => {
+        const account = await db.account.create({
+            data: { publicKey: `pk-account-directory-${Date.now()}` },
+            select: { id: true },
+        });
+        // The restricted Directory kind is minted here only to prove the
+        // negative admission contract; no production Home route mints it.
+        const directoryToken = await auth.createToken(account.id, undefined, {
+            kind: "account_directory",
+            authority: "present_user",
+        });
+
+        const app = Fastify({ logger: false }) as unknown as AppFastify;
+        startSocket(app);
+        await app.listen({ port: 0, host: "127.0.0.1" });
+        const address = app.server.address();
+        const port = typeof address === "object" && address ? address.port : null;
+        if (!port) {
+            await app.close();
+            throw new Error("Failed to bind socket server");
+        }
+
+        try {
+            for (const admission of [
+                { name: "user", auth: {} },
+                {
+                    name: "session",
+                    auth: { clientType: "session-scoped", sessionId: "session-directory-token-rejected" },
+                },
+                {
+                    name: "machine",
+                    auth: { clientType: "machine-scoped", machineId: "machine-directory-token-rejected" },
+                },
+            ] as const) {
+                const socket = ioClient(`http://127.0.0.1:${port}`, {
+                    path: "/v1/updates",
+                    transports: ["websocket"],
+                    reconnection: false,
+                    auth: { token: directoryToken, ...admission.auth },
                 });
 
                 try {
@@ -402,7 +464,10 @@ describe("startSocket (auth policy enforcement)", () => {
                 data: { publicKey: `pk-epoch-race-${admission.name}-${Date.now()}` },
                 select: { id: true },
             });
-            const token = await auth.createToken(account.id);
+            const token = await auth.createToken(account.id, undefined, {
+                kind: "account",
+                authority: "present_user",
+            });
             const socketAuth = await admission.configure(account.id);
             const pausedAdmission = admission.pauseAdmission();
             const verifySpy = vi.spyOn(auth, "verifyToken");
@@ -494,7 +559,10 @@ describe("startSocket (auth policy enforcement)", () => {
                 data: { publicKey: `pk-post-connect-epoch-${admission.name}-${Date.now()}` },
                 select: { id: true },
             });
-            const token = await auth.createToken(account.id);
+            const token = await auth.createToken(account.id, undefined, {
+                kind: "account",
+                authority: "present_user",
+            });
             const socketAuth = await admission.configure(account.id);
             const finalVerificationReached = deferred();
             const releaseFinalVerification = deferred();
@@ -568,7 +636,10 @@ describe("startSocket (auth policy enforcement)", () => {
             },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);
@@ -630,7 +701,10 @@ describe("startSocket (auth policy enforcement)", () => {
             select: { id: true },
         });
 
-        const token = await auth.createToken(otherAccount.id);
+        const token = await auth.createToken(otherAccount.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);
@@ -686,7 +760,10 @@ describe("startSocket (auth policy enforcement)", () => {
             select: { id: true },
         });
 
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);
@@ -754,7 +831,10 @@ describe("startSocket (auth policy enforcement)", () => {
             select: { id: true },
         });
 
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);
@@ -809,7 +889,10 @@ describe("startSocket (auth policy enforcement)", () => {
             select: { id: true },
         });
 
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);
@@ -903,7 +986,10 @@ describe("startSocket (auth policy enforcement)", () => {
             select: { id: true },
         });
 
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);
@@ -960,7 +1046,10 @@ describe("startSocket (auth policy enforcement)", () => {
             select: { id: true },
         });
 
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);
@@ -1055,7 +1144,10 @@ describe("startSocket (auth policy enforcement)", () => {
             select: { id: true },
         });
 
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);
@@ -1150,7 +1242,10 @@ describe("startSocket (auth policy enforcement)", () => {
             data: { id: "s-test", tag: `t-${Date.now()}`, accountId: account.id, encryptionMode: "e2ee", metadata: "{}" },
         });
 
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);
@@ -1203,7 +1298,10 @@ describe("startSocket (auth policy enforcement)", () => {
             data: { id: "s-foreign", tag: `t-${Date.now()}`, accountId: owner.id, encryptionMode: "e2ee", metadata: "{}" },
         });
 
-        const token = await auth.createToken(otherAccount.id);
+        const token = await auth.createToken(otherAccount.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);

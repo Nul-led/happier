@@ -1,3 +1,6 @@
+-- AlterEnum
+ALTER TYPE "AutomationScheduleKind" ADD VALUE 'manual';
+
 -- AlterTable
 ALTER TABLE "AutomationRun" ADD COLUMN "idempotencyKey" TEXT;
 

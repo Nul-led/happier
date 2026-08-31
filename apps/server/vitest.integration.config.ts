@@ -7,6 +7,7 @@ import { resolveVitestFeatureTestExcludeGlobs } from '../../scripts/testing/feat
 import { serverWorkspacePackageSourcesPlugin } from './vitestWorkspacePackageResolution';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const homeIrohRealIntegrationTest = 'sources/app/iroh/homeIrohEndpoint.real.integration.test.ts';
 
 export default defineConfig({
   test: {
@@ -23,7 +24,10 @@ export default defineConfig({
       'scripts/**/*.integration.test.ts',
       'scripts/**/*.real.integration.test.ts',
     ],
-    exclude: [...resolveVitestFeatureTestExcludeGlobs()],
+    exclude: [
+      ...resolveVitestFeatureTestExcludeGlobs(),
+      ...(process.env.HAPPIER_IROH_REQUIRE_NODE_ADDON === '1' ? [] : [homeIrohRealIntegrationTest]),
+    ],
     isolate: true,
     env: {
       HAPPIER_FEATURE_POLICY_ENV: '',

@@ -224,6 +224,86 @@ describe("review comment operations", () => {
         })).rejects.toMatchObject({ code: "review_comment_conflict" });
     });
 
+    it("settles and releases a frozen claim after the canonical comment is edited", async () => {
+        const { operations } = createHarness();
+        const created = await operations.create({
+            accountId: "account-1",
+            actor: { kind: "user", userId: "user-1" },
+            grants: [],
+            input: {
+                projectId: "project-1",
+                anchor: { kind: "line", filePath: "src/example.ts", line: 3 },
+                snapshot: textSnapshot(["return value.name;"]),
+                body: "Null-check this value.",
+                authorIntent: "open",
+                clientMutationId: "mutation-publication-edit-race",
+            },
+        });
+        const request = {
+            accountId: "account-1",
+            actor: { kind: "user", userId: "user-1" } as const,
+            input: {
+                target: {
+                    providerId: "github",
+                    configuredAccountId: "github-account-1",
+                    entryRef: {
+                        sourceId: "github",
+                        kindId: "pull-request",
+                        collisionScope: "github:repository-1",
+                        entryId: "42",
+                    },
+                    subtarget: null,
+                },
+                baseRevision: "base-1",
+                headRevision: "head-1",
+                entries: [{
+                    happierCommentId: created.comment.id,
+                    expectedServerRevision: created.comment.serverRevision,
+                    anchor: created.comment.anchor,
+                    snapshot: textSnapshot(["return value.name;"]),
+                    body: "Null-check this value.",
+                }],
+                verdict: null,
+            },
+        };
+        const claim = await operations.claimPublicationDispatch(request);
+
+        await operations.edit({
+            accountId: "account-1",
+            actor: { kind: "user", userId: "user-1" },
+            input: {
+                projectId: "project-1",
+                commentId: created.comment.id,
+                expectedBodyVersion: created.comment.bodyVersion,
+                expectedServerRevision: created.comment.serverRevision,
+                nextBody: "Updated wording.",
+                clientMutationId: "mutation-publication-edit-race-edit",
+            },
+        });
+
+        await expect(operations.claimPublicationDispatch({
+            ...request,
+            input: {
+                ...request.input,
+                settlement: {
+                    dispatchToken: claim.dispatchToken,
+                    result: {
+                        publicationPlanId: claim.publicationPlanId,
+                        entries: [{
+                            ...claim.entries[0]!,
+                            outcome: { kind: "failed" as const, code: "provider/rejected" },
+                        }],
+                        verdict: { kind: "notRequested" as const },
+                    },
+                },
+            },
+        })).resolves.toMatchObject({ disposition: "reconcile" });
+        await expect(operations.claimPublicationDispatch(request)).resolves.toMatchObject({
+            disposition: "dispatch",
+            instructions: { entries: ["dispatch"], verdict: null },
+        });
+    });
+
     it("allows only one provider dispatch for simultaneous verdict-only publication requests", async () => {
         const { operations } = createHarness();
         const request = {

@@ -1,7 +1,26 @@
-import { parseBooleanEnv, parseIntEnv } from "@/config/env";
+import { parseBooleanEnv, parseIntEnv, parseOptionalBooleanEnv } from "@/config/env";
 import { resolveAuthProviderInstancesFromEnv } from "@/app/auth/providers/oidc/oidcProviderConfig";
 
 export type AuthOffboardingMode = "per-request-cache";
+
+export type AuthKeyChallengeV2Policy = Readonly<{
+    ordinaryHomeRequired: boolean;
+}>;
+
+export function resolveAuthKeyChallengeV2Policy(
+    env: NodeJS.ProcessEnv,
+): AuthKeyChallengeV2Policy {
+    const configured = env.HAPPIER_AUTH_REQUIRE_KEY_CHALLENGE_V2;
+    return Object.freeze({
+        ordinaryHomeRequired: parseBooleanEnv(configured, false),
+    });
+}
+
+export function resolveAuthKeyChallengeV2Requirement(
+    env: NodeJS.ProcessEnv,
+): boolean {
+    return resolveAuthKeyChallengeV2Policy(env).ordinaryHomeRequired;
+}
 
 export type AuthPolicy = Readonly<{
     anonymousSignupEnabled: boolean;
@@ -15,6 +34,18 @@ export type AuthPolicy = Readonly<{
         mode: AuthOffboardingMode;
     }>;
 }>;
+
+/**
+ * Returns true only for a recognized, explicitly disabled anonymous-signup
+ * setting. This is stricter than the effective signup policy because callers
+ * that enable non-loopback exposure must not treat an unset or malformed
+ * value as proof that signup has been closed.
+ */
+export function isAnonymousSignupExplicitlyDisabled(
+    env: NodeJS.ProcessEnv,
+): boolean {
+    return parseOptionalBooleanEnv(env.AUTH_ANONYMOUS_SIGNUP_ENABLED) === false;
+}
 
 function parseCsvList(raw: string | undefined): string[] {
     if (typeof raw !== "string") return [];

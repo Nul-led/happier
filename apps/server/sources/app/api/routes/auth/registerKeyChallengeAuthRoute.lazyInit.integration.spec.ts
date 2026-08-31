@@ -1109,6 +1109,52 @@ describe("registerKeyChallengeAuthRoute (lazy auth init) (integration)", () => {
         harness.resetEnv();
     });
 
+    it("rejects a v2 challenge whose persisted server identity is missing", async () => {
+        harness.resetEnv({
+            HAPPIER_PUBLIC_SERVER_URL: "https://server-a.example.test/api",
+            HAPPIER_SERVER_IDENTITY_ID: "srv_challenge_a",
+        });
+        const app = createTestApp();
+        registerKeyChallengeAuthRoute(app);
+        await app.ready();
+
+        const signing = tweetnacl.sign.keyPair();
+        await db.account.create({
+            data: {
+                publicKey: privacyKit.encodeHex(ownedBytes(signing.publicKey)),
+                encryptionMode: "plain",
+            },
+        });
+        const issued = await app.inject({
+            method: "POST",
+            url: "/v1/auth/challenge",
+            payload: {},
+        });
+        expect(issued.statusCode).toBe(200);
+        const challenge = issued.json() as KeyChallengeV2IssueResponse;
+        await db.keyChallengeV2.update({
+            where: { id: challenge.challengeId },
+            data: { audienceServerIdentityId: null },
+        });
+
+        const response = await app.inject({
+            method: "POST",
+            url: "/v1/auth",
+            payload: createKeyChallengeV2LoginPayload({
+                challenge: {
+                    ...challenge,
+                    audience: { origin: challenge.audience.origin },
+                },
+                signing,
+            }),
+        });
+
+        expect(response.statusCode).toBe(401);
+
+        await app.close();
+        harness.resetEnv();
+    });
+
     it("rejects a v2 assertion after the issued challenge expires", async () => {
         harness.resetEnv({
             HAPPIER_PUBLIC_SERVER_URL: "https://server-a.example.test/api",

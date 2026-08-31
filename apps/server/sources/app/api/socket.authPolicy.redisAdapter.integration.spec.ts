@@ -234,7 +234,7 @@ describe("startSocket account revocation with the configured Redis adapter", () 
                 data: { publicKey: `pk-redis-revocation-${admission.name}-${Date.now()}` },
                 select: { id: true },
             });
-            const token = await auth.createToken(account.id);
+            const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
             const socketAuth = await admission.configure(account.id);
             const socket = await connectClient({
                 port: replicaB.port,

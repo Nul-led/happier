@@ -950,6 +950,159 @@ describe("automationRunRetentionRule", () => {
         ]);
     });
 
+    it("advances the Event catalog once when history clear releases a retired Event trigger", async () => {
+        const account = await db.account.create({
+            data: { id: "account-clear-released-event-trigger", encryptionMode: "plain" },
+            select: { id: true },
+        });
+        await db.automation.create({
+            data: {
+                id: "automation-clear-released-event-trigger",
+                accountId: account.id,
+                name: "Clear released Event trigger",
+                enabled: true,
+                targetType: "execution_run",
+                templateCiphertext: "retention-fixture",
+                templateVersion: 1,
+            },
+        });
+        await db.automationTrigger.create({
+            data: {
+                id: "trigger-clear-released-event",
+                automationId: "automation-clear-released-event-trigger",
+                kind: "pluginEvent",
+                enabled: false,
+                deletedAt: new Date("2026-08-01T00:00:00.000Z"),
+                eventPluginId: "plugin.retention",
+                eventLocalId: "event/retention",
+                sourceSelectorId: "clear-released-event-selector",
+                sourceContractVersion: 1,
+            },
+        });
+        await db.automationEventCatalogState.create({
+            data: { accountId: account.id, eventSourceDefinitionsRevision: 7n },
+        });
+        const finishedAt = new Date("2026-08-02T00:00:00.000Z");
+        await db.automationRun.createMany({
+            data: ["run-clear-released-event-first", "run-clear-released-event-final"].map((id) => ({
+                id,
+                automationId: "automation-clear-released-event-trigger",
+                accountId: account.id,
+                state: "failed" as const,
+                triggerId: "trigger-clear-released-event",
+                causeKind: "trigger" as const,
+                causeTriggerKind: "pluginEvent" as const,
+                causeTriggerRevision: 0,
+                causeEventPluginId: "plugin.retention",
+                causeEventLocalId: "event/retention",
+                causeSourceSelectorId: "clear-released-event-selector",
+                causeOccurredAt: finishedAt,
+                occurrenceKey: `${id}-occurrence`,
+                triggerEvidenceEnvelope: JSON.stringify({ t: "plain", v: {} }),
+                scheduledAt: finishedAt,
+                dueAt: finishedAt,
+                finishedAt,
+            })),
+        });
+
+        await expect(clearAutomationRunHistory({
+            accountId: account.id,
+            automationId: "automation-clear-released-event-trigger",
+        })).resolves.toEqual({ status: "cleared", clearedRuns: 2 });
+        await expect(db.automationEventCatalogState.findUniqueOrThrow({
+            where: { accountId: account.id },
+            select: { eventSourceDefinitionsRevision: true },
+        })).resolves.toEqual({ eventSourceDefinitionsRevision: 8n });
+        await expect(clearAutomationRunHistory({
+            accountId: account.id,
+            automationId: "automation-clear-released-event-trigger",
+        })).resolves.toEqual({ status: "cleared", clearedRuns: 0 });
+        await expect(db.automationEventCatalogState.findUniqueOrThrow({
+            where: { accountId: account.id },
+            select: { eventSourceDefinitionsRevision: true },
+        })).resolves.toEqual({ eventSourceDefinitionsRevision: 8n });
+    });
+
+    it("advances the Event catalog once when retention releases a retired Event trigger", async () => {
+        const account = await db.account.create({
+            data: { id: "account-retention-released-event-trigger", encryptionMode: "plain" },
+            select: { id: true },
+        });
+        await db.automation.create({
+            data: {
+                id: "automation-retention-released-event-trigger",
+                accountId: account.id,
+                name: "Retention released Event trigger",
+                enabled: true,
+                targetType: "execution_run",
+                templateCiphertext: "retention-fixture",
+                templateVersion: 1,
+            },
+        });
+        await db.automationTrigger.create({
+            data: {
+                id: "trigger-retention-released-event",
+                automationId: "automation-retention-released-event-trigger",
+                kind: "pluginEvent",
+                enabled: false,
+                deletedAt: new Date("2026-08-01T00:00:00.000Z"),
+                eventPluginId: "plugin.retention",
+                eventLocalId: "event/retention",
+                sourceSelectorId: "retention-released-event-selector",
+                sourceContractVersion: 1,
+            },
+        });
+        await db.automationEventCatalogState.create({
+            data: { accountId: account.id, eventSourceDefinitionsRevision: 11n },
+        });
+        const finishedAt = new Date("2026-06-01T00:00:00.000Z");
+        await db.automationRun.create({
+            data: {
+                id: "run-retention-released-event-final",
+                automationId: "automation-retention-released-event-trigger",
+                accountId: account.id,
+                state: "failed",
+                triggerId: "trigger-retention-released-event",
+                causeKind: "trigger",
+                causeTriggerKind: "pluginEvent",
+                causeTriggerRevision: 0,
+                causeEventPluginId: "plugin.retention",
+                causeEventLocalId: "event/retention",
+                causeSourceSelectorId: "retention-released-event-selector",
+                causeOccurredAt: finishedAt,
+                occurrenceKey: "retention-released-event-occurrence",
+                triggerEvidenceEnvelope: JSON.stringify({ t: "plain", v: {} }),
+                scheduledAt: finishedAt,
+                dueAt: finishedAt,
+                finishedAt,
+            },
+        });
+
+        const rule = createAutomationRunRetentionRule();
+        await expect(rule.run({
+            policy: createGloballyDisabledPolicy(),
+            batchSize: 100,
+            dryRun: false,
+            maxDeletesPerRulePerRun: 100,
+            now: new Date("2026-08-12T00:00:00.000Z"),
+        })).resolves.toMatchObject({ id: "automationRuns", deleted: 1 });
+        await expect(db.automationEventCatalogState.findUniqueOrThrow({
+            where: { accountId: account.id },
+            select: { eventSourceDefinitionsRevision: true },
+        })).resolves.toEqual({ eventSourceDefinitionsRevision: 12n });
+        await expect(rule.run({
+            policy: createGloballyDisabledPolicy(),
+            batchSize: 100,
+            dryRun: false,
+            maxDeletesPerRulePerRun: 100,
+            now: new Date("2026-08-12T00:00:00.000Z"),
+        })).resolves.toMatchObject({ id: "automationRuns", deleted: 0 });
+        await expect(db.automationEventCatalogState.findUniqueOrThrow({
+            where: { accountId: account.id },
+            select: { eventSourceDefinitionsRevision: true },
+        })).resolves.toEqual({ eventSourceDefinitionsRevision: 12n });
+    });
+
     it("deletes a soft-deleted Automation's custody-terminal history even when the Account keeps live history forever", async () => {
         const account = await db.account.create({
             data: {

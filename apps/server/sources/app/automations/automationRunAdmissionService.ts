@@ -5,6 +5,7 @@ import {
     AutomationRunCauseSchema,
     AutomationRunExecutionInputV1Schema,
     createCanonicalJsonSigningInput,
+    deriveAutomationManualOccurrenceKeyV1,
     normalizeAutomationTemplateEnvelopeStoredRead,
     parseAutomationStoredDefinitionExecutionRecipeV1,
     serializeAutomationRunExecutionRecipeV1,
@@ -83,7 +84,10 @@ export type AutomationRunAdmissionRequest = Readonly<{
     triggerEvidenceEnvelope?: string | null;
     executionTriggerEvidenceEnvelope?: string | null;
     occurrenceEvidenceEqualityTag?: string | null;
+    /** Current V3 manual retry identity, projected to the canonical occurrence key. */
     manualIdempotencyKey?: string;
+    /** Released-V2-only predecessor retry column; never dual-written with V3. */
+    legacyV2ManualIdempotencyKey?: string;
     replyHandoff?: AutomationRunReplyHandoffAdmission;
 }>;
 
@@ -106,6 +110,7 @@ function occurrenceDiscriminator(params: Readonly<{
     automationId: string;
     cause: AutomationRunCause;
     manualIdempotencyKey?: string;
+    legacyV2ManualIdempotencyKey?: string;
 }>): Prisma.AutomationRunWhereInput | null {
     return params.cause.kind === "trigger"
         ? { triggerId: params.cause.triggerId, occurrenceKey: params.cause.occurrenceKey }
@@ -119,8 +124,17 @@ function occurrenceDiscriminator(params: Readonly<{
                 ? {
                     automationId: params.automationId,
                     causeKind: "manual",
-                    legacyManualIdempotencyKey: params.manualIdempotencyKey,
+                    occurrenceKey: deriveAutomationManualOccurrenceKeyV1({
+                        automationId: params.automationId,
+                        idempotencyKey: params.manualIdempotencyKey,
+                    }),
                 }
+                : params.legacyV2ManualIdempotencyKey
+                    ? {
+                        automationId: params.automationId,
+                        causeKind: "manual",
+                        legacyManualIdempotencyKey: params.legacyV2ManualIdempotencyKey,
+                    }
                 : null;
 }
 
@@ -129,6 +143,7 @@ function findExistingRun(params: Readonly<{
     automationId: string;
     cause: AutomationRunCause;
     manualIdempotencyKey?: string;
+    legacyV2ManualIdempotencyKey?: string;
     occurrenceEvidenceEqualityTag?: string | null;
 }>): AutomationRunItem | null {
     const existing = params.rows.find((row) => {
@@ -141,9 +156,16 @@ function findExistingRun(params: Readonly<{
             return row.causeKind === "conversation"
                 && row.occurrenceKey === params.cause.occurrenceKey;
         }
-        return params.manualIdempotencyKey !== undefined
+        if (params.manualIdempotencyKey !== undefined) {
+            return row.causeKind === "manual"
+                && row.occurrenceKey === deriveAutomationManualOccurrenceKeyV1({
+                    automationId: params.automationId,
+                    idempotencyKey: params.manualIdempotencyKey,
+                });
+        }
+        return params.legacyV2ManualIdempotencyKey !== undefined
             && row.causeKind === "manual"
-            && row.legacyManualIdempotencyKey === params.manualIdempotencyKey;
+            && row.legacyManualIdempotencyKey === params.legacyV2ManualIdempotencyKey;
     }) ?? null;
     if (!existing) return null;
     if (!sameOccurrenceCause(decodeAutomationRunCause(existing), params.cause)
@@ -324,9 +346,17 @@ async function insertPreparedAutomationRunTx(params: Readonly<{
             accountId: params.accountId,
             state: "queued",
             ...causeFields,
+            ...(cause.kind === "manual" && request.manualIdempotencyKey
+                ? {
+                    occurrenceKey: deriveAutomationManualOccurrenceKeyV1({
+                        automationId: request.automationId,
+                        idempotencyKey: request.manualIdempotencyKey,
+                    }),
+                }
+                : {}),
             legacyManualIdempotencyKey: cause.kind === "manual"
-                    ? request.manualIdempotencyKey ?? null
-                    : null,
+                ? request.legacyV2ManualIdempotencyKey ?? null
+                : null,
             occurrenceEvidenceEqualityTag: request.occurrenceEvidenceEqualityTag ?? null,
             triggerEvidenceEnvelope: request.triggerEvidenceEnvelope ?? null,
             executionInputEnvelope,
@@ -406,6 +436,7 @@ export async function admitAutomationRunsTx(params: Readonly<{
             automationId: request.automationId,
             cause,
             manualIdempotencyKey: request.manualIdempotencyKey,
+            legacyV2ManualIdempotencyKey: request.legacyV2ManualIdempotencyKey,
         });
         return discriminator === null ? [] : [[JSON.stringify(discriminator), discriminator] as const];
     })).values()];

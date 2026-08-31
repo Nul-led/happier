@@ -16,6 +16,7 @@ import {
     DAEMON_VOICE_AUDIO_RELAY_CAP_PROFILE_ID,
     type FeatureId,
     type DirectRouteGrantScopeV1,
+    type IrohPeerRouteBindingV2,
     type LiveStreamGrantScopeV1,
     type MachineLiveStreamCapsV1,
     type PeerFlowKindV1,
@@ -104,16 +105,10 @@ const LoopbackPeerMediationGrantRequestSchema = z.object({
 }).strict();
 
 // Native machine/1 grants use the same signed grant authority as loopback
-// mediation, but are admitted only for the endpoint-bound Iroh route.
-const IrohPeerMediationGrantRequestSchema = z.object({
-    machineId: z.string().min(1),
-    flowKind: z.enum(["bounded_transfer", "machine_rpc"]),
-    routeKind: z.literal("iroh_peer"),
-    endpointFingerprint: z.string().min(1),
-    ttlMs: z.number().int().positive(),
-    scope: DirectRouteGrantScopeV1Schema,
-}).strict();
-
+// mediation, but are admitted only for the endpoint-bound Iroh route. The
+// machine/1 binding (both machines, both endpoint ids, orientation, operation
+// kind) is required here; the payload-level invariants (target aliases, flow
+// compatibility) are owned by the protocol grant schema and enforced at mint.
 const LiveStreamServerRelayAuthorizationRequestSchema = z.object({
     machineId: z.string().min(1),
     targetMachineId: z.string().min(1),
@@ -154,7 +149,6 @@ const VoiceMediaServerRelayAuthorizationRequestSchema = z.object({
 const PeerMediationGrantRequestSchema = z.union([
     DirectRouteGrantRequestV2Schema,
     LoopbackPeerMediationGrantRequestSchema,
-    IrohPeerMediationGrantRequestSchema,
     LiveStreamServerRelayAuthorizationRequestSchema,
     TcpTunnelServerRelayAuthorizationRequestSchema,
     VoiceMediaServerRelayAuthorizationRequestSchema,
@@ -499,7 +493,13 @@ export function registerPeerMediationGrantRoutes(
             });
         }
 
-        const directOwnershipRejection = await rejectUnlessMachinesOwned(accountId, [parsed.data.machineId]);
+        const irohBinding: IrohPeerRouteBindingV2 | undefined = "iroh" in parsed.data
+            ? parsed.data.iroh
+            : undefined;
+        const directOwnershipRejection = await rejectUnlessMachinesOwned(accountId, [
+            parsed.data.machineId,
+            ...(irohBinding ? [irohBinding.sourceMachineId, irohBinding.targetMachineId] : []),
+        ]);
         if (directOwnershipRejection) return directOwnershipRejection;
 
         const directGrantInput = {
@@ -519,11 +519,13 @@ export function registerPeerMediationGrantRoutes(
             signingKey: {
                 keyId: signing.keyId,
                 secretKey: signing.secretKey,
+                expiresAt: signing.capability.expiresAt,
             },
         };
         return "v" in parsed.data && parsed.data.v === 2
             ? mintDirectRouteGrantV2({
                 ...directGrantInput,
+                ...(irohBinding ? { iroh: irohBinding } : {}),
                 ephemeralPublicKeyBase64Url: parsed.data.ephemeralPublicKeyBase64Url,
             })
             : mintDirectRouteGrantV1(directGrantInput);

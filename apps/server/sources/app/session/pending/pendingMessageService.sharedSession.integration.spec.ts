@@ -696,6 +696,27 @@ describe("pendingMessageService (shared sessions)", () => {
         });
         expect(idempotent).toMatchObject({ ok: true, didUpdate: false, pendingVersion: changed.pendingVersion });
 
+        await db.session.update({
+            where: { id: session.id },
+            data: { pendingBlockedCount: 1 },
+        });
+        const reconciledIdempotent = await updatePendingRequestedAction({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            requestedAction: { v: 1, kind: "steer_now" },
+        });
+        expect(reconciledIdempotent).toMatchObject({
+            ok: true,
+            didUpdate: false,
+            pendingCount: 1,
+            pendingBlockedCount: 0,
+        });
+        await expect(db.session.findUniqueOrThrow({
+            where: { id: session.id },
+            select: { pendingCount: true, pendingBlockedCount: true },
+        })).resolves.toEqual({ pendingCount: 1, pendingBlockedCount: 0 });
+
         await db.sessionPendingMessage.update({
             where: { sessionId_localId: { sessionId: session.id, localId } },
             data: { deliveryState: "blocked", deliveryBlockedReason: "steering_unavailable" },

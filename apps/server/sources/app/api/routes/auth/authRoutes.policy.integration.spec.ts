@@ -24,8 +24,8 @@ function createTestApp() {
     return trackApp(typed);
 }
 
-function createAuthBody() {
-    const seed = new Uint8Array(32).fill(7);
+function createAuthBody(seedByte = 7) {
+    const seed = new Uint8Array(32).fill(seedByte);
     const kp = tweetnacl.sign.keyPair.fromSeed(seed);
     const challenge = new Uint8Array(32).fill(9);
     const signature = tweetnacl.sign.detached(challenge, kp.secretKey);
@@ -505,5 +505,81 @@ describe("authRoutes (auth policy) (integration)", () => {
         expect(typeof json.token).toBe("string");
 
         await app.close();
+    });
+
+    it("creates a plain Home account while signup is open, refuses new anonymous signups after closure and app recreation, and keeps the persisted credential valid", async () => {
+        // Loopback bootstrap posture: the fixed Personal Home storage policy with anonymous signup still open.
+        harness.resetEnv({
+            AUTH_ANONYMOUS_SIGNUP_ENABLED: "1",
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "plaintext_only",
+            HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: "plain",
+        });
+
+        const bootstrap = createAuthBody();
+
+        const firstApp = createTestApp();
+        authRoutes(firstApp as any);
+        await firstApp.ready();
+
+        const signupRes = await firstApp.inject({
+            method: "POST",
+            url: "/v1/auth",
+            payload: bootstrap.body,
+        });
+        expect(signupRes.statusCode).toBe(200);
+        const signupJson = signupRes.json() as { success?: boolean; token?: string };
+        expect(signupJson.success).toBe(true);
+        expect(typeof signupJson.token).toBe("string");
+        await firstApp.close();
+
+        const stored = await db.account.findUnique({
+            where: { publicKey: bootstrap.publicKeyHex },
+            select: { encryptionMode: true },
+        });
+        expect(stored?.encryptionMode).toBe("plain");
+
+        // Signup closure through the canonical env owner, then recreate the real
+        // app against the same durable harness database (no data reset between apps).
+        harness.resetEnv({
+            AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "plaintext_only",
+            HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: "plain",
+        });
+
+        const restartedApp = createTestApp();
+        authRoutes(restartedApp as any);
+        await restartedApp.ready();
+
+        const freshSignup = createAuthBody(9);
+        const refusedRes = await restartedApp.inject({
+            method: "POST",
+            url: "/v1/auth",
+            payload: freshSignup.body,
+        });
+        expect(refusedRes.statusCode).toBe(403);
+        expect(refusedRes.json()).toEqual({ error: "signup-disabled" });
+
+        // The pre-restart identity still logs in under closed signup, no duplicate
+        // account is created, and its signup-time token still authenticates.
+        const loginRes = await restartedApp.inject({
+            method: "POST",
+            url: "/v1/auth",
+            payload: bootstrap.body,
+        });
+        expect(loginRes.statusCode).toBe(200);
+        expect((loginRes.json() as { success?: boolean }).success).toBe(true);
+
+        const accounts = await db.account.findMany({ select: { publicKey: true } });
+        expect(accounts.map((account) => account.publicKey)).toEqual([bootstrap.publicKeyHex]);
+
+        const pingRes = await restartedApp.inject({
+            method: "GET",
+            url: "/v1/auth/ping",
+            headers: { authorization: `Bearer ${signupJson.token}` },
+        });
+        expect(pingRes.statusCode).toBe(200);
+        expect(pingRes.json()).toEqual({ ok: true });
+
+        await restartedApp.close();
     });
 });

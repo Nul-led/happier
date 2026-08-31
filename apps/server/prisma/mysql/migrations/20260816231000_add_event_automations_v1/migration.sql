@@ -166,7 +166,8 @@ INSERT INTO `AutomationTrigger` (
 )
 SELECT `id`, `id`, 'schedule', true, `scheduleKind`, `scheduleExpr`,
     `everyMs`, `timezone`, `nextRunAt`, `createdAt`, `updatedAt`
-FROM `Automation`;
+FROM `Automation`
+WHERE `scheduleKind` IN ('cron', 'interval');
 
 UPDATE `AutomationRun` AS run SET
     run.`triggerId` = CASE WHEN run.`idempotencyKey` IS NULL AND run.`dueAt` <> run.`scheduledAt` THEN run.`automationId` ELSE NULL END,

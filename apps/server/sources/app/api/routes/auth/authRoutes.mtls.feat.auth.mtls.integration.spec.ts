@@ -132,7 +132,7 @@ describe("authRoutes (mTLS) (integration)", () => {
                 profile: {},
             },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const proof = "fresh-mtls-browser-proof";
         const proofHash = createHash("sha256")
             .update(proof, "utf8")

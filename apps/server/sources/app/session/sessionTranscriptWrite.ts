@@ -15,6 +15,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import { resolveEncryptionWriteRejectionCode, type EncryptionPolicyRejectionCode } from "@/app/session/encryptionRejectionCodes";
 import { inTx, type Tx } from "@/storage/inTx";
+import { notifySessionTranscriptMutationAfterCommit } from './sessionTranscriptMutationObserver';
 import { isPrismaErrorCode } from "@/storage/prisma";
 
 export const SESSION_TRANSCRIPT_WRITE_SELECT = {
@@ -278,6 +279,19 @@ export async function writeSessionTranscriptMessageInTx(
                 : {}),
         },
         select: SESSION_TRANSCRIPT_WRITE_SELECT,
+    });
+
+    notifySessionTranscriptMutationAfterCommit(tx, {
+        kind: 'upsert',
+        message: {
+            id: message.id,
+            sessionId: message.sessionId,
+            seq: message.seq,
+            createdAtMs: message.createdAt.getTime(),
+            updatedAtMs: message.updatedAt.getTime(),
+            role: typeof message.messageRole === 'string' ? message.messageRole : null,
+            content: message.content,
+        },
     });
 
     return { ok: true as const, message };

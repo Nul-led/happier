@@ -16,6 +16,7 @@ import {
 } from "@happier-dev/protocol";
 
 import { auth } from "@/app/auth/auth";
+import { isRestrictedAuthTokenKind } from "@/app/api/utils/apiTokenRouteAdmission";
 import type { Fastify } from "@/app/api/types";
 import {
     proxyLocalServicePreviewHttpRequest,
@@ -438,8 +439,10 @@ async function readOptionalBearerUserId(request: RouteRequest): Promise<string |
         return null;
     }
     try {
-        const verified = await auth.verifyToken(authorization.slice("Bearer ".length));
-        return verified?.authTokenKind === "api_token" ? null : verified?.userId ?? null;
+        const verified = await auth.verifyTokenForRoute(authorization.slice("Bearer ".length));
+        return verified && !isRestrictedAuthTokenKind(verified.authTokenKind)
+            ? verified.userId
+            : null;
     } catch {
         return null;
     }

@@ -124,7 +124,7 @@ describe("authRoutes (sign out everywhere) (integration)", () => {
             data: { publicKey: "sign-out-everywhere-owner" },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const pat = await auth.createApiToken({
             accountId: account.id,
             label: "Retained by sign out everywhere",
@@ -177,7 +177,7 @@ describe("authRoutes (sign out everywhere) (integration)", () => {
             select: { id: true },
         });
         const [signedToken, pat] = await Promise.all([
-            auth.createToken(account.id),
+            auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
             auth.createApiToken({ accountId: account.id, label: "Automation cannot sign out" }),
         ]);
         const app = createTestApp();
@@ -229,7 +229,7 @@ describe("authRoutes (sign out everywhere) (integration)", () => {
             },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const app = createTestApp();
         await app.listen({ port: 0, host: "127.0.0.1" });
         const address = app.server.address();

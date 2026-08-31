@@ -41,10 +41,17 @@ describe("auth (oauth state fallback)", () => {
         const { auth } = await import("./auth");
         await expect(auth.init()).resolves.toBeUndefined();
 
-        const token = await auth.createToken("user-oauth-backend-down", { role: "admin" });
+        const token = await auth.createToken(
+            "user-oauth-backend-down",
+            { role: "admin" },
+            { kind: "account", authority: "present_user" },
+        );
         await expect(auth.verifyToken(token)).resolves.toEqual({
             userId: "user-oauth-backend-down",
             extras: { role: "admin" },
+            authTokenKind: "account",
+            authority: "present_user",
+            legacy: false,
         });
 
         await expect(auth.createOauthStateToken({

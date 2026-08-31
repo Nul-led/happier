@@ -5,6 +5,7 @@ import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-
 import { db } from "@/storage/db";
 import { connectRoutes } from "./connectRoutes";
 import { auth } from "@/app/auth/auth";
+import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
 
@@ -236,6 +237,103 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
 
         const accounts = await db.account.findMany();
         expect(accounts.length).toBe(0);
+
+        await app.close();
+    });
+
+    it("binds the account_directory purpose and exact Account Service target through signed state, pending storage, and callback redirect", async () => {
+        const endpointUrl = "https://accounts.example.test";
+        applyGithubExternalAuthCallbackEnv(harness, {
+            HAPPIER_PUBLIC_SERVER_URL: endpointUrl,
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+        });
+        const endpointServerIdentityId = await getOrCreateServerIdentityId(process.env);
+        const proofHash = "d".repeat(64);
+        const ghProfile = {
+            id: 987,
+            login: "directory-user",
+            avatar_url: "https://avatars.example.test/directory-user.png",
+            name: "Directory User",
+        };
+        const fetchMock = vi.fn(async (url: unknown) => {
+            if (typeof url === "string" && url.includes("https://github.com/login/oauth/access_token")) {
+                return { ok: true, json: async () => ({ access_token: "directory_tok_1" }) } as any;
+            }
+            if (typeof url === "string" && url.includes("https://api.github.com/user")) {
+                return { ok: true, json: async () => ghProfile } as any;
+            }
+            throw new Error(`Unexpected fetch: ${String(url)}`);
+        });
+        vi.stubGlobal("fetch", fetchMock as any);
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const query = new URLSearchParams({
+            mode: "keyless",
+            proofHash,
+            purpose: "account_directory",
+            endpointUrl,
+            endpointServerIdentityId,
+        });
+        const paramsRes = await app.inject({
+            method: "GET",
+            url: `/v1/auth/external/github/params?${query.toString()}`,
+        });
+        expect(paramsRes.statusCode).toBe(200);
+        const paramsBody = paramsRes.json() as {
+            url: string;
+            purpose: string;
+            credentialTarget: string;
+            endpointUrl: string;
+            endpointServerIdentityId: string;
+            expiresAt: string;
+        };
+        expect(paramsBody).toMatchObject({
+            purpose: "account_directory",
+            credentialTarget: "account_directory",
+            endpointUrl,
+            endpointServerIdentityId,
+        });
+        expect(Date.parse(paramsBody.expiresAt)).toBeGreaterThan(Date.now());
+        const authorizeUrl = new URL(paramsBody.url);
+        const state = authorizeUrl.searchParams.get("state");
+        expect(state).toBeTruthy();
+        expect(await auth.verifyOauthStateToken(state!)).toMatchObject({
+            flow: "auth",
+            provider: "github",
+            purpose: "account_directory",
+            endpointUrl,
+            endpointServerIdentityId,
+        });
+
+        const callbackRes = await app.inject({
+            method: "GET",
+            url: `/v1/oauth/github/callback?code=directory-code&state=${encodeURIComponent(state!)}`,
+        });
+        expect(callbackRes.statusCode).toBe(302);
+        const redirect = new URL(callbackRes.headers.location as string);
+        expect(redirect.searchParams.get("flow")).toBe("auth");
+        expect(redirect.searchParams.get("purpose")).toBe("account_directory");
+        expect(redirect.searchParams.get("credentialTarget")).toBe("account_directory");
+        expect(redirect.searchParams.get("endpointUrl")).toBe(endpointUrl);
+        expect(redirect.searchParams.get("endpointServerIdentityId")).toBe(endpointServerIdentityId);
+        const pendingKey = redirect.searchParams.get("pending");
+        expect(pendingKey).toBeTruthy();
+
+        const pendingRow = await db.repeatKey.findUnique({ where: { key: pendingKey! } });
+        expect(JSON.parse(pendingRow!.value)).toMatchObject({
+            v: 2,
+            flow: "auth",
+            authMode: "keyless",
+            provider: "github",
+            purpose: "account_directory",
+            endpointUrl,
+            endpointServerIdentityId,
+            proofHash,
+        });
+        expect(await db.account.count()).toBe(0);
 
         await app.close();
     });

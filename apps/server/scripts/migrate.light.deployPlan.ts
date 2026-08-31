@@ -1,12 +1,14 @@
+import { resolveManagedServerLightPathEnvValue } from '@happier-dev/cli-common/firstPartyRuntime';
+
 export type LightMigrateDeployPlan = {
     dataDir: string;
     prismaDeployArgs: string[];
 };
 
 export function requireLightDataDir(env: NodeJS.ProcessEnv): string {
-    const raw = env.HAPPY_SERVER_LIGHT_DATA_DIR ?? env.HAPPIER_SERVER_LIGHT_DATA_DIR;
-    if (typeof raw !== 'string' || raw.trim() === '') {
-        throw new Error('Missing HAPPY_SERVER_LIGHT_DATA_DIR (set it or ensure applyLightDefaultEnv sets it)');
+    const raw = resolveManagedServerLightPathEnvValue(env, 'HAPPIER_SERVER_LIGHT_DATA_DIR', 'HAPPY_SERVER_LIGHT_DATA_DIR');
+    if (raw.trim() === '') {
+        throw new Error('Missing HAPPIER_SERVER_LIGHT_DATA_DIR/HAPPY_SERVER_LIGHT_DATA_DIR (set it or ensure applyLightDefaultEnv sets it)');
     }
     return raw.trim();
 }

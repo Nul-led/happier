@@ -147,7 +147,7 @@ describe('startSocket handshake compatibility', () => {
             data: { publicKey: `pk-${Date.now()}` },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         const { app, port } = await startSocketApp();
         const socket = ioClient(`http://127.0.0.1:${port}`, {
@@ -177,7 +177,7 @@ describe('startSocket handshake compatibility', () => {
             data: { publicKey: `pk-${Date.now()}` },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         const { app, port } = await startSocketApp();
         const socket = ioClient(`http://127.0.0.1:${port}`, {
@@ -223,7 +223,7 @@ describe('startSocket handshake compatibility', () => {
                 },
             });
         }
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const baseAuth = {
             token,
             clientType,
@@ -266,7 +266,7 @@ describe('startSocket handshake compatibility', () => {
             data: { publicKey: `pk-${Date.now()}` },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         const { app, port } = await startSocketApp();
         const socket = ioClient(`http://127.0.0.1:${port}`, {

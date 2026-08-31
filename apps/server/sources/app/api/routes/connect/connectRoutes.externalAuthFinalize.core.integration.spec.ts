@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { createHash } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
 import * as privacyKit from "privacy-kit";
@@ -295,6 +296,86 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         });
         expect(identity?.providerUserId).toBe(String(githubProfile.id));
         expect(identity?.providerLogin).toBe("octocat");
+
+        await app.close();
+    });
+
+    it("POST /v1/auth/external/github/finalize rejects a Directory continuation bound to keyless finalization", async () => {
+        applyGithubExternalAuthFinalizeEnv(harness);
+
+        const { body, publicKeyHex } = createAuthBody(17);
+        const proof = "directory_new_account_proof";
+        const proofHash = createHash("sha256")
+            .update(proof, "utf8")
+            .digest("hex");
+        const pending = "oauth_pending_DirectoryKeyedCreateA1";
+        const githubProfile = {
+            id: 321,
+            login: "directory-new-user",
+            avatar_url: "",
+            name: "Directory New User",
+        };
+        const pendingPrefix = [
+            "auth",
+            "external",
+            "github",
+            "pending_v2",
+            pending,
+        ];
+        await db.repeatKey.create({
+            data: {
+                key: pending,
+                value: JSON.stringify({
+                    v: 2,
+                    flow: "auth",
+                    authMode: "keyless",
+                    purpose: "account_directory",
+                    provider: "github",
+                    endpointUrl: "https://accounts.example.test",
+                    endpointServerIdentityId: "srv_accounts_1",
+                    proofHash,
+                    profileEnc: privacyKit.encodeBase64(
+                        encryptString(
+                            [...pendingPrefix, "profile"],
+                            JSON.stringify(githubProfile),
+                        ),
+                    ),
+                    accessTokenEnc: privacyKit.encodeBase64(
+                        encryptString(
+                            [...pendingPrefix, "token"],
+                            "directory_new_account_token",
+                        ),
+                    ),
+                    suggestedUsername: "directory-new-user",
+                    usernameRequired: false,
+                    usernameReason: null,
+                }),
+                expiresAt: new Date(Date.now() + 60_000),
+            },
+        });
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const res = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize",
+            headers: { "content-type": "application/json" },
+            payload: {
+                pending,
+                proof,
+                ...body,
+            },
+        });
+
+        expect(res.statusCode).toBe(400);
+        expect(res.json()).toEqual({ error: "invalid-pending" });
+        const account = await db.account.findUnique({
+            where: { publicKey: publicKeyHex },
+            select: { id: true, encryptionMode: true },
+        });
+        expect(account).toBeNull();
 
         await app.close();
     });

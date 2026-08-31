@@ -44,6 +44,9 @@ function resolveShutdownDeadlineMs(env: NodeJS.ProcessEnv = process.env): number
 }
 
 function shutdownBucketPriority(name: string): number {
+    // Iroh Home ingress stops before Socket.IO/HTTP teardown so no new Iroh
+    // connection is accepted while the API listeners close.
+    if (name === "iroh") return 5;
     if (name === "api:socket") return 10;
     if (name === "api:http") return 20;
     if (name === "api") return 30;

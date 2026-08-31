@@ -12,12 +12,19 @@ export {
     HomeLoginAssertionV1Schema,
     HomeLoginRedemptionRequestV1Schema,
     HomeLoginRedemptionResponseV1Schema,
+    HomeLoginRedemptionResultV1Schema,
     AccountDirectoryMeResponseV1Schema as AccountDirectoryMeResponseSchema,
     AccountDirectoryHomesResponseV1Schema,
     AccountDirectoryHomePutResponseV1Schema,
+    AccountDirectoryHomeDeleteParamsV1Schema,
+    AccountDirectoryHomeDeleteRequestV1Schema,
     AccountDirectoryHomeDeleteResponseV1Schema,
+    AccountDirectoryLinkDeleteParamsV1Schema,
+    AccountDirectoryLinkDeleteRequestV1Schema,
     AccountDirectoryLinkPutResponseV1Schema,
     AccountDirectoryLinkDeleteResponseV1Schema,
+    AccountDirectoryPreferredHomePatchResponseV1Schema,
+    HomeLoginRedemptionApprovalRequiredV1Schema,
     AccountDirectoryRouteErrorResponseV1Schema,
 } from "@happier-dev/protocol";
 
@@ -29,5 +36,6 @@ export type {
     HomeLoginAssertionRequestV1 as HomeLoginAssertionRequest,
     HomeLoginAssertionV1,
     HomeLoginRedemptionResponseV1,
+    HomeLoginRedemptionResultV1,
     AccountDirectoryMeResponseV1,
 } from "@happier-dev/protocol";

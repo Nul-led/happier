@@ -56,8 +56,8 @@ describe("enableAuthentication API-token admission (integration)", () => {
             select: { id: true },
         });
         const [signedToken, terminalToken, pat] = await Promise.all([
-            auth.createToken(account.id),
-            auth.createToken(account.id, { session: "terminal-auth-request" }),
+            auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
+            auth.createToken(account.id, { session: "terminal-auth-request" }, { kind: "terminal", authority: "account_automation" }),
             auth.createApiToken({ accountId: account.id, label: "PAT admission" }),
         ]);
         const app = createApp();

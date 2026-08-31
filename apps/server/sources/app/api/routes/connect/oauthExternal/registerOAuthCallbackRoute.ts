@@ -86,15 +86,41 @@ export function registerOAuthCallbackRoute(app: Fastify) {
             return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, { flow: oauthState.flow, error: "invalid_state" }));
         }
 
+        const isFirstKeyStepUp =
+            oauthState.purpose
+            === "account_encryption_first_key";
+        const isAccountDirectory =
+            oauthState.purpose === "account_directory";
+        const accountDirectoryTarget = isAccountDirectory
+            && attemptParsed.data.purpose === "account_directory"
+            && typeof attemptParsed.data.endpointUrl === "string"
+            && attemptParsed.data.endpointUrl === oauthState.endpointUrl
+            && typeof attemptParsed.data.endpointServerIdentityId === "string"
+            && attemptParsed.data.endpointServerIdentityId
+                === oauthState.endpointServerIdentityId
+                ? {
+                    endpointUrl: attemptParsed.data.endpointUrl,
+                    endpointServerIdentityId:
+                        attemptParsed.data.endpointServerIdentityId,
+                }
+                : null;
+        if (
+            isAccountDirectory !==
+                (attemptParsed.data.purpose === "account_directory")
+            || (isAccountDirectory && !accountDirectoryTarget)
+        ) {
+            return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, {
+                flow: oauthState.flow,
+                error: "invalid_state",
+            }));
+        }
+
         const webAppUrl =
             typeof attemptParsed.data.webAppOAuthReturnUrl === "string" && attemptParsed.data.webAppOAuthReturnUrl.trim()
                 ? attemptParsed.data.webAppOAuthReturnUrl.trim()
                 : fallbackWebAppUrl;
 
         const flow = oauthState.flow;
-        const isFirstKeyStepUp =
-            oauthState.purpose
-            === "account_encryption_first_key";
         const authMode = flow === "auth" && oauthState.publicKey ? "keyed" : flow === "auth" ? "keyless" : null;
         const redirectBaseParams: Record<string, string> =
             isFirstKeyStepUp
@@ -103,6 +129,16 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                     mode: "keyless",
                     purpose: "account_encryption_first_key",
                 }
+                : accountDirectoryTarget
+                    ? {
+                        flow,
+                        mode: authMode!,
+                        purpose: "account_directory",
+                        credentialTarget: "account_directory",
+                        endpointUrl: accountDirectoryTarget.endpointUrl,
+                        endpointServerIdentityId:
+                            accountDirectoryTarget.endpointServerIdentityId,
+                    }
                 : flow === "auth" && authMode === "keyless"
                     ? { flow, mode: "keyless" }
                     : { flow };
@@ -111,6 +147,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
             flow === "auth"
             && authMode === "keyless"
             && !isFirstKeyStepUp
+            && !isAccountDirectory
         ) {
             const policy = resolveAuthPolicyFromEnv(process.env);
             const keyedAllowed = policy.signupProviders.includes(providerId);
@@ -307,6 +344,13 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                             key: pendingKey,
                             value: JSON.stringify({
                                 v: 2,
+                                ...(accountDirectoryTarget
+                                    ? {
+                                        authMode: "keyless",
+                                        purpose: "account_directory",
+                                        ...accountDirectoryTarget,
+                                    }
+                                    : {}),
                                 flow: "auth",
                                 provider: providerId,
                                 proofHash: proofHash!,
@@ -320,6 +364,30 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                             expiresAt: new Date(Date.now() + ttlMs),
                         },
                     });
+
+                    if (accountDirectoryTarget) {
+                        const directoryRedirectParams = {
+                            ...redirectBaseParams,
+                            mode: isAlreadyLinked
+                                ? "keyless"
+                                : "keyed",
+                        };
+                        if (usernameRequired) {
+                            return reply.redirect(buildRedirectUrl(webAppUrl, {
+                                ...directoryRedirectParams,
+                                status: "username_required",
+                                reason:
+                                    usernameReason
+                                    ?? "invalid_login",
+                                login,
+                                pending: pendingKey,
+                            }));
+                        }
+                        return reply.redirect(buildRedirectUrl(webAppUrl, {
+                            ...directoryRedirectParams,
+                            pending: pendingKey,
+                        }));
+                    }
 
                     const encryptionEnv = readEncryptionFeatureEnv(process.env);
                     const policy = resolveAuthPolicyFromEnv(process.env);
@@ -414,6 +482,14 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                     data: {
                         key: pendingKey,
                         value: JSON.stringify({
+                            ...(accountDirectoryTarget
+                                ? {
+                                    v: 2,
+                                    authMode: "keyed",
+                                    purpose: "account_directory",
+                                    ...accountDirectoryTarget,
+                                }
+                                : {}),
                             flow: "auth",
                             provider: providerId,
                             publicKeyHex: publicKeyHex!,

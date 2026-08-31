@@ -1035,7 +1035,7 @@ describe("local service public exposure routes", () => {
         process.env.HANDY_MASTER_SECRET = "public-preview-route-auth-secret";
         dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0 });
         await auth.init();
-        const token = await auth.createToken("user_1");
+        const token = await auth.createToken("user_1", undefined, { kind: "account", authority: "present_user" });
         const app = createFakeRouteApp();
         const validateAccess = vi.fn(() => ({ ok: true as const, preview }));
         mod.registerLocalServicePublicRoutes(app as never, {
@@ -1075,10 +1075,11 @@ describe("local service public exposure routes", () => {
         expect(mod?.registerLocalServicePublicRoutes).toBeTypeOf("function");
         if (!mod?.registerLocalServicePublicRoutes) return;
 
-        const verifyToken = vi.spyOn(auth, "verifyToken").mockResolvedValue({
+        const verifyToken = vi.spyOn(auth, "verifyTokenForRoute").mockResolvedValue({
             userId: "user_1",
             authTokenKind: "api_token",
             authority: "account_automation",
+            legacy: false,
             apiTokenPrincipal: {
                 accountId: "user_1",
                 principalId: "user_1",
@@ -1124,6 +1125,74 @@ describe("local service public exposure routes", () => {
             verifyToken.mockRestore();
         }
 
+        expect(validateAccess).toHaveBeenNthCalledWith(1, expect.objectContaining({
+            authenticated: false,
+            sessionAuthorized: false,
+        }));
+        expect(validateAccess).toHaveBeenNthCalledWith(2, expect.objectContaining({
+            authenticated: false,
+            sessionAuthorized: false,
+        }));
+        expect(authorizeSessionAccess).not.toHaveBeenCalled();
+    });
+
+    it("does not treat a signed account_directory token as authenticated on public preview HTTP or WebSocket data planes", async () => {
+        const mod = await loadPublicRoutesModule();
+        expect(mod?.registerLocalServicePublicRoutes).toBeTypeOf("function");
+        if (!mod?.registerLocalServicePublicRoutes) return;
+
+        const previousMasterSecret = process.env.HANDY_MASTER_SECRET;
+        process.env.HANDY_MASTER_SECRET = "public-preview-route-auth-secret";
+        dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0 });
+        await auth.init();
+        const directoryToken = await auth.createToken("user_directory_1", undefined, {
+            kind: "account_directory",
+            authority: "present_user",
+        });
+        const app = createUpgradeRouteApp();
+        const validateAccess = vi.fn(() => ({ ok: true as const, preview }));
+        const authorizeSessionAccess = allowSessionAccess();
+        mod.registerLocalServicePublicRoutes(app as never, {
+            resolvePreview: vi.fn(() => preview),
+            resolveExposure: vi.fn(() => exposure),
+            createExposure: vi.fn(() => ({ ok: true as const, exposure })),
+            revokeExposure: vi.fn(() => ({ ok: true as const })),
+            validateAccess,
+            authorizeSessionAccess,
+            proxyHttp: vi.fn(async () => ({ ok: true as const })),
+            proxyWebSocket: vi.fn(async () => ({ ok: true as const })),
+        });
+
+        try {
+            const handler = getRouteHandler(app, "GET", "/v1/local-services/public/:exposureId/*");
+            await handler({
+                params: { exposureId: "public_preview_1", "*": "" },
+                query: {},
+                headers: { authorization: `Bearer ${directoryToken}` },
+                method: "GET",
+            }, createReplyStub());
+
+            await app.upgradeHandlers[0]?.({
+                url: "/v1/local-services/public/public_preview_1/socket",
+                headers: {
+                    host: "preview.happier.test",
+                    upgrade: "websocket",
+                    connection: "Upgrade",
+                    authorization: `Bearer ${directoryToken}`,
+                },
+                rawHeaders: [],
+            }, createUpgradeSocket(), new Uint8Array());
+        } finally {
+            if (typeof previousMasterSecret === "string") {
+                process.env.HANDY_MASTER_SECRET = previousMasterSecret;
+            } else {
+                delete process.env.HANDY_MASTER_SECRET;
+            }
+        }
+
+        // A projected restricted credential would resolve to authenticated:true
+        // (S-2) and reach the session authorizer; the Directory bearer must
+        // degrade to the anonymous public path on both planes.
         expect(validateAccess).toHaveBeenNthCalledWith(1, expect.objectContaining({
             authenticated: false,
             sessionAuthorized: false,

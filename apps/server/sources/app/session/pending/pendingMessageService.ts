@@ -1,5 +1,6 @@
 import { markSessionParticipantsChanged, type SessionParticipantCursor } from "@/app/session/changeTracking/markSessionParticipantsChanged";
 import { markPendingStateChangedParticipants } from "@/app/session/pending/markPendingStateChangedParticipants";
+import { reconcileSessionPendingQueueStateInTx } from "@/app/session/pending/reconcileSessionPendingQueueState";
 import { applyPendingSessionStateChange } from "@/app/session/pending/applyPendingSessionStateChange";
 import { mapPendingMessageRow } from "@/app/session/pending/mapPendingMessageRow";
 import {
@@ -1304,11 +1305,16 @@ export async function updatePendingRequestedAction(params: Readonly<{
                 if (retained !== 1) {
                     return { ok: false, error: "action-conflict" } as const;
                 }
-                const session = await tx.session.findUnique({
-                    where: { id: sessionId },
-                    select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
-                });
-                if (!session) return { ok: false, error: "session-not-found" } as const;
+                const session = await reconcileSessionPendingQueueStateInTx(tx, sessionId);
+                const participantCursors = session.didRepair
+                    ? await markPendingStateChangedParticipants({
+                        tx,
+                        sessionId,
+                        pendingCount: session.pendingCount,
+                        pendingBlockedCount: session.pendingBlockedCount,
+                        pendingVersion: session.pendingVersion,
+                    })
+                    : [];
                 return {
                     ok: true,
                     didUpdate: false,
@@ -1316,7 +1322,7 @@ export async function updatePendingRequestedAction(params: Readonly<{
                     pendingCount: session.pendingCount,
                     pendingBlockedCount: session.pendingBlockedCount,
                     pendingVersion: session.pendingVersion,
-                    participantCursors: [] as ParticipantCursor[],
+                    participantCursors,
                 } as const;
             }
             const updatedCount = (await tx.sessionPendingMessage.updateMany({

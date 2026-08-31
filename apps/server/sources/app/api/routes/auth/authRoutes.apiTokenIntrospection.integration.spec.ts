@@ -68,7 +68,7 @@ describe("authRoutes (API token introspection) (integration)", () => {
             data: { publicKey: "api-token-introspection-owner" },
             select: { id: true },
         });
-        const daemonConnectionToken = await auth.createToken(account.id);
+        const daemonConnectionToken = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const pat = await auth.createApiToken({
             accountId: account.id,
             label: "Daemon Action API",
@@ -108,7 +108,7 @@ describe("authRoutes (API token introspection) (integration)", () => {
             db.account.create({ data: { publicKey: "api-token-introspection-owner-b" }, select: { id: true } }),
         ]);
         const [otherDaemonConnectionToken, pat] = await Promise.all([
-            auth.createToken(other.id),
+            auth.createToken(other.id, undefined, { kind: "account", authority: "present_user" }),
             auth.createApiToken({ accountId: owner.id, label: "Other Account" }),
         ]);
         const app = createTestApp();
@@ -135,7 +135,7 @@ describe("authRoutes (API token introspection) (integration)", () => {
             select: { id: true },
         });
         const [daemonConnectionToken, pat] = await Promise.all([
-            auth.createToken(account.id),
+            auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
             auth.createApiToken({ accountId: account.id, label: "No body Account" }),
         ]);
         const app = createTestApp();
@@ -172,7 +172,7 @@ describe("authRoutes (API token introspection) (integration)", () => {
             select: { id: true },
         });
         const [daemonConnectionToken, pat] = await Promise.all([
-            auth.createToken(account.id),
+            auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
             auth.createApiToken({ accountId: account.id, label: "Cross-honor guard" }),
         ]);
         const app = createTestApp();
@@ -259,7 +259,7 @@ describe("authRoutes (API token introspection) (integration)", () => {
             data: { publicKey: "api-token-introspection-revocation" },
             select: { id: true },
         });
-        const daemonConnectionToken = await auth.createToken(account.id);
+        const daemonConnectionToken = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const pat = await auth.createApiToken({ accountId: account.id, label: "Revocable daemon token" });
         await auth.revokeApiToken({ accountId: account.id, tokenId: pat.tokenId });
         const app = createTestApp();

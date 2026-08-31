@@ -47,7 +47,7 @@ describe("accountRoutes (activity badge snapshot) (integration)", () => {
     it("returns an unread-derived badgeCount when lastViewedSessionSeq is behind session.seq", async () => {
         const app = createTestApp();
         const account = await db.account.create({ data: { publicKey: "pk_activity_badges_1" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         const session = await db.session.create({
             data: {
@@ -88,7 +88,7 @@ describe("accountRoutes (activity badge snapshot) (integration)", () => {
     it("counts a session once when multiple activity reasons are active", async () => {
         const app = createTestApp();
         const account = await db.account.create({ data: { publicKey: "pk_activity_badges_2" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         const session = await db.session.create({
             data: {

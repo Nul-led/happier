@@ -129,9 +129,9 @@ export function registerAutomationDaemonRoutes(
 
         return {
             assignments: rows.map((row) => {
-                const trigger = row.automation.triggers[0];
+                const trigger = row.v2ScheduleTrigger;
                 if (!trigger || trigger.kind !== "schedule" || trigger.scheduleKind === null) {
-                    throw new Error("V2 assignment is missing its sole schedule trigger");
+                    throw new Error("V2 assignment is missing its frozen schedule trigger");
                 }
                 return {
                     machineId: row.machineId,

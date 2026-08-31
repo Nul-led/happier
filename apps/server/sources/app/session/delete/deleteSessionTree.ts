@@ -1,5 +1,6 @@
 import type { Tx } from '@/storage/inTx';
 import type { Prisma } from '@prisma/client';
+import { notifySessionTranscriptMutationAfterCommit } from '../sessionTranscriptMutationObserver';
 
 export class SessionDeleteConditionLostError extends Error {
     constructor() {
@@ -66,6 +67,11 @@ export async function deleteSessionTree(
     if (deletedSession.count !== 1) {
         throw new SessionDeleteConditionLostError();
     }
+
+    notifySessionTranscriptMutationAfterCommit(tx, {
+        kind: 'remove-session',
+        sessionId: params.sessionId,
+    });
 
     return {
         deletedMessages: deletedMessages.count,

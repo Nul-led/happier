@@ -2,6 +2,8 @@ import { createHash, createHmac } from "node:crypto";
 import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
 import {
+    ACCOUNT_DIRECTORY_ASSERTION_CLOCK_SKEW_MS,
+    ACCOUNT_DIRECTORY_ASSERTION_SIGNING_DOMAIN_V1,
     createHomeLoginAssertionSigningBytesV1,
     decodeBase64,
     encodeBase64,
@@ -10,7 +12,7 @@ import {
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import type { HomeLoginAssertionV1 } from "./accountDirectorySchemas";
 
-export const ACCOUNT_DIRECTORY_SIGNING_DOMAIN = "happier.account-directory.home-login.v1";
+export const ACCOUNT_DIRECTORY_SIGNING_DOMAIN = ACCOUNT_DIRECTORY_ASSERTION_SIGNING_DOMAIN_V1;
 const ASSERTION_TTL_MS = 3 * 60_000;
 
 function deriveSigningSeed(masterSecret: string): Uint8Array {
@@ -74,17 +76,24 @@ export function verifyHomeLoginAssertionSignature(
     assertion: HomeLoginAssertionV1,
     publicKey: Uint8Array,
     nowMs = Date.now(),
-): "ok" | "expired" | "invalid" {
-    if (assertion.expiresAtMs <= nowMs || assertion.issuedAtMs > nowMs + 60_000) return "expired";
+): "ok" | "expired" | "clock_skew" | "invalid" {
+    const parsed = HomeLoginAssertionV1Schema.safeParse(assertion);
+    if (!parsed.success) return "invalid";
+    const validated = parsed.data;
+    // Past expiry (beyond the bounded skew) is distinct from an assertion
+    // dated in the future beyond the skew: the former is expiry, the latter
+    // is clock skew, and callers surface different typed errors for each.
+    if (validated.expiresAtMs + ACCOUNT_DIRECTORY_ASSERTION_CLOCK_SKEW_MS <= nowMs) return "expired";
+    if (validated.issuedAtMs > nowMs + ACCOUNT_DIRECTORY_ASSERTION_CLOCK_SKEW_MS) return "clock_skew";
     if (publicKey.length !== tweetnacl.sign.publicKeyLength) return "invalid";
     let signature: Uint8Array;
     try {
-        signature = decodeBase64(assertion.signatureBase64Url, "base64url");
+        signature = decodeBase64(validated.signatureBase64Url, "base64url");
     } catch {
         return "invalid";
     }
     if (signature.length !== tweetnacl.sign.signatureLength) return "invalid";
-    const { signatureBase64Url: _signature, ...unsigned } = assertion;
+    const { signatureBase64Url: _signature, ...unsigned } = validated;
     return tweetnacl.sign.detached.verify(canonicalHomeLoginAssertionBytes(unsigned), signature, publicKey)
         ? "ok"
         : "invalid";

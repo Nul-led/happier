@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import tweetnacl from "tweetnacl";
 
-import { decodeBase64, encodeBase64, openBoxBundle } from "@happier-dev/protocol";
+import { BOX_BUNDLE_PUBLIC_KEY_BYTES, decodeBase64, encodeBase64, openBoxBundle } from "@happier-dev/protocol";
 
 import {
   OPENAI_CODEX_DEVICE_REDIRECT_URI,
@@ -27,6 +27,20 @@ function buildJwt(payload: Readonly<Record<string, unknown>>): string {
 }
 
 describe("openai codex device auth", () => {
+  it("rejects a low-order recipient key before consuming the provider authorization code", async () => {
+    const fetchMock = vi.fn();
+
+    await expect(exchangeOpenAiCodexDeviceAuthApprovalForBundle({
+      fetcher: fetchMock as any,
+      publicKeyB64Url: encodeBase64(new Uint8Array(BOX_BUNDLE_PUBLIC_KEY_BYTES), "base64url"),
+      authorizationCode: "one-time-code",
+      codeVerifier: "verifier-1",
+      now: 1700000000000,
+    })).rejects.toThrow(/invalid publickey/i);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("starts device auth and returns user code + interval", async () => {
     const fetchMock = vi.fn(async (url: any, init: any) => {
       expect(String(url)).toContain("/api/accounts/deviceauth/usercode");

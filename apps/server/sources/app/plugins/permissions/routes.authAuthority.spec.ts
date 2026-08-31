@@ -47,8 +47,14 @@ describe("plugin permission grant HTTP auth authority", () => {
 
         try {
             const [presentUserToken, terminalToken] = await Promise.all([
-                auth.createToken("account-1"),
-                auth.createToken("account-1", { session: "terminal-automation" }),
+                auth.createToken("account-1", undefined, {
+                    kind: "account",
+                    authority: "present_user",
+                }),
+                auth.createToken("account-1", { session: "terminal-automation" }, {
+                    kind: "terminal",
+                    authority: "account_automation",
+                }),
             ]);
 
             for (const [path, body] of [
@@ -88,8 +94,14 @@ describe("plugin permission grant HTTP auth authority", () => {
 
         try {
             const [presentUserToken, terminalToken] = await Promise.all([
-                auth.createToken("account-1"),
-                auth.createToken("account-1", { session: "terminal-automation" }),
+                auth.createToken("account-1", undefined, {
+                    kind: "account",
+                    authority: "present_user",
+                }),
+                auth.createToken("account-1", { session: "terminal-automation" }, {
+                    kind: "terminal",
+                    authority: "account_automation",
+                }),
             ]);
 
             const automationResponse = await app.inject({

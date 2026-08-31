@@ -4,6 +4,7 @@ import { logPublicShareAccess, getIpAddress, getUserAgent } from "@/app/share/ac
 import { PROFILE_SELECT, toShareUserProfile } from "@/app/share/types";
 import { createHash } from "crypto";
 import { auth } from "@/app/auth/auth";
+import { isRestrictedAuthTokenKind } from "@/app/api/utils/apiTokenRouteAdmission";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { parseSessionMessageRole } from "@/app/session/messageRole/resolveSessionMessageRole";
 import {
@@ -71,8 +72,10 @@ async function getOptionalAuthenticatedUserId(request: any): Promise<string | nu
 
     try {
         const token = authHeader.substring(7);
-        const verified = await auth.verifyToken(token);
-        return verified?.authTokenKind === "api_token" ? null : verified?.userId ?? null;
+        const verified = await auth.verifyTokenForRoute(token);
+        return verified && !isRestrictedAuthTokenKind(verified.authTokenKind)
+            ? verified.userId
+            : null;
     } catch {
         return null;
     }

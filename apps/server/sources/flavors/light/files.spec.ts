@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { getLightPublicUrl, normalizePublicPath } from "./files";
+import { getLightPublicUrl, normalizePublicPath, resolveLightPublicFilesDir } from "./files";
+
+describe("resolveLightPublicFilesDir", () => {
+  it("prefers the current HAPPIER_* files dir over a conflicting legacy HAPPY_* alias", () => {
+    const env = {
+      HAPPIER_SERVER_LIGHT_FILES_DIR: "/current/files",
+      HAPPY_SERVER_LIGHT_FILES_DIR: "/legacy/files",
+    } as NodeJS.ProcessEnv;
+    expect(resolveLightPublicFilesDir(env)).toBe("/current/files");
+  });
+
+  it("falls back to the legacy HAPPY_* files dir when the current name is absent", () => {
+    const env = { HAPPY_SERVER_LIGHT_FILES_DIR: "/legacy/files" } as NodeJS.ProcessEnv;
+    expect(resolveLightPublicFilesDir(env)).toBe("/legacy/files");
+  });
+});
 
 describe("normalizePublicPath", () => {
   it("rejects path traversal and absolute paths", () => {

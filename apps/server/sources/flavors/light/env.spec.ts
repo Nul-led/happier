@@ -2,12 +2,17 @@ import { mkdtemp, mkdir, rm, readFile, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { resolvePersonalHomeRuntimeLayout } from "@happier-dev/cli-common/firstPartyRuntime";
 import {
   applyLightDefaultEnv,
   applyPackagedLightRuntimeSqliteDefaults,
   ensureHandyMasterSecret,
+  resolveLightDataDir,
+  resolveLightDatabaseDir,
+  resolveLightFilesDir,
   resolveLightSqliteDatabaseUrl,
 } from "./env";
+import { resolveLocalPrivateFilesDir } from "../../storage/privateFiles/privateFilesLocal";
 
 describe("light env helpers", () => {
   it("applyLightDefaultEnv fills defaults without overriding explicit values", () => {
@@ -45,6 +50,60 @@ describe("light env helpers", () => {
     );
     expect(env.DATABASE_URL).toBeUndefined();
     expect(env.PUBLIC_URL).toBe("http://localhost:4000");
+  });
+
+  it("resolves current HAPPIER_* paths over conflicting legacy HAPPY_* aliases and agrees with the Personal Home layout owner", () => {
+    const env: NodeJS.ProcessEnv = {
+      HAPPIER_SERVER_LIGHT_DATA_DIR: "/current/data",
+      HAPPY_SERVER_LIGHT_DATA_DIR: "/legacy/data",
+      HAPPIER_SERVER_LIGHT_FILES_DIR: "/current/files",
+      HAPPY_SERVER_LIGHT_FILES_DIR: "/legacy/files",
+      HAPPIER_SERVER_LIGHT_DB_DIR: "/current/db",
+      HAPPY_SERVER_LIGHT_DB_DIR: "/legacy/db",
+    };
+
+    expect(resolveLightDataDir(env)).toBe("/current/data");
+    expect(resolveLightFilesDir(env, resolveLightDataDir(env))).toBe("/current/files");
+    expect(resolveLightDatabaseDir(env, resolveLightDataDir(env))).toBe("/current/db");
+
+    // applyLightDefaultEnv normalizes the legacy aliases to the authoritative current
+    // roots without overwriting the supplied current values.
+    const normalized: NodeJS.ProcessEnv = { ...env };
+    applyLightDefaultEnv(normalized, { homedir: "/home/ignored" });
+    expect(normalized.HAPPIER_SERVER_LIGHT_DATA_DIR).toBe("/current/data");
+    expect(normalized.HAPPY_SERVER_LIGHT_DATA_DIR).toBe("/current/data");
+    expect(normalized.HAPPIER_SERVER_LIGHT_FILES_DIR).toBe("/current/files");
+    expect(normalized.HAPPY_SERVER_LIGHT_FILES_DIR).toBe("/current/files");
+    expect(normalized.HAPPIER_SERVER_LIGHT_DB_DIR).toBe("/current/db");
+    expect(normalized.HAPPY_SERVER_LIGHT_DB_DIR).toBe("/current/db");
+
+    // Cross-owner regression: the cli-common Personal Home layout and the server
+    // private-files operation adapter must resolve the same current roots from the
+    // same environment as the server-light startup owner.
+    const layout = resolvePersonalHomeRuntimeLayout({
+      env,
+      homeDir: "/home/tester",
+      platform: process.platform,
+    });
+    expect(layout.dataDir).toBe(resolveLightDataDir(env));
+    expect(layout.publicFilesDir).toBe(resolveLightFilesDir(env, resolveLightDataDir(env)));
+    expect(resolveLocalPrivateFilesDir(env)).toBe(layout.privateFilesDir);
+  });
+
+  it("falls back to non-empty legacy HAPPY_* paths only when the current HAPPIER_* name is absent", () => {
+    const env: NodeJS.ProcessEnv = {
+      HAPPY_SERVER_LIGHT_DATA_DIR: "/legacy/data",
+      HAPPY_SERVER_LIGHT_FILES_DIR: "/legacy/files",
+      HAPPIER_SERVER_LIGHT_FILES_DIR: "",
+    };
+
+    expect(resolveLightDataDir(env)).toBe("/legacy/data");
+    // An explicitly empty current value resolves to the default rather than the legacy alias.
+    expect(resolveLightFilesDir(env, resolveLightDataDir(env))).toBe("/legacy/data/files");
+
+    applyLightDefaultEnv(env);
+    expect(env.HAPPIER_SERVER_LIGHT_FILES_DIR).toBe("/legacy/data/files");
+    expect(env.HAPPY_SERVER_LIGHT_FILES_DIR).toBe("/legacy/data/files");
   });
 
   it("applyLightDefaultEnv expands ~ in explicit light path overrides", () => {

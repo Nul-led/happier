@@ -103,6 +103,7 @@ type EncryptedCandidate = Readonly<{
 
 type ExistingOccurrenceRow = Readonly<{
     id: string;
+    automationId: string;
     triggerId: string | null;
     causeKind: string;
     causeTriggerKind: string | null;
@@ -117,6 +118,7 @@ type ExistingOccurrenceRow = Readonly<{
 
 const existingEventOccurrenceSelect = {
     id: true,
+    automationId: true,
     triggerId: true,
     causeKind: true,
     causeTriggerKind: true,
@@ -329,13 +331,15 @@ async function assertAllResultsWithReadyContinuationTx(params: Readonly<{
 
 function existingEvidenceDisposition(params: Readonly<{
     row: ExistingOccurrenceRow;
+    automationId: string;
     triggerId: string;
     occurrenceKey: string;
     sourceSelectorId: string;
     evidence: AutomationPluginEventOccurrenceEvidenceV1;
 }>): "match" | "mismatch" | "unavailable" {
     if (
-        params.row.triggerId !== params.triggerId
+        params.row.automationId !== params.automationId
+        || params.row.triggerId !== params.triggerId
         || params.row.causeKind !== "trigger"
         || params.row.causeTriggerKind !== "pluginEvent"
         || params.row.causeEventPluginId !== params.evidence.eventRef.pluginId
@@ -356,6 +360,7 @@ function existingEvidenceDisposition(params: Readonly<{
 
 function encryptedExistingEvidenceDisposition(params: Readonly<{
     row: ExistingOccurrenceRow;
+    automationId: string;
     triggerId: string;
     eventRef: Readonly<{ pluginId: string; localId: string }>;
     occurrenceKey: string;
@@ -364,7 +369,8 @@ function encryptedExistingEvidenceDisposition(params: Readonly<{
     occurrenceEvidenceEqualityTag: string;
 }>): "match" | "mismatch" | "unavailable" {
     if (
-        params.row.triggerId !== params.triggerId
+        params.row.automationId !== params.automationId
+        || params.row.triggerId !== params.triggerId
         || params.row.causeKind !== "trigger"
         || params.row.causeTriggerKind !== "pluginEvent"
         || params.row.causeEventPluginId !== params.eventRef.pluginId
@@ -547,6 +553,7 @@ async function admitEncryptedAutomationEventV1(params: Readonly<{
             }
             const disposition = encryptedExistingEvidenceDisposition({
                 row: existing,
+                automationId: definition.automationId,
                 triggerId: definition.triggerId,
                 eventRef: params.hostEvidence.eventRef,
                 occurrenceKey: definition.occurrenceKey,
@@ -942,6 +949,7 @@ export async function admitAutomationEventV1(params: Readonly<{
             }
             const disposition = existingEvidenceDisposition({
                 row: existing,
+                automationId: group.definition.automationId,
                 triggerId: group.definition.triggerId,
                 occurrenceKey,
                 sourceSelectorId: group.definition.sourceSelectorId,

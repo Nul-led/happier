@@ -47,13 +47,19 @@ describe("auth persistent token compatibility", () => {
         ]);
         await auth.init();
 
-        await expect(auth.verifyToken(LEGACY_NODE_TOKEN)).resolves.toEqual({
+        await expect(auth.verifyLegacyHomeToken(LEGACY_NODE_TOKEN)).resolves.toEqual({
             userId: "legacy-node-user",
             extras: { provenance: "privacy-kit-0.0.25-node" },
+            authTokenKind: "account",
+            authority: "present_user",
+            legacy: true,
         });
-        await expect(auth.verifyToken(LEGACY_BUN_RETRY_TOKEN)).resolves.toEqual({
+        await expect(auth.verifyLegacyHomeToken(LEGACY_BUN_RETRY_TOKEN)).resolves.toEqual({
             userId: "legacy-bun-user",
             extras: { provenance: "privacy-kit-0.0.25-bun-1.3.5" },
+            authTokenKind: "account",
+            authority: "present_user",
+            legacy: true,
         });
 
         const attemptZero = await privacyKit.createPersistentTokenGenerator({
@@ -64,7 +70,11 @@ describe("auth persistent token compatibility", () => {
             service: "handy",
             publicKey: attemptZero.publicKey,
         });
-        const newlyIssuedToken = await auth.createToken("new-user", { source: "canonical" });
+        const newlyIssuedToken = await auth.createToken(
+            "new-user",
+            { source: "canonical" },
+            { kind: "account", authority: "present_user" },
+        );
 
         await expect(attemptZeroVerifier.verify(newlyIssuedToken)).resolves.toMatchObject({
             user: "new-user",

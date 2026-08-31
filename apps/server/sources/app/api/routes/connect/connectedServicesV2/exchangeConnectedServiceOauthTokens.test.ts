@@ -16,6 +16,10 @@ function buildRecipientPublicKeyB64Url(): string {
     return encodeBase64(bytes, "base64url");
 }
 
+function buildLowOrderRecipientPublicKeyB64Url(): string {
+    return encodeBase64(new Uint8Array(BOX_BUNDLE_PUBLIC_KEY_BYTES), "base64url");
+}
+
 function buildRecipientKeyPair(): Readonly<{ publicKeyB64Url: string; secretKey: Uint8Array }> {
     const secretKey = new Uint8Array(32).fill(7);
     const publicKey = tweetnacl.box.keyPair.fromSecretKey(secretKey).publicKey;
@@ -33,6 +37,22 @@ function buildJwt(payload: Readonly<Record<string, unknown>>): string {
 
 describe("exchangeConnectedServiceOauthTokens", () => {
     const resetOauthExchangeEnv = createEnvReset();
+
+    it("rejects a low-order recipient key before consuming the provider authorization code", async () => {
+        const fetchMock = vi.fn();
+
+        await expect(exchangeConnectedServiceOauthTokens({
+            serviceId: "openai-codex",
+            publicKeyB64Url: buildLowOrderRecipientPublicKeyB64Url(),
+            code: "one-time-code",
+            verifier: "v",
+            redirectUri: "http://localhost:54545/oauth2callback",
+            now: 1700000000000,
+            fetcher: fetchMock as any,
+        })).rejects.toThrow(/invalid publickey/i);
+
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
 
     it("rejects openai api-key service oauth exchange", async () => {
         await expect(exchangeConnectedServiceOauthTokens({

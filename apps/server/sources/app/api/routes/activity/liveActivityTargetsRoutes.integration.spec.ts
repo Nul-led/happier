@@ -67,7 +67,7 @@ function responseJson<T>(response: { json: () => unknown }): T {
 
 async function createAccountToken(publicKey: string) {
     const account = await db.account.create({ data: { publicKey } });
-    const token = await auth.createToken(account.id);
+    const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
     const session = await db.session.create({
         data: {
             id: `${publicKey}-session`,

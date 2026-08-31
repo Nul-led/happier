@@ -13,6 +13,15 @@ describe('requireLightDataDir', () => {
     it('returns a trimmed HAPPY_SERVER_LIGHT_DATA_DIR', () => {
         expect(requireLightDataDir({ HAPPY_SERVER_LIGHT_DATA_DIR: '  /tmp/happy  ' })).toBe('/tmp/happy');
     });
+
+    it('prefers HAPPIER_SERVER_LIGHT_DATA_DIR when both current and legacy names are set', () => {
+        expect(
+            requireLightDataDir({
+                HAPPIER_SERVER_LIGHT_DATA_DIR: '/current/data',
+                HAPPY_SERVER_LIGHT_DATA_DIR: '/legacy/data',
+            }),
+        ).toBe('/current/data');
+    });
 });
 
 describe('buildLightMigrateDeployPlan', () => {

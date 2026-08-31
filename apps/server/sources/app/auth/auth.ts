@@ -2,10 +2,15 @@ import * as privacyKit from "privacy-kit";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
     AccountEncryptionMigrateExternalAuthBindingDigestV1Schema,
+    AuthTokenProvenanceSchema,
     parseAccountApiTokenBearerV1,
+    type AuthTokenAuthority,
+    type AuthTokenKind,
+    type AuthTokenProvenance,
     type ParsedAccountApiTokenBearerV1,
 } from "@happier-dev/protocol";
 import { db } from "@/storage/db";
+import { inTx, type Tx } from "@/storage/inTx";
 import { log } from "@/utils/logging/log";
 import { LRUTtlMap } from "@/utils/collections/lru";
 import {
@@ -14,7 +19,10 @@ import {
 } from "./oauthStateErrors";
 
 interface TokenGeneratorLike {
-    new: (payload: any) => Promise<string>;
+    new: (payload: Readonly<{
+        user?: string;
+        extras?: Readonly<Record<string, unknown>>;
+    }>) => Promise<string>;
     publicKey: Uint8Array | number[];
 }
 
@@ -25,6 +33,10 @@ interface TokenVerifierLike {
 // Persistent tokens have no expiry. Retain this read-only compatibility window until an
 // explicit token epoch or forced re-auth retires tokens issued by privacy-kit 0.0.25 on Bun.
 const LEGACY_BUN_SEED_CANDIDATE_COUNT = 64;
+const HISTORICAL_LEGACY_TOKEN_MARKERS = new Set([
+    "privacy-kit-0.0.25-node",
+    "privacy-kit-0.0.25-bun-1.3.5",
+]);
 
 interface AuthTokens {
     generator: TokenGeneratorLike;
@@ -43,18 +55,32 @@ type OAuthStatePayload = Readonly<{
     userId?: string | null;
     publicKey?: string | null;
     proofHash?: string | null;
-    purpose?: "account_encryption_first_key" | null;
+    purpose?: "account_encryption_first_key" | "account_directory" | null;
     requestDigest?: string | null;
+    endpointUrl?: string | null;
+    endpointServerIdentityId?: string | null;
 }>;
 
 type DecodedAuthToken = Readonly<{
     userId: string;
     extras?: unknown;
     tokenEpoch: number;
+    provenance: AuthTokenProvenance;
+    legacy: boolean;
 }>;
 
-export type AuthTokenKind = "account" | "terminal" | "api_token";
-export type AuthAuthority = "present_user" | "account_automation";
+export type { AuthTokenAuthority, AuthTokenKind, AuthTokenProvenance } from "@happier-dev/protocol";
+
+/** Backward-compatible server spelling retained for existing request callers. */
+export type AuthAuthority = AuthTokenAuthority;
+
+/** An explicit, complete mint decision; no endpoint, extras, or token shape
+ * may infer it. The canonical kind/authority mapping is owned by the protocol
+ * provenance schema. */
+export type CreateTokenOptions = Readonly<{
+    kind: AuthTokenKind;
+    authority: AuthTokenAuthority;
+}>;
 
 /**
  * Server-verified PAT facts that may be projected only for the lifetime of
@@ -72,13 +98,15 @@ export type VerifiedApiTokenPrincipal = Readonly<{
 export type VerifiedAuthToken = Readonly<{
     userId: string;
     extras?: unknown;
-    /**
-     * API tokens stamp their server-verified provenance. Signed tokens retain
-     * their existing shape; Fastify derives their existing account/terminal
-     * provenance from verified extras.
-     */
-    authTokenKind?: AuthTokenKind;
-    authority?: AuthAuthority;
+    /** Canonical server-verified credential kind from the signed marker. */
+    authTokenKind: AuthTokenKind;
+    /** Canonical server-verified authority from the signed marker. */
+    authority: AuthTokenAuthority;
+    /** True only when the credential was accepted through the named
+     * pre-marker ordinary-Home reader. Central admission consumes this fact
+     * to deny a legacy credential on Directory-opt-in routes; a current
+     * signed or database-minted credential is never legacy. */
+    legacy: boolean;
     apiTokenPrincipal?: VerifiedApiTokenPrincipal;
 }>;
 
@@ -316,11 +344,11 @@ class AuthModule {
         log({ module: 'auth' }, 'Auth module initialized');
     }
     
-    async createToken(userId: string, extras?: any): Promise<string> {
-        if (!this.tokens) {
-            throw new Error('Auth module not initialized');
-        }
-
+    async createToken(
+        userId: string,
+        extras: unknown | undefined,
+        options: CreateTokenOptions,
+    ): Promise<string> {
         const account = await db.account.findUnique({
             where: { id: userId },
             select: { tokenEpoch: true },
@@ -329,11 +357,59 @@ class AuthModule {
             throw new Error("Cannot create auth token for an unknown account");
         }
 
+        return this.createTokenWithEpoch(userId, account.tokenEpoch, extras, options);
+    }
+
+    /** Account-auth completion uses the same serializable transaction for the
+     * epoch read and the sealed-result CAS. The raw token remains transaction-local. */
+    async createTokenInTx(
+        tx: Tx,
+        userId: string,
+        extras: unknown | undefined,
+        options: CreateTokenOptions,
+    ): Promise<string> {
+        const account = await tx.account.findUnique({
+            where: { id: userId },
+            select: { tokenEpoch: true },
+        });
+        if (!account) {
+            throw new Error("Cannot create auth token for an unknown account");
+        }
+
+        return this.createTokenWithEpoch(userId, account.tokenEpoch, extras, options);
+    }
+
+    private async createTokenWithEpoch(
+        userId: string,
+        tokenEpoch: number,
+        extras: unknown,
+        options: CreateTokenOptions,
+    ): Promise<string> {
+        if (!this.tokens) {
+            throw new Error('Auth module not initialized');
+        }
+
+        // Provenance is an explicit mint decision: no endpoint, extras, or
+        // token shape may infer or default it. A missing or non-canonical
+        // kind/authority pairing fails closed through the protocol owner;
+        // API tokens remain exclusively database-minted.
+        if (options?.kind === "api_token") {
+            throw new Error("API tokens must be minted through createApiToken");
+        }
+        const provenance = AuthTokenProvenanceSchema.parse({
+            v: 1,
+            kind: options?.kind,
+            authority: options?.authority,
+        });
+
         return await this.tokens.generator.new({
             user: userId,
             extras: {
-                ...(this.asTokenExtras(extras) ?? {}),
-                tokenEpoch: account.tokenEpoch,
+                ...this.asTokenExtras(extras),
+                // `provenance` is a JWT top-level claim emitted by the token
+                // generator, never caller-controlled nested extras.
+                provenance,
+                tokenEpoch,
             },
         });
     }
@@ -448,7 +524,39 @@ class AuthModule {
         return result.count;
     }
 
+    /**
+     * Verifies a current signed credential (or a PAT). Signed credentials must
+     * carry the v1 provenance marker; pre-marker credentials are intentionally
+     * not accepted on this canonical route-auth path.
+     */
     async verifyToken(token: string): Promise<VerifiedAuthToken | null> {
+        return this.verifyTokenInternal(token, { allowLegacyHome: false });
+    }
+
+    /**
+     * Bounded compatibility reader for pre-marker ordinary Home credentials.
+     * This is an explicit migration seam: it never admits PATs, Directory
+     * credentials, or malformed/future markers and must not be used by generic
+     * route admission.
+     */
+    async verifyLegacyHomeToken(token: string): Promise<VerifiedAuthToken | null> {
+        const verified = await this.verifyTokenInternal(token, { allowLegacyHome: true });
+        if (!verified || verified.authTokenKind === "account_directory" || verified.authTokenKind === "api_token") {
+            return null;
+        }
+        return verified;
+    }
+
+    /** Route/socket compatibility boundary: strict current tokens first, then
+     * the explicitly named pre-marker ordinary-Home reader. */
+    async verifyTokenForRoute(token: string): Promise<VerifiedAuthToken | null> {
+        return (await this.verifyToken(token)) ?? (await this.verifyLegacyHomeToken(token));
+    }
+
+    private async verifyTokenInternal(
+        token: string,
+        options: Readonly<{ allowLegacyHome: boolean }>,
+    ): Promise<VerifiedAuthToken | null> {
         if (!this.tokens) {
             throw new Error('Auth module not initialized');
         }
@@ -456,6 +564,7 @@ class AuthModule {
         // API tokens have a reserved bearer prefix. A malformed token must not
         // fall through to the signed-token verifier or gain a second auth path.
         if (isApiTokenCandidate(token)) {
+            if (options.allowLegacyHome) return null;
             const verifiedPat = await this.verifyPat(token);
             if (!verifiedPat.ok) {
                 return null;
@@ -464,6 +573,7 @@ class AuthModule {
                 userId: verifiedPat.principalId,
                 authTokenKind: "api_token",
                 authority: verifiedPat.authority,
+                legacy: false,
                 apiTokenPrincipal: {
                     accountId: verifiedPat.accountId,
                     principalId: verifiedPat.principalId,
@@ -475,10 +585,13 @@ class AuthModule {
         }
 
         let decoded: DecodedAuthToken | null | undefined = this.tokenCache?.get(token);
+        if (decoded?.legacy && !options.allowLegacyHome) {
+            return null;
+        }
         if (!decoded) {
             try {
                 const verified = await this.tokens.verifier.verify(token);
-                decoded = this.decodeAuthToken(verified);
+                decoded = this.decodeAuthToken(verified, options);
             } catch {
                 log({ module: "auth", level: "error" }, "Token verification failed");
                 return null;
@@ -495,11 +608,17 @@ class AuthModule {
             where: { id: decoded.userId },
             select: { tokenEpoch: true },
         });
-        if (!account || decoded.tokenEpoch < account.tokenEpoch) {
+        if (!account || decoded.tokenEpoch !== account.tokenEpoch) {
             return null;
         }
 
-        return { userId: decoded.userId, extras: decoded.extras };
+        return {
+            userId: decoded.userId,
+            extras: decoded.extras,
+            authTokenKind: decoded.provenance.kind,
+            authority: decoded.provenance.authority,
+            legacy: decoded.legacy,
+        };
     }
 
     /**
@@ -533,12 +652,19 @@ class AuthModule {
     }
 
     async signOutEverywhere(userId: string): Promise<number> {
-        const account = await db.account.update({
-            where: { id: userId },
-            data: { tokenEpoch: { increment: 1 } },
-            select: { tokenEpoch: true },
+        // The epoch bump and PAT revocation are one sign-out decision. PAT rows
+        // carry no per-credential epoch, so they are revoked through this
+        // owner's existing deletion model at the same instant the epoch
+        // invalidates signed tokens and cached verifications.
+        return await inTx(async (tx) => {
+            const account = await tx.account.update({
+                where: { id: userId },
+                data: { tokenEpoch: { increment: 1 } },
+                select: { tokenEpoch: true },
+            });
+            await tx.accountApiToken.deleteMany({ where: { accountId: userId } });
+            return account.tokenEpoch;
         });
-        return account.tokenEpoch;
     }
 
     private async verifyParsedApiToken(
@@ -618,23 +744,57 @@ class AuthModule {
         }
     }
 
-    private decodeAuthToken(verified: unknown): DecodedAuthToken | null {
+    private decodeAuthToken(
+        verified: unknown,
+        options: Readonly<{ allowLegacyHome: boolean }>,
+    ): DecodedAuthToken | null {
         if (typeof verified !== "object" || verified === null || Array.isArray(verified)) {
             return null;
         }
 
         const payload = verified as Readonly<Record<string, unknown>>;
-        const userId = typeof payload.user === "string" ? payload.user.trim() : "";
+        const userCandidate = payload.user ?? payload.userId;
+        const userId = typeof userCandidate === "string" ? userCandidate.trim() : "";
         if (!userId) {
             return null;
         }
 
-        const tokenExtras = this.asTokenExtras(payload.extras);
-        if (!tokenExtras) {
-            return null;
+        const tokenExtras = this.asTokenExtras(payload.extras) ?? {};
+
+        const hasTopLevelProvenance = Object.prototype.hasOwnProperty.call(payload, "provenance");
+        const hasNestedProvenance = Object.prototype.hasOwnProperty.call(tokenExtras, "provenance");
+        const rawProvenance = hasTopLevelProvenance
+            ? payload.provenance
+            : tokenExtras.provenance;
+
+        let provenance: AuthTokenProvenance;
+        let legacy = false;
+        if (!hasTopLevelProvenance && !hasNestedProvenance) {
+            if (!options.allowLegacyHome) return null;
+            provenance = this.legacyAuthTokenProvenance(tokenExtras);
+            legacy = true;
+        } else if (this.isHistoricalLegacyTokenMarker(rawProvenance)) {
+            if (!options.allowLegacyHome) return null;
+            // privacy-kit 0.0.25 placed its implementation identifier in a
+            // `provenance` string. It is a compatibility marker, not trusted
+            // authority; the resulting token is always ordinary Home/terminal.
+            provenance = this.legacyAuthTokenProvenance(tokenExtras);
+            legacy = true;
+        } else {
+            const parsedProvenance = AuthTokenProvenanceSchema.safeParse(rawProvenance);
+            if (!parsedProvenance.success) {
+                return null;
+            }
+            // `api_token` is a database-backed bearer credential, not a
+            // privacy-kit signed session. Never let a signed token impersonate
+            // that direct consumer kind.
+            if (parsedProvenance.data.kind === "api_token") {
+                return null;
+            }
+            provenance = parsedProvenance.data;
         }
 
-        const rawTokenEpoch = tokenExtras.tokenEpoch;
+        const rawTokenEpoch = payload.tokenEpoch ?? tokenExtras.tokenEpoch;
         const tokenEpoch = rawTokenEpoch === undefined ? 0 : rawTokenEpoch;
         if (
             typeof tokenEpoch !== "number"
@@ -646,9 +806,33 @@ class AuthModule {
 
         return {
             userId,
-            extras: this.withoutTokenEpoch(tokenExtras),
+            extras: this.withoutProvenance(
+                this.withoutTokenEpoch(tokenExtras),
+                legacy,
+            ),
             tokenEpoch,
+            provenance,
+            legacy,
         };
+    }
+
+    private legacyAuthTokenProvenance(
+        extras: Readonly<Record<string, unknown>>,
+    ): AuthTokenProvenance {
+        const session = extras.session;
+        const kind: AuthTokenKind =
+            typeof session === "string" && session.trim()
+                ? "terminal"
+                : "account";
+        return {
+            v: 1,
+            kind,
+            authority: kind === "terminal" ? "account_automation" : "present_user",
+        };
+    }
+
+    private isHistoricalLegacyTokenMarker(value: unknown): boolean {
+        return typeof value === "string" && HISTORICAL_LEGACY_TOKEN_MARKERS.has(value);
     }
 
     private asTokenExtras(value: unknown): Readonly<Record<string, unknown>> | null {
@@ -660,6 +844,15 @@ class AuthModule {
 
     private withoutTokenEpoch(extras: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
         const { tokenEpoch: _tokenEpoch, ...publicExtras } = extras;
+        return publicExtras;
+    }
+
+    private withoutProvenance(
+        extras: Readonly<Record<string, unknown>>,
+        legacy: boolean,
+    ): Readonly<Record<string, unknown>> {
+        if (legacy) return extras;
+        const { provenance: _provenance, ...publicExtras } = extras;
         return publicExtras;
     }
     
@@ -693,10 +886,21 @@ class AuthModule {
         const userId = payload.userId?.toString().trim() || null;
         const publicKey = payload.publicKey?.toString().trim() || null;
         const proofHash = payload.proofHash?.toString().trim() || null;
-        const purpose =
-            payload.purpose === "account_encryption_first_key"
-                ? payload.purpose
-                : null;
+        const purposeRaw = payload.purpose ?? null;
+        if (
+            purposeRaw !== null
+            && purposeRaw !== "account_encryption_first_key"
+            && purposeRaw !== "account_directory"
+        ) {
+            // The purpose union is closed and server-controlled. An unknown
+            // purpose must never silently downgrade to an ordinary full-auth
+            // state.
+            throw new Error("Invalid OAuth purpose");
+        }
+        const purpose = purposeRaw;
+        const endpointUrl = payload.endpointUrl?.toString().trim() || null;
+        const endpointServerIdentityId =
+            payload.endpointServerIdentityId?.toString().trim() || null;
         const requestDigestCandidate =
             AccountEncryptionMigrateExternalAuthBindingDigestV1Schema
                 .safeParse(
@@ -716,9 +920,31 @@ class AuthModule {
                 || !proofHash
                 || !requestDigest
                 || publicKey !== null
+                || endpointUrl !== null
+                || endpointServerIdentityId !== null
             )
         ) {
             throw new Error("Invalid OAuth first-key step-up binding");
+        }
+        if (
+            purpose === "account_directory"
+            && (
+                flow !== "auth"
+                || userId !== null
+                || !endpointUrl
+                || !endpointServerIdentityId
+                || requestDigest !== null
+                || ((publicKey === null) === (proofHash === null))
+            )
+        ) {
+            throw new Error("Invalid OAuth account-directory binding");
+        }
+        if (
+            purpose === null
+            && (endpointUrl !== null || endpointServerIdentityId !== null)
+        ) {
+            // Endpoint binding fields only travel with the directory purpose.
+            throw new Error("Invalid OAuth endpoint binding");
         }
 
         return await oauthStateTokens.oauthStateGenerator.new({
@@ -732,6 +958,8 @@ class AuthModule {
                 proofHash,
                 purpose,
                 requestDigest,
+                endpointUrl,
+                endpointServerIdentityId,
             },
         });
     }
@@ -743,8 +971,10 @@ class AuthModule {
         userId: string | null;
         publicKey: string | null;
         proofHash: string | null;
-        purpose?: "account_encryption_first_key";
+        purpose?: "account_encryption_first_key" | "account_directory";
         requestDigest?: string;
+        endpointUrl?: string;
+        endpointServerIdentityId?: string;
     } | null> {
         if (!this.tokens) {
             throw new Error("Auth module not initialized");
@@ -762,9 +992,27 @@ class AuthModule {
             const provider = typeof extras.provider === "string" ? extras.provider.trim().toLowerCase() : "";
             const flow = extras.flow === "auth" ? "auth" : extras.flow === "connect" ? "connect" : null;
             if (!provider || !flow) return null;
-            const purpose =
-                extras.purpose === "account_encryption_first_key"
+            const purposeRaw =
+                typeof extras.purpose === "string" && extras.purpose.trim()
                     ? extras.purpose
+                    : null;
+            if (
+                purposeRaw !== null
+                && purposeRaw !== "account_encryption_first_key"
+                && purposeRaw !== "account_directory"
+            ) {
+                // Unknown/future purpose markers fail closed instead of
+                // degrading the continuation into an ordinary full-auth state.
+                return null;
+            }
+            const purpose = purposeRaw;
+            const endpointUrl =
+                typeof extras.endpointUrl === "string" && extras.endpointUrl.trim()
+                    ? extras.endpointUrl.trim()
+                    : null;
+            const endpointServerIdentityId =
+                typeof extras.endpointServerIdentityId === "string" && extras.endpointServerIdentityId.trim()
+                    ? extras.endpointServerIdentityId.trim()
                     : null;
             const userId =
                 typeof extras.userId === "string" && extras.userId.trim()
@@ -798,8 +1046,30 @@ class AuthModule {
                     || !proofHash
                     || !requestDigest
                     || publicKey !== null
+                    || endpointUrl !== null
+                    || endpointServerIdentityId !== null
                 )
             ) {
+                return null;
+            }
+            if (
+                purpose === "account_directory"
+                && (
+                    flow !== "auth"
+                    || userId !== null
+                    || !endpointUrl
+                    || !endpointServerIdentityId
+                    || requestDigest !== null
+                    || ((publicKey === null) === (proofHash === null))
+                )
+            ) {
+                return null;
+            }
+            if (
+                purpose === null
+                && (endpointUrl !== null || endpointServerIdentityId !== null)
+            ) {
+                // Endpoint binding fields only travel with the directory purpose.
                 return null;
             }
 
@@ -812,6 +1082,12 @@ class AuthModule {
                 proofHash,
                 ...(purpose ? { purpose } : {}),
                 ...(purpose && requestDigest ? { requestDigest } : {}),
+                ...(purpose === "account_directory" && endpointUrl
+                    ? { endpointUrl }
+                    : {}),
+                ...(purpose === "account_directory" && endpointServerIdentityId
+                    ? { endpointServerIdentityId }
+                    : {}),
             };
         } catch (error) {
             if (isOAuthStateUnavailableError(error)) {

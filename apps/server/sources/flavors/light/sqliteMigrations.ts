@@ -1,11 +1,15 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { mkdir } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseBooleanEnv } from '@/config/env';
 import { expandHomeDirPath } from '@happier-dev/cli-common/path';
+import {
+  readSqliteMigrationCatalog,
+  type SqliteMigrationCatalogEntry,
+} from '@happier-dev/cli-common/firstPartyRuntime/sqliteMigrationCatalog';
 import {
   isLegacyTransactionWrapperStatement,
   isSafeMissingMigrationReconciliationStatement,
@@ -20,11 +24,7 @@ import {
   runSessionSystemRecordMigrationDeployment,
 } from '@/app/session/systemRecords/sessionSystemRecordMigrationDeployment';
 
-type SqliteMigration = Readonly<{
-  name: string;
-  sql: string;
-  checksum: string;
-}>;
+type SqliteMigration = SqliteMigrationCatalogEntry;
 
 type AppliedMigrationRecord = Readonly<{
   name: string;
@@ -58,10 +58,6 @@ export type SqliteMigrationExecutor = Readonly<{
 type CloseableSqliteMigrationExecutor = SqliteMigrationExecutor & Readonly<{
   close: () => void;
 }>;
-
-function sha256Hex(input: string): string {
-  return createHash('sha256').update(input).digest('hex');
-}
 
 function normalizeSqlError(error: unknown): string {
   return String((error as { message?: string })?.message ?? error ?? '').toLowerCase();
@@ -105,10 +101,6 @@ function createUnsafeAlreadyAppliedMigrationError(migration: SqliteMigration, or
       ? `[sqlite-migrations] migration ${migration.name} cannot be marked applied safely: ${details}`
       : `[sqlite-migrations] migration ${migration.name} cannot be marked applied safely`,
   );
-}
-
-function createInvalidMigrationSqlError(migrationName: string, reason: string): Error {
-  return new Error(`[sqlite-migrations] ${reason} for migration ${migrationName}`);
 }
 
 function mapAppliedMigrations(rows: ReadonlyArray<AppliedMigrationRecord>): Map<string, string> {
@@ -234,34 +226,7 @@ export function resolveSqliteMigrationBusyTimeoutMs(databaseUrl: string): number
 }
 
 export async function listSqliteMigrations(migrationsDir: string): Promise<SqliteMigration[]> {
-  const rawDir = String(migrationsDir ?? '').trim();
-  if (!rawDir) {
-    throw new Error('SQLite migrations directory is missing: <empty>');
-  }
-  const dir = resolve(rawDir);
-  const entries = await readdir(dir, { withFileTypes: true }).catch(() => {
-    throw new Error(`SQLite migrations directory is missing: ${dir}`);
-  });
-  const dirs = entries
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name)
-    .sort((a, b) => a.localeCompare(b));
-
-  const result: SqliteMigration[] = [];
-  for (const name of dirs) {
-    const sqlPath = join(dir, name, 'migration.sql');
-    let sql: string;
-    try {
-      sql = await readFile(sqlPath, 'utf8');
-    } catch {
-      throw createInvalidMigrationSqlError(name, 'missing migration.sql');
-    }
-    if (!sql.trim()) {
-      throw createInvalidMigrationSqlError(name, 'empty migration.sql');
-    }
-    result.push(Object.freeze({ name, sql, checksum: sha256Hex(sql) }));
-  }
-  return result;
+  return await readSqliteMigrationCatalog(migrationsDir);
 }
 
 export function shouldAutoMigrateSqliteOnStart(env: NodeJS.ProcessEnv): boolean {

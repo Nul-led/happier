@@ -26,6 +26,7 @@ import { findExactHostSessionSystemRecordInTx } from "@/app/session/systemRecord
 import { inTx, type Tx } from "@/storage/inTx";
 import { isPrismaErrorCode } from "@/storage/prisma";
 import type { Prisma } from "@prisma/client";
+import { notifySessionTranscriptMutationAfterCommit } from './sessionTranscriptMutationObserver';
 
 const HISTORICAL_IMPORT_NAMESPACE = "external_sessions";
 const HISTORICAL_IMPORT_KIND = "historical_import";
@@ -1714,6 +1715,7 @@ async function executeExternalSessionHistoricalImportCommandWithCreateRaceRetry(
                     "Historical import lacks exact unpublished discard authority.",
                 );
             }
+            const discardedMessageIds: string[] = [];
             if (job.insertedMessageIds !== null && job.insertedMessageIds.length > 0) {
                 const deleted = await tx.sessionMessage.deleteMany({
                     where: {
@@ -1724,11 +1726,19 @@ async function executeExternalSessionHistoricalImportCommandWithCreateRaceRetry(
                 if (deleted.count !== job.insertedMessageIds.length) {
                     throw new HistoricalImportDiscardConflictError();
                 }
+                discardedMessageIds.push(...job.insertedMessageIds);
             }
             if (
                 job.insertedSequenceSpans !== null
                 && job.insertedSequenceSpans.length > 0
             ) {
+                const rowsToDelete = await tx.sessionMessage.findMany({
+                    where: {
+                        sessionId: session.id,
+                        OR: job.insertedSequenceSpans.map((span) => ({ seq: { gte: span.firstSeq, lte: span.lastSeq } })),
+                    },
+                    select: { id: true },
+                });
                 const deleted = await tx.sessionMessage.deleteMany({
                     where: {
                         sessionId: session.id,
@@ -1746,6 +1756,13 @@ async function executeExternalSessionHistoricalImportCommandWithCreateRaceRetry(
                 ) {
                     throw new HistoricalImportDiscardConflictError();
                 }
+                discardedMessageIds.push(...rowsToDelete.map((row) => row.id));
+            }
+            if (discardedMessageIds.length > 0) {
+                notifySessionTranscriptMutationAfterCommit(tx, {
+                    kind: 'remove-messages',
+                    messageIds: discardedMessageIds,
+                });
             }
             const transitioned = await tx.session.updateMany({
                 where: {

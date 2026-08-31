@@ -12,6 +12,10 @@ import type { AutomationRunItem, AutomationScheduleKind } from "./automationType
 import { AUTOMATION_RUN_TERMINAL_STATES, isTerminalAutomationRunState } from "./automationTypes";
 import { emitAutomationScheduleWake } from "./automationScheduleWake";
 
+function isCanonicalScheduleKind(value: string | null): value is AutomationScheduleKind {
+    return value === "cron" || value === "interval";
+}
+
 export function resolveScheduledRunDueAt(params: Readonly<{
     now: Date;
     scheduleKind: AutomationScheduleKind;
@@ -49,7 +53,7 @@ export async function ensureAutomationScheduleCursorsTx(params: Readonly<{
     if (!automation || !automation.enabled || automation.deletedAt !== null) return;
     let changed = false;
     for (const trigger of automation.triggers) {
-        if (trigger.scheduleKind === null || trigger.nextRunAt !== null) continue;
+        if (!isCanonicalScheduleKind(trigger.scheduleKind) || trigger.nextRunAt !== null) continue;
         // Property narrowing does not survive an object spread, so the live
         // schedule kind is passed explicitly instead of `...trigger`.
         const dueAt = resolveScheduledRunDueAt({
@@ -171,7 +175,7 @@ export async function advanceAutomationScheduleCursorAfterTerminalRunTx(params: 
             scheduleKind: true, scheduleExpr: true, everyMs: true, timezone: true, nextRunAt: true,
         },
     });
-    if (!trigger || trigger.scheduleKind === null || trigger.nextRunAt === null) return;
+    if (!trigger || !isCanonicalScheduleKind(trigger.scheduleKind) || trigger.nextRunAt === null) return;
     // Property narrowing does not survive an object spread, so the live
     // schedule kind is passed explicitly instead of `...trigger`. A disabled
     // or deleted trigger still tombstones its cursor to null below.

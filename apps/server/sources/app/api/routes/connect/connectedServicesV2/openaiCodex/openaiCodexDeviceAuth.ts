@@ -8,6 +8,7 @@ import {
   OPENAI_CODEX_DEVICE_VERIFICATION_URL,
   decodeBase64,
   encodeBase64,
+  isValidBoxBundlePublicKey,
   sealBoxBundle,
   type ConnectedServiceId,
 } from "@happier-dev/protocol";
@@ -38,8 +39,8 @@ type OauthExchangePayload = Readonly<{
 
 function parseRecipientPublicKey(publicKeyB64Url: string): Uint8Array {
   const bytes = decodeBase64(publicKeyB64Url, "base64url");
-  if (bytes.length !== BOX_BUNDLE_PUBLIC_KEY_BYTES) {
-    throw new Error(`Invalid publicKey length: ${bytes.length}`);
+  if (bytes.length !== BOX_BUNDLE_PUBLIC_KEY_BYTES || !isValidBoxBundlePublicKey(bytes)) {
+    throw new Error("Invalid publicKey");
   }
   return bytes;
 }

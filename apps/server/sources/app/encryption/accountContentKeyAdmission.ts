@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 
 import {
     computeContentPublicKeyFingerprint,
+    isValidBoxBundlePublicKey,
     type ContentPublicKeyFingerprint,
 } from "@happier-dev/protocol";
 import tweetnacl from "tweetnacl";
@@ -93,8 +94,7 @@ export function verifyAccountContentKeyBinding(params: Readonly<{
     if (
         params.accountSigningPublicKey.byteLength
             !== tweetnacl.sign.publicKeyLength
-        || params.contentPublicKey.byteLength
-            !== tweetnacl.box.publicKeyLength
+        || !isValidBoxBundlePublicKey(params.contentPublicKey)
         || params.contentPublicKeySignature.byteLength
             !== tweetnacl.sign.signatureLength
     ) {

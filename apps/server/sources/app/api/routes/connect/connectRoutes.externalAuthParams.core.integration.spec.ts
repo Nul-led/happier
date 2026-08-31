@@ -200,7 +200,7 @@ describe("connectRoutes (external auth params)", () => {
                 profile: {},
             },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const proofHash = "c".repeat(64);
         const requestDigest = `aemrb1_${"A".repeat(43)}`;
         const url =

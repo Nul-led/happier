@@ -307,7 +307,6 @@ async function findClaimCandidates(params: {
     return await params.tx.automationRun.findMany({
         where: {
             accountId: params.accountId,
-            automation: { enabled: true, deletedAt: null },
             dueAt: { lte: params.now },
             ...expectedRunTriggerCauseWhere(params.expectedTriggerKind),
             // A released V2 claimant can only ever claim retained V2 frozen
@@ -357,7 +356,6 @@ async function tryClaimRun(params: {
         return await params.tx.automationRun.updateMany({
             where: {
                 id: params.runId,
-                automation: { enabled: true, deletedAt: null },
                 state: "queued",
                 revision: params.expectedRunRevision,
                 executionInputEnvelope: params.executionInputEnvelope,
@@ -379,7 +377,6 @@ async function tryClaimRun(params: {
     return await params.tx.automationRun.updateMany({
         where: {
             id: params.runId,
-            automation: { enabled: true, deletedAt: null },
             state: previousState,
             leaseExpiresAt: { lt: params.now },
             revision: params.expectedRunRevision,

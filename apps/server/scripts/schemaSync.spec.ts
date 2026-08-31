@@ -6,13 +6,118 @@ import { AccountApiTokensCreateActionInputV1Schema } from "@happier-dev/protocol
 import { generateMySqlSchemaFromPostgres, generateSqliteSchemaFromPostgres } from "./schemaSync";
 
 describe("schemaSync", () => {
-    it("keeps the reconciled 0.2 Session columns intact when the Directory migration is applied", () => {
-        const migration = readFileSync(
-            join(process.cwd(), "prisma/migrations/20260830120000_add_account_directory_models/migration.sql"),
-            "utf8",
-        );
-        expect(migration).not.toMatch(/DROP\s+(COLUMN|INDEX|TABLE)[^;]*(unreadSince|needsAttention)/iu);
-        expect(migration).not.toMatch(/DROP\s+(COLUMN|INDEX|TABLE)[^;]*(serviceAccount|quota)/iu);
+    it("retains the predecessor Session attention fields and lookup index in every provider schema", () => {
+        for (const schemaPath of [
+            "prisma/schema.prisma",
+            "prisma/sqlite/schema.prisma",
+            "prisma/mysql/schema.prisma",
+        ]) {
+            const schema = readFileSync(join(process.cwd(), schemaPath), "utf8");
+            expect(schema).toMatch(/^\s*unreadSince\s+DateTime\?\s*$/mu);
+            expect(schema).toMatch(/^\s*needsAttention\s+Boolean\s+@default\(dbgenerated\(\)\)\s*$/mu);
+            expect(schema).toMatch(
+                /^\s*@@index\(\[accountId, needsAttention, meaningfulActivityAt(?:\(sort: Desc\))?, id(?:\(sort: Desc\))?\]\)\s*$/mu,
+            );
+        }
+    });
+
+    it("preserves predecessor enum lineage and provider-safe Account Directory widths", () => {
+        const postgres = readFileSync(join(process.cwd(), "prisma/schema.prisma"), "utf8");
+        const mysql = generateMySqlSchemaFromPostgres(postgres);
+
+        expect(postgres).toMatch(/enum AutomationScheduleKind\s*\{[^}]*\bmanual\b[^}]*\}/su);
+        expect(mysql).toMatch(/^\s*canonicalServerUrl\s+String\s+@db\.VarChar\(512\)\s*$/mu);
+        expect(mysql).toMatch(/^\s*issuerSubjectId\s+String\s+@db\.VarChar\(256\)\s*$/mu);
+        expect(mysql).toMatch(/^\s*requesterIssuerSubjectId\s+String\?\s+@db\.VarChar\(256\)\s*$/mu);
+        expect(mysql).toMatch(/^\s*flow\s+String\s+@default\("direct_qr"\)\s+@db\.VarChar\(32\)\s*$/mu);
+        expect(mysql).toMatch(/^\s*approvalStatus\s+String\?\s+@db\.VarChar\(16\)\s*$/mu);
+    });
+
+    it("keeps Account Directory ownership, cascade, and pinned-link invariants provider-complete", () => {
+        for (const schemaPath of [
+            "prisma/schema.prisma",
+            "prisma/sqlite/schema.prisma",
+            "prisma/mysql/schema.prisma",
+        ]) {
+            const schema = readFileSync(join(process.cwd(), schemaPath), "utf8");
+            const entry = schema.match(/model AccountHomeDirectoryEntry\s*\{([\s\S]*?)^\}/mu)?.[1] ?? "";
+            const link = schema.match(/model AccountDirectoryLink\s*\{([\s\S]*?)^\}/mu)?.[1] ?? "";
+            const pairing = schema.match(/model AuthPairingSession\s*\{([\s\S]*?)^\}/mu)?.[1] ?? "";
+
+            expect(schema).toMatch(/^\s*preferredHomeServerIdentityId\s+String\?\s*$/mu);
+            expect(entry).toMatch(/@@id\(\[accountId, homeServerIdentityId\]\)/u);
+            expect(entry).toMatch(/@relation\(fields: \[accountId\], references: \[id\], onDelete: Cascade\)/u);
+            expect(link).toMatch(/@@id\(\[issuerServerIdentityId, issuerSubjectId\]\)/u);
+            expect(link).toMatch(/@@unique\(\[accountId, issuerServerIdentityId\]\)/u);
+            expect(link).toMatch(/@relation\(fields: \[accountId\], references: \[id\], onDelete: Cascade\)/u);
+            expect(pairing).toMatch(/flow\s+String\s+@default\("direct_qr"\)/u);
+            expect(pairing).toMatch(/requesterIssuerServerIdentityId\s+String\?/u);
+            expect(pairing).toMatch(/requesterIssuerSubjectId\s+String\?/u);
+            expect(pairing).toMatch(/approvalStatus\s+String\?/u);
+            expect(pairing).toMatch(/decidedAt\s+DateTime\?/u);
+            expect(pairing).toMatch(/requestedBindingProof\s+String\?/u);
+            if (schemaPath === "prisma/mysql/schema.prisma") {
+                expect(link).toMatch(/^\s*issuerSubjectId\s+String\s+@db\.VarChar\(256\)\s*$/mu);
+                expect(pairing).toMatch(/^\s*requesterIssuerSubjectId\s+String\?\s+@db\.VarChar\(256\)\s*$/mu);
+            }
+        }
+    });
+
+    it("keeps the account-auth sealed completion result provider-complete and unbounded on MySQL", () => {
+        for (const schemaPath of [
+            "prisma/schema.prisma",
+            "prisma/sqlite/schema.prisma",
+            "prisma/mysql/schema.prisma",
+        ]) {
+            const schema = readFileSync(join(process.cwd(), schemaPath), "utf8");
+            const accountAuth = schema.match(/model AccountAuthRequest\s*\{([\s\S]*?)^\}/mu)?.[1] ?? "";
+
+            if (schemaPath === "prisma/mysql/schema.prisma") {
+                expect(accountAuth).toMatch(/^\s*tokenEncrypted\s+String\?\s+@db\.Text\s*$/mu);
+            } else {
+                expect(accountAuth).toMatch(/^\s*tokenEncrypted\s+String\?\s*$/mu);
+            }
+        }
+
+        const migrations = [
+            "prisma/migrations/20260830142000_add_account_auth_encrypted_result/migration.sql",
+            "prisma/sqlite/migrations/20260830142000_add_account_auth_encrypted_result/migration.sql",
+            "prisma/mysql/migrations/20260830142000_add_account_auth_encrypted_result/migration.sql",
+        ].map((migrationPath) => readFileSync(join(process.cwd(), migrationPath), "utf8"));
+
+        expect(migrations[0]).toMatch(/ADD COLUMN "tokenEncrypted" TEXT/u);
+        expect(migrations[1]).toMatch(/ADD COLUMN "tokenEncrypted" TEXT/u);
+        expect(migrations[2]).toMatch(/ADD COLUMN `tokenEncrypted` TEXT NULL/u);
+    });
+
+    it("keeps released Session and quota storage intact across Directory and approval migrations", () => {
+        for (const providerDir of ["prisma", "prisma/sqlite", "prisma/mysql"]) {
+            const migrations = [
+                "20260830120000_add_account_directory_models",
+                "20260830140000_add_home_assertion_approval_fields",
+                "20260830141000_add_qr_requested_binding_proof",
+            ].map((migrationId) => readFileSync(
+                join(process.cwd(), providerDir, "migrations", migrationId, "migration.sql"),
+                "utf8",
+            )).join("\n");
+
+            expect(migrations).not.toMatch(/DROP\s+(COLUMN|INDEX|TABLE)[^;]*(unreadSince|needsAttention)/iu);
+            expect(migrations).not.toMatch(/DROP\s+(COLUMN|INDEX|TABLE)[^;]*(serviceAccount|quota)/iu);
+            expect(migrations).not.toMatch(/CREATE\s+TABLE[^;]*(approval|replay|consume|quota)/iu);
+            expect(migrations).toMatch(/ALTER\s+TABLE\s+["`]AuthPairingSession["`]/u);
+
+            const predecessorReconciliation = readFileSync(join(
+                process.cwd(),
+                providerDir,
+                "migrations/20260725110000_reconcile_predecessor_migration_lineage/migration.sql",
+            ), "utf8");
+            expect(predecessorReconciliation).not.toMatch(
+                /DROP\s+(?:TABLE|INDEX|COLUMN)[^;]*(?:ServiceAccountQuotaSnapshot|serviceAccount|quota)/iu,
+            );
+            expect(predecessorReconciliation).toMatch(
+                /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`]ServiceAccountQuotaSnapshot["`]/iu,
+            );
+        }
     });
 
     it("generates provider-specific schemas from prisma/schema.prisma", () => {

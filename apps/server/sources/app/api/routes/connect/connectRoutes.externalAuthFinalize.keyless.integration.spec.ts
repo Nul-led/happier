@@ -7,7 +7,9 @@ import * as privacyKit from "privacy-kit";
 import { db } from "@/storage/db";
 import { connectRoutes } from "./connectRoutes";
 import { auth } from "@/app/auth/auth";
-import { encryptString } from "@/modules/encrypt";
+import { decryptString, encryptString } from "@/modules/encrypt";
+import { findOAuthProviderById } from "@/app/oauth/providers/registry";
+import { authPendingSchema } from "./oauthExternal/oauthExternalSchemas";
 import { createAppCloseTracker } from "../../testkit/appLifecycle";
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
@@ -260,6 +262,112 @@ describe("connectRoutes (external auth finalize keyless) (integration)", () => {
 
         const pending = await db.repeatKey.findUnique({ where: { key: pendingKey } });
         expect(pending).toBeNull();
+
+        await app.close();
+    });
+
+    it("POST /v1/auth/external/:provider/finalize-keyless mints only a restricted Directory token for a server-persisted account_directory purpose", async () => {
+        harness.resetEnv({
+            AUTH_SIGNUP_PROVIDERS: "github",
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+        });
+
+        const e2eeAccount = await db.account.create({
+            data: { publicKey: null, encryptionMode: "e2ee" },
+            select: { id: true },
+        });
+        await db.accountIdentity.create({
+            data: {
+                accountId: e2eeAccount.id,
+                provider: "github",
+                providerUserId: "987",
+                providerLogin: "directory-user",
+                profile: { id: "directory-user-123", login: "directory-user" },
+                showOnProfile: false,
+            },
+        });
+
+        const pendingKey = "oauth_pending_AccountDirectoryA1";
+        const proof = "directory_proof_secret_1";
+        const proofHash = createHash("sha256").update(proof, "utf8").digest("hex");
+        const githubProfile = {
+            id: 987,
+            login: "directory-user",
+            avatar_url: "",
+            name: "Directory User",
+        };
+        const pendingPrefix = [
+            "auth",
+            "external",
+            "github",
+            "pending_v2",
+            pendingKey,
+        ];
+
+        const pendingValue = {
+            v: 2 as const,
+            flow: "auth" as const,
+            authMode: "keyless" as const,
+            purpose: "account_directory" as const,
+            provider: "github",
+            endpointUrl: "https://accounts.example.test",
+            endpointServerIdentityId: "srv_accounts_1",
+            proofHash,
+            profileEnc: privacyKit.encodeBase64(
+                encryptString([...pendingPrefix, "profile"], JSON.stringify(githubProfile)),
+            ),
+            accessTokenEnc: privacyKit.encodeBase64(
+                encryptString([...pendingPrefix, "token"], "directory_access_token"),
+            ),
+            suggestedUsername: "directory-user",
+            usernameRequired: false,
+            usernameReason: null,
+        };
+        const parsedPending = authPendingSchema.parse(pendingValue);
+        expect(decryptString(
+            [...pendingPrefix, "profile"],
+            privacyKit.decodeBase64(parsedPending.profileEnc),
+        )).toBe(JSON.stringify(githubProfile));
+        expect(
+            findOAuthProviderById(process.env, "github")
+                ?.getProviderUserId(githubProfile),
+        ).toBe("987");
+
+        await db.repeatKey.create({
+            data: {
+                key: pendingKey,
+                value: JSON.stringify(pendingValue),
+                expiresAt: new Date(Date.now() + 60_000),
+            },
+        });
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const res = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize-keyless",
+            headers: { "content-type": "application/json" },
+            payload: { pending: pendingKey, proof },
+        });
+
+        const responseBody = res.json() as {
+            token?: string;
+            error?: string;
+        };
+        expect({ statusCode: res.statusCode, responseBody }).toEqual({
+            statusCode: 200,
+            responseBody: expect.objectContaining({ token: expect.any(String) }),
+        });
+        const token = responseBody.token!;
+        const verified = await auth.verifyToken(token);
+        expect(verified).toMatchObject({
+            userId: e2eeAccount.id,
+            authTokenKind: "account_directory",
+            authority: "present_user",
+        });
+        expect(await db.repeatKey.findUnique({ where: { key: pendingKey } })).toBeNull();
 
         await app.close();
     });

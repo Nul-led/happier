@@ -59,7 +59,7 @@ describe("authRoutes (API-token management) (integration)", () => {
             data: { publicKey: "api-token-management-owner" },
             select: { id: true },
         });
-        const signedToken = await auth.createToken(account.id);
+        const signedToken = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const app = createTestApp();
         await app.ready();
 
@@ -128,7 +128,7 @@ describe("authRoutes (API-token management) (integration)", () => {
                 expect(response.json()).toEqual({ error: "present_user_required" });
             }
 
-            const terminalToken = await auth.createToken(account.id, { session: "api-token-management-terminal" });
+            const terminalToken = await auth.createToken(account.id, { session: "api-token-management-terminal" }, { kind: "terminal", authority: "account_automation" });
             const terminalList = await app.inject({
                 method: "POST",
                 url: ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
@@ -180,7 +180,7 @@ describe("authRoutes (API-token management) (integration)", () => {
             data: { publicKey: "api-token-management-revocation" },
             select: { id: true },
         });
-        const signedToken = await auth.createToken(account.id);
+        const signedToken = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const app = createTestApp();
         await app.ready();
 

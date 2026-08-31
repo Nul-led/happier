@@ -477,6 +477,7 @@ model AccountAuthRequest {
     id                String   @id @default(cuid())
     publicKey         String   @unique
     response          String?
+    tokenEncrypted    String?
     responseAccountId String?
     responseAccount   Account? @relation(fields: [responseAccountId], references: [id])
     createdAt         DateTime @default(now())
@@ -491,11 +492,17 @@ model AuthPairingSession {
     account             Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
     secretHash          String
     requestedPublicKey  String?
+    requestedBindingProof String?
     requestedDeviceLabel String?
     requestedAt         DateTime?
     expiresAt           DateTime
     createdAt           DateTime @default(now())
     updatedAt           DateTime @updatedAt
+    flow                String   @default("direct_qr")
+    requesterIssuerServerIdentityId String?
+    requesterIssuerSubjectId String?
+    approvalStatus      String?
+    decidedAt           DateTime?
 
     @@index([accountId, expiresAt])
     @@index([expiresAt])
@@ -611,6 +618,8 @@ model Session {
     publisherGeneration BigInt             @default(0)
     publisherGenerationLastActiveAt DateTime?
     meaningfulActivityAt DateTime?
+    unreadSince       DateTime?
+    needsAttention    Boolean             @default(dbgenerated())
     createdAt         DateTime            @default(now())
     updatedAt         DateTime            @updatedAt
     messages          SessionMessage[]
@@ -635,6 +644,7 @@ model Session {
     @@unique([accountId, tag])
     @@index([accountId, updatedAt(sort: Desc)])
     @@index([accountId, meaningfulActivityAt(sort: Desc), id(sort: Desc)])
+    @@index([accountId, needsAttention, meaningfulActivityAt(sort: Desc), id(sort: Desc)])
     @@index([accountId, archivedAt(sort: Desc)])
     @@index([lastActiveAt(sort: Asc), updatedAt(sort: Asc)])
 }
@@ -1177,6 +1187,7 @@ model Machine {
 enum AutomationScheduleKind {
     cron
     interval
+    manual
 }
 
 enum AutomationTargetType {

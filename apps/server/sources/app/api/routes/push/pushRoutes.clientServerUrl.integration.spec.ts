@@ -47,7 +47,7 @@ describe("pushRoutes (clientServerUrl) (integration)", () => {
     it("stores and returns clientServerUrl for each push token", async () => {
         const app = createTestApp();
         const account = await db.account.create({ data: { publicKey: "pk_push_1" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         const post = await app.inject({
             method: "POST",
@@ -75,7 +75,7 @@ describe("pushRoutes (clientServerUrl) (integration)", () => {
     it("returns clientServerUrl=null when the client hint is invalid", async () => {
         const app = createTestApp();
         const account = await db.account.create({ data: { publicKey: "pk_push_2" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         const post = await app.inject({
             method: "POST",

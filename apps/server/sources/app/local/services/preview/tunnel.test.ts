@@ -524,4 +524,121 @@ describe("local service preview PMS tunnel opener", () => {
             vi.useRealTimers();
         }
     });
+
+    it("rejects regressive client credit ACKs through the shared duplex session", async () => {
+        const mod = await loadPreviewTunnelModule();
+        if (!mod?.createLocalServicePreviewTunnelOpener) throw new Error("preview tunnel module unavailable");
+        const keyPair = tweetnacl.sign.keyPair();
+        const relay = createRelayHarness();
+        const stream = await mod.createLocalServicePreviewTunnelOpener({
+            env: {
+                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
+                [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "5173",
+                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
+                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
+                [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
+                [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
+            } as NodeJS.ProcessEnv,
+            resolvePreviewAccountId: () => "account_1",
+            createRelayTransport: relay.createTransport,
+        })({ preview });
+        const open = relay.sent[1];
+        if (!open || open.v !== 2) throw new Error("substream open missing");
+        const decodedOpen = decodePeerTcpTunnelBinaryFrameV2({
+            frame: open.frame,
+            maxHeaderBytes: 64 * 1024,
+            maxPayloadBytes: 64 * 1024,
+        });
+        if (!decodedOpen.ok || !decodedOpen.header.substreamId) throw new Error("substream open invalid");
+
+        await stream.write(new Uint8Array([1, 2, 3]));
+        const ack = (nextSequence: number) => relay.receive({
+            v: 2,
+            scopeUserId: "account_1",
+            sender: { kind: "machine", machineId: "machine_1" },
+            recipient: { kind: "user" },
+            encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+            frame: encodePeerTcpTunnelBinaryFrameV2({
+                header: {
+                    version: 2,
+                    kind: "ack",
+                    tunnelId: decodedOpen.header.tunnelId,
+                    substreamId: decodedOpen.header.substreamId,
+                    direction: "client_to_daemon",
+                    ack: nextSequence,
+                    window: 16,
+                    payloadLength: 0,
+                },
+            }),
+        });
+        ack(3);
+        ack(2);
+        await flushAsyncIteratorResume();
+
+        const abort = relay.sent
+            .filter((envelope): envelope is Extract<PeerTcpTunnelRelayEnvelope, { v: 2 }> => envelope.v === 2)
+            .map((envelope) => decodePeerTcpTunnelBinaryFrameV2({
+                frame: envelope.frame,
+                maxHeaderBytes: 64 * 1024,
+                maxPayloadBytes: 64 * 1024,
+            }))
+            .find((decoded) => decoded.ok && decoded.header.kind === "abort");
+        expect(abort?.ok ? abort.header.reasonCode : null).toBe("ack_sequence_invalid");
+    });
+
+    it("keeps read and write half-closes independent and rejects writes after endWrite", async () => {
+        const mod = await loadPreviewTunnelModule();
+        if (!mod?.createLocalServicePreviewTunnelOpener) throw new Error("preview tunnel module unavailable");
+        const keyPair = tweetnacl.sign.keyPair();
+        const relay = createRelayHarness();
+        const stream = await mod.createLocalServicePreviewTunnelOpener({
+            env: {
+                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedEnabled]: "true",
+                [FEATURE_ENV_KEYS.machinesTunnelAllowedPorts]: "5173",
+                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBytes]: `${64 * 1024 * 1024}`,
+                [FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxFrameBytes]: `${64 * 1024}`,
+                [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
+                [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
+            } as NodeJS.ProcessEnv,
+            resolvePreviewAccountId: () => "account_1",
+            createRelayTransport: relay.createTransport,
+        })({ preview });
+        const open = relay.sent[1];
+        if (!open || open.v !== 2) throw new Error("substream open missing");
+        const decodedOpen = decodePeerTcpTunnelBinaryFrameV2({
+            frame: open.frame,
+            maxHeaderBytes: 64 * 1024,
+            maxPayloadBytes: 64 * 1024,
+        });
+        if (!decodedOpen.ok || !decodedOpen.header.substreamId) throw new Error("substream open invalid");
+
+        relay.receive({
+            v: 2,
+            scopeUserId: "account_1",
+            sender: { kind: "machine", machineId: "machine_1" },
+            recipient: { kind: "user" },
+            encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+            frame: encodePeerTcpTunnelBinaryFrameV2({
+                header: {
+                    version: 2,
+                    kind: "close",
+                    tunnelId: decodedOpen.header.tunnelId,
+                    substreamId: decodedOpen.header.substreamId,
+                    direction: "daemon_to_client",
+                    halfClose: true,
+                    reasonCode: "response_complete",
+                    payloadLength: 0,
+                },
+            }),
+        });
+
+        await expect(stream.read()[Symbol.asyncIterator]().next()).resolves.toEqual({ done: true, value: undefined });
+        await stream.write(new Uint8Array([7]));
+        expect(clientToDaemonDataPayloads(relay.sent, decodedOpen.header.substreamId)).toHaveLength(1);
+
+        await stream.endWrite();
+        await expect(stream.write(new Uint8Array([8]))).rejects.toMatchObject({
+            reasonCode: "direction_half_closed",
+        });
+    });
 });

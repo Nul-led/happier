@@ -564,6 +564,11 @@ async function createPostgresPredecessor(): Promise<PGlite> {
             "targetType", "templateCiphertext", "nextRunAt", "updatedAt"
         ) VALUES ('automation', 'account', 'retained schedule', false, 'interval', 60000, 'UTC',
             'new_session', '{}', '2026-08-27T10:00:00.000Z', CURRENT_TIMESTAMP);
+        INSERT INTO "Automation" (
+            "id", "accountId", "name", "enabled", "scheduleKind", "targetType",
+            "templateCiphertext", "updatedAt"
+        ) VALUES ('manual-automation', 'account', 'retained manual', true, 'manual', 'new_session',
+            '{}', CURRENT_TIMESTAMP);
         INSERT INTO "AutomationAssignment" ("id", "automationId", "machineId", "enabled", "priority", "updatedAt") VALUES
             ('enabled-assignment', 'automation', 'machine-enabled', true, 7, CURRENT_TIMESTAMP),
             ('disabled-assignment', 'automation', 'machine-disabled', false, 9, CURRENT_TIMESTAMP);
@@ -634,6 +639,11 @@ function createSqlitePredecessor(): DatabaseSync {
             "templateCiphertext", "nextRunAt", "updatedAt"
         ) VALUES ('automation', 'account', 'retained schedule', false, 'interval', 60000, 'UTC',
             'new_session', '{}', '2026-08-27T10:00:00.000Z', CURRENT_TIMESTAMP);
+        INSERT INTO "Automation" (
+            "id", "accountId", "name", "enabled", "scheduleKind", "targetType",
+            "templateCiphertext", "updatedAt"
+        ) VALUES ('manual-automation', 'account', 'retained manual', true, 'manual', 'new_session',
+            '{}', CURRENT_TIMESTAMP);
         INSERT INTO "AutomationAssignment" ("id", "automationId", "machineId", "enabled", "priority", "updatedAt") VALUES
             ('enabled-assignment', 'automation', 'machine-enabled', true, 7, CURRENT_TIMESTAMP),
             ('disabled-assignment', 'automation', 'machine-disabled', false, 9, CURRENT_TIMESTAMP);
@@ -742,6 +752,13 @@ describe("Automation trigger-set executable migration", () => {
                 everyMs: 60_000,
                 timezone: "UTC",
             }]);
+            expect((await db.query<{ id: string }>(`
+                SELECT "id" FROM "Automation" WHERE "id" = 'manual-automation'
+            `)).rows).toEqual([{ id: "manual-automation" }]);
+            expect((await db.query<{ count: string }>(`
+                SELECT COUNT(*)::text AS "count" FROM "AutomationTrigger"
+                WHERE "automationId" = 'manual-automation'
+            `)).rows).toEqual([{ count: "0" }]);
             const runs = await db.query<{
                 id: string; triggerId: string | null; causeKind: string;
                 causeTriggerKind: string | null; causeTriggerRevision: number | null;
@@ -1005,6 +1022,13 @@ describe("Automation trigger-set executable migration", () => {
                 everyMs: 60_000,
                 timezone: "UTC",
             }]);
+            expect(db.prepare(`
+                SELECT "id" FROM "Automation" WHERE "id" = 'manual-automation'
+            `).all()).toEqual([{ id: "manual-automation" }]);
+            expect(db.prepare(`
+                SELECT COUNT(*) AS "count" FROM "AutomationTrigger"
+                WHERE "automationId" = 'manual-automation'
+            `).all()).toEqual([{ count: 0 }]);
             expect(db.prepare(`
                 SELECT "id", "triggerId", "causeKind", "causeTriggerKind", "causeTriggerRevision",
                     "causeScheduledFor", "occurrenceKey", "idempotencyKey"

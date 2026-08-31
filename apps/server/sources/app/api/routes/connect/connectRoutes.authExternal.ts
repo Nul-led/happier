@@ -20,11 +20,19 @@ import {
 } from "@happier-dev/protocol";
 import { readAuthOauthKeylessFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import { resolveKeylessAccountsAvailability } from "@/app/features/e2ee/resolveKeylessAccountsEnabled";
-import { resolveWebAppOAuthReturnUrlFromRequestHeaders } from "./oauthExternal/oauthExternalConfig";
+import {
+    resolveOauthStateAttemptTtlMsFromEnv,
+    resolveWebAppOAuthReturnUrlFromRequestHeaders,
+} from "./oauthExternal/oauthExternalConfig";
 import { db } from "@/storage/db";
 import {
     isTrulyKeylessPlainAccountRow,
 } from "@/app/encryption/accountEncryptionMode";
+import {
+    normalizeHttpUrl,
+    resolveConfiguredCanonicalServerUrl,
+} from "@/app/serverUrls/effectiveServerUrls";
+import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 
 export function connectAuthExternalRoutes(app: Fastify) {
     //
@@ -48,12 +56,17 @@ export function connectAuthExternalRoutes(app: Fastify) {
                     publicKey: z.string().optional(),
                     mode: z.enum(["keyed", "keyless"]).optional(),
                     proofHash: z.string().optional(),
-                    purpose:
-                        z.literal("account_encryption_first_key")
-                            .optional(),
+                    purpose: z
+                        .enum([
+                            "account_encryption_first_key",
+                            "account_directory",
+                        ])
+                        .optional(),
                     requestDigest:
                         AccountEncryptionMigrateExternalAuthBindingDigestV1Schema
                             .optional(),
+                    endpointUrl: z.string().optional(),
+                    endpointServerIdentityId: z.string().optional(),
                 })
                 .refine((q) => {
                     if (q.purpose === "account_encryption_first_key") {
@@ -61,6 +74,17 @@ export function connectAuthExternalRoutes(app: Fastify) {
                             && Boolean(q.proofHash)
                             && Boolean(q.requestDigest)
                             && !q.publicKey;
+                    }
+                    if (q.purpose === "account_directory") {
+                        const isKeyless = q.mode === "keyless"
+                            && Boolean(q.proofHash)
+                            && !q.publicKey;
+                        const isKeyed = q.mode === "keyed"
+                            && Boolean(q.publicKey)
+                            && !q.proofHash;
+                        return (isKeyless || isKeyed)
+                            && Boolean(q.endpointUrl)
+                            && Boolean(q.endpointServerIdentityId);
                     }
                     if (q.mode === "keyless") return Boolean(q.proofHash);
                     if (typeof q.proofHash === "string" && q.proofHash.trim()) return true;
@@ -83,6 +107,8 @@ export function connectAuthExternalRoutes(app: Fastify) {
         const isFirstKeyStepUp =
             request.query.purpose
             === "account_encryption_first_key";
+        const isAccountDirectory =
+            request.query.purpose === "account_directory";
         if (isFirstKeyStepUp) {
             const proofHash = request.query.proofHash!
                 .toString()
@@ -163,11 +189,53 @@ export function connectAuthExternalRoutes(app: Fastify) {
             }
         }
 
+        let accountDirectoryTarget:
+            | Readonly<{
+                endpointUrl: string;
+                endpointServerIdentityId: string;
+                expiresAt: Date;
+            }>
+            | null = null;
+        if (isAccountDirectory) {
+            const requestedEndpointUrl = normalizeHttpUrl(
+                request.query.endpointUrl ?? "",
+            );
+            const canonicalServerUrl =
+                resolveConfiguredCanonicalServerUrl(process.env);
+            const requestedServerIdentityId = String(
+                request.query.endpointServerIdentityId ?? "",
+            ).trim();
+            const actualServerIdentityId =
+                await getOrCreateServerIdentityId(process.env);
+            if (
+                !requestedEndpointUrl
+                || !canonicalServerUrl
+                || requestedEndpointUrl !== canonicalServerUrl
+                || !requestedServerIdentityId
+                || requestedServerIdentityId !== actualServerIdentityId
+            ) {
+                return reply
+                    .code(400)
+                    .send({ error: "invalid-account-directory-target" });
+            }
+            accountDirectoryTarget = {
+                endpointUrl: canonicalServerUrl,
+                endpointServerIdentityId: actualServerIdentityId,
+                expiresAt: new Date(
+                    Date.now()
+                    + resolveOauthStateAttemptTtlMsFromEnv(process.env),
+                ),
+            };
+        }
+
         const mode = (request.query as any)?.mode === "keyless" ? "keyless" : "keyed";
         const policy = resolveAuthPolicyFromEnv(process.env);
         const keyedAllowed = policy.signupProviders.includes(providerId);
         let keylessAllowed = false;
-        if (mode === "keyless") {
+        if (isAccountDirectory && !keyedAllowed) {
+            return reply.code(403).send({ error: "signup-provider-disabled" });
+        }
+        if (mode === "keyless" && !isAccountDirectory) {
             const keyless = readAuthOauthKeylessFeatureEnv(process.env);
             keylessAllowed = keyless.enabled && keyless.providers.includes(providerId);
             if (!keylessAllowed) return reply.code(403).send({ error: "keyless-disabled" });
@@ -231,10 +299,31 @@ export function connectAuthExternalRoutes(app: Fastify) {
                 provider,
                 publicKeyHex,
                 proofHash,
+                ...(accountDirectoryTarget
+                    ? {
+                        purpose: "account_directory" as const,
+                        endpointUrl: accountDirectoryTarget.endpointUrl,
+                        endpointServerIdentityId:
+                            accountDirectoryTarget.endpointServerIdentityId,
+                        attemptExpiresAt:
+                            accountDirectoryTarget.expiresAt,
+                    }
+                    : {}),
                 ...(webAppOAuthReturnUrl ? { webAppOAuthReturnUrl } : {}),
             });
             if (!url) return reply.code(400).send({ error: OAUTH_STATE_UNAVAILABLE_CODE });
-            return reply.send({ url });
+            return reply.send(accountDirectoryTarget
+                ? {
+                    url,
+                    purpose: "account_directory" as const,
+                    credentialTarget: "account_directory" as const,
+                    endpointUrl: accountDirectoryTarget.endpointUrl,
+                    endpointServerIdentityId:
+                        accountDirectoryTarget.endpointServerIdentityId,
+                    expiresAt:
+                        accountDirectoryTarget.expiresAt.toISOString(),
+                }
+                : { url });
         } catch (error) {
             if (error instanceof Error && error.message === OAUTH_NOT_CONFIGURED_ERROR) {
                 return reply.code(400).send({ error: OAUTH_NOT_CONFIGURED_ERROR });

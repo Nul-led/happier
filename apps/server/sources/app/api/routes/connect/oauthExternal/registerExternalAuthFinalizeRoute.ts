@@ -123,8 +123,20 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             return reply.code(400).send({ error: "invalid-pending" });
         }
 
+        const isAccountDirectory =
+            (parsedValue as { v?: unknown }).v === 2
+            && (parsedValue as { purpose?: unknown }).purpose
+                === "account_directory";
+        const isKeyedAccountDirectory =
+            isAccountDirectory
+            && (parsedValue as { authMode?: unknown }).authMode
+                === "keyed";
+        if (isAccountDirectory && !isKeyedAccountDirectory) {
+            await deleteOAuthPendingBestEffort(pendingKey);
+            return reply.code(400).send({ error: "invalid-pending" });
+        }
         const pendingFormat =
-            (parsedValue as any)?.v === 2
+            (parsedValue as { v?: unknown }).v === 2
                 ? ("v2" as const)
                 : (typeof (parsedValue as any)?.publicKeyHex === "string" && (parsedValue as any).publicKeyHex.trim())
                     ? ("legacy_keyed" as const)
@@ -133,7 +145,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             await deleteOAuthPendingBestEffort(pendingKey);
             return reply.code(400).send({ error: "invalid-pending" });
         }
-        if (pendingFormat === "v2") {
+        if (pendingFormat === "v2" && !isKeyedAccountDirectory) {
             const proof = request.body.proof?.toString?.().trim?.() ?? "";
             if (!proof) {
                 await deleteOAuthPendingBestEffort(pendingKey);
@@ -149,7 +161,11 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
         if (parsedValue.provider.toString().trim().toLowerCase() !== providerId) {
             return reply.code(403).send({ error: "forbidden" });
         }
-        if (pendingFormat === "legacy_keyed" && (parsedValue as any).publicKeyHex !== publicKeyHex) {
+        if (
+            (pendingFormat === "legacy_keyed" || isKeyedAccountDirectory)
+            && (parsedValue as { publicKeyHex?: unknown }).publicKeyHex
+                !== publicKeyHex
+        ) {
             return reply.code(403).send({ error: "forbidden" });
         }
 
@@ -159,13 +175,13 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
         try {
             const tokenBytes = privacyKit.decodeBase64(parsedValue.accessTokenEnc);
             accessToken =
-                pendingFormat === "v2"
+                pendingFormat === "v2" && !isKeyedAccountDirectory
                     ? decryptString(["auth", "external", providerId, "pending_v2", pendingKey, "token"], tokenBytes)
                     : decryptString(["auth", "external", providerId, "pending", pendingKey, publicKeyHex], tokenBytes);
             if (typeof parsedValue.refreshTokenEnc === "string" && parsedValue.refreshTokenEnc.trim()) {
                 const refreshBytes = privacyKit.decodeBase64(parsedValue.refreshTokenEnc);
                 refreshToken = decryptString(
-                    pendingFormat === "v2"
+                    pendingFormat === "v2" && !isKeyedAccountDirectory
                         ? ["auth", "external", providerId, "pending_v2", pendingKey, "refresh"]
                         : ["auth", "external", providerId, "pending", pendingKey, publicKeyHex, "refresh"],
                     refreshBytes,
@@ -174,7 +190,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
 
             const profileBytes = privacyKit.decodeBase64(parsedValue.profileEnc);
             const profileJson = decryptString(
-                pendingFormat === "v2"
+                pendingFormat === "v2" && !isKeyedAccountDirectory
                     ? ["auth", "external", providerId, "pending_v2", pendingKey, "profile"]
                     : ["auth", "external", providerId, "pending", pendingKey, publicKeyHex, "profile"],
                 profileBytes,
@@ -204,6 +220,21 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             select: { id: true, accountId: true, showOnProfile: true },
         });
 
+        if (isAccountDirectory && alreadyLinked) {
+            await db.repeatKey.deleteMany({ where: { key: pendingKey } });
+            const token = await auth.createToken(
+                alreadyLinked.accountId,
+                undefined,
+                // Canonical closed provenance: the restricted directory kind
+                // always travels with present_user authority.
+                {
+                    kind: "account_directory",
+                    authority: "present_user",
+                },
+            );
+            return reply.send({ success: true, token });
+        }
+
         if (!existingAccount && !alreadyLinked) {
             const blocked = shouldDenyPublicSignupProvisioningAction({
                 env: process.env,
@@ -217,6 +248,9 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
         }
 
         const resetRequested = request.body.reset === true;
+        if (isAccountDirectory && resetRequested) {
+            return reply.code(403).send({ error: "forbidden" });
+        }
         if (alreadyLinked && !resetRequested) {
             return reply.code(409).send({ error: PROVIDER_ALREADY_LINKED_ERROR, provider: providerId });
         }
@@ -441,7 +475,11 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
 
             await db.repeatKey.deleteMany({ where: { key: pendingKey } });
 
-            const token = await auth.createToken(newAccount.id);
+            const token = await auth.createToken(
+                newAccount.id,
+                undefined,
+                { kind: "account", authority: "present_user" },
+            );
             return reply.send({ success: true, token });
         }
 
@@ -540,7 +578,18 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             throw error;
         }
 
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(
+            account.id,
+            undefined,
+            isAccountDirectory
+                ? // Canonical closed provenance: the restricted directory kind
+                  // always travels with present_user authority.
+                  {
+                    kind: "account_directory",
+                    authority: "present_user",
+                }
+                : { kind: "account", authority: "present_user" },
+        );
         return reply.send({ success: true, token });
     });
 }

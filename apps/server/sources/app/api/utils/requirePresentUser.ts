@@ -10,6 +10,8 @@ export const PresentUserRequiredResponseSchema = z.object({
 type AuthenticatedRouteRequest = Readonly<{
     /** Set only by `enableAuthentication`; absent authority fails closed. */
     authAuthority?: unknown;
+    /** Current verifier projection; absent or unknown provenance fails closed. */
+    authTokenKind?: unknown;
 }>;
 
 type AuthenticatedRouteReply = Readonly<{
@@ -28,6 +30,13 @@ export async function requirePresentUser(
     request: AuthenticatedRouteRequest,
     reply: AuthenticatedRouteReply,
 ): Promise<unknown> {
-    if (request.authAuthority === "present_user") return undefined;
+    // Directory credentials intentionally carry present-user authority for
+    // identity operations, but must never reach ordinary Home present-user
+    // routes. Authentication stamps this kind on every live request; missing,
+    // restricted, and unknown provenance all fail closed.
+    if (
+        request.authAuthority === "present_user"
+        && request.authTokenKind === "account"
+    ) return undefined;
     return reply.code(403).send({ error: PRESENT_USER_REQUIRED_ERROR });
 }

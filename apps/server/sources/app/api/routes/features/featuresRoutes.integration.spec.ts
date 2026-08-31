@@ -1,5 +1,7 @@
-import { readServerEnabledBit } from "@happier-dev/protocol";
+import { readServerEnabledBit, type HomeSearchCapabilities } from "@happier-dev/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { HomeIrohEndpointState } from "@/app/iroh/homeIrohEndpoint";
 
 import { createEnvReset } from "../../testkit/env";
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
@@ -36,6 +38,12 @@ type ServerIdentityRouteModuleMock = Readonly<{
 async function getFeaturesPayload(
     requestOverrides: Record<string, unknown> = {},
     serverIdentityMock?: ServerIdentityRouteModuleMock,
+    resolveHomeSearchCapability?: () => Readonly<{
+        enabled: boolean;
+        provider: "home" | "daemon" | null;
+        reason?: "non_plain_home" | "index_unavailable" | "indexing";
+    }> | undefined,
+    resolveHomeIrohEndpointState?: () => HomeIrohEndpointState,
 ) {
     if (serverIdentityMock) {
         vi.doMock("@/app/serverIdentity/serverIdentity", () => serverIdentityMock);
@@ -45,7 +53,7 @@ async function getFeaturesPayload(
         method: "GET",
         path: "/v1/features",
         registerRoutes(app) {
-            featuresRoutes(app as any);
+            featuresRoutes(app as any, { resolveHomeSearchCapability, resolveHomeIrohEndpointState });
         },
     });
     const { response, reply } = await route.invoke(requestOverrides);
@@ -64,6 +72,38 @@ describe("featuresRoutes", () => {
         vi.doUnmock("@/app/serverIdentity/serverIdentity");
         resetPublicServerUrlInferenceCacheForTests();
         resetEnv();
+    });
+
+    it("projects the single Home search lifecycle from indexing to ready", async () => {
+        let capability: HomeSearchCapabilities = {
+            enabled: false,
+            provider: "home" as const,
+            reason: "indexing" as const,
+        };
+        const resolveCapability = () => capability;
+
+        const indexing = await getFeaturesPayload({}, undefined, resolveCapability);
+        expect(indexing.payload.capabilities.homeSearch).toEqual(capability);
+
+        capability = { enabled: true, provider: "home" };
+        const ready = await getFeaturesPayload({}, undefined, resolveCapability);
+        expect(ready.payload.capabilities.homeSearch).toEqual({ enabled: true, provider: "home" });
+    });
+
+    it("advertises Home unavailability but makes no Home claim when no lifecycle is composed", async () => {
+        const unavailable = await getFeaturesPayload({}, undefined, () => ({
+            enabled: false,
+            provider: null,
+            reason: "index_unavailable",
+        }));
+        expect(unavailable.payload.capabilities.homeSearch).toEqual({
+            enabled: false,
+            provider: null,
+            reason: "index_unavailable",
+        });
+
+        const nonPlain = await getFeaturesPayload();
+        expect(nonPlain.payload.capabilities).not.toHaveProperty("homeSearch");
     });
 
     it("returns the browser sidecar feature branch enabled in the live feature payload", async () => {
@@ -123,6 +163,95 @@ describe("featuresRoutes", () => {
             });
             expect(readCachedServerIdentityIdForHotPath).toHaveBeenCalledTimes(1);
             expect(getOrCreateServerIdentityId).not.toHaveBeenCalled();
+        });
+    });
+
+    describe("home iroh endpoint publication", () => {
+        const activeSnapshot = {
+            homeServerIdentityId: "srv_routeIrohHome",
+            canonicalServerUrl: "http://127.0.0.1:3005",
+            revision: 7,
+            endpoint: {
+                endpointId: "a".repeat(64),
+                relayUrls: ["https://relay.example.test"],
+                directAddresses: ["192.168.1.10:4242"],
+            },
+        } satisfies NonNullable<HomeIrohEndpointState["snapshot"]>;
+
+        const activeState = (): HomeIrohEndpointState => ({
+            status: "active",
+            snapshot: activeSnapshot,
+            failureReason: null,
+        });
+
+        it("publishes the exact canonical descriptor for an active endpoint state", async () => {
+            const { payload, reply } = await getFeaturesPayload({}, undefined, undefined, activeState);
+
+            // Exact shape: only the canonical wire fields, no runtime handles,
+            // acceptor ports, keys, or failure detail.
+            expect(payload.homeConnectionDescriptor).toEqual({
+                v: 1,
+                homeServerIdentityId: "srv_routeIrohHome",
+                canonicalServerUrl: "http://127.0.0.1:3005",
+                revision: 7,
+                endpoints: [{
+                    kind: "iroh",
+                    endpointId: "a".repeat(64),
+                    relayUrls: ["https://relay.example.test"],
+                    directAddresses: ["192.168.1.10:4242"],
+                }],
+            });
+            expect(Object.keys(payload.homeConnectionDescriptor).sort()).toEqual([
+                "canonicalServerUrl",
+                "endpoints",
+                "homeServerIdentityId",
+                "revision",
+                "v",
+            ]);
+            expect(reply.headers["Cache-Control"]).toBe("no-store");
+        });
+
+        it("omits the descriptor for not-composed, unavailable, and failed states", async () => {
+            for (const state of [
+                { status: "not-composed", snapshot: null, failureReason: null },
+                { status: "unavailable", snapshot: null, failureReason: null },
+                { status: "failed", snapshot: null, failureReason: "native_error" },
+            ] as const satisfies readonly HomeIrohEndpointState[]) {
+                const { payload } = await getFeaturesPayload({}, undefined, undefined, () => state);
+                expect(payload).not.toHaveProperty("homeConnectionDescriptor");
+            }
+        });
+
+        it("reads endpoint state at request time and never serves a stale descriptor", async () => {
+            let state: HomeIrohEndpointState = activeState();
+            const { featuresRoutes } = await import("./featuresRoutes");
+            const route = createRouteTestBuilder({
+                method: "GET",
+                path: "/v1/features",
+                registerRoutes(app) {
+                    featuresRoutes(app as any, { resolveHomeIrohEndpointState: () => state });
+                },
+            });
+
+            const first = await route.invoke();
+            expect((first.response as any).homeConnectionDescriptor?.revision).toBe(7);
+
+            state = {
+                status: "active",
+                snapshot: {
+                    ...activeSnapshot,
+                    revision: 8,
+                    endpoint: { endpointId: "b".repeat(64) },
+                },
+                failureReason: null,
+            };
+            const second = await route.invoke();
+            expect((second.response as any).homeConnectionDescriptor?.revision).toBe(8);
+            expect((second.response as any).homeConnectionDescriptor?.endpoints?.[0]?.endpointId).toBe("b".repeat(64));
+
+            state = { status: "failed", snapshot: null, failureReason: "endpoint_key_lost" };
+            const third = await route.invoke();
+            expect((third.response as any)).not.toHaveProperty("homeConnectionDescriptor");
         });
     });
 

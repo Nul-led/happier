@@ -5,6 +5,23 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("privateFilesLocal", () => {
+    it("shares the authoritative private-files path with the Personal Home runtime layout", async () => {
+        const { resolvePersonalHomeRuntimeLayout } = await import("@happier-dev/cli-common/firstPartyRuntime");
+        const { resolveLocalPrivateFilesDir } = await import("./privateFilesLocal");
+        const dataDir = await mkdtemp(join(tmpdir(), "happier-private-files-layout-"));
+        try {
+            const env = {
+                HAPPIER_SERVER_LIGHT_DATA_DIR: dataDir,
+                HAPPY_SERVER_LIGHT_PRIVATE_FILES_DIR: join(dataDir, "private-files"),
+            };
+
+            expect(resolvePersonalHomeRuntimeLayout({ env }).privateFilesDir)
+                .toBe(resolveLocalPrivateFilesDir(env));
+        } finally {
+            await rm(dataDir, { recursive: true, force: true });
+        }
+    });
+
     it("writes and reads account-private bytes without exposing a public URL contract", async () => {
         const { createLocalPrivateFilesBackend } = await import("./privateFilesLocal");
         const dir = await mkdtemp(join(tmpdir(), "happier-private-files-"));

@@ -415,6 +415,10 @@ describe("Automation API projections", () => {
         })).toBe(false);
         expect(isAutomationDefinitionRepresentableInV2({
             ...schedule,
+            triggers: [{ ...schedule.triggers[0], enabled: false }],
+        })).toBe(false);
+        expect(isAutomationDefinitionRepresentableInV2({
+            ...schedule,
             templateCiphertext: "not a retained V2 template envelope",
         })).toBe(false);
         const v2 = toAutomationV2ApiDto(schedule);

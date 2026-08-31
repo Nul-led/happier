@@ -603,6 +603,13 @@ async function settleSucceededAutomationRun(params: {
         ) {
             return null;
         }
+        const suppressConversationHandoff = isConversationHandoff
+            && typeof preflight.replyHandoffTargetMachineId === "string"
+            && await readMachineAvailabilityStateInTx({
+                tx,
+                accountId: params.accountId,
+                machineId: preflight.replyHandoffTargetMachineId,
+            }) === "revoked";
         let resultEnvelopeAccountSeq: number | undefined;
         if (
             parsedResultEnvelope !== null
@@ -672,8 +679,10 @@ async function settleSucceededAutomationRun(params: {
                 errorMessage: null,
                 ...(isConversationHandoff
                     ? {
-                        replyHandoffState: "ready",
-                        replyHandoffDueAt: now,
+                        replyHandoffState: suppressConversationHandoff
+                            ? "suppressed"
+                            : "ready",
+                        replyHandoffDueAt: suppressConversationHandoff ? null : now,
                     }
                     : {}),
                 revision: { increment: 1 },

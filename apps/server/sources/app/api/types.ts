@@ -24,6 +24,8 @@ declare module 'fastify' {
     interface FastifyContextConfig {
         /** API tokens are denied unless an HTTP route explicitly opts in. */
         allowApiToken?: true;
+        /** Account Directory tokens are denied unless a Directory route opts in. */
+        allowAccountDirectoryToken?: true;
         /** Keeps connection authentication rejection distinct from an authenticated subject failure. */
         connectionAuthFailureError?: "authentication_failed" | "invalid_token";
         /** Public bearer-only routes can opt out of the global CORS hook. */
@@ -32,7 +34,7 @@ declare module 'fastify' {
     interface FastifyRequest {
         userId: string;
         /** Verified credential provenance; missing is never present-user authority. */
-        authTokenKind?: "account" | "terminal" | "api_token";
+        authTokenKind?: "account" | "account_directory" | "terminal" | "api_token";
         /** Server-stamped authority for Action ingress; never caller-provided input. */
         authAuthority?: "present_user" | "account_automation";
         /** Request-local verified provenance for an admitted PAT; never a raw bearer. */

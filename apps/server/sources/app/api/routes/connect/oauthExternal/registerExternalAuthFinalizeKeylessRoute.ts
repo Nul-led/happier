@@ -45,20 +45,8 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
         const provider = findOAuthProviderById(process.env, providerId);
         if (!provider) return reply.code(404).send({ error: "unsupported-provider" });
 
-        const keylessEnv = readAuthOauthKeylessFeatureEnv(process.env);
-        const allowed = keylessEnv.enabled && keylessEnv.providers.includes(providerId);
-        if (!allowed) return reply.code(403).send({ error: "keyless-disabled" });
-
         const pendingKey = request.body.pending.toString().trim();
         if (!pendingKey) return reply.code(400).send({ error: "invalid-pending" });
-
-        const availability = resolveKeylessAccountsAvailability(process.env);
-        if (!availability.ok) {
-            await deleteOAuthPendingBestEffort(pendingKey);
-            return reply
-                .code(403)
-                .send({ error: availability.reason === "e2ee-required" ? "e2ee-required" : "keyless-disabled" });
-        }
 
         const pending = await loadValidOAuthPending(pendingKey);
         if (!pending) return reply.code(400).send({ error: "invalid-pending" });
@@ -79,13 +67,49 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
         if (parsedValue.flow !== "auth" || parsedValue.provider.toString().trim().toLowerCase() !== providerId) {
             return reply.code(400).send({ error: "invalid-pending" });
         }
+        const pendingVersion =
+            (parsedValue as { v?: unknown }).v;
+        const isAccountDirectoryPurpose =
+            pendingVersion === 2
+            && (parsedValue as { purpose?: unknown }).purpose
+                === "account_directory";
+        const isAccountDirectory =
+            isAccountDirectoryPurpose
+            && (parsedValue as { authMode?: unknown }).authMode
+                === "keyless";
+        if (isAccountDirectoryPurpose && !isAccountDirectory) {
+            return reply.code(400).send({ error: "invalid-pending" });
+        }
         const pendingFormat =
-            (parsedValue as any)?.v === 2
+            pendingVersion === 2
                 ? ("v2" as const)
                 : (parsedValue as any)?.authMode === "keyless"
                     ? ("legacy_keyless" as const)
                     : null;
         if (!pendingFormat) return reply.code(400).send({ error: "invalid-pending" });
+
+        const keylessEnv = readAuthOauthKeylessFeatureEnv(process.env);
+        if (!isAccountDirectory) {
+            const allowed =
+                keylessEnv.enabled
+                && keylessEnv.providers.includes(providerId);
+            if (!allowed) {
+                return reply.code(403).send({ error: "keyless-disabled" });
+            }
+
+            const availability =
+                resolveKeylessAccountsAvailability(process.env);
+            if (!availability.ok) {
+                await deleteOAuthPendingBestEffort(pendingKey);
+                return reply
+                    .code(403)
+                    .send({
+                        error: availability.reason === "e2ee-required"
+                            ? "e2ee-required"
+                            : "keyless-disabled",
+                    });
+            }
+        }
 
         const proof = request.body.proof.toString();
         const proofHash = sha256Hex(proof);
@@ -98,7 +122,9 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
         let pendingProfile: unknown;
         try {
             const tokenBytes = privacyKit.decodeBase64((parsedValue as any).accessTokenEnc);
-            const prefix = pendingFormat === "v2" ? "pending_v2" : "pending_keyless";
+            const prefix = pendingFormat === "v2"
+                ? "pending_v2"
+                : "pending_keyless";
             accessToken = decryptString(["auth", "external", providerId, prefix, pendingKey, "token"], tokenBytes);
             if (typeof (parsedValue as any).refreshTokenEnc === "string" && (parsedValue as any).refreshTokenEnc.trim()) {
                 const refreshBytes = privacyKit.decodeBase64((parsedValue as any).refreshTokenEnc);
@@ -144,13 +170,28 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
                 currentness?.status === "inconsistent"
                 || currentness?.currentness.encryptionMode
                     === "e2ee";
-            if (requiresRestore) {
+            if (requiresRestore && !isAccountDirectory) {
                 await db.repeatKey.deleteMany({ where: { key: pendingKey } });
                 return reply.code(409).send({ error: "restore-required" });
             }
             await db.repeatKey.deleteMany({ where: { key: pendingKey } });
-            const token = await auth.createToken(existingIdentity.accountId);
+            const token = await auth.createToken(
+                existingIdentity.accountId,
+                undefined,
+                isAccountDirectory
+                    ? // Canonical closed provenance: the restricted directory kind
+                      // always travels with present_user authority.
+                      {
+                        kind: "account_directory",
+                        authority: "present_user",
+                    }
+                    : { kind: "account", authority: "present_user" },
+            );
             return reply.send({ success: true, token });
+        }
+
+        if (isAccountDirectory) {
+            return reply.code(403).send({ error: "not-eligible" });
         }
 
         const blocked = shouldDenyPublicSignupProvisioningAction({
@@ -225,7 +266,11 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
             throw error;
         }
 
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(
+            account.id,
+            undefined,
+            { kind: "account", authority: "present_user" },
+        );
         return reply.send({ success: true, token });
     });
 }

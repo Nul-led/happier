@@ -8,6 +8,7 @@ import {
 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
+import { auth } from "@/app/auth/auth";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { createAuthenticatedTestApp } from "../../testkit/sqliteFastify";
@@ -1188,4 +1189,109 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
             }
         },
     );
+
+    it("projects a signed account_directory bearer as anonymous on the public share read route", async () => {
+        await auth.init();
+        const owner = await createCurrentE2eeAccount();
+        const viewer = await db.account.create({
+            data: {
+                ...createSignedAccountContentBinding(),
+                encryptionMode: "e2ee",
+            },
+            select: { id: true },
+        });
+        const [ordinaryToken, directoryToken] = await Promise.all([
+            auth.createToken(viewer.id, undefined, { kind: "account", authority: "present_user" }),
+            auth.createToken(viewer.id, undefined, { kind: "account_directory", authority: "present_user" }),
+        ]);
+        const [viewerSession, anonymousSession] = await Promise.all([
+            db.session.create({
+                data: {
+                    accountId: owner.id,
+                    tag: `s_public_share_directory_viewer_${crypto.randomUUID()}`,
+                    encryptionMode: "plain",
+                    metadata: STORED_SHARED_METADATA_V1,
+                    metadataVersion: 4,
+                    metadataLayoutVersion: 1,
+                    ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
+                    agentState: null,
+                    agentStateVersion: 0,
+                    dataEncryptionKey: null,
+                },
+                select: { id: true },
+            }),
+            db.session.create({
+                data: {
+                    accountId: owner.id,
+                    tag: `s_public_share_directory_anon_${crypto.randomUUID()}`,
+                    encryptionMode: "plain",
+                    metadata: STORED_SHARED_METADATA_V1,
+                    metadataVersion: 4,
+                    metadataLayoutVersion: 1,
+                    ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
+                    agentState: null,
+                    agentStateVersion: 0,
+                    dataEncryptionKey: null,
+                },
+                select: { id: true },
+            }),
+        ]);
+        const token = `tok_public_share_directory_bearer_${crypto.randomUUID()}`;
+        const anonymousToken = `tok_public_share_directory_anon_${crypto.randomUUID()}`;
+        const viewerShare = await db.publicSessionShare.create({
+            data: {
+                sessionId: viewerSession.id,
+                createdByUserId: owner.id,
+                tokenHash: createHash("sha256").update(token, "utf8").digest(),
+                encryptedDataKey: null,
+                isConsentRequired: false,
+            },
+        });
+        const anonymousShare = await db.publicSessionShare.create({
+            data: {
+                sessionId: anonymousSession.id,
+                createdByUserId: owner.id,
+                tokenHash: createHash("sha256").update(anonymousToken, "utf8").digest(),
+                encryptedDataKey: null,
+                isConsentRequired: false,
+            },
+        });
+
+        const app = createCurrentClientTestApp();
+        publicShareRoutes(app as any);
+        await app.ready();
+        try {
+            const ordinaryResponse = await app.inject({
+                method: "GET",
+                url: `/v1/public-share/${encodeURIComponent(token)}`,
+                headers: { authorization: `Bearer ${ordinaryToken}` },
+            });
+            expect(ordinaryResponse.statusCode, ordinaryResponse.body).toBe(200);
+            expect(ordinaryResponse.json()).toMatchObject({ accessLevel: "view" });
+
+            const directoryResponse = await app.inject({
+                method: "GET",
+                url: `/v1/public-share/${encodeURIComponent(anonymousToken)}`,
+                headers: { authorization: `Bearer ${directoryToken}` },
+            });
+            expect(directoryResponse.statusCode, directoryResponse.body).toBe(200);
+            expect(directoryResponse.json()).toMatchObject({ accessLevel: "view" });
+        } finally {
+            await app.close();
+        }
+
+        // The ordinary signed bearer is logged as its account; the restricted
+        // Directory credential is logged as anonymous on the identical route:
+        // it was never projected as the optional authenticated user.
+        const viewerShareLogs = await db.publicShareAccessLog.findMany({
+            where: { publicShareId: viewerShare.id },
+            select: { userId: true },
+        });
+        expect(viewerShareLogs.map((entry) => entry.userId)).toEqual([viewer.id]);
+        const anonymousShareLogs = await db.publicShareAccessLog.findMany({
+            where: { publicShareId: anonymousShare.id },
+            select: { userId: true },
+        });
+        expect(anonymousShareLogs.map((entry) => entry.userId)).toEqual([null]);
+    });
 });

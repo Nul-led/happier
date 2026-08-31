@@ -460,7 +460,11 @@ export function registerMtlsAuthRoutes(app: Fastify): void {
                 return reply.code(403).send({ error: account.error });
             }
 
-            const token = await auth.createToken(account.accountId);
+            const token = await auth.createToken(
+                account.accountId,
+                undefined,
+                { kind: "account", authority: "present_user" },
+            );
             return reply.send({ success: true, token });
         },
     );
@@ -504,7 +508,11 @@ export function registerMtlsAuthRoutes(app: Fastify): void {
             ) {
                 return reply.code(409).send({ error: "restore-required" });
             }
-            const token = await auth.createToken(verified.userId);
+            const token = await auth.createToken(
+                verified.userId,
+                undefined,
+                { kind: "account", authority: "present_user" },
+            );
             return reply.send({ success: true, token });
         },
     );

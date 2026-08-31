@@ -352,7 +352,13 @@ describe("migrations (provider completeness)", () => {
             'CREATE INDEX "SessionSystemRecord_account_kind_updated_idx"',
         );
         expect(sqliteCorrection).not.toContain("IF EXISTS");
-        expect(sqliteCorrection).not.toContain("IF NOT EXISTS");
+        expect(sqliteCorrection.match(/IF NOT EXISTS/gu)).toHaveLength(3);
+        expect(
+            sqliteCorrection
+                .split("\n")
+                .filter((line) => line.includes("IF NOT EXISTS"))
+                .every((line) => line.includes("ServiceAccountQuotaSnapshot")),
+        ).toBe(true);
         expect(sqliteCorrection).not.toContain("csus_paur_idx");
     });
 

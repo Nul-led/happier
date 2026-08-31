@@ -2032,6 +2032,83 @@ describe("automationRunService (integration)", () => {
             replyHandoffReceiptEnvelope: null,
         }));
         expect(succeeded?.replyHandoffDueAt).not.toBeNull();
+
+        const revokedReplyTarget = await db.machine.create({
+            data: {
+                id: "machine-conversation-reply-revoked-target",
+                accountId: account.id,
+                metadata: "{}",
+                revokedAt: new Date(),
+            },
+            select: { id: true },
+        });
+        const suppressedRun = await db.automationRun.create({
+            data: {
+                id: "run-conversation-reply-revoked-target",
+                automationId: automation.id,
+                accountId: account.id,
+                state: "running",
+                ...conversationRunCause("conversation-occurrence-revoked-target"),
+                executionInputEnvelope: strictPlainExistingSessionRecipe(session.id),
+                triggerEvidenceEnvelope: JSON.stringify({ t: "plain", v: {} }),
+                replyContextEnvelope: JSON.stringify({
+                    t: "plain",
+                    v: {
+                        v: 1,
+                        correspondence: {
+                            automationId: automation.id,
+                            occurrenceKey: conversationOccurrenceKey("conversation-occurrence-revoked-target"),
+                        },
+                        templateVersion: 1,
+                        opaqueContext: { conversationId: "conversation-2" },
+                    },
+                }),
+                replyHandoffActionPluginId: "happier.channels",
+                replyHandoffActionLocalId: "automation/result-deliver-v1",
+                replyHandoffTargetMachineId: revokedReplyTarget.id,
+                replyHandoffTargetMachineInstallationId: "installation-2",
+                replyHandoffTargetMaterializationId: "materialization-2",
+                replyHandoffId: "handoff-conversation-reply-revoked-target",
+                replyHandoffState: "awaitingResult",
+                scheduledAt: new Date(Date.now() - 60_000),
+                dueAt: new Date(Date.now() - 30_000),
+                startedAt: new Date(Date.now() - 20_000),
+                claimedByMachineId: machine.id,
+                leaseExpiresAt: new Date(Date.now() + 30_000),
+                attempt: 1,
+            },
+            select: { id: true },
+        });
+        const suppressedResultEnvelope = JSON.stringify({
+            t: "plain",
+            v: {
+                v: 1,
+                correspondence: {
+                    accountId: account.id,
+                    automationId: automation.id,
+                    runId: suppressedRun.id,
+                    handoffId: "handoff-conversation-reply-revoked-target",
+                },
+                result: { v: 1, kind: "text", text: "Finished" },
+            },
+        });
+
+        const suppressed = await succeedAutomationRun({
+            accountId: account.id,
+            runId: suppressedRun.id,
+            machineId: machine.id,
+            attempt: 1,
+            accountCurrentness: await readAutomationAccountCurrentness(account.id),
+            producedSessionId: session.id,
+            resultEnvelope: suppressedResultEnvelope,
+        });
+
+        expect(suppressed).toEqual(expect.objectContaining({
+            id: suppressedRun.id,
+            state: "succeeded",
+            replyHandoffState: "suppressed",
+        }));
+        expect(suppressed?.replyHandoffDueAt).toBeNull();
     });
 
     it("settles strict no-result-delivery Conversations with a null result envelope and no reply handoff or wake", async () => {

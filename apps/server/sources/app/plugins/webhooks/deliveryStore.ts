@@ -292,7 +292,18 @@ export async function admitPluginWebhookDeliveryV1(params: Readonly<{
                     handlerActionId: true,
                     sourceInstanceId: true,
                     providerConfirmedAt: true,
-                    route: { select: { currentCredential: { select: { credentialVersionId: true } } } },
+                    route: {
+                        select: {
+                            currentCredential: { select: { credentialVersionId: true } },
+                            previousCredential: {
+                                select: {
+                                    credentialVersionId: true,
+                                    state: true,
+                                    acceptUntil: true,
+                                },
+                            },
+                        },
+                    },
                 },
             });
             if (
@@ -307,6 +318,23 @@ export async function admitPluginWebhookDeliveryV1(params: Readonly<{
                 || endpoint.handlerActionId === null
                 || endpoint.sourceInstanceId === null
             ) {
+                return { kind: "endpointUnavailable" };
+            }
+
+            // Verification streams the request before this transaction. Recheck
+            // the exact credential membership at durable admission so retiring
+            // a credential cannot race an already verified request into custody.
+            const previousCredential = endpoint.route.previousCredential;
+            const credentialStillAccepted = (
+                endpoint.route.currentCredential?.credentialVersionId === params.credentialVersionId
+                || (
+                    previousCredential?.credentialVersionId === params.credentialVersionId
+                    && previousCredential.state === "previous"
+                    && previousCredential.acceptUntil !== null
+                    && previousCredential.acceptUntil.getTime() > now.getTime()
+                )
+            );
+            if (!credentialStillAccepted) {
                 return { kind: "endpointUnavailable" };
             }
 

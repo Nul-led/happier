@@ -636,6 +636,10 @@ describe("automationCrudService (integration)", () => {
         expect(first).toMatchObject({
             triggerId: null, causeKind: "manual", causeTriggerKind: null, state: "queued",
         });
+        expect(first).toMatchObject({
+            occurrenceKey: expect.any(String),
+            legacyManualIdempotencyKey: null,
+        });
         expect(replay?.id).toBe(first?.id);
         expect(replay?.causeOccurredAt).toEqual(first?.causeOccurredAt);
         await expect(db.automationRun.count({ where: { automationId: created.id } }))
@@ -665,6 +669,41 @@ describe("automationCrudService (integration)", () => {
             automationId: created.id,
             idempotencyKey: "ci-build-45",
         })).rejects.toBeInstanceOf(AutomationDisabledError);
+    });
+
+    it("keeps released V2 manual retries on their predecessor key without a canonical-key dual write", async () => {
+        const account = await db.account.create({
+            data: { encryptionMode: "plain" }, select: { id: true },
+        });
+        const legacy = await createAutomation({
+            accountId: account.id,
+            requireV2DefinitionRepresentability: true,
+            input: {
+                name: "V2 manual retry",
+                enabled: true,
+                schedule: { kind: "interval", everyMs: 60_000, timezone: null },
+                targetType: "new_session",
+                templateCiphertext: legacyTemplateEnvelope(),
+                assignments: [{ machineId: await seedExecutionMachine(account.id) }],
+            },
+        });
+        const first = await runAutomationNow({
+            accountId: account.id,
+            automationId: legacy.id,
+            idempotencyKey: "released-v2-manual",
+            requireV2DefinitionRepresentability: true,
+        });
+        const replay = await runAutomationNow({
+            accountId: account.id,
+            automationId: legacy.id,
+            idempotencyKey: "released-v2-manual",
+            requireV2DefinitionRepresentability: true,
+        });
+        expect(first).toMatchObject({
+            occurrenceKey: null,
+            legacyManualIdempotencyKey: "released-v2-manual",
+        });
+        expect(replay?.id).toBe(first?.id);
     });
 
     it("soft-deletes a definition without rewriting its admitted Run cause", async () => {

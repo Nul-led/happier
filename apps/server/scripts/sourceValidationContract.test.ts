@@ -31,4 +31,10 @@ describe('server source validation', () => {
             expect(config.resolve?.alias ?? []).toEqual([]);
         }
     });
+
+    it('keeps the source-built Home Iroh test out of the ordinary integration lane', () => {
+        expect(integrationConfig.test?.exclude).toContain(
+            'sources/app/iroh/homeIrohEndpoint.real.integration.test.ts',
+        );
+    });
 });

@@ -5,9 +5,15 @@ import { log } from "@/utils/logging/log";
 import { auth, type VerifiedApiTokenPrincipal } from "@/app/auth/auth";
 import { enforceLoginEligibility } from "@/app/auth/enforceLoginEligibility";
 import { captureAccountStoredContentCompatibilityForHttpRequest } from "@/app/clientCompatibility/accountStoredContentCompatibility";
-import { redactPublicShareCapabilityUrl } from "@happier-dev/protocol";
 import {
-    isApiTokenDeniedForRoute,
+    ACCOUNT_DIRECTORY_ERROR_CODES_V1,
+    AuthTokenProvenanceSchema,
+    redactPublicShareCapabilityUrl,
+    type AuthTokenKind,
+    type AuthTokenProvenance,
+} from "@happier-dev/protocol";
+import {
+    isRestrictedAuthTokenDeniedForRoute,
     PRESENT_USER_REQUIRED_ERROR,
 } from "./apiTokenRouteAdmission";
 
@@ -32,34 +38,20 @@ type VerifiedTokenProvenance = Readonly<{
     apiTokenPrincipal?: VerifiedApiTokenPrincipal;
 }>;
 
-function resolveVerifiedAuthTokenKind(verified: VerifiedTokenProvenance): "account" | "terminal" | "api_token" {
-    if (verified.authTokenKind === "api_token") {
-        return "api_token";
-    }
-    // Terminal authorization is minted only with the verified `{ session }` token
-    // extra. This is server-verified token provenance, never caller-provided HTTP
-    // metadata, so destructive routes can fail closed for daemon credentials.
-    if (typeof verified.extras !== "object" || verified.extras === null || Array.isArray(verified.extras)) {
-        return "account";
-    }
-    return typeof (verified.extras as Readonly<Record<string, unknown>>).session === "string"
-        ? "terminal"
-        : "account";
-}
-
-function resolveVerifiedAuthAuthority(
+function resolveVerifiedAuthProvenance(
     verified: VerifiedTokenProvenance,
-    tokenKind: "account" | "terminal" | "api_token",
-): "present_user" | "account_automation" {
-    if (verified.authority === "present_user" || verified.authority === "account_automation") {
-        return verified.authority;
-    }
-    return tokenKind === "account" ? "present_user" : "account_automation";
+): AuthTokenProvenance | null {
+    const parsed = AuthTokenProvenanceSchema.safeParse({
+        v: 1,
+        kind: verified.authTokenKind,
+        authority: verified.authority,
+    });
+    return parsed.success ? parsed.data : null;
 }
 
 function resolveVerifiedApiTokenPrincipal(
     verified: VerifiedTokenProvenance,
-    tokenKind: "account" | "terminal" | "api_token",
+    tokenKind: AuthTokenKind,
 ): VerifiedApiTokenPrincipal | null {
     if (tokenKind !== "api_token") return null;
     const principal = verified.apiTokenPrincipal;
@@ -97,11 +89,29 @@ export function enableAuthentication(app: Fastify) {
             }
 
             const token = authHeader.substring(7);
-            const verified = await auth.verifyToken(token);
+            // A pre-marker credential is an ordinary-Home compatibility input,
+            // never a Directory credential. Directory routes therefore use
+            // only the strict current verifier; every other HTTP route may
+            // fall back to the explicitly named legacy reader.
+            const verified = await auth.verifyToken(token)
+                ?? (request.routeOptions?.config?.allowAccountDirectoryToken === true
+                    ? null
+                    : await auth.verifyLegacyHomeToken(token));
             if (!verified) {
                 log({ module: 'auth-decorator' }, `Auth failed - invalid token`);
                 return sendInvalidConnectionCredentialFailure(request, reply);
             }
+
+            // Auth provenance is a closed, server-verified contract. Do this
+            // before login eligibility or any route handler can observe the
+            // subject, so missing/unknown/future markers cannot default to an
+            // ordinary Account credential.
+            const provenance = resolveVerifiedAuthProvenance(verified);
+            if (!provenance) {
+                return sendInvalidConnectionCredentialFailure(request, reply);
+            }
+            const tokenKind = provenance.kind;
+            const authority = provenance.authority;
 
             const eligibility = await enforceLoginEligibility({ accountId: verified.userId, env: process.env });
             if (!eligibility.ok) {
@@ -122,15 +132,17 @@ export function enableAuthentication(app: Fastify) {
                 log({ module: 'auth-decorator' }, `Auth success - user: ${verified.userId}`);
             }
             request.userId = verified.userId;
-            const tokenKind = resolveVerifiedAuthTokenKind(verified);
             request.authTokenKind = tokenKind;
-            request.authAuthority = resolveVerifiedAuthAuthority(verified, tokenKind);
+            request.authAuthority = authority;
             const apiTokenPrincipal = resolveVerifiedApiTokenPrincipal(verified, tokenKind);
             if (tokenKind === "api_token" && !apiTokenPrincipal) {
                 return sendInvalidConnectionCredentialFailure(request, reply);
             }
-            if (isApiTokenDeniedForRoute(request)) {
-                return reply.code(403).send({ error: PRESENT_USER_REQUIRED_ERROR });
+            if (isRestrictedAuthTokenDeniedForRoute(request)) {
+                const error = request.routeOptions?.config?.allowAccountDirectoryToken === true
+                    ? ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidRequest
+                    : PRESENT_USER_REQUIRED_ERROR;
+                return reply.code(403).send({ error });
             }
             if (apiTokenPrincipal) {
                 request.apiTokenPrincipal = apiTokenPrincipal;

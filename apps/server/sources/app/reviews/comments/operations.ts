@@ -4,6 +4,7 @@ import {
     reviewCommentMutationInputWithoutEventEnvelopeV1,
     ReviewCommentV1Schema,
     stringifyReviewCommentPrincipalCanonicalJsonV1,
+    validateReviewCommentPublicationResultAgainstPlanV1,
     type ReviewCommentActorRefV1,
     type ReviewCommentAttachEvidenceRequestV1,
     type ReviewCommentAttachEvidenceResponseV1,
@@ -727,9 +728,12 @@ export function createReviewCommentOperations(
             }
             return { bulkActionId, updated, failed };
         },
-        async claimPublicationDispatch(params) {
-            const canonicalTarget = reviewCommentPublicationTargetJson(params.input);
-            const canonicalPlan = stringifyReviewCommentPrincipalCanonicalJsonV1(params.input);
+        async claimPublicationDispatch(
+            params: ReviewCommentMutationOperationParams<ReviewCommentClaimPublicationDispatchRequestV1>,
+        ): Promise<ReviewCommentClaimPublicationDispatchResponseV1> {
+            const { settlement, ...publicationPlan } = params.input;
+            const canonicalTarget = reviewCommentPublicationTargetJson(publicationPlan);
+            const canonicalPlan = stringifyReviewCommentPrincipalCanonicalJsonV1(publicationPlan);
             const publicationPlanId = reviewCommentPublicationDigest("plan", params.accountId, canonicalPlan);
             const targetKey = reviewCommentPublicationDigest("target", params.accountId, canonicalTarget);
             const entries = params.input.entries.map((entry) => ({
@@ -751,6 +755,35 @@ export function createReviewCommentOperations(
                         publicationPlanId,
                     ),
                 };
+            let validatedSettlement = settlement;
+            if (settlement !== undefined) {
+                try {
+                    validatedSettlement = {
+                        dispatchToken: settlement.dispatchToken,
+                        result: validateReviewCommentPublicationResultAgainstPlanV1(
+                            publicationPlan,
+                            {
+                                disposition: "reconcile",
+                                dispatchToken: null,
+                                publicationPlanId,
+                                entries,
+                                verdict,
+                                instructions: {
+                                    entries: entries.map(() => "reconcile" as const),
+                                    verdict: verdict === null ? null : "reconcile",
+                                },
+                                priorResult: null,
+                            },
+                            settlement.result,
+                        ),
+                    };
+                } catch {
+                    throw new ReviewCommentOperationError(
+                        "review_comment_idempotency_conflict",
+                        "Publication completion does not match its frozen plan",
+                    );
+                }
+            }
             const claim = await store.claimPublicationDispatch({
                 accountId: params.accountId,
                 entries: params.input.entries.map((entry, index) => ({
@@ -762,13 +795,21 @@ export function createReviewCommentOperations(
                 targetKey,
                 target: params.input.target,
                 publicationPlanId,
+                dispatchToken: runtime.createId("review-publication-dispatch"),
+                ...(validatedSettlement === undefined ? {} : { settlement: validatedSettlement }),
                 createdAt: runtime.now(),
             });
             return {
-                disposition: claim.claimed ? "dispatch" : "reconcile",
+                disposition: claim.disposition,
+                dispatchToken: claim.dispatchToken,
                 publicationPlanId: claim.publicationPlanId,
                 entries,
                 verdict,
+                instructions: {
+                    entries: [...claim.instructions.entries],
+                    verdict: claim.instructions.verdict,
+                },
+                priorResult: claim.priorResult,
             };
         },
     };

@@ -45,6 +45,33 @@ describe("registerApiRoutes", () => {
         expect(app.routes.has("POST /v1/plugins/webhooks/:opaqueRouteId")).toBe(true);
         expect(app.routes.has("GET /v2/session-organization")).toBe(true);
         expect(app.routes.has("PUT /v2/session-organization/pins/:sessionId")).toBe(true);
+
+        const accountDirectoryOptIns = [...app.routes.entries()]
+            .filter(([, route]) =>
+                route.opts.config?.allowAccountDirectoryToken === true)
+            .map(([route]) => route)
+            .sort();
+        expect(accountDirectoryOptIns).toEqual([
+            "DELETE /v1/account-directory/homes/:homeServerIdentityId",
+            "GET /v1/account-directory/homes",
+            "GET /v1/account-directory/me",
+            "PATCH /v1/account-directory/homes/preferred",
+            "POST /v1/account-directory/homes/:homeServerIdentityId/login-assertion",
+            "PUT /v1/account-directory/homes/:homeServerIdentityId",
+        ]);
+        for (const ordinaryRoute of [
+            "GET /v1/auth/ping",
+            "GET /v1/machines",
+            "GET /v1/sessions",
+            "GET /v1/artifacts",
+            "POST /v1/auth/api-tokens/list",
+        ]) {
+            expect(app.routes.has(ordinaryRoute)).toBe(true);
+            expect(
+                app.routes.get(ordinaryRoute)?.opts.config
+                    ?.allowAccountDirectoryToken,
+            ).not.toBe(true);
+        }
     });
 
     it("routes API requests on preview hosts to registered API handlers before local preview fallback", async () => {

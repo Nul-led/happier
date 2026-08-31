@@ -2022,6 +2022,40 @@ describe("Automation Event admission", () => {
         await expect(db.automationRun.count({ where: { accountId: ACCOUNT_ID } })).resolves.toBe(1);
     });
 
+    it("does not rejoin plain Event evidence retained under another Automation", async () => {
+        await seed();
+        const originalInput = input({ occurrenceId: "plain-automation-identity" });
+        const admitted = await admitAutomationEventV1({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: originalInput,
+        });
+        const runId = (admitted.results[0] as { runId: string }).runId;
+        await db.automation.create({
+            data: {
+                id: SECOND_AUTOMATION_ID,
+                accountId: ACCOUNT_ID,
+                name: "Wrong retained Run parent",
+                enabled: false,
+                targetType: "new_session",
+                templateCiphertext: strictEventDefinitionRecipe({ prompt: "other" }),
+                templateVersion: 1,
+            },
+        });
+        await db.automationRun.update({
+            where: { id: runId },
+            data: { automationId: SECOND_AUTOMATION_ID },
+        });
+
+        await expect(admitAutomationEventV1({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: originalInput,
+        })).resolves.toEqual({
+            results: [{ kind: "blocked", reason: "occurrenceConflict", checkpointSafe: false }],
+        });
+    });
+
     it("rejoins one concurrent matching Event occurrence after the unique race and conflicts on changed evidence", async () => {
         await seed();
 
@@ -2403,6 +2437,31 @@ describe("Automation Event admission", () => {
             hostEvidence,
         })).resolves.toEqual({
             results: [{ kind: "rejoined", runId: existingRunId, checkpointSafe: true }],
+            continuation: { kind: "ready", accountCurrentness: e2ee.accountCurrentness },
+        });
+
+        await db.automation.create({
+            data: {
+                id: SECOND_AUTOMATION_ID,
+                accountId: ACCOUNT_ID,
+                name: "Wrong encrypted retained Run parent",
+                enabled: false,
+                targetType: "new_session",
+                templateCiphertext: e2eeRecipe,
+                templateVersion: 1,
+            },
+        });
+        await db.automationRun.update({
+            where: { id: existingRunId },
+            data: { automationId: SECOND_AUTOMATION_ID },
+        });
+        await expect(admitAutomationEventV1Raw({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: originalInput,
+            hostEvidence,
+        })).resolves.toEqual({
+            results: [{ kind: "blocked", reason: "occurrenceConflict", checkpointSafe: false }],
             continuation: { kind: "ready", accountCurrentness: e2ee.accountCurrentness },
         });
 

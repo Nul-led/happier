@@ -3360,6 +3360,44 @@ export function automationRunCustodyTerminalWhere() {
     };
 }
 
+/**
+ * Releasing a Run can change checkpoint-retirement truth only for a tombstoned
+ * Event trigger in a still-live Automation. A deleted parent is finalized by
+ * finalizeDeletedAutomationsWithoutRetainedRunsTx, which advances the catalog
+ * once for that separate physical-deletion transition.
+ */
+export async function advanceAutomationEventCatalogForReleasedRetiredRunsTx(params: Readonly<{
+    tx: Tx;
+    accountId: string;
+    releasedRunTriggerIds: readonly string[];
+}>): Promise<void> {
+    const triggerIds = [...new Set(params.releasedRunTriggerIds)];
+    if (triggerIds.length === 0) return;
+    const retiredEventTriggers = await params.tx.automationTrigger.findMany({
+        where: {
+            id: { in: triggerIds },
+            kind: "pluginEvent",
+            deletedAt: { not: null },
+            automation: { accountId: params.accountId, deletedAt: null },
+        },
+        select: { id: true },
+    });
+    if (retiredEventTriggers.length === 0) return;
+    const remainingTriggerIds = new Set((await params.tx.automationRun.findMany({
+        where: {
+            accountId: params.accountId,
+            triggerId: { in: retiredEventTriggers.map((trigger) => trigger.id) },
+        },
+        select: { triggerId: true },
+    })).flatMap((run) => run.triggerId === null ? [] : [run.triggerId]));
+    if (retiredEventTriggers.every((trigger) => remainingTriggerIds.has(trigger.id))) return;
+    await ensureAutomationEventCatalogStateTx({
+        tx: params.tx,
+        accountId: params.accountId,
+        projectionChanged: true,
+    });
+}
+
 export type ClearAutomationRunHistoryResult =
     | Readonly<{ status: "not_found" }>
     | Readonly<{ status: "cleared"; clearedRuns: number }>;
@@ -3388,6 +3426,14 @@ export async function clearAutomationRunHistory(params: {
         if (!automation) {
             return { status: "not_found" };
         }
+        const candidates = await tx.automationRun.findMany({
+            where: {
+                accountId: params.accountId,
+                automationId: automation.id,
+                ...automationRunCustodyTerminalWhere(),
+            },
+            select: { triggerId: true },
+        });
         const cleared = await tx.automationRun.deleteMany({
             where: {
                 accountId: params.accountId,
@@ -3396,6 +3442,13 @@ export async function clearAutomationRunHistory(params: {
             },
         });
         if (cleared.count > 0) {
+            await advanceAutomationEventCatalogForReleasedRetiredRunsTx({
+                tx,
+                accountId: params.accountId,
+                releasedRunTriggerIds: candidates.flatMap((candidate) => (
+                    candidate.triggerId === null ? [] : [candidate.triggerId]
+                )),
+            });
             const cursor = await markAutomationChangedTx(tx, {
                 accountId: params.accountId,
                 automationId: automation.id,
@@ -5291,7 +5344,14 @@ export async function finalizeDeletedAutomationsWithoutRetainedRunsTx(params: Re
         },
         orderBy: { deletedAt: "asc" },
         take: params.limit,
-        select: { id: true },
+        select: {
+            id: true,
+            triggers: {
+                where: { kind: "pluginEvent" },
+                select: { id: true },
+                take: 1,
+            },
+        },
     });
     if (candidates.length === 0) return 0;
     const deleted = await params.tx.automation.deleteMany({
@@ -5302,6 +5362,16 @@ export async function finalizeDeletedAutomationsWithoutRetainedRunsTx(params: Re
             runs: { none: {} },
         },
     });
+    if (deleted.count > 0 && candidates.some((candidate) => candidate.triggers.length > 0)) {
+        // A soft-deleted Event Automation retains checkpoint custody while a
+        // historical Run still names its trigger. Its final physical deletion
+        // is the exact retirement transition, so watchers must re-adopt.
+        await ensureAutomationEventCatalogStateTx({
+            tx: params.tx,
+            accountId: params.accountId,
+            projectionChanged: true,
+        });
+    }
     return deleted.count;
 }
 
@@ -5349,7 +5419,11 @@ export async function runAutomationNow(params: {
             accountId: params.accountId,
             now,
             cause: { kind: "manual", invokedAt: now.getTime() },
-            ...(idempotencyKey ? { manualIdempotencyKey: idempotencyKey } : {}),
+            ...(idempotencyKey
+                ? params.requireV2DefinitionRepresentability
+                    ? { legacyV2ManualIdempotencyKey: idempotencyKey }
+                    : { manualIdempotencyKey: idempotencyKey }
+                : {}),
         });
         if (admitted.kind === "ineligible") {
             if (admitted.reason === "automationNotFound") return null;
@@ -5412,8 +5486,8 @@ export async function listAutomationRuns(params: AutomationRunListParams | Autom
             : {}),
         select: automationRunV2ListItemSelect,
     });
-    const rows = params.requireV2RunRepresentability
-        ? await inTx(async (tx) => {
+    if (params.requireV2RunRepresentability) {
+        const rows = await inTx(async (tx) => {
             const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
             if (accountFence.status !== "ready") return [];
             const automationExists = await tx.automation.findFirst({
@@ -5425,40 +5499,46 @@ export async function listAutomationRuns(params: AutomationRunListParams | Autom
             });
             if (!automationExists) return null;
 
-            const representable = [] as Awaited<ReturnType<typeof readRows>>;
-            const scanSize = Math.max(50, (normalizedLimit + 1) * 2);
-            let scanCursor = params.cursor;
-            while (representable.length <= normalizedLimit) {
-                const candidates = await readRows(tx, scanCursor, scanSize);
-                for (const run of candidates) {
-                    if (isAutomationRunV2HistoryRepresentable(run)) {
-                        representable.push(run);
-                        if (representable.length > normalizedLimit) break;
-                    }
-                }
-                if (representable.length > normalizedLimit || candidates.length < scanSize) break;
-                scanCursor = candidates[candidates.length - 1]?.id;
-                if (!scanCursor) break;
-            }
-            return representable;
-        })
-        : await db.automationRun.findMany({
-            where: {
-                accountId: params.accountId,
-                automationId: params.automationId,
-            },
-            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-            take: normalizedLimit + 1,
-            ...(params.cursor
-                ? {
-                    cursor: { id: params.cursor },
-                    skip: 1,
-                }
-                : {}),
-            select: automationRunV3ListItemSelect,
+            // V2 history advances through one bounded raw Run window. Filtering
+            // after that read preserves the exact raw cursor and cannot scan
+            // arbitrarily far across current-only V3 rows to fill a page.
+            return await readRows(tx, params.cursor);
         });
+        if (rows === null) return null;
+        const hasNext = rows.length > normalizedLimit;
+        const rawWindow = hasNext ? rows.slice(0, normalizedLimit) : rows;
+        const resultRows = rawWindow.filter(isAutomationRunV2HistoryRepresentable);
+        const currentTriggerIds = new Set((await db.automationTrigger.findMany({
+            where: {
+                id: { in: resultRows.flatMap((run) => run.triggerId ? [run.triggerId] : []) },
+                deletedAt: null,
+            },
+            select: { id: true },
+        })).map((trigger) => trigger.id));
+        return {
+            runs: resultRows.map((run) => ({
+                ...run,
+                triggerRetired: run.triggerId !== null && !currentTriggerIds.has(run.triggerId),
+            })),
+            nextCursor: hasNext ? rawWindow[rawWindow.length - 1]?.id ?? null : null,
+        };
+    }
 
-    if (rows === null) return null;
+    const rows = await db.automationRun.findMany({
+        where: {
+            accountId: params.accountId,
+            automationId: params.automationId,
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: normalizedLimit + 1,
+        ...(params.cursor
+            ? {
+                cursor: { id: params.cursor },
+                skip: 1,
+            }
+            : {}),
+        select: automationRunV3ListItemSelect,
+    });
     const hasNext = rows.length > normalizedLimit;
     const resultRows = hasNext ? rows.slice(0, normalizedLimit) : rows;
     const nextCursor = hasNext ? resultRows[resultRows.length - 1]?.id ?? null : null;

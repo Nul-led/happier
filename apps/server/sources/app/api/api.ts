@@ -49,11 +49,14 @@ import { V2_SESSION_LIST_SERVER_TIMING_REQUEST_HEADER } from "./routes/session/v
 import { startAutomationReplyHandoffWorker } from "@/app/automations/automationReplyHandoffWorker";
 import { startAutomationScheduleWorker } from "@/app/automations/automationScheduleWorker";
 import { registerExternalActionRoutes } from "./routes/actions/registerExternalActionRoutes";
-import { createHomeSearchService } from "@/app/search/homeSearchService";
+import { startHomeSearchLifecycle, type HomeSearchLifecycle } from "@/app/search/homeSearchLifecycle";
+import { readCanonicalSessionMessagesPage } from "@/app/search/homeSearchCanonicalSessionMessages";
 import { registerHomeSearchRoutes } from "@/app/search/homeSearchRoutes";
+import { resolveHomeSearchRuntimeConfig } from "@/app/search/homeSearchCapability";
+import { resolveHomeSearchDbPath } from "@/app/search/homeSearchDb";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { db } from "@/storage/db";
-import { join } from "node:path";
+import { createV2SessionListVisibilityWhere } from "./routes/session/v2SessionListRows";
 
 export function resolveApiListenHost(env: Record<string, string | undefined>): string {
     const host = (env.HAPPIER_SERVER_HOST ?? env.HAPPY_SERVER_HOST ?? '').toString().trim();
@@ -102,7 +105,9 @@ export function enableContentTypeParsers(app: Pick<FastifyInstance, 'addContentT
     app.addContentTypeParser('*', { parseAs: 'string' }, parseUnsupportedBody);
 }
 
-export function registerApiRoutes(typed: Fastify): void {
+export function registerApiRoutes(typed: Fastify, params: Readonly<{
+    resolveHomeSearchCapability?: () => ReturnType<HomeSearchLifecycle['capability']> | undefined;
+}> = {}): void {
     authRoutes(typed);
     pushRoutes(typed);
     sessionRoutes(typed);
@@ -114,7 +119,7 @@ export function registerApiRoutes(typed: Fastify): void {
     accessKeysRoutes(typed);
     devRoutes(typed);
     versionRoutes(typed);
-    featuresRoutes(typed);
+    featuresRoutes(typed, { resolveHomeSearchCapability: params.resolveHomeSearchCapability });
     bugReportDiagnosticsRoutes(typed);
     sessionPendingRoutes(typed);
     voiceRoutes(typed);
@@ -174,29 +179,39 @@ export async function startApi() {
     // server HTTP routes can open PMS relay tunnels without a test-only seam.
     startSocket(typed);
 
+    // Home search construction is intentionally I/O-free. Opening and reconciliation start only after listen.
+    const homeSearchConfig = resolveHomeSearchRuntimeConfig(process.env);
+    const homeSearch = homeSearchConfig
+        ? startHomeSearchLifecycle({
+            dbPath: resolveHomeSearchDbPath(homeSearchConfig.dataDir),
+            homeServerIdentityId: async () => await getOrCreateServerIdentityId(process.env),
+            storagePolicy: homeSearchConfig.storagePolicy,
+            readCanonicalMessagesPage: readCanonicalSessionMessagesPage,
+        })
+        : null;
+
     // Routes
-    registerApiRoutes(typed);
-    let homeSearchService: Awaited<ReturnType<typeof createHomeSearchService>> | null = null;
-    if ((process.env.HAPPIER_DB_PROVIDER ?? process.env.HAPPY_DB_PROVIDER) === 'sqlite'
-        && (process.env.HAPPIER_FILES_BACKEND ?? process.env.HAPPY_FILES_BACKEND) === 'local') {
-        const dataDir = String(process.env.HAPPIER_SERVER_LIGHT_DATA_DIR ?? process.env.HAPPY_SERVER_LIGHT_DATA_DIR ?? '').trim();
-        if (dataDir) {
-            homeSearchService = await createHomeSearchService({
-                dbPath: join(dataDir, 'derived', 'search.sqlite'),
-                homeServerIdentityId: await getOrCreateServerIdentityId(process.env),
-                storagePolicy: String(process.env.HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY ?? process.env.HAPPY_FEATURE_ENCRYPTION__STORAGE_POLICY ?? 'plaintext_only'),
-            });
-            registerHomeSearchRoutes(typed, {
-                service: homeSearchService,
-                resolveVisibleSessionIds: async (userId) => (await db.session.findMany({ where: { accountId: userId }, select: { id: true } })).map((session) => session.id),
-            });
-            onShutdown('home-search', async () => { homeSearchService?.close(); });
-        }
+    registerApiRoutes(typed, {
+        resolveHomeSearchCapability: homeSearch ? () => homeSearch.capability() : undefined,
+    });
+    if (homeSearch) {
+        registerHomeSearchRoutes(typed, {
+            service: homeSearch,
+            resolveVisibleSessionIds: async (userId) => (
+                await db.session.findMany({
+                    where: createV2SessionListVisibilityWhere({ userId }),
+                    select: { id: true },
+                })
+            ).map((session) => session.id),
+        });
+        onShutdown('home-search', async () => { await homeSearch.stop(); });
     }
 
     // Start HTTP 
     const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3005;
     await app.listen({ port, host: resolveApiListenHost(process.env) });
+    // Home search starts after the API is initialized and stops before the DB shutdown phase.
+    homeSearch?.start();
     const automationReplyHandoffWorker = startAutomationReplyHandoffWorker({
         dispatch: async (request) => await typed.forwardAutomationReplyHandoffToMachine(request),
     });
@@ -213,4 +228,5 @@ export async function startApi() {
 
     // End
     log('API ready on port http://localhost:' + port);
+    return app;
 }

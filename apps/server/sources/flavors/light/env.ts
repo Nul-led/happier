@@ -3,7 +3,10 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, win32 as win32Path } from 'node:path';
 import { homedir as defaultHomedir, tmpdir } from 'node:os';
-import { renderPrismaCompatibleSqliteDatabaseUrl } from '@happier-dev/cli-common/firstPartyRuntime';
+import {
+    renderPrismaCompatibleSqliteDatabaseUrl,
+    resolveManagedServerLightPathEnvValue,
+} from '@happier-dev/cli-common/firstPartyRuntime';
 import {
     expandHomeDirPath,
     resolveHomeDirFromEnvironment,
@@ -17,7 +20,10 @@ function isBunfsHomeDir(path: string): boolean {
 }
 
 export function resolveLightDataDir(env: LightEnv, opts?: { homedir?: string }): string {
-    const fromEnv = expandHomeDirPath((env.HAPPY_SERVER_LIGHT_DATA_DIR ?? env.HAPPIER_SERVER_LIGHT_DATA_DIR)?.trim() ?? '', env);
+    const fromEnv = expandHomeDirPath(
+        resolveManagedServerLightPathEnvValue(env, 'HAPPIER_SERVER_LIGHT_DATA_DIR', 'HAPPY_SERVER_LIGHT_DATA_DIR').trim(),
+        env,
+    );
     if (fromEnv) {
         return fromEnv;
     }
@@ -31,7 +37,10 @@ export function resolveLightDataDir(env: LightEnv, opts?: { homedir?: string }):
 }
 
 export function resolveLightFilesDir(env: LightEnv, dataDir: string): string {
-    const fromEnv = expandHomeDirPath((env.HAPPY_SERVER_LIGHT_FILES_DIR ?? env.HAPPIER_SERVER_LIGHT_FILES_DIR)?.trim() ?? '', env);
+    const fromEnv = expandHomeDirPath(
+        resolveManagedServerLightPathEnvValue(env, 'HAPPIER_SERVER_LIGHT_FILES_DIR', 'HAPPY_SERVER_LIGHT_FILES_DIR').trim(),
+        env,
+    );
     if (fromEnv) {
         return fromEnv;
     }
@@ -39,7 +48,10 @@ export function resolveLightFilesDir(env: LightEnv, dataDir: string): string {
 }
 
 export function resolveLightDatabaseDir(env: LightEnv, dataDir: string): string {
-    const fromEnv = expandHomeDirPath((env.HAPPY_SERVER_LIGHT_DB_DIR ?? env.HAPPIER_SERVER_LIGHT_DB_DIR)?.trim() ?? '', env);
+    const fromEnv = expandHomeDirPath(
+        resolveManagedServerLightPathEnvValue(env, 'HAPPIER_SERVER_LIGHT_DB_DIR', 'HAPPY_SERVER_LIGHT_DB_DIR').trim(),
+        env,
+    );
     if (fromEnv) {
         return fromEnv;
     }
@@ -83,9 +95,9 @@ export function applyLightDefaultEnv(env: LightEnv, opts?: { homedir?: string })
     env.HAPPY_SERVER_LIGHT_DATA_DIR = dataDir;
     env.HAPPY_SERVER_LIGHT_FILES_DIR = filesDir;
     env.HAPPY_SERVER_LIGHT_DB_DIR = dbDir;
-    env.HAPPIER_SERVER_LIGHT_DATA_DIR ??= dataDir;
-    env.HAPPIER_SERVER_LIGHT_FILES_DIR ??= filesDir;
-    env.HAPPIER_SERVER_LIGHT_DB_DIR ??= dbDir;
+    env.HAPPIER_SERVER_LIGHT_DATA_DIR = dataDir;
+    env.HAPPIER_SERVER_LIGHT_FILES_DIR = filesDir;
+    env.HAPPIER_SERVER_LIGHT_DB_DIR = dbDir;
 
     env.PUBLIC_URL = resolveLightPublicUrl(env);
 }

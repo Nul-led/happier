@@ -140,7 +140,7 @@ describe("plugin webhook present-user endpoint routes", () => {
             app,
             "POST",
             PluginWebhookActionHttpPathsV1["plugin.webhook.endpoint.read"],
-        )({ userId: "account-authenticated", authAuthority: "present_user", body: input }, reply);
+        )({ userId: "account-authenticated", authAuthority: "present_user", authTokenKind: "account", body: input }, reply);
 
         expect(read).toHaveBeenCalledWith({ accountId: "account-authenticated", input });
         expect(reply.headers).toEqual({ "Cache-Control": "no-store" });

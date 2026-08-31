@@ -284,6 +284,289 @@ describe("review comment durable storage", () => {
         expect(Number(row?.count ?? 0)).toBe(1);
     });
 
+    it("releases only the failed and unattempted suffix after a partial publication", async () => {
+        const account = await db.account.create({
+            data: {
+                id: "account-review-comment-publication-partial",
+                publicKey: "pk-review-comment-publication-partial",
+                encryptionMode: "plain",
+            },
+            select: { id: true },
+        });
+        const create = getRouteHandler(registerDefaultRoutes(), "POST", "/v1/reviews/comments");
+        const comments = await Promise.all(["first", "second", "third"].map(async (label) => (
+            ReviewCommentCreateResponseV1Schema.parse(await create({
+                userId: account.id,
+                body: {
+                    projectId: "project-1",
+                    anchor: { kind: "line", filePath: `src/${label}.ts`, line: 2 },
+                    snapshot: textSnapshot(),
+                    body: `${label} comment`,
+                    clientMutationId: `mutation-publication-${label}`,
+                },
+            }, createReplyStub())).comment
+        )));
+        let dispatchSequence = 0;
+        const operations = createReviewCommentOperations(createSqlReviewCommentStore(), {
+            now: () => 1234,
+            createId: (prefix) => `${prefix}-${dispatchSequence += 1}`,
+        });
+        const request = {
+            accountId: account.id,
+            actor: { kind: "user", userId: account.id } as const,
+            input: {
+                target: {
+                    providerId: "github",
+                    configuredAccountId: "github-account-1",
+                    entryRef: {
+                        sourceId: "github",
+                        kindId: "pull-request",
+                        collisionScope: "github:repository-1",
+                        entryId: "42",
+                    },
+                    subtarget: null,
+                },
+                baseRevision: "base-1",
+                headRevision: "head-1",
+                entries: comments.map((comment, index) => ({
+                    happierCommentId: comment.id,
+                    expectedServerRevision: comment.serverRevision,
+                    anchor: comment.anchor,
+                    snapshot: textSnapshot(),
+                    body: `${["first", "second", "third"][index]!} comment`,
+                })),
+                verdict: { kind: "comment" as const, body: "Review summary" },
+            },
+        };
+
+        const first = await operations.claimPublicationDispatch(request);
+        expect(first).toMatchObject({
+            disposition: "dispatch",
+            instructions: {
+                entries: ["dispatch", "dispatch", "dispatch"],
+                verdict: "dispatch",
+            },
+            priorResult: null,
+        });
+        expect(first.dispatchToken).toEqual(expect.any(String));
+
+        await operations.claimPublicationDispatch({
+            ...request,
+            input: {
+                ...request.input,
+                settlement: {
+                    dispatchToken: first.dispatchToken,
+                    result: {
+                        publicationPlanId: first.publicationPlanId,
+                        entries: [
+                            { ...first.entries[0]!, outcome: { kind: "published" as const, externalRef: "native-1" } },
+                            { ...first.entries[1]!, outcome: { kind: "failed" as const, code: "provider/rejected" } },
+                            { ...first.entries[2]!, outcome: { kind: "skippedPriorFailure" as const } },
+                        ],
+                        verdict: {
+                            publicationCorrelationId: first.verdict!.publicationCorrelationId,
+                            outcome: { kind: "skippedPriorFailure" as const },
+                        },
+                    },
+                },
+            },
+        });
+
+        const retry = await operations.claimPublicationDispatch(request);
+        expect(retry).toMatchObject({
+            disposition: "dispatch",
+            instructions: {
+                entries: ["confirmed", "dispatch", "dispatch"],
+                verdict: "dispatch",
+            },
+            priorResult: {
+                entries: [
+                    { outcome: { kind: "published", externalRef: "native-1" } },
+                    { outcome: { kind: "failed", code: "provider/rejected" } },
+                    { outcome: { kind: "skippedPriorFailure" } },
+                ],
+                verdict: { outcome: { kind: "skippedPriorFailure" } },
+            },
+        });
+        expect(retry.dispatchToken).not.toBe(first.dispatchToken);
+    });
+
+    it("keeps an uncertain effect and its unattempted suffix reconciliation-only", async () => {
+        const account = await db.account.create({
+            data: {
+                id: "account-review-comment-publication-uncertain",
+                publicKey: "pk-review-comment-publication-uncertain",
+                encryptionMode: "plain",
+            },
+            select: { id: true },
+        });
+        const create = getRouteHandler(registerDefaultRoutes(), "POST", "/v1/reviews/comments");
+        const comments = await Promise.all(["first", "second", "third"].map(async (label) => (
+            ReviewCommentCreateResponseV1Schema.parse(await create({
+                userId: account.id,
+                body: {
+                    projectId: "project-1",
+                    anchor: { kind: "line", filePath: `src/${label}.ts`, line: 2 },
+                    snapshot: textSnapshot(),
+                    body: `${label} comment`,
+                    clientMutationId: `mutation-uncertain-${label}`,
+                },
+            }, createReplyStub())).comment
+        )));
+        let dispatchSequence = 0;
+        const operations = createReviewCommentOperations(createSqlReviewCommentStore(), {
+            now: () => 1234,
+            createId: (prefix) => `${prefix}-${dispatchSequence += 1}`,
+        });
+        const request = {
+            accountId: account.id,
+            actor: { kind: "user", userId: account.id } as const,
+            input: {
+                target: {
+                    providerId: "gitlab",
+                    configuredAccountId: "gitlab-account-1",
+                    entryRef: {
+                        sourceId: "gitlab",
+                        kindId: "merge-request",
+                        collisionScope: "gitlab:project-1",
+                        entryId: "42",
+                    },
+                    subtarget: null,
+                },
+                baseRevision: "base-1",
+                headRevision: "head-1",
+                entries: comments.map((comment, index) => ({
+                    happierCommentId: comment.id,
+                    expectedServerRevision: comment.serverRevision,
+                    anchor: comment.anchor,
+                    snapshot: textSnapshot(),
+                    body: `${["first", "second", "third"][index]!} comment`,
+                })),
+                verdict: null,
+            },
+        };
+        const first = await operations.claimPublicationDispatch(request);
+
+        await operations.claimPublicationDispatch({
+            ...request,
+            input: {
+                ...request.input,
+                settlement: {
+                    dispatchToken: first.dispatchToken,
+                    result: {
+                        publicationPlanId: first.publicationPlanId,
+                        entries: [
+                            { ...first.entries[0]!, outcome: { kind: "published" as const, externalRef: "native-1" } },
+                            { ...first.entries[1]!, outcome: { kind: "uncertain" as const } },
+                            { ...first.entries[2]!, outcome: { kind: "skippedPriorFailure" as const } },
+                        ],
+                        verdict: { kind: "notRequested" as const },
+                    },
+                },
+            },
+        });
+
+        const retry = await operations.claimPublicationDispatch(request);
+        expect(retry).toMatchObject({
+            disposition: "reconcile",
+            dispatchToken: null,
+            instructions: {
+                entries: ["confirmed", "reconcile", "held"],
+                verdict: null,
+            },
+            priorResult: {
+                entries: [
+                    { outcome: { kind: "published", externalRef: "native-1" } },
+                    { outcome: { kind: "uncertain" } },
+                    { outcome: { kind: "skippedPriorFailure" } },
+                ],
+            },
+        });
+    });
+
+    it("admits one concurrent retry and rejects a stale completion token", async () => {
+        const account = await db.account.create({
+            data: {
+                id: "account-review-comment-publication-retry",
+                publicKey: "pk-review-comment-publication-retry",
+                encryptionMode: "plain",
+            },
+            select: { id: true },
+        });
+        const create = getRouteHandler(registerDefaultRoutes(), "POST", "/v1/reviews/comments");
+        const comment = ReviewCommentCreateResponseV1Schema.parse(await create({
+            userId: account.id,
+            body: {
+                projectId: "project-1",
+                anchor: { kind: "line", filePath: "src/retry.ts", line: 2 },
+                snapshot: textSnapshot(),
+                body: "Retry this comment.",
+                clientMutationId: "mutation-publication-retry",
+            },
+        }, createReplyStub())).comment;
+        let dispatchSequence = 0;
+        const operations = createReviewCommentOperations(createSqlReviewCommentStore(), {
+            now: () => 1234,
+            createId: (prefix) => `${prefix}-${dispatchSequence += 1}`,
+        });
+        const request = {
+            accountId: account.id,
+            actor: { kind: "user", userId: account.id } as const,
+            input: {
+                target: {
+                    providerId: "bitbucket",
+                    configuredAccountId: "bitbucket-account-1",
+                    entryRef: {
+                        sourceId: "bitbucket",
+                        kindId: "pull-request",
+                        collisionScope: "bitbucket:repository-1",
+                        entryId: "42",
+                    },
+                    subtarget: null,
+                },
+                baseRevision: "base-1",
+                headRevision: "head-1",
+                entries: [{
+                    happierCommentId: comment.id,
+                    expectedServerRevision: comment.serverRevision,
+                    anchor: comment.anchor,
+                    snapshot: textSnapshot(),
+                    body: "Retry this comment.",
+                }],
+                verdict: null,
+            },
+        };
+        const first = await operations.claimPublicationDispatch(request);
+        const failedResult = {
+            publicationPlanId: first.publicationPlanId,
+            entries: [{
+                happierCommentId: first.entries[0]!.happierCommentId,
+                publicationCorrelationId: first.entries[0]!.publicationCorrelationId,
+                outcome: { kind: "failed" as const, code: "provider/rejected" },
+            }],
+            verdict: { kind: "notRequested" as const },
+        };
+        await operations.claimPublicationDispatch({
+            ...request,
+            input: { ...request.input, settlement: { dispatchToken: first.dispatchToken, result: failedResult } },
+        });
+
+        const concurrent = await Promise.all([
+            operations.claimPublicationDispatch(request),
+            operations.claimPublicationDispatch(request),
+        ]);
+        expect(concurrent.map((claim) => claim.disposition).sort()).toEqual(["dispatch", "reconcile"]);
+        const active = concurrent.find((claim) => claim.disposition === "dispatch")!;
+        expect(active.dispatchToken).not.toBe(first.dispatchToken);
+
+        await expect(operations.claimPublicationDispatch({
+            ...request,
+            input: { ...request.input, settlement: { dispatchToken: first.dispatchToken, result: failedResult } },
+        })).rejects.toMatchObject({ code: "review_comment_idempotency_conflict" });
+        const afterStaleCompletion = await operations.claimPublicationDispatch(request);
+        expect(afterStaleCompletion).toMatchObject({ disposition: "reconcile", dispatchToken: null });
+    });
+
     it("coalesces one frozen verdict plan while allowing a later verdict on the same head", async () => {
         const account = await db.account.create({
             data: {

@@ -1,5 +1,6 @@
 import { parseBooleanEnv, parseIntEnv } from "@/config/env";
 import { auth } from "@/app/auth/auth";
+import { isRestrictedAuthTokenKind } from "@/app/api/utils/apiTokenRouteAdmission";
 
 export type ApiRouteRateLimitConfig =
     | false
@@ -72,7 +73,10 @@ export function createApiRateLimitKeyGenerator(
         if (!token) return ipKey;
 
         try {
-            const verified = await auth.verifyToken(token);
+            const verified = await auth.verifyTokenForRoute(token);
+            if (isRestrictedAuthTokenKind(verified?.authTokenKind)) {
+                return ipKey;
+            }
             const userId = verified?.userId;
             if (typeof userId === "string") {
                 const trimmed = userId.trim();

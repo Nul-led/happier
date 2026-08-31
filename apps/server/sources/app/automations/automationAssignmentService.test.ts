@@ -4,6 +4,7 @@ const dbMocks = vi.hoisted(() => ({
     definitionAssignments: vi.fn(),
     runAssignments: vi.fn(),
     automations: vi.fn(),
+    triggers: vi.fn(),
 }));
 
 vi.mock("@/storage/db", () => ({
@@ -11,6 +12,7 @@ vi.mock("@/storage/db", () => ({
         automationAssignment: { findMany: dbMocks.definitionAssignments },
         automationRunAssignment: { findMany: dbMocks.runAssignments },
         automation: { findMany: dbMocks.automations },
+        automationTrigger: { findMany: dbMocks.triggers },
     },
 }));
 
@@ -27,6 +29,7 @@ describe("resolveAutomationAssignmentNextClaimAt", () => {
         dbMocks.definitionAssignments.mockResolvedValue([]);
         dbMocks.runAssignments.mockResolvedValue([]);
         dbMocks.automations.mockResolvedValue([]);
+        dbMocks.triggers.mockResolvedValue([]);
     });
 
     it("uses the earliest reachable schedule, queued/retry, or lease-recovery deadline", () => {

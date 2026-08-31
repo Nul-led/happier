@@ -58,9 +58,19 @@ function txFixture(params: Readonly<{
 }> = {}) {
     let recipe = params.recipe ?? strictRecipe({ templateVersion: 1, prompt: "current recipe" });
     let templateVersion = params.templateVersion ?? 1;
-    let assignments = (params.assignments ?? ["machine"]).map((assignment) => typeof assignment === "string"
-        ? { machineId: assignment, priority: 0 }
-        : assignment);
+    let assignments = (params.assignments ?? ["machine"]).map((assignment) => {
+        const value = typeof assignment === "string"
+            ? { machineId: assignment, priority: 0 }
+            : assignment;
+        return {
+            ...value,
+            machine: {
+                accountId: "account",
+                revokedAt: null,
+                replacedByMachineId: null,
+            },
+        };
+    });
     const triggers = [...(params.triggers ?? [])];
     const created: Array<Record<string, unknown>> = [];
     const runAssignments: Array<Record<string, unknown>> = [];
@@ -184,7 +194,14 @@ function txFixture(params: Readonly<{
         }>) {
             recipe = next.recipe;
             templateVersion = next.templateVersion;
-            assignments = [...next.assignments];
+            assignments = next.assignments.map((assignment) => ({
+                ...assignment,
+                machine: {
+                    accountId: "account",
+                    revokedAt: null,
+                    replacedByMachineId: null,
+                },
+            }));
         },
         editTrigger(triggerId: string, next: Readonly<{ revision: number; nextRunAt: Date }>) {
             const index = triggers.findIndex((trigger) => trigger.id === triggerId);

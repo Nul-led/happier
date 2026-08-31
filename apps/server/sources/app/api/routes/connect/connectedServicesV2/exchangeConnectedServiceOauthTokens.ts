@@ -5,6 +5,7 @@ import {
     decodeBase64,
     encodeBase64,
     BOX_BUNDLE_PUBLIC_KEY_BYTES,
+    isValidBoxBundlePublicKey,
     type ConnectedServiceId,
     CONNECTED_SERVICE_ERROR_CODES,
 } from "@happier-dev/protocol";
@@ -92,8 +93,8 @@ type ConnectedServiceOauthExchangeHandler = (params: Readonly<{
 
 function parseRecipientPublicKey(publicKeyB64Url: string): Uint8Array {
     const bytes = decodeBase64(publicKeyB64Url, "base64url");
-    if (bytes.length !== BOX_BUNDLE_PUBLIC_KEY_BYTES) {
-        throw new Error(`Invalid publicKey length: ${bytes.length}`);
+    if (bytes.length !== BOX_BUNDLE_PUBLIC_KEY_BYTES || !isValidBoxBundlePublicKey(bytes)) {
+        throw new Error("Invalid publicKey");
     }
     return bytes;
 }

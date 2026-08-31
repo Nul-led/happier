@@ -41,7 +41,7 @@ describe("auth (token epoch)", () => {
             data: { publicKey: "token-epoch-warm-cache" },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         expect(auth.getCacheStats().size).toBe(0);
 
         await expect(auth.verifyToken(token)).resolves.toMatchObject({ userId: account.id });
@@ -77,6 +77,30 @@ describe("auth (token epoch)", () => {
         await expect(auth.verifyToken(token)).resolves.toBeNull();
     });
 
+    it("rejects a cryptographically valid current-format token from a future epoch", async () => {
+        const account = await db.account.create({
+            data: { publicKey: "token-epoch-future" },
+            select: { id: true },
+        });
+        const generator = await privacyKit.createPersistentTokenGenerator({
+            service: "handy",
+            seed: MASTER_SECRET,
+        });
+        const token = await generator.new({
+            user: account.id,
+            extras: {
+                tokenEpoch: 1,
+                provenance: {
+                    v: 1,
+                    kind: "account",
+                    authority: "present_user",
+                },
+            },
+        });
+
+        await expect(auth.verifyToken(token)).resolves.toBeNull();
+    });
+
     it("treats the predecessor's no-epoch token as epoch zero before and after a zero-to-one bump", async () => {
         const account = await db.account.create({
             data: {
@@ -86,9 +110,12 @@ describe("auth (token epoch)", () => {
             select: { id: true },
         });
 
-        await expect(auth.verifyToken(LEGACY_NO_EPOCH_TOKEN)).resolves.toEqual({
+        await expect(auth.verifyLegacyHomeToken(LEGACY_NO_EPOCH_TOKEN)).resolves.toEqual({
             userId: account.id,
             extras: { provenance: "privacy-kit-0.0.25-node" },
+            authTokenKind: "account",
+            authority: "present_user",
+            legacy: true,
         });
 
         await db.account.update({
@@ -96,7 +123,7 @@ describe("auth (token epoch)", () => {
             data: { tokenEpoch: { increment: 1 } },
         });
 
-        await expect(auth.verifyToken(LEGACY_NO_EPOCH_TOKEN)).resolves.toBeNull();
+        await expect(auth.verifyLegacyHomeToken(LEGACY_NO_EPOCH_TOKEN)).resolves.toBeNull();
     });
 
     it("mints a token at the account's current epoch after a bump", async () => {
@@ -109,7 +136,7 @@ describe("auth (token epoch)", () => {
             data: { tokenEpoch: { increment: 1 } },
         });
 
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const generator = await privacyKit.createPersistentTokenGenerator({
             service: "handy",
             seed: MASTER_SECRET,
@@ -131,7 +158,7 @@ describe("auth (token epoch)", () => {
             data: { publicKey: "token-epoch-sign-out-everywhere" },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         await expect(auth.verifyToken(token)).resolves.toMatchObject({ userId: account.id });
 
         await expect(auth.signOutEverywhere(account.id)).resolves.toBe(1);

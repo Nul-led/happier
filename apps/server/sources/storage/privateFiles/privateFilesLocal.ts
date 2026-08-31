@@ -2,7 +2,7 @@ import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
 import { resolveLightDataDir } from "@/flavors/light/env";
-import { expandHomeDirPath } from "@happier-dev/cli-common/path";
+import { resolvePersonalHomePrivateFilesDir } from "@happier-dev/cli-common/firstPartyRuntime";
 
 import { normalizePrivateFileKey } from "./privateFileKeys";
 import type { PrivateFilesBackend } from "./privateFiles";
@@ -12,14 +12,11 @@ export type LocalPrivateFilesBackendOptions = Readonly<{
 }>;
 
 export function resolveLocalPrivateFilesDir(env: NodeJS.ProcessEnv = process.env): string {
-    const explicit = expandHomeDirPath(
-        (env.HAPPY_SERVER_LIGHT_PRIVATE_FILES_DIR ?? env.HAPPIER_SERVER_LIGHT_PRIVATE_FILES_DIR)?.trim() ?? "",
+    return resolvePersonalHomePrivateFilesDir({
+        dataDir: resolveLightDataDir(env),
         env,
-    );
-    if (explicit) {
-        return explicit;
-    }
-    return join(resolveLightDataDir(env), "private-files");
+        platform: process.platform,
+    });
 }
 
 export function createLocalPrivateFilesBackendFromEnv(env: NodeJS.ProcessEnv = process.env): PrivateFilesBackend {

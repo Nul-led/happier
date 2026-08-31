@@ -62,7 +62,7 @@ describe("enableAuthentication (auth policy) (integration)", () => {
         });
 
         const account = await db.account.create({ data: { publicKey: "pk_1" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         await withAuthenticatedApp(async (app) => {
             const res = await app.inject({
@@ -91,7 +91,7 @@ describe("enableAuthentication (auth policy) (integration)", () => {
                 profile: { id: 123, login: "octocat" },
             },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         await withAuthenticatedApp(async (app) => {
             const res = await app.inject({
@@ -107,8 +107,8 @@ describe("enableAuthentication (auth policy) (integration)", () => {
 
     it("projects the terminal-session credential kind from verified token extras", async () => {
         const account = await db.account.create({ data: { publicKey: "pk_terminal_kind" } });
-        const accountToken = await auth.createToken(account.id);
-        const terminalToken = await auth.createToken(account.id, { session: "terminal-auth-request" });
+        const accountToken = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
+        const terminalToken = await auth.createToken(account.id, { session: "terminal-auth-request" }, { kind: "terminal", authority: "account_automation" });
 
         const app = Fastify({ logger: false }) as any;
         enableAuthentication(app);
@@ -212,7 +212,7 @@ describe("enableAuthentication (auth policy) (integration)", () => {
                 profile: { id: 123, login: "octocat" },
             },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         await withAuthenticatedApp(async (app) => {
             const res = await app.inject({
@@ -242,7 +242,7 @@ describe("enableAuthentication (auth policy) (integration)", () => {
                 profile: { id: 123, login: "octocat" },
             },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         await withAuthenticatedApp(async (app) => {
             const res = await app.inject({
@@ -279,7 +279,7 @@ describe("enableAuthentication (auth policy) (integration)", () => {
                 eligibilityNextCheckAt: new Date(0),
             },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         await withStubbedFetch(
             (async (url: any, init?: any) => {
@@ -335,7 +335,7 @@ describe("enableAuthentication (auth policy) (integration)", () => {
                 eligibilityNextCheckAt: new Date(0),
             },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         await withStubbedFetch(
             (async (url: any, init?: any) => {
@@ -389,7 +389,7 @@ describe("enableAuthentication (auth policy) (integration)", () => {
                 eligibilityNextCheckAt: new Date(0),
             },
         });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         await withStubbedFetch(
             (async (url: any, init?: any) => {

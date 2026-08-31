@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
     createApiRateLimitKeyGenerator,
@@ -10,11 +10,33 @@ import {
 
 import { auth } from "@/app/auth/auth";
 
-vi.mock("@/app/auth/auth", () => ({
-    auth: {
-        verifyToken: vi.fn(async (token: string) => (token === "valid-token" ? { userId: "user-123" } : null)),
+// Bearer keying is proven through the real auth owner (mint + verifyTokenForRoute).
+// Only the storage boundary is stubbed: createToken/verify read the account
+// token epoch through db.account.findUnique.
+const dbAccountFindUniqueMock = vi.hoisted(() => vi.fn());
+vi.mock("@/storage/db", () => ({
+    db: {
+        account: {
+            findUnique: dbAccountFindUniqueMock,
+        },
     },
 }));
+
+const previousMasterSecret = process.env.HANDY_MASTER_SECRET;
+
+beforeAll(async () => {
+    process.env.HANDY_MASTER_SECRET = "api-rate-limit-policy-spec-secret";
+    dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0 });
+    await auth.init();
+});
+
+afterAll(() => {
+    if (typeof previousMasterSecret === "string") {
+        process.env.HANDY_MASTER_SECRET = previousMasterSecret;
+    } else {
+        delete process.env.HANDY_MASTER_SECRET;
+    }
+});
 
 describe("apiRateLimitPolicy", () => {
     it("disables all rate limiting when HAPPIER_API_RATE_LIMITS_ENABLED=0", () => {
@@ -61,20 +83,37 @@ describe("apiRateLimitPolicy", () => {
         expect(resolveApiTrustProxy({ HAPPIER_SERVER_TRUST_PROXY: "2" })).toBe(2);
     });
 
-    it("keys authenticated requests by verified user id (not by raw Authorization header)", async () => {
-        const verifySpy = vi.spyOn(auth, "verifyToken");
+    it("keys an ordinary signed bearer by its verified account id (not by the raw Authorization header)", async () => {
+        const token = await auth.createToken("rate-limit-account-1", undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
         const keyGen = createApiRateLimitKeyGenerator();
-        const key = await keyGen({ headers: { authorization: "Bearer valid-token" }, ip: "203.0.113.9" });
-        expect(key).toBe("uid:user-123");
-        expect(verifySpy).toHaveBeenCalledWith("valid-token");
+        const key = await keyGen({ headers: { authorization: `Bearer ${token}` }, ip: "203.0.113.9" });
 
-        const fallback = await keyGen({ headers: { authorization: "Bearer invalid-token" }, ip: "203.0.113.9" });
-        expect(fallback).toBe("ip:203.0.113.9");
+        expect(key).toBe("uid:rate-limit-account-1");
+    });
+
+    it("never keys a restricted account_directory bearer by its account id", async () => {
+        const token = await auth.createToken("rate-limit-directory-1", undefined, {
+            kind: "account_directory",
+            authority: "present_user",
+        });
+        const keyGen = createApiRateLimitKeyGenerator();
+        const key = await keyGen({ headers: { authorization: `Bearer ${token}` }, ip: "203.0.113.9" });
+
+        expect(key).toBe("ip:203.0.113.9");
+    });
+
+    it("falls back to the ip key for an unverifiable bearer", async () => {
+        const keyGen = createApiRateLimitKeyGenerator();
+        const key = await keyGen({ headers: { authorization: "Bearer not-a-signed-token" }, ip: "203.0.113.9" });
+
+        expect(key).toBe("ip:203.0.113.9");
     });
 
     it("uses the route IP key without pre-verifying a bearer on PAT-admitting routes", async () => {
-        const verifySpy = vi.spyOn(auth, "verifyToken");
-        verifySpy.mockClear();
+        const verifySpy = vi.spyOn(auth, "verifyTokenForRoute");
         const keyGen = createApiRateLimitKeyGenerator({}, { strategy: "user-or-ip", scope: "global" });
 
         const key = await keyGen({
@@ -85,11 +124,11 @@ describe("apiRateLimitPolicy", () => {
 
         expect(key).toBe("ip:203.0.113.9");
         expect(verifySpy).not.toHaveBeenCalled();
+        verifySpy.mockRestore();
     });
 
     it("fails closed to the ip key without verifying absurdly large bearer tokens", async () => {
-        const verifySpy = vi.spyOn(auth, "verifyToken");
-        verifySpy.mockClear();
+        const verifySpy = vi.spyOn(auth, "verifyTokenForRoute");
 
         const keyGen = createApiRateLimitKeyGenerator();
         const hugeToken = "x".repeat(5000);
@@ -97,6 +136,7 @@ describe("apiRateLimitPolicy", () => {
 
         expect(key).toBe("ip:203.0.113.9");
         expect(verifySpy).not.toHaveBeenCalled();
+        verifySpy.mockRestore();
     });
 
     it("truncates untrusted ip strings used in rate limit keys", async () => {
@@ -109,8 +149,11 @@ describe("apiRateLimitPolicy", () => {
     });
 
     it("fails closed to the ip key when the verified user id is excessively large", async () => {
-        const verifySpy = vi.spyOn(auth, "verifyToken");
-        verifySpy.mockResolvedValue({ userId: "x".repeat(10_000) } as any);
+        // Boundary fixture stub: only shapes the verified payload past the
+        // length guard; the real verifyTokenForRoute call chain stays live.
+        const verifySpy = vi.spyOn(auth, "verifyTokenForRoute").mockResolvedValue({
+            userId: "x".repeat(10_000),
+        } as Awaited<ReturnType<typeof auth.verifyTokenForRoute>>);
 
         const keyGen = createApiRateLimitKeyGenerator();
         const key = await keyGen({ headers: { authorization: "Bearer valid-token" }, ip: "203.0.113.9" });

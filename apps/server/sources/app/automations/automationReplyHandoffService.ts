@@ -377,6 +377,107 @@ async function publishAutomationRunMutationTx(
     });
 }
 
+/**
+ * Settles Conversation reply custody whose exact target machine has crossed
+ * the permanent-revocation boundary. Reversible replacement deliberately does
+ * not call this owner: preserving retryable custody lets undo restore the
+ * original target without rewriting the admitted Run.
+ *
+ * A ready handoff that has never been attempted cannot have produced an
+ * external effect and is suppressed. Once an attempt exists, or while a
+ * handoff lease is active, the external outcome may be ambiguous and the
+ * existing blocked state preserves that truth for explicit review.
+ */
+export async function settleAutomationReplyHandoffsForRevokedMachineTx(params: Readonly<{
+    tx: Tx;
+    accountId: string;
+    machineId: string;
+    now?: Date;
+}>): Promise<void> {
+    const candidates = await params.tx.automationRun.findMany({
+        where: {
+            accountId: params.accountId,
+            state: "succeeded",
+            causeKind: "conversation",
+            replyHandoffTargetMachineId: params.machineId,
+            replyHandoffState: { in: ["ready", "handingOff"] },
+        },
+        select: {
+            id: true,
+            replyHandoffState: true,
+            replyHandoffAttempt: true,
+        },
+    });
+    if (candidates.length === 0) return;
+
+    const now = params.now ?? new Date();
+    const suppressIds = candidates
+        .filter((candidate) => (
+            candidate.replyHandoffState === "ready"
+            && candidate.replyHandoffAttempt === 0
+        ))
+        .map((candidate) => candidate.id);
+    const blockIds = candidates
+        .filter((candidate) => (
+            candidate.replyHandoffState === "handingOff"
+            || candidate.replyHandoffAttempt > 0
+        ))
+        .map((candidate) => candidate.id);
+
+    if (suppressIds.length > 0) {
+        await params.tx.automationRun.updateMany({
+            where: {
+                id: { in: suppressIds },
+                accountId: params.accountId,
+                state: "succeeded",
+                causeKind: "conversation",
+                replyHandoffTargetMachineId: params.machineId,
+                replyHandoffState: "ready",
+                replyHandoffAttempt: 0,
+            },
+            data: {
+                replyHandoffState: "suppressed",
+                replyHandoffDueAt: null,
+                replyHandoffReceiptEnvelope: null,
+                revision: { increment: 1 },
+                updatedAt: now,
+            },
+        });
+    }
+    if (blockIds.length > 0) {
+        await params.tx.automationRun.updateMany({
+            where: {
+                id: { in: blockIds },
+                accountId: params.accountId,
+                state: "succeeded",
+                causeKind: "conversation",
+                replyHandoffTargetMachineId: params.machineId,
+                OR: [
+                    { replyHandoffState: "handingOff" },
+                    { replyHandoffState: "ready", replyHandoffAttempt: { gt: 0 } },
+                ],
+            },
+            data: {
+                replyHandoffState: "blocked",
+                replyHandoffDueAt: null,
+                replyHandoffReceiptEnvelope: null,
+                revision: { increment: 1 },
+                updatedAt: now,
+            },
+        });
+    }
+
+    for (const candidate of candidates) {
+        const run = await fetchAutomationRunItemTx(params.tx, candidate.id);
+        if (
+            run
+            && (run.replyHandoffState === "suppressed" || run.replyHandoffState === "blocked")
+        ) {
+            await publishAutomationRunMutationTx(params.tx, run);
+        }
+    }
+}
+
 async function blockInvalidCandidateTx(
     tx: Tx,
     candidate: AutomationReplyHandoffCandidate,

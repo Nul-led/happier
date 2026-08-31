@@ -137,7 +137,7 @@ describe("liveActivityRemoteUpdateRoutes (integration)", () => {
     it("rejects caller-supplied APNs transport fields before any relay/provider send", async () => {
         const app = await createTestApp();
         const account = await db.account.create({ data: { publicKey: "pk_live_activity_update_route" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
 
         const response = await app.inject({
             method: "POST",
@@ -167,7 +167,7 @@ describe("liveActivityRemoteUpdateRoutes (integration)", () => {
         });
         const app = await createTestApp();
         const account = await db.account.create({ data: { publicKey: "pk_live_activity_update_route_mode" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         await db.accountLiveActivityTarget.create({
             data: {
                 accountId: account.id,
@@ -209,7 +209,7 @@ describe("liveActivityRemoteUpdateRoutes (integration)", () => {
         });
         const app = await createTestApp();
         const account = await db.account.create({ data: { publicKey: "pk_live_activity_update_route_bg_mode" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         await db.accountLiveActivityTarget.create({
             data: {
                 accountId: account.id,
@@ -260,7 +260,7 @@ describe("liveActivityRemoteUpdateRoutes (integration)", () => {
         vi.stubGlobal("fetch", fetchMock);
         const app = await createTestApp();
         const account = await db.account.create({ data: { publicKey: "pk_live_activity_update_route_hosted" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         await db.accountLiveActivityTarget.create({
             data: {
                 accountId: account.id,
@@ -338,7 +338,7 @@ describe("liveActivityRemoteUpdateRoutes (integration)", () => {
         vi.stubGlobal("fetch", fetchMock);
         const app = await createTestApp();
         const account = await db.account.create({ data: { publicKey: "pk_live_activity_update_route_hosted_dedupe" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         await db.accountLiveActivityTarget.create({
             data: {
                 accountId: account.id,
@@ -410,7 +410,7 @@ describe("liveActivityRemoteUpdateRoutes (integration)", () => {
         });
         const app = await createTestApp();
         const account = await db.account.create({ data: { publicKey: "pk_live_activity_update_route_direct_dedupe" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         await db.accountLiveActivityTarget.create({
             data: {
                 accountId: account.id,
@@ -478,7 +478,7 @@ describe("liveActivityRemoteUpdateRoutes (integration)", () => {
         });
         const app = await createTestApp();
         const account = await db.account.create({ data: { publicKey: "pk_live_activity_update_route_bg_dedupe" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         await db.accountLiveActivityTarget.create({
             data: {
                 accountId: account.id,
@@ -539,7 +539,7 @@ describe("liveActivityRemoteUpdateRoutes (integration)", () => {
         });
         const app = await createTestApp();
         const account = await db.account.create({ data: { publicKey: "pk_live_activity_update_route_bg_throttle" } });
-        const token = await auth.createToken(account.id);
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         await db.accountLiveActivityTarget.create({
             data: {
                 accountId: account.id,

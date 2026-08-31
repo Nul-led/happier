@@ -23,6 +23,27 @@ afterEach(() => {
 });
 
 describe('registerConnectedServiceOauthExchangeRoutes', () => {
+  it('maps a low-order recipient key to the typed exchange failure without contacting the provider', async () => {
+    const app = createTestApp();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v2/connect/openai-codex/oauth/exchange',
+      payload: {
+        publicKey: encodeBase64(new Uint8Array(tweetnacl.box.publicKeyLength), 'base64url'),
+        code: 'one-time-code',
+        verifier: 'verifier-1',
+        redirectUri: 'http://localhost:1455/auth/callback',
+      },
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'connect_oauth_exchange_failed' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('exchanges openai-codex tokens and returns a decryptable bundle', async () => {
     const app = createTestApp();
 

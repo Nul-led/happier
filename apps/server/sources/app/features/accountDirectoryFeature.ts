@@ -14,11 +14,10 @@ export function resolveAccountDirectoryFeature(env: NodeJS.ProcessEnv): Features
                     version: 1,
                     homeDirectory: true,
                     homeEnrollment: true,
-                    deviceApproval: false,
                     homeLoginAssertion: signing,
                 },
             },
-        } as unknown as FeaturesPayloadDelta;
+        };
     } catch {
         // A missing master secret already prevents auth startup. Keep feature
         // discovery fail-closed while allowing health/configuration routes to

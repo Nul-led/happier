@@ -5,16 +5,35 @@ type AuthenticatedRouteRequest = Readonly<{
     routeOptions?: Readonly<{
         config?: Readonly<{
             allowApiToken?: unknown;
+            allowAccountDirectoryToken?: unknown;
         }>;
     }>;
 }>;
 
+/** Restricted kinds never gain ordinary Home transport capabilities. */
+export function isRestrictedAuthTokenKind(
+    kind: unknown,
+): kind is "api_token" | "account_directory" {
+    return kind === "api_token" || kind === "account_directory";
+}
+
 /**
- * API tokens are opt-in at the HTTP route boundary. Legacy authenticated
- * routes therefore retain their existing account/terminal behavior without
- * becoming implicit PAT capabilities.
+ * Restricted credentials are opt-in at the HTTP route boundary. Keeping this
+ * decision in one helper prevents a route from accidentally becoming a
+ * second authority merely by forgetting a local guard.
  */
-export function isApiTokenDeniedForRoute(request: AuthenticatedRouteRequest): boolean {
-    return request.authTokenKind === "api_token"
-        && request.routeOptions?.config?.allowApiToken !== true;
+export function isRestrictedAuthTokenDeniedForRoute(
+    request: AuthenticatedRouteRequest,
+): boolean {
+    if (request.routeOptions?.config?.allowAccountDirectoryToken === true) {
+        return request.authTokenKind !== "account"
+            && request.authTokenKind !== "account_directory";
+    }
+    if (request.authTokenKind === "api_token") {
+        return request.routeOptions?.config?.allowApiToken !== true;
+    }
+    if (request.authTokenKind === "account_directory") {
+        return request.routeOptions?.config?.allowAccountDirectoryToken !== true;
+    }
+    return false;
 }

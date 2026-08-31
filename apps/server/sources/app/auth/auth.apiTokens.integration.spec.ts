@@ -152,6 +152,7 @@ describe("auth (API tokens)", () => {
             userId: account.id,
             authority: "account_automation",
             authTokenKind: "api_token",
+            legacy: false,
             apiTokenPrincipal: {
                 accountId: account.id,
                 principalId: account.id,
@@ -249,7 +250,10 @@ describe("auth (API tokens)", () => {
             label: "Daemon cache",
             expiresAt: new Date("2026-08-22T13:00:00.000Z"),
         });
-        const signedAccountToken = await auth.createToken(account.id);
+        const signedAccountToken = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
 
         await expect(apiTokenAuth.verifyPat(minted.token)).resolves.toEqual({
             ok: true,
@@ -263,6 +267,51 @@ describe("auth (API tokens)", () => {
             ok: false,
             reason: "invalid_token",
         });
+    });
+
+    it("fails PATs minted before sign-out-everywhere once the token epoch advances", async () => {
+        const account = await db.account.create({
+            data: { publicKey: "api-token-sign-out-everywhere" },
+            select: { id: true },
+        });
+        const preEpochToken = await apiTokenAuth.createApiToken({
+            accountId: account.id,
+            label: "Pre-epoch automation",
+        });
+        const preEpochSigned = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
+        await expect(auth.verifyToken(preEpochToken.token)).resolves.not.toBeNull();
+
+        await apiTokenAuth.signOutEverywhere(account.id);
+
+        await expect(auth.verifyToken(preEpochToken.token)).resolves.toBeNull();
+        await expect(apiTokenAuth.verifyPat(preEpochToken.token)).resolves.toEqual({
+            ok: false,
+            reason: "invalid_token",
+        });
+        // Revocation is deletion, so the dead credential disappears from the
+        // owner's own summaries instead of lingering as unusable state.
+        await expect(apiTokenAuth.listApiTokens(account.id)).resolves.toEqual([]);
+
+        // Credentials minted after the epoch change remain valid.
+        const postEpochToken = await apiTokenAuth.createApiToken({
+            accountId: account.id,
+            label: "Post-epoch automation",
+        });
+        await expect(auth.verifyToken(postEpochToken.token)).resolves.not.toBeNull();
+        const postEpochSigned = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
+        await expect(auth.verifyToken(postEpochSigned)).resolves.toMatchObject({
+            userId: account.id,
+            authTokenKind: "account",
+            legacy: false,
+        });
+        // The pre-epoch signed token was already invalidated by the epoch check.
+        await expect(auth.verifyToken(preEpochSigned)).resolves.toBeNull();
     });
 
     it("rejects expired and deleted-account tokens while retaining opaque external failure", async () => {

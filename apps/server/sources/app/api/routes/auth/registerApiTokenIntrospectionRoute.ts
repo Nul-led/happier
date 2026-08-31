@@ -40,6 +40,12 @@ export function registerApiTokenIntrospectionRoute(app: Fastify): void {
             },
         },
         async (request, reply) => {
+            // This endpoint is a signed daemon-to-server introspection seam;
+            // an Account Directory credential may not use it as either the
+            // connection credential or a PAT management proxy.
+            if (request.authTokenKind === "account_directory") {
+                return reply.code(401).send({ error: "invalid_token" });
+            }
             if (request.validationError) {
                 return reply.code(401).send({ error: "invalid_token" });
             }

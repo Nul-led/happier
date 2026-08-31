@@ -51,7 +51,7 @@ describe("authRoutes (Account erasure) (integration)", () => {
             data: { id: "account-erasure-machine", accountId: account.id, metadata: "fixture" },
         });
         const [signedToken, pat] = await Promise.all([
-            auth.createToken(account.id),
+            auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
             auth.createApiToken({ accountId: account.id, label: "Automation cannot erase Accounts" }),
         ]);
         const app = createTestApp();

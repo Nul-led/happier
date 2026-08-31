@@ -7,18 +7,24 @@ import { describe, expect, it } from 'vitest';
 import { writeStartupReceiptFromEnvironment } from './startupReceipt';
 
 describe('writeStartupReceiptFromEnvironment', () => {
-    it('atomically records only the private activation nonce and current pid', async () => {
+    it('atomically records the private activation identity and actual bound listener', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-server-startup-receipt-'));
         try {
             const receiptPath = join(root, 'startup.json');
             await expect(writeStartupReceiptFromEnvironment({
                 HAPPIER_SERVER_STARTUP_RECEIPT_PATH: receiptPath,
                 HAPPIER_SERVER_STARTUP_RECEIPT_NONCE: 'activation-nonce-1',
+            }, {
+                server: {
+                    address: () => ({ address: '::ffff:127.0.0.1', family: 'IPv6', port: 43123 }),
+                },
             })).resolves.toBe(true);
 
             await expect(readFile(receiptPath, 'utf8').then(JSON.parse)).resolves.toEqual({
                 nonce: 'activation-nonce-1',
                 pid: process.pid,
+                host: '127.0.0.1',
+                port: 43123,
             });
         } finally {
             await rm(root, { recursive: true, force: true });
@@ -26,10 +32,26 @@ describe('writeStartupReceiptFromEnvironment', () => {
     });
 
     it('does nothing unless both private activation values are valid', async () => {
-        await expect(writeStartupReceiptFromEnvironment({})).resolves.toBe(false);
+        await expect(writeStartupReceiptFromEnvironment({}, null)).resolves.toBe(false);
         await expect(writeStartupReceiptFromEnvironment({
             HAPPIER_SERVER_STARTUP_RECEIPT_PATH: 'relative.json',
             HAPPIER_SERVER_STARTUP_RECEIPT_NONCE: 'activation-nonce-1',
-        })).resolves.toBe(false);
+        }, null)).resolves.toBe(false);
+    });
+
+    it('refuses to attest startup without a TCP listener address', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-server-startup-receipt-no-listener-'));
+        try {
+            const receiptPath = join(root, 'startup.json');
+            await expect(writeStartupReceiptFromEnvironment({
+                HAPPIER_SERVER_STARTUP_RECEIPT_PATH: receiptPath,
+                HAPPIER_SERVER_STARTUP_RECEIPT_NONCE: 'activation-nonce-1',
+            }, {
+                server: { address: () => '/tmp/happier.sock' },
+            })).resolves.toBe(false);
+            await expect(readFile(receiptPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
     });
 });

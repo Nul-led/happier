@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const verifyToken = vi.fn();
 const enforceLoginEligibility = vi.fn();
@@ -17,19 +17,23 @@ vi.mock("@/utils/logging/log", () => ({
     log,
 }));
 
+let enableAuthentication: typeof import("./enableAuthentication").enableAuthentication;
+
 describe("enableAuthentication (defensive error handling)", () => {
+    beforeAll(async () => {
+        ({ enableAuthentication } = await import("./enableAuthentication"));
+    });
+
     beforeEach(() => {
-        vi.resetModules();
         verifyToken.mockReset();
         enforceLoginEligibility.mockReset();
         log.mockReset();
     });
 
     it("never responds with an undefined error when login eligibility rejects", async () => {
-        verifyToken.mockResolvedValueOnce({ userId: "u1" });
+        verifyToken.mockResolvedValueOnce({ userId: "u1", authTokenKind: "account", authority: "present_user" });
         enforceLoginEligibility.mockResolvedValueOnce({ ok: false, statusCode: 403 } as any);
 
-        const { enableAuthentication } = await import("./enableAuthentication");
         const app = Fastify({ logger: false }) as any;
         enableAuthentication(app);
         app.get("/private", { preHandler: app.authenticate }, async () => ({ ok: true }));
@@ -48,10 +52,9 @@ describe("enableAuthentication (defensive error handling)", () => {
     });
 
     it("returns 403 account-disabled when eligibility blocks a disabled account", async () => {
-        verifyToken.mockResolvedValueOnce({ userId: "u1" });
+        verifyToken.mockResolvedValueOnce({ userId: "u1", authTokenKind: "account", authority: "present_user" });
         enforceLoginEligibility.mockResolvedValueOnce({ ok: false, statusCode: 403, error: "account-disabled" } as any);
 
-        const { enableAuthentication } = await import("./enableAuthentication");
         const app = Fastify({ logger: false }) as any;
         enableAuthentication(app);
         app.get("/private", { preHandler: app.authenticate }, async () => ({ ok: true }));
@@ -72,7 +75,6 @@ describe("enableAuthentication (defensive error handling)", () => {
     it("returns opaque invalid_token when bearer token verification fails", async () => {
         verifyToken.mockResolvedValueOnce(null);
 
-        const { enableAuthentication } = await import("./enableAuthentication");
         const app = Fastify({ logger: false }) as any;
         enableAuthentication(app);
         app.get("/private", { preHandler: app.authenticate }, async () => ({ ok: true }));
@@ -94,7 +96,6 @@ describe("enableAuthentication (defensive error handling)", () => {
         verifyToken.mockResolvedValueOnce(null);
         verifyToken.mockRejectedValueOnce(new Error("verification unavailable"));
 
-        const { enableAuthentication } = await import("./enableAuthentication");
         const app = Fastify({ logger: false }) as any;
         enableAuthentication(app);
         app.get(
@@ -133,7 +134,6 @@ describe("enableAuthentication (defensive error handling)", () => {
     });
 
     it("lets a bearer-only route hide missing and malformed connection credentials behind invalid_token", async () => {
-        const { enableAuthentication } = await import("./enableAuthentication");
         const app = Fastify({ logger: false }) as any;
         enableAuthentication(app);
         app.get(
@@ -165,10 +165,9 @@ describe("enableAuthentication (defensive error handling)", () => {
     });
 
     it("returns opaque invalid_token when a token's account cannot be found", async () => {
-        verifyToken.mockResolvedValueOnce({ userId: "missing-account" });
+        verifyToken.mockResolvedValueOnce({ userId: "missing-account", authTokenKind: "account", authority: "present_user" });
         enforceLoginEligibility.mockResolvedValueOnce({ ok: false, statusCode: 401, error: "invalid-token" } as any);
 
-        const { enableAuthentication } = await import("./enableAuthentication");
         const app = Fastify({ logger: false }) as any;
         enableAuthentication(app);
         app.get("/private", { preHandler: app.authenticate }, async () => ({ ok: true }));
@@ -187,10 +186,9 @@ describe("enableAuthentication (defensive error handling)", () => {
     });
 
     it("does not emit per-request auth success logs by default", async () => {
-        verifyToken.mockResolvedValueOnce({ userId: "u1" });
+        verifyToken.mockResolvedValueOnce({ userId: "u1", authTokenKind: "account", authority: "present_user" });
         enforceLoginEligibility.mockResolvedValueOnce({ ok: true });
 
-        const { enableAuthentication } = await import("./enableAuthentication");
         const app = Fastify({ logger: false }) as any;
         enableAuthentication(app);
         app.get("/private", { preHandler: app.authenticate }, async () => ({ ok: true }));
@@ -216,10 +214,9 @@ describe("enableAuthentication (defensive error handling)", () => {
     });
 
     it("captures the account stored-content HTTP declaration once on the authenticated request", async () => {
-        verifyToken.mockResolvedValueOnce({ userId: "u1" });
+        verifyToken.mockResolvedValueOnce({ userId: "u1", authTokenKind: "account", authority: "present_user" });
         enforceLoginEligibility.mockResolvedValueOnce({ ok: true });
 
-        const { enableAuthentication } = await import("./enableAuthentication");
         const app = Fastify({ logger: false }) as any;
         enableAuthentication(app);
         app.get(
@@ -234,16 +231,17 @@ describe("enableAuthentication (defensive error handling)", () => {
             url: "/private",
             headers: {
                 authorization: "Bearer t",
-                "x-happier-account-stored-content-protocol": "1",
+                "x-happier-account-stored-content-protocol": "2",
             },
         });
 
         expect(res.statusCode).toBe(200);
         expect(res.json()).toEqual({
-            accepted: true,
             supportsCurrentProtocol: true,
+            supportsPluginDataProtocol: false,
+            supportsSessionAccessWitnessProtocol: false,
             outcome: "accepted",
-            declaration: { v: 1, protocolVersion: 1 },
+            declaration: { v: 1, protocolVersion: 2 },
             upgradeRequired: null,
         });
 

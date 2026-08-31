@@ -25,7 +25,7 @@ const findRetiredAutomationTriggers = dbMocks.db.automationTrigger.findMany;
 function createRouteTestBuilder(options: Parameters<typeof createBaseRouteTestBuilder>[0]) {
     return createBaseRouteTestBuilder({
         ...options,
-        defaultRequest: { authAuthority: "present_user", ...options.defaultRequest },
+        defaultRequest: { authAuthority: "present_user", authTokenKind: "account", ...options.defaultRequest },
     });
 }
 

@@ -94,6 +94,127 @@ describe("mintDirectRouteGrantV1", () => {
         )).toBe(true);
     });
 
+    it("mints a V2 iroh_peer grant carrying the signed machine/1 endpoint-role binding and proof key", () => {
+        const ephemeralKeyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(9));
+        const minted = mintDirectRouteGrantV2({
+            accountId: "account_1",
+            machineId: "machine_target",
+            flowKind: "bounded_transfer",
+            routeKind: "iroh_peer",
+            scope: {
+                kind: "bounded_transfer",
+                mode: "single",
+                transferId: "transfer_1",
+                maxBytes: 1024,
+            },
+            endpointFingerprint: "b".repeat(64),
+            iroh: {
+                sourceMachineId: "machine_source",
+                targetMachineId: "machine_target",
+                sourceEndpointId: "a".repeat(64),
+                targetEndpointId: "b".repeat(64),
+                role: "initiator",
+                operationKind: "file_transfer",
+            },
+            ephemeralPublicKeyBase64Url: toBase64Url(ephemeralKeyPair.publicKey),
+            nowMs: 1_000,
+            ttlMs: 600_000,
+            serverGateEnabled: true,
+            signingKey: { keyId: "key_1", secretKey: keyPair.secretKey },
+        });
+
+        expect(minted).toEqual(expect.objectContaining({ ok: true }));
+        if (!minted.ok) throw new Error("expected grant");
+        expect(minted.grant.payload.iroh).toEqual({
+            sourceMachineId: "machine_source",
+            targetMachineId: "machine_target",
+            sourceEndpointId: "a".repeat(64),
+            targetEndpointId: "b".repeat(64),
+            role: "initiator",
+            operationKind: "file_transfer",
+        });
+        expect(tweetnacl.sign.detached.verify(
+            Buffer.from(createDirectRouteGrantSigningInputV2(minted.grant.payload), "utf8"),
+            Buffer.from(minted.grant.signature.valueBase64Url, "base64url"),
+            keyPair.publicKey,
+        )).toBe(true);
+    });
+
+    it("rejects every V1 iroh_peer grant because machine/1 requires V2 proof", () => {
+        expect(mintDirectRouteGrantV1({
+            accountId: "account_1",
+            machineId: "machine_target",
+            flowKind: "bounded_transfer",
+            routeKind: "iroh_peer",
+            scope: {
+                kind: "bounded_transfer",
+                mode: "single",
+                transferId: "transfer_1",
+                maxBytes: 1024,
+            },
+            endpointFingerprint: "b".repeat(64),
+            nowMs: 1_000,
+            ttlMs: 600_000,
+            serverGateEnabled: true,
+            signingKey: { keyId: "key_1", secretKey: keyPair.secretKey },
+        })).toEqual({
+            ok: false,
+            reasonCode: "iroh_requires_v2",
+            receipt: "peer.route_grant.rejected",
+        });
+    });
+
+    it("caps grants at the signing trust-root expiry and refuses an expired root", () => {
+        const base = {
+            accountId: "account_1",
+            machineId: "machine_1",
+            flowKind: "bounded_transfer" as const,
+            routeKind: "loopback_direct" as const,
+            scope: {
+                kind: "bounded_transfer" as const,
+                mode: "single" as const,
+                transferId: "transfer_1",
+                maxBytes: 1024,
+            },
+            nowMs: 1_000,
+            ttlMs: 600,
+            serverGateEnabled: true,
+        };
+        const cappedV1 = mintDirectRouteGrantV1({
+            ...base,
+            signingKey: { keyId: "key_1", secretKey: keyPair.secretKey, expiresAt: 1_500 },
+        });
+        expect(cappedV1).toMatchObject({ ok: true, grant: { payload: { exp: 1_500 } } });
+        expect(mintDirectRouteGrantV1({
+            ...base,
+            ttlMs: 1,
+            signingKey: { keyId: "key_1", secretKey: keyPair.secretKey, expiresAt: 1_000 },
+        })).toEqual({
+            ok: false,
+            reasonCode: "signing_key_expired",
+            receipt: "peer.route_grant.rejected",
+        });
+
+        const cappedV2 = mintDirectRouteGrantV2({
+            ...base,
+            routeKind: "iroh_peer",
+            endpointFingerprint: "b".repeat(64),
+            iroh: {
+                sourceMachineId: "machine_source",
+                targetMachineId: "machine_1",
+                sourceEndpointId: "a".repeat(64),
+                targetEndpointId: "b".repeat(64),
+                role: "initiator",
+                operationKind: "file_transfer",
+            },
+            ephemeralPublicKeyBase64Url: toBase64Url(
+                tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(8)).publicKey,
+            ),
+            signingKey: { keyId: "key_1", secretKey: keyPair.secretKey, expiresAt: 1_500 },
+        });
+        expect(cappedV2).toMatchObject({ ok: true, grant: { payload: { exp: 1_500 } } });
+    });
+
     it("rejects disabled server policy, server relay, and production machine RPC grants", () => {
         const base = {
             accountId: "account_1",
@@ -187,6 +308,19 @@ describe("mintDirectRouteGrantV1", () => {
         expect(resolved).toEqual({
             ok: false,
             reasonCode: "invalid_private_key",
+        });
+    });
+
+    it("rejects a configured signing expiry that cannot be enforced", () => {
+        const resolved = resolvePeerMediationGrantSigningConfig({
+            HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_KEY_ID: "key_1",
+            HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_PRIVATE_KEY: toBase64Url(seed),
+            HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_EXPIRES_AT: "not-a-timestamp",
+        } as NodeJS.ProcessEnv);
+
+        expect(resolved).toEqual({
+            ok: false,
+            reasonCode: "invalid_expiry",
         });
     });
 

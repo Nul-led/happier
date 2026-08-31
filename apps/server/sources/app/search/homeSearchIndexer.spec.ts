@@ -3,24 +3,198 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openHomeSearchDb } from './homeSearchDb';
-import { createHomeSearchIndexer } from './homeSearchIndexer';
+import { createHomeSearchIndexer, type HomeSearchCanonicalMessage } from './homeSearchIndexer';
+
+function pagedReader(readRows: () => readonly Parameters<ReturnType<typeof createHomeSearchIndexer>['notify']>[0][]) {
+    return async ({ afterId, limit }: { afterId?: string; limit: number }) => {
+        const rows = [...readRows()].sort((left, right) => left.id.localeCompare(right.id));
+        const messages = rows.filter((row) => !afterId || row.id > afterId).slice(0, limit);
+        const nextAfterId = messages.length === limit ? messages.at(-1)?.id : undefined;
+        return { messages, ...(nextAfterId ? { nextAfterId } : {}) };
+    };
+}
 
 describe('Home search indexer', () => {
     it('reconciles canonical plain content and removes deleted rows', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-home-indexer-'));
         const path = join(root, 'search.sqlite');
         let rows = [{ id: 'm-1', sessionId: 's-1', seq: 1, createdAtMs: 10, content: { t: 'plain', v: { type: 'text', text: 'first token' } } }];
-        const indexer = await createHomeSearchIndexer({ dbPath: path, readCanonicalMessages: async () => rows });
+        const db = await openHomeSearchDb({ dbPath: path });
+        const indexer = createHomeSearchIndexer({ db, readCanonicalMessagesPage: pagedReader(() => rows) });
         await expect(indexer.reconcile()).resolves.toEqual({ indexed: 1, removed: 0 });
-        let db = await openHomeSearchDb({ dbPath: path });
         expect(db.search({ query: 'first' })).toHaveLength(1);
-        db.close();
 
         rows = [];
         await expect(indexer.reconcile()).resolves.toEqual({ indexed: 0, removed: 1 });
-        db = await openHomeSearchDb({ dbPath: path });
         expect(db.search({ query: 'first' })).toEqual([]);
+        await indexer.stop();
         db.close();
-        indexer.close();
+    });
+
+    it('reconciles edits so only current canonical text stays searchable', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-indexer-edit-'));
+        const path = join(root, 'search.sqlite');
+        let rows = [{ id: 'm-1', sessionId: 's-1', seq: 1, createdAtMs: 10, content: { t: 'plain', v: { type: 'text', text: 'original wording' } } }];
+        const db = await openHomeSearchDb({ dbPath: path });
+        const indexer = createHomeSearchIndexer({ db, readCanonicalMessagesPage: pagedReader(() => rows) });
+        await indexer.reconcile();
+
+        rows = [{ id: 'm-1', sessionId: 's-1', seq: 1, createdAtMs: 10, content: { t: 'plain', v: { type: 'text', text: 'revised wording' } } }];
+        await indexer.reconcile();
+        expect(db.search({ query: 'original' })).toEqual([]);
+        expect(db.search({ query: 'revised' })).toHaveLength(1);
+        await indexer.stop();
+        db.close();
+    });
+
+    it('extracts nested plaintext message content and removes a row when an edit becomes empty', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-indexer-nested-'));
+        const path = join(root, 'search.sqlite');
+        const rows = [{
+            id: 'm-nested',
+            sessionId: 's-1',
+            seq: 1,
+            createdAtMs: 10,
+            content: { t: 'plain', v: { role: 'assistant', content: { type: 'text', text: 'nested phrase' } } },
+        }];
+        const db = await openHomeSearchDb({ dbPath: path });
+        const indexer = createHomeSearchIndexer({ db, readCanonicalMessagesPage: pagedReader(() => rows) });
+        await indexer.reconcile();
+        expect(db.search({ query: 'nested' })).toHaveLength(1);
+
+        indexer.notify({ ...rows[0]!, content: { t: 'plain', v: { role: 'assistant', content: { type: 'text', text: '' } } } });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(db.search({ query: 'nested' })).toEqual([]);
+        await indexer.stop();
+        db.close();
+    });
+
+    it('indexes canonical ACP and Codex plaintext bodies stored beneath content.data', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-indexer-native-agent-'));
+        const db = await openHomeSearchDb({ dbPath: join(root, 'search.sqlite') });
+        const rows = [
+            {
+                id: 'm-acp',
+                sessionId: 's-1',
+                seq: 1,
+                createdAtMs: 10,
+                content: {
+                    t: 'plain',
+                    v: {
+                        role: 'agent',
+                        content: {
+                            type: 'acp',
+                            agentId: 'agent',
+                            data: { type: 'text', text: 'native acp phrase' },
+                        },
+                    },
+                },
+            },
+            {
+                id: 'm-codex',
+                sessionId: 's-1',
+                seq: 2,
+                createdAtMs: 20,
+                content: {
+                    t: 'plain',
+                    v: {
+                        role: 'agent',
+                        content: {
+                            type: 'codex',
+                            data: { type: 'message', message: 'released codex phrase' },
+                        },
+                    },
+                },
+            },
+        ];
+        const indexer = createHomeSearchIndexer({ db, readCanonicalMessagesPage: pagedReader(() => rows) });
+
+        await expect(indexer.reconcile()).resolves.toEqual({ indexed: 2, removed: 0 });
+        expect(db.search({ query: 'native' }).map((hit) => hit.id)).toEqual(['m-acp']);
+        expect(db.search({ query: 'released' }).map((hit) => hit.id)).toEqual(['m-codex']);
+
+        await indexer.stop();
+        db.close();
+    });
+
+    it('indexes only explicitly plain envelopes', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-indexer-envelope-'));
+        const db = await openHomeSearchDb({ dbPath: join(root, 'search.sqlite') });
+        const rows = [
+            { id: 'plain', sessionId: 's-1', seq: 1, createdAtMs: 1, content: { t: 'plain', v: { content: { type: 'text', text: 'allowed phrase' } } } },
+            { id: 'encrypted', sessionId: 's-1', seq: 2, createdAtMs: 2, content: { t: 'encrypted', c: 'forbidden phrase' } },
+            { id: 'unwrapped', sessionId: 's-1', seq: 3, createdAtMs: 3, content: { type: 'text', text: 'malformed phrase' } },
+        ];
+        const indexer = createHomeSearchIndexer({ db, readCanonicalMessagesPage: pagedReader(() => rows) });
+        await indexer.reconcile();
+        expect(db.search({ query: 'allowed' })).toHaveLength(1);
+        expect(db.search({ query: 'forbidden' })).toEqual([]);
+        expect(db.search({ query: 'malformed' })).toEqual([]);
+        await indexer.stop();
+        db.close();
+    });
+
+    it('reconciles a bounded large transcript across many pages without truncating message content', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-indexer-scale-'));
+        const db = await openHomeSearchDb({ dbPath: join(root, 'search.sqlite') });
+        const largeTailToken = 'tailTokenZZQ9';
+        const fillerLine = 'const value = computeModuleBoundaries(offsetIndex); // routine source line\n';
+        const largeText = fillerLine.repeat(2000) + `export const ${largeTailToken} = true;`;
+        const rows: HomeSearchCanonicalMessage[] = [];
+        for (let i = 0; i < 1200; i += 1) {
+            rows.push({
+                id: `m-${String(i).padStart(5, '0')}`,
+                sessionId: `s-${i % 3}`,
+                seq: i,
+                createdAtMs: i,
+                content: { t: 'plain', v: { content: { type: 'text', text: `routine transcript entry ${i} with searchable marker` } } },
+            });
+        }
+        rows.push({
+            id: 'm-large', sessionId: 's-0', seq: 1201, createdAtMs: 1201,
+            content: { t: 'plain', v: { content: { type: 'text', text: largeText } } },
+        });
+        const indexer = createHomeSearchIndexer({ db, readCanonicalMessagesPage: pagedReader(() => rows) });
+
+        // 1,201 rows over three sessions force several 250-row reconciliation pages.
+        await expect(indexer.reconcile()).resolves.toEqual({ indexed: 1201, removed: 0 });
+        // The unique token lives at the very end of the largest message: indexing had no size cap.
+        expect(db.search({ query: largeTailToken }).map((hit) => hit.id)).toEqual(['m-large']);
+        expect(db.search({ query: 'routine transcript entry', maxResults: 5 })).toHaveLength(5);
+        expect(db.getWatermark('s-0')).toBe(1201);
+        expect(db.getWatermark('s-2')).toBe(1199);
+        await indexer.stop();
+        db.close();
+    }, 60_000);
+
+    it('buffers committed writes until the bounded startup projection finishes and has no timer', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-indexer-buffer-'));
+        const db = await openHomeSearchDb({ dbPath: join(root, 'search.sqlite') });
+        let releaseFirstPage!: () => void;
+        const firstPage = new Promise<void>((resolve) => { releaseFirstPage = resolve; });
+        const pageLimits: number[] = [];
+        const indexer = createHomeSearchIndexer({
+            db,
+            readCanonicalMessagesPage: async ({ afterId, limit }) => {
+                pageLimits.push(limit);
+                if (!afterId) await firstPage;
+                return afterId
+                    ? { messages: [] }
+                    : {
+                        messages: [{ id: 'm-1', sessionId: 's-1', seq: 1, createdAtMs: 1, content: { t: 'plain', v: { content: { type: 'text', text: 'startup row' } } } }],
+                        nextAfterId: 'm-1',
+                    };
+            },
+        });
+        indexer.start();
+        indexer.notify({ id: 'm-2', sessionId: 's-1', seq: 2, createdAtMs: 2, content: { t: 'plain', v: { content: { type: 'text', text: 'live row' } } } });
+        expect(indexer.ready()).toBe(false);
+        releaseFirstPage();
+        await indexer.whenReady();
+        expect(pageLimits.every((limit) => limit > 0 && limit <= 500)).toBe(true);
+        expect(db.search({ query: 'startup' })).toHaveLength(1);
+        expect(db.search({ query: 'live' })).toHaveLength(1);
+        await indexer.stop();
+        db.close();
     });
 });

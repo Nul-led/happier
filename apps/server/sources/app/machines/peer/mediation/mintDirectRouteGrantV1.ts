@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import tweetnacl from "tweetnacl";
 import {
     DirectRouteGrantScopeV1Schema,
+    DirectRouteGrantPayloadV1Schema,
     DirectRouteGrantPayloadV2Schema,
     PEER_MEDIATION_RECEIPTS,
     createDirectRouteGrantSigningInputV1,
@@ -11,6 +12,7 @@ import {
     type DirectRouteGrantPayloadV1,
     type DirectRouteGrantPayloadV2,
     type DirectRouteGrantScopeV1,
+    type IrohPeerRouteBindingV2,
     type PeerFlowKindV1,
     type SignedDirectRouteGrantV1,
     type SignedDirectRouteGrantV2,
@@ -31,7 +33,12 @@ export type PeerMediationGrantSigningConfig =
     }>
     | Readonly<{
         ok: false;
-        reasonCode: "missing_key_id" | "missing_private_key" | "invalid_private_key" | "invalid_public_key";
+        reasonCode:
+        | "missing_key_id"
+        | "missing_private_key"
+        | "invalid_private_key"
+        | "invalid_public_key"
+        | "invalid_expiry";
     }>;
 
 export type MintDirectRouteGrantV1Result =
@@ -48,6 +55,9 @@ export type MintDirectRouteGrantV1Result =
         | "machine_rpc_requires_pms5_classification"
         | "machine_rpc_method_server_required"
         | "invalid_scope"
+        | "invalid_iroh_binding"
+        | "iroh_requires_v2"
+        | "signing_key_expired"
         | "invalid_ttl";
         receipt: typeof PEER_MEDIATION_RECEIPTS.routeGrantRejected;
     }>;
@@ -65,10 +75,13 @@ export type MintDirectRouteGrantV1Input = Readonly<{
     signingKey: Readonly<{
         keyId: string;
         secretKey: Uint8Array;
+        expiresAt?: number | null;
     }>;
 }>;
 
 export type MintDirectRouteGrantV2Input = MintDirectRouteGrantV1Input & Readonly<{
+    /** Required for `iroh_peer` grants: the signed machine/1 endpoint-role relationship. */
+    iroh?: IrohPeerRouteBindingV2;
     ephemeralPublicKeyBase64Url: string;
 }>;
 
@@ -112,12 +125,13 @@ function normalizeSigningSecretKey(privateKeyBase64Url: string): Uint8Array | nu
     return null;
 }
 
-function parseOptionalPositiveInt(raw: string | undefined): number | null {
-    if (typeof raw !== "string" || raw.trim().length === 0) return null;
+function parseOptionalPositiveInt(raw: string | undefined):
+    | Readonly<{ ok: true; value: number | null }>
+    | Readonly<{ ok: false }> {
+    if (typeof raw !== "string" || raw.trim().length === 0) return { ok: true, value: null };
     const parsed = Number(raw.trim());
-    if (!Number.isFinite(parsed)) return null;
-    const normalized = Math.floor(parsed);
-    return normalized > 0 ? normalized : null;
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) return { ok: false };
+    return { ok: true, value: parsed };
 }
 
 export function resolvePeerMediationGrantSigningConfig(
@@ -144,6 +158,8 @@ export function resolvePeerMediationGrantSigningConfig(
             return { ok: false, reasonCode: "invalid_public_key" };
         }
     }
+    const expiresAt = parseOptionalPositiveInt(env[FEATURE_ENV_KEYS.peerMediationRouteGrantSigningExpiresAt]);
+    if (!expiresAt.ok) return { ok: false, reasonCode: "invalid_expiry" };
 
     return {
         ok: true,
@@ -152,51 +168,63 @@ export function resolvePeerMediationGrantSigningConfig(
         capability: {
             keyId,
             publicKey: publicKeyBase64Url,
-            expiresAt: parseOptionalPositiveInt(env[FEATURE_ENV_KEYS.peerMediationRouteGrantSigningExpiresAt]),
+            expiresAt: expiresAt.value,
         },
     };
 }
 
-export function mintDirectRouteGrantV1(input: MintDirectRouteGrantV1Input): MintDirectRouteGrantV1Result {
+type MintDirectRouteGrantFailure = Extract<MintDirectRouteGrantV1Result, Readonly<{ ok: false }>>;
+
+function rejectMint(reasonCode: MintDirectRouteGrantFailure["reasonCode"]): MintDirectRouteGrantFailure {
+    return {
+        ok: false,
+        reasonCode,
+        receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
+    };
+}
+
+function validateDirectRouteGrantMintInput(input: MintDirectRouteGrantV1Input):
+    | Readonly<{ ok: true; scope: DirectRouteGrantScopeV1; grantExpiresAt: number }>
+    | MintDirectRouteGrantFailure {
     if (!input.serverGateEnabled) {
-        return {
-            ok: false,
-            reasonCode: "blocked_by_server_policy",
-            receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
-        };
+        return rejectMint("blocked_by_server_policy");
     }
     if (input.routeKind === "server_relay") {
-        return {
-            ok: false,
-            reasonCode: "server_relay_not_grantable",
-            receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
-        };
+        return rejectMint("server_relay_not_grantable");
     }
     if (!Number.isFinite(input.ttlMs) || input.ttlMs <= 0) {
-        return {
-            ok: false,
-            reasonCode: "invalid_ttl",
-            receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
-        };
+        return rejectMint("invalid_ttl");
     }
+    const requestedGrantExpiresAt = input.nowMs + input.ttlMs;
+    if (!Number.isSafeInteger(requestedGrantExpiresAt)) {
+        return rejectMint("invalid_ttl");
+    }
+    if (input.signingKey.expiresAt != null && input.nowMs >= input.signingKey.expiresAt) {
+        return rejectMint("signing_key_expired");
+    }
+    const grantExpiresAt = input.signingKey.expiresAt == null
+        ? requestedGrantExpiresAt
+        : Math.min(requestedGrantExpiresAt, input.signingKey.expiresAt);
 
     const scope = DirectRouteGrantScopeV1Schema.safeParse(input.scope);
     if (!scope.success || scope.data.kind !== input.flowKind) {
-        return {
-            ok: false,
-            reasonCode: "invalid_scope",
-            receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
-        };
+        return rejectMint("invalid_scope");
     }
     if (scope.data.kind === "machine_rpc") {
         const methods = validateMachineRpcGrantAllowedMethods(scope.data.allowedMethods);
         if (!methods.ok) {
-            return {
-                ok: false,
-                reasonCode: methods.reasonCode,
-                receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
-            };
+            return rejectMint(methods.reasonCode);
         }
+    }
+    return { ok: true, scope: scope.data, grantExpiresAt };
+}
+
+export function mintDirectRouteGrantV1(input: MintDirectRouteGrantV1Input): MintDirectRouteGrantV1Result {
+    const validated = validateDirectRouteGrantMintInput(input);
+    if (!validated.ok) return validated;
+    if (input.routeKind === "server_relay") return rejectMint("server_relay_not_grantable");
+    if (input.routeKind === "iroh_peer") {
+        return rejectMint("iroh_requires_v2");
     }
 
     const payload: DirectRouteGrantPayloadV1 = {
@@ -207,13 +235,21 @@ export function mintDirectRouteGrantV1(input: MintDirectRouteGrantV1Input): Mint
         machineId: input.machineId,
         flowKind: input.flowKind,
         routeKind: input.routeKind,
-        scope: scope.data,
+        scope: validated.scope,
         iat: input.nowMs,
-        exp: input.nowMs + input.ttlMs,
+        exp: validated.grantExpiresAt,
         aud: "happier-daemon-route-grant",
         ...(input.endpointFingerprint ? { endpointFingerprint: input.endpointFingerprint } : {}),
     };
-    const signingInput = Buffer.from(createDirectRouteGrantSigningInputV1(payload), "utf8");
+    const payloadValidation = DirectRouteGrantPayloadV1Schema.safeParse(payload);
+    if (!payloadValidation.success) {
+        return {
+            ok: false,
+            reasonCode: "invalid_iroh_binding",
+            receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
+        };
+    }
+    const signingInput = Buffer.from(createDirectRouteGrantSigningInputV1(payloadValidation.data), "utf8");
     const signature = tweetnacl.sign.detached(signingInput, input.signingKey.secretKey);
 
     return {
@@ -231,12 +267,24 @@ export function mintDirectRouteGrantV1(input: MintDirectRouteGrantV1Input): Mint
 }
 
 export function mintDirectRouteGrantV2(input: MintDirectRouteGrantV2Input): MintDirectRouteGrantV2Result {
-    const validated = mintDirectRouteGrantV1(input);
+    const validated = validateDirectRouteGrantMintInput(input);
     if (!validated.ok) return validated;
+    if (input.routeKind === "server_relay") return rejectMint("server_relay_not_grantable");
 
     const candidate: DirectRouteGrantPayloadV2 = {
-        ...validated.grant.payload,
         v: 2,
+        grantId: `grant_${randomUUID()}`,
+        grantFamilyId: `grant_family_${randomUUID()}`,
+        accountId: input.accountId,
+        machineId: input.machineId,
+        flowKind: input.flowKind,
+        routeKind: input.routeKind,
+        scope: validated.scope,
+        iat: input.nowMs,
+        exp: validated.grantExpiresAt,
+        aud: "happier-daemon-route-grant",
+        ...(input.endpointFingerprint ? { endpointFingerprint: input.endpointFingerprint } : {}),
+        ...(input.iroh ? { iroh: input.iroh } : {}),
         proofKind: "ephemeral_ed25519",
         ephemeralPublicKeyBase64Url: input.ephemeralPublicKeyBase64Url,
     };

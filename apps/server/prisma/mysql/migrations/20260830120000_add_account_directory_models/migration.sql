@@ -21,7 +21,7 @@ FOREIGN KEY (`accountId`) REFERENCES `Account`(`id`) ON DELETE CASCADE ON UPDATE
 CREATE TABLE `AccountDirectoryLink` (
     `accountId` VARCHAR(191) NOT NULL,
     `issuerServerIdentityId` VARCHAR(191) NOT NULL,
-    `issuerSubjectId` VARCHAR(191) NOT NULL,
+    `issuerSubjectId` VARCHAR(256) NOT NULL,
     `issuerSigningKeyId` VARCHAR(191) NOT NULL,
     `issuerSigningPublicKey` LONGBLOB NOT NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

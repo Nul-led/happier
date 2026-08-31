@@ -86,8 +86,19 @@ function isRetryableUnavailable(
 ): boolean {
     return code === "targetUnavailable"
         || code === "actionExecutionFailed"
-        || code === "contractInvalid"
         || code === "cancelled";
+}
+
+function ambiguousContractOutcome(
+    claim: Readonly<{ attempt: number }>,
+): Readonly<{ kind: "retry"; retryAfterMs: number }> | Readonly<{ kind: "blocked" }> {
+    // The first invocation may have committed custody before returning an
+    // invalid result. Rejoin that exact frozen handoff once. A second invalid
+    // result cannot become valid through unattended repetition, so it enters
+    // the existing recoverable blocked custody.
+    return claim.attempt === 1
+        ? { kind: "retry", retryAfterMs: DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS }
+        : { kind: "blocked" };
 }
 
 async function readNextDueAt(now: Date): Promise<Date | null> {
@@ -131,10 +142,7 @@ export async function runAutomationReplyHandoffWorkerPass(params: Readonly<{
         const settlement = await settleAutomationReplyHandoff({
             claim,
             now: params.now,
-            outcome: {
-                kind: "retry",
-                retryAfterMs: DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS,
-            },
+            outcome: ambiguousContractOutcome(claim),
         });
         return { claimed: true, settled: settlement.applied, nextDueAt: await readNextDueAt(params.now) };
     }
@@ -143,9 +151,11 @@ export async function runAutomationReplyHandoffWorkerPass(params: Readonly<{
         ? await settleAutomationReplyHandoff({
             claim,
             now: params.now,
-            outcome: isRetryableUnavailable(result.data.code)
-                ? { kind: "retry", retryAfterMs: DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS }
-                : { kind: "blocked" },
+            outcome: result.data.code === "contractInvalid"
+                ? ambiguousContractOutcome(claim)
+                : isRetryableUnavailable(result.data.code)
+                    ? { kind: "retry", retryAfterMs: DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS }
+                    : { kind: "blocked" },
         })
         : await settleAutomationReplyHandoff({
             claim,

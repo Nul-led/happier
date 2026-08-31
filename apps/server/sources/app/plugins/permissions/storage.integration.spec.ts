@@ -1144,6 +1144,8 @@ describe("plugin permission grant durable storage", () => {
             }, createReplyStub()) as any;
             const granted = await grant({
                 userId: account.id,
+                authAuthority: "present_user",
+                authTokenKind: "account",
                 body: { requestId: requested.pendingRequest.id },
             }, createReplyStub()) as any;
             return granted.grant.id;
@@ -1233,6 +1235,7 @@ describe("plugin permission grant durable storage", () => {
         await revoke({
             userId: account.id,
             authAuthority: "present_user",
+            authTokenKind: "account",
             body: { grantId: grantIdStillOwned },
         }, userReply);
         expect(userReply.statusCode).toBe(200);

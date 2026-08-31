@@ -12,12 +12,14 @@ import { createPluginEventAutomationSetupResultV1JsonSchema } from "@happier-dev
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { db, initDbMysql, initDbPostgres } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 
 import {
     AutomationTriggerMutationConflictError,
     createAutomation,
     deleteAutomation,
+    finalizeDeletedAutomationsWithoutRetainedRunsTx,
     setAutomationEnabled,
     updateAutomation,
     updateAutomationTrigger,
@@ -497,6 +499,80 @@ describe("Automation Event CRUD database contract", () => {
         })).rejects.toBeInstanceOf(AutomationValidationError);
         expect(await db.automation.count({ where: { accountId: e2ee.id } })).toBe(0);
         expect(await readEventCatalogRevision(e2ee.id)).toBeNull();
+    });
+
+    it("advances the Event catalog only when the final retained Run releases a deleted Event Automation", async () => {
+        const account = await seedEventWriterAccount();
+        const created = await createAutomation({
+            accountId: account.id,
+            input: {
+                automationId: randomUUID(),
+                name: "Retained repository event",
+                enabled: true,
+                triggers: [eventWriterTriggerInput(eventWriterTrigger(
+                    account,
+                    `retained-repository-${randomUUID()}`,
+                ))],
+                executionRecipe: eventExecutionRecipe({
+                    templateVersion: 1,
+                    machineId: account.machineId,
+                }),
+                assignments: [{ machineId: account.machineId }],
+            },
+        });
+        const trigger = created.triggers[0]!;
+        const retainedRunId = randomUUID();
+        const occurredAt = new Date("2026-08-31T00:00:00.000Z");
+        await db.automationRun.create({
+            data: {
+                id: retainedRunId,
+                automationId: created.id,
+                accountId: account.id,
+                state: "failed",
+                triggerId: trigger.id,
+                causeKind: "trigger",
+                causeTriggerKind: "pluginEvent",
+                causeTriggerRevision: trigger.revision,
+                causeOccurredAt: occurredAt,
+                occurrenceKey: `retained-event-run-${randomUUID()}`,
+                causeEventPluginId: EVENT_PLUGIN_ID,
+                causeEventLocalId: EVENT_LOCAL_ID,
+                causeSourceSelectorId: trigger.sourceSelectorId,
+                triggerEvidenceEnvelope: JSON.stringify({ t: "plain", v: {} }),
+                scheduledAt: occurredAt,
+                dueAt: occurredAt,
+                finishedAt: occurredAt,
+                errorCode: "retained_event_catalog_test",
+            },
+        });
+
+        await expect(deleteAutomation({
+            accountId: account.id,
+            automationId: created.id,
+        })).resolves.toBe(true);
+        expect(await readEventCatalogRevision(account.id)).toBe(2n);
+        await expect(inTx(async (tx) => await finalizeDeletedAutomationsWithoutRetainedRunsTx({
+            tx,
+            accountId: account.id,
+            limit: 1,
+        }))).resolves.toBe(0);
+        expect(await readEventCatalogRevision(account.id)).toBe(2n);
+
+        await db.automationRun.delete({ where: { id: retainedRunId } });
+        await expect(inTx(async (tx) => await finalizeDeletedAutomationsWithoutRetainedRunsTx({
+            tx,
+            accountId: account.id,
+            limit: 1,
+        }))).resolves.toBe(1);
+        expect(await readEventCatalogRevision(account.id)).toBe(3n);
+        await expect(db.automation.findUnique({ where: { id: created.id } })).resolves.toBeNull();
+
+        await expect(inTx(async (tx) => await finalizeDeletedAutomationsWithoutRetainedRunsTx({
+            tx,
+            accountId: account.id,
+            limit: 1,
+        }))).resolves.toBe(0);
+        expect(await readEventCatalogRevision(account.id)).toBe(3n);
     });
 
     it("keeps multiple Event trigger rows independently identifiable and resumable", async () => {

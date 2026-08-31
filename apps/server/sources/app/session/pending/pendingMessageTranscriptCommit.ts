@@ -21,6 +21,7 @@ import {
     type SessionMessageRole,
     type PendingRequestedActionV1,
 } from "@happier-dev/protocol";
+import { notifySessionTranscriptMutationAfterCommit } from '../sessionTranscriptMutationObserver';
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
@@ -197,6 +198,21 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
                 select: { id: true, seq: true, localId: true, messageRole: true, content: true, deliveryResolution: true, createdAt: true, updatedAt: true },
             })
             : existing;
+
+        if (needsRoleUpdate || needsDeliveryResolutionUpdate) {
+            notifySessionTranscriptMutationAfterCommit(tx, {
+                kind: 'upsert',
+                message: {
+                    id: row.id,
+                    sessionId,
+                    seq: row.seq,
+                    createdAtMs: row.createdAt.getTime(),
+                    updatedAtMs: row.updatedAt.getTime(),
+                    role: typeof row.messageRole === 'string' ? row.messageRole : null,
+                    content: row.content,
+                },
+            });
+        }
 
         return {
             ok: true,

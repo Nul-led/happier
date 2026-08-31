@@ -68,7 +68,11 @@ function hasRetainedV2TemplateEnvelope(raw: string): boolean {
 
 /** Released V2 represents exactly one retained schedule and nothing else. */
 type AutomationV2RepresentabilityFacts = Pick<AutomationListItem, "targetType" | "templateCiphertext"> & Readonly<{
-    triggers: ReadonlyArray<Pick<AutomationTriggerItem, "kind" | "scheduleKind">>;
+    // Prisma's physical enum can contain unreleased values while this adapter
+    // remains intentionally constrained to the released V2 schedule shape.
+    triggers: ReadonlyArray<Pick<AutomationTriggerItem, "kind" | "enabled"> & Readonly<{
+        scheduleKind: string | null;
+    }>>;
 }>;
 
 export function isAutomationDefinitionRepresentableInV2<T extends AutomationV2RepresentabilityFacts>(
@@ -76,6 +80,7 @@ export function isAutomationDefinitionRepresentableInV2<T extends AutomationV2Re
 ): item is T & Readonly<{ targetType: AutomationLegacyTargetType }> {
     const trigger = item.triggers.length === 1 ? item.triggers[0] : undefined;
     return trigger?.kind === "schedule"
+        && trigger.enabled
         && trigger.scheduleKind !== null
         && item.targetType !== "execution_run"
         && parseAutomationStoredDefinitionExecutionRecipeV1(item.templateCiphertext).kind !== "available"

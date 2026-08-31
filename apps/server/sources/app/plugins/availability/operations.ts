@@ -526,6 +526,44 @@ function isExactPlainPackageAssetArchive(input: Readonly<{
         }) !== null;
 }
 
+function isExactPlainUiArtifactArchive(input: Readonly<{
+    pluginId: string;
+    slot: PluginUiReleaseSlotV1;
+    envelope: Readonly<{
+        header: Uint8Array;
+        body: Uint8Array;
+        dataEncryptionKey: Uint8Array;
+    }>;
+}>): boolean {
+    if (!isPlainArtifactDataKeyBytes(input.envelope.dataEncryptionKey)) {
+        // E2EE archive bytes are intentionally opaque to the server. Their
+        // canonical verification remains at the Account Artifact opener.
+        return true;
+    }
+    const header = decodePlainArtifactStoredContent(
+        privacyKit.encodeBase64(copyArtifactBytes(input.envelope.header)),
+    );
+    const bodyEnvelope = decodePlainArtifactStoredContent(
+        privacyKit.encodeBase64(copyArtifactBytes(input.envelope.body)),
+    );
+    const encodedBody = readArtifactArchiveBodyString(bodyEnvelope);
+    const body = encodedBody
+        ? decodePluginUiArtifactArchiveBodyV1(encodedBody)
+        : null;
+    const archive = header !== null && body !== null
+        ? openPluginUiArtifactArchiveV1({
+            pluginId: input.pluginId,
+            expectedArtifactDigest: input.slot.artifactDigest,
+            header,
+            body,
+        })
+        : null;
+    return archive !== null
+        && archive.artifactGraph.contributionId === input.slot.contributionId
+        && archive.artifactGraph.tier === input.slot.tier
+        && archive.artifactGraph.platform === input.slot.platform;
+}
+
 function artifactEnvelopeByteLength(input: Readonly<{
     header: Uint8Array;
     body: Uint8Array;
@@ -1622,6 +1660,16 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                 "plugin_ui_artifact_hosting_unsupported",
             );
         }
+        const artifact = decodeArtifactEnvelope(input.artifact);
+        if (!isExactPlainUiArtifactArchive({
+            pluginId: input.release.pluginId,
+            slot: input.slot,
+            envelope: artifact,
+        })) {
+            throw new PluginAvailabilityOperationError(
+                "plugin_ui_artifact_invalid_content",
+            );
+        }
 
         const publish = async (tx: Tx): Promise<PluginAvailabilityUiArtifactPublishActionOutputV1> => {
             const release = await resolveReleaseTx(tx, params.accountId, input.release);
@@ -1674,7 +1722,6 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                     "plugin_ui_artifact_conflict",
                 );
             }
-            const artifact = decodeArtifactEnvelope(input.artifact);
             await assertHostingCapacityTx({
                 tx,
                 accountId: params.accountId,

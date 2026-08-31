@@ -28,6 +28,18 @@ describe("released V2 daemon assignment projection", () => {
             priority: 7,
             updatedAt: DATE,
             nextClaimAt: new Date(DATE.getTime() + 30_000),
+            // This may point at a soft-deleted frozen Run trigger rather than
+            // the first mutable Definition trigger.
+            v2ScheduleTrigger: {
+                id: "trigger-frozen-run",
+                kind: "schedule",
+                enabled: false,
+                scheduleKind: "interval",
+                scheduleExpr: null,
+                everyMs: 120_000,
+                timezone: "UTC",
+                nextRunAt: null,
+            },
             automation: {
                 id: "automation-1",
                 accountId: "account-1",
@@ -121,7 +133,7 @@ describe("released V2 daemon assignment projection", () => {
                     schedule: {
                         kind: "interval",
                         scheduleExpr: null,
-                        everyMs: 60_000,
+                        everyMs: 120_000,
                         timezone: "UTC",
                     },
                     nextRunAt: DATE.getTime() + 30_000,

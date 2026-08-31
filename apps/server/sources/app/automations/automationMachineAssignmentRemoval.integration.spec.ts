@@ -825,4 +825,87 @@ describe("automation machine-assignment removal (integration)", () => {
             where: { accountId, kind: "automation" },
         })).resolves.toEqual([]);
     });
+
+    it("terminalizes reply custody whose frozen target is permanently revoked", async () => {
+        const accountId = await createAccount();
+        const machineId = await createMachine(accountId);
+        const { automationId } = await seedAutomation({ accountId });
+        const now = new Date();
+        const common = {
+            automationId,
+            accountId,
+            state: "succeeded" as const,
+            causeKind: "conversation" as const,
+            causeOccurredAt: now,
+            occurrenceKey: "A".repeat(43),
+            triggerEvidenceEnvelope: JSON.stringify({ t: "plain", v: {} }),
+            scheduledAt: now,
+            dueAt: now,
+            finishedAt: now,
+            resultEnvelope: "{}",
+            replyContextEnvelope: "{}",
+            replyHandoffActionPluginId: "happier.channels",
+            replyHandoffActionLocalId: "automation/result-deliver-v1",
+            replyHandoffTargetMachineId: machineId,
+            replyHandoffTargetMachineInstallationId: "installation-1",
+            replyHandoffTargetMaterializationId: "materialization-1",
+        };
+        const [unattempted, retrying, handingOff] = await Promise.all([
+            db.automationRun.create({
+                data: {
+                    ...common,
+                    id: `run-${randomUUID()}`,
+                    occurrenceKey: "A".repeat(43),
+                    replyHandoffId: `handoff-${randomUUID()}`,
+                    replyHandoffState: "ready",
+                    replyHandoffAttempt: 0,
+                    replyHandoffDueAt: now,
+                },
+            }),
+            db.automationRun.create({
+                data: {
+                    ...common,
+                    id: `run-${randomUUID()}`,
+                    occurrenceKey: "B".repeat(43),
+                    replyHandoffId: `handoff-${randomUUID()}`,
+                    replyHandoffState: "ready",
+                    replyHandoffAttempt: 1,
+                    replyHandoffDueAt: now,
+                },
+            }),
+            db.automationRun.create({
+                data: {
+                    ...common,
+                    id: `run-${randomUUID()}`,
+                    occurrenceKey: "C".repeat(43),
+                    replyHandoffId: `handoff-${randomUUID()}`,
+                    replyHandoffState: "handingOff",
+                    replyHandoffAttempt: 1,
+                    replyHandoffDueAt: now,
+                },
+            }),
+        ]);
+
+        await inTx(async (tx) => await removeAutomationMachineAssignmentsTx({
+            tx,
+            accountId,
+            machineId,
+            markMachineUnavailableTx: async (fencedTx) => {
+                await fencedTx.machine.update({
+                    where: { id: machineId },
+                    data: { revokedAt: now },
+                });
+            },
+        }));
+
+        await expect(db.automationRun.findMany({
+            where: { id: { in: [unattempted.id, retrying.id, handingOff.id] } },
+            orderBy: { id: "asc" },
+            select: { id: true, replyHandoffState: true, replyHandoffDueAt: true },
+        })).resolves.toEqual([
+            { id: handingOff.id, replyHandoffState: "blocked", replyHandoffDueAt: null },
+            { id: retrying.id, replyHandoffState: "blocked", replyHandoffDueAt: null },
+            { id: unattempted.id, replyHandoffState: "suppressed", replyHandoffDueAt: null },
+        ].sort((left, right) => left.id.localeCompare(right.id)));
+    });
 });
