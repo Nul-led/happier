@@ -512,9 +512,14 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
       const wasRunning = await deps.lifecycle.isRunning();
       if (wasRunning) {
         input.progress?.('stopping_home');
-        await deps.lifecycle.stop();
-        if (await deps.lifecycle.isRunning()) {
-          throw new PersonalHomeOperationsError('home_stop_failed', 'Personal Home did not stop; erase was not attempted.');
+        try {
+          await deps.lifecycle.stop();
+          if (await deps.lifecycle.isRunning()) {
+            throw new PersonalHomeOperationsError('home_stop_failed', 'Personal Home did not stop; erase was not attempted.');
+          }
+        } catch (error) {
+          await deps.lifecycle.start().catch(() => undefined);
+          throw error;
         }
       }
       const paths = resolvePersonalHomeEraseTargets(layout);
@@ -586,6 +591,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
           throw new PersonalHomeOperationsError('home_stop_failed', 'Personal Home did not stop; relocation was not attempted.');
         }
       },
+      isSourceRunning: () => deps.lifecycle.isRunning(),
       startSource: async () => { input.progress?.('rolling_back_source'); await deps.lifecycle.start(); },
       priorSourceRunning: await deps.lifecycle.isRunning(),
       checkCancelledBeforeCutover: () => checkCancelled(input),

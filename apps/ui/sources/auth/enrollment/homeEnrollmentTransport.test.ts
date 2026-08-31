@@ -87,6 +87,28 @@ describe('resolveHomeEnrollmentTransport', () => {
         expect(releaseSpy).toHaveBeenCalledTimes(1);
     });
 
+    it('prefers Iroh before an available HTTPS endpoint for a mixed descriptor', async () => {
+        const descriptor = {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_home_b',
+            canonicalServerUrl: 'https://home-b.test',
+            revision: 7,
+            endpoints: [
+                { kind: 'https' as const, url: 'https://home-b.test' },
+                { kind: 'iroh' as const, endpointId: 'iroh-home-b' },
+            ],
+        };
+
+        const result = await resolveHomeEnrollmentTransport(descriptor);
+
+        expect(result).toMatchObject({ ok: true, transport: {
+            carrier: 'iroh',
+            endpointUrl: 'https://home-b.test',
+            runtimeOrigin: 'http://127.0.0.1:43123',
+        } });
+        expect(acquireIrohHomeRuntimeOriginSpy).toHaveBeenCalledTimes(1);
+    });
+
     it('falls back to an independent HTTPS endpoint when Iroh acquisition fails on pure availability', async () => {
         acquireIrohHomeRuntimeOriginSpy.mockRejectedValueOnce(
             Object.assign(new Error('native unavailable'), { name: 'IrohError', code: 'unavailable' }),

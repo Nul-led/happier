@@ -288,6 +288,35 @@ describe('Personal Home relocation owner', () => {
         await rm(root, { recursive: true, force: true });
     });
 
+    it('restarts the source after destination quarantine when stop throws after stopping it', { timeout: 60_000 }, async () => {
+        const { root, source, destination } = await makeRoots();
+        let sourceRunning = true;
+        const events: string[] = [];
+        await writeFile(join(root, 'home.tar'), 'bundle-bytes');
+        await expect(relocatePersonalHome({
+            source: { dataDir: source, homeServerIdentityId: IDENTITY },
+            destination: { dataDir: destination },
+            revalidateSourceUnderLocks: async () => undefined,
+            createFinalBackup: async () => ({ path: join(root, 'home.tar'), sha256: '9'.repeat(64), manifest: {} as never }),
+            prepareDestination: async () => undefined,
+            stopSource: async () => { sourceRunning = false; throw new Error('source stop failed after stopping'); },
+            isSourceRunning: async () => sourceRunning,
+            startSource: async () => { events.push('start-source'); sourceRunning = true; },
+            transfer: { send: async () => ({ receivedPath: join(root, 'received.tar'), bytes: 12, sha256: '9'.repeat(64) }) },
+            restoreDestination: async () => undefined,
+            verifyDestination: async () => ({ homeServerIdentityId: IDENTITY }),
+            startDestination: async () => ({ healthy: true, homeServerIdentityId: IDENTITY }),
+            stopDestination: async () => undefined,
+            quarantineDestination: async () => { events.push('quarantine-destination'); },
+            commitSameHomeRelocation: async () => undefined,
+            destinationDescriptor: descriptor(),
+            priorSourceRunning: true,
+        })).rejects.toThrow('source stop failed after stopping');
+        expect(events).toEqual(['quarantine-destination', 'start-source']);
+        expect(sourceRunning).toBe(true);
+        await rm(root, { recursive: true, force: true });
+    });
+
     it('rolls a failed destination activation back to the source without publishing', { timeout: 60_000 }, async () => {
         const { root, source } = await makeRoots();
         const events: string[] = [];

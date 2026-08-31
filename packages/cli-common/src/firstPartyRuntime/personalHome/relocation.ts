@@ -1,10 +1,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 
 import { normalizePersonalHomeLockOrder, withPersonalHomeOperationLocks } from './lock.js';
+import { replacePersonalHomeFileDurably } from './durableFile.js';
 
 export type PersonalHomeBundleTransfer = Readonly<{
     send(input: Readonly<{
@@ -69,7 +70,7 @@ async function writeMarker(dataDir: string, marker: PersonalHomeRelocationMarker
     await mkdir(join(resolve(dataDir), '.operations'), { recursive: true });
     const temporary = `${path}.${process.pid}.tmp`;
     await writeFile(temporary, `${JSON.stringify(marker)}\n`, { mode: 0o600 });
-    await rename(temporary, path);
+    await replacePersonalHomeFileDurably(temporary, path);
 }
 
 function verifyTransfer(params: Readonly<{
@@ -95,6 +96,7 @@ export async function relocatePersonalHome(params: Readonly<{
     createFinalBackup(): Promise<Readonly<{ path: string; sha256: string; manifest: unknown }>>;
     prepareDestination(): Promise<void>;
     stopSource(): Promise<void>;
+    isSourceRunning?(): Promise<boolean>;
     startSource(): Promise<void>;
     transfer: PersonalHomeBundleTransfer;
     restoreDestination(receivedPath: string): Promise<void>;
@@ -148,8 +150,13 @@ export async function relocatePersonalHome(params: Readonly<{
         await persist('staged');
 
         params.checkCancelledBeforeCutover?.();
-        await params.stopSource();
-        sourceStopped = true;
+        try {
+            await params.stopSource();
+            sourceStopped = true;
+        } catch (error) {
+            if (params.isSourceRunning && !(await params.isSourceRunning())) sourceStopped = true;
+            throw error;
+        }
         const backup = await params.createFinalBackup();
         const expectedBytes = (await stat(backup.path)).size;
         bundleSha256 = backup.sha256;

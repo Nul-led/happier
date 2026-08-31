@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const adoptHomeProfileMock = vi.hoisted(() => vi.fn(async (params: unknown) => params));
 const getActiveServerSnapshotMock = vi.hoisted(() => vi.fn(() => ({ serverId: 'focused', serverUrl: 'https://focused.test', generation: 1 })));
@@ -7,6 +7,11 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({ adoptHomeProfile: adopt
 vi.mock('@/sync/domains/server/serverRuntime', () => ({ getActiveServerSnapshot: getActiveServerSnapshotMock }));
 
 describe('refreshAccountHomeDirectory', () => {
+    beforeEach(() => {
+        adoptHomeProfileMock.mockClear();
+        getActiveServerSnapshotMock.mockClear();
+    });
+
     it('adopts directory homes without reading or changing focused Home state', async () => {
         const { refreshAccountHomeDirectory } = await import('./refreshAccountHomeDirectory');
         const session = {
@@ -25,5 +30,27 @@ describe('refreshAccountHomeDirectory', () => {
             preserveUserLabel: true,
         }));
         expect(getActiveServerSnapshotMock).not.toHaveBeenCalled();
+    });
+
+    it('does not adopt a late directory result after the owning Account Service attempt is cancelled', async () => {
+        const { refreshAccountHomeDirectory } = await import('./refreshAccountHomeDirectory');
+        let cancelled = false;
+        const session = {
+            refresh: vi.fn(async () => {
+                cancelled = true;
+                return {
+                    endpoint: 'https://directory.test', status: 'ready', account: null, preferredHomeServerIdentityId: 'home-1', refreshedAtMs: 1, error: null,
+                    homes: [{
+                        homeServerIdentityId: 'home-1', canonicalServerUrl: 'https://home.test', label: 'Home', createdAt: 1, updatedAt: 1,
+                        connectionDescriptor: { v: 1, homeServerIdentityId: 'home-1', canonicalServerUrl: 'https://home.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.test' }] },
+                    }],
+                };
+            }),
+        };
+
+        await refreshAccountHomeDirectory(session as never, { shouldCancel: () => cancelled });
+
+        expect(session.refresh).toHaveBeenCalledWith({ shouldCancel: expect.any(Function) });
+        expect(adoptHomeProfileMock).not.toHaveBeenCalled();
     });
 });

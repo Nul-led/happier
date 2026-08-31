@@ -15,6 +15,7 @@ export type HomeApprovalGate = {
         issuerServerIdentityId: string;
         issuerSubjectId: string;
         requesterBoxPublicKeyBase64: string;
+        approvalBindingProof: string;
         deviceLabel: string | null;
         approvalId?: string;
     }): Promise<
@@ -57,6 +58,7 @@ export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): Ho
                 }
                 if (
                     row.requestedPublicKey !== input.requesterBoxPublicKeyBase64
+                    || row.requestedBindingProof !== input.approvalBindingProof
                     || row.requesterIssuerServerIdentityId !== input.issuerServerIdentityId
                     || row.requesterIssuerSubjectId !== input.issuerSubjectId
                 ) {
@@ -108,6 +110,7 @@ export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): Ho
                         approvalStatus: "pending",
                         expiresAt: { gt: now },
                         requestedPublicKey: input.requesterBoxPublicKeyBase64,
+                        requestedBindingProof: input.approvalBindingProof,
                         requesterIssuerServerIdentityId: input.issuerServerIdentityId,
                         requesterIssuerSubjectId: input.issuerSubjectId,
                     },
@@ -130,6 +133,7 @@ export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): Ho
                         accountId: input.accountId,
                         secretHash: randomBytes(32).toString("base64url"),
                         requestedPublicKey: input.requesterBoxPublicKeyBase64,
+                        requestedBindingProof: input.approvalBindingProof,
                         requestedDeviceLabel: input.deviceLabel,
                         requestedAt: now,
                         expiresAt,
@@ -174,6 +178,7 @@ export function registerHomeLoginApprovalRoutes(app: Fastify): void {
                 approvalStatus: "pending",
                 expiresAt: { gt: now },
                 requestedPublicKey: { not: null },
+                requestedBindingProof: { not: null },
                 requesterIssuerServerIdentityId: { not: null },
                 requesterIssuerSubjectId: { not: null },
             },

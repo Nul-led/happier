@@ -75,6 +75,54 @@ describe('AccountDirectorySession', () => {
         expect(stale.homes).toHaveLength(1);
     });
 
+    it('does not project a refresh result after the owning lifecycle cancels the attempt', async () => {
+        let resolveList: ((value: { homes: ReturnType<typeof home>[]; preferredHomeServerIdentityId: string }) => void) | null = null;
+        let cancelled = false;
+        const client = {
+            getMe: vi.fn(async () => ({ accountId: 'a' })),
+            listHomes: vi.fn(() => new Promise<{ homes: ReturnType<typeof home>[]; preferredHomeServerIdentityId: string }>((resolve) => {
+                resolveList = resolve;
+            })),
+        };
+        const session = new AccountDirectorySession({ endpoint: 'https://directory.test' }, {
+            client: client as never,
+            capability: supportedCapability,
+        });
+
+        const refresh = session.refresh({ shouldCancel: () => cancelled });
+        cancelled = true;
+        resolveList!({ homes: [home('home-late')], preferredHomeServerIdentityId: 'home-late' });
+        await refresh;
+
+        expect(session.snapshot).not.toMatchObject({
+            status: 'ready',
+            preferredHomeServerIdentityId: 'home-late',
+        });
+        expect(session.snapshot.homes).toEqual([]);
+    });
+
+    it('keeps logout authoritative when an older refresh resolves late', async () => {
+        let resolveList: ((value: { homes: ReturnType<typeof home>[]; preferredHomeServerIdentityId: string }) => void) | null = null;
+        const client = {
+            getMe: vi.fn(async () => ({ accountId: 'a' })),
+            listHomes: vi.fn(() => new Promise<{ homes: ReturnType<typeof home>[]; preferredHomeServerIdentityId: string }>((resolve) => {
+                resolveList = resolve;
+            })),
+        };
+        const session = new AccountDirectorySession({ endpoint: 'https://directory.test' }, {
+            client: client as never,
+            capability: supportedCapability,
+        });
+
+        const refresh = session.refresh();
+        await session.logout();
+        resolveList!({ homes: [home('home-late')], preferredHomeServerIdentityId: 'home-late' });
+        await refresh;
+
+        expect(session.snapshot).toMatchObject({ status: 'idle', account: null });
+        expect(session.snapshot.homes).toEqual([]);
+    });
+
     it.each([
         ['missing', undefined],
         ['malformed', { version: 1, homeDirectory: true, homeEnrollment: true }],

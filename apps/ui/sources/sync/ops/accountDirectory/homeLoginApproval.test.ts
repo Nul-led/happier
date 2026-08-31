@@ -191,10 +191,10 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         );
     });
 
-    it('retains one pure-Iroh lease through approval retry and releases it only after enrollment', async () => {
+    it('closes each pure-Iroh redemption transport and reacquires one for approval resume', async () => {
         const keyPair = sodium.crypto_box_keypair();
         const sealedToken = sealCredentials('home-b-iroh-token', keyPair.publicKey);
-        acquireIrohHomeRuntimeOriginMock.mockResolvedValueOnce({
+        acquireIrohHomeRuntimeOriginMock.mockResolvedValue({
             leaseId: 'lease-home-b',
             runtimeOrigin: 'http://127.0.0.1:45991',
             release: irohReleaseMock,
@@ -230,7 +230,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         });
         expect(pending).toMatchObject({ kind: 'approval_required', approvalId: 'approval-iroh' });
         expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(1);
-        expect(irohReleaseMock).not.toHaveBeenCalled();
+        expect(irohReleaseMock).toHaveBeenCalledTimes(1);
         expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith(expect.objectContaining({
             endpointUrl: 'http://localhost:3010',
             runtimeOrigin: 'http://127.0.0.1:45991',
@@ -243,8 +243,8 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             kind: 'enrolled',
             homeServerIdentityId: 'srv_home_b',
         });
-        expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(1);
-        expect(irohReleaseMock).toHaveBeenCalledTimes(1);
+        expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(2);
+        expect(irohReleaseMock).toHaveBeenCalledTimes(2);
     });
 
     it('releases a retained pure-Iroh approval lease when the continuation is cancelled', async () => {
@@ -275,6 +275,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             assertion: ASSERTION,
         });
         if (pending.kind !== 'approval_required') throw new Error('Expected approval continuation');
+        expect(irohReleaseMock).toHaveBeenCalledTimes(1);
         await expect(pending.cancel()).resolves.toEqual({ kind: 'cancelled' });
         expect(irohReleaseMock).toHaveBeenCalledTimes(1);
     });
@@ -409,9 +410,37 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
     });
 
-    it('returns an explicit transient continuation and preserves the assertion and approval id when resumed', async () => {
+    it('maps an initial transient redemption to the existing failed outcome', async () => {
         const keyPair = sodium.crypto_box_keypair();
+        endpointFetchMock.mockResolvedValueOnce(json(503, { error: 'home_unavailable' }));
+
+        const result = await continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+        });
+
+        expect(result).toEqual({ kind: 'failed' });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+    });
+
+    it('retains approval state across a transient resume and retries through a fresh transport', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        acquireIrohHomeRuntimeOriginMock.mockResolvedValue({
+            leaseId: 'lease-home-b',
+            runtimeOrigin: 'http://127.0.0.1:45991',
+            release: irohReleaseMock,
+        });
         endpointFetchMock
+            .mockResolvedValueOnce(json(202, {
+                v: 1,
+                outcome: 'approval_required',
+                homeServerIdentityId: 'srv_home_b',
+                approvalId: 'approval-transient',
+                deviceLabel: 'Phone',
+                expiresAtMs: Date.now() + 60_000,
+            }))
             .mockResolvedValueOnce(json(503, { error: 'home_unavailable' }))
             .mockResolvedValueOnce(json(200, {
                 v: 1,
@@ -421,49 +450,41 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
                 expiresAtMs: Date.now() + 120_000,
             }));
 
-        const pending = await continueHomeLoginEnrollment({
-            home: HOME_B,
-            clientSecretKey: keyPair.privateKey,
-            assertion: ASSERTION,
-            approvalId: 'approval-5',
-        });
-        expect(pending.kind).toBe('transient');
-        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
-        if (pending.kind !== 'transient') return;
-        const result = await pending.resume();
-        expect(result).toEqual({ kind: 'enrolled', homeServerIdentityId: 'srv_home_b' });
-        expect(setCredentialsForServerUrlMock).toHaveBeenCalledWith(
-            'https://home-b.test',
-            { serverId: 'srv_home_b' },
-            { token: 'home-b-after-retry' },
-        );
-        expect(endpointFetchMock).toHaveBeenCalledTimes(2);
-        const firstBody = JSON.parse(String((endpointFetchMock.mock.calls[0]?.[1] as RequestInit).body));
-        const secondBody = JSON.parse(String((endpointFetchMock.mock.calls[1]?.[1] as RequestInit).body));
-        expect(secondBody).toEqual(firstBody);
-    });
-
-    it('returns another explicit transient continuation when a resumed request is still transient', async () => {
-        const keyPair = sodium.crypto_box_keypair();
-        endpointFetchMock
-            .mockResolvedValueOnce(json(503, { error: 'home_unavailable' }))
-            .mockResolvedValueOnce(json(503, { error: 'home_unavailable' }));
-
         const first = await continueHomeLoginEnrollment({
-            home: HOME_B,
+            home: {
+                ...HOME_B,
+                connectionDescriptor: {
+                    ...HOME_B.connectionDescriptor,
+                    canonicalServerUrl: 'http://localhost:3010',
+                    endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+                },
+            },
             clientSecretKey: keyPair.privateKey,
             assertion: ASSERTION,
-            approvalId: 'approval-transient',
         });
-        expect(first.kind).toBe('transient');
+        expect(first).toMatchObject({ kind: 'approval_required', approvalId: 'approval-transient' });
         expect(endpointFetchMock).toHaveBeenCalledTimes(1);
-        if (first.kind !== 'transient') return;
+        expect(irohReleaseMock).toHaveBeenCalledTimes(1);
+        if (first.kind !== 'approval_required') return;
+
         const second = await first.resume();
-        expect(second.kind).toBe('transient');
+        expect(second).toMatchObject({ kind: 'approval_required', approvalId: 'approval-transient' });
         expect(endpointFetchMock).toHaveBeenCalledTimes(2);
+        expect(irohReleaseMock).toHaveBeenCalledTimes(2);
+        if (second.kind !== 'approval_required') return;
+
+        await expect(second.resume()).resolves.toEqual({
+            kind: 'enrolled',
+            homeServerIdentityId: 'srv_home_b',
+        });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(3);
+        expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(3);
+        expect(irohReleaseMock).toHaveBeenCalledTimes(3);
         const firstBody = JSON.parse(String((endpointFetchMock.mock.calls[0]?.[1] as RequestInit).body));
         const secondBody = JSON.parse(String((endpointFetchMock.mock.calls[1]?.[1] as RequestInit).body));
-        expect(secondBody).toEqual(firstBody);
+        const thirdBody = JSON.parse(String((endpointFetchMock.mock.calls[2]?.[1] as RequestInit).body));
+        expect(secondBody.assertion).toEqual(firstBody.assertion);
+        expect(thirdBody).toEqual(secondBody);
     });
 
     it('does not retry a terminal Home rejection', async () => {

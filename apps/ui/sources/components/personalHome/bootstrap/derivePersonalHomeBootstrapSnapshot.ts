@@ -72,7 +72,7 @@ export function derivePersonalHomeBootstrapSnapshot(facts: PersonalHomeFacts): P
     if (facts.explicitlySelectedOtherHome) {
         return {
             shouldGateShell: false,
-            homeReady: false,
+            homeReady: facts.completedPersonalHomeProfile != null,
             daemonReady: daemonIsReady(facts),
             phase: 'ready',
             daemonState: daemonState(facts),

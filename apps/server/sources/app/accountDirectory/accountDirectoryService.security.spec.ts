@@ -58,6 +58,7 @@ describe("Account Directory Home redemption security", () => {
             issuerSubjectId: "account-1",
             issuerSigningKeyId: assertion.keyId,
             issuerSigningPublicKey: Buffer.from(keyPair.publicKey),
+            createdAt: new Date(1_700_000_000_000),
         } as never);
         await expect(redeemHomeLoginAssertion({ assertion: signed, nowMs: assertion.issuedAtMs + 1 })).rejects.toMatchObject({
             code: "home_redemption_unavailable",

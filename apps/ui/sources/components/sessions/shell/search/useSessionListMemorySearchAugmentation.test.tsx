@@ -389,7 +389,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
         expect(hook.getCurrent().isSearchingMemory).toBe(false);
     });
 
-    it('keeps missing and indexing Personal Home capability off the daemon path', async () => {
+    it('safely falls back when Home capability is missing and keeps indexing Home off the daemon path', async () => {
         vi.useFakeTimers();
         machinesState.machines = [];
         serverProfilesState.profileSource = 'desktop-personal-home';
@@ -402,7 +402,7 @@ describe('useSessionListMemorySearchAugmentation', () => {
 
         expect(homeSearchMock).not.toHaveBeenCalled();
         expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();
-        expect(hook.getCurrent().memorySearchUnavailableReason).toBe('home_unknown');
+        expect(hook.getCurrent().memorySearchUnavailableReason).toBeUndefined();
 
         featureRuntimeState.homeSearch = { enabled: false, provider: 'home', reason: 'indexing' };
         await hook.rerender({

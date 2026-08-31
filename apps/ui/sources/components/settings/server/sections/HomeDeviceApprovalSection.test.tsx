@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createDeferred, flushHookEffects, renderScreen } from '@/dev/testkit';
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
@@ -12,7 +12,19 @@ type DecideHomeDeviceApproval = (typeof import('@/auth/approval/homeDeviceApprov
 type ResolveHomeEnrollmentTransport = (typeof import('@/auth/enrollment/homeEnrollmentTransport'))['resolveHomeEnrollmentTransport'];
 type GetCredentialsForServerUrl = (typeof import('@/auth/storage/tokenStorage'))['TokenStorage']['getCredentialsForServerUrl'];
 
+const appStateEmitter = vi.hoisted(async () => {
+    const { createReactNativeAppStateEmitter } = await import('@/dev/testkit/mocks/reactNative');
+    return createReactNativeAppStateEmitter('active');
+});
+
 installSettingsViewCommonModuleMocks({
+    reactNative: async () => {
+        const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
+        return createReactNativeWebMock({
+            Platform: { get OS() { return 'android'; } },
+            AppState: (await appStateEmitter).appState,
+        });
+    },
     text: async () => {
         const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
         return createTextModuleMock({ translate: (key) => key });
@@ -41,6 +53,7 @@ const pendingEnrollmentSnapshot = vi.hoisted(() => ({ current: null as null | {
     resume: () => Promise<never>;
     cancel: () => Promise<never>;
 } }));
+const pendingEnrollmentListeners = vi.hoisted(() => new Set<() => void>());
 const resumePendingEnrollmentMock = vi.hoisted(() => vi.fn<() => Promise<HomeLoginContinuationResult | null>>(async () => null));
 const cancelPendingEnrollmentMock = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('@/auth/approval/homeDeviceApprovalClient', () => ({
@@ -62,9 +75,15 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
 });
 vi.mock('@/sync/ops/accountDirectory/enrollPreferredDirectoryHome', () => ({
     getPendingPreferredHomeEnrollment: () => pendingEnrollmentSnapshot.current,
-    subscribePendingPreferredHomeEnrollment: () => () => {},
+    subscribePendingPreferredHomeEnrollment: (listener: () => void) => {
+        pendingEnrollmentListeners.add(listener);
+        return () => pendingEnrollmentListeners.delete(listener);
+    },
     resumePendingPreferredHomeEnrollment: () => resumePendingEnrollmentMock(),
     cancelPendingPreferredHomeEnrollment: () => cancelPendingEnrollmentMock(),
+}));
+vi.mock('@/utils/platform/desktopHost', () => ({
+    isDesktopHost: () => false,
 }));
 
 const HOME: ServerProfile = {
@@ -124,7 +143,19 @@ const APPROVAL = {
     decidedAtMs: null,
 } as const;
 
+function publishPendingEnrollment(
+    next: typeof pendingEnrollmentSnapshot.current,
+): void {
+    pendingEnrollmentSnapshot.current = next;
+    for (const listener of [...pendingEnrollmentListeners]) listener();
+}
+
+beforeEach(async () => {
+    (await appStateEmitter).emit('active');
+});
+
 afterEach(() => {
+    vi.useRealTimers();
     listMock.mockReset();
     decideMock.mockReset();
     resolveTransportMock.mockReset();
@@ -132,11 +163,134 @@ afterEach(() => {
     getCredentialsForServerUrlMock.mockClear();
     getCredentialsForServerUrlMock.mockResolvedValue({ token: 'home-b-full-credential' });
     pendingEnrollmentSnapshot.current = null;
+    pendingEnrollmentListeners.clear();
     resumePendingEnrollmentMock.mockClear();
     cancelPendingEnrollmentMock.mockClear();
 });
 
 describe('HomeDeviceApprovalSection', () => {
+    it('discovers a new Home approval on the active-screen pairing cadence', async () => {
+        vi.useFakeTimers();
+        listMock
+            .mockResolvedValueOnce({ ok: true, items: [] })
+            .mockResolvedValueOnce({ ok: true, items: [APPROVAL] });
+        resolveTransportMock.mockResolvedValue({ ok: true, transport: createTransport() });
+
+        const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
+        const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(screen.findByTestId('settings.server.homeApprovals.empty')).toBeTruthy();
+        expect(listMock).toHaveBeenCalledTimes(1);
+
+        await React.act(async () => {
+            await vi.advanceTimersByTimeAsync(1_000);
+            await flushHookEffects({ cycles: 2, turns: 2 });
+        });
+
+        expect(listMock).toHaveBeenCalledTimes(2);
+        expect(screen.findByTestId('settings.server.homeApprovals.approval-1')).toBeTruthy();
+        expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
+            .toBe('approvals.title: Home B');
+    });
+
+    it('allows only one approval refresh in flight', async () => {
+        vi.useFakeTimers();
+        const firstList = createDeferred<Awaited<ReturnType<ListHomeDeviceApprovals>>>();
+        listMock
+            .mockReturnValueOnce(firstList.promise)
+            .mockResolvedValue({ ok: true, items: [] });
+        resolveTransportMock.mockResolvedValue({ ok: true, transport: createTransport() });
+
+        const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
+        await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(listMock).toHaveBeenCalledTimes(1);
+
+        await React.act(async () => {
+            await vi.advanceTimersByTimeAsync(5_000);
+        });
+        expect(listMock).toHaveBeenCalledTimes(1);
+
+        await React.act(async () => {
+            firstList.resolve({ ok: true, items: [] });
+            await flushHookEffects({ cycles: 2, turns: 2 });
+            await vi.advanceTimersByTimeAsync(999);
+        });
+        expect(listMock).toHaveBeenCalledTimes(1);
+
+        await React.act(async () => {
+            await vi.advanceTimersByTimeAsync(1);
+            await flushHookEffects({ cycles: 2, turns: 2 });
+        });
+        expect(listMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('pauses approval refresh in the background and stops it on unmount', async () => {
+        vi.useFakeTimers();
+        listMock.mockResolvedValue({ ok: true, items: [] });
+        resolveTransportMock.mockResolvedValue({ ok: true, transport: createTransport() });
+
+        const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
+        const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(listMock).toHaveBeenCalledTimes(1);
+
+        await React.act(async () => {
+            (await appStateEmitter).emit('background');
+            await vi.advanceTimersByTimeAsync(3_000);
+        });
+        expect(listMock).toHaveBeenCalledTimes(1);
+
+        await React.act(async () => {
+            (await appStateEmitter).emit('active');
+            await flushHookEffects({ cycles: 2, turns: 2 });
+        });
+        expect(listMock).toHaveBeenCalledTimes(2);
+
+        React.act(() => screen.tree.unmount());
+        await vi.advanceTimersByTimeAsync(3_000);
+        expect(listMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('continues a mounted pending enrollment without manual retry and stops after terminal success', async () => {
+        vi.useFakeTimers();
+        pendingEnrollmentSnapshot.current = {
+            kind: 'approval_required',
+            homeServerIdentityId: 'srv_home_b',
+            approvalId: 'approval-pending',
+            expiresAtMs: Date.now() + 60_000,
+            resume: async () => { throw new Error('not called directly'); },
+            cancel: async () => { throw new Error('not called directly'); },
+        };
+        listMock.mockResolvedValue({ ok: true, items: [] });
+        resolveTransportMock.mockResolvedValue({ ok: true, transport: createTransport() });
+        resumePendingEnrollmentMock.mockImplementation(async () => {
+            publishPendingEnrollment(null);
+            return { kind: 'enrolled', homeServerIdentityId: 'srv_home_b' };
+        });
+
+        const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
+        const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+        expect(screen.findByTestId('settings.server.homeEnrollment.pending')).toBeTruthy();
+
+        await React.act(async () => {
+            await vi.advanceTimersByTimeAsync(1_000);
+            await flushHookEffects({ cycles: 3, turns: 2 });
+        });
+
+        expect(resumePendingEnrollmentMock).toHaveBeenCalledTimes(1);
+        expect(screen.findByTestId('settings.server.homeEnrollment.pending')).toBeNull();
+        expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
+            .toBe('Home B. connect.homeAddedPreservedFocusBody');
+
+        await React.act(async () => {
+            await vi.advanceTimersByTimeAsync(5_000);
+        });
+        expect(resumePendingEnrollmentMock).toHaveBeenCalledTimes(1);
+    });
+
     it('presents a pending enrollment with its Home target, expiry, and separate retry and cancel actions', async () => {
         const expiresAtMs = Date.parse('2030-01-02T03:04:05.000Z');
         pendingEnrollmentSnapshot.current = {
@@ -167,15 +321,14 @@ describe('HomeDeviceApprovalSection', () => {
         expect(pending?.props.accessibilityLabel).toContain('connect.waitingForApproval');
 
         const retry = screen.findByTestId('settings.server.homeEnrollment.pending.retry');
-        const cancel = screen.findByTestId('settings.server.homeEnrollment.pending.cancel');
         expect(retry?.props.title).toBe('common.retry');
-        expect(cancel?.props.title).toBe('common.cancel');
+        expect(screen.findByTestId('settings.server.homeEnrollment.pending.cancel')?.props.title).toBe('common.cancel');
         await React.act(async () => {
             retry?.props.onPress();
             await flushHookEffects({ cycles: 2, turns: 2 });
         });
         await React.act(async () => {
-            cancel?.props.onPress();
+            screen.findByTestId('settings.server.homeEnrollment.pending.cancel')?.props.onPress();
             await flushHookEffects({ cycles: 2, turns: 2 });
         });
         expect(resumePendingEnrollmentMock).toHaveBeenCalledTimes(1);

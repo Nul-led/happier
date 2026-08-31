@@ -188,6 +188,20 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
         });
     });
 
+    it('preserves completed Personal Home readiness while another Home remains explicitly focused', () => {
+        const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
+            explicitlySelectedOtherHome: true,
+            completedPersonalHomeProfile: profile,
+        }));
+
+        expect(snapshot).toMatchObject({
+            shouldGateShell: false,
+            homeReady: true,
+            phase: 'ready',
+            action: 'none',
+        });
+    });
+
     it('routes retained managed data into recovery before the runtime is reinstalled', () => {
         const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
             candidateLocalProfile: null,

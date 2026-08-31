@@ -72,6 +72,7 @@ test('the routing map includes representative composed, native, and production-r
 
   const actualLanes = new Set([...paths].map((path) => classifyTestFile(EMPTY_TEST_LANE_CONTEXT, path)));
   assert.ok(actualLanes.has('test'), 'representatives must include an owner-level unit lane');
-  assert.ok(actualLanes.has('test:integration'), 'representatives must include a real integration lane');
+  assert.ok(actualLanes.has('test:home-iroh:real'), 'representatives must include the dedicated native transport lane');
+  assert.ok(actualLanes.has('cli:test:workspace-sync:real'), 'representatives must include the real workspace-sync lane');
   assert.ok(actualLanes.has('test:e2e:core:slow'), 'representatives must include a composed slow lane');
 });

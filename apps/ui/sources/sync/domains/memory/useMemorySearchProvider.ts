@@ -2,10 +2,7 @@ import * as React from 'react';
 
 import { HomeSearchCapabilitiesSchema } from '@happier-dev/protocol';
 
-import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
-import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
 import { useServerFeaturesRuntimeSnapshot } from '@/sync/domains/features/featureDecisionRuntime';
-import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
 
 export type MemorySearchProviderId = 'home' | 'daemon';
 
@@ -24,17 +21,16 @@ export type MemorySearchProvider = Readonly<{
 }>;
 
 /**
- * Provider selection authority: Lane 03 classifies a profile as
- * `desktop-personal-home` only after its plaintext-only policy is verified.
- * That durable classification keeps search Home-owned even while the optional
- * capability is indexing, unavailable, or absent. Other profiles keep daemon
- * search; the capability refines Home readiness and query availability only.
+ * Provider selection is a functional active-Home decision. The strict server
+ * capability identifies the actual search provider even when the profile was
+ * adopted through QR, Account Directory, or manual configuration. Missing or
+ * unsupported capability shapes safely retain the daemon provider.
  */
 export function resolveMemorySearchProvider(input: Readonly<{
-    profileSource: string | null | undefined;
+    capability: unknown;
 }>): MemorySearchProviderId {
-    if (input.profileSource !== 'desktop-personal-home') return 'daemon';
-    return 'home';
+    const parsed = HomeSearchCapabilitiesSchema.safeParse(input.capability);
+    return parsed.success && parsed.data.provider === 'home' ? 'home' : 'daemon';
 }
 
 export function resolveHomeMemorySearchReadiness(capability: unknown): HomeMemorySearchReadiness {
@@ -47,26 +43,23 @@ export function resolveHomeMemorySearchReadiness(capability: unknown): HomeMemor
 }
 
 export function useMemorySearchProvider(): MemorySearchProvider {
-    const activeServer = useActiveServerSnapshot();
-    const serverProfilesGeneration = useServerProfilesGeneration();
-    const profile = activeServer.serverId ? getServerProfileById(activeServer.serverId) : null;
-    const provider = resolveMemorySearchProvider({ profileSource: profile?.source });
-    const featuresSnapshot = useServerFeaturesRuntimeSnapshot({ enabled: provider === 'home' });
+    // This fetch must be independent of profile provenance: its result is the
+    // authority used to choose the provider.
+    const featuresSnapshot = useServerFeaturesRuntimeSnapshot({ enabled: true });
 
     return React.useMemo(() => {
+        const capability = featuresSnapshot.status === 'ready'
+            ? featuresSnapshot.features.capabilities.homeSearch
+            : undefined;
+        const provider = resolveMemorySearchProvider({ capability });
         if (provider === 'daemon') {
             return { provider, homeReadiness: null, queryAvailable: true };
         }
-        const homeReadiness = resolveHomeMemorySearchReadiness(
-            featuresSnapshot.status === 'ready'
-                ? featuresSnapshot.features.capabilities.homeSearch
-                : undefined,
-        );
+        const homeReadiness = resolveHomeMemorySearchReadiness(capability);
         return {
             provider,
             homeReadiness,
             queryAvailable: homeReadiness === 'ready',
         };
-        // `serverProfilesGeneration` re-reads the persisted profile store when profiles change.
-    }, [provider, serverProfilesGeneration, featuresSnapshot]);
+    }, [featuresSnapshot]);
 }

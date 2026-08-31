@@ -8,13 +8,13 @@ describe('shouldKeepDesktopPersonalHomeShell', () => {
     it('keeps unauthenticated Desktop in the real shell after the provider gate releases it', () => {
         expect(shouldKeepDesktopPersonalHomeShell({
             isAuthenticated: false,
-            isDesktopHost: true,
+            isPersonalHomeBootstrapHost: true,
         })).toBe(true);
     });
 
     it.each([
-        { name: 'authenticated Desktop', isAuthenticated: true, isDesktopHost: true },
-        { name: 'non-Desktop host', isAuthenticated: false, isDesktopHost: false },
+        { name: 'authenticated Desktop', isAuthenticated: true, isPersonalHomeBootstrapHost: true },
+        { name: 'unsupported Desktop or non-Desktop host', isAuthenticated: false, isPersonalHomeBootstrapHost: false },
     ])('does not override established routing for $name', (input) => {
         expect(shouldKeepDesktopPersonalHomeShell(input)).toBe(false);
     });
@@ -43,7 +43,7 @@ describe('shouldKeepDesktopPersonalHomeShell', () => {
         expect(derivePersonalHomeBootstrapSnapshot(facts).shouldGateShell).toBe(false);
         expect(shouldKeepDesktopPersonalHomeShell({
             isAuthenticated: false,
-            isDesktopHost: true,
+            isPersonalHomeBootstrapHost: true,
         })).toBe(true);
     });
 

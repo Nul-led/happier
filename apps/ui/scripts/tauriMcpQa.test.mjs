@@ -162,6 +162,32 @@ test('tauri MCP QA personal-home launch never reuses another attachable app and 
     assert.equal(plan.tauriDev.env?.HAPPIER_TAURI_WEB_RUNTIME_SERVER_URL, undefined);
 });
 
+test('tauri MCP QA passes the exact loaded Personal Home OS home to the evidence scenario', async () => {
+    const scriptsDir = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = join(scriptsDir, 'tauriMcpQa.mjs');
+    const module = await import(pathToFileURL(scriptPath).href);
+    const disposableHome = await mkdtemp(join(tmpdir(), 'tauri-personal-home-evidence-home-'));
+    const env = {
+        ...process.env,
+        HAPPIER_STACK_STACK: 'lane03-personal-home-qa',
+        HAPPIER_STACK_TAURI_IDENTIFIER: 'com.happier.stack.lane03-personal-home-qa',
+        HAPPIER_TAURI_PERSONAL_HOME_QA_HOME: disposableHome,
+    };
+    const plan = await module.resolveTauriMcpQaPlan({ argv: ['--personal-home'], env });
+
+    const qaEnv = module.buildTauriMcpQaScenarioEnv({
+        plan,
+        effectiveEnv: env,
+        attachableApp: {
+            driverSessionPort: 9223,
+            resolvedAppIdentifier: 'com.happier.stack.lane03-personal-home-qa',
+        },
+    });
+
+    assert.equal(qaEnv.HOME, disposableHome);
+    assert.equal(qaEnv.USERPROFILE, disposableHome);
+});
+
 test('tauri MCP QA desktop-sidebar-chrome scenario defaults to the canonical stack-owned desktop QA target when no stack env is provided', async () => {
     const scriptsDir = dirname(fileURLToPath(import.meta.url));
     const scriptPath = join(scriptsDir, 'tauriMcpQa.mjs');

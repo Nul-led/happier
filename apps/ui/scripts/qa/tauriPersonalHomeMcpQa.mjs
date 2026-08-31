@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -49,6 +49,30 @@ function resolveRuntimePaths(env = process.env) {
         join(installRoot, 'data'),
     );
     return { configDir, dataDir, installRoot };
+}
+
+function pathIsWithin(rootPath, candidatePath) {
+    const pathFromRoot = relative(resolve(rootPath), resolve(candidatePath));
+    return pathFromRoot === '' || (!pathFromRoot.startsWith('..') && !isAbsolute(pathFromRoot));
+}
+
+export async function inspectPersonalHomeBackupArchiveEvidence({ archivePath, dataDir }) {
+    if (pathIsWithin(dataDir, archivePath)) {
+        throw new Error('Personal Home loaded QA backup archive is inside the Home data root.');
+    }
+    const archive = await stat(archivePath);
+    if (!archive.isFile() || archive.size <= 0) {
+        throw new Error('Personal Home loaded QA backup archive is missing or empty.');
+    }
+    const [realArchivePath, realDataDir] = await Promise.all([realpath(archivePath), realpath(dataDir)]);
+    if (pathIsWithin(realDataDir, realArchivePath)) {
+        throw new Error('Personal Home loaded QA backup archive resolves inside the Home data root.');
+    }
+    return {
+        archiveBytes: archive.size,
+        archivePath,
+        outsidePersonalHomeDataRoot: true,
+    };
 }
 
 function requireLoopbackListener(host, port, canonicalServerUrl) {
@@ -149,9 +173,18 @@ function resolveArtifactRoot(env = process.env) {
 
 export function buildTauriPersonalHomeQaPlan({ env = process.env } = {}) {
     const appIdentifier = readString(env.HAPPIER_TAURI_MCP_APP_IDENTIFIER ?? env.HAPPIER_STACK_TAURI_IDENTIFIER);
+    const { dataDir } = resolveRuntimePaths(env);
+    const userHome = readString(env.HOME ?? env.USERPROFILE, homedir());
     return {
         appIdentifier,
         artifactRoot: resolveArtifactRoot(env),
+        backupArchivePath: join(userHome, 'happier-personal-home-qa-backups', 'loaded-personal-home.tar'),
+        backupConfirmSelector: '[data-testid="web-modal-confirm"]',
+        backupPromptConfirmSelector: '[data-testid="web-prompt-confirm"]',
+        backupPromptInputSelector: '[data-testid="web-prompt-input"]',
+        backupResultSelector: '[data-testid="settings.personalHomeRuntime.backupResult"]',
+        backupSelector: '[data-testid="settings.personalHomeRuntime.backup"]',
+        dataDir,
         forbiddenOnboardingSelector: '[data-testid="onboarding-wizard-welcome-auth"]',
         personalHomeSettingsSelector: '[data-testid="settings.personalHomeRuntime.identity"]',
         shellSelectors: [
@@ -224,6 +257,62 @@ async function clickSelector(selector, { appIdentifier, env } = {}) {
         'webview-interact', '--action', 'click', '--selector', selector,
         '--app-identifier', appIdentifier,
     ], { appIdentifier, env });
+}
+
+async function fillPromptInput(selector, value, { appIdentifier, env } = {}) {
+    const script = `(() => {
+        const input = document.querySelector(${JSON.stringify(selector)});
+        if (!(input instanceof HTMLInputElement) && !(input instanceof HTMLTextAreaElement)) {
+            return { ok: false, reason: 'missing_input' };
+        }
+        const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+        if (!setter) return { ok: false, reason: 'missing_value_setter' };
+        setter.call(input, ${JSON.stringify(value)});
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return { ok: true };
+    })()`;
+    await runCli([
+        'webview-execute-js', '--script', script, '--app-identifier', appIdentifier, '--json',
+    ], { appIdentifier, env });
+}
+
+async function runPersonalHomeBackup(plan, { env } = {}) {
+    if (pathIsWithin(plan.dataDir, plan.backupArchivePath)) {
+        throw new Error('Refusing to place the loaded QA backup inside Personal Home data.');
+    }
+    await ensureDir(dirname(plan.backupArchivePath));
+    const existingArchive = await stat(plan.backupArchivePath).catch((error) => {
+        if (error?.code === 'ENOENT') return null;
+        throw error;
+    });
+    if (existingArchive) {
+        throw new Error(`Refusing to reuse an existing loaded QA backup archive: ${plan.backupArchivePath}`);
+    }
+
+    await clickSelector(plan.backupSelector, { appIdentifier: plan.appIdentifier, env });
+    await clickSelector(plan.backupConfirmSelector, { appIdentifier: plan.appIdentifier, env });
+    await runCli([
+        'webview-wait-for', '--type', 'selector', '--strategy', 'css', '--value', plan.backupPromptInputSelector,
+        '--timeout', '30000', '--app-identifier', plan.appIdentifier,
+    ], { appIdentifier: plan.appIdentifier, env });
+    await fillPromptInput(plan.backupPromptInputSelector, plan.backupArchivePath, {
+        appIdentifier: plan.appIdentifier,
+        env,
+    });
+    await clickSelector(plan.backupPromptConfirmSelector, { appIdentifier: plan.appIdentifier, env });
+    if (!(await selectorPresent(plan.backupResultSelector, {
+        appIdentifier: plan.appIdentifier,
+        env,
+        timeoutMs: 180_000,
+    }))) {
+        throw new Error('Personal Home backup did not publish the verified production result row.');
+    }
+    return await inspectPersonalHomeBackupArchiveEvidence({
+        archivePath: plan.backupArchivePath,
+        dataDir: plan.dataDir,
+    });
 }
 
 async function captureLoadedSurface(plan, { env } = {}) {
@@ -301,10 +390,12 @@ async function main(argv = process.argv.slice(2)) {
         initialPid: runtimeEvidenceBeforeRestart.listener.pid,
         readEvidence: async () => await inspectPersonalHomeRuntimeEvidence({ env: process.env }),
     });
+    const backupEvidence = await runPersonalHomeBackup(plan, { env: process.env });
     const screenshotPath = await captureLoadedSurface(plan, { env: process.env });
     const summary = {
         ok: true,
         appIdentifier: plan.appIdentifier,
+        backupEvidence,
         build: await readBuildIdentity(),
         matchedShellSelector,
         runtimeEvidenceAfterRestart,

@@ -25,7 +25,8 @@ function createTestApp() {
 const APPROVAL_ENV = { HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "1" } as const;
 
 const baseRowFacts = {
-        requesterBoxPublicKeyBase64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    requesterBoxPublicKeyBase64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    approvalBindingProof: "approval-binding-proof-1",
     issuerServerIdentityId: "srv_issuer",
     issuerSubjectId: "issuer-subject-1",
     deviceLabel: "Pixel 9" as string | null,
@@ -48,6 +49,7 @@ async function createAssertionRow(overrides: Partial<{
             accountId: overrides.accountId ?? (await ensurePrimaryAccount()).id,
             secretHash: overrides.secretHash ?? "seeded-assertion-secret-hash",
             requestedPublicKey: overrides.requestedPublicKey ?? baseRowFacts.requesterBoxPublicKeyBase64,
+            requestedBindingProof: baseRowFacts.approvalBindingProof,
             requestedDeviceLabel: overrides.requestedDeviceLabel ?? baseRowFacts.deviceLabel,
             requestedAt: new Date(),
             expiresAt: overrides.expiresAt ?? new Date(Date.now() + 120_000),

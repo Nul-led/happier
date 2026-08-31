@@ -22,6 +22,7 @@ import {
   type PersonalHomeRestorableConfigurationV1,
 } from './configuration.js';
 import { createPersonalHomePathProtection } from './protection.js';
+import { replacePersonalHomeFileDurably, syncPersonalHomeFileAndParent } from './durableFile.js';
 import {
   inspectPersonalHomeSqliteMigrationFrontier,
   migrateStagedPersonalHomeSqliteDatabase,
@@ -206,6 +207,7 @@ export async function preparePersonalHomeSanitizedConfiguration(
     await protect(temporary, 'file');
     await writeFile(rollbackArtifact, previous, { mode: 0o600 });
     await protect(rollbackArtifact, 'file');
+    await syncPersonalHomeFileAndParent(rollbackArtifact);
   } catch (error) {
     await Promise.all([
       rm(temporary, { force: true }).catch(() => undefined),
@@ -215,7 +217,7 @@ export async function preparePersonalHomeSanitizedConfiguration(
   }
   return {
     rollbackArtifact,
-    apply: async () => { await rename(temporary, envPath); await protect(envPath, 'file'); },
+    apply: async () => { await replacePersonalHomeFileDurably(temporary, envPath); await protect(envPath, 'file'); },
     rollback: async () => recoverPersonalHomeSanitizedConfiguration(layout, rollbackArtifact),
   };
 }
@@ -240,7 +242,7 @@ export async function recoverPersonalHomeSanitizedConfiguration(layout: Personal
   const previous = await readFile(rollbackArtifact);
   const temporary = `${envPath}.${randomUUID()}.rollback.tmp`;
   const protect = createPersonalHomePathProtection({ platform: layout.platform });
-  await writeFile(temporary, previous, { mode: 0o600 }); await protect(temporary, 'file'); await rename(temporary, envPath); await protect(envPath, 'file');
+  await writeFile(temporary, previous, { mode: 0o600 }); await protect(temporary, 'file'); await replacePersonalHomeFileDurably(temporary, envPath); await protect(envPath, 'file');
 }
 
 function assertPersonalHomeConfigurationRollbackArtifact(envPath: string, rollbackArtifact: string): void {

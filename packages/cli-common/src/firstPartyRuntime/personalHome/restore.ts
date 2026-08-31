@@ -14,6 +14,7 @@ import {
   type PersonalHomeRestorableConfigurationV1,
 } from './configuration.js';
 import { createPersonalHomePathProtection } from './protection.js';
+import { replacePersonalHomeFileDurably } from './durableFile.js';
 
 export class PersonalHomeRestoreError extends Error {
   constructor(public readonly code: 'destination_not_empty' | 'identity_mismatch' | 'schema_unsupported' | 'insufficient_space' | 'restore_failed' | 'recovery_required', message: string) { super(message); this.name = 'PersonalHomeRestoreError'; }
@@ -68,7 +69,7 @@ function targetEntries(layout: PersonalHomeRuntimeLayout, stage: string, id: str
     [layout.derivedDataDir, join(stage, 'derived')],
   ].map(([target, source]) => ({ target: target!, source: source!, rollback: `${target}.restore-rollback-${id}`, hadTarget: false, state: 'untouched' }));
 }
-async function writeJournal(path: string, journal: RestoreJournal): Promise<void> { await mkdir(dirname(path), { recursive: true, mode: 0o700 }); await protectPersonalHomeRestorePath(dirname(path), 'directory'); const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`; try { await writeFile(temporary, `${JSON.stringify(journal)}\n`, { mode: 0o600 }); await protectPersonalHomeRestorePath(temporary, 'file'); await rename(temporary, path); } catch (error) { await rm(temporary, { force: true }).catch(() => undefined); throw error; } }
+async function writeJournal(path: string, journal: RestoreJournal): Promise<void> { await mkdir(dirname(path), { recursive: true, mode: 0o700 }); await protectPersonalHomeRestorePath(dirname(path), 'directory'); const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`; try { await writeFile(temporary, `${JSON.stringify(journal)}\n`, { mode: 0o600 }); await protectPersonalHomeRestorePath(temporary, 'file'); await replacePersonalHomeFileDurably(temporary, path); } catch (error) { await rm(temporary, { force: true }).catch(() => undefined); throw error; } }
 const RESTORE_PHASES: readonly RestoreJournal['phase'][] = ['prepared', 'preserving', 'promoting', 'applying_configuration', 'activating', 'completed', 'rolling_back'];
 const RESTORE_ENTRY_STATES: readonly RestoreEntryState[] = ['untouched', 'preserving', 'preserved', 'promoting', 'promoted', 'rollback_started', 'rollback_applied'];
 const UUID_SUFFIX = /([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/iu;

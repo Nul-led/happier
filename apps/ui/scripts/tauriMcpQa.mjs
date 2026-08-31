@@ -874,6 +874,17 @@ async function runWizardQaCapture({ cwd, env, scriptPath }) {
   return exitCode;
 }
 
+export function buildTauriMcpQaScenarioEnv({ plan, effectiveEnv = process.env, attachableApp } = {}) {
+  const personalHomeScenario = String(plan?.qaScenario?.id ?? '').trim().toLowerCase() === 'personal-home';
+  const launchedEnv = personalHomeScenario ? (plan?.tauriDev?.env ?? {}) : {};
+  return {
+    ...effectiveEnv,
+    ...launchedEnv,
+    HAPPIER_TAURI_MCP_PORT: String(attachableApp?.driverSessionPort ?? ''),
+    HAPPIER_TAURI_MCP_APP_IDENTIFIER: String(attachableApp?.resolvedAppIdentifier ?? ''),
+  };
+}
+
 async function main(argv = process.argv.slice(2)) {
   const json = argv.includes('--json');
   const help = argv.includes('--help') || argv.includes('-h');
@@ -1007,11 +1018,7 @@ async function main(argv = process.argv.slice(2)) {
     }
   }
 
-  const qaEnv = {
-    ...effectiveEnv,
-    HAPPIER_TAURI_MCP_PORT: String(attachableApp.driverSessionPort),
-    HAPPIER_TAURI_MCP_APP_IDENTIFIER: String(attachableApp.resolvedAppIdentifier),
-  };
+  const qaEnv = buildTauriMcpQaScenarioEnv({ plan, effectiveEnv, attachableApp });
 
   if (plan.runSelectedScenario) {
     const wizardExitCode = await runWizardQaCapture({

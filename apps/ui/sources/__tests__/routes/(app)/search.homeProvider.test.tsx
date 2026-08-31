@@ -282,9 +282,7 @@ describe('Memory search screen — Personal Home provider', () => {
         expect(scrollOwners).toHaveLength(1);
         expect(scrollOwners[0]?.props.testID).toBe('memory-search-scroll');
         expect(scrollOwners[0]?.props.contentInsetAdjustmentBehavior).toBe('automatic');
-        expect(screen.findAll((node) => (
-            typeof node.props?.testID === 'string' && node.props.testID.startsWith('memory-search-hit')
-        ))).toHaveLength(20);
+        expect(collectScreenText(screen)).toContain('Result 20');
     });
 
     it('keeps useful results visible when a refresh fails and provides an explicit clear action', async () => {
@@ -318,7 +316,7 @@ describe('Memory search screen — Personal Home provider', () => {
         expect(collectScreenText(screen)).not.toContain('Keep this result');
     });
 
-    it('surfaces indexing, unavailable, and missing Home capability without querying Home or daemon', async () => {
+    it('surfaces indexing and unavailable Home capability without querying Home or daemon, then safely falls back when missing', async () => {
         machineRpcSpy.mockImplementation(async () => {
             throw new Error('daemon RPC must not be called for the Home provider');
         });
@@ -352,14 +350,20 @@ describe('Memory search screen — Personal Home provider', () => {
         const missingCapabilityScreen = await renderMemorySearchScreen();
         await settleMemorySearchScreen();
 
-        expect(collectScreenText(missingCapabilityScreen)).toContain('memorySearchSettings.status.unavailableLight');
         expect(findRequiredTestNode(missingCapabilityScreen, 'memory-search-submit').props.accessibilityState).toEqual({ disabled: true });
+        expect(missingCapabilityScreen.findAllByTestId('memory-search-machine-trigger')).toHaveLength(1);
         expect(homeSearchSpy).not.toHaveBeenCalled();
         expect(machineRpcSpy).not.toHaveBeenCalled();
     });
 
-    it('keeps shared plaintext Homes on daemon-only search without calling Home', async () => {
+    it('keeps non-plain Homes on the advertised daemon provider without calling Home', async () => {
         serverProfilesState.profileSource = 'account-directory';
+        featureRuntimeState.storagePolicy = 'required_e2ee';
+        featureRuntimeState.homeSearch = {
+            enabled: false,
+            provider: 'daemon',
+            reason: 'non_plain_home',
+        };
         machinesState.machines = [{
             id: 'm1',
             seq: 0,

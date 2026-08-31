@@ -18,6 +18,7 @@ import {
   AccountDirectoryPreferredHomePatchResponseV1Schema,
   AccountDirectoryRouteErrorResponseV1Schema,
   HomeConnectionDescriptorV1Schema,
+  HomeApplicationOriginV1Schema,
   HomeDeviceApprovalRequestV1Schema,
   HomeDeviceApprovalListV1Schema,
   HomeLoginAssertionRequestV1Schema,
@@ -139,6 +140,27 @@ describe('Account Directory protocol DTOs', () => {
     expect(HomeConnectionDescriptorV1Schema.parse(MIXED_DESCRIPTOR)).toEqual(MIXED_DESCRIPTOR);
   });
 
+  it('owns the strict Home application-origin policy', () => {
+    for (const value of [
+      'https://home.example.test',
+      'https://home.example.test/base',
+      'http://localhost:3010',
+      'http://127.0.0.2:3010',
+      'http://[::1]:3010',
+    ]) {
+      expect(HomeApplicationOriginV1Schema.parse(value)).toBe(value);
+    }
+    for (const value of [
+      'http://home.example.test',
+      'https://user:pass@home.example.test',
+      'https://home.example.test?mode=enroll',
+      'https://home.example.test#enroll',
+      'ftp://home.example.test',
+    ]) {
+      expect(HomeApplicationOriginV1Schema.safeParse(value).success).toBe(false);
+    }
+  });
+
   it('keeps descriptors closed and bounded', () => {
     expect(HomeConnectionDescriptorV1Schema.safeParse({ ...HTTPS_DESCRIPTOR, v: 2 }).success).toBe(false);
     expect(HomeConnectionDescriptorV1Schema.safeParse({ ...HTTPS_DESCRIPTOR, unexpected: true }).success).toBe(false);
@@ -146,6 +168,14 @@ describe('Account Directory protocol DTOs', () => {
     expect(HomeConnectionDescriptorV1Schema.safeParse({
       ...HTTPS_DESCRIPTOR,
       canonicalServerUrl: 'ftp://home.example.test',
+    }).success).toBe(false);
+    expect(HomeConnectionDescriptorV1Schema.safeParse({
+      ...HTTPS_DESCRIPTOR,
+      canonicalServerUrl: 'http://home.example.test',
+    }).success).toBe(false);
+    expect(HomeConnectionDescriptorV1Schema.safeParse({
+      ...HTTPS_DESCRIPTOR,
+      canonicalServerUrl: 'https://home.example.test?mode=enroll',
     }).success).toBe(false);
     expect(HomeConnectionDescriptorV1Schema.safeParse({
       ...HTTPS_DESCRIPTOR,
@@ -158,6 +188,10 @@ describe('Account Directory protocol DTOs', () => {
     expect(HomeConnectionDescriptorV1Schema.safeParse({
       ...HTTPS_DESCRIPTOR,
       endpoints: [{ kind: 'https', url: 'https://home.example.test', unexpected: true }],
+    }).success).toBe(false);
+    expect(HomeConnectionDescriptorV1Schema.safeParse({
+      ...HTTPS_DESCRIPTOR,
+      endpoints: [{ kind: 'https', url: 'http://home.example.test' }],
     }).success).toBe(false);
     // The composed Iroh variant keeps the canonical connectivity module's
     // strict/unknown-field rejection inside the outer descriptor union.

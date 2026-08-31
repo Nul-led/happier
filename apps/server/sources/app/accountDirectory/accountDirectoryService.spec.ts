@@ -41,6 +41,7 @@ const mocks = vi.hoisted(() => ({
     txLinkCreate: vi.fn(),
     txLinkUpdate: vi.fn(),
     txLinkDeleteMany: vi.fn(),
+    txPairingSessionDeleteMany: vi.fn(),
     getOrCreateServerIdentityId: vi.fn(),
     readCachedServerIdentityIdForHotPath: vi.fn(),
 }));
@@ -77,6 +78,7 @@ vi.mock("@/storage/inTx", () => ({
             update: mocks.txLinkUpdate,
             deleteMany: mocks.txLinkDeleteMany,
         },
+        authPairingSession: { deleteMany: mocks.txPairingSessionDeleteMany },
     }),
 }));
 
@@ -129,6 +131,7 @@ function linkRowFor(keyPair: ReturnType<typeof signingKeyPair>, overrides: Row =
         issuerSubjectId: "account-1",
         issuerSigningKeyId: sha256Hex(keyPair.publicKey),
         issuerSigningPublicKey: Buffer.from(keyPair.publicKey),
+        createdAt: new Date(1_700_000_000_000),
         ...overrides,
     };
 }
@@ -167,6 +170,7 @@ describe("Account Directory service", () => {
         mocks.getOrCreateServerIdentityId.mockResolvedValue("srv_account");
         mocks.readCachedServerIdentityIdForHotPath.mockReturnValue("srv_home");
         mocks.txLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
+        mocks.txPairingSessionDeleteMany.mockResolvedValue({ count: 0 });
     });
 
     describe("directory entry upsert", () => {
@@ -705,6 +709,67 @@ describe("Account Directory service", () => {
             })).rejects.toMatchObject({ code: "assertion_clock_skew" });
 
             expect(mocks.readCachedServerIdentityIdForHotPath).toHaveBeenCalled();
+        });
+
+        it.each([
+            {
+                field: "issuerServerIdentityId" as const,
+                storedValue: "SRV_ACCOUNT",
+                expectedCode: "assertion_issuer_untrusted",
+            },
+            {
+                field: "issuerSubjectId" as const,
+                storedValue: "ACCOUNT-1",
+                expectedCode: "invalid_subject",
+            },
+        ])("rejects a byte-different stored $field returned by the initial link lookup", async ({
+            field,
+            storedValue,
+            expectedCode,
+        }) => {
+            const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
+            mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4), { [field]: storedValue }));
+            const homeApprovalGate = { evaluate: vi.fn(async () => ({ kind: "allowed" as const })) };
+            const issueHomeToken = vi.fn(async () => "must-never-issue");
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: signedAssertion(),
+                nowMs,
+                homeApprovalGate,
+                issueHomeToken,
+            })).rejects.toMatchObject({ code: expectedCode });
+            expect(homeApprovalGate.evaluate).not.toHaveBeenCalled();
+            expect(issueHomeToken).not.toHaveBeenCalled();
+        });
+
+        it.each([
+            {
+                field: "issuerServerIdentityId" as const,
+                storedValue: "SRV_ACCOUNT",
+                expectedCode: "assertion_issuer_untrusted",
+            },
+            {
+                field: "issuerSubjectId" as const,
+                storedValue: "ACCOUNT-1",
+                expectedCode: "invalid_subject",
+            },
+        ])("rejects a byte-different stored $field returned by the post-approval reread", async ({
+            field,
+            storedValue,
+            expectedCode,
+        }) => {
+            const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
+            mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
+            mocks.txLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4), { [field]: storedValue }));
+            const issueHomeToken = vi.fn(async () => "must-never-issue");
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: signedAssertion(),
+                nowMs,
+                homeApprovalGate: allowedGate,
+                issueHomeToken,
+            })).rejects.toMatchObject({ code: expectedCode });
+            expect(issueHomeToken).not.toHaveBeenCalled();
         });
 
         it("never issues or seals a token for a low-order assertion client key", async () => {

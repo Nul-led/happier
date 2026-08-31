@@ -89,7 +89,6 @@ function signedAssertion(params: Readonly<{
 }
 
 async function approveAssertionRequest(params: Readonly<{
-    accountId: string;
     assertion: ReturnType<typeof signedAssertion>;
     nowMs: number;
 }>): Promise<string> {
@@ -369,12 +368,60 @@ describe("Account Directory database contract", () => {
         }
     });
 
+    it("does not issue after an approved link is deleted and recreated before the issuance transaction", async () => {
+        const account = await db.account.create({
+            data: { publicKey: uniqueValue("account-directory-link-instance-race") },
+            select: { id: true },
+        });
+        const issuerServerIdentityId = uniqueValue("srv_instance_race");
+        const issuerSubjectId = uniqueValue("issuer-subject");
+        const key = signingKey(30);
+        const nowMs = Date.now();
+        const assertion = signedAssertion({ issuerServerIdentityId, issuerSubjectId, signingSeed: 30, nowMs });
+        const link = {
+            accountId: account.id,
+            issuerServerIdentityId,
+            issuerSubjectId,
+            issuerSigningKeyId: key.id,
+            issuerSigningPublicKeyBase64Url: key.publicKeyBase64Url,
+        };
+        let issueCalls = 0;
+
+        try {
+            await upsertAccountDirectoryLink(link);
+            const approvalId = await approveAssertionRequest({ assertion, nowMs });
+
+            await expect(redeemHomeLoginAssertion({
+                assertion,
+                approvalId,
+                nowMs,
+                env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
+                homeApprovalGate: {
+                    evaluate: async (facts) => {
+                        const decision = await createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "1" }).evaluate(facts);
+                        expect(decision.kind).toBe("allowed");
+                        await deleteAccountDirectoryLink({ accountId: account.id, issuerServerIdentityId });
+                        await upsertAccountDirectoryLink(link);
+                        return decision;
+                    },
+                },
+                issueHomeToken: async () => {
+                    issueCalls += 1;
+                    return "must-never-issue";
+                },
+            })).rejects.toMatchObject({ code: "home_unavailable" });
+            expect(issueCalls).toBe(0);
+        } finally {
+            await db.account.delete({ where: { id: account.id }, select: { id: true } });
+        }
+    });
+
     it("binds an approval to the exact signed assertion", async () => {
         const account = await db.account.create({
             data: { publicKey: uniqueValue("account-directory-assertion-binding") },
             select: { id: true },
         });
-        const issuerServerIdentityId = uniqueValue("srv_issuer_assertion_binding");
+        const issuerServerIdentityId = uniqueValue("srv_issuer_bind");
         const issuerSubjectId = uniqueValue("issuer-subject");
         const key = signingKey(31);
         const nowMs = Date.now();
@@ -390,7 +437,7 @@ describe("Account Directory database contract", () => {
                 issuerSigningKeyId: key.id,
                 issuerSigningPublicKeyBase64Url: key.publicKeyBase64Url,
             });
-            const approvalId = await approveAssertionRequest({ accountId: account.id, assertion: originalAssertion, nowMs });
+            const approvalId = await approveAssertionRequest({ assertion: originalAssertion, nowMs });
 
             await expect(redeemHomeLoginAssertion({
                 assertion: freshAssertion,
@@ -432,7 +479,7 @@ describe("Account Directory database contract", () => {
                 issuerSigningPublicKeyBase64Url: originalKey.publicKeyBase64Url,
             };
             await upsertAccountDirectoryLink(link);
-            const approvalId = await approveAssertionRequest({ accountId: account.id, assertion: originalAssertion, nowMs });
+            const approvalId = await approveAssertionRequest({ assertion: originalAssertion, nowMs });
             await upsertAccountDirectoryLink({
                 ...link,
                 issuerSigningKeyId: replacementKey.id,
@@ -463,7 +510,7 @@ describe("Account Directory database contract", () => {
             data: { publicKey: uniqueValue("account-directory-recreated-link-binding") },
             select: { id: true },
         });
-        const issuerServerIdentityId = uniqueValue("srv_issuer_recreated_link_binding");
+        const issuerServerIdentityId = uniqueValue("srv_issuer_recreate");
         const issuerSubjectId = uniqueValue("issuer-subject");
         const key = signingKey(34);
         const nowMs = Date.now();
@@ -479,7 +526,7 @@ describe("Account Directory database contract", () => {
                 issuerSigningPublicKeyBase64Url: key.publicKeyBase64Url,
             };
             await upsertAccountDirectoryLink(link);
-            const approvalId = await approveAssertionRequest({ accountId: account.id, assertion, nowMs });
+            const approvalId = await approveAssertionRequest({ assertion, nowMs });
             await deleteAccountDirectoryLink({ accountId: account.id, issuerServerIdentityId });
             await upsertAccountDirectoryLink(link);
 

@@ -21,6 +21,7 @@ function readPlainEnvelopeValue(content: unknown): string {
     const value = content as Record<string, unknown>;
     if (typeof value.text === 'string') return value.text;
     if (typeof value.message === 'string') return value.message;
+    if (value.message && typeof value.message === 'object') return readPlainEnvelopeValue(value.message);
     if (Array.isArray(value.content)) return value.content.map(readPlainEnvelopeValue).filter(Boolean).join('\n');
     if (value.content && typeof value.content === 'object') return readPlainEnvelopeValue(value.content);
     if (value.data && typeof value.data === 'object') return readPlainEnvelopeValue(value.data);

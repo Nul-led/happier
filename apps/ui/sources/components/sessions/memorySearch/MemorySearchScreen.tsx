@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Pressable, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 import { useUnistyles } from 'react-native-unistyles';
 import { useRouter } from 'expo-router';
 
@@ -203,7 +203,13 @@ export const MemorySearchScreen = React.memo(function MemorySearchScreen() {
     }
 
     return (
-        <View style={{ flex: 1, padding: 16 }}>
+        <ScrollView
+            testID="memory-search-scroll"
+            style={{ flex: 1 }}
+            contentContainerStyle={{ flexGrow: 1, padding: 16 }}
+            contentInsetAdjustmentBehavior="automatic"
+            keyboardShouldPersistTaps="handled"
+        >
             {isHomeProvider ? null : (
                 <>
                     <Text style={{ color: theme.colors.text.secondary, paddingVertical: 8 }}>
@@ -369,6 +375,6 @@ export const MemorySearchScreen = React.memo(function MemorySearchScreen() {
                     </Pressable>
                 </View>
             ) : null}
-        </View>
+        </ScrollView>
     );
 });

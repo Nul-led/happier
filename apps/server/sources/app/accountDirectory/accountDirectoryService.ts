@@ -28,6 +28,8 @@ import {
 import {
     ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES,
     ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES,
+    computeCanonicalDomainSeparatedDigest,
+    createHomeLoginAssertionSigningBytesV1,
     decodeBase64,
     encodeBase64,
     isValidBoxBundlePublicKey,
@@ -53,11 +55,45 @@ const ACCOUNT_DIRECTORY_LINK_SELECT = {
     issuerSubjectId: true,
     issuerSigningKeyId: true,
     issuerSigningPublicKey: true,
+    createdAt: true,
 } as const satisfies Prisma.AccountDirectoryLinkSelect;
 
 type AccountDirectoryLinkRow = Prisma.AccountDirectoryLinkGetPayload<{
     select: typeof ACCOUNT_DIRECTORY_LINK_SELECT;
 }>;
+
+const HOME_LOGIN_APPROVAL_BINDING_DOMAIN_V1 =
+    "happier.account-directory.home-approval-binding.v1" as const;
+
+function createHomeLoginApprovalBindingProof(
+    assertion: HomeLoginAssertionV1,
+    link: AccountDirectoryLinkRow,
+): string {
+    return computeCanonicalDomainSeparatedDigest(HOME_LOGIN_APPROVAL_BINDING_DOMAIN_V1, [
+        createHomeLoginAssertionSigningBytesV1(assertion),
+        assertion.signatureBase64Url,
+        link.accountId,
+        link.issuerServerIdentityId,
+        link.issuerSubjectId,
+        link.issuerSigningKeyId,
+        link.issuerSigningPublicKey,
+        String(link.createdAt.getTime()),
+    ]);
+}
+
+async function invalidateAccountAssertionApprovalsForLink(
+    tx: Tx,
+    link: AccountDirectoryLinkRow,
+): Promise<void> {
+    await tx.authPairingSession.deleteMany({
+        where: {
+            accountId: link.accountId,
+            flow: "account_assertion",
+            requesterIssuerServerIdentityId: link.issuerServerIdentityId,
+            requesterIssuerSubjectId: link.issuerSubjectId,
+        },
+    });
+}
 
 function mapDescriptor(value: unknown): HomeConnectionDescriptorV1 {
     const parsed = HomeConnectionDescriptorV1Schema.safeParse(value);
@@ -249,6 +285,7 @@ export async function upsertAccountDirectoryLink(params: Readonly<{
             if (body.relink !== true) {
                 throw new AccountDirectoryError("directory_link_conflict", "Issuer link changes require explicit relink");
             }
+            await invalidateAccountAssertionApprovalsForLink(tx, existing);
             if (subjectChanged) {
                 await tx.accountDirectoryLink.deleteMany({
                     where: { accountId: params.accountId, issuerServerIdentityId: params.issuerServerIdentityId },
@@ -284,9 +321,16 @@ export async function upsertAccountDirectoryLink(params: Readonly<{
 
 export async function deleteAccountDirectoryLink(params: Readonly<{ accountId: string; issuerServerIdentityId: string }>): Promise<void> {
     await inTx(async (tx) => {
-        await tx.accountDirectoryLink.deleteMany({
+        const existing = await tx.accountDirectoryLink.findFirst({
+            where: { accountId: params.accountId, issuerServerIdentityId: params.issuerServerIdentityId },
+            select: ACCOUNT_DIRECTORY_LINK_SELECT,
+        });
+        const deleted = await tx.accountDirectoryLink.deleteMany({
             where: { accountId: params.accountId, issuerServerIdentityId: params.issuerServerIdentityId },
         });
+        if (existing && deleted.count > 0) {
+            await invalidateAccountAssertionApprovalsForLink(tx, existing);
+        }
     });
 }
 
@@ -334,6 +378,12 @@ function validateAssertionAgainstLink(
     link: AccountDirectoryLinkRow,
     nowMs: number | undefined,
 ): void {
+    if (link.issuerServerIdentityId !== assertion.issuerServerIdentityId) {
+        throw new AccountDirectoryError("assertion_issuer_untrusted");
+    }
+    if (link.issuerSubjectId !== assertion.issuerSubjectId) {
+        throw new AccountDirectoryError("invalid_subject");
+    }
     const keyId = link.issuerSigningKeyId;
     const publicKey = link.issuerSigningPublicKey;
     if (keyId !== assertion.keyId || createHash("sha256").update(publicKey).digest("hex") !== keyId) {
@@ -356,6 +406,7 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
         issuerServerIdentityId: string;
         issuerSubjectId: string;
         requesterBoxPublicKeyBase64: string;
+        approvalBindingProof: string;
         deviceLabel: string | null;
         approvalId?: string;
     }>) => Promise<
@@ -400,6 +451,7 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
         issuerServerIdentityId: assertion.issuerServerIdentityId,
         issuerSubjectId: assertion.issuerSubjectId,
         requesterBoxPublicKeyBase64: assertion.clientBoxPublicKeyBase64,
+        approvalBindingProof: createHomeLoginApprovalBindingProof(assertion, link),
         deviceLabel: null,
         ...(params.approvalId ? { approvalId: params.approvalId } : {}),
     });

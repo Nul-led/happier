@@ -7,6 +7,7 @@ import {
 } from '../crypto/canonicalDigest.js';
 import { BOX_BUNDLE_MIN_BYTES } from '../crypto/boxBundle.js';
 import { normalizeServerIdentityIdCapability } from '../features/payload/capabilities/serverIdentityCapabilities.js';
+import { isLoopbackHostname } from '../server/urls/loopbackHostname.js';
 import {
   IROH_DESCRIPTOR_MAX_DIRECT_ADDRESSES,
   IROH_DESCRIPTOR_MAX_RELAY_URLS,
@@ -63,7 +64,11 @@ export const ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES =
 const UTF8_ENCODER = new TextEncoder();
 const SERVER_IDENTITY_ID_PATTERN = /^srv_[A-Za-z0-9._-]{1,60}$/u;
 const HEX_SHA256_PATTERN = /^[0-9a-f]{64}$/u;
-const URL_WITHOUT_CREDENTIALS_OR_FRAGMENT = z.string()
+/**
+ * Application endpoint policy for Home enrollment and canonical Home URLs.
+ * Account Service endpoint parsing is a separate client-owned contract.
+ */
+export const HomeApplicationOriginV1Schema = z.string()
   .trim()
   .min(1)
   .max(ACCOUNT_DIRECTORY_MAX_URL_UTF8_BYTES)
@@ -73,16 +78,17 @@ const URL_WITHOUT_CREDENTIALS_OR_FRAGMENT = z.string()
     }
     try {
       const parsed = new URL(value);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        context.addIssue({ code: z.ZodIssueCode.custom, message: 'URL must use HTTP or HTTPS' });
+      if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname))) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: 'Home application URL must use HTTPS or loopback HTTP' });
       }
-      if (parsed.username || parsed.password || parsed.hash) {
-        context.addIssue({ code: z.ZodIssueCode.custom, message: 'URL must not contain credentials or a fragment' });
+      if (parsed.username || parsed.password || value.includes('?') || value.includes('#')) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: 'Home application URL must not contain credentials, a query, or a fragment' });
       }
     } catch {
       context.addIssue({ code: z.ZodIssueCode.custom, message: 'URL must be absolute' });
     }
   });
+export type HomeApplicationOriginV1 = z.infer<typeof HomeApplicationOriginV1Schema>;
 
 const ServerIdentityIdSchema = z.preprocess(
   normalizeServerIdentityIdCapability,
@@ -148,7 +154,7 @@ const TimestampMsSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INT
 // union variant below composes it without redefining the wire shape.
 const HttpsEndpointDescriptorV1Schema = z.object({
   kind: z.literal('https'),
-  url: URL_WITHOUT_CREDENTIALS_OR_FRAGMENT,
+  url: HomeApplicationOriginV1Schema,
 }).strict();
 
 export const HomeConnectionEndpointV1Schema = z.discriminatedUnion('kind', [
@@ -162,7 +168,7 @@ export type HomeConnectionEndpointV1 = z.infer<typeof HomeConnectionEndpointV1Sc
 export const HomeConnectionDescriptorV1Schema = z.object({
   v: z.literal(1),
   homeServerIdentityId: ServerIdentityIdSchema,
-  canonicalServerUrl: URL_WITHOUT_CREDENTIALS_OR_FRAGMENT,
+  canonicalServerUrl: HomeApplicationOriginV1Schema,
   revision: PositiveRevisionSchema,
   endpoints: z.array(HomeConnectionEndpointV1Schema)
     .min(1)
@@ -172,7 +178,7 @@ export type HomeConnectionDescriptorV1 = z.infer<typeof HomeConnectionDescriptor
 
 const AccountDirectoryHomeIdentityFieldsSchema = z.object({
   homeServerIdentityId: ServerIdentityIdSchema,
-  canonicalServerUrl: URL_WITHOUT_CREDENTIALS_OR_FRAGMENT,
+  canonicalServerUrl: HomeApplicationOriginV1Schema,
 }).strict();
 
 function validateDescriptorIdentityAndUrl(
@@ -191,7 +197,7 @@ function validateDescriptorIdentityAndUrl(
 export const AccountDirectoryHomeEntryV1Schema = z.object({
   v: z.literal(1),
   homeServerIdentityId: ServerIdentityIdSchema,
-  canonicalServerUrl: URL_WITHOUT_CREDENTIALS_OR_FRAGMENT,
+  canonicalServerUrl: HomeApplicationOriginV1Schema,
   label: LabelSchema,
   connectionDescriptor: HomeConnectionDescriptorV1Schema,
   createdAtMs: TimestampMsSchema,

@@ -1,6 +1,10 @@
-import type { SQLInputValue } from 'node:sqlite';
 import { mkdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
+import {
+    openHomeSearchSqliteBinding,
+    type HomeSearchSqliteDatabase,
+    type HomeSearchSqliteValue,
+} from './homeSearchSqliteBinding';
 
 export const HOME_SEARCH_SCHEMA_VERSION = 1;
 
@@ -134,10 +138,9 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
     if (!params.dbPath && !params.dataDir) throw new Error('Personal Home search database path is required');
     const path = resolve(params.dbPath ?? resolveHomeSearchDbPath(params.dataDir!));
     await mkdir(dirname(path), { recursive: true });
-    let db: InstanceType<(typeof import('node:sqlite'))['DatabaseSync']>;
+    let db: HomeSearchSqliteDatabase;
     try {
-        const sqlite = await import('node:sqlite');
-        db = new sqlite.DatabaseSync(path);
+        db = await openHomeSearchSqliteBinding(path);
     } catch (error) {
         throw new Error(`Personal Home search index is unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -288,7 +291,7 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
             const parsedQuery = buildFtsQuery(input.query);
             if (!parsedQuery.match) return [];
             const whereParts: string[] = [];
-            const args: SQLInputValue[] = [parsedQuery.match];
+            const args: HomeSearchSqliteValue[] = [parsedQuery.match];
             if (input.sessionId) {
                 whereParts.push('f.session_id = ?');
                 args.push(input.sessionId);

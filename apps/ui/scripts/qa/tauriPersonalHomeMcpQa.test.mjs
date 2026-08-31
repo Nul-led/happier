@@ -2,17 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
     buildTauriPersonalHomeQaPlan,
+    inspectPersonalHomeBackupArchiveEvidence,
     inspectPersonalHomeRuntimeEvidence,
     waitForRestartedPersonalHomeEvidence,
 } from './tauriPersonalHomeMcpQa.mjs';
 
 test('personal-home loaded QA plan uses the production shell and settings projections as observable proof', () => {
+    const disposableHome = join(tmpdir(), 'lane03-personal-home-qa-home');
     const plan = buildTauriPersonalHomeQaPlan({
         env: {
+            HOME: disposableHome,
             HAPPIER_STACK_STACK: 'lane03-personal-home-qa',
             HAPPIER_STACK_TAURI_IDENTIFIER: 'com.happier.stack.lane03-personal-home-qa',
         },
@@ -25,7 +28,33 @@ test('personal-home loaded QA plan uses the production shell and settings projec
         '[data-testid="desktop-narrow-shell-chrome"]',
     ]);
     assert.equal(plan.personalHomeSettingsSelector, '[data-testid="settings.personalHomeRuntime.identity"]');
+    assert.equal(plan.backupSelector, '[data-testid="settings.personalHomeRuntime.backup"]');
+    assert.equal(plan.backupResultSelector, '[data-testid="settings.personalHomeRuntime.backupResult"]');
+    assert.equal(plan.backupArchivePath, join(disposableHome, 'happier-personal-home-qa-backups', 'loaded-personal-home.tar'));
+    assert.equal(plan.backupArchivePath.startsWith(join(disposableHome, '.happier', 'self-host')), false);
     assert.equal(plan.forbiddenOnboardingSelector, '[data-testid="onboarding-wizard-welcome-auth"]');
+});
+
+test('backup archive evidence accepts a non-empty archive outside the Personal Home data root', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'tauri-personal-home-backup-'));
+    const dataDir = join(homeDir, '.happier', 'self-host', 'data');
+    const archivePath = join(homeDir, 'happier-personal-home-qa-backups', 'loaded-personal-home.tar');
+    await mkdir(dataDir, { recursive: true });
+    await mkdir(dirname(archivePath), { recursive: true });
+    await writeFile(archivePath, 'verified-backup-bytes');
+
+    assert.deepEqual(await inspectPersonalHomeBackupArchiveEvidence({ archivePath, dataDir }), {
+        archiveBytes: 21,
+        archivePath,
+        outsidePersonalHomeDataRoot: true,
+    });
+
+    const unsafeArchivePath = join(dataDir, 'unsafe-loaded-personal-home.tar');
+    await writeFile(unsafeArchivePath, 'unsafe-backup-bytes');
+    await assert.rejects(
+        inspectPersonalHomeBackupArchiveEvidence({ archivePath: unsafeArchivePath, dataDir }),
+        /inside the Home data root/u,
+    );
 });
 
 test('runtime evidence inspection proves the persisted purpose, closure, listener receipt, and live health without exposing credentials', async () => {

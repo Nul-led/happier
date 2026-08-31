@@ -1,7 +1,7 @@
 export function shouldKeepDesktopPersonalHomeShell(input: Readonly<{
     isAuthenticated: boolean;
-    isDesktopHost: boolean;
+    isPersonalHomeBootstrapHost: boolean;
 }>): boolean {
     return !input.isAuthenticated
-        && input.isDesktopHost;
+        && input.isPersonalHomeBootstrapHost;
 }
