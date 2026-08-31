@@ -97,6 +97,6 @@ describe("Account Directory Home redemption security", () => {
         expect(JSON.stringify(authorized)).not.toContain("home-local-token");
 
         const forged = { ...signed, issuerSubjectId: "attacker" };
-        await expect(redeemHomeLoginAssertion({ assertion: forged, nowMs: assertion.issuedAtMs + 1, homeApprovalGate: { evaluate: async () => ({ kind: "allowed" as const }) }, issueHomeToken: async () => "bad" })).rejects.toMatchObject({ code: "invalid_assertion" });
+        await expect(redeemHomeLoginAssertion({ assertion: forged, nowMs: assertion.issuedAtMs + 1, homeApprovalGate: { evaluate: async () => ({ kind: "allowed" as const }) }, issueHomeToken: async () => "bad" })).rejects.toMatchObject({ code: "invalid_subject" });
     });
 });
