@@ -1,10 +1,50 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openHomeSearchDb } from './homeSearchDb';
 
+const bunAvailable = spawnSync('bun', ['--version'], { encoding: 'utf8' }).status === 0;
+
 describe('Home search FTS5 owner', () => {
+    it.skipIf(!bunAvailable)('opens and searches FTS5 from the packaged Bun server runtime', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-search-bun-'));
+        try {
+            const entrypoint = join(root, 'entrypoint.ts');
+            const executablePath = join(root, process.platform === 'win32' ? 'home-search-probe.exe' : 'home-search-probe');
+            const homeSearchDbPath = fileURLToPath(new URL('./homeSearchDb.ts', import.meta.url));
+            const builder = join(
+                dirname(fileURLToPath(import.meta.url)),
+                '../../../../../packages/cli-common/scripts/buildServerBunBinary.mjs',
+            );
+            await writeFile(entrypoint, [
+                `import { openHomeSearchDb } from ${JSON.stringify(homeSearchDbPath)};`,
+                `const db = await openHomeSearchDb({ dbPath: ${JSON.stringify(join(root, 'search.sqlite'))} });`,
+                `db.upsert({ id: 'bun-proof', sessionId: 's-1', seq: 1, createdAtMs: 1, text: 'packaged bun fts proof' });`,
+                `const hits = db.search({ query: 'packaged' });`,
+                `db.close();`,
+                `if (hits.length !== 1 || hits[0]?.id !== 'bun-proof') throw new Error('Packaged Bun FTS5 search failed');`,
+                `process.stdout.write('home-search-bun-ok');`,
+            ].join('\n'), 'utf8');
+
+            const compiled = spawnSync('bun', [
+                builder,
+                `--target=bun-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`,
+                `--entrypoint=${entrypoint}`,
+                `--outfile=${executablePath}`,
+            ], { encoding: 'utf8' });
+            expect(compiled.status, compiled.stderr).toBe(0);
+
+            const runtime = spawnSync(executablePath, [], { encoding: 'utf8' });
+            expect(runtime.status, runtime.stderr).toBe(0);
+            expect(runtime.stdout).toBe('home-search-bun-ok');
+        } finally {
+            await rm(root, { recursive: true, force: true });
+        }
+    }, 60_000);
+
     it('indexes Unicode and code identifiers, returns snippets, and persists watermarks', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-home-search-'));
         const db = await openHomeSearchDb({ dbPath: join(root, 'derived', 'search.sqlite') });

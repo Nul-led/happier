@@ -36,6 +36,7 @@ installSearchRouteCommonModuleMocks({
             Text: (props: any) => React.createElement('Text', props, props.children),
             TextInput: (props: any) => React.createElement('TextInput', props),
             Pressable: (props: any) => React.createElement('Pressable', props, props.children),
+            ScrollView: (props: any) => React.createElement('ScrollView', props, props.children),
             Platform: {
                 OS: 'web',
                 select: (options: any) => (options && 'default' in options ? options.default : undefined),
@@ -225,6 +226,7 @@ async function submitQuery(screen: Awaited<ReturnType<typeof renderScreen>>, que
 
 describe('Memory search screen — Personal Home provider', () => {
     it('searches Home with zero machines and a dead daemon, renders grouped hits, navigates, and never calls daemon RPC', async () => {
+        serverProfilesState.profileSource = 'account-directory';
         machinesState.machines = [];
         machineRpcSpy.mockImplementation(async () => {
             throw new Error('daemon RPC must not be called for the Home provider');
@@ -263,6 +265,26 @@ describe('Memory search screen — Personal Home provider', () => {
             hitNodes[0]?.props.onPress?.();
         });
         expect(routerPushSpy).toHaveBeenCalledWith('/session/sess-1?jumpSeq=1');
+    });
+
+    it('keeps controls, state, and bounded results under one stable scroll owner', async () => {
+        homeSearchSpy.mockResolvedValueOnce({
+            v: 1,
+            ok: true,
+            hits: Array.from({ length: 20 }, (_, index) => createHomeSearchHit(`sess-${index + 1}`, `Result ${index + 1}`)),
+        });
+
+        const screen = await renderMemorySearchScreen();
+        await settleMemorySearchScreen();
+        await submitQuery(screen, 'bounded');
+
+        const scrollOwners = screen.findAllByType('ScrollView' as any);
+        expect(scrollOwners).toHaveLength(1);
+        expect(scrollOwners[0]?.props.testID).toBe('memory-search-scroll');
+        expect(scrollOwners[0]?.props.contentInsetAdjustmentBehavior).toBe('automatic');
+        expect(screen.findAll((node) => (
+            typeof node.props?.testID === 'string' && node.props.testID.startsWith('memory-search-hit')
+        ))).toHaveLength(20);
     });
 
     it('keeps useful results visible when a refresh fails and provides an explicit clear action', async () => {

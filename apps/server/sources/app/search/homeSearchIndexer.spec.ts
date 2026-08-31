@@ -1,6 +1,7 @@
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { TranscriptRawRecordV1Schema } from '@happier-dev/protocol';
 import { describe, expect, it } from 'vitest';
 import { openHomeSearchDb } from './homeSearchDb';
 import { createHomeSearchIndexer, type HomeSearchCanonicalMessage } from './homeSearchIndexer';
@@ -112,6 +113,36 @@ describe('Home search indexer', () => {
         await expect(indexer.reconcile()).resolves.toEqual({ indexed: 2, removed: 0 });
         expect(db.search({ query: 'native' }).map((hit) => hit.id)).toEqual(['m-acp']);
         expect(db.search({ query: 'released' }).map((hit) => hit.id)).toEqual(['m-codex']);
+
+        await indexer.stop();
+        db.close();
+    });
+
+    it('indexes protocol-accepted assistant text stored beneath data.message.content', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-indexer-assistant-message-'));
+        const db = await openHomeSearchDb({ dbPath: join(root, 'search.sqlite') });
+        const rawRecord = {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    message: {
+                        role: 'assistant',
+                        content: [{ type: 'text', text: 'canonical nested phrase' }],
+                    },
+                },
+            },
+        };
+        expect(TranscriptRawRecordV1Schema.safeParse(rawRecord).success).toBe(true);
+        const rows = [{
+            id: 'm-assistant', sessionId: 's-1', seq: 1, createdAtMs: 10,
+            content: { t: 'plain', v: rawRecord },
+        }];
+        const indexer = createHomeSearchIndexer({ db, readCanonicalMessagesPage: pagedReader(() => rows) });
+
+        await expect(indexer.reconcile()).resolves.toEqual({ indexed: 1, removed: 0 });
+        expect(db.search({ query: 'canonical' }).map((hit) => hit.id)).toEqual(['m-assistant']);
 
         await indexer.stop();
         db.close();
