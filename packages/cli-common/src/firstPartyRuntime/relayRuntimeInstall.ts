@@ -1531,8 +1531,9 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
 
         if (rollbackCanProceed && personalHomeRestorePoint) {
             try {
-                for (const rollbackPath of personalHomeRestoreRollbackPaths ?? []) {
-                    await rm(rollbackPath, { recursive: true, force: true });
+                const finalization = await personalHomeRestorePoint.finalize();
+                if (finalization.outcome !== 'finalized' && finalization.outcome !== 'none') {
+                    throw new Error(`[relay-runtime] Personal Home restore finalization did not complete (${finalization.outcome})${finalization.error ? `: ${finalization.error}` : ''}`);
                 }
                 personalHomeRestoreRollbackPaths = undefined;
                 await personalHomeRestorePoint.dispose();

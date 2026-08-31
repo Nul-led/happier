@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import {
     buildTauriPersonalHomeQaPlan,
     inspectPersonalHomeRuntimeEvidence,
+    waitForRestartedPersonalHomeEvidence,
 } from './tauriPersonalHomeMcpQa.mjs';
 
 test('personal-home loaded QA plan uses the production shell and settings projections as observable proof', () => {
@@ -62,11 +63,30 @@ test('runtime evidence inspection proves the persisted purpose, closure, listene
         canonicalServerUrl: 'http://127.0.0.1:43123',
         defaultAccountMode: 'plain',
         healthy: true,
-        listener: { host: '127.0.0.1', port: 43123 },
+        listener: { host: '127.0.0.1', pid: 123, port: 43123 },
         purpose: 'personal-home',
         storagePolicy: 'plaintext_only',
         version: '0.3.0-test',
     });
     assert.equal(JSON.stringify(evidence).includes('token'), false);
     assert.equal(JSON.stringify(evidence).includes('secret'), false);
+});
+
+test('restart evidence waits for a new loaded server process while preserving closure', async () => {
+    const observations = [
+        { listener: { pid: 123 }, anonymousSignupEnabled: false, healthy: true },
+        { listener: { pid: 456 }, anonymousSignupEnabled: false, healthy: true },
+    ];
+    const waits = [];
+
+    const evidence = await waitForRestartedPersonalHomeEvidence({
+        initialPid: 123,
+        readEvidence: async () => observations.shift(),
+        wait: async (milliseconds) => waits.push(milliseconds),
+        pollDelayMs: 25,
+        maxAttempts: 3,
+    });
+
+    assert.equal(evidence.listener.pid, 456);
+    assert.deepEqual(waits, [25]);
 });

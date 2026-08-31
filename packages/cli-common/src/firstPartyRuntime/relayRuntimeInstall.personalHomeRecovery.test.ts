@@ -98,6 +98,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home restore-point lifecycle
         assertPersonalHomeStopped: async () => undefined,
         env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
         runServiceCommands: true,
+        skipHealthCheck: true,
       });
 
       expect(serviceEvents).toContain('service:stop');

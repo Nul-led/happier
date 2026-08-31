@@ -17,6 +17,7 @@ const mergedTestEnv: NodeJS.ProcessEnv = {
     ...testEnv,
 };
 const workspaceSyncRealIntegrationTest = 'src/daemon/startup/createDaemonWorkspaceSyncRuntime.real.integration.test.ts';
+const workspaceMachineCarrierRealIntegrationTest = 'src/daemon/peer/iroh/workspaceMachineCarrierLane08.real.integration.test.ts';
 
 if (mergedTestEnv.HAPPIER_SERVER_URL && !mergedTestEnv.HAPPIER_WEBAPP_URL) {
     mergedTestEnv.HAPPIER_WEBAPP_URL = mergedTestEnv.HAPPIER_SERVER_URL;
@@ -61,6 +62,9 @@ export default defineConfig({
             ...(process.env.HAPPIER_RUN_MUTAGEN_REAL_INTEGRATION === '1'
                 ? []
                 : [workspaceSyncRealIntegrationTest]),
+            ...(process.env.HAPPIER_RUN_HOME_IROH_REAL_INTEGRATION === '1'
+                ? []
+                : [workspaceMachineCarrierRealIntegrationTest]),
         ],
         globalSetup: ['./src/test-setup.integration.ts'],
         coverage: {

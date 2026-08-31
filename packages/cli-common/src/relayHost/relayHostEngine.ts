@@ -54,6 +54,7 @@ import { createPersonalHomeRestorePointWithLease } from '../firstPartyRuntime/pe
 import { assertPersonalHomeRelocationAllowsActivation } from '../firstPartyRuntime/personalHome/relocation.js';
 import {
   createPersonalHomeSqliteMaintenance,
+  finalizePersonalHomeSanitizedConfiguration,
   inspectPersonalHomeSanitizedConfigurationStorage,
   preparePersonalHomeSanitizedConfiguration,
   readCanonicalPersonalHomeIdentity,
@@ -1732,6 +1733,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
             configuration: await readPersonalHomeSanitizedConfiguration(layout),
             sqlite: await createPersonalHomeSqliteMaintenance(layout.databasePath),
             readIdentityFromDatabase: readPersonalHomeIdentityValueFromSqlite,
+            finalizeConfiguration: (artifact) => finalizePersonalHomeSanitizedConfiguration(layout, artifact),
             operationLeaseHeld: true,
           });
         },

@@ -9,7 +9,9 @@ import {
 } from './backup.js';
 import type { PersonalHomeRuntimeLayout } from './layout.js';
 import {
+  finalizePersonalHomeRestoreWithLease,
   restorePersonalHomeBackupWithLease,
+  type PersonalHomeRestoreFinalizationResult,
   type PersonalHomeRestoreHooks,
   type PersonalHomeRestoreResult,
 } from './restore.js';
@@ -17,6 +19,7 @@ import {
 export type PersonalHomeRestorePoint = Readonly<{
   backup: PersonalHomeBackupResult;
   restore(hooks: PersonalHomeRestoreHooks): Promise<PersonalHomeRestoreResult>;
+  finalize(): Promise<PersonalHomeRestoreFinalizationResult>;
   dispose(): Promise<void>;
 }>;
 
@@ -32,6 +35,7 @@ export async function createPersonalHomeRestorePointWithLease(params: Readonly<{
   configuration: Record<string, unknown>;
   sqlite: PersonalHomeSqliteMaintenance;
   readIdentityFromDatabase?(databasePath: string): Promise<Readonly<{ homeServerIdentityId: string }>>;
+  finalizeConfiguration(rollbackArtifact: string): Promise<void>;
   operationLeaseHeld: true;
 }>): Promise<PersonalHomeRestorePoint> {
   const id = randomUUID();
@@ -55,6 +59,11 @@ export async function createPersonalHomeRestorePointWithLease(params: Readonly<{
       ...(params.readIdentityFromDatabase ? { verifyStagedIdentity: async (databasePath: string, manifest: PersonalHomeRestoreResult['manifest']) => (await params.readIdentityFromDatabase!(databasePath)).homeServerIdentityId === manifest.homeServerIdentityId } : {}),
       ...hooks,
       operationLeaseHeld: true,
+    }),
+    finalize: () => finalizePersonalHomeRestoreWithLease({
+      layout: params.layout,
+      operationLeaseHeld: true,
+      finalizeConfiguration: params.finalizeConfiguration,
     }),
     dispose: () => rm(backup.path, { force: true }),
   });

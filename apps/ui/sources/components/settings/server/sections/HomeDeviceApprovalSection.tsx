@@ -191,6 +191,11 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
         );
         setBusyKeys((current) => current.filter((candidate) => candidate !== key));
         if (!result.ok) {
+            if (result.reason === 'already_decided') {
+                setDecisionErrorKeys((current) => current.filter((candidate) => candidate !== key));
+                await load();
+                return;
+            }
             setDecisionErrorKeys((current) => current.includes(key) ? current : [...current, key]);
             publishAnnouncement(`${t('approvals.decisionError')}: ${item.home.name}`);
             return;
@@ -204,7 +209,7 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
             )),
         }));
         publishAnnouncement(`${t(`approvals.status.${decision === 'approve' ? 'approved' : 'rejected'}`)}: ${item.home.name}`);
-    }, [publishAnnouncement]);
+    }, [load, publishAnnouncement]);
 
     const runPendingEnrollmentOperation = React.useCallback(async (
         homeName: string,
