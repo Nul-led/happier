@@ -7,7 +7,10 @@ import type {
     WorkspaceSyncPersistentModeV1,
 } from '@happier-dev/protocol';
 
-import { openSessionHandoffPicker } from '@/components/sessions/handoff/openSessionHandoffPicker';
+import {
+    openSessionHandoffPicker,
+    type SessionHandoffPickerResult,
+} from '@/components/sessions/handoff/openSessionHandoffPicker';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { sync } from '@/sync/sync';
@@ -194,7 +197,7 @@ async function confirmActiveSessionHandoff(sessionId: string): Promise<boolean> 
 
 async function confirmMirrorExactly(input: Readonly<{
     sourceMachineId?: string | null;
-    selection: Awaited<ReturnType<typeof openSessionHandoffPicker>> & {};
+    selection: SessionHandoffPickerResult;
 }>): Promise<boolean> {
     if (input.selection.workspaceSyncRelationshipIntent?.mode !== 'mirror_exactly') return true;
 

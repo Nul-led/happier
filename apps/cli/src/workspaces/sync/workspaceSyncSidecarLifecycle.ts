@@ -155,12 +155,15 @@ export class WorkspaceSyncSidecarLifecycle {
     }
     if (process) {
       const graceMs = this.dependencies.shutdownGraceMs ?? 5_000;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const exitedNaturally = await Promise.race([
-        process.waitForTermination().then(() => true, () => false),
-        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), graceMs); }),
-      ]);
-      if (timer !== undefined) clearTimeout(timer);
+      let exitedNaturally = false;
+      if (graceMs > 0) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        exitedNaturally = await Promise.race([
+          process.waitForTermination().then(() => true, () => false),
+          new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), graceMs); }),
+        ]);
+        if (timer !== undefined) clearTimeout(timer);
+      }
       if (!exitedNaturally) await process.stop().catch(() => undefined);
     }
     await broker?.close().catch(() => undefined);

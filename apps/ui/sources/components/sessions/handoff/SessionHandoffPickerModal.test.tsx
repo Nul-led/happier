@@ -225,6 +225,8 @@ describe('SessionHandoffPickerModal', () => {
         expect(machineSelector.props.dropdownTestID).toBe('session-handoff-machine-dropdown-trigger');
         await act(async () => {
             invokeTestInstanceHandler(machineSelector, 'onSelect', { id: 'machine_target', metadata: { displayName: 'Target machine' } });
+            const pathInput = tree.find((node: any) => node.props?.testID === 'path-selection-list:header:input');
+            invokeTestInstanceHandler(pathInput, 'onChangeText', '/home/target/happier');
         });
 
         const footer = requireCardChrome(chrome).footer;
@@ -240,6 +242,8 @@ describe('SessionHandoffPickerModal', () => {
 
         expect(onResolve).toHaveBeenCalledWith({
             targetMachineId: 'machine_target',
+            targetMachineLabel: 'Target machine',
+            targetPath: '/home/target/happier',
             sourceRootPath: '~/projects/happier',
             targetSessionStorageMode: 'persisted',
             workspaceAction: {

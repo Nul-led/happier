@@ -46,10 +46,10 @@ const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRelationsh
     const modeKey = resolveWorkspaceSyncModeTranslationKey(props.summary.relationship.mode);
     const stateKey = status ? resolveWorkspaceSyncStateTranslationKey(status.state) : null;
     const errorKey = resolveWorkspaceSyncErrorTranslationKey(status?.errorCode);
-    const [pendingAction, setPendingAction] = React.useState<'sync' | 'disable' | 'enable' | 'resume' | 'terminate' | null>(null);
+    const [pendingAction, setPendingAction] = React.useState<'sync' | 'disable' | 'enable' | 'terminate' | null>(null);
     const [menuOpen, setMenuOpen] = React.useState(false);
 
-    const runAction = React.useCallback(async (action: 'sync' | 'disable' | 'enable' | 'resume' | 'terminate') => {
+    const runAction = React.useCallback(async (action: 'sync' | 'disable' | 'enable' | 'terminate') => {
         setPendingAction(action);
         setMenuOpen(false);
         try {
@@ -101,7 +101,7 @@ const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRelationsh
             ...(props.summary.beta.workspaceRef ? [{ id: 'open-beta', title: t('workspaceSync.actions.openFolder', { label: props.summary.beta.label }) }] : []),
             { id: 'terminate', title: t('workspaceSync.actions.terminate') },
         ];
-    }, [props.summary.alpha.label, props.summary.alpha.workspaceRef, props.summary.beta.label, props.summary.beta.workspaceRef, props.summary.relationship.enabled, status?.state]);
+    }, [props.summary.alpha.label, props.summary.alpha.workspaceRef, props.summary.beta.label, props.summary.beta.workspaceRef, props.summary.relationship.enabled]);
 
     const handleActionSelect = React.useCallback((action: string) => {
         if (action === 'open-alpha' || action === 'open-beta') {
