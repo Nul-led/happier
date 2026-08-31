@@ -629,6 +629,57 @@ describe("authRoutes (pairing auth) (integration)", () => {
         expect(await db.authPairingSession.findUnique({ where: { id: row.id } })).toBeNull();
     });
 
+    it("fails closed for a bare consume of an undecided requester and preserves joining-device polling", async () => {
+        const account = await db.account.create({
+            data: { publicKey: `pk-${Date.now()}-bare-requested`, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const token = await createPresentUserToken(account.id);
+        const requester = createPhoneEphemeralKeypair();
+        await db.accountAuthRequest.create({
+            data: { publicKey: privacyKit.encodeHex(requester.publicKeyRaw) },
+        });
+        const row = await db.authPairingSession.create({
+            data: {
+                accountId: account.id,
+                secretHash: randomBase64Url32Bytes(),
+                requestedPublicKey: requester.publicKeyBase64,
+                requestedBindingProof: randomBase64Url32Bytes(),
+                requestedAt: new Date(),
+                expiresAt: new Date(Date.now() + 120_000),
+                flow: "direct_qr",
+            },
+        });
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const cleanup = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/consume",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { pairId: row.id },
+        });
+        expect(cleanup.statusCode).toBe(404);
+        expect(await db.authPairingSession.findUnique({ where: { id: row.id } })).toMatchObject({
+            requestedPublicKey: requester.publicKeyBase64,
+            approvalStatus: null,
+            decidedAt: null,
+        });
+
+        const joiningPoll = await app.inject({
+            method: "POST",
+            url: "/v2/auth/account/request",
+            payload: {
+                publicKey: requester.publicKeyBase64,
+                pairId: row.id,
+                homeServerIdentityId: localHomeServerIdentityId,
+            },
+        });
+        expect(joiningPoll.statusCode).toBe(200);
+        expect(joiningPoll.json()).toEqual({ state: "requested" });
+    });
+
     it("reject intent fails as already decided when approval won and preserves the approved row", async () => {
         const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-approved-reject` }, select: { id: true } });
         const token = await createPresentUserToken(account.id);

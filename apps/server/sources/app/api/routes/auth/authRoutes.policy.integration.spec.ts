@@ -82,6 +82,7 @@ describe("authRoutes (auth policy) (integration)", () => {
 
         expect(res.statusCode).toBe(403);
         expect(res.json()).toEqual({ error: "signup-disabled" });
+        await expect(db.account.count()).resolves.toBe(0);
 
         await app.close();
     });

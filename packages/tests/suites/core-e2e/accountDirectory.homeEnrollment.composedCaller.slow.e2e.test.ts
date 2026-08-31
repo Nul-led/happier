@@ -581,12 +581,18 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         };
         const firstUpdate = await session.putHome(updatedHomeB);
         const secondUpdate = await session.putHome(updatedHomeB);
-        expect(firstUpdate).toEqual(secondUpdate);
+        expect(firstUpdate).toMatchObject({
+            homeServerIdentityId: homeBIdentity,
+            label: 'Home B updated',
+            preferred: true,
+        });
         expect(secondUpdate).toMatchObject({
             homeServerIdentityId: homeBIdentity,
             label: 'Home B updated',
             preferred: true,
         });
+        expect(secondUpdate.createdAtMs).toBe(firstUpdate.createdAtMs);
+        expect(secondUpdate.updatedAtMs).toBeGreaterThanOrEqual(firstUpdate.updatedAtMs);
 
         const firstPreferred = await session.setPreferredHome(homeBIdentity);
         const secondPreferred = await session.setPreferredHome(homeBIdentity);
