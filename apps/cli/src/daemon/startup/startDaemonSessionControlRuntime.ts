@@ -4238,6 +4238,11 @@ export async function startDaemonSessionControlRuntime(
             }),
         });
     };
+    const temporaryThrottleContinuationMessageDispatcher =
+        createConnectedServiceContinuationMessageDispatcher({
+            credentials: params.credentials,
+            sendMessage: sendSessionMessage,
+        });
     const temporaryThrottleScheduler = new ConnectedServiceTemporaryThrottleRetryScheduler({
         nowMs: () => Date.now(),
         baseBackoffMs: resolvePositiveIntEnv(
@@ -4280,7 +4285,7 @@ export async function startDaemonSessionControlRuntime(
             });
             const result = await spawnSessionForInternalResume(respawnOptions);
             if (result.type === 'success') {
-                const continuationResult = await continuationMessageDispatcher
+                const continuationResult = await temporaryThrottleContinuationMessageDispatcher
                     .enqueueInterruptedOriginContinuation({
                         sessionId,
                         attemptId: intent.issueFingerprint,

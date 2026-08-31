@@ -441,7 +441,7 @@ const CODEX_QUALIFIED_SERVICE = {
 const connectedAccountRequestAuthServiceDependenciesCapture = vi.hoisted(() => ({
     current: null as ConnectedAccountRequestAuthServiceDependencies | null,
 }));
-const sendSessionMessageMock = vi.hoisted(() => vi.fn(async () => undefined));
+const sendSessionMessageMock = vi.hoisted(() => vi.fn(async (): Promise<unknown> => undefined));
 const createCliActionExecutorFromCredentialsMock = vi.hoisted(() => vi.fn());
 const handleConnectedServiceRuntimeAuthFailureForSessionMock = vi.hoisted(() => vi.fn<(_input: unknown) => Promise<unknown>>(async (_input) => ({
     handled: false,
@@ -19588,9 +19588,7 @@ describe('startDaemonSessionControlRuntime', () => {
                 }),
                 metadataVersion: 3,
             };
-            fetchSessionByIdCompatMock
-                .mockResolvedValueOnce(rawSession)
-                .mockResolvedValueOnce(rawSession);
+            fetchSessionByIdCompatMock.mockResolvedValue(rawSession);
             let capturedTemporaryThrottleRecovery: null | {
                 wake: (wakeInput: { sessionId: string; reason: 'timer' | 'manual' }) => Promise<{ status: string }>;
             } = null;
