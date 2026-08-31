@@ -18,14 +18,14 @@ function mutationError(code: string): Error {
 export function parseWorkspaceSyncRelationshipRecords(raw: unknown): WorkspaceSyncRelationshipV1[] {
     if (raw === undefined) return [];
     if (!Array.isArray(raw) || raw.length > MAX_WORKSPACE_SYNC_RELATIONSHIPS) {
-        throw mutationError('workspace_sync_relationship_settings_invalid');
+        throw mutationError('workspace_sync_settings_invalid');
     }
     const relationships: WorkspaceSyncRelationshipV1[] = [];
     const ids = new Set<string>();
     for (const candidate of raw) {
         const parsed = WorkspaceSyncRelationshipV1Schema.safeParse(candidate);
         if (!parsed.success || ids.has(parsed.data.relationshipId)) {
-            throw mutationError('workspace_sync_relationship_settings_invalid');
+            throw mutationError('workspace_sync_settings_invalid');
         }
         ids.add(parsed.data.relationshipId);
         relationships.push(parsed.data);
@@ -46,6 +46,19 @@ export function upsertWorkspaceSyncRelationshipRecord(
     if (existingIndex < 0) {
         if (relationships.length >= MAX_WORKSPACE_SYNC_RELATIONSHIPS) {
             throw mutationError('workspace_sync_relationship_limit');
+        }
+        const endpointPairAlreadyClaimed = relationships.some((candidate) => (
+            (
+                candidate.alphaWorkspaceRefId === parsed.data.alphaWorkspaceRefId
+                && candidate.betaWorkspaceRefId === parsed.data.betaWorkspaceRefId
+            )
+            || (
+                candidate.alphaWorkspaceRefId === parsed.data.betaWorkspaceRefId
+                && candidate.betaWorkspaceRefId === parsed.data.alphaWorkspaceRefId
+            )
+        ));
+        if (endpointPairAlreadyClaimed) {
+            throw mutationError('workspace_sync_relationship_replacement_required');
         }
         return [...relationships, parsed.data];
     }

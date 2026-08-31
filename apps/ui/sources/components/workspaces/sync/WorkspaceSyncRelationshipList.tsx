@@ -10,7 +10,6 @@ import {
     disableWorkspaceSyncRelationship,
     enableWorkspaceSyncRelationship,
     flushWorkspaceSyncRelationship,
-    resumeWorkspaceSyncRelationship,
     terminatePersistedWorkspaceSyncRelationship,
 } from '@/sync/ops/workspaceSync';
 import {
@@ -73,12 +72,11 @@ const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRelationsh
                 await terminatePersistedWorkspaceSyncRelationship(scope);
                 return;
             }
-            const nextStatus = action === 'disable'
-                ? await disableWorkspaceSyncRelationship(scope)
-                : action === 'enable'
-                    ? await enableWorkspaceSyncRelationship(scope)
-                    : await resumeWorkspaceSyncRelationship(scope);
-            setWorkspaceSyncStatus(scope, nextStatus);
+            if (action === 'disable') {
+                await disableWorkspaceSyncRelationship(scope);
+            } else {
+                await enableWorkspaceSyncRelationship(scope);
+            }
         } catch {
             Modal.alert(t('common.error'), t('errors.operationFailed'));
         } finally {
@@ -87,15 +85,15 @@ const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRelationsh
     }, [scope]);
 
     const actionItems = React.useMemo<readonly DropdownMenuItem[]>(() => {
-        const toggleAction = !props.summary.relationship.enabled || status?.state === 'paused'
+        const toggleAction = !props.summary.relationship.enabled
             ? {
-                id: props.summary.relationship.enabled ? 'resume' : 'enable',
+                id: 'enable',
                 title: t('workspaceSync.actions.resume'),
                 icon: undefined,
             }
             : { id: 'disable', title: t('workspaceSync.actions.pause'), icon: undefined };
         return [
-            ...(!props.summary.relationship.enabled || status?.state === 'paused'
+            ...(!props.summary.relationship.enabled
                 ? []
                 : [{ id: 'sync', title: t('workspaceSync.actions.syncNow') }]),
             toggleAction,
@@ -115,7 +113,7 @@ const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRelationsh
             }) as Href);
             return;
         }
-        if (action === 'sync' || action === 'disable' || action === 'enable' || action === 'resume' || action === 'terminate') {
+        if (action === 'sync' || action === 'disable' || action === 'enable' || action === 'terminate') {
             void runAction(action);
         }
     }, [props.summary.alpha, props.summary.beta, router, runAction]);

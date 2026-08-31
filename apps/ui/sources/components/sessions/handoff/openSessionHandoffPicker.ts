@@ -10,6 +10,8 @@ import { SessionHandoffPickerModalEntry } from './SessionHandoffPickerModalEntry
 
 export type SessionHandoffPickerResult = Readonly<{
     targetMachineId: string;
+    /** Display-only identity used by consequential confirmation copy. */
+    targetMachineLabel?: string;
     targetPath?: string;
     /** Local UI context used to materialize the canonical source WorkspaceRef. */
     sourceRootPath?: string;

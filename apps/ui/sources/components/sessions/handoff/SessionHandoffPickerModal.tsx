@@ -223,6 +223,17 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
         cacheScopeKey: normalizeId(serverId) || null,
     });
     const targetMachineHomeDir = String(selectedMachine?.metadata?.homeDir ?? '').trim() || '/home';
+    const resolvedTargetPath = React.useMemo(
+        () => resolveAbsolutePath(targetPath?.trim() ?? '', targetMachineHomeDir),
+        [targetMachineHomeDir, targetPath],
+    );
+    const workspaceTargetPathSafety = React.useMemo(
+        () => evaluateSessionHandoffWorkspaceTransferSourcePathSafety({
+            sourcePath: resolvedTargetPath,
+            sourceHomeDir: targetMachineHomeDir,
+        }),
+        [resolvedTargetPath, targetMachineHomeDir],
+    );
     const recentTargetPathOptions = React.useMemo(
         () => recentTargetPaths.map((path, index) => ({ path, lastUsedAt: index })),
         [recentTargetPaths],
@@ -239,7 +250,7 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
             ?? SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS[0],
         [workspaceSyncMode],
     );
-    const workspacePolicyControlsDisabled = workspaceSyncMode !== 'copy_once';
+    const workspacePolicyControlsDisabled = workspaceSyncMode === 'none';
 
     const handleCancel = React.useCallback(() => {
         onResolve(null);
@@ -252,6 +263,7 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
         if (!targetMachineId) return;
         if (!canAttemptSelectedMachine) return;
         if (workspaceSyncMode !== 'none' && !workspaceSourcePathSafety.allowed) return;
+        if (workspaceSyncMode !== 'none' && !workspaceTargetPathSafety.allowed) return;
         const persistentMode = workspaceSyncMode !== 'none' && workspaceSyncMode !== 'copy_once'
             ? workspaceSyncMode
             : null;
@@ -264,7 +276,8 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
         if (!workspaceAction && !persistentMode) return;
         onResolve({
             targetMachineId,
-            ...(targetPath ? { targetPath } : {}),
+            targetMachineLabel: normalizeId(selectedMachine?.metadata?.displayName) || targetMachineId,
+            ...(resolvedTargetPath ? { targetPath: resolvedTargetPath } : {}),
             ...(sourceRootPath ? { sourceRootPath } : {}),
             targetSessionStorageMode: isExternalSession
                 ? (directTargetMode === 'convert_to_persisted' ? 'persisted' : 'direct')
@@ -279,11 +292,11 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
                 }
                 : {}),
         });
-    }, [canAttemptSelectedMachine, currentSessionMetadata?.path, directTargetMode, ignoredIncludeGlobs, includeIgnoredMode, isExternalSession, onResolve, selectedMachineId, targetPath, workspaceSourcePathSafety.allowed, workspaceSyncMode]);
+    }, [canAttemptSelectedMachine, currentSessionMetadata?.path, directTargetMode, ignoredIncludeGlobs, includeIgnoredMode, isExternalSession, onResolve, resolvedTargetPath, selectedMachine?.metadata?.displayName, selectedMachineId, workspaceSourcePathSafety.allowed, workspaceSyncMode, workspaceTargetPathSafety.allowed]);
 
     const canStart = Boolean(selectedMachine && canAttemptSelectedMachine && (
         workspaceSyncMode === 'none'
-        || (workspaceSourcePathSafety.allowed && (
+        || (workspaceSourcePathSafety.allowed && workspaceTargetPathSafety.allowed && (
             workspaceSyncMode !== 'copy_once'
             || buildSessionHandoffWorkspaceAction({
                 workspaceSyncMode,

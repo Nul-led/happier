@@ -60,6 +60,7 @@ export type ProductionDaemonWorkspaceSyncFactories = Readonly<{
   subscribeSettingsSnapshot: typeof subscribeActiveAccountSettingsSnapshot;
   callMachineRpc: typeof callMachineRpc;
   inspectLegacyState: typeof inspectRetiredWorkspaceReplicationState;
+  cleanupLegacyState: typeof cleanupRetiredWorkspaceReplicationState;
   prepareGitTarget: typeof prepareExistingGitWorkspaceSyncTarget;
   warn(message: string, error: unknown): void;
 }>;
@@ -83,6 +84,7 @@ const defaultFactories: ProductionDaemonWorkspaceSyncFactories = {
   subscribeSettingsSnapshot: subscribeActiveAccountSettingsSnapshot,
   callMachineRpc,
   inspectLegacyState: inspectRetiredWorkspaceReplicationState,
+  cleanupLegacyState: cleanupRetiredWorkspaceReplicationState,
   prepareGitTarget: prepareExistingGitWorkspaceSyncTarget,
   warn: (message, error) => logger.warn(message, error),
 };
@@ -419,7 +421,7 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
       if (inspection.status !== 'legacy_workspace_sync_state_unsupported') {
         throw compositionError(inspection.status, 'Workspace sync legacy state cannot be safely removed');
       }
-      const result = await cleanupRetiredWorkspaceReplicationState(inspection);
+      const result = await factories.cleanupLegacyState(inspection);
       return { removed: result.removed, restartRequired: result.removed };
     },
   };

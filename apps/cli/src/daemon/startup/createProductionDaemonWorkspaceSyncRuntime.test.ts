@@ -321,6 +321,7 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
             inventoryHash: 'a'.repeat(64),
           };
       const inspectLegacyState = vi.fn(async () => inspection);
+      const cleanupLegacyState = vi.fn(async () => ({ removed: true }));
       const spawnSidecar = vi.fn(async () => {
         throw new Error('sidecar must not spawn while the legacy gate is closed');
       });
@@ -339,6 +340,7 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
         spawnSidecar,
         launchLocalAgent,
         inspectLegacyState,
+        cleanupLegacyState,
         warn,
       } as unknown as ProductionDaemonWorkspaceSyncFactories;
       const production = await createProductionDaemonWorkspaceSyncRuntime({
@@ -356,6 +358,7 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
         callMachineRpc,
         warn,
         inspectLegacyState,
+        cleanupLegacyState,
         cleanup: async () => {
           await production.stop();
           await rm(activeServerDir, { recursive: true, force: true });
@@ -406,6 +409,26 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
         } finally {
           await composed.cleanup();
         }
+      }
+    });
+
+    it('runs the explicit exact-quarantine cleanup only for classified retired state', async () => {
+      const retired = await compose('legacy_workspace_sync_state_unsupported');
+      try {
+        await expect(retired.production.workspaceSync.cleanupRetiredState())
+          .resolves.toEqual({ removed: true, restartRequired: true });
+        expect(retired.cleanupLegacyState).toHaveBeenCalledOnce();
+      } finally {
+        await retired.cleanup();
+      }
+
+      const unknown = await compose('legacy_workspace_sync_state_unknown');
+      try {
+        await expect(unknown.production.workspaceSync.cleanupRetiredState())
+          .rejects.toMatchObject({ code: 'legacy_workspace_sync_state_unknown' });
+        expect(unknown.cleanupLegacyState).not.toHaveBeenCalled();
+      } finally {
+        await unknown.cleanup();
       }
     });
 

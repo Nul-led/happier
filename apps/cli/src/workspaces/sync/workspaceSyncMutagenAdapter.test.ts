@@ -282,7 +282,7 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     });
     const adapter = createWorkspaceSyncMutagenAdapter({
       send, createRequestId: () => 'request-1',
-      resolveWorkspaceRef: async () => null,
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
     });
 
     await expect(adapter.copyOnce(copyOnceOperation)).rejects.toMatchObject({ code: 'indeterminate' });

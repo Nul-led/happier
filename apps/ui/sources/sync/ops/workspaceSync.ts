@@ -121,27 +121,6 @@ export async function flushWorkspaceSyncRelationship(
     return await runRelationshipCommand(scope, RPC_METHODS.DAEMON_WORKSPACE_SYNC_FLUSH);
 }
 
-export async function pauseWorkspaceSyncRelationship(
-    scope: WorkspaceSyncRelationshipScope,
-): Promise<WorkspaceSyncStatusV1> {
-    return await runRelationshipCommand(scope, RPC_METHODS.DAEMON_WORKSPACE_SYNC_PAUSE);
-}
-
-export async function resumeWorkspaceSyncRelationship(
-    scope: WorkspaceSyncRelationshipScope,
-): Promise<WorkspaceSyncStatusV1> {
-    return await runRelationshipCommand(scope, RPC_METHODS.DAEMON_WORKSPACE_SYNC_RESUME);
-}
-
-export async function terminateWorkspaceSyncRelationship(
-    scope: WorkspaceSyncRelationshipScope,
-): Promise<void> {
-    const method = RPC_METHODS.DAEMON_WORKSPACE_SYNC_TERMINATE;
-    const payload = WorkspaceSyncRelationshipIdV1Schema.parse({ relationshipId: scope.relationshipId });
-    const record = strictRecord(await callWorkspaceSync(scope, method, payload), ['ok'], method);
-    if (record.ok !== true) unsupported(method);
-}
-
 async function persistRelationshipEnabled(
     scope: WorkspaceSyncRelationshipScope,
     enabled: boolean,
@@ -162,24 +141,19 @@ async function persistRelationshipEnabled(
 
 export async function disableWorkspaceSyncRelationship(
     scope: WorkspaceSyncRelationshipScope,
-): Promise<WorkspaceSyncStatusV1> {
+): Promise<void> {
     await persistRelationshipEnabled(scope, false);
-    return await pauseWorkspaceSyncRelationship(scope);
 }
 
 export async function enableWorkspaceSyncRelationship(
     scope: WorkspaceSyncRelationshipScope,
-): Promise<WorkspaceSyncStatusV1> {
+): Promise<void> {
     await persistRelationshipEnabled(scope, true);
-    return await resumeWorkspaceSyncRelationship(scope);
 }
 
 export async function terminatePersistedWorkspaceSyncRelationship(
     scope: WorkspaceSyncRelationshipScope,
 ): Promise<void> {
-    await persistRelationshipEnabled(scope, false);
-    await pauseWorkspaceSyncRelationship(scope);
-    await terminateWorkspaceSyncRelationship(scope);
     await mutateWorkspaceSyncAccountSettings((raw) => ({
         ...raw,
         workspaceSyncRelationshipsV1: removeWorkspaceSyncRelationshipRecord(

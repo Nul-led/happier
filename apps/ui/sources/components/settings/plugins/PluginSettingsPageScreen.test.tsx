@@ -1,7 +1,10 @@
 import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { normalizePluginUiSettingsPageBindingV1 } from '@happier-dev/protocol/plugins/ui';
+import {
+    normalizePluginUiSettingsPageBindingV1,
+    type PluginUiHostApiRequestEnvelopeV1,
+} from '@happier-dev/protocol/plugins/ui';
 
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import type { PluginSurfaceOpenHandler } from '@/components/plugins/surfaces/openPluginSurface';
@@ -26,6 +29,15 @@ const hostSpy = vi.hoisted(() => vi.fn());
 const fallbackSpy = vi.hoisted(() => vi.fn());
 const stackScreenSpy = vi.hoisted(() => vi.fn());
 const routerPushSpy = vi.hoisted(() => vi.fn());
+const routerReplaceSpy = vi.hoisted(() => vi.fn());
+const nativeBackState = vi.hoisted(() => ({
+    enabled: false,
+    consume: null as null | (() => boolean),
+}));
+const routeRemovalState = vi.hoisted(() => ({
+    active: false,
+    consume: null as null | (() => boolean),
+}));
 const appShellState = vi.hoisted(() => ({
     projection: null as PluginUiProjectionModel | null,
     phase: 'current' as 'establishing' | 'current' | 'retainedOffline' | 'unavailable',
@@ -59,13 +71,33 @@ const administrationSelectionFixture = vi.hoisted(() => Object.freeze({
 
 vi.mock('expo-router', () => ({
     usePathname: () => '/settings/plugins/examples.descriptor-only/settings',
-    useRouter: () => ({ push: routerPushSpy }),
+    useRouter: () => ({ push: routerPushSpy, replace: routerReplaceSpy }),
     Stack: {
         Screen: (props: unknown) => {
             stackScreenSpy(props);
             return React.createElement('StackScreen', { props });
         },
     },
+}));
+
+vi.mock('@/components/ui/overlays/NativeBackLayerBoundary', () => ({
+    useNativeBackLayerBackHandler: (enabled: boolean, consume: () => boolean) => {
+        nativeBackState.enabled = enabled;
+        nativeBackState.consume = consume;
+    },
+}));
+
+vi.mock('@/utils/navigation/RouteRemovalStepConsumer', () => ({
+    RouteRemovalStepConsumer: (props: Readonly<{ active: boolean; consume: () => boolean }>) => {
+        routeRemovalState.active = props.active;
+        routeRemovalState.consume = props.consume;
+        return null;
+    },
+}));
+
+vi.mock('@/keyboard/escape', () => ({
+    ESCAPE_LAYER_PRIORITIES: { pane: 10 },
+    useEscapeLayer: () => {},
 }));
 
 vi.mock('@react-navigation/native', () => ({
@@ -167,7 +199,15 @@ function settingsPage(input: Readonly<{
 }
 
 type SettingsPageHostProps = Readonly<{
-    binding?: Readonly<{ openSurface?: PluginSurfaceOpenHandler }>;
+    binding?: Readonly<{
+        openSurface?: PluginSurfaceOpenHandler;
+        mountedHostApiHandlers?: Readonly<{
+            replacePageLocation?: (
+                request: PluginUiHostApiRequestEnvelopeV1,
+            ) => unknown;
+        }>;
+    }>;
+    subPath?: string;
     unavailableAction?: Readonly<{ label: string; onPress: () => void }>;
     projectionInteractionEnabled?: boolean;
     daemonSettingsTarget?: Readonly<{
@@ -204,10 +244,54 @@ afterEach(() => {
     fallbackSpy.mockClear();
     stackScreenSpy.mockClear();
     routerPushSpy.mockClear();
+    routerReplaceSpy.mockClear();
+    nativeBackState.enabled = false;
+    nativeBackState.consume = null;
+    routeRemovalState.active = false;
+    routeRemovalState.consume = null;
     administrationTargetSelectorSpy.mockClear();
 });
 
 describe('PluginSettingsPageScreen', () => {
+    it('uses the shared plugin page-location owner for internal route replacement and system Back', async () => {
+        const page = settingsPage();
+        appShellState.projection = {
+            ...EMPTY_PLUGIN_UI_PROJECTION,
+            settingsPagesById: { [page.id]: page },
+        };
+        const { PluginSettingsPageScreen } = await import('./PluginSettingsPageScreen');
+
+        await renderScreen(
+            <PluginSettingsPageScreen
+                pluginId="examples.descriptor-only"
+                pageId="settings"
+                subPath=""
+            />,
+        );
+
+        const replacePageLocation = latestHostProps().binding?.mountedHostApiHandlers?.replacePageLocation;
+        expect(replacePageLocation).toBeTypeOf('function');
+        expect(replacePageLocation?.({
+            v: 1,
+            method: 'replacePageLocation',
+            payload: { subPath: 'bindings/7', backLocation: '' },
+        })).toEqual({ subPath: 'bindings/7' });
+        expect(routerReplaceSpy).toHaveBeenCalledWith(expect.objectContaining({
+            pathname: '/(app)/settings/plugins/[pluginId]/[pageId]',
+            params: expect.objectContaining({
+                pluginId: 'examples.descriptor-only',
+                pageId: 'settings',
+                subPath: 'bindings/7',
+            }),
+        }));
+        expect(latestHostProps().subPath).toBe('');
+        expect(routeRemovalState.active).toBe(true);
+        expect(routeRemovalState.consume?.()).toBe(true);
+        expect(routerReplaceSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+            params: expect.objectContaining({ subPath: '' }),
+        }));
+    });
+
     it('keeps a restored Settings destination pending until the app projection has described it', async () => {
         appShellState.projection = null;
         appShellState.phase = 'establishing';

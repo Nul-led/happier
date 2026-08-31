@@ -192,6 +192,28 @@ async function confirmActiveSessionHandoff(sessionId: string): Promise<boolean> 
     );
 }
 
+async function confirmMirrorExactly(input: Readonly<{
+    sourceMachineId?: string | null;
+    selection: Awaited<ReturnType<typeof openSessionHandoffPicker>> & {};
+}>): Promise<boolean> {
+    if (input.selection.workspaceSyncRelationshipIntent?.mode !== 'mirror_exactly') return true;
+
+    return await Modal.confirm(
+        t('sessionHandoff.mirrorConfirmation.title'),
+        t('sessionHandoff.mirrorConfirmation.message', {
+            sourceMachine: input.sourceMachineId?.trim() || '—',
+            sourcePath: input.selection.sourceRootPath?.trim() || '—',
+            targetMachine: input.selection.targetMachineLabel?.trim() || input.selection.targetMachineId,
+            targetPath: input.selection.targetPath?.trim() || '—',
+        }),
+        {
+            cancelText: t('common.cancel'),
+            confirmText: t('sessionHandoff.mirrorConfirmation.confirm'),
+            destructive: true,
+        },
+    );
+}
+
 export async function runSessionHandoffPickerFlow(args: Readonly<{
     execute: ExecuteAction;
     sessionId: string;
@@ -206,6 +228,9 @@ export async function runSessionHandoffPickerFlow(args: Readonly<{
     });
     if (!selection) return null;
     if (!await confirmActiveSessionHandoff(args.sessionId)) return { ok: false, handled: true };
+    if (!await confirmMirrorExactly({ sourceMachineId: args.sourceMachineId, selection })) {
+        return { ok: false, handled: true };
+    }
 
     const releaseUserRequestLease = sync.acquireUserRequestLease();
     const requestId = randomUUID();
