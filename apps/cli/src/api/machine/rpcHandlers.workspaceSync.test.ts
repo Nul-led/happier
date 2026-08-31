@@ -51,6 +51,7 @@ describe('workspace sync machine RPC handlers', () => {
       manifestDigest: 'c'.repeat(64),
     }));
     const releaseBootstrapAtTarget = vi.fn(async () => ({ ok: true as const, released: true }));
+    const cleanupRetiredState = vi.fn(async () => ({ removed: true, restartRequired: true } as const));
     registerMachineWorkspaceSyncRpcHandlers({
       rpcHandlerManager,
       service: {
@@ -59,6 +60,7 @@ describe('workspace sync machine RPC handlers', () => {
         readFileAtTarget: vi.fn(async () => ({ status: 'missing' as const })),
         prepareBootstrapAtTarget,
         releaseBootstrapAtTarget,
+        cleanupRetiredState,
       },
     });
 
@@ -70,6 +72,9 @@ describe('workspace sync machine RPC handlers', () => {
     await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_FILE_READ)?.({
       relationshipId: 'rel-1', side: 'alpha', path: 'src/index.ts', maxBytes: 1024,
     })).resolves.toMatchObject({ status: 'text', text: 'hello' });
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_LEGACY_CLEANUP)?.({}))
+      .resolves.toEqual({ removed: true, restartRequired: true });
+    expect(cleanupRetiredState).toHaveBeenCalledWith(expect.any(AbortSignal));
 
     expect(controller.pause).toHaveBeenCalledWith('rel-1', expect.any(AbortSignal));
     expect(controller.readFile).toHaveBeenCalledWith(expect.objectContaining({
@@ -92,6 +97,7 @@ describe('workspace sync machine RPC handlers', () => {
         readFileAtTarget,
         prepareBootstrapAtTarget: vi.fn(),
         releaseBootstrapAtTarget: vi.fn(),
+        cleanupRetiredState: vi.fn(),
       },
     });
     await expect(first.handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_CONFLICT_DELETE)?.({
@@ -147,6 +153,7 @@ describe('workspace sync target bootstrap RPC handlers', () => {
         readFileAtTarget: vi.fn(async () => ({ status: 'missing' as const })),
         prepareBootstrapAtTarget,
         releaseBootstrapAtTarget,
+        cleanupRetiredState: vi.fn(),
       },
     });
 

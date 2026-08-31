@@ -83,6 +83,18 @@ export type WorkspaceSyncControllerOptions = Readonly<{
 
 function abortIfRequested(signal?: AbortSignal): void { if (signal?.aborted) throw Object.assign(new Error('Workspace sync operation cancelled'), { name: 'AbortError', code: 'cancelled' }); }
 
+function isIndeterminate(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'indeterminate';
+}
+
+function areCopyOnceDefinitionsEqual(left: WorkspaceSyncCopyOnceV1, right: WorkspaceSyncCopyOnceV1): boolean {
+  return left.operationId === right.operationId
+    && left.controllerMachineId === right.controllerMachineId
+    && left.alphaWorkspaceRefId === right.alphaWorkspaceRefId
+    && left.betaWorkspaceRefId === right.betaWorkspaceRefId
+    && left.contentPolicy.policyDigest === right.contentPolicy.policyDigest;
+}
+
 const requiredAdapterMethods = ['rehydrate', 'ensure', 'copyOnce', 'get', 'list', 'flush', 'pause', 'resume', 'terminate', 'listConflicts'] as const;
 
 function assertCompleteAdapter(adapter: WorkspaceSyncMutagenAdapter): void {
@@ -108,8 +120,11 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
   private readonly definitions = new Map<string, WorkspaceSyncRelationshipV1>();
   private readonly copyOperations = new Map<string, WorkspaceSyncCopyOnceV1>();
   private readonly copyFences = new Map<string, readonly WorkspaceRootOwnershipHandle[]>();
+  private readonly copyOwnedFences = new Map<string, readonly WorkspaceRootOwnershipHandle[]>();
   private readonly statuses = new Map<string, WorkspaceSyncStatusV1>();
   private readonly fences = new Map<string, WorkspaceRootOwnershipHandle[]>();
+  private readonly ownershipLost = new Set<string>();
+  private readonly activeIngress = new Map<string, Set<Duplex>>();
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly listeners = new Map<string, Set<(status: WorkspaceSyncStatusV1) => void>>();
   private readonly renewalTimers = new Map<string, NodeJS.Timeout>();
@@ -154,13 +169,22 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
           await Promise.all(handles.map((handle) => handle.renew()));
         } catch {
           this.stopOwnershipRenewal(id);
-          try {
-            const paused = await this.adapter.pause(id);
+          this.ownershipLost.add(id);
+          void this.enqueue(id, undefined, async () => {
+            if (this.fences.get(id) !== handles) return;
+            this.closeActiveIngress(id);
+            let paused: WorkspaceSyncStatusV1 | undefined;
+            try {
+              paused = await this.adapter.pause(id);
+            } finally {
+              this.fences.delete(id);
+              await Promise.all(handles.map((handle) => handle.release()));
+            }
             this.publish({ ...paused, state: 'paused', errorCode: 'workspace_root_ownership_lost' });
-          } catch {
+          }).catch(() => {
             const previous = this.statuses.get(id);
             if (previous) this.publish({ ...previous, state: 'error', errorCode: 'workspace_root_ownership_lost' });
-          }
+          });
         }
       })();
     }, this.ownershipRenewIntervalMs);
@@ -178,6 +202,27 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
     this.fences.delete(id);
     await Promise.all(handles.map((handle) => handle.release()));
   }
+  private closeActiveIngress(id: string): void {
+    for (const stream of this.activeIngress.get(id) ?? []) stream.destroy();
+    this.activeIngress.delete(id);
+  }
+  private trackActiveIngress(id: string, stream: Duplex): Duplex {
+    const streams = this.activeIngress.get(id) ?? new Set<Duplex>();
+    streams.add(stream);
+    this.activeIngress.set(id, streams);
+    stream.once('close', () => {
+      streams.delete(stream);
+      if (streams.size === 0) this.activeIngress.delete(id);
+    });
+    return stream;
+  }
+  private async releaseCopyOperation(id: string): Promise<void> {
+    const handles = this.copyOwnedFences.get(id) ?? [];
+    this.copyOwnedFences.delete(id);
+    this.copyFences.delete(id);
+    this.copyOperations.delete(id);
+    await Promise.all(handles.map((handle) => handle.release()));
+  }
   private async ensureWithinQueue(
     valid: WorkspaceSyncRelationshipV1,
     signal?: AbortSignal,
@@ -187,25 +232,31 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       throw Object.assign(new Error('Workspace sync controller machine is unavailable'), { code: 'controller_unavailable' });
     }
     const previous = this.definitions.get(valid.relationshipId);
+    const recoveringOwnership = previous !== undefined && this.ownershipLost.has(valid.relationshipId);
     if (!previous && this.definitions.size >= MAX_WORKSPACE_SYNC_RELATIONSHIPS) {
       throw Object.assign(new Error('Workspace sync relationship limit reached'), { code: 'workspace_sync_relationship_limit' });
     }
     if (previous && !areWorkspaceSyncRelationshipDefinitionsEqual(previous, valid)) {
       throw Object.assign(new Error('Workspace sync relationship definition conflicts with active relationship'), { code: 'relationship_definition_conflict' });
     }
-    if (!previous) this.fences.set(valid.relationshipId, await this.acquireRoots(valid));
+    let acquiredHandles: WorkspaceRootOwnershipHandle[] | undefined;
+    if (!previous || recoveringOwnership) {
+      acquiredHandles = await this.acquireRoots(valid);
+      this.fences.set(valid.relationshipId, acquiredHandles);
+    }
     try {
       await this.prepareTarget(valid, signal);
       await this.lifecycle.start();
       if (!previous) this.definitions.set(valid.relationshipId, valid);
       const status = await this.adapter.ensure(valid, signal);
+      this.ownershipLost.delete(valid.relationshipId);
       this.startOwnershipRenewal(valid.relationshipId, this.fences.get(valid.relationshipId) ?? []);
       return this.publish(status);
     } catch (error) {
-      if (!previous) {
-        this.definitions.delete(valid.relationshipId);
+      if (!previous || recoveringOwnership) {
+        if (!previous) this.definitions.delete(valid.relationshipId);
         this.stopOwnershipRenewal(valid.relationshipId);
-        await Promise.all((this.fences.get(valid.relationshipId) ?? []).map((handle) => handle.release()));
+        await Promise.all((acquiredHandles ?? []).map((handle) => handle.release()));
         this.fences.delete(valid.relationshipId);
       }
       throw error;
@@ -225,26 +276,37 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       if (valid.controllerMachineId !== this.localMachineId) {
         throw Object.assign(new Error('Workspace sync controller machine is unavailable'), { code: 'controller_unavailable' });
       }
-      const acquiredHandles = await this.acquireRoots({
-        v: 1, relationshipId: valid.operationId, controllerMachineId: valid.controllerMachineId,
-        alphaWorkspaceRefId: valid.alphaWorkspaceRefId, betaWorkspaceRefId: valid.betaWorkspaceRefId,
-        mode: 'keep_synced', contentPolicy: valid.contentPolicy, enabled: true, createdAtMs: 0, updatedAtMs: 0,
-      });
-      const handles = [...(ownershipHandles ?? []), ...acquiredHandles];
-      try {
+      const retained = this.copyOperations.get(valid.operationId);
+      if (retained && !areCopyOnceDefinitionsEqual(retained, valid)) {
+        throw Object.assign(new Error('Workspace copy operation definition conflicts with active operation'), { code: 'relationship_definition_conflict' });
+      }
+      const acquiredHandles = retained ? [] : await this.acquireRoots({
+          v: 1, relationshipId: valid.operationId, controllerMachineId: valid.controllerMachineId,
+          alphaWorkspaceRefId: valid.alphaWorkspaceRefId, betaWorkspaceRefId: valid.betaWorkspaceRefId,
+          mode: 'keep_synced', contentPolicy: valid.contentPolicy, enabled: true, createdAtMs: 0, updatedAtMs: 0,
+        });
+      const handles = retained
+        ? this.copyFences.get(valid.operationId) ?? []
+        : [...(ownershipHandles ?? []), ...acquiredHandles];
+      if (!retained) {
         this.copyOperations.set(valid.operationId, valid);
         this.copyFences.set(valid.operationId, handles);
+        this.copyOwnedFences.set(valid.operationId, acquiredHandles);
+      }
+      try {
         await this.lifecycle.start();
-        return this.publish(await this.adapter.copyOnce(valid, signal));
-      } finally {
-        this.copyOperations.delete(valid.operationId);
-        this.copyFences.delete(valid.operationId);
-        await Promise.all(acquiredHandles.map((handle) => handle.release()));
+        const result = this.publish(await this.adapter.copyOnce(valid, signal));
+        await this.releaseCopyOperation(valid.operationId);
+        return result;
+      } catch (error) {
+        if (!isIndeterminate(error)) await this.releaseCopyOperation(valid.operationId);
+        throw error;
       }
     });
   }
   async flush(id: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1> { return this.enqueue(id, signal, async () => {
     this.assertStateAvailable();
+    if (this.ownershipLost.has(id)) throw Object.assign(new Error('Workspace root ownership was lost'), { code: 'workspace_root_ownership_lost' });
     if (!this.definitions.has(id)) {
       const definition = await this.resolveDefinition(id);
       if (!definition) throw Object.assign(new Error('Workspace sync relationship is not ready'), { code: 'relationship_not_ready' });
@@ -254,13 +316,36 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
     return this.publish(await this.adapter.flush(id, signal));
   }); }
   async pause(id: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1> { return this.enqueue(id, signal, async () => { this.assertStateAvailable(); await this.lifecycle.start(); return this.publish(await this.adapter.pause(id, signal)); }); }
-  async resume(id: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1> { return this.enqueue(id, signal, async () => { this.assertStateAvailable(); await this.lifecycle.start(); return this.publish(await this.adapter.resume(id, signal)); }); }
-  async terminate(id: string, signal?: AbortSignal): Promise<void> { return this.enqueue(id, signal, async () => { this.assertStateAvailable(); await this.lifecycle.start(); await this.adapter.terminate(id, signal); await this.releaseRelationshipOwnership(id); this.definitions.delete(id); this.statuses.delete(id); }); }
+  async resume(id: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1> { return this.enqueue(id, signal, async () => {
+    this.assertStateAvailable();
+    if (this.ownershipLost.has(id)) {
+      const definition = this.definitions.get(id) ?? await this.resolveDefinition(id);
+      if (!definition) throw Object.assign(new Error('Workspace sync relationship is not ready'), { code: 'relationship_not_ready' });
+      return await this.ensureWithinQueue(validateWorkspaceSyncRelationship(definition), signal);
+    }
+    await this.lifecycle.start();
+    return this.publish(await this.adapter.resume(id, signal));
+  }); }
+  async terminate(id: string, signal?: AbortSignal): Promise<void> { return this.enqueue(id, signal, async () => {
+    this.assertStateAvailable();
+    await this.lifecycle.start();
+    await this.adapter.terminate(id, signal);
+    if (this.copyOperations.has(id)) {
+      await this.releaseCopyOperation(id);
+    } else {
+      await this.releaseRelationshipOwnership(id);
+      this.ownershipLost.delete(id);
+      this.closeActiveIngress(id);
+      this.definitions.delete(id);
+      this.statuses.delete(id);
+    }
+  }); }
   async listConflicts(id: string, signal?: AbortSignal): Promise<WorkspaceSyncConflictListV1> { this.assertStateAvailable(); abortIfRequested(signal); await this.lifecycle.start(); return await this.adapter.listConflicts(id, signal); }
   async deleteConflictLoser(request: DeleteWorkspaceSyncConflictLoserV1, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1> {
     this.assertStateAvailable();
     const valid = DeleteWorkspaceSyncConflictLoserV1Schema.parse(request);
     return this.enqueue(valid.relationshipId, signal, async () => {
+      if (this.ownershipLost.has(valid.relationshipId)) throw Object.assign(new Error('Workspace root ownership was lost'), { code: 'workspace_root_ownership_lost' });
       const definition = this.definitions.get(valid.relationshipId);
       if (!definition) throw Object.assign(new Error('Workspace sync relationship is not ready'), { code: 'relationship_not_ready' });
       if (!this.deleteAtTarget) {
@@ -304,7 +389,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       signal,
     });
   }
-  async shutdown(): Promise<void> { for (const id of this.renewalTimers.keys()) this.stopOwnershipRenewal(id); await this.lifecycle.stop(); await Promise.all([...this.fences.values()].flat().map((handle) => handle.release())); this.fences.clear(); }
+  async shutdown(): Promise<void> { for (const id of this.renewalTimers.keys()) this.stopOwnershipRenewal(id); for (const id of this.activeIngress.keys()) this.closeActiveIngress(id); await this.lifecycle.stop(); await Promise.all([...this.fences.values(), ...this.copyOwnedFences.values()].flat().map((handle) => handle.release())); this.fences.clear(); this.copyOwnedFences.clear(); this.copyFences.clear(); this.copyOperations.clear(); }
   async rehydrateFromSettings(value: unknown): Promise<readonly WorkspaceSyncStatusV1[]> {
     this.assertStateAvailable();
     const relationships = validateWorkspaceSyncRelationships(value).filter((relationship) => relationship.enabled
@@ -370,6 +455,9 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
     }).find(({ operationId, role }) => deriveWorkspaceSyncEndpointId(operationId, role) === input.endpointId);
     if (!match) throw Object.assign(new Error('Workspace sync endpoint is not owned'), { code: 'relationship_not_owned' });
     const { operation, operationId, role } = match;
+    if (this.ownershipLost.has(operationId)) {
+      throw Object.assign(new Error('Workspace root ownership was lost'), { code: 'workspace_root_ownership_lost' });
+    }
     if (operation.controllerMachineId !== this.localMachineId) {
       throw Object.assign(new Error('Workspace sync controller machine is unavailable'), { code: 'controller_unavailable' });
     }
@@ -400,7 +488,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       } catch {
         throw Object.assign(new Error('Workspace sync endpoint root changed after admission'), { code: 'root_changed' });
       }
-      return await this.openLocalAgent({ operationId, role, workspaceRefId: endpointRefId, canonicalRoot, ...(input.signal ? { signal: input.signal } : {}) });
+      return this.trackActiveIngress(operationId, await this.openLocalAgent({ operationId, role, workspaceRefId: endpointRefId, canonicalRoot, ...(input.signal ? { signal: input.signal } : {}) }));
     }
     if (!this.openMachineCarrier) throw machineCarrierUnavailableError();
     const tunnel = await this.openMachineCarrier({
@@ -410,7 +498,7 @@ export class WorkspaceSyncController implements ManagedWorkspaceSync {
       flow: 'workspace_sync',
       ...(input.signal ? { signal: input.signal } : {}),
     });
-    return await connectWorkspaceSyncMachineTunnel(tunnel, input.signal);
+    return this.trackActiveIngress(operationId, await connectWorkspaceSyncMachineTunnel(tunnel, input.signal));
   }
   subscribe(id: string, signal: AbortSignal): AsyncIterable<WorkspaceSyncStatusV1> {
     const self = this;

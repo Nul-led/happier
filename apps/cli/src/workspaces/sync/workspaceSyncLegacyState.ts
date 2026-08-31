@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, lstat, readFile, readdir, realpath, rename, stat, unlink } from 'node:fs/promises';
+import { chmod, lstat, readFile, readdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 
 // Retired engine schema marker is intentionally local: the replacement must not import
@@ -161,6 +161,36 @@ async function validateRetiredQuarantine(
   const inventory = await readInventory(quarantinePath, { ignoreRetirementMarker: true }).catch(() => null);
   if (!inventory || inventory.hash !== record.inventoryHash) return { valid: false };
   return { valid: true, inventoryHash: inventory.hash };
+}
+
+export async function cleanupRetiredWorkspaceReplicationState(
+  inspection: Extract<WorkspaceSyncLegacyStateInspection, { status: 'legacy_workspace_sync_state_unsupported' }>,
+): Promise<Readonly<{ removed: boolean }>> {
+  const quarantinePath = resolve(inspection.quarantinePath);
+  const quarantineName = basename(quarantinePath);
+  if (!RETIRED_QUARANTINE_NAME_PATTERN.test(quarantineName)) {
+    throw Object.assign(new Error('Retired workspace sync quarantine identity changed'), {
+      code: 'legacy_workspace_sync_state_changed',
+    });
+  }
+  const exists = await lstat(quarantinePath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (exists === null) return { removed: false };
+  const liveStatePath = join(dirname(quarantinePath), LEGACY_DIRECTORY_NAME);
+  const liveStateExists = await lstat(liveStatePath).then(() => true, (error: unknown) => {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return false;
+    throw error;
+  });
+  const validation = await validateRetiredQuarantine(quarantinePath, quarantineName);
+  if (liveStateExists || !validation.valid || validation.inventoryHash !== inspection.inventoryHash) {
+    throw Object.assign(new Error('Retired workspace sync quarantine changed before cleanup'), {
+      code: 'legacy_workspace_sync_state_changed',
+    });
+  }
+  await rm(quarantinePath, { recursive: true });
+  return { removed: true };
 }
 
 /**

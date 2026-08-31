@@ -301,6 +301,54 @@ describe('SessionHandoffPickerModal', () => {
         }));
     });
 
+    it('keeps persistent policy controls enabled and blocks an invalid target path before resolving', async () => {
+        settingsState.sessionHandoffDefaultsV1 = {
+            v: 1,
+            workspaceSyncMode: 'mirror_exactly',
+            workspaceSyncRelationshipId: null,
+            includeIgnoredMode: 'exclude',
+            ignoredIncludeGlobs: [],
+            directTargetMode: 'convert_to_persisted',
+        };
+        const onResolve = vi.fn();
+        let chrome: CustomModalChromeConfig | null = null;
+        const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');
+        const screen = await renderScreen(<SessionHandoffPickerModal
+            onClose={vi.fn()}
+            setChrome={(next) => { chrome = next; }}
+            onResolve={onResolve}
+            sessionId="sess_1"
+            sourceMachineId="machine_source"
+            serverId="server_a"
+        />);
+
+        await act(async () => {
+            invokeTestInstanceHandler(screen.tree.findByType('MachineSelector' as any), 'onSelect', {
+                id: 'machine_target',
+                active: true,
+                metadata: { displayName: 'Target machine', homeDir: '/home/target' },
+            });
+            screen.changeTextByTestId('path-selection-list:header:input', '/');
+        });
+
+        const policyMenu = screen.tree.findAllByType('DropdownMenu' as any)
+            .find((node: any) => node.props?.itemTrigger?.title === 'settingsSession.handoff.includeIgnoredMode.title');
+        expect(policyMenu?.props.itemTrigger.itemProps.disabled).toBe(false);
+
+        let startButton = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        expect(startButton?.props.disabled).toBe(true);
+        await act(async () => {
+            await (startButton!.props as { onPress: () => unknown }).onPress();
+        });
+        expect(onResolve).not.toHaveBeenCalled();
+
+        await act(async () => {
+            screen.changeTextByTestId('path-selection-list:header:input', '/home/target/repo');
+        });
+        startButton = findElementByTestId(requireCardChrome(chrome).footer, 'session-handoff-start');
+        expect(startButton?.props.disabled).toBe(false);
+    });
+
     it('reuses the editable recent-path picker and opens its browser only on Browse', async () => {
         const onResolve = vi.fn();
         const { SessionHandoffPickerModal } = await import('./SessionHandoffPickerModal');

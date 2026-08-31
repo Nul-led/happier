@@ -261,6 +261,7 @@ export const RPC_METHODS = {
   DAEMON_WORKSPACE_SYNC_TARGET_FILE_READ: 'daemon.workspaceSync.target.file.read.v1',
   DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_PREPARE: 'daemon.workspaceSync.target.bootstrap.prepare.v1',
   DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_RELEASE: 'daemon.workspaceSync.target.bootstrap.release.v1',
+  DAEMON_WORKSPACE_SYNC_LEGACY_CLEANUP: 'daemon.workspaceSync.legacy.cleanup.v1',
   DAEMON_SESSION_GOAL_GET: 'daemon.sessionGoal.get',
   DAEMON_SESSION_GOAL_SET: 'daemon.sessionGoal.set',
   DAEMON_SESSION_GOAL_CLEAR: 'daemon.sessionGoal.clear',

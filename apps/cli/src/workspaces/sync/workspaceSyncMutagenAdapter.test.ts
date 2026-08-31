@@ -253,7 +253,7 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     ]);
   });
 
-  it('discovers and terminates an exact copy_once session after an indeterminate create response', async () => {
+  it('retains and discovers an exact copy_once session after an indeterminate create response, then adopts it on retry', async () => {
     const commands: Array<{ t: string; sessionIdentifier?: string }> = [];
     let created = false;
     const createdSession = genericSessionFor('copy-1', {
@@ -273,7 +273,12 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
         created = false;
         return null;
       }
-      return createdSession;
+      return genericSessionFor('copy-1', {
+        identifier: 'mutagen-copy-session',
+        paused: false,
+        status: 'watching',
+        successfulCycles: command.t === 'flush' ? 1 : 0,
+      });
     });
     const adapter = createWorkspaceSyncMutagenAdapter({
       send, createRequestId: () => 'request-1',
@@ -281,11 +286,24 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     });
 
     await expect(adapter.copyOnce(copyOnceOperation)).rejects.toMatchObject({ code: 'indeterminate' });
+    expect(created).toBe(true);
+    await expect(adapter.get('copy-1')).resolves.toMatchObject({
+      relationshipId: 'copy-1',
+      mode: 'copy_once',
+    });
+    await expect(adapter.copyOnce(copyOnceOperation)).resolves.toMatchObject({
+      relationshipId: 'copy-1',
+      mode: 'copy_once',
+    });
     expect(created).toBe(false);
     expect(commands.map(({ t, sessionIdentifier }) => [t, sessionIdentifier])).toEqual([
       ['list', undefined],
       ['create', undefined],
       ['list', undefined],
+      ['get', 'mutagen-copy-session'],
+      ['list', undefined],
+      ['resume', 'mutagen-copy-session'],
+      ['flush', 'mutagen-copy-session'],
       ['terminate', 'mutagen-copy-session'],
     ]);
   });

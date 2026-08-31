@@ -4255,11 +4255,17 @@ export async function startDaemonSessionControlRuntime(
             3,
             { min: 1, max: 100 },
         ),
-        resume: async (_intent, { sessionId }) => {
+        resume: async (intent, { sessionId }) => {
             const tracked = await resolveTemporaryThrottleResumeSource(sessionId);
             if (!tracked) {
                 temporaryThrottleResumeSnapshotsBySessionId.delete(sessionId);
                 throw new Error('temporary_throttle_session_not_found');
+            }
+            if (!intent.continuation) {
+                return {
+                    status: 'terminal' as const,
+                    lastError: 'temporary_throttle_continuation_identity_missing',
+                };
             }
             const seed = buildTrackedExistingSessionResumeSeed({ tracked, sessionId });
             if (!seed) {
@@ -4274,12 +4280,34 @@ export async function startDaemonSessionControlRuntime(
             });
             const result = await spawnSessionForInternalResume(respawnOptions);
             if (result.type === 'success') {
+                const continuationResult = await continuationMessageDispatcher
+                    .enqueueInterruptedOriginContinuation({
+                        sessionId,
+                        attemptId: intent.issueFingerprint,
+                        interruptedOriginId: intent.continuation.interruptedOriginId,
+                        interruption: 'provider_failed_turn',
+                        resumePromptMode: intent.continuation.resumePromptMode,
+                        customResumePrompt: intent.continuation.customResumePrompt,
+                        recoveryKind: intent.continuation.recoveryKind,
+                    });
+                if (continuationResult.status === 'enqueued') {
+                    temporaryThrottleResumeSnapshotsBySessionId.delete(sessionId);
+                    logger.debug('[DAEMON RUN] Temporary throttle recovery handed continuation to Pending', {
+                        sessionId,
+                    });
+                    return { status: 'continued' as const };
+                }
+                if (continuationResult.status === 'suppressed_newer_user_input') {
+                    temporaryThrottleResumeSnapshotsBySessionId.delete(sessionId);
+                    return { status: 'superseded' as const, reason: 'newer_user_input' };
+                }
                 temporaryThrottleResumeSnapshotsBySessionId.delete(sessionId);
-                logger.debug('[DAEMON RUN] Temporary throttle recovery resumed session', {
-                    sessionId,
-                    resumedSessionId: result.sessionId ?? sessionId,
-                });
-                return;
+                return {
+                    status: 'terminal' as const,
+                    lastError: continuationResult.status === 'disabled'
+                        ? 'temporary_throttle_continuation_disabled'
+                        : 'temporary_throttle_continuation_not_interrupted',
+                };
             }
             throw new Error(`temporary_throttle_resume_failed:${result.type}${result.type === 'error' ? `:${result.errorCode}` : ''}`);
         },
@@ -8450,21 +8478,31 @@ export async function startDaemonSessionControlRuntime(
                 reason: 'runtime_auth_service_key_unparseable',
             };
         }
+        const interruptedContinuation = interruptedOriginId
+            ? {
+                interruptedOriginId,
+                resumePromptMode: await resolveContinuationResumePromptMode({
+                    serviceId: runtimeAuthServiceKey,
+                    groupId: input.classification.groupId,
+                    explicit: input.resumePromptMode,
+                    loadGroupPolicy: input.classification.groupId
+                        ? async () => (await readQualifiedConnectedServiceAuthGroup({
+                            serviceId: runtimeAuthServiceKey,
+                            groupId: input.classification.groupId!,
+                        }))?.policy ?? null
+                        : undefined,
+                }),
+                customResumePrompt: readContinuationCustomResumePrompt(
+                    getActiveAccountSettingsSnapshot()?.settings ?? null,
+                ),
+                recoveryKind: input.classification.kind,
+            }
+            : null;
         const continueAfterRuntimeAuthSwitch = createConnectedServiceContinuationHandler({
             credentials: params.credentials,
             interruptedOriginId,
-            resumePromptMode: await resolveContinuationResumePromptMode({
-                serviceId: runtimeAuthServiceKey,
-                groupId: input.classification.groupId,
-                explicit: input.resumePromptMode,
-                loadGroupPolicy: input.classification.groupId
-                    ? async () => (await readQualifiedConnectedServiceAuthGroup({
-                        serviceId: runtimeAuthServiceKey,
-                        groupId: input.classification.groupId!,
-                    }))?.policy ?? null
-                    : undefined,
-            }),
-            customResumePrompt: readContinuationCustomResumePrompt(getActiveAccountSettingsSnapshot()?.settings ?? null),
+            resumePromptMode: interruptedContinuation?.resumePromptMode ?? 'off',
+            customResumePrompt: interruptedContinuation?.customResumePrompt ?? null,
             recoveryKind: input.classification.kind,
             resolveInterruption: ({ sessionId, action, switchReason }) =>
                 resolveConnectedServiceContinuationInterruptionForSwitch({
@@ -8477,6 +8515,14 @@ export async function startDaemonSessionControlRuntime(
             }),
         });
         let supersedingSourceConverged = false;
+        const scopedTemporaryThrottleRecovery = {
+            ...temporaryThrottleRecovery,
+            enable: async (temporaryThrottleInput: Parameters<typeof temporaryThrottleRecovery.enable>[0]) =>
+                await temporaryThrottleRecovery.enable({
+                    ...temporaryThrottleInput,
+                    continuation: interruptedContinuation,
+                }),
+        };
         const result = await handleConnectedServiceRuntimeAuthFailureForSession({
             getChildren: () => Array.from(params.pidToTrackedSession.values()),
             resolveInactiveSession: async ({ sessionId }) => {
@@ -8496,7 +8542,7 @@ export async function startDaemonSessionControlRuntime(
             switchCoordinator,
             switchAttemptTracker: connectedServiceRuntimeAuthSwitchAttempts,
             switchCore: connectedServiceSessionAuthSwitchCore,
-            temporaryThrottleRecovery,
+            temporaryThrottleRecovery: scopedTemporaryThrottleRecovery,
             emitSessionEvent: async (sessionId, event) => {
                 await commitConnectedServiceAccountSwitchSessionEventWithNotification({
                     sessionId,

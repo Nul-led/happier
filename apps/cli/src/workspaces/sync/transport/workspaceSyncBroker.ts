@@ -220,7 +220,7 @@ export class WorkspaceSyncBroker {
     const staleControl = this.authenticatedControl;
     this.authenticatedControl = undefined;
     this.authenticatedSidecarPidValue = undefined;
-    this.failCommands(new BrokerProtocolError('agent_unavailable', 'sidecar launch credential rotated'));
+    this.failCommands(new BrokerProtocolError('indeterminate', 'sidecar command outcome is unknown after launch credential rotation'));
     for (const stream of [...this.pending.values()]) this.closePending(stream);
     staleControl?.destroy();
     return { launchNonce: this.launchNonceValue, launchSecret: Buffer.from(this.launchSecret) };
@@ -282,7 +282,7 @@ export class WorkspaceSyncBroker {
     this.closed = true;
     for (const socket of this.controlSockets) socket.destroy();
     for (const stream of [...this.pending.values()]) this.closePending(stream);
-    this.failCommands(new BrokerProtocolError('agent_unavailable', 'workspace sync broker closed'));
+    this.failCommands(new BrokerProtocolError('indeterminate', 'sidecar command outcome is unknown after broker close'));
     await closeServer(this.server);
     await this.endpoint.remove();
   }
@@ -313,7 +313,7 @@ export class WorkspaceSyncBroker {
       if (this.authenticatedControl === socket) {
         this.authenticatedControl = undefined;
         this.authenticatedSidecarPidValue = undefined;
-        this.failCommands(new BrokerProtocolError('agent_unavailable', 'workspace sync sidecar disconnected'));
+        this.failCommands(new BrokerProtocolError('indeterminate', 'sidecar command outcome is unknown after disconnect'));
       }
       this.controlSockets.delete(socket);
       if (!socket.destroyed) socket.destroy();

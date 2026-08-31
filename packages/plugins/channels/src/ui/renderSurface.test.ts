@@ -944,7 +944,6 @@ describe('Channels mounted provider setup recovery', () => {
     // A fresh Account, or a machine with no conversation integration enabled,
     // reaches this state. Rendering nothing left the person with no way to
     // learn why the page is empty or what to do about it.
-    let selectionLifetimeSignal: AbortSignal | undefined;
     const fixture = await createPluginUiTestkit({
       identity: {
         pluginId: 'happier.channels',
@@ -1354,10 +1353,7 @@ describe('Channels mounted provider setup recovery', () => {
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
       handlers: {
-        selectActionInput: async ({ signal }) => {
-          selectionLifetimeSignal = signal;
-          return submittedProviderSetup;
-        },
+        selectActionInput: async () => submittedProviderSetup,
         executeAction,
         readResource: bindingResourceReader(),
         openExternalLink: async ({ url }) => { openedLinks.push(url); },
@@ -1526,6 +1522,7 @@ describe('Channels mounted provider setup recovery', () => {
       }
       throw new Error(`Unexpected mounted Action: ${String(request.action)}`);
     });
+    let selectionLifetimeSignal: AbortSignal | undefined;
     const fixture = await createPluginUiTestkit({
       identity: {
         pluginId: 'happier.channels',
@@ -1538,7 +1535,10 @@ describe('Channels mounted provider setup recovery', () => {
       surfaceContext: createChannelsSurfaceContext(),
       adapter: createChannelsSemanticAdapter(),
       handlers: {
-        selectActionInput: async () => submittedProviderSetup,
+        selectActionInput: async ({ signal }) => {
+          selectionLifetimeSignal = signal;
+          return submittedProviderSetup;
+        },
         executeAction,
         readResource: bindingResourceReader(),
       },

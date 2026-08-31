@@ -698,7 +698,7 @@ describe('workspace sync broker authentication and attach rules', () => {
     await client.close();
   });
 
-  it('fails pending commands when the sidecar control connection drops', async () => {
+  it('reports a dispatched command as indeterminate when the sidecar control connection drops', async () => {
     const fixture = await useFixture(await startBroker());
     const client = await connectClient(fixture);
     client.onCommand(async () => {
@@ -707,7 +707,7 @@ describe('workspace sync broker authentication and attach rules', () => {
     const pending = fixture.broker.command({ t: 'flush', requestId: 'cmd-drop', sessionIdentifier: 'mutagen-session-1' }, { timeoutMs: 10_000 });
     await waitFor(() => fixture.broker.hasInFlightCommands(), 'command dispatched to sidecar');
     await client.close();
-    await expect(pending).rejects.toMatchObject({ code: 'agent_unavailable' });
+    await expect(pending).rejects.toMatchObject({ code: 'indeterminate' });
   });
 
   it('times out an in-flight sidecar command and delivers cancellation to its handler', async () => {

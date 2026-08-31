@@ -31,6 +31,7 @@ import {
 import { prepareExistingGitWorkspaceSyncTarget } from '@/workspaces/sync/workspaceSyncTargetBootstrap';
 import { createWorkspaceSyncPeerIdentityValidator } from '@/workspaces/sync/transport/workspaceSyncPeerIdentity';
 import {
+  cleanupRetiredWorkspaceReplicationState,
   createWorkspaceSyncLegacyStateGate,
   inspectRetiredWorkspaceReplicationState,
   type WorkspaceSyncLegacyStateInspection,
@@ -412,6 +413,15 @@ export async function createProductionDaemonWorkspaceSyncRuntime(
     readFileAtTarget: targetAuthority.readFileHere,
     prepareBootstrapAtTarget: targetAuthority.prepareBootstrapHere,
     releaseBootstrapAtTarget: targetAuthority.releaseBootstrapHere,
+    cleanupRetiredState: async (signal) => {
+      signal?.throwIfAborted();
+      if (inspection.status === 'absent') return { removed: false, restartRequired: false };
+      if (inspection.status !== 'legacy_workspace_sync_state_unsupported') {
+        throw compositionError(inspection.status, 'Workspace sync legacy state cannot be safely removed');
+      }
+      const result = await cleanupRetiredWorkspaceReplicationState(inspection);
+      return { removed: result.removed, restartRequired: result.removed };
+    },
   };
   let stopPromise: Promise<void> | null = null;
   return {

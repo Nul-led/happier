@@ -60,6 +60,114 @@ describe('WorkspaceSyncController', () => {
     vi.useRealTimers();
   });
 
+  it('serializes renewal loss behind in-flight mutation, drops the lost fence, and reacquires through canonical ensure before resume', async () => {
+    vi.useFakeTimers();
+    const order: string[] = [];
+    let finishFlush!: () => void;
+    const flushGate = new Promise<void>((resolve) => { finishFlush = resolve; });
+    const oldRelease = vi.fn(async () => { order.push('release-old'); });
+    const freshRelease = vi.fn(async () => { order.push('release-fresh'); });
+    let acquisition = 0;
+    const tryAcquire = vi.fn(async (owner) => {
+      acquisition += 1;
+      const isOld = acquisition === 1;
+      return {
+        owner: { ...owner, rootFingerprint: null },
+        bindCurrentRootIdentity: vi.fn(async () => undefined),
+        renew: vi.fn(async () => {
+          if (isOld) throw Object.assign(new Error('lost'), { code: 'workspace_root_ownership_lost' });
+        }),
+        release: isOld ? oldRelease : freshRelease,
+      };
+    });
+    const pause = vi.fn(async () => { order.push('pause'); return { ...status, state: 'paused' as const }; });
+    const ensure = vi.fn(async () => { order.push('ensure'); return status; });
+    const resume = vi.fn(async () => { order.push('resume-direct'); return status; });
+    const flush = vi.fn(async () => {
+      order.push('flush-start');
+      await flushGate;
+      order.push('flush-end');
+      return status;
+    });
+    const prepareRelationshipTarget = vi.fn(async () => { order.push('prepare-target'); });
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ pause, ensure, resume, flush }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: { tryAcquire },
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: `/tmp/controller-loss-${process.pid}` }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+      prepareRelationshipTarget,
+      ownershipRenewIntervalMs: 15_000,
+    });
+    try {
+      await controller.ensure(definition);
+      order.length = 0;
+      const flushing = controller.flush('r1');
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(order).toEqual(['flush-start']);
+      expect(pause).not.toHaveBeenCalled();
+      expect(oldRelease).not.toHaveBeenCalled();
+
+      finishFlush();
+      await flushing;
+      await vi.waitFor(() => expect(pause).toHaveBeenCalledOnce());
+      expect(order).toEqual(['flush-start', 'flush-end', 'pause', 'release-old']);
+
+      await controller.resume('r1');
+      expect(tryAcquire).toHaveBeenCalledTimes(2);
+      expect(prepareRelationshipTarget).toHaveBeenCalledTimes(2);
+      expect(ensure).toHaveBeenCalledTimes(2);
+      expect(resume).not.toHaveBeenCalled();
+      expect(order.slice(-2)).toEqual(['prepare-target', 'ensure']);
+    } finally {
+      await controller.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retains copy_once root authority after an indeterminate dispatch and releases it only after terminal retry', async () => {
+    const release = vi.fn(async () => undefined);
+    const tryAcquire = vi.fn(async (owner) => ({
+      owner: { ...owner, rootFingerprint: null },
+      bindCurrentRootIdentity: vi.fn(async () => undefined),
+      renew: vi.fn(async () => undefined),
+      release,
+    }));
+    const copyOnce = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('result lost'), { code: 'indeterminate' }))
+      .mockResolvedValueOnce({ ...status, relationshipId: 'copy-1', mode: 'copy_once' as const });
+    const get = vi.fn(async () => ({ ...status, relationshipId: 'copy-1', mode: 'copy_once' as const }));
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ copyOnce, get }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: { tryAcquire },
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath: `/tmp/controller-copy-${process.pid}` }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+    });
+    const operation = {
+      v: 1 as const,
+      operationId: 'copy-1',
+      controllerMachineId: 'm1',
+      alphaWorkspaceRefId: 'a',
+      betaWorkspaceRefId: 'b',
+      contentPolicy: { ...policy, policyDigest: computeWorkspaceSyncPolicyDigest(policy) },
+    };
+
+    await expect(controller.copyOnce(operation)).rejects.toMatchObject({ code: 'indeterminate' });
+    expect(release).not.toHaveBeenCalled();
+    await expect(controller.get('copy-1')).resolves.toMatchObject({ relationshipId: 'copy-1', mode: 'copy_once' });
+    expect(release).not.toHaveBeenCalled();
+
+    await expect(controller.copyOnce(operation)).resolves.toMatchObject({ relationshipId: 'copy-1', mode: 'copy_once' });
+    expect(tryAcquire).toHaveBeenCalledOnce();
+    expect(copyOnce).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('rehydrates enabled relationships from settings without persisted Mutagen IDs', async () => {
     const events: string[] = [];
     const ensure = vi.fn(async () => status);

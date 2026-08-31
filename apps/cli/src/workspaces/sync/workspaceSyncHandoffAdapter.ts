@@ -185,6 +185,9 @@ export function createWorkspaceSyncHandoffAdapter(deps: WorkspaceSyncHandoffAdap
     async abort(input: AbortWorkspaceSyncHandoffInput): Promise<void> {
       input.signal?.throwIfAborted();
       const operation = preparedByOperation.get(input.operationId);
+      if (operation?.prepared.action.kind === 'copy_once') {
+        await deps.sync.terminate(input.operationId, input.signal);
+      }
       await operation?.fence?.release('abort');
       preparedByOperation.delete(input.operationId);
     },

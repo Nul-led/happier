@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,49 +21,55 @@ test('fork source inspection and materialization consume only the pinned clean c
   const root = await mkdtemp(join(tmpdir(), 'happier-mutagen-source-'));
   const vendorRoot = await mkdtemp(join(tmpdir(), 'happier-mutagen-vendor-'));
   try {
+    const git = (...args) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
+    git('init', '-b', 'happier/external-stream-v1');
+    git('config', 'user.name', 'Mutagen Artifact Test');
+    git('config', 'user.email', 'mutagen-artifact-test@example.invalid');
+    git('remote', 'add', 'origin', 'https://github.com/happier-dev/mutagen.git');
     await writeFile(join(root, 'go.mod'), 'module github.com/mutagen-io/mutagen\n\ngo 1.22.12\n');
     await writeFile(join(root, 'README.md'), 'external stream source\n');
+    git('add', 'go.mod', 'README.md');
+    git('commit', '-m', 'test: establish source basis');
+    const sourceBaseCommit = git('rev-parse', 'HEAD');
+    git('tag', 'v0.18.1');
     await writeFile(join(root, 'fork-provenance.json'), `${JSON.stringify({
       remote: 'https://github.com/happier-dev/mutagen.git',
       branch: 'happier/external-stream-v1',
-      sourceBaseCommit: FORK_SOURCE_BASE_COMMIT,
-      releaseCommit: FORK_RELEASE_COMMIT,
-      implementationState: 'immutable-release',
-      transportSpikeCommit: SPIKE_COMMIT,
+      sourceBaseCommit,
+      transportSpikeCommit: sourceBaseCommit,
       upstreamTag: 'v0.18.1',
-      upstreamCommit: UPSTREAM_COMMIT,
+      upstreamCommit: sourceBaseCommit,
       toolchain: { go: '1.22.12' },
       protocol: { epoch: 'external-stream-v1', urlShape: 'external://<opaque-endpoint-id>' },
     }, null, 2)}\n`);
+    git('add', 'fork-provenance.json');
+    git('commit', '-m', 'chore: record stable fork provenance');
+    const releaseCommit = git('rev-parse', 'HEAD');
     const defaultPolicy = await readMutagenEnginePolicy();
     const policy = {
       ...defaultPolicy,
-      fork: { ...defaultPolicy.fork, releaseCommit: FORK_RELEASE_COMMIT, implementationState: 'immutable-release' },
-    };
-    const fakeGit = async (_command, args) => {
-      const joined = args.join(' ');
-      if (joined.includes('rev-parse HEAD')) return { stdout: `${FORK_RELEASE_COMMIT}\n` };
-      if (joined.includes('remote get-url origin')) return { stdout: 'https://github.com/happier-dev/mutagen.git\n' };
-      if (joined.includes('branch --show-current')) return { stdout: 'happier/external-stream-v1\n' };
-      if (joined.includes('status --porcelain')) return { stdout: '' };
-      if (joined.includes('rev-parse v0.18.1')) return { stdout: `${UPSTREAM_COMMIT}\n` };
-      if (joined.includes('merge-base --is-ancestor')) return { stdout: '' };
-      throw new Error(`unexpected git invocation: ${joined}`);
+      fork: {
+        ...defaultPolicy.fork,
+        sourceBaseCommit,
+        releaseCommit,
+        implementationState: 'immutable-release',
+        transportSpikeCommit: sourceBaseCommit,
+      },
+      upstream: { tag: 'v0.18.1', commit: sourceBaseCommit },
     };
 
-    const inspected = await inspectMutagenForkSource({ sourceRoot: root, policy, execFileImpl: fakeGit });
+    const inspected = await inspectMutagenForkSource({ sourceRoot: root, policy });
     assert.equal(inspected.status, 'ok');
     const result = await materializeMutagenForkSource({
       sourceRoot: root,
       vendorRoot: join(vendorRoot, 'vendor'),
       policy,
-      execFileImpl: fakeGit,
     });
     assert.equal(result.status, 'ok');
     assert.equal(await readFile(join(result.vendorRoot, 'README.md'), 'utf8'), 'external stream source\n');
     assert.equal(await readFile(join(root, 'README.md'), 'utf8'), 'external stream source\n');
     const sourceMetadata = JSON.parse(await readFile(join(result.vendorRoot, 'MUTAGEN-SOURCE.json'), 'utf8'));
-    assert.equal(sourceMetadata.source.commit, FORK_RELEASE_COMMIT);
+    assert.equal(sourceMetadata.source.commit, releaseCommit);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(vendorRoot, { recursive: true, force: true });

@@ -9611,6 +9611,12 @@ function ProviderSetupPicker(props: Readonly<{
    * copied into the persisted prepare/create Action inputs or React state.
    */
   const selectedProviderSetupActionInputRef = React.useRef<SelectedProviderSetupActionInput | undefined>(undefined);
+  const selectedProviderSetupLifetimeRef = React.useRef<AbortController | undefined>(undefined);
+  const retireSelectedProviderSetup = React.useCallback(() => {
+    selectedProviderSetupLifetimeRef.current?.abort();
+    selectedProviderSetupLifetimeRef.current = undefined;
+    selectedProviderSetupActionInputRef.current = undefined;
+  }, []);
   const mountedRef = React.useRef(true);
   const operations = React.useMemo(
     () => currentProviderSetupOperations(surface.targetedContributions, props.targetPluginId),
@@ -9642,6 +9648,7 @@ function ProviderSetupPicker(props: Readonly<{
 
   const onPrepareOutcomeReconciled = React.useCallback(() => {
     prepareAction.reset();
+    retireSelectedProviderSetup();
     setPreparedConnection(undefined);
     setCreateValidationIssue(undefined);
     setRemediationSetupOperation(undefined);
@@ -9649,7 +9656,7 @@ function ProviderSetupPicker(props: Readonly<{
     setEndpointContinuation(undefined);
     setEndpointSetupRequired(undefined);
     setFeedback(undefined);
-  }, [prepareAction.reset]);
+  }, [prepareAction.reset, retireSelectedProviderSetup]);
   const requestPrepareOutcomeReread = useExplicitFreshRereadAfterUnknownOutcome({
     outcomeUnknown: prepareOutcomeUnknown,
     resource: props.resource,
@@ -9658,6 +9665,7 @@ function ProviderSetupPicker(props: Readonly<{
   });
   const onCreateOutcomeReconciled = React.useCallback(() => {
     createAction.reset();
+    retireSelectedProviderSetup();
     setPreparedConnection(undefined);
     setCreateValidationIssue(undefined);
     setRemediationSetupOperation(undefined);
@@ -9665,7 +9673,7 @@ function ProviderSetupPicker(props: Readonly<{
     setEndpointContinuation(undefined);
     setEndpointSetupRequired(undefined);
     setFeedback(undefined);
-  }, [createAction.reset]);
+  }, [createAction.reset, retireSelectedProviderSetup]);
   const requestCreateOutcomeReread = useExplicitFreshRereadAfterUnknownOutcome({
     outcomeUnknown: createOutcomeUnknown,
     resource: props.resource,
@@ -9677,18 +9685,16 @@ function ProviderSetupPicker(props: Readonly<{
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      selectedProviderSetupActionInputRef.current = undefined;
+      retireSelectedProviderSetup();
     };
-  }, []);
+  }, [retireSelectedProviderSetup]);
 
   React.useEffect(() => {
-    const clearSelection = () => {
-      selectedProviderSetupActionInputRef.current = undefined;
-    };
+    const clearSelection = () => retireSelectedProviderSetup();
     if (props.signal.aborted) clearSelection();
     else props.signal.addEventListener('abort', clearSelection, { once: true });
     return () => props.signal.removeEventListener('abort', clearSelection);
-  }, [props.signal]);
+  }, [props.signal, retireSelectedProviderSetup]);
 
   React.useEffect(() => {
     const selected = selectedProviderSetupActionInputRef.current;
@@ -9697,7 +9703,7 @@ function ProviderSetupPicker(props: Readonly<{
     ))) {
       // A host context/currentness revision withdrew the operation that issued
       // this settlement. Its safe draft can remain, but it cannot be executed.
-      selectedProviderSetupActionInputRef.current = undefined;
+      retireSelectedProviderSetup();
       setPreparedConnection(undefined);
       setRemediationSetupOperation(undefined);
       setRemediationSelection(undefined);
@@ -9716,7 +9722,7 @@ function ProviderSetupPicker(props: Readonly<{
       setEndpointSetupRequired(undefined);
       setFeedback('selectionUnavailable');
     }
-  }, [operations, remediationSetupOperation]);
+  }, [operations, remediationSetupOperation, retireSelectedProviderSetup]);
 
   React.useEffect(() => {
     if (remediationSelection === undefined || remediationOperations.some((operation) => (
@@ -9814,7 +9820,7 @@ function ProviderSetupPicker(props: Readonly<{
       : undefined;
     selectionPendingRef.current = true;
     if (mountedRef.current) {
-      selectedProviderSetupActionInputRef.current = undefined;
+      retireSelectedProviderSetup();
       setSelectionPending(true);
       setActiveOperationKey(operationKey);
       setFeedback(undefined);
@@ -9826,20 +9832,30 @@ function ProviderSetupPicker(props: Readonly<{
       setEndpointSetupRequired(undefined);
       createAction.reset();
     }
+    const selectionLifetime = new AbortController();
+    selectedProviderSetupLifetimeRef.current = selectionLifetime;
     try {
       let selection;
       try {
         selection = await hostApi.selectActionInput(
           { operation, ...(draft === undefined ? {} : { draft }) },
-          { signal: props.signal },
+          { signal: selectionLifetime.signal },
         );
       } catch {
         if (mountedRef.current && !props.signal.aborted) {
           setFeedback('selectionUnavailable');
         }
+        if (selectedProviderSetupLifetimeRef.current === selectionLifetime) {
+          retireSelectedProviderSetup();
+        }
         return;
       }
-      if (selection.kind !== 'submitted' || props.signal.aborted || !mountedRef.current) return;
+      if (selection.kind !== 'submitted' || props.signal.aborted || !mountedRef.current) {
+        if (selectedProviderSetupLifetimeRef.current === selectionLifetime) {
+          retireSelectedProviderSetup();
+        }
+        return;
+      }
 
       const selectedActionInput: SelectedProviderSetupActionInput = {
         operation,
@@ -9869,6 +9885,7 @@ function ProviderSetupPicker(props: Readonly<{
     props.signal,
     providerSetupDraft,
     remediationSelection,
+    retireSelectedProviderSetup,
   ]);
 
   const selectProviderRemediation = React.useCallback(async () => {
@@ -10028,7 +10045,15 @@ function ProviderSetupPicker(props: Readonly<{
       }
       return undefined;
     };
+    const selectedActionInput = selectedProviderSetupActionInputRef.current;
+    if (selectedActionInput === undefined
+      || pluginUiTargetedContributionOperationKey(selectedActionInput.operation) !== preparedConnection.operationKey) {
+      setPreparedConnection(undefined);
+      setFeedback('selectionUnavailable');
+      return;
+    }
     const completeConnectionCreation = (outcome: Readonly<{ kind: 'created' | 'rejoined'; connectionId: string }>) => {
+      retireSelectedProviderSetup();
       setEndpointContinuation(undefined);
       setEndpointSetupRequired(undefined);
       setPreparedConnection(undefined);
@@ -10141,7 +10166,7 @@ function ProviderSetupPicker(props: Readonly<{
           connectionId: continuedDraft.connectionId,
           webhookEndpointId,
         },
-      }, { signal: props.signal });
+      }, { signal: props.signal, selectedActionInput });
       if (!mountedRef.current || props.signal.aborted) return;
       if (settled.status === 'success') {
         const outcome = readSettledCreateResult(settled);
@@ -10162,17 +10187,6 @@ function ProviderSetupPicker(props: Readonly<{
       return;
     }
 
-    const selectedActionInput = selectedProviderSetupActionInputRef.current;
-    if (selectedActionInput === undefined
-      || pluginUiTargetedContributionOperationKey(selectedActionInput.operation) !== preparedConnection.operationKey) {
-      setPreparedConnection(undefined);
-      setFeedback('selectionUnavailable');
-      return;
-    }
-    // Create is the one terminal outer relay. Forget the flow-local carrier
-    // before dispatch: its host-retained counterpart is synchronously consumed
-    // by the mounted Host API, whatever outcome the provider setup observes.
-    selectedProviderSetupActionInputRef.current = undefined;
     const createInput = {
       providerSelection: preparedConnection.providerSelection,
       providerSetupInput: preparedConnection.providerSetupInput,
@@ -10180,14 +10194,22 @@ function ProviderSetupPicker(props: Readonly<{
       selectedTransport: preparedConnection.selectedTransport,
       maximumObservationAgeMs,
     } as const;
-    const terminalExecutionOptions = {
+    const executionOptions = {
       signal: props.signal,
       selectedActionInput,
-      // Host-private mounted execution fact, intentionally absent from the
-      // public PluginUiActionExecutionOptions author contract.
-      consumeSelectedActionInput: true as const,
+      // Durable push may require endpoint setup and an exact same-request
+      // continuation. Its selected Connected Account stays purpose-bound to
+      // this mounted journey until a definite create/rejoin retires the
+      // selection lifetime. Single-call transports keep the incumbent
+      // terminal host consumption.
+      ...(preparedConnection.selectedTransport === 'durablePush'
+        ? {}
+        : { consumeSelectedActionInput: true as const }),
     };
-    const settled = await createAction.execute(createInput, terminalExecutionOptions);
+    const settled = await createAction.execute(createInput, executionOptions);
+    if (preparedConnection.selectedTransport !== 'durablePush') {
+      retireSelectedProviderSetup();
+    }
     if (!mountedRef.current || props.signal.aborted) return;
     if (settled.status === 'success') {
       const outcome = readSettledCreateResult(settled);
@@ -10258,7 +10280,7 @@ function ProviderSetupPicker(props: Readonly<{
             connectionId: continuedDraft.connectionId,
             webhookEndpointId,
           },
-        }, { signal: props.signal });
+        }, { signal: props.signal, selectedActionInput });
         if (!mountedRef.current || props.signal.aborted) return;
         if (continuationSettled.status === 'success') {
           const continuationOutcome = readSettledCreateResult(continuationSettled);
@@ -10296,6 +10318,7 @@ function ProviderSetupPicker(props: Readonly<{
     prepareOutcomeUnknown,
     preparedConnection,
     props,
+    retireSelectedProviderSetup,
   ]);
 
   // Zero admitted providers is a reachable Account state, not an error: a fresh

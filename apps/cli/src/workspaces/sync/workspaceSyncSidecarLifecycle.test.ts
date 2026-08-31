@@ -10,7 +10,10 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
   it('starts one verified sidecar and delivers the complete broker bootstrap only on descriptor 3', async () => {
     let terminate!: () => void;
     const waitForTermination = new Promise<void>((resolve) => { terminate = resolve; });
-    const command = vi.fn(async () => []);
+    const command = vi.fn(async (input: { t: string }) => {
+      if (input.t === 'shutdown') terminate();
+      return [];
+    });
     const closeBroker = vi.fn(async () => undefined);
     const stop = vi.fn(async () => { terminate(); });
     const spawn = vi.fn<SpawnWorkspaceSyncSidecar>(async () => ({ pid: 42, waitForTermination: async () => { await waitForTermination; return { type: 'exited' as const, code: 0 }; }, stop }));
@@ -36,6 +39,7 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
       randomBytes: () => new Uint8Array(32).fill(7),
       randomId: () => 'opaque-id',
       onRestartReady: async () => undefined,
+      shutdownGraceMs: 1_000,
     });
 
     await lifecycle.start();
@@ -56,7 +60,7 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
     await lifecycle.stop();
     expect(command).toHaveBeenCalledWith(expect.objectContaining({ t: 'shutdown' }));
     expect(closeBroker).toHaveBeenCalledTimes(1);
-    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).not.toHaveBeenCalled();
   });
 
   it('returns a typed engine_unavailable error when artifact resolution fails', async () => {
@@ -66,6 +70,7 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
       openExternalStream: vi.fn(),
       randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
       onRestartReady: async () => undefined,
+      shutdownGraceMs: 0,
     });
     await expect(lifecycle.start()).rejects.toMatchObject({ code: 'engine_unavailable' });
   });
@@ -92,6 +97,7 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
       openExternalStream: vi.fn(), spawn, ensurePrivateDirectory: vi.fn(async () => undefined),
       randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
       onRestartReady,
+      shutdownGraceMs: 0,
     });
     await lifecycle.start();
     expect(onRestartReady).not.toHaveBeenCalled();
@@ -132,6 +138,7 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
       openExternalStream: vi.fn(), spawn, ensurePrivateDirectory: vi.fn(async () => undefined),
       randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
       onRestartReady: async () => await restartReconciliation,
+      shutdownGraceMs: 0,
     });
 
     try {

@@ -895,7 +895,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-107c5c98-48ee-41ee-9ad3-0df583cb8589",
+      "immutableGenerationId": "bundled-882226e4-98e1-41c4-810d-148cc61100a7",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.antigravity",
       "schemaVersion": 1,
@@ -1142,7 +1142,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-c1b45f2b-cd11-43ed-9ae4-d0a420932cd4",
+      "immutableGenerationId": "bundled-3eed69f2-4a51-4b2b-967a-ab29f2639e2c",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.auggie",
       "schemaVersion": 1,
@@ -1509,7 +1509,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-d40a7020-41ac-4b38-9145-7b061fc08a9c",
+      "immutableGenerationId": "bundled-53c53b6a-271f-4bdb-98c4-bd66c882f7b9",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.channel.discord",
       "schemaVersion": 1,
@@ -1712,7 +1712,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-3052e045-7578-46ba-9343-f2fa4f1ebeab",
+      "immutableGenerationId": "bundled-25524936-fb01-4036-bc82-19ec6a9054ab",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.channel.telegram",
       "schemaVersion": 1,
@@ -2579,7 +2579,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-5673c7c0-f70b-4fcb-9c36-b44ba0357f2e",
+      "immutableGenerationId": "bundled-8be627dd-786a-4ae5-9cb0-5dbb7ded82d4",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.channels",
       "schemaVersion": 1,
@@ -5766,7 +5766,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-07cb0408-c852-4e44-a40c-0bbc2b820276",
+      "immutableGenerationId": "bundled-89885180-f318-4d1b-af3c-f0b2830d5820",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.claude",
       "schemaVersion": 1,
@@ -5889,7 +5889,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-e1aaf040-3a67-4ad2-9231-94120967e9b1",
+      "immutableGenerationId": "bundled-9902b71f-b31e-4495-b79b-5b04f3ab67ac",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.provider.cliproxyapi",
       "schemaVersion": 1,
@@ -8372,7 +8372,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-a09b5e4c-d569-4712-b86c-a08b209d156c",
+      "immutableGenerationId": "bundled-3cd8f5c6-99a6-4fab-a9c7-998445a0684c",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.codex",
       "schemaVersion": 1,
@@ -8747,7 +8747,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-d3ecabad-0eac-4bcd-bebe-5dece3cbc722",
+      "immutableGenerationId": "bundled-45d14022-b707-4cd0-9391-586e1d5e218c",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.copilot",
       "schemaVersion": 1,
@@ -9326,7 +9326,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-63b59207-56b3-48c6-ac27-579d0beee329",
+      "immutableGenerationId": "bundled-6879ed5a-5331-4f13-98a6-ac2c41e77ce2",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.cursor",
       "schemaVersion": 1,
@@ -9765,7 +9765,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-f41fff9e-c12e-4419-8103-c2c1c09a68cc",
+      "immutableGenerationId": "bundled-36374643-28fd-4201-b7a4-7f7e3d2de2c8",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.gemini",
       "schemaVersion": 1,
@@ -9920,7 +9920,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-26bf1b48-3e98-4f23-bda5-0d945f3bc9a4",
+      "immutableGenerationId": "bundled-e6c2e126-629e-4bc3-93a1-d37118b9bc36",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.voice.google",
       "schemaVersion": 1,
@@ -10227,7 +10227,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-2a49b38c-954c-4a2f-bc29-a2d1d024eccd",
+      "immutableGenerationId": "bundled-5889e2ec-41cb-4113-8115-aa91021754e4",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.grok",
       "schemaVersion": 1,
@@ -10398,7 +10398,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-c81ac611-6081-4142-a241-4d81debd2236",
+      "immutableGenerationId": "bundled-fa3369bd-05de-497f-bef5-d7284a756ec6",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.inspector",
       "schemaVersion": 1,
@@ -10693,7 +10693,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-158442cd-d2f7-4599-b8fe-c886226b2307",
+      "immutableGenerationId": "bundled-13418fca-8014-4554-a843-cd179b35e810",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.kilo",
       "schemaVersion": 1,
@@ -10972,7 +10972,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-9716369a-608d-4a08-902c-7882de9a8cc4",
+      "immutableGenerationId": "bundled-73ebd09c-fc39-45d1-b745-a8d90904f656",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.kimi",
       "schemaVersion": 1,
@@ -11199,7 +11199,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-8de769d5-4278-47e0-9155-fa240fb7e544",
+      "immutableGenerationId": "bundled-22434677-ca4e-434f-84ed-a01c6aa342fe",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.kiro",
       "schemaVersion": 1,
@@ -11638,7 +11638,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-e89087d6-8827-482b-a429-502aba666f19",
+      "immutableGenerationId": "bundled-9083c2ed-0a52-456d-a896-e4e3d8a01a5f",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.ohmypi",
       "schemaVersion": 1,
@@ -11729,7 +11729,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-90e1d074-16b4-401a-8b1f-73e370abfb86",
+      "immutableGenerationId": "bundled-903e4c11-f80c-41ea-a54b-30805672ea24",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.provider.ollama",
       "schemaVersion": 1,
@@ -12028,7 +12028,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-6a093980-a8ee-43cb-808f-a185dfac9ef7",
+      "immutableGenerationId": "bundled-1046937c-327a-46cd-a3ab-a08a5acfc60b",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.voice.openai",
       "schemaVersion": 1,
@@ -12151,7 +12151,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-69c276f1-59a3-417d-b32b-9f7ed5d23848",
+      "immutableGenerationId": "bundled-f40a003a-5e67-4dbe-9a1f-01555dc83c1d",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.voice.openai-compat",
       "schemaVersion": 1,
@@ -13962,7 +13962,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-c76a4ffc-8460-431c-a4ea-8c7d5b106af4",
+      "immutableGenerationId": "bundled-ed775834-5e56-42e9-b4de-cadb51b3fdfc",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.opencode",
       "schemaVersion": 1,
@@ -14817,7 +14817,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-45ec7cde-65c1-4bd5-bd0d-2083d0f29fcd",
+      "immutableGenerationId": "bundled-dd60656e-e664-4373-aa17-2300c88738c4",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.pi",
       "schemaVersion": 1,
@@ -15800,7 +15800,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-1b7eb12e-49c9-4850-b504-4d00388530a6",
+      "immutableGenerationId": "bundled-06e5bb22-6fc5-40f0-907d-2ed472c848e4",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.posthog",
       "schemaVersion": 1,
@@ -15935,7 +15935,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-e2ae66b0-cbda-4548-a4f4-ff77f7aeee72",
+      "immutableGenerationId": "bundled-c457a059-25e6-47a3-8e4f-4137a614a57e",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.agent.qwen",
       "schemaVersion": 1,
@@ -16206,7 +16206,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "resources/review-prompt.md"
         }
       ],
-      "immutableGenerationId": "bundled-bd8743da-bd9f-4584-9e89-65c1c5eba97f",
+      "immutableGenerationId": "bundled-5def5583-345f-4248-b239-d35f781f6ea3",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.review.coderabbit",
       "schemaVersion": 1,
@@ -16529,7 +16529,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "resources/review-prompt.md"
         }
       ],
-      "immutableGenerationId": "bundled-dfb0d9e8-1bb7-4fc5-8595-2f16e1f0fa3a",
+      "immutableGenerationId": "bundled-cb1d8ac5-558d-44ab-a664-fb93c344341c",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.review.deepsec",
       "schemaVersion": 1,
@@ -17528,7 +17528,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-b7d90178-f9d1-475b-9aa9-c2ec6e7d2f13",
+      "immutableGenerationId": "bundled-84f4dd2e-4c7c-401a-a3d7-88c5f4e13a3c",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.scm.forge.azure-devops",
       "schemaVersion": 1,
@@ -18735,7 +18735,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-5ae581e6-945c-4fd8-a3cd-fb48e6c10d3b",
+      "immutableGenerationId": "bundled-0e8ae5fe-ffdd-4b49-8ea0-ace61432446a",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.scm.forge.bitbucket",
       "schemaVersion": 1,
@@ -19930,7 +19930,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-f0adb5c6-4276-4234-beba-45ed8620ede4",
+      "immutableGenerationId": "bundled-62ffdcf5-98d9-44ca-aa5b-a38d9ebc266b",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.scm.backend.git",
       "schemaVersion": 1,
@@ -21541,7 +21541,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-a3194f3a-2528-4612-91f3-c64fbef54d7e",
+      "immutableGenerationId": "bundled-0fcea4cf-59ca-45d3-b4f1-c3928e4ca935",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.scm.forge.github",
       "schemaVersion": 1,
@@ -22876,7 +22876,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-4462c313-d7bd-4bfd-a73a-fc22d563a999",
+      "immutableGenerationId": "bundled-ef17f6eb-4e02-41c1-a114-08dc7732426a",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.scm.forge.gitlab",
       "schemaVersion": 1,
@@ -23191,7 +23191,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-99b3af3a-9f28-4568-bdef-39c0b9698b7a",
+      "immutableGenerationId": "bundled-1fe27f5f-7554-495e-96eb-b67d8a9df437",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.scm.backend.sapling",
       "schemaVersion": 1,
@@ -24014,7 +24014,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-99c8e93d-0026-495f-a4c1-6c822deae580",
+      "immutableGenerationId": "bundled-ce4495a9-52b8-4c30-a764-a22595801606",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.sentry",
       "schemaVersion": 1,
@@ -26989,7 +26989,7 @@ export const BUNDLED_FIRST_PARTY_IMMUTABLE_ARTIFACTS = Object.freeze(
           "relativePath": "package.json"
         }
       ],
-      "immutableGenerationId": "bundled-fe36538b-49df-492f-87ec-7844c1ddd853",
+      "immutableGenerationId": "bundled-efaa3e24-6c68-407d-86ea-b7b180ef6604",
       "manifestRelativePath": ".happier-plugin/plugin.json",
       "pluginId": "happier.triage",
       "schemaVersion": 1,

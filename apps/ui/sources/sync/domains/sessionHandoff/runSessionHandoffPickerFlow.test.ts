@@ -365,6 +365,107 @@ describe('runSessionHandoffPickerFlow', () => {
         }));
     });
 
+    it('does not persist or dispatch a competing relationship for the same endpoint pair', async () => {
+        const policyFields = {
+            v: 1 as const,
+            selection: 'git_worktree' as const,
+            extraIgnorePatterns: [],
+            extraIncludePatterns: [],
+            includeGitDirectory: false,
+        };
+        const contentPolicy = {
+            ...policyFields,
+            policyDigest: computeWorkspaceSyncPolicyDigest(policyFields),
+        };
+        settingsState.raw = {
+            workspaceRefsV1: [
+                { id: 'workspace-source', serverId: 'server_a', machineId: 'machine_source', rootPath: '/source/repo', label: null, createdAtMs: 1, lastOpenedAtMs: null },
+                { id: 'workspace-target', serverId: 'server_a', machineId: 'machine_target', rootPath: '/target/repo', label: null, createdAtMs: 1, lastOpenedAtMs: null },
+            ],
+            workspaceSyncRelationshipsV1: [{
+                v: 1,
+                relationshipId: 'relationship-existing',
+                controllerMachineId: 'machine_source',
+                alphaWorkspaceRefId: 'workspace-source',
+                betaWorkspaceRefId: 'workspace-target',
+                mode: 'keep_synced',
+                contentPolicy,
+                enabled: true,
+                createdAtMs: 1,
+                updatedAtMs: 2,
+            }],
+        };
+        openSessionHandoffPickerMock.mockResolvedValueOnce({
+            targetMachineId: 'machine_target',
+            targetPath: '/target/repo',
+            sourceRootPath: '/source/repo',
+            targetSessionStorageMode: 'persisted',
+            workspaceSyncRelationshipIntent: { mode: 'mirror_exactly', contentPolicy },
+        });
+
+        const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
+        await expect(runSessionHandoffPickerFlow({
+            execute: vi.fn() as any,
+            sessionId: 'sess_1',
+            sourceMachineId: 'machine_source',
+            serverId: 'server_a',
+            placement: 'session_action_menu',
+        })).rejects.toMatchObject({ code: 'workspace_sync_relationship_replacement_required' });
+
+        expect(settingsState.raw.workspaceSyncRelationshipsV1).toEqual([
+            expect.objectContaining({ relationshipId: 'relationship-existing', mode: 'keep_synced' }),
+        ]);
+        expect(executeSessionHandoffActionMock).not.toHaveBeenCalled();
+    });
+
+    it('requires destination-specific confirmation before persisting a mirror relationship', async () => {
+        openSessionHandoffPickerMock.mockResolvedValueOnce({
+            targetMachineId: 'machine_target',
+            targetMachineLabel: 'Build machine',
+            targetPath: '/target/repo',
+            sourceRootPath: '/source/repo',
+            targetSessionStorageMode: 'persisted',
+            workspaceSyncRelationshipIntent: {
+                mode: 'mirror_exactly',
+                contentPolicy: {
+                    v: 1,
+                    selection: 'git_worktree',
+                    extraIgnorePatterns: [],
+                    extraIncludePatterns: [],
+                    includeGitDirectory: false,
+                    policyDigest: computeWorkspaceSyncPolicyDigest({
+                        v: 1,
+                        selection: 'git_worktree',
+                        extraIgnorePatterns: [],
+                        extraIncludePatterns: [],
+                        includeGitDirectory: false,
+                    }),
+                },
+            },
+        });
+        modalConfirmMock.mockResolvedValueOnce(false);
+
+        const { runSessionHandoffPickerFlow } = await import('./runSessionHandoffPickerFlow');
+        await expect(runSessionHandoffPickerFlow({
+            execute: vi.fn() as any,
+            sessionId: 'sess_1',
+            sourceMachineId: 'machine_source',
+            serverId: 'server_a',
+            placement: 'session_action_menu',
+        })).resolves.toEqual({ ok: false, handled: true });
+
+        expect(modalConfirmMock).toHaveBeenCalledWith(
+            'sessionHandoff.mirrorConfirmation.title',
+            'sessionHandoff.mirrorConfirmation.message',
+            expect.objectContaining({
+                confirmText: 'sessionHandoff.mirrorConfirmation.confirm',
+                destructive: true,
+            }),
+        );
+        expect(mutateAccountSettingsOnceMock).not.toHaveBeenCalled();
+        expect(executeSessionHandoffActionMock).not.toHaveBeenCalled();
+    });
+
     it('reuses a two-way relationship on handoff-back without reversing its fixed controller or endpoints', async () => {
         const policyFields = {
             v: 1 as const,

@@ -76,9 +76,26 @@ describe('workspace sync Account Settings relationship mutations', () => {
         }))).toThrow('workspace_sync_relationship_definition_immutable');
     });
 
+    it('requires explicit replacement before another definition can claim the same endpoint pair', () => {
+        const created = upsertWorkspaceSyncRelationshipRecord([], relationship());
+
+        expect(() => upsertWorkspaceSyncRelationshipRecord(created, relationship({
+            relationshipId: 'relationship-2',
+            mode: 'mirror_exactly',
+            updatedAtMs: 20,
+        }))).toThrow('workspace_sync_relationship_replacement_required');
+        expect(() => upsertWorkspaceSyncRelationshipRecord(created, relationship({
+            relationshipId: 'relationship-3',
+            controllerMachineId: 'machine-beta',
+            alphaWorkspaceRefId: 'workspace-beta',
+            betaWorkspaceRefId: 'workspace-alpha',
+            updatedAtMs: 20,
+        }))).toThrow('workspace_sync_relationship_replacement_required');
+    });
+
     it('fails closed instead of erasing malformed or unknown relationship state', () => {
         expect(() => upsertWorkspaceSyncRelationshipRecord([{ relationshipId: 'malformed' }], relationship()))
-            .toThrow('workspace_sync_relationship_settings_invalid');
+            .toThrow('workspace_sync_settings_invalid');
         expect(() => setWorkspaceSyncRelationshipEnabled([], {
             relationshipId: 'missing',
             enabled: false,

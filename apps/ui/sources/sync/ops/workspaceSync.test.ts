@@ -20,12 +20,10 @@ import {
     getWorkspaceSyncStatus,
     listWorkspaceSyncConflicts,
     listWorkspaceSyncStatuses,
-    pauseWorkspaceSyncRelationship,
     readWorkspaceSyncFile,
     disableWorkspaceSyncRelationship,
     enableWorkspaceSyncRelationship,
     terminatePersistedWorkspaceSyncRelationship,
-    terminateWorkspaceSyncRelationship,
 } from './workspaceSync';
 
 const status = {
@@ -117,10 +115,9 @@ describe('workspace sync UI operations', () => {
         });
     });
 
-    it('maps lifecycle and conflict commands without inventing client-side state', async () => {
+    it('maps transient and conflict commands without inventing client-side state', async () => {
         const paused = { ...status, state: 'paused' as const };
         machineRpcWithServerScope
-            .mockResolvedValueOnce({ status: paused })
             .mockResolvedValueOnce({
                 relationshipId: 'relationship-1',
                 totalCount: 1,
@@ -133,14 +130,8 @@ describe('workspace sync UI operations', () => {
                     beta: { kind: 'file', digest: 'b'.repeat(64) },
                 }],
             })
-            .mockResolvedValueOnce({ status: paused })
-            .mockResolvedValueOnce({ ok: true });
+            .mockResolvedValueOnce({ status: paused });
 
-        await expect(pauseWorkspaceSyncRelationship({
-            controllerMachineId: 'machine-controller',
-            serverId: 'server-1',
-            relationshipId: 'relationship-1',
-        })).resolves.toEqual(paused);
         await expect(listWorkspaceSyncConflicts({
             controllerMachineId: 'machine-controller',
             serverId: 'server-1',
@@ -157,17 +148,9 @@ describe('workspace sync UI operations', () => {
                 expectedKind: 'file',
             },
         })).resolves.toEqual(paused);
-        await expect(terminateWorkspaceSyncRelationship({
-            controllerMachineId: 'machine-controller',
-            serverId: 'server-1',
-            relationshipId: 'relationship-1',
-        })).resolves.toBeUndefined();
-
         expect(machineRpcWithServerScope.mock.calls.map(([input]) => input.method)).toEqual([
-            RPC_METHODS.DAEMON_WORKSPACE_SYNC_PAUSE,
             RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICTS_LIST,
             RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICT_DELETE,
-            RPC_METHODS.DAEMON_WORKSPACE_SYNC_TERMINATE,
         ]);
     });
 
@@ -197,50 +180,31 @@ describe('workspace sync UI operations', () => {
         })).rejects.toThrow('Unsupported response');
     });
 
-    it('persists disable/enable intent and removes settings only after runtime termination', async () => {
-        const paused = { ...status, state: 'paused' as const };
-        machineRpcWithServerScope
-            .mockResolvedValueOnce({ status: paused })
-            .mockResolvedValueOnce({ status })
-            .mockResolvedValueOnce({ status: paused })
-            .mockResolvedValueOnce({ ok: true });
-
+    it('writes lifecycle desired state only through Account Settings and leaves reconciliation to the daemon', async () => {
         const scope = {
             controllerMachineId: 'machine-controller',
             serverId: 'server-1',
             relationshipId: 'relationship-1',
         };
-        await expect(disableWorkspaceSyncRelationship(scope)).resolves.toEqual(paused);
+        await expect(disableWorkspaceSyncRelationship(scope)).resolves.toBeUndefined();
         expect((settingsRaw.workspaceSyncRelationshipsV1 as any[])[0]?.enabled).toBe(false);
 
-        await expect(enableWorkspaceSyncRelationship(scope)).resolves.toEqual(status);
+        await expect(enableWorkspaceSyncRelationship(scope)).resolves.toBeUndefined();
         expect((settingsRaw.workspaceSyncRelationshipsV1 as any[])[0]?.enabled).toBe(true);
 
         await expect(terminatePersistedWorkspaceSyncRelationship(scope)).resolves.toBeUndefined();
         expect(settingsRaw.workspaceSyncRelationshipsV1).toEqual([]);
-        expect(machineRpcWithServerScope.mock.calls.map(([input]) => input.method)).toEqual([
-            RPC_METHODS.DAEMON_WORKSPACE_SYNC_PAUSE,
-            RPC_METHODS.DAEMON_WORKSPACE_SYNC_RESUME,
-            RPC_METHODS.DAEMON_WORKSPACE_SYNC_PAUSE,
-            RPC_METHODS.DAEMON_WORKSPACE_SYNC_TERMINATE,
-        ]);
+        expect(machineRpcWithServerScope).not.toHaveBeenCalled();
     });
 
-    it('leaves a relationship durably disabled when runtime termination fails', async () => {
-        const paused = { ...status, state: 'paused' as const };
-        machineRpcWithServerScope
-            .mockResolvedValueOnce({ status: paused })
-            .mockRejectedValueOnce(new Error('controller unavailable'));
-
+    it('removes a relationship without requiring the controller to be online', async () => {
         await expect(terminatePersistedWorkspaceSyncRelationship({
             controllerMachineId: 'machine-controller',
             serverId: 'server-1',
             relationshipId: 'relationship-1',
-        })).rejects.toThrow('controller unavailable');
+        })).resolves.toBeUndefined();
 
-        expect((settingsRaw.workspaceSyncRelationshipsV1 as any[])[0]).toMatchObject({
-            relationshipId: 'relationship-1',
-            enabled: false,
-        });
+        expect(settingsRaw.workspaceSyncRelationshipsV1).toEqual([]);
+        expect(machineRpcWithServerScope).not.toHaveBeenCalled();
     });
 });

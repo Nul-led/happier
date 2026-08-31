@@ -132,6 +132,10 @@ function definitionConflict(message: string): Error {
   return Object.assign(new Error(message), { code: 'relationship_definition_conflict' });
 }
 
+function isIndeterminate(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'indeterminate';
+}
+
 function entryFromChanges(changes: readonly unknown[]): WorkspaceSyncConflictV1['alpha'] {
   const last = changes.at(-1);
   if (!last) return { kind: 'missing' };
@@ -302,6 +306,7 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
     this.definitions.set(operation.operationId, operation);
     let operationError: unknown;
     let cleanupRequired = false;
+    let retainForRecovery = false;
     try {
       const existing = await this.findClaimedSession(operation.operationId, signal);
       if (existing) {
@@ -330,41 +335,49 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
       }, signal), operation, 'operation');
     } catch (error) {
       operationError = error;
+      retainForRecovery = isIndeterminate(error);
       throw error;
     } finally {
-      let cleanupFailure: unknown;
-      try {
-        if (cleanupRequired) {
-          let sessionIdentifier = this.sessionIdentifiers.get(operation.operationId);
-          if (!sessionIdentifier) {
-            const discovered = await this.findClaimedSession(operation.operationId);
-            if (discovered) {
-              this.acceptSession(discovered.raw, operation);
-              sessionIdentifier = discovered.generic.identifier;
+      if (!retainForRecovery) {
+        let cleanupFailure: unknown;
+        try {
+          if (cleanupRequired) {
+            let sessionIdentifier = this.sessionIdentifiers.get(operation.operationId);
+            if (!sessionIdentifier) {
+              const discovered = await this.findClaimedSession(operation.operationId);
+              if (discovered) {
+                this.acceptSession(discovered.raw, operation);
+                sessionIdentifier = discovered.generic.identifier;
+              }
+            }
+            if (sessionIdentifier) {
+              await this.options.send({ t: 'terminate', requestId: this.requestId(), sessionIdentifier });
             }
           }
-          if (sessionIdentifier) {
-            await this.options.send({ t: 'terminate', requestId: this.requestId(), sessionIdentifier });
+        } catch (cleanupError) {
+          cleanupFailure = cleanupError;
+          if (operationError instanceof Error) {
+            Object.assign(operationError, { cleanupError });
           }
         }
-      } catch (cleanupError) {
-        cleanupFailure = cleanupError;
-        if (operationError instanceof Error) {
-          Object.assign(operationError, { cleanupError });
-        }
+        this.definitions.delete(operation.operationId);
+        this.sessionIdentifiers.delete(operation.operationId);
+        this.successfulCycles.delete(operation.operationId);
+        this.lastSuccessfulSyncAtMs.delete(operation.operationId);
+        if (operationError === undefined && cleanupFailure !== undefined) throw cleanupFailure;
       }
-      this.definitions.delete(operation.operationId);
-      this.sessionIdentifiers.delete(operation.operationId);
-      this.successfulCycles.delete(operation.operationId);
-      this.lastSuccessfulSyncAtMs.delete(operation.operationId);
-      if (operationError === undefined && cleanupFailure !== undefined) throw cleanupFailure;
     }
   }
   async get(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1 | null> {
     const definition = this.definitions.get(relationshipId);
-    if (!definition || !('relationshipId' in definition)) return null;
-    const sessionIdentifier = this.sessionIdentifiers.get(relationshipId);
-    if (!sessionIdentifier) return null;
+    if (!definition) return null;
+    let sessionIdentifier = this.sessionIdentifiers.get(relationshipId);
+    if (!sessionIdentifier) {
+      const discovered = await this.findClaimedSession(relationshipId, signal);
+      if (!discovered) return null;
+      this.acceptSession(discovered.raw, definition);
+      sessionIdentifier = discovered.generic.identifier;
+    }
     const value = await this.options.send({ t: 'get', requestId: this.requestId(), sessionIdentifier }, signal);
     return value === null ? null : await this.project(value, definition, 'none');
   }
@@ -405,7 +418,15 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
     this.lastSuccessfulSyncAtMs.delete(relationshipId);
   }
   async terminate(relationshipId: string, signal?: AbortSignal): Promise<void> {
-    const sessionIdentifier = this.sessionIdentifiers.get(relationshipId);
+    const definition = this.definitions.get(relationshipId);
+    let sessionIdentifier = this.sessionIdentifiers.get(relationshipId);
+    if (!sessionIdentifier && definition) {
+      const discovered = await this.findClaimedSession(relationshipId, signal);
+      if (discovered) {
+        this.acceptSession(discovered.raw, definition);
+        sessionIdentifier = discovered.generic.identifier;
+      }
+    }
     if (sessionIdentifier) await this.terminateRuntimeSession(relationshipId, sessionIdentifier, signal);
     this.definitions.delete(relationshipId);
   }

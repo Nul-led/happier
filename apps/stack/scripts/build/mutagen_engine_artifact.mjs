@@ -114,7 +114,6 @@ export async function inspectMutagenForkSource({
     || provenance.remote !== fork.remote
     || provenance.branch !== fork.branch
     || provenance.sourceBaseCommit !== fork.sourceBaseCommit
-    || provenance.releaseCommit !== fork.releaseCommit
     || provenance.transportSpikeCommit !== fork.transportSpikeCommit
     || provenance.upstreamTag !== upstream.tag
     || provenance.upstreamCommit !== upstream.commit

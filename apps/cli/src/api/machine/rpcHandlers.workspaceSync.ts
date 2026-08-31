@@ -56,6 +56,10 @@ export type MachineWorkspaceSyncRpcService = Readonly<{
     request: WorkspaceSyncTargetBootstrapReleaseV1,
     signal?: AbortSignal,
   ): Promise<WorkspaceSyncTargetBootstrapReleaseResultV1>;
+  cleanupRetiredState(signal?: AbortSignal): Promise<Readonly<{
+    removed: boolean;
+    restartRequired: boolean;
+  }>>;
 }>;
 
 function unavailable(): never {
@@ -144,5 +148,9 @@ export function registerMachineWorkspaceSyncRpcHandlers(params: Readonly<{
     return WorkspaceSyncTargetBootstrapReleaseResultV1Schema.parse(
       await service().releaseBootstrapAtTarget(request, signal(context?.signal)),
     );
+  });
+  params.rpcHandlerManager.registerHandler(RPC_METHODS.DAEMON_WORKSPACE_SYNC_LEGACY_CLEANUP, async (raw, context) => {
+    requireEmptyRequest(raw);
+    return await service().cleanupRetiredState(signal(context?.signal));
   });
 }

@@ -4,7 +4,10 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { inspectRetiredWorkspaceReplicationState } from './workspaceSyncLegacyState';
+import {
+  cleanupRetiredWorkspaceReplicationState,
+  inspectRetiredWorkspaceReplicationState,
+} from './workspaceSyncLegacyState';
 
 async function makeServerDir(): Promise<string> {
   return await mkdtemp(join(tmpdir(), 'happier-workspace-sync-legacy-state-'));
@@ -113,6 +116,54 @@ describe('inspectRetiredWorkspaceReplicationState', () => {
       status: 'legacy_workspace_sync_state_unsupported',
       quarantinePath,
     });
+
+    await rm(activeServerDir, { recursive: true, force: true });
+  });
+
+  it('removes only the exact unchanged quarantine during an explicit cleanup pass', async () => {
+    const activeServerDir = await makeServerDir();
+    const stateRoot = join(activeServerDir, 'workspace-replication');
+    await mkdir(join(stateRoot, 'jobs'), { recursive: true });
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1 }));
+    await chmod(stateRoot, 0o700);
+    const inspection = await inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-test',
+      nowMs: 1_700_000_000_000,
+      randomSuffix: 'cleanup',
+    });
+    if (inspection.status !== 'legacy_workspace_sync_state_unsupported') {
+      throw new Error('expected retired workspace state');
+    }
+
+    await expect(cleanupRetiredWorkspaceReplicationState(inspection)).resolves.toEqual({ removed: true });
+    await expect(stat(inspection.quarantinePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(inspectRetiredWorkspaceReplicationState({ activeServerDir })).resolves.toMatchObject({ status: 'absent' });
+
+    await rm(activeServerDir, { recursive: true, force: true });
+  });
+
+  it('refuses explicit cleanup when the classified quarantine inventory changed', async () => {
+    const activeServerDir = await makeServerDir();
+    const stateRoot = join(activeServerDir, 'workspace-replication');
+    await mkdir(join(stateRoot, 'jobs'), { recursive: true });
+    await writeFile(join(stateRoot, 'jobs', 'job-1.json'), JSON.stringify({ schemaVersion: 1 }));
+    await chmod(stateRoot, 0o700);
+    const inspection = await inspectRetiredWorkspaceReplicationState({
+      activeServerDir,
+      installationId: 'installation-test',
+      nowMs: 1_700_000_000_000,
+      randomSuffix: 'drift-before-cleanup',
+    });
+    if (inspection.status !== 'legacy_workspace_sync_state_unsupported') {
+      throw new Error('expected retired workspace state');
+    }
+    await mkdir(join(inspection.quarantinePath, 'cas'));
+
+    await expect(cleanupRetiredWorkspaceReplicationState(inspection)).rejects.toMatchObject({
+      code: 'legacy_workspace_sync_state_changed',
+    });
+    await expect(stat(inspection.quarantinePath)).resolves.toBeTruthy();
 
     await rm(activeServerDir, { recursive: true, force: true });
   });
