@@ -95,7 +95,40 @@ describe('openTerminalProvisioningResponse', () => {
     })).toBeNull();
   });
 
-  it('continues to accept legacy v2 and v1 responses during the expansion window', () => {
+  it('continues to accept historical unbound v2 and v1 responses only when the request carried no pairing context', () => {
+    const v2Plaintext = new Uint8Array(33);
+    v2Plaintext[0] = 0;
+    v2Plaintext.set(new Uint8Array(32).fill(7), 1);
+    const v2Payload = sealBoxBundle({
+      plaintext: v2Plaintext,
+      recipientPublicKey: terminalPublicKey,
+      randomBytes: deterministicRandomBytes,
+    });
+    const v1Payload = sealBoxBundle({
+      plaintext: new Uint8Array(32).fill(5),
+      recipientPublicKey: terminalPublicKey,
+      randomBytes: deterministicRandomBytes,
+    });
+
+    expect(openTerminalProvisioningResponse({
+      payload: v2Payload,
+      terminalSecretKey,
+      terminalPublicKey,
+      pairing: null,
+      requirement: null,
+      nowMs: 2_000,
+    })).toEqual({ type: 'dataKey', key: new Uint8Array(32).fill(7), authenticated: false });
+    expect(openTerminalProvisioningResponse({
+      payload: v1Payload,
+      terminalSecretKey,
+      terminalPublicKey,
+      pairing: null,
+      requirement: null,
+      nowMs: 2_000,
+    })).toEqual({ type: 'legacy', key: new Uint8Array(32).fill(5), authenticated: false });
+  });
+
+  it('fails closed for unbound v2 and v1 responses when an authenticated pairing context exists', () => {
     const v2Plaintext = new Uint8Array(33);
     v2Plaintext[0] = 0;
     v2Plaintext.set(new Uint8Array(32).fill(7), 1);
@@ -117,7 +150,7 @@ describe('openTerminalProvisioningResponse', () => {
       pairing,
       requirement: null,
       nowMs: 2_000,
-    })).toEqual({ type: 'dataKey', key: new Uint8Array(32).fill(7), authenticated: false });
+    })).toBeNull();
     expect(openTerminalProvisioningResponse({
       payload: v1Payload,
       terminalSecretKey,
@@ -125,7 +158,56 @@ describe('openTerminalProvisioningResponse', () => {
       pairing,
       requirement: null,
       nowMs: 2_000,
-    })).toEqual({ type: 'legacy', key: new Uint8Array(32).fill(5), authenticated: false });
+    })).toBeNull();
+  });
+
+  it('rejects an authenticated v3 response outside the pairing validity window', () => {
+    const payload = sealTerminalProvisioningV3Payload({
+      contentPrivateKey: new Uint8Array(32).fill(7),
+      terminalEphemeralPublicKey: terminalPublicKey,
+      pairingSecret: pairing.secret,
+      createdAtMs: pairing.createdAtMs,
+      expiresAtMs: pairing.expiresAtMs,
+      randomBytes: deterministicRandomBytes,
+    });
+
+    expect(openTerminalProvisioningResponse({
+      payload,
+      terminalSecretKey,
+      terminalPublicKey,
+      pairing,
+      requirement: null,
+      nowMs: pairing.createdAtMs - 1,
+    })).toBeNull();
+    expect(openTerminalProvisioningResponse({
+      payload,
+      terminalSecretKey,
+      terminalPublicKey,
+      pairing,
+      requirement: null,
+      nowMs: pairing.expiresAtMs + 1,
+    })).toBeNull();
+  });
+
+  it('rejects a response sealed for a different terminal key', () => {
+    const otherKeypair = tweetnacl.box.keyPair();
+    const payload = sealTerminalProvisioningV3Payload({
+      contentPrivateKey: new Uint8Array(32).fill(7),
+      terminalEphemeralPublicKey: otherKeypair.publicKey,
+      pairingSecret: pairing.secret,
+      createdAtMs: pairing.createdAtMs,
+      expiresAtMs: pairing.expiresAtMs,
+      randomBytes: deterministicRandomBytes,
+    });
+
+    expect(openTerminalProvisioningResponse({
+      payload,
+      terminalSecretKey,
+      terminalPublicKey,
+      pairing,
+      requirement: null,
+      nowMs: 2_000,
+    })).toBeNull();
   });
 
   it('rejects legacy responses when authenticated v3 pairing is required', () => {

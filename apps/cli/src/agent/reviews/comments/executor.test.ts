@@ -319,9 +319,12 @@ describe('createCliReviewCommentActionExecutorFromCredentials', () => {
             status: 200,
             data: {
                 disposition: 'dispatch',
+                dispatchToken: 'dispatch-token-1',
                 publicationPlanId: 'p'.repeat(43),
                 entries: [{ happierCommentId: 'comment-1', publicationCorrelationId: 'a'.repeat(43) }],
                 verdict: { publicationCorrelationId: 'v'.repeat(43) },
+                instructions: { entries: ['dispatch'], verdict: 'dispatch' },
+                priorResult: null,
             },
         });
         const resolveAccountEncryptionMode = vi.fn(async () => 'plain' as const);
@@ -356,9 +359,12 @@ describe('createCliReviewCommentActionExecutorFromCredentials', () => {
         };
         await expect(executor('reviews.comments.claimPublicationDispatch', publicationPlan)).resolves.toEqual({
             disposition: 'dispatch',
+            dispatchToken: 'dispatch-token-1',
             publicationPlanId: 'p'.repeat(43),
             entries: [{ happierCommentId: 'comment-1', publicationCorrelationId: 'a'.repeat(43) }],
             verdict: { publicationCorrelationId: 'v'.repeat(43) },
+            instructions: { entries: ['dispatch'], verdict: 'dispatch' },
+            priorResult: null,
         });
 
         expect(resolveAccountEncryptionMode).not.toHaveBeenCalled();

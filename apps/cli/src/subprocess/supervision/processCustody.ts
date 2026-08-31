@@ -3,6 +3,8 @@ import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
+import type { Socket } from 'node:net';
 
 import { execFileWithDeadline } from '@happier-dev/cli-common/process';
 
@@ -20,9 +22,15 @@ import { resolveCliRuntimeAssetPath } from '@/packagedRuntime/assets/resolveCliR
  *   handshake, and terminate/query-by-job with full membership absence proofs.
  * - Darwin: the native subsecond start identity (`darwin-proc`), read through
  *   the helper's validated numeric sysctl witness.
- * Linux never consumes this helper — its custody stays on the dedicated
- * process-group owner — so every Linux question here answers "unavailable"
- * without touching the filesystem.
+ * - Peer identity (`peer-identity`): the one exact OS peer-identity boundary
+ *   for locally inherited IPC connections (Linux SO_PEERCRED, Darwin
+ *   LOCAL_PEERPID plus LOCAL_PEERCRED, Windows
+ *   GetNamedPipeClientProcessId), consumed by the
+ *   private workspace-sync broker's peer validation.
+ * Linux never consumes this helper for custody — its custody stays on the
+ * dedicated process-group owner — but Linux does consume the same helper for
+ * the peer-identity question. Every unsupported question here still answers
+ * "unavailable" without touching the filesystem.
  */
 
 export const PROCESS_CUSTODY_RUNTIME_BINARY_BASE_NAME = 'happier-process-custody';
@@ -31,6 +39,21 @@ export const PROCESS_CUSTODY_RUNTIME_BINARY_BASE_NAME = 'happier-process-custody
 const WINDOWS_JOB_IDENTITY_PREFIX = 'winjob:';
 /** Darwin native subsecond identity: `darwin-proc:<pid>:<sec>:<usec>`. */
 const DARWIN_NATIVE_IDENTITY_PREFIX = 'darwin-proc:';
+
+function stagedCustodyExecutableName(platform: NodeJS.Platform): string {
+    return platform === 'win32'
+        ? `${PROCESS_CUSTODY_RUNTIME_BINARY_BASE_NAME}.exe`
+        : PROCESS_CUSTODY_RUNTIME_BINARY_BASE_NAME;
+}
+
+/** The one staged location owner for the runtime support binary. */
+function resolveStagedCustodyBinaryPath(platform: NodeJS.Platform, executableName: string): string | null {
+    const stagedPath = resolveCliRuntimeAssetPath('tools', 'unpacked', executableName);
+    if (existsSync(stagedPath)) return stagedPath;
+    const sourceCheckoutPath = resolveCliRuntimeAssetPath('apps', 'cli', 'tools', 'unpacked', executableName);
+    if (existsSync(sourceCheckoutPath)) return sourceCheckoutPath;
+    return null;
+}
 
 export type ProcessCustodySpawnSpec = Readonly<{
     jobName: string;
@@ -102,14 +125,7 @@ export function resolveProcessCustodyRuntimeExecutable(
     platform: NodeJS.Platform = process.platform,
 ): string | null {
     if (platform !== 'win32' && platform !== 'darwin') return null;
-    const executableName = platform === 'win32'
-        ? `${PROCESS_CUSTODY_RUNTIME_BINARY_BASE_NAME}.exe`
-        : PROCESS_CUSTODY_RUNTIME_BINARY_BASE_NAME;
-    const stagedPath = resolveCliRuntimeAssetPath('tools', 'unpacked', executableName);
-    if (existsSync(stagedPath)) return stagedPath;
-    const sourceCheckoutPath = resolveCliRuntimeAssetPath('apps', 'cli', 'tools', 'unpacked', executableName);
-    if (existsSync(sourceCheckoutPath)) return sourceCheckoutPath;
-    return null;
+    return resolveStagedCustodyBinaryPath(platform, stagedCustodyExecutableName(platform));
 }
 
 export function formatWindowsJobCustodyStartIdentity(jobName: string): string {
@@ -342,4 +358,176 @@ export async function observeNativeDarwinProcessStartIdentity(
     } catch {
         return null;
     }
+}
+
+/**
+ * The OS-proven peer identity of one accepted local IPC connection, answered
+ * by the helper's `peer-identity` command through the platform's real peer
+ * primitive (SO_PEERCRED / LOCAL_PEERPID+LOCAL_PEERCRED /
+ * GetNamedPipeClientProcessId). On Windows this primitive provides no user
+ * fact, so `uid` is exactly `null` and the broker must separately enforce its
+ * user-only pipe ACL.
+ */
+export type ProcessCustodyPeerIdentity = Readonly<{ pid: number; uid: number | null }>;
+
+/** The platforms whose helper build can answer the peer-identity question. */
+export const PROCESS_CUSTODY_PEER_IDENTITY_PLATFORMS = ['linux', 'darwin', 'win32'] as const;
+
+/**
+ * Resolve the staged helper for the peer-identity question. Unlike custody,
+ * which Linux never consumes, Linux has an exact peer primitive and consumes
+ * the same binary; absence stays a normal answered `null`.
+ */
+export function resolveProcessCustodyPeerIdentityExecutable(
+    platform: NodeJS.Platform = process.platform,
+): string | null {
+    if (!PROCESS_CUSTODY_PEER_IDENTITY_PLATFORMS.some((supported) => supported === platform)) return null;
+    return resolveStagedCustodyBinaryPath(platform, stagedCustodyExecutableName(platform));
+}
+
+/**
+ * Parse the helper's one strict peer-identity line:
+ * `{"pid":<pid>,"t":"peer-identity","uid":<uid|null>,"v":1}`.
+ * Anything padded, retyped, or out of range is `null`, never a guess.
+ */
+export function parseProcessCustodyPeerIdentityLine(raw: string): ProcessCustodyPeerIdentity | null {
+    if (typeof raw !== 'string') return null;
+    const trimmed = raw.trim();
+    if (!trimmed || /[\r\n]/u.test(trimmed)) return null;
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(trimmed);
+    } catch {
+        return null;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    if (
+        keys.length !== 4
+        || keys[0] !== 'pid'
+        || keys[1] !== 't'
+        || keys[2] !== 'uid'
+        || keys[3] !== 'v'
+        || record.t !== 'peer-identity'
+        || record.v !== 1
+        || !isPositiveSafeInteger(record.pid)
+    ) return null;
+    const uid = record.uid;
+    if (uid !== null && !(typeof uid === 'number' && Number.isSafeInteger(uid) && uid >= 0)) return null;
+    return Object.freeze({ pid: record.pid, uid });
+}
+
+/** The narrow child surface the invocation boundary needs from `spawn`. */
+export type ProcessCustodyPeerIdentityChild = {
+    readonly stdout: NodeJS.ReadableStream | null;
+    on(event: 'error', listener: (error: Error) => void): unknown;
+    on(event: 'close', listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+    kill(signal?: NodeJS.Signals | number): boolean;
+};
+
+/**
+ * Spawn seam. The helper receives the accepted connection ONLY as the fixed
+ * extra descriptor (stdio index 3), never as an argv path, and the command
+ * takes no secret: there is nothing here that could leak one.
+ */
+export type ProcessCustodyPeerIdentitySpawn = (input: Readonly<{
+    executablePath: string;
+    args: readonly string[];
+    stdio: readonly ['ignore', 'pipe', 'pipe', Socket];
+}>) => ProcessCustodyPeerIdentityChild;
+
+const PEER_IDENTITY_STDOUT_LIMIT_BYTES = 4096;
+const PEER_IDENTITY_TIMEOUT_MS = 2_000;
+
+function spawnProcessCustodyPeerIdentityChild(input: Readonly<{
+    executablePath: string;
+    args: readonly string[];
+    stdio: readonly ['ignore', 'pipe', 'pipe', Socket];
+}>): ProcessCustodyPeerIdentityChild {
+    // Passing the Socket object itself to child_process transfers its libuv
+    // stream wrapper and strands subsequent reads in the parent. On POSIX the
+    // child only needs dup(2) of the accepted descriptor, so isolate Node's
+    // private handle lookup here and pass the numeric fd. Windows needs the
+    // stream form so libuv materializes its inherited handle table.
+    const socket = input.stdio[3] as Socket & { _handle?: { fd?: unknown } };
+    const inherited = process.platform === 'win32' ? socket : socket._handle?.fd;
+    if (typeof inherited !== 'object'
+        && (typeof inherited !== 'number' || !Number.isSafeInteger(inherited) || inherited < 0)) {
+        throw new Error('accepted IPC socket descriptor is unavailable');
+    }
+    const spawnOptions: SpawnOptions = {
+        stdio: ['ignore', 'pipe', 'pipe', inherited as Socket | number],
+    };
+    return nodeSpawn(input.executablePath, [...input.args], spawnOptions);
+}
+
+/**
+ * Ask the staged helper, through one bounded invocation, for the OS-proven
+ * peer identity of one accepted local IPC connection. The accepted socket is
+ * passed as the fixed extra descriptor and is never read, written, or closed
+ * here, so the parent's connection keeps working. Any failure — helper
+ * absence, spawn error, timeout, signal exit, non-zero exit, oversized or
+ * malformed output — is `null`, and `null` must always be treated as "peer
+ * identity not proven" by the caller.
+ */
+export async function observeLocalIpcPeerIdentity(input: Readonly<{
+    socket: Socket;
+    executablePath: string;
+    timeoutMs?: number;
+    spawn?: ProcessCustodyPeerIdentitySpawn;
+}>): Promise<ProcessCustodyPeerIdentity | null> {
+    const spawnChild = input.spawn ?? spawnProcessCustodyPeerIdentityChild;
+    if (input.socket.destroyed) return null;
+    const restoreFlowing = input.socket.readableFlowing === true;
+    const args = ['peer-identity'] as const;
+    const stdio = ['ignore', 'pipe', 'pipe', input.socket] as const;
+    let child: ProcessCustodyPeerIdentityChild;
+    try {
+        child = spawnChild({ executablePath: input.executablePath, args, stdio });
+    } catch {
+        return null;
+    }
+    return await new Promise<ProcessCustodyPeerIdentity | null>((resolve) => {
+        let settled = false;
+        const chunks: Buffer[] = [];
+        let totalBytes = 0;
+        let killed = false;
+        const finish = (result: ProcessCustodyPeerIdentity | null) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            // Passing a live Socket as child stdio can pause the parent's
+            // Readable while libuv lends the handle to the helper. Preserve
+            // the caller's pre-check flow state so authenticated control/data
+            // bytes cannot remain stranded after the helper exits.
+            if (restoreFlowing && !input.socket.destroyed) input.socket.resume();
+            resolve(result);
+        };
+        const timer = setTimeout(() => {
+            killed = true;
+            child.kill('SIGKILL');
+            finish(null);
+        }, Math.max(1, input.timeoutMs ?? PEER_IDENTITY_TIMEOUT_MS));
+        timer.unref();
+        child.stdout?.on('data', (chunk: Buffer | string) => {
+            totalBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.byteLength;
+            if (totalBytes > PEER_IDENTITY_STDOUT_LIMIT_BYTES) {
+                killed = true;
+                child.kill('SIGKILL');
+                finish(null);
+                return;
+            }
+            chunks.push(typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk);
+        });
+        child.on('error', () => finish(null));
+        child.on('close', (code, signal) => {
+            if (killed) return;
+            if (code !== 0 || signal !== null) {
+                finish(null);
+                return;
+            }
+            finish(parseProcessCustodyPeerIdentityLine(Buffer.concat(chunks).toString('utf8')));
+        });
+    });
 }

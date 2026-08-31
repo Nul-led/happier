@@ -13,6 +13,7 @@ import {
     materializeNextPendingQueueV2MessageViaReleasedServerSocket,
     readAcceptedPendingQueueV2DeliveryRetryDirective,
     readBlockedPendingQueueV2DeliveryByLocalIdFromServer,
+    readPendingQueueV2MessageContentByLocalIdFromServer,
     resolveAcceptedPendingQueueV2Delivery,
     settlePendingQueueV2Admission,
 } from './pendingQueueV2Transport';
@@ -36,6 +37,27 @@ describe('pendingQueueV2Transport', () => {
     beforeEach(() => {
         mockGet.mockReset();
         mockPost.mockReset();
+    });
+
+    it('reads one exact pending message content for durable admission rejoin', async () => {
+        const content = {
+            t: 'plain' as const,
+            v: { role: 'user', content: { type: 'text', text: 'prepared' }, meta: {} },
+        };
+        mockGet.mockResolvedValueOnce({
+            data: {
+                pending: [
+                    { localId: 'other', content },
+                    { localId: 'message-1', content },
+                ],
+            },
+        });
+
+        await expect(readPendingQueueV2MessageContentByLocalIdFromServer({
+            token: 'token',
+            sessionId: 'session-1',
+            localId: 'message-1',
+        })).resolves.toEqual(content);
     });
 
     it('degrades a conditional-steer settlement to a strict block on an older server', async () => {

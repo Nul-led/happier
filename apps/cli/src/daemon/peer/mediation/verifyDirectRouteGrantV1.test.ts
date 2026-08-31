@@ -60,6 +60,42 @@ function createSignedGrant(overrides: Partial<DirectRouteGrantPayloadV1> = {}) {
 }
 
 describe('verifyDirectRouteGrantV1', () => {
+    it('rejects V1 iroh_peer grants before signature admission', () => {
+        const invalidIrohGrant = {
+            ...createSignedGrant(),
+            payload: { ...payload, routeKind: 'iroh_peer' },
+        };
+        expect(verifyDirectRouteGrantV1({
+            grant: invalidIrohGrant,
+            trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
+            nowMs: 2_000,
+            expected: {
+                accountId: 'account_1',
+                machineId: 'machine_1',
+                flowKind: 'bounded_transfer',
+                routeKind: 'iroh_peer',
+            },
+        })).toEqual({ valid: false, reasonCode: 'grant_invalid', receipt: 'peer.route_grant.rejected' });
+    });
+
+    it('rejects a signed server_relay grant at the endpoint verifier', () => {
+        const validGrant = createSignedGrant();
+        expect(verifyDirectRouteGrantV1({
+            grant: {
+                ...validGrant,
+                payload: { ...validGrant.payload, routeKind: 'server_relay' },
+            },
+            trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
+            nowMs: 2_000,
+            expected: {
+                accountId: 'account_1',
+                machineId: 'machine_1',
+                flowKind: 'bounded_transfer',
+                routeKind: 'loopback_direct',
+            },
+        })).toEqual({ valid: false, reasonCode: 'grant_invalid', receipt: 'peer.route_grant.rejected' });
+    });
+
     it('verifies signature, audience, expiry, endpoint, and expected route binding', () => {
         expect(verifyDirectRouteGrantV1({
             grant: createSignedGrant(),
@@ -78,6 +114,17 @@ describe('verifyDirectRouteGrantV1', () => {
     });
 
     it('rejects key, signature, expiry, audience, and endpoint mismatches with structured reasons', () => {
+        expect(verifyDirectRouteGrantV1({
+            grant: createSignedGrant(),
+            trustRoots: [{
+                keyId: 'key_1',
+                publicKey: toBase64Url(signingKeyPair.publicKey),
+                expiresAt: 2_000,
+            }],
+            nowMs: 2_000,
+            expected: { accountId: 'account_1', machineId: 'machine_1', flowKind: 'bounded_transfer', routeKind: 'loopback_direct' },
+        })).toEqual({ valid: false, reasonCode: 'grant_unknown_key' });
+
         expect(verifyDirectRouteGrantV1({
             grant: createSignedGrant(),
             trustRoots: [{ keyId: 'other_key', publicKey: toBase64Url(signingKeyPair.publicKey) }],
@@ -173,6 +220,81 @@ describe('verifyDirectRouteGrantV2', () => {
         })).toEqual(expect.objectContaining({ valid: true }));
     });
 
+    it('requires the full signed Iroh relationship when V2 admits machine/1', () => {
+        const sourceEndpointId = 'a'.repeat(64);
+        const targetEndpointId = 'b'.repeat(64);
+        const iroh = {
+            sourceMachineId: 'machine_source',
+            targetMachineId: 'machine_target',
+            sourceEndpointId,
+            targetEndpointId,
+            role: 'initiator' as const,
+            operationKind: 'file_transfer' as const,
+        };
+        const { grant, proof } = createV2GrantAndProof({
+            machineId: iroh.targetMachineId,
+            flowKind: 'bounded_transfer',
+            routeKind: 'iroh_peer',
+            scope: {
+                kind: 'bounded_transfer',
+                mode: 'single',
+                transferId: 'transfer_1',
+                maxBytes: 1024,
+            },
+            endpointFingerprint: targetEndpointId,
+            iroh,
+        });
+        const baseInput = {
+            grant,
+            proof,
+            trustRoots: [{ keyId: 'key_1', publicKey: toBase64Url(signingKeyPair.publicKey) }],
+            nowMs: 2_000,
+        } as const;
+
+        expect(verifyDirectRouteGrantV2({
+            ...baseInput,
+            expected: {
+                accountId: 'account_1',
+                machineId: iroh.targetMachineId,
+                flowKind: 'bounded_transfer',
+                routeKind: 'iroh_peer',
+                endpointFingerprint: targetEndpointId,
+                iroh,
+            },
+        })).toEqual(expect.objectContaining({ valid: true }));
+        expect(verifyDirectRouteGrantV2({
+            ...baseInput,
+            expected: {
+                accountId: 'account_1',
+                machineId: iroh.targetMachineId,
+                flowKind: 'bounded_transfer',
+                routeKind: 'iroh_peer',
+                endpointFingerprint: targetEndpointId,
+            },
+        })).toEqual({ valid: false, reasonCode: 'grant_iroh_binding_mismatch' });
+    });
+
+    it('rejects a V2 machine grant after its signing trust root expires', () => {
+        const { grant, proof } = createV2GrantAndProof();
+        expect(verifyDirectRouteGrantV2({
+            grant,
+            proof,
+            trustRoots: [{
+                keyId: 'key_1',
+                publicKey: toBase64Url(signingKeyPair.publicKey),
+                expiresAt: 2_000,
+            }],
+            nowMs: 2_000,
+            expected: {
+                accountId: 'account_1',
+                machineId: 'machine_1',
+                flowKind: 'machine_rpc',
+                routeKind: 'loopback_direct',
+                endpointFingerprint: 'endpoint_1',
+            },
+        })).toEqual({ valid: false, reasonCode: 'grant_unknown_key' });
+    });
+
     it.each([
         ['accountId', 'other-account', 'grant_account_mismatch'],
         ['machineId', 'other-machine', 'grant_machine_mismatch'],
@@ -245,6 +367,60 @@ describe('verifyPeerRouteNonceV1', () => {
                 routeKind: 'lan_direct',
                 flowKind: 'bounded_transfer',
                 endpointFingerprint: 'endpoint_1',
+            },
+        })).toEqual({ valid: false, reasonCode: 'nonce_binding_mismatch' });
+    });
+
+    it('links an iroh_peer nonce proof to the signed grant and its target endpoint fingerprint', () => {
+        const proof = createPeerRouteNonceProofV1({
+            grantId: 'grant_iroh_1',
+            routeKind: 'iroh_peer',
+            flowKind: 'bounded_transfer',
+            endpointFingerprint: 'endpoint_target',
+            nonceBase64Url: toBase64Url(new Uint8Array(32).fill(4)),
+            accountSigningSeed: accountSeed,
+        });
+
+        expect(verifyPeerRouteNonceV1({
+            proof,
+            accountPublicKey: toBase64Url(accountKeyPair.publicKey),
+            expected: {
+                grantId: 'grant_iroh_1',
+                routeKind: 'iroh_peer',
+                flowKind: 'bounded_transfer',
+                endpointFingerprint: 'endpoint_target',
+            },
+        })).toEqual({ valid: true });
+
+        expect(verifyPeerRouteNonceV1({
+            proof,
+            accountPublicKey: toBase64Url(accountKeyPair.publicKey),
+            expected: {
+                grantId: 'grant_iroh_1',
+                routeKind: 'iroh_peer',
+                flowKind: 'bounded_transfer',
+                endpointFingerprint: 'endpoint_other',
+            },
+        })).toEqual({ valid: false, reasonCode: 'nonce_binding_mismatch' });
+    });
+
+    it('requires an endpoint fingerprint expectation for iroh_peer nonce proofs', () => {
+        const proof = createPeerRouteNonceProofV1({
+            grantId: 'grant_iroh_1',
+            routeKind: 'iroh_peer',
+            flowKind: 'bounded_transfer',
+            endpointFingerprint: 'endpoint_target',
+            nonceBase64Url: toBase64Url(new Uint8Array(32).fill(4)),
+            accountSigningSeed: accountSeed,
+        });
+
+        expect(verifyPeerRouteNonceV1({
+            proof,
+            accountPublicKey: toBase64Url(accountKeyPair.publicKey),
+            expected: {
+                grantId: 'grant_iroh_1',
+                routeKind: 'iroh_peer',
+                flowKind: 'bounded_transfer',
             },
         })).toEqual({ valid: false, reasonCode: 'nonce_binding_mismatch' });
     });

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { createAcpNdJsonStream } from '../createAcpNdJsonStream';
+import { createAcpFilteredStdoutReadable } from '../createAcpFilteredStdoutReadable';
+import { AcpNdJsonProtocolError, createAcpNdJsonStream } from '../createAcpNdJsonStream';
+import type { TransportHandler } from '@/agent/transport/TransportHandler';
 
 describe('createAcpNdJsonStream', () => {
   it('parses the final message even when the input ends without a trailing newline', async () => {
@@ -20,6 +22,58 @@ describe('createAcpNdJsonStream', () => {
       value: { jsonrpc: '2.0', id: 1, method: 'ping', params: {} },
     });
     await expect(reader.read()).resolves.toMatchObject({ done: true, value: undefined });
+  });
+
+  it('continues after the transport filters a diagnostic line', async () => {
+    const payload = [
+      'provider diagnostic: warming cache',
+      '{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}',
+    ].join('\n');
+    const rawInput = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(payload));
+        controller.close();
+      },
+    });
+    const transport: TransportHandler = {
+      agentName: 'test',
+      getInitTimeout: () => 0,
+      getToolPatterns: () => [],
+      filterStdoutLine: (line) => line.startsWith('provider diagnostic:') ? null : line,
+    };
+    const input = createAcpFilteredStdoutReadable({ readable: rawInput, transport });
+    const stream = createAcpNdJsonStream(new WritableStream<Uint8Array>(), input);
+    const reader = stream.readable.getReader();
+
+    await expect(reader.read()).resolves.toMatchObject({
+      done: false,
+      value: { jsonrpc: '2.0', id: 1, method: 'ping', params: {} },
+    });
+    await expect(reader.read()).resolves.toMatchObject({ done: true, value: undefined });
+  });
+
+  it('fails once with a typed protocol error for a malformed unfiltered frame', async () => {
+    const rawInput = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0",malformed}\n'));
+        controller.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0","id":2,"result":{}}\n'));
+        controller.close();
+      },
+    });
+    const transport: TransportHandler = {
+      agentName: 'test',
+      getInitTimeout: () => 0,
+      getToolPatterns: () => [],
+      filterStdoutLine: (line) => line,
+    };
+    const input = createAcpFilteredStdoutReadable({ readable: rawInput, transport });
+    const stream = createAcpNdJsonStream(new WritableStream<Uint8Array>(), input);
+    const reader = stream.readable.getReader();
+
+    const failure = await reader.read().catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AcpNdJsonProtocolError);
+    expect(failure).toMatchObject({ code: 'acp_ndjson_protocol_error' });
+    await expect(reader.read()).rejects.toBe(failure);
   });
 
   it('reuses a single output writer across multiple message writes', async () => {

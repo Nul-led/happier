@@ -49,4 +49,19 @@ describe('createConnectedServicePredictiveSwitchGuard', () => {
     });
   });
 
+  it('allows in-flight hard fanout when the runtime declares in-turn apply support', async () => {
+    const guard = createConnectedServicePredictiveSwitchGuard({
+      resolvePredictiveSoftSwitchMode: vi.fn(async () => 'supported_in_turn' as const),
+      readTurnState: vi.fn(() => ({ inFlight: true })),
+    });
+
+    await expect(guard({
+      sessionId: 'session-1',
+      serviceId: SERVICE_ID,
+      groupId: 'team',
+      activeProfileId: 'active',
+      reason: 'same_provider_account_exhausted',
+    })).resolves.toEqual({ status: 'allow' });
+  });
+
 });

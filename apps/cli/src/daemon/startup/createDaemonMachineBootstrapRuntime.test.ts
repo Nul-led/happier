@@ -36,6 +36,12 @@ const deviceLocalSecretStorage = {
 } as never;
 
 function createBaseRuntimeParams(overrides: Partial<Parameters<typeof createDaemonMachineBootstrapRuntime>[0]> = {}) {
+  const workspaceSyncHandoffAdapter = {
+    prepare: vi.fn(),
+    finalize: vi.fn(),
+    commit: vi.fn(),
+    abort: vi.fn(),
+  };
   return {
     // Test fixture boundary: this test only inspects returned PMS config; API methods are not invoked.
     api: {
@@ -46,6 +52,7 @@ function createBaseRuntimeParams(overrides: Partial<Parameters<typeof createDaem
       encryption: { type: 'legacy', secret: new Uint8Array(32).fill(7) },
     },
     deviceLocalSecretStorage,
+    workspaceSyncHandoffAdapter,
     diagnosticSubsystemGates: {
       disableMachineSync: false,
       disableAutomationWorker: false,
@@ -94,10 +101,23 @@ describe('createDaemonMachineBootstrapRuntime', () => {
   it('keeps daemon quiescence out of ownership metadata and forwards it as a lifecycle dependency', () => {
     const machineSyncClient = vi.fn(() => ({}));
     const isShuttingDown = vi.fn(() => false);
+    const workspaceSyncHandoffAdapter = {
+      prepare: vi.fn(),
+      finalize: vi.fn(),
+      commit: vi.fn(),
+      abort: vi.fn(),
+    };
+    const workspaceSync = {
+      controller: {},
+      deleteConflictLoserAtTarget: vi.fn(),
+      readFileAtTarget: vi.fn(),
+    } as never;
     const runtime = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams({
       // Test fixture boundary: only machineSyncClient call arguments are observed.
       api: { machineSyncClient } as never,
       isShuttingDown,
+      workspaceSyncHandoffAdapter,
+      workspaceSync,
     }));
     expect(runtime.deviceLocalSecretStorage).toBe(
       deviceLocalSecretStorage,
@@ -117,7 +137,57 @@ describe('createDaemonMachineBootstrapRuntime', () => {
     expect(machineSyncClient).toHaveBeenCalledWith(
       machine,
       expect.not.objectContaining({ isDaemonQuiescing: expect.any(Function) }),
-      { isDaemonQuiescing: isShuttingDown },
+      {
+        isDaemonQuiescing: isShuttingDown,
+        workspaceSyncHandoffAdapter,
+        workspaceSync,
+      },
+    );
+  });
+
+  it('constructs workspace sync from the registered machine identity before publishing the machine client', async () => {
+    const machineSyncClient = vi.fn(() => ({}));
+    const handoffAdapter = {
+      prepare: vi.fn(),
+      finalize: vi.fn(),
+      commit: vi.fn(),
+      abort: vi.fn(),
+    };
+    const workspaceSync = {
+      controller: {},
+      deleteConflictLoserAtTarget: vi.fn(),
+      readFileAtTarget: vi.fn(),
+    } as never;
+    const createWorkspaceSyncRuntime = vi.fn(async () => ({
+      handoffAdapter,
+      workspaceSync,
+    }));
+    const runtime = createDaemonMachineBootstrapRuntime(createBaseRuntimeParams({
+      api: { machineSyncClient } as never,
+      workspaceSyncHandoffAdapter: undefined,
+      workspaceSync: undefined,
+      createWorkspaceSyncRuntime,
+    }));
+    const machine = {
+      id: 'registered-machine',
+      encryptionKey: new Uint8Array(32),
+      encryptionVariant: 'legacy' as const,
+      metadata: null,
+      metadataVersion: 0,
+      daemonState: null,
+      daemonStateVersion: 0,
+    };
+
+    await runtime.createConnectedApiMachine(machine);
+
+    expect(createWorkspaceSyncRuntime).toHaveBeenCalledWith({ machineId: 'registered-machine' });
+    expect(machineSyncClient).toHaveBeenCalledWith(
+      machine,
+      expect.any(Object),
+      expect.objectContaining({
+        workspaceSyncHandoffAdapter: handoffAdapter,
+        workspaceSync,
+      }),
     );
   });
 

@@ -460,6 +460,7 @@ export function mergeSessionMetadataForStartup(opts: {
     } else if (mode === 'attach') {
         delete (merged as Record<string, unknown>).mcpSelectionV1;
     }
+    delete (merged as Record<string, unknown>).mcpSelectionRestartRequiredV1;
 
     return merged;
 }

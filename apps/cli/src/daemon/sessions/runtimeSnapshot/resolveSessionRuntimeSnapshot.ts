@@ -12,11 +12,13 @@ import {
 import type { SpawnSessionOptions } from '@/session/shared/spawnSessionContract';
 import {
   ConnectedServiceBindingsV1Schema,
+  SessionMcpSelectionV1Schema,
   buildBackendTargetKeyV2,
   readRuntimeDescriptorV1FromMetadata,
   type ProviderBoundModelRef,
   type ConnectedServiceMaterializationIdentityV1,
   type ConnectedServiceBindingsV1,
+  type SessionMcpSelectionV1,
 } from '@happier-dev/protocol';
 import { resolveBackendTargetFromSessionMetadata } from '@/session/backendTargets/resolveBackendTargetFromSessionMetadata';
 import type { CatalogAgentId } from '@/agent/catalog/ids';
@@ -34,6 +36,7 @@ export type SessionRuntimeSnapshot = Readonly<{
   connectedServices: ConnectedServiceBindingsV1 | null;
   connectedServicesUpdatedAt: number | null;
   connectedServiceMaterializationIdentityV1: ConnectedServiceMaterializationIdentityV1 | null;
+  mcpSelection: SessionMcpSelectionV1 | null;
   runtimeDescriptorV1: SpawnSessionOptions['runtimeDescriptorV1'] | null;
   permissionMode: SnapshotValue<PermissionMode> | null;
   agentModeId: SnapshotValue<string> | null;
@@ -109,6 +112,12 @@ function readAgentIdFromOptions(options: SpawnSessionOptions | null | undefined)
 
 function parseConnectedServices(value: unknown): ConnectedServiceBindingsV1 | null {
   const parsed = ConnectedServiceBindingsV1Schema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function parseMcpSelection(value: unknown): SessionMcpSelectionV1 | null {
+  if (value === undefined || value === null) return null;
+  const parsed = SessionMcpSelectionV1Schema.safeParse(value);
   return parsed.success ? parsed.data : null;
 }
 
@@ -326,6 +335,10 @@ function applySnapshotToSpawnOptions(
     next.connectedServiceMaterializationIdentityV1 = snapshot.connectedServiceMaterializationIdentityV1;
   }
 
+  if (snapshot.mcpSelection) {
+    next.mcpSelection = snapshot.mcpSelection;
+  }
+
   if (snapshot.runtimeDescriptorV1) {
     next.runtimeDescriptorV1 = snapshot.runtimeDescriptorV1;
   }
@@ -418,6 +431,10 @@ export function resolveSessionRuntimeSnapshot(
     connectedServices: connectedServices?.value ?? null,
     connectedServicesUpdatedAt: connectedServices?.updatedAt ?? null,
     connectedServiceMaterializationIdentityV1: chooseConnectedServiceMaterializationIdentity(params),
+    mcpSelection:
+      parseMcpSelection(params.persistedMetadata?.mcpSelectionV1)
+      ?? parseMcpSelection(params.incomingOptions.mcpSelection)
+      ?? parseMcpSelection(params.trackedSpawnOptions?.mcpSelection),
     runtimeDescriptorV1: readRuntimeDescriptorV1FromMetadata(params.persistedMetadata),
     permissionMode: chooseTimestamped([
       readPermissionFromMetadata(params.persistedMetadata),

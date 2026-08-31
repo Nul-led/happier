@@ -13,6 +13,7 @@ import type { ImmutablePluginGenerationRecord } from '@/plugins/store/registry/g
 import {
     MAX_PLUGIN_RESOURCE_BYTES,
     MAX_PLUGIN_RESOURCE_AGGREGATE_BYTES,
+    MAX_PLUGIN_RESOURCES_PER_GENERATION,
     createStablePluginResourcesOwner,
 } from './resources';
 
@@ -463,6 +464,36 @@ describe('dynamic plugin resources (EU-4b §3.6.1)', () => {
             },
         };
     }
+
+    it('applies the declaration-count bound per plugin generation rather than across the registry', async () => {
+        const pluginCount = MAX_PLUGIN_RESOURCES_PER_GENERATION + 1;
+        const contributions = Array.from({ length: pluginCount }, (_, index) => (
+            dynamicContribution(`acme.many-${index}`, 'shared')
+        ));
+        const dynamicProducers = Array.from({ length: pluginCount }, (_, index) => ({
+            pluginId: `acme.many-${index}`,
+            localId: 'shared',
+            runtime: {
+                read: () => new Uint8Array(),
+                observe: () => ({ dispose: () => undefined }),
+            },
+        }));
+        const immutableGenerationIdsByPluginId = new Map(
+            Array.from({ length: pluginCount }, (_, index) => [
+                `acme.many-${index}`,
+                `generation-${index}`,
+            ] as const),
+        );
+
+        const owner = await createStablePluginResourcesOwner({
+            registry: registry(contributions),
+            generations: new Map(),
+            immutableGenerationIdsByPluginId,
+            dynamicProducers,
+        });
+
+        expect(owner).toBeDefined();
+    });
 
     it('derives only readable/dynamic capability facts from the admitted registry', async () => {
         const packaged = await fixture('acme.alpha', 'packaged');

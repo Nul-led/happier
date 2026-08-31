@@ -429,7 +429,7 @@ function parseCandidate(value: unknown): AgentExternalSessionCandidate | null {
     const record = readStrictRecord(
         value,
         ['remoteSessionId', 'updatedAtMs'],
-        ['title', 'createdAtMs', 'archived', 'linkData'],
+        ['title', 'createdAtMs', 'archived', 'linkData', 'candidateIndexState'],
     );
     if (!record) return null;
     const remoteSessionId = parseBoundedString(record.remoteSessionId, MAX_ID_CODE_UNITS);
@@ -440,6 +440,9 @@ function parseCandidate(value: unknown): AgentExternalSessionCandidate | null {
     const createdAtMs = record.createdAtMs === undefined ? undefined : parseTimestamp(record.createdAtMs);
     const archived = parseOptionalBoolean(record.archived);
     const linkData = record.linkData === undefined ? undefined : parseLinkData(record.linkData);
+    const candidateIndexState = record.candidateIndexState === undefined
+        ? undefined
+        : parseLinkData(record.candidateIndexState);
     if (
         remoteSessionId === null
         || updatedAtMs === null
@@ -448,6 +451,7 @@ function parseCandidate(value: unknown): AgentExternalSessionCandidate | null {
         || createdAtMs === null
         || archived === null
         || linkData === null
+        || candidateIndexState === null
     ) {
         return null;
     }
@@ -458,6 +462,7 @@ function parseCandidate(value: unknown): AgentExternalSessionCandidate | null {
         ...(createdAtMs === undefined ? {} : { createdAtMs }),
         ...(archived === undefined ? {} : { archived }),
         ...(linkData === undefined ? {} : { linkData }),
+        ...(candidateIndexState === undefined ? {} : { candidateIndexState }),
     });
 }
 
@@ -1118,6 +1123,18 @@ export function createBoundedAgentExternalSessionsContribution(params: Readonly<
                         ...(typeof cursor === 'string' ? { cursor } : {}),
                         ...(searchTerm === undefined ? {} : { searchTerm }),
                         ...(request.searchMode === undefined ? {} : { searchMode: request.searchMode }),
+                        ...(request.readCandidateIndexState === undefined
+                            ? {}
+                            : {
+                                readCandidateIndexState: (candidate) => {
+                                    if (
+                                        signal.aborted
+                                        || params.retirementSignal.aborted
+                                        || !params.isCurrent()
+                                    ) return undefined;
+                                    return request.readCandidateIndexState?.(candidate);
+                                },
+                            }),
                     });
                 },
                 parse: (value) => parseAndBoundResult(

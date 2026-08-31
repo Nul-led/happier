@@ -11,7 +11,6 @@ import { processGenerationProvesReuse, readProcessIdentityByPid } from '@/daemon
 import { resolveComparableCliVersion } from '@/daemon/resolveComparableCliVersion';
 import { readDaemonRestartVerifyPollMs, readDaemonRestartVerifyTimeoutMs } from '@/daemon/startupWaitDefaults';
 import { configuration } from '@/configuration';
-import { inspectRetiredWorkspaceReplicationState } from '@/workspaces/sync/workspaceSyncLegacyState';
 import { recoverSessionHandoffPrepareTargetJobsAfterRestart } from '@/session/handoff/prepare/sessionHandoffPrepareTargetJobStore';
 
 import type { TrackedSession } from '../types';
@@ -94,25 +93,7 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
     6 * 60 * 60 * 1000,
   );
   let heartbeatRunning = false;
-  let workspaceSyncLegacyStateRetirementPromise: Promise<void> | null = null;
   let sessionHandoffPrepareTargetRecoveryPromise: Promise<void> | null = null;
-
-  const ensureWorkspaceSyncLegacyStateRetirement = (): Promise<void> => {
-    if (workspaceSyncLegacyStateRetirementPromise) {
-      return workspaceSyncLegacyStateRetirementPromise;
-    }
-    workspaceSyncLegacyStateRetirementPromise = (async () => {
-      try {
-        await inspectRetiredWorkspaceReplicationState({
-          activeServerDir: configuration.activeServerDir,
-          nowMs: Date.now(),
-        });
-      } catch (error) {
-        logger.debug('[DAEMON RUN] Failed to inspect retired workspace replication state', error);
-      }
-    })();
-    return workspaceSyncLegacyStateRetirementPromise;
-  };
 
   const ensureSessionHandoffPrepareTargetRecovery = (): Promise<void> => {
     if (sessionHandoffPrepareTargetRecoveryPromise) {
@@ -141,10 +122,10 @@ export function startDaemonHeartbeatLoop(params: Readonly<{
     return sessionHandoffPrepareTargetRecoveryPromise;
   };
 
-  // Retired workspace-replication state is inspected once at daemon startup.
-  // Do not put this maintenance back into the generic heartbeat: workspace sync
-  // lifecycle is owned by the workspace-sync controller now.
-  void ensureWorkspaceSyncLegacyStateRetirement();
+  // Retired workspace-replication state is owned by the workspace-sync
+  // production composition, which inspects it once per installation startup
+  // and fails its entry points closed with the typed legacy-state code.
+  // Do not put this maintenance back into the generic heartbeat.
   void ensureSessionHandoffPrepareTargetRecovery();
 
   const intervalHandle = setInterval(async () => {

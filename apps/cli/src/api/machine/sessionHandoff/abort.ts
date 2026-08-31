@@ -127,6 +127,7 @@ export function createSessionHandoffAbortActionHandler(
       persistedSourceExport?.targetMachineId,
     ]);
     directPeerTransfer?.clearPublishedTransfer(buildSessionHandoffAgentBundleTransferId(parsed.data.handoffId));
+    await sourceExportStore.releaseTransferFiles(parsed.data.handoffId);
     return { handoffId: parsed.data.handoffId, status };
   };
 }

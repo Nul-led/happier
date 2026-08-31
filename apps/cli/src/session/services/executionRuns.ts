@@ -825,7 +825,12 @@ type ExecutionRunWaitWithExactReader = ExecutionRunWaitRequest & Readonly<{
 export async function waitForExecutionRun(
     params: (ExecutionRunRpcContext & ExecutionRunWaitRequest) | ExecutionRunWaitWithExactReader,
 ): Promise<WaitForExecutionRunResult> {
-    const request = ExecutionRunGetRequestSchema.parse({ runId: params.runId });
+    const request = ExecutionRunGetRequestSchema.parse({
+        runId: params.runId,
+        // Waiting is a terminal observation of the same canonical get result,
+        // including bounded structured/tool output when it is available.
+        includeStructured: true,
+    });
     return await waitForExecutionRunTerminal<unknown, ExecutionRunServiceFailure>({
         runId: request.runId,
         timeoutMs: params.timeoutMs,

@@ -179,6 +179,7 @@ function bindHost(params: Readonly<{
     ) => () => void;
     randomBytes?: (length: number) => Uint8Array;
     resolveServerFeaturesSnapshot?: () => CliServerFeaturesSnapshot | undefined;
+    signal?: AbortSignal;
 }>) {
     // Keep the test boundary forward-compatible while the host consumes this
     // optional daemon-cached capability. The production dependency remains
@@ -215,7 +216,7 @@ function bindHost(params: Readonly<{
     const account = host.bind({
         pluginId: PLUGIN_ID,
         generation: '1',
-        signal: controller.signal,
+        signal: params.signal ?? controller.signal,
         isGenerationCurrent: () => true,
     });
     if (!account) throw new Error('Expected Account Data host binding');
@@ -1274,6 +1275,149 @@ describe('Account plugin Data storage host', () => {
         });
     });
 
+    it('rebases a daemon per-key mutation over an unrelated aggregate-row conflict', async () => {
+        let reads = 0;
+        const writes: unknown[] = [];
+        const account = bindHost({
+            get: async () => {
+                reads += 1;
+                return {
+                    status: 200,
+                    data: {
+                        status: 'present' as const,
+                        revision: reads === 1 ? 4 : 5,
+                        content: {
+                            t: 'plain' as const,
+                            v: {
+                                v: 1 as const,
+                                values: {
+                                    other: reads === 1
+                                        ? { version: 0, value: 'before' }
+                                        : { version: 1, value: 'after' },
+                                },
+                            },
+                        },
+                    },
+                };
+            },
+            post: async (_url, body) => {
+                const request = PluginAccountStorageMutationRequestV1Schema.parse(JSON.parse(body));
+                writes.push(request);
+                return {
+                    status: 200,
+                    data: writes.length === 1
+                        ? { status: 'conflict' as const, revision: 5 }
+                        : { status: 'updated' as const, revision: 6 },
+                };
+            },
+        });
+
+        await expect(account.kv.set('target', 'mine', {
+            expectedVersion: 'absent',
+        })).resolves.toEqual({ version: 0 });
+
+        expect(writes).toEqual([
+            {
+                expectedRevision: 4,
+                content: {
+                    t: 'plain',
+                    v: {
+                        v: 1,
+                        values: {
+                            other: { version: 0, value: 'before' },
+                            target: { version: 0, value: 'mine' },
+                        },
+                    },
+                },
+            },
+            {
+                expectedRevision: 5,
+                content: {
+                    t: 'plain',
+                    v: {
+                        v: 1,
+                        values: {
+                            other: { version: 1, value: 'after' },
+                            target: { version: 0, value: 'mine' },
+                        },
+                    },
+                },
+            },
+        ]);
+    });
+
+    it('treats a service write from an Account KV callback as a separate mutation while rejecting a nested transaction', async () => {
+        const wire = createAccountKvWireStore();
+        const account = bindHost({ get: wire.get, post: wire.post });
+
+        await expect(account.kv.transaction(async (transaction) => {
+            await transaction.set('transaction-write', 1, { expectedVersion: 'absent' });
+            await expect(account.kv.transaction(async (nested) => await nested.set(
+                'nested-transaction-write',
+                4,
+                { expectedVersion: 'absent' },
+            ))).rejects.toMatchObject({ code: 'plugin_account_kv_invalid' });
+            await expect(account.kv.set(
+                'callback-service-write',
+                2,
+                { expectedVersion: 'absent' },
+            )).resolves.toEqual({ version: 0 });
+        })).resolves.toBeUndefined();
+
+        await expect(account.kv.get('callback-service-write')).resolves.toEqual({
+            version: 0,
+            value: 2,
+        });
+        await expect(account.kv.get('transaction-write')).resolves.toEqual({
+            version: 0,
+            value: 1,
+        });
+        await expect(account.kv.get('nested-transaction-write')).resolves.toBeNull();
+    });
+
+    it('honors cancellation supplied to one daemon transaction method before writing', async () => {
+        const post = vi.fn(async () => ({
+            status: 200,
+            data: { status: 'updated' as const, revision: 0 },
+        }));
+        const account = bindHost({
+            get: async () => ({ status: 200, data: { status: 'absent' as const } }),
+            post,
+        });
+        const cancellation = new AbortController();
+        cancellation.abort();
+
+        await expect(account.kv.transaction(async (transaction) => await transaction.set(
+            'cancelled',
+            true,
+            { expectedVersion: 'absent', signal: cancellation.signal },
+        ))).rejects.toMatchObject({ code: 'plugin_collection_cancelled' });
+        expect(post).not.toHaveBeenCalled();
+    });
+
+    it('stops a daemon physical-conflict retry when the bound caller is cancelled', async () => {
+        const cancellation = new AbortController();
+        const get = vi.fn(async () => ({
+            status: 200,
+            data: { status: 'absent' as const },
+        }));
+        const post = vi.fn(async () => {
+            cancellation.abort();
+            return {
+                status: 200,
+                data: { status: 'conflict' as const, revision: 0 },
+            };
+        });
+        const account = bindHost({ get, post, signal: cancellation.signal });
+
+        await expect(account.kv.set('target', 'mine', {
+            expectedVersion: 'absent',
+        })).rejects.toMatchObject({ code: 'plugin_collection_cancelled' });
+
+        expect(post).toHaveBeenCalledOnce();
+        expect(get).toHaveBeenCalledOnce();
+    });
+
     it('retains and exposes deletion versions so stale absence cannot resurrect a key', async () => {
         const wire = createAccountKvWireStore({
             v: 1,
@@ -1424,13 +1568,36 @@ describe('Account plugin Data storage host', () => {
         } satisfies Partial<PluginError>);
     });
 
-    it('does not replay a transaction callback when the one whole-row CAS conflicts', async () => {
-        const wire = createAccountKvWireStore();
+    it('does not replay a transaction callback when a touched key changed during the row CAS', async () => {
+        let reads = 0;
         const post = vi.fn(async (_url: string, _body: string) => ({
             status: 200,
             data: { status: 'conflict' as const, revision: 0 },
         }));
-        const account = bindHost({ get: wire.get, post });
+        const account = bindHost({
+            get: async () => {
+                reads += 1;
+                return reads === 1
+                    ? { status: 200, data: { status: 'absent' as const } }
+                    : {
+                        status: 200,
+                        data: {
+                            status: 'present' as const,
+                            revision: 0,
+                            content: {
+                                t: 'plain' as const,
+                                v: {
+                                    v: 1 as const,
+                                    values: {
+                                        checkpoint: { version: 0, value: { attempt: 'external' } },
+                                    },
+                                },
+                            },
+                        },
+                    };
+            },
+            post,
+        });
         const callback = vi.fn(async (transaction: AccountKvTransaction) => {
             await transaction.set('checkpoint', { attempt: 1 }, { expectedVersion: 'absent' });
             return 'settled';
@@ -1441,6 +1608,7 @@ describe('Account plugin Data storage host', () => {
         } satisfies Partial<PluginError>);
         expect(callback).toHaveBeenCalledOnce();
         expect(post).toHaveBeenCalledOnce();
+        expect(reads).toBe(2);
     });
 
     /**

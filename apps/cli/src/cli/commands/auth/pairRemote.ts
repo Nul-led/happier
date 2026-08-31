@@ -10,12 +10,14 @@ import { applyServerSelectionFromArgs } from '@/server/serverSelection';
 import { isLoopbackHttpServerUrl } from '@/server/serverUrlClassification';
 import { isInteractiveTerminal } from '@/terminal/prompts/promptInput';
 import { buildOpenSshCommand } from '@happier-dev/cli-common/ssh';
+import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 
 type JsonRecord = Record<string, unknown>;
 
 type PairRemoteDeps = Readonly<{
   isInteractiveTerminal: () => boolean;
   promptForCurrentMachineReachableServerUrl: typeof promptForCurrentMachineReachableServerUrl;
+  fetchServerFeaturesSnapshot: typeof fetchServerFeaturesSnapshot;
 }>;
 
 type RemoteServerSelection = Readonly<{
@@ -27,6 +29,7 @@ type RemoteServerSelection = Readonly<{
 const DEFAULT_DEPS: PairRemoteDeps = {
   isInteractiveTerminal,
   promptForCurrentMachineReachableServerUrl,
+  fetchServerFeaturesSnapshot,
 };
 
 function takeFlagValue(args: string[], name: string): { value: string | null; rest: string[] } {
@@ -327,6 +330,24 @@ export async function handleAuthPairRemote(argsRaw: string[], deps: Partial<Pair
     remoteArgs: [remoteExecutable, 'auth', 'request', '--json', '--persist', ...remoteServerArgs],
   });
   assertRemoteRequestUsedExpectedRelay(request, remoteSelection);
+  const requestedServerIdentityId = typeof request.serverIdentityId === 'string'
+    ? request.serverIdentityId.trim()
+    : '';
+  const localFeatures = await effectiveDeps.fetchServerFeaturesSnapshot({
+    serverUrl: configuration.apiServerUrl,
+  });
+  const selectedServerIdentityId = localFeatures.status === 'ready'
+    ? localFeatures.features.capabilities.serverIdentity.serverIdentityId?.trim() ?? ''
+    : '';
+  if (!requestedServerIdentityId || !selectedServerIdentityId) {
+    fail('Unable to verify the stable Home identity for the remote authentication request. No approval was sent.');
+  }
+  if (requestedServerIdentityId !== selectedServerIdentityId) {
+    fail(
+      `Remote authentication targets Home ${requestedServerIdentityId}, but the selected local Home is `
+      + `${selectedServerIdentityId}. No approval was sent.`,
+    );
+  }
   const publicKey = typeof request?.publicKey === 'string' ? request.publicKey : '';
   if (!publicKey) {
     console.error('Remote `happier auth request --json` output did not include "publicKey".');
@@ -337,7 +358,18 @@ export async function handleAuthPairRemote(argsRaw: string[], deps: Partial<Pair
     if (!json) {
       console.log('Approving remote authentication request...');
     }
-    await approveTerminalAuthRequest({ publicKey });
+    // Forward the remote v3 pairing context verbatim so the approval seals a
+    // pairing-secret-bound v3 response. The approval owner is the single
+    // validator and material decision-maker: absent, malformed, or expired
+    // context fails closed there instead of degrading to an unbound legacy
+    // response. Only the short-lived pairing context crosses this boundary —
+    // never the claim secret or any persisted credential.
+    const remotePairing: unknown = request.pairing;
+    await approveTerminalAuthRequest({
+      publicKey,
+      ...(remotePairing !== undefined && remotePairing !== null ? { pairing: remotePairing } : {}),
+      ...(request.supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
+    });
   } catch (error) {
     console.error(error instanceof Error ? error.message : 'Failed to approve auth request.');
     process.exit(1);

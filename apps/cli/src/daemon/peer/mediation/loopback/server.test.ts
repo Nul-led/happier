@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import tweetnacl from 'tweetnacl';
 
 import {
+  DIRECT_ROUTE_GRANT_AUDIENCE_V1,
   createDirectRouteGrantSigningInputV1,
   createDirectRouteGrantSigningInputV2,
   createEphemeralPeerRouteProofHandleV2,
@@ -9,10 +10,17 @@ import {
   PEER_MEDIATION_RECEIPTS,
   type DirectRouteGrantPayloadV1,
   type DirectRouteGrantPayloadV2,
+  type IrohMachineHandshakeV1,
   type MachineLiveStreamFrameV1,
   type SignedDirectRouteGrantV1,
+  type SignedDirectRouteGrantV2,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import {
+  IROH_MACHINE_ADMISSION_PATH,
+  IROH_MACHINE_APPLICATION_PORT_HEADER,
+  IROH_MACHINE_REMOTE_ENDPOINT_HEADER,
+} from '@happier-dev/iroh-native/node';
 
 import { createPeerRouteNonceProofV1 } from '../verifyDirectRouteGrantV1';
 import {
@@ -184,6 +192,119 @@ type TestLiveStreamCaptureStartInput = Readonly<{
     frame: MachineLiveStreamFrameV1,
   ) => Readonly<{ ok: true } | { ok: false; reasonCode: string }>;
 }>;
+
+// --- machine/1 Iroh admission fixtures: canonical handshake + real signed V2 `iroh_peer` grant ---
+const IROH_SIGNING_KEY_PAIR = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(11));
+const IROH_TRUST_ROOTS = [{ keyId: 'iroh-key-1', publicKey: toBase64Url(IROH_SIGNING_KEY_PAIR.publicKey) }];
+// Strict endpoint-id grammar (64 lowercase hex = 32-byte Iroh endpoint identity).
+const IROH_SOURCE_ENDPOINT_ID = 'a'.repeat(64);
+const IROH_TARGET_ENDPOINT_ID = 'b'.repeat(64);
+const IROH_OPERATION_ID = 'operation_iroh_1';
+
+function createIrohMachineHandshake(input: Readonly<{
+  role?: 'initiator' | 'acceptor';
+  flow?: 'file_transfer' | 'attachment_transfer' | 'workspace_sync';
+  targetMachineId?: string;
+  grantOverrides?: Partial<DirectRouteGrantPayloadV2>;
+  breakProof?: boolean;
+}> = {}): IrohMachineHandshakeV1 {
+  const role = input.role ?? 'initiator';
+  const flow = input.flow ?? 'file_transfer';
+  const sourceMachineId = 'machine_source';
+  const targetMachineId = input.targetMachineId ?? 'machine_1';
+  const payload: DirectRouteGrantPayloadV2 = {
+    v: 2,
+    grantId: 'grant_iroh_1',
+    accountId: 'account_1',
+    machineId: targetMachineId,
+    flowKind: 'bounded_transfer',
+    routeKind: 'iroh_peer',
+    scope: { kind: 'bounded_transfer', mode: 'single', transferId: IROH_OPERATION_ID, maxBytes: 1024 },
+    iat: 1_000,
+    exp: 601_000,
+    aud: DIRECT_ROUTE_GRANT_AUDIENCE_V1,
+    endpointFingerprint: IROH_TARGET_ENDPOINT_ID,
+    iroh: {
+      sourceMachineId,
+      targetMachineId,
+      sourceEndpointId: IROH_SOURCE_ENDPOINT_ID,
+      targetEndpointId: IROH_TARGET_ENDPOINT_ID,
+      role,
+      operationKind: flow,
+    },
+    proofKind: 'ephemeral_ed25519',
+    ephemeralPublicKeyBase64Url: '',
+    ...input.grantOverrides,
+  };
+  const handle = createEphemeralPeerRouteProofHandleV2({ randomBytes: (length) => new Uint8Array(length).fill(3) });
+  const signedPayload = { ...payload, ephemeralPublicKeyBase64Url: handle.publicKeyBase64Url };
+  const grant: SignedDirectRouteGrantV2 = {
+    payload: signedPayload,
+    signature: {
+      keyId: 'iroh-key-1',
+      alg: 'Ed25519',
+      valueBase64Url: toBase64Url(tweetnacl.sign.detached(
+        Buffer.from(createDirectRouteGrantSigningInputV2(signedPayload), 'utf8'),
+        IROH_SIGNING_KEY_PAIR.secretKey,
+      )),
+    },
+  };
+  const proof = handle.sign(grant);
+  return {
+    v: 1,
+    role,
+    accountId: 'account_1',
+    sourceMachineId,
+    targetMachineId,
+    sourceEndpointId: IROH_SOURCE_ENDPOINT_ID,
+    targetEndpointId: IROH_TARGET_ENDPOINT_ID,
+    flow,
+    operationId: IROH_OPERATION_ID,
+    grant,
+    proof: input.breakProof ? { ...proof, nonceBase64Url: toBase64Url(new Uint8Array(16).fill(7)) } : proof,
+  };
+}
+
+/**
+ * A `server_relay` grant can never be produced by the canonical signer (the authorized
+ * endpoint-route schema excludes it), so this simulates the wire body a hostile or
+ * misconfigured peer would actually send: a genuinely signed `iroh_peer` handshake whose
+ * grant payload route kind was swapped to `server_relay` after signing. The route must
+ * reject it fail-closed (403, no echo), exactly like every other cross-route grant.
+ */
+function createCrossRouteGrantWireHandshake(): Record<string, unknown> {
+  const handshake = createIrohMachineHandshake();
+  return {
+    ...handshake,
+    grant: {
+      ...handshake.grant,
+      payload: {
+        ...handshake.grant.payload,
+        routeKind: 'server_relay',
+      },
+    },
+  };
+}
+
+function createIrohAdmissionTestApp() {
+  return createPeerMediationLoopbackApp({
+    nowMs: () => 2_000,
+    expected: {
+      accountId: 'account_1',
+      machineId: 'machine_1',
+      flowKind: 'bounded_transfer',
+      routeKind: 'loopback_direct',
+      endpointFingerprint: 'loopback_endpoint_1',
+    },
+    trustRoots: IROH_TRUST_ROOTS,
+    irohMachineAdmission: {
+      localEndpointId: IROH_TARGET_ENDPOINT_ID,
+      role: 'acceptor',
+      allowedFlows: ['file_transfer', 'workspace_sync'],
+      resolveApplicationPort: () => 46_001,
+    },
+  });
+}
 
 describe('peer mediation loopback server', () => {
   it('answers browser CORS and private-network preflight for signed loopback requests', async () => {
@@ -1058,6 +1179,128 @@ describe('peer mediation loopback server', () => {
     expect(reasonCodes).toContain('quarantined');
     expect(reasonCodes[reasonCodes.length - 1]).toBe('quarantined');
     expect(reasonCodes.every((code) => code.length > 0)).toBe(true);
+
+    await app.close();
+  });
+});
+
+describe('machine/1 Iroh admission route', () => {
+  it('admits a real signed machine/1 handshake with a bodyless 204 and the exact endpoint echo', async () => {
+    const app = createIrohAdmissionTestApp();
+
+    for (const flow of ['file_transfer', 'workspace_sync'] as const) {
+      const response = await app.inject({
+        method: 'POST',
+        url: IROH_MACHINE_ADMISSION_PATH,
+        headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: IROH_SOURCE_ENDPOINT_ID },
+        payload: createIrohMachineHandshake({ flow }),
+      });
+
+      expect(response.statusCode).toBe(204);
+      expect(response.headers[IROH_MACHINE_REMOTE_ENDPOINT_HEADER.toLowerCase()]).toBe(IROH_SOURCE_ENDPOINT_ID);
+      expect(response.headers[IROH_MACHINE_APPLICATION_PORT_HEADER.toLowerCase()]).toBe('46001');
+      expect(response.body).toBe('');
+    }
+
+    await app.close();
+  });
+
+  it('does not register the admission route without explicit machine-Iroh config', async () => {
+    const app = createPeerMediationLoopbackApp({
+      nowMs: () => 2_000,
+      expected: {
+        accountId: 'account_1',
+        machineId: 'machine_1',
+        flowKind: 'bounded_transfer',
+        routeKind: 'loopback_direct',
+        endpointFingerprint: 'loopback_endpoint_1',
+      },
+      trustRoots: IROH_TRUST_ROOTS,
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: IROH_MACHINE_ADMISSION_PATH,
+      headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: IROH_SOURCE_ENDPOINT_ID },
+      payload: createIrohMachineHandshake(),
+    });
+
+    expect(response.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it('rejects a verified handshake when no application loopback target is available', async () => {
+    const app = createPeerMediationLoopbackApp({
+      nowMs: () => 2_000,
+      expected: {
+        accountId: 'account_1',
+        machineId: 'machine_1',
+        flowKind: 'bounded_transfer',
+        routeKind: 'loopback_direct',
+        endpointFingerprint: 'loopback_endpoint_1',
+      },
+      trustRoots: IROH_TRUST_ROOTS,
+      irohMachineAdmission: {
+        localEndpointId: IROH_TARGET_ENDPOINT_ID,
+        role: 'acceptor',
+        allowedFlows: ['file_transfer'],
+        resolveApplicationPort: () => null,
+      },
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: IROH_MACHINE_ADMISSION_PATH,
+      headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: IROH_SOURCE_ENDPOINT_ID },
+      payload: createIrohMachineHandshake(),
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.headers[IROH_MACHINE_REMOTE_ENDPOINT_HEADER.toLowerCase()]).toBeUndefined();
+    expect(response.headers[IROH_MACHINE_APPLICATION_PORT_HEADER.toLowerCase()]).toBeUndefined();
+    expect(response.body).toBe('');
+    await app.close();
+  });
+
+  it('rejects every invalid admission with one stable non-2xx, no echo, and no reason detail', async () => {
+    const app = createIrohAdmissionTestApp();
+    const validHandshake = createIrohMachineHandshake();
+    const remoteEndpointHeader = { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: IROH_SOURCE_ENDPOINT_ID };
+    const cases: ReadonlyArray<Readonly<{
+      name: string;
+      headers?: Record<string, string>;
+      omitHeaders?: boolean;
+      payload: object;
+    }>> = [
+      { name: 'missing endpoint header', omitHeaders: true, payload: validHandshake },
+      { name: 'malformed endpoint header', headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: 'not-an-endpoint-id' }, payload: validHandshake },
+      // Node folds duplicate header lines into one comma-separated value; the strict endpoint grammar rejects it.
+      { name: 'duplicate endpoint header', headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: `${IROH_SOURCE_ENDPOINT_ID}, ${IROH_SOURCE_ENDPOINT_ID}` }, payload: validHandshake },
+      { name: 'wrong endpoint header', headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: 'c'.repeat(64) }, payload: validHandshake },
+      { name: 'wrong target machine', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ targetMachineId: 'machine_other' }) },
+      { name: 'role mismatch', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ role: 'acceptor' }) },
+      { name: 'flow not admitted', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ flow: 'attachment_transfer' }) },
+      { name: 'expired grant', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ grantOverrides: { exp: 2_000 } }) },
+      { name: 'invalid proof', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ breakProof: true }) },
+      { name: 'malformed non-Iroh body', headers: remoteEndpointHeader, payload: { v: 1, grant: {}, nonceProof: {} } },
+      { name: 'server_relay grant', headers: remoteEndpointHeader, payload: createCrossRouteGrantWireHandshake() },
+      // A request can never select a destination: the strict handshake schema rejects unknown fields.
+      { name: 'destination selection attempt', headers: remoteEndpointHeader, payload: { ...validHandshake, destination: { host: '127.0.0.1', port: 9 } } },
+    ];
+
+    for (const testCase of cases) {
+      const response = await app.inject({
+        method: 'POST',
+        url: IROH_MACHINE_ADMISSION_PATH,
+        ...(testCase.omitHeaders ? {} : { headers: testCase.headers ?? remoteEndpointHeader }),
+        payload: testCase.payload,
+      });
+
+      expect(response.statusCode, testCase.name).toBe(403);
+      expect(response.headers[IROH_MACHINE_REMOTE_ENDPOINT_HEADER.toLowerCase()], testCase.name).toBeUndefined();
+      expect(response.headers[IROH_MACHINE_APPLICATION_PORT_HEADER.toLowerCase()], testCase.name).toBeUndefined();
+      expect(response.body, testCase.name).toBe('');
+    }
 
     await app.close();
   });

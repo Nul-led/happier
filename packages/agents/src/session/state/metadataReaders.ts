@@ -1,8 +1,5 @@
 import type { PermissionIntent } from '../../types.js';
 import {
-  parseBackendTargetKeyV2,
-} from '@happier-dev/protocol/plugins/agents';
-import {
   SessionModelSelectionIntentV1Schema,
   readSessionModelSelectionIntentSourceV1,
   resolveSessionModelSelectionIntentV1,
@@ -31,6 +28,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
  */
 export function readActiveSessionModelSelectionFromMetadata(
   metadata: unknown,
+  agentId: string,
   agentTargetKey: string,
   currentRunnerProcessIdentity: Readonly<{
     pid: number;
@@ -40,16 +38,9 @@ export function readActiveSessionModelSelectionFromMetadata(
   const record = asRecord(metadata);
   if (!record) return null;
 
-  let targetAgentId: string;
-  try {
-    targetAgentId = parseBackendTargetKeyV2(agentTargetKey).backendId;
-  } catch {
-    return null;
-  }
-
   return readExactSessionActiveModelSelectionV1({
     metadata: record,
-    agentId: targetAgentId,
+    agentId,
     agentTargetKey,
     currentRunnerProcessIdentity,
   })?.selection ?? null;

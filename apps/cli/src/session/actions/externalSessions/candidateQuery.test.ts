@@ -526,12 +526,19 @@ describe('External Sessions candidate query owner', () => {
     it('persists exact preparation chunks privately and serves only the rows it has already indexed', async () => {
         const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-candidate-index-'));
         roots.push(activeServerDir);
-        const listCandidates = vi.fn(async ({ cursor }: Readonly<{ cursor?: string }>) => cursor
+        const listCandidates = vi.fn(async ({ cursor }: Readonly<{
+            cursor?: string;
+            readCandidateIndexState?: (candidate: Readonly<{
+                remoteSessionId: string;
+                linkData?: Readonly<Record<string, unknown>>;
+            }>) => Readonly<Record<string, unknown>> | undefined;
+        }>) => cursor
             ? {
                 candidates: [{
                     remoteSessionId: 'newest',
                     updatedAtMs: 30,
                     linkData: { projectId: 'project-a' },
+                    candidateIndexState: { kind: 'fixture-index', offset: 30 },
                 }],
                 nextCursor: null,
                 preparation: {
@@ -547,11 +554,13 @@ describe('External Sessions candidate query owner', () => {
                         title: 'Immutable first user message',
                         updatedAtMs: 10,
                         linkData: { projectId: 'project-a' },
+                        candidateIndexState: { kind: 'fixture-index', offset: 10 },
                     },
                     {
                         remoteSessionId: 'middle',
                         updatedAtMs: 20,
                         linkData: { projectId: 'project-a' },
+                        candidateIndexState: { kind: 'fixture-index', offset: 20 },
                     },
                 ],
                 nextCursor: 'qualified-scan-cursor',
@@ -634,9 +643,9 @@ describe('External Sessions candidate query owner', () => {
         const raw = await readFile(indexPath, 'utf8');
         expect(raw).not.toContain('/private/source');
         expect(raw).not.toContain('candidateKey');
-        // The source-supplied title is the one content-derived field the index
-        // keeps (approved amendment, 2026-08-07): a first user message is
-        // immutable, and a partial page is served without hydration.
+        expect(raw).toContain('fixture-index');
+        // Source enrichment and its private resumable checkpoint share this
+        // canonical index; only the title is published.
         expect(raw).toContain('Immutable first user message');
         expect(JSON.parse(raw)).toMatchObject({
             v: 2,
@@ -677,7 +686,16 @@ describe('External Sessions candidate query owner', () => {
             'middle',
         ]);
         expect(listCandidates).toHaveBeenCalledTimes(2);
-        expect(listCandidates).toHaveBeenCalledWith({ limit: 2 });
+        expect(listCandidates).toHaveBeenCalledWith(expect.objectContaining({
+            limit: 2,
+            readCandidateIndexState: expect.any(Function),
+        }));
+        const restartedRootRequest = listCandidates.mock.calls[0]?.[0];
+        expect(restartedRootRequest?.readCandidateIndexState?.({
+            remoteSessionId: 'middle',
+            linkData: { projectId: 'project-a' },
+        })).toEqual({ kind: 'fixture-index', offset: 20 });
+        expect(restarted.candidates[0]).not.toHaveProperty('candidateIndexState');
 
         const semanticallyCorrupt = JSON.parse(await readFile(indexPath, 'utf8')) as Record<string, unknown>;
         semanticallyCorrupt.indexGeneration = '';
@@ -765,7 +783,7 @@ describe('External Sessions candidate query owner', () => {
                 total: 4,
             },
         });
-        expect(listCandidates).toHaveBeenLastCalledWith({ limit: 2 });
+        expect(listCandidates).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 2 }));
         expect(JSON.stringify(await query())).not.toContain('strict-chunk-leaked');
     });
 
@@ -924,7 +942,7 @@ describe('External Sessions candidate query owner', () => {
             preparation: { scanned: 1 },
         });
         expect(listCandidates).toHaveBeenCalledTimes(1);
-        expect(listCandidates).toHaveBeenCalledWith({ limit: 1 });
+        expect(listCandidates).toHaveBeenCalledWith(expect.objectContaining({ limit: 1 }));
     });
 
     it('keeps cold build-to-validation preparation progress monotonic', async () => {
@@ -1898,7 +1916,7 @@ describe('External Sessions candidate query owner', () => {
             })),
             nextCursor: 'native-cursor',
         });
-        expect(listCandidates).toHaveBeenCalledWith({ limit: 5 });
+        expect(listCandidates).toHaveBeenCalledWith(expect.objectContaining({ limit: 5 }));
 
         await expect(stat(join(activeServerDir, 'external-sessions'))).rejects.toMatchObject({
             code: 'ENOENT',
@@ -2481,6 +2499,76 @@ describe('External Sessions candidate query owner', () => {
 
         expect(refreshed.sourceInvalidCount).toBe(0);
         expect(refreshed.result.candidates[0]?.remoteSessionId).toBe(expectedId);
+    });
+
+    it('carries enrichment checkpoints through a candidate-index generation rebuild', async () => {
+        const activeServerDir = await mkdtemp(join(tmpdir(), 'happier-candidate-state-seed-'));
+        roots.push(activeServerDir);
+        const corpus = Array.from({ length: 3 }, (_, index) => ({
+            remoteSessionId: `session-${index}`,
+            updatedAtMs: index,
+            linkData: { projectId: 'project-a' },
+        }));
+        const observedPreviousState = vi.fn();
+        const listCandidates = vi.fn(async (request: Readonly<{
+            cursor?: string;
+            limit: number;
+            readCandidateIndexState?: (candidate: Readonly<{
+                remoteSessionId: string;
+                linkData?: Readonly<Record<string, unknown>>;
+            }>) => Readonly<Record<string, unknown>> | undefined;
+        }>) => {
+            const offset = request.cursor ? Number.parseInt(request.cursor.slice(5), 10) : 0;
+            const page = corpus.slice(offset, offset + request.limit).map((candidate, index) => {
+                const previous = request.readCandidateIndexState?.(candidate);
+                if (previous) observedPreviousState(candidate.remoteSessionId, previous);
+                return {
+                    ...candidate,
+                    candidateIndexState: previous ?? {
+                        kind: 'fixture-index',
+                        offset: offset + index,
+                    },
+                };
+            });
+            const nextOffset = offset + page.length;
+            return {
+                candidates: page,
+                nextCursor: nextOffset < corpus.length ? `scan:${nextOffset}` : null,
+                preparation: {
+                    kind: 'building_candidate_index' as const,
+                    scanned: nextOffset,
+                    total: corpus.length,
+                },
+            };
+        });
+        const query = () => executeExternalSessionCandidateQuery({
+            activeServerDir,
+            agentIdentity: { pluginId: 'happier.claude', localId: 'claude' },
+            source: { kind: 'claudeConfig', configDir: '/private/source' },
+            limit: 1,
+            listCandidates,
+        });
+
+        await readUntilPublished(query);
+        corpus[2]!.updatedAtMs = 99;
+        await expect(query()).resolves.toHaveProperty('preparation');
+        const indexPath = await findCandidateIndexPath(activeServerDir);
+        const rebuilding = JSON.parse(await readFile(indexPath, 'utf8')) as Readonly<{
+            state: string;
+            candidateIndexStateSeed: Readonly<Record<string, unknown>>;
+        }>;
+        expect(rebuilding).toMatchObject({
+            state: 'building',
+            candidateIndexStateSeed: expect.any(Object),
+        });
+        expect(Object.keys(rebuilding.candidateIndexStateSeed)).toHaveLength(2);
+
+        observedPreviousState.mockClear();
+        await query();
+        expect(observedPreviousState).toHaveBeenCalledWith(
+            'session-2',
+            { kind: 'fixture-index', offset: 2 },
+        );
     });
 
     it('derives distinct opaque identities for duplicate native ids in different linkData scopes', () => {

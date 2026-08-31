@@ -102,7 +102,6 @@ const harness = vi.hoisted(() => {
             resolvesWhenShutdownRequested,
         };
     });
-
     return {
         directPeerRegistry,
         requestDirectPeerTransferToFile: vi.fn(async ({ destinationPath }: { destinationPath: string }) => ({

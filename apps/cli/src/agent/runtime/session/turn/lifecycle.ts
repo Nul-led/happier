@@ -31,6 +31,7 @@ type SessionTurnLifecycleParams = Readonly<{
 export type SessionTurnLifecycle = Readonly<{
     observeRuntimeEvent(event: AgentSessionRuntimeEvent): void;
     hasActiveTurn(): boolean;
+    retireAcceptedLifecyclePublication(): void;
     drainAcceptedLifecycle(): Promise<void>;
 }>;
 
@@ -80,8 +81,8 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
     let activeTurnId: string | null = null;
     let lastActiveTurnTouchAtMs: number | null = null;
     const knownTurnIds = new Set<string>();
-    const terminalStatusByTurnId = new Map<string, 'completed' | 'ineligible'>();
     let acceptedLifecycleTail = Promise.resolve();
+    let acceptedLifecyclePublicationRetired = false;
     const turnsWithMarkerButNoAcceptedBegin = new Set<string>();
 
     async function publishAcceptedBeginMarker(
@@ -92,6 +93,7 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
         }>,
     ): Promise<void> {
         for (;;) {
+            if (acceptedLifecyclePublicationRetired) return;
             try {
                 await params.onAcceptedTurnLifecycle?.(lifecycle);
                 return;
@@ -119,7 +121,6 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
                 void Promise.resolve(enqueue(mutation))
                     .then(async (admission) => {
                         if (admission?.terminalStatusOverride === 'failed' && 'turnId' in mutation) {
-                            terminalStatusByTurnId.set(mutation.turnId, 'ineligible');
                         }
                     })
                     .catch(() => undefined);
@@ -154,7 +155,6 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
                 return;
             }
             if (admission?.terminalStatusOverride === 'failed' && mutationTurnId) {
-                terminalStatusByTurnId.set(mutationTurnId, 'ineligible');
             }
             if (!acceptedLifecycle) return;
             const acceptedLifecycleAfterAdmission =
@@ -176,6 +176,10 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
     }
 
     return {
+        retireAcceptedLifecyclePublication() {
+            acceptedLifecyclePublicationRetired = true;
+        },
+
         async drainAcceptedLifecycle() {
             await acceptedLifecycleTail;
         },
@@ -191,7 +195,6 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
                 activeTurnId = event.turnId;
                 lastActiveTurnTouchAtMs = null;
                 knownTurnIds.add(event.turnId);
-                terminalStatusByTurnId.delete(event.turnId);
                 publish(
                     {
                         ...buildMutationBase({ session: params.session, agentId: params.agentId, action: 'begin', event }),
@@ -237,7 +240,6 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
 
             if (event.kind === 'turn-complete') {
                 if (!hasKnownTurn(event.turnId)) return;
-                terminalStatusByTurnId.set(event.turnId, 'completed');
                 publish(
                     {
                         ...buildMutationBase({ session: params.session, agentId: params.agentId, action: 'complete', event }),
@@ -256,7 +258,6 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
 
             if (event.kind === 'turn-failed') {
                 if (!hasKnownTurn(event.turnId)) return;
-                terminalStatusByTurnId.set(event.turnId, 'ineligible');
                 publish(
                     {
                         ...buildMutationBase({ session: params.session, agentId: params.agentId, action: 'fail', event }),
@@ -281,7 +282,6 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
 
             if (event.kind === 'turn-cancelled') {
                 if (!hasKnownTurn(event.turnId)) return;
-                terminalStatusByTurnId.set(event.turnId, 'ineligible');
                 publish(
                     {
                         ...buildMutationBase({ session: params.session, agentId: params.agentId, action: 'cancel', event }),
@@ -301,7 +301,6 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
 
             if (event.kind === 'runtime-ended') {
                 if (!activeTurnId) return;
-                terminalStatusByTurnId.set(activeTurnId, 'ineligible');
                 activeTurnId = null;
             }
         },

@@ -1,0 +1,218 @@
+import { describe, expect, it, vi } from 'vitest';
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import type { RpcHandler, RpcHandlerRegistrar, RpcHandlerContext } from '../rpc/types';
+
+import { registerMachineWorkspaceSyncRpcHandlers } from './rpcHandlers.workspaceSync';
+
+const status = {
+  relationshipId: 'rel-1',
+  controllerMachineId: 'machine-a',
+  state: 'watching' as const,
+  alphaPath: '/repo/a',
+  betaPath: '/repo/b',
+  mode: 'keep_both_in_sync' as const,
+  changedFiles: 0,
+  conflictCount: 0,
+  lastSuccessfulSyncAtMs: 1,
+};
+
+function createRegistrar() {
+  const handlers = new Map<string, (raw: unknown, context?: RpcHandlerContext) => Promise<unknown>>();
+  const rpcHandlerManager = {
+    registerHandler: <TRequest, TResponse>(method: string, handler: RpcHandler<TRequest, TResponse>) => {
+      handlers.set(method, async (raw: unknown, context?: RpcHandlerContext) => await handler(raw as TRequest, context));
+    },
+  } satisfies RpcHandlerRegistrar;
+  return { handlers, rpcHandlerManager };
+}
+
+describe('workspace sync machine RPC handlers', () => {
+  it('routes lifecycle, conflicts and previews through the one managed controller', async () => {
+    const { handlers, rpcHandlerManager } = createRegistrar();
+    const controller = {
+      get: vi.fn(async () => status),
+      list: vi.fn(async () => [status]),
+      flush: vi.fn(async () => status),
+      pause: vi.fn(async () => ({ ...status, state: 'paused' as const })),
+      resume: vi.fn(async () => status),
+      terminate: vi.fn(async () => undefined),
+      listConflicts: vi.fn(async () => ({ relationshipId: 'rel-1', totalCount: 0, shownCount: 0, truncatedCount: 0, conflicts: [] })),
+      deleteConflictLoser: vi.fn(async () => status),
+      readFile: vi.fn(async () => ({ status: 'text' as const, text: 'hello', digest: 'a'.repeat(40), size: 5 })),
+    };
+    const prepareBootstrapAtTarget = vi.fn(async () => ({
+      v: 1 as const,
+      bootstrapOperationId: 'bootstrap-op-1',
+      targetWorkspaceRefId: 'workspace-beta',
+      state: 'ready' as const,
+      created: true,
+      rootFingerprint: 'b'.repeat(64),
+      policyDigest: 'a'.repeat(64),
+      manifestDigest: 'c'.repeat(64),
+    }));
+    const releaseBootstrapAtTarget = vi.fn(async () => ({ ok: true as const, released: true }));
+    registerMachineWorkspaceSyncRpcHandlers({
+      rpcHandlerManager,
+      service: {
+        controller,
+        deleteConflictLoserAtTarget: vi.fn(async () => undefined),
+        readFileAtTarget: vi.fn(async () => ({ status: 'missing' as const })),
+        prepareBootstrapAtTarget,
+        releaseBootstrapAtTarget,
+      },
+    });
+
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_LIST)?.({})).resolves.toEqual({ statuses: [status] });
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_PAUSE)?.({ relationshipId: 'rel-1' }))
+      .resolves.toMatchObject({ status: { state: 'paused' } });
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICTS_LIST)?.({ relationshipId: 'rel-1' }))
+      .resolves.toMatchObject({ relationshipId: 'rel-1', totalCount: 0 });
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_FILE_READ)?.({
+      relationshipId: 'rel-1', side: 'alpha', path: 'src/index.ts', maxBytes: 1024,
+    })).resolves.toMatchObject({ status: 'text', text: 'hello' });
+
+    expect(controller.pause).toHaveBeenCalledWith('rel-1', expect.any(AbortSignal));
+    expect(controller.readFile).toHaveBeenCalledWith(expect.objectContaining({
+      relationshipId: 'rel-1', side: 'alpha', path: 'src/index.ts', maxBytes: 1024,
+    }), expect.any(AbortSignal));
+  });
+
+  it('keeps target mutation roots daemon-resolved and fails closed without the runtime', async () => {
+    const first = createRegistrar();
+    const deleteConflictLoserAtTarget = vi.fn(async () => undefined);
+    const readFileAtTarget = vi.fn(async () => ({ status: 'missing' as const }));
+    registerMachineWorkspaceSyncRpcHandlers({
+      rpcHandlerManager: first.rpcHandlerManager,
+      service: {
+        controller: {
+          get: vi.fn(), list: vi.fn(), flush: vi.fn(), pause: vi.fn(), resume: vi.fn(), terminate: vi.fn(),
+          listConflicts: vi.fn(), deleteConflictLoser: vi.fn(), readFile: vi.fn(),
+        },
+        deleteConflictLoserAtTarget,
+        readFileAtTarget,
+        prepareBootstrapAtTarget: vi.fn(),
+        releaseBootstrapAtTarget: vi.fn(),
+      },
+    });
+    await expect(first.handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_CONFLICT_DELETE)?.({
+      relationshipId: 'rel-1', workspaceRefId: 'workspace-beta', rootPath: '/caller/root',
+      path: 'src/index.ts', expectedKind: 'file',
+    })).rejects.toThrow();
+    expect(deleteConflictLoserAtTarget).not.toHaveBeenCalled();
+
+    await expect(first.handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_FILE_READ)?.({
+      relationshipId: 'rel-1', workspaceRefId: 'workspace-beta',
+      path: 'src/index.ts', maxBytes: 1024,
+    })).resolves.toEqual({ status: 'missing' });
+    expect(readFileAtTarget).toHaveBeenCalledWith(expect.objectContaining({
+      relationshipId: 'rel-1', workspaceRefId: 'workspace-beta',
+      path: 'src/index.ts', maxBytes: 1024,
+    }), expect.any(AbortSignal));
+
+    await expect(first.handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_FILE_READ)?.({
+      relationshipId: 'rel-1', workspaceRefId: 'workspace-beta',
+      rootPath: '/caller/root', path: 'src/index.ts', maxBytes: 1024,
+    })).rejects.toThrow();
+
+    const absent = createRegistrar();
+    registerMachineWorkspaceSyncRpcHandlers({ rpcHandlerManager: absent.rpcHandlerManager });
+    await expect(absent.handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_LIST)?.({}))
+      .rejects.toMatchObject({ code: 'workspace_sync_unavailable' });
+  });
+});
+
+describe('workspace sync target bootstrap RPC handlers', () => {
+  it('registers the exact root-free prepare/release methods, forwards the abort signal and rejects poison fields', async () => {
+    const { handlers, rpcHandlerManager } = createRegistrar();
+    const readyResult = {
+      v: 1 as const,
+      bootstrapOperationId: 'bootstrap-op-1',
+      targetWorkspaceRefId: 'workspace-beta',
+      state: 'ready' as const,
+      created: true,
+      rootFingerprint: 'b'.repeat(64),
+      policyDigest: 'a'.repeat(64),
+      manifestDigest: 'c'.repeat(64),
+    };
+    const prepareBootstrapAtTarget = vi.fn(async () => readyResult);
+    const releaseBootstrapAtTarget = vi.fn(async () => ({ ok: true as const, released: false }));
+    registerMachineWorkspaceSyncRpcHandlers({
+      rpcHandlerManager,
+      service: {
+        controller: {
+          get: vi.fn(), list: vi.fn(), flush: vi.fn(), pause: vi.fn(), resume: vi.fn(), terminate: vi.fn(),
+          listConflicts: vi.fn(), deleteConflictLoser: vi.fn(), readFile: vi.fn(),
+        },
+        deleteConflictLoserAtTarget: vi.fn(async () => undefined),
+        readFileAtTarget: vi.fn(async () => ({ status: 'missing' as const })),
+        prepareBootstrapAtTarget,
+        releaseBootstrapAtTarget,
+      },
+    });
+
+    expect(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_PREPARE).toBe('daemon.workspaceSync.target.bootstrap.prepare.v1');
+    expect(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_RELEASE).toBe('daemon.workspaceSync.target.bootstrap.release.v1');
+
+    const prepareRequest = {
+      v: 1,
+      bootstrapOperationId: 'bootstrap-op-1',
+      owner: { kind: 'relationship' as const, relationshipId: 'rel-1' },
+      targetWorkspaceRefId: 'workspace-beta',
+      endpointRole: 'beta' as const,
+      policyDigest: 'a'.repeat(64),
+      createIfMissing: true,
+    };
+    const signal = new AbortController().signal;
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_PREPARE)?.(prepareRequest, { signal }))
+      .resolves.toEqual(readyResult);
+    expect(prepareBootstrapAtTarget).toHaveBeenCalledWith(prepareRequest, signal);
+
+    // Caller-supplied paths, credentials and unknown fields are rejected before the service is consulted.
+    for (const poison of ['rootPath', 'sourceRootPath', 'canonicalRoot', 'markerPath', 'credential', 'grant', 'bearer', 'route']) {
+      await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_PREPARE)?.({
+        ...prepareRequest,
+        [poison]: '/caller/chosen/value',
+      })).rejects.toThrow();
+    }
+    expect(prepareBootstrapAtTarget).toHaveBeenCalledTimes(1);
+
+    const releaseRequest = {
+      v: 1,
+      bootstrapOperationId: 'bootstrap-op-1',
+      targetWorkspaceRefId: 'workspace-beta',
+      reason: 'abort' as const,
+    };
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_RELEASE)?.(releaseRequest, { signal }))
+      .resolves.toEqual({ ok: true, released: false });
+    expect(releaseBootstrapAtTarget).toHaveBeenCalledWith(releaseRequest, signal);
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_RELEASE)?.({
+      ...releaseRequest,
+      reason: 'copy_committed',
+    })).resolves.toEqual({ ok: true, released: false });
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_RELEASE)?.({
+      ...releaseRequest,
+      rootPath: '/caller/root',
+    })).rejects.toThrow();
+    expect(releaseBootstrapAtTarget).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed without the runtime for the bootstrap methods', async () => {
+    const absent = createRegistrar();
+    registerMachineWorkspaceSyncRpcHandlers({ rpcHandlerManager: absent.rpcHandlerManager });
+    await expect(absent.handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_PREPARE)?.({
+      v: 1,
+      bootstrapOperationId: 'bootstrap-op-1',
+      owner: { kind: 'relationship', relationshipId: 'rel-1' },
+      targetWorkspaceRefId: 'workspace-beta',
+      endpointRole: 'beta',
+      policyDigest: 'a'.repeat(64),
+      createIfMissing: true,
+    })).rejects.toMatchObject({ code: 'workspace_sync_unavailable' });
+    await expect(absent.handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_RELEASE)?.({
+      v: 1,
+      bootstrapOperationId: 'bootstrap-op-1',
+      targetWorkspaceRefId: 'workspace-beta',
+      reason: 'abort',
+    })).rejects.toMatchObject({ code: 'workspace_sync_unavailable' });
+  });
+});

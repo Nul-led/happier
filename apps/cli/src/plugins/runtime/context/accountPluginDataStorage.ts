@@ -8,6 +8,7 @@ import {
     PluginAccountKvRowError,
     assertPluginAccountKvExpectedVersionV1,
     clonePluginAccountKvRowV1,
+    commitPluginAccountKvMutationWithRebaseV1,
     createEmptyPluginAccountKvRowV1,
     deletePluginAccountKvEntryV1,
     listPluginAccountKvEntriesV1,
@@ -433,6 +434,17 @@ function asJsonObject(value: JsonValue): Readonly<Record<string, JsonValue>> | n
 function inAccountKvRowAlgebra<T>(operation: () => T): T {
     try {
         return operation();
+    } catch (error) {
+        if (error instanceof PluginAccountKvRowError) {
+            throw dataError(error.code, error.message);
+        }
+        throw error;
+    }
+}
+
+async function inAccountKvRowAlgebraAsync<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+        return await operation();
     } catch (error) {
         if (error instanceof PluginAccountKvRowError) {
             throw dataError(error.code, error.message);
@@ -1338,7 +1350,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                 snapshot: AccountKvSnapshot;
                 row: PluginAccountStorageRowV1;
                 operationSignal?: AbortSignal;
-            }>): Promise<void> => {
+            }>): Promise<'updated' | 'conflict'> => {
                 const encryption = await currentEncryption(input.snapshot.credentials, input.operationSignal);
                 await assertCurrentAccount(input.snapshot.credentials, input.operationSignal);
                 let content: unknown;
@@ -1402,17 +1414,13 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     throw dataError(COLLECTION_PROTOCOL_INVALID_CODE, 'Account KV mutation response is invalid');
                 }
                 if (parsed.data.status === 'conflict') {
-                    throw dataError(ACCOUNT_KV_CONFLICT_CODE, 'Account KV changed before the conditional write completed');
+                    return 'conflict';
                 }
                 await assertCurrentAccount(input.snapshot.credentials, input.operationSignal);
+                return 'updated';
             };
 
             const createAccountKvScope = (): AccountKvService => {
-                const assertKvMutationNotReentrant = (): void => {
-                    if (accountKvTransactionContext.getStore()?.has(kvScopeIdentity)) {
-                        throw dataError(ACCOUNT_KV_INVALID_CODE, 'Account KV mutations must use the active transaction handle');
-                    }
-                };
                 const assertKvTransactionNotNested = (): void => {
                     if ((accountKvTransactionContext.getStore()?.size ?? 0) > 0) {
                         throw dataError(ACCOUNT_KV_INVALID_CODE, 'Nested Account KV transactions are unavailable');
@@ -1425,6 +1433,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     await assertBoundCurrent(lifecycle, operationSignal);
                     const snapshot = await readAccountKvSnapshot(operationSignal);
                     const row = cloneAccountKvRow(snapshot.row);
+                    const touchedKeys = new Set<string>();
                     let active = true;
                     let mutated = false;
                     const assertTransactionActive = async (signal?: AbortSignal): Promise<void> => {
@@ -1451,6 +1460,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                                 options.expectedVersion,
                             );
                             const version = setAccountKvEntry(row, normalizedKey, value, previous);
+                            touchedKeys.add(normalizedKey);
                             mutated = true;
                             return Object.freeze({ version });
                         },
@@ -1469,6 +1479,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                                 throw dataError(ACCOUNT_KV_CONFLICT_CODE, 'Account KV key is absent');
                             }
                             const version = deleteAccountKvEntry(row, normalizedKey, previous);
+                            touchedKeys.add(normalizedKey);
                             mutated = true;
                             return Object.freeze({ version, deleted: true as const });
                         },
@@ -1480,7 +1491,18 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         );
                         await assertBoundCurrent(lifecycle, operationSignal);
                         if (mutated) {
-                            await writeAccountKvSnapshot({ snapshot, row, operationSignal });
+                            await inAccountKvRowAlgebraAsync(async () => await commitPluginAccountKvMutationWithRebaseV1({
+                                initialSnapshot: snapshot,
+                                pendingRow: row,
+                                touchedKeys: [...touchedKeys],
+                                assertCurrent: async () => await assertBoundCurrent(lifecycle, operationSignal),
+                                readLatest: async () => await readAccountKvSnapshot(operationSignal),
+                                write: async (currentSnapshot, currentRow) => await writeAccountKvSnapshot({
+                                    snapshot: currentSnapshot,
+                                    row: currentRow,
+                                    operationSignal,
+                                }),
+                            }));
                         }
                         await assertBoundCurrent(lifecycle, operationSignal);
                         return result;
@@ -1500,7 +1522,6 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         expectedVersion: number | 'absent';
                         signal?: AbortSignal;
                     }>) {
-                        assertKvMutationNotReentrant();
                         return await mutate(
                             async (transaction) => await transaction.set(key, value, options),
                             options.signal,
@@ -1510,7 +1531,6 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         expectedVersion: number;
                         signal?: AbortSignal;
                     }>) {
-                        assertKvMutationNotReentrant();
                         return await mutate(
                             async (transaction) => await transaction.delete(key, options),
                             options.signal,

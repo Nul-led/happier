@@ -32,6 +32,10 @@ import {
   registerPeerTcpTunnelLoopbackRoutes,
   type RegisterPeerTcpTunnelLoopbackRoutesOptions,
 } from '../tunnel/registerRoutes';
+import {
+  registerPeerMediationIrohMachineAdmissionRoute,
+  type PeerMediationLoopbackIrohMachineAdmissionOptions,
+} from './irohMachineAdmission';
 import { FILES_TRANSFER_CHUNK_CONFIG_MAX_BYTES } from '../../../../configuration/fileTransferLimits';
 
 const ENCRYPTED_TRANSFER_CHUNK_OVERHEAD_BYTES = 1 + 12 + 16;
@@ -78,6 +82,12 @@ export type PeerMediationLoopbackAppOptions = Readonly<{
   rpc?: PeerMachineRpcDirectRuntimeOptions;
   stream?: PeerMachineLiveStreamDirectRuntimeOptions;
   tunnel?: PeerTcpTunnelDirectRuntimeOptions;
+  /**
+   * Lane-06 I9: explicit machine-Iroh admission config. The `happier/machine/1` admission
+   * route is registered only when this is supplied; the native acceptor POSTs the canonical
+   * handshake to the fixed admission path and admits only a 2xx echoing its EndpointId header.
+   */
+  irohMachineAdmission?: PeerMediationLoopbackIrohMachineAdmissionOptions;
   /**
    * PMS-9 / P1-9. This composition root is the one place that knows the account, machine, route
    * kind and clock for every direct route, so the emitter is bound here once and each registrar
@@ -191,7 +201,13 @@ export function createPeerMediationLoopbackApp(options: PeerMediationLoopbackApp
         endpointFingerprint: expected.endpointFingerprint,
       },
     });
-    if (!verification.valid) return fallback(verification.reasonCode);
+    if (!verification.valid) {
+      // The V1 loopback probe never carries an Iroh grant; keep its published fallback
+      // vocabulary bounded even though the shared verifier also serves machine/1 V2.
+      return fallback(verification.reasonCode === 'grant_iroh_binding_mismatch'
+        ? 'grant_invalid'
+        : verification.reasonCode);
+    }
 
     if (!expected.accountPublicKey) return fallback('nonce_invalid');
     const nonceVerification = verifyPeerRouteNonceV1({
@@ -261,6 +277,19 @@ export function createPeerMediationLoopbackApp(options: PeerMediationLoopbackApp
         accountPublicKey: expected.accountPublicKey,
       },
       trustRoots: options.trustRoots,
+    });
+  }
+
+  if (options.irohMachineAdmission) {
+    // Local facts reuse the shared loopback binding: every flow binding in this app is the
+    // same local daemon, so `expected.accountId`/`expected.machineId` are the canonical
+    // account/machine identity for admission too.
+    registerPeerMediationIrohMachineAdmissionRoute(app, {
+      admission: options.irohMachineAdmission,
+      accountId: options.expected.accountId,
+      machineId: options.expected.machineId,
+      trustRoots: options.trustRoots,
+      nowMs: options.nowMs,
     });
   }
 

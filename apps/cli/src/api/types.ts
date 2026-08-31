@@ -30,6 +30,7 @@ import {
   MachineInstallationProofV1Schema,
   MachineInstallationPublicKeySchema,
   MachineReplacementReasonSchema,
+  IrohEndpointDescriptorV1Schema,
   SessionOrganizationPlacementV1Schema,
 } from '@happier-dev/protocol'
 import {
@@ -434,6 +435,9 @@ const DaemonPeerMediationLoopbackStateSchema = z.object({
 
 const DaemonPeerMediationStateSchema = z.object({
   loopback: DaemonPeerMediationLoopbackStateSchema.optional(),
+  iroh: z.object({
+    endpoint: IrohEndpointDescriptorV1Schema,
+  }).passthrough().optional(),
 }).passthrough()
 
 /**

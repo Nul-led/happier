@@ -15,6 +15,7 @@ function createTranscriptApi(params?: Readonly<{
         observedAt: number;
     }> | null;
     getActiveLocalTurnProgressAt?: () => number | null;
+    findPersistedSessionUserMessageAdmission?: Parameters<typeof createSessionClientTranscriptApi>[0]['findPersistedSessionUserMessageAdmission'];
 }>) {
     const enqueueCommittedTranscriptMessage = vi.fn(async () => ({ persisted: true, delivered: false }));
     const admitSessionUserMessage = params?.admitSessionUserMessage ?? vi.fn(async () => undefined);
@@ -48,6 +49,8 @@ function createTranscriptApi(params?: Readonly<{
         permissionToolCallRawInputByProviderAndId: new Map(),
         toolCallInputByProviderAndId: new Map(),
         admitSessionUserMessage,
+        findPersistedSessionUserMessageAdmission:
+            params?.findPersistedSessionUserMessageAdmission ?? vi.fn(async () => null),
         getTranscriptQueryContext: () => ({
             encryptionKey: new Uint8Array(32),
             encryptionVariant: 'legacy',
@@ -474,6 +477,58 @@ describe('createSessionClientTranscriptApi hook dispatch', () => {
                 }),
             }),
         }));
+    });
+
+    it('rejoins persisted prepared attachments before invoking an unavailable plugin transformer', async () => {
+        const transformSessionInputBeforeCommit = vi.fn(async () => {
+            throw Object.assign(new Error('plugin unavailable'), {
+                code: 'composer_attachment_unavailable',
+            });
+        });
+        const preparedAttachment = {
+            v: 1 as const,
+            instanceId: 'review-instance-1',
+            attachment: { pluginId: 'acme.review-comments', localId: 'review-comment' },
+            key: 'review-42',
+            value: { reviewId: '42', prepared: true },
+            presentation: { label: 'Review #42', typeLabel: 'Commentaire de revue' },
+        };
+        const persistedMeta = {
+            source: 'ui',
+            sentFrom: 'ui',
+            happierStructuredInputV1: { v: 1, composerAttachments: [preparedAttachment] },
+        };
+        const findPersistedSessionUserMessageAdmission = vi.fn(async () => ({
+            text: 'inspect this review [prepared]',
+            meta: persistedMeta,
+            composerAttachments: [preparedAttachment],
+        }));
+        const { api, admitSessionUserMessage } = createTranscriptApi({
+            transformSessionInputBeforeCommit,
+            findPersistedSessionUserMessageAdmission,
+        });
+
+        await api.enqueueSessionUserMessage({
+            text: 'inspect this review',
+            localId: 'retry-local-1',
+            meta: {
+                happierStructuredInputV1: {
+                    v: 1,
+                    composerAttachments: [{
+                        ...preparedAttachment,
+                        value: { reviewId: '42' },
+                    }],
+                },
+            },
+        });
+
+        expect(transformSessionInputBeforeCommit).not.toHaveBeenCalled();
+        expect(admitSessionUserMessage).toHaveBeenCalledWith({
+            localId: 'retry-local-1',
+            text: 'inspect this review [prepared]',
+            meta: persistedMeta,
+            composerAttachments: [preparedAttachment],
+        });
     });
 
     it('does not let a successful session-input transform erase a selected composer attachment', async () => {

@@ -5,6 +5,7 @@ import type {
     PluginSettingsContributionV2,
 } from '@happier-dev/protocol';
 import {
+    PluginDeclarativeProjectedModelV1Schema,
     preparePluginJsonSchema,
 } from '@happier-dev/protocol';
 import { PluginError } from '@happier-dev/plugin-sdk';
@@ -139,6 +140,9 @@ describe('stable declarative plugin model', () => {
             action: { qualifiedId: 'com.acme.forms/reset' },
             enabled: false,
         });
+        // Producer/wire parity: the emitted model is exactly the strict
+        // Protocol contract the daemon wire and UI host re-parse.
+        expect(PluginDeclarativeProjectedModelV1Schema.safeParse(model).success).toBe(true);
     expect(Object.isFrozen(model)).toBe(true);
   });
 

@@ -93,14 +93,14 @@ describe('buildCgroupSelfMigratingHappyCliLaunchSpec', () => {
     });
   });
 
-  it('uses the provisioned critical user slice as the canonical session launch owner', async () => {
+  it('uses the provisioned lower-weight jobs slice instead of the daemon control-plane slice', async () => {
     const originalPlatform = process.platform;
     Object.defineProperty(process, 'platform', {
       configurable: true,
       value: 'linux',
     });
     mocks.execFileWithDeadline.mockResolvedValue({
-      stdout: 'LoadState=loaded\nMemoryLow=4294967296\n',
+      stdout: 'LoadState=loaded\nCPUWeight=50\nIOWeight=50\nMemoryHigh=60129542144\n',
       stderr: '',
     });
 
@@ -118,7 +118,8 @@ describe('buildCgroupSelfMigratingHappyCliLaunchSpec', () => {
       expect(result?.args).toEqual(expect.arrayContaining([
         '--user',
         '--scope',
-        '--slice=happier-critical.slice',
+        '--slice=happier-jobs.slice',
+        '--nice=10',
         '--',
         'codex',
       ]));
@@ -129,9 +130,11 @@ describe('buildCgroupSelfMigratingHappyCliLaunchSpec', () => {
         [
           '--user',
           'show',
-          'happier-critical.slice',
+          'happier-jobs.slice',
           '--property=LoadState',
-          '--property=MemoryLow',
+          '--property=CPUWeight',
+          '--property=IOWeight',
+          '--property=MemoryHigh',
         ],
         expect.objectContaining({
           env: expect.objectContaining({

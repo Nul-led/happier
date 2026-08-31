@@ -15,6 +15,7 @@ import {
     inspectWorkspaceLocationWithScmWorkspace,
     materializeWorkspaceCheckoutWithScmWorkspace,
     realizeWorkspaceCheckoutWithScmWorkspace,
+    realizeWorkspaceCheckoutWithScmWorkspaceSource,
     reconcilePostMaterializationWithScmWorkspace,
     resolveWorkspaceReplicationSourceInputsWithScmWorkspace,
     resolveWorkspaceTransferWithScmWorkspace,
@@ -761,6 +762,44 @@ describe('scm workspace integration', () => {
                 baseRef: 'main',
                 branchMode: 'new',
             },
+        });
+    });
+
+    it('retains the selected source root with the canonical created-versus-reused realization receipt', async () => {
+        const createWorkspaceCheckout = vi.fn(async () => ({
+            kind: 'git_worktree' as const,
+            targetPath: '/repo/.dev/worktree/feature-auth',
+            branchName: 'feature-auth',
+            created: false,
+        }));
+        const registry = createScmBackendRegistry([
+            createTestBackend({
+                id: 'git',
+                detectionRootPath: '/repo',
+                workspaceIntegration: {
+                    inspectWorkspaceLocation: async () => null,
+                    createWorkspaceCheckout,
+                },
+            }),
+        ]);
+
+        await expect(realizeWorkspaceCheckoutWithScmWorkspaceSource({
+            sourcePath: '/repo/packages/app',
+            checkoutCreation: {
+                kind: 'git_worktree',
+                displayName: 'feature-auth',
+                baseRef: null,
+                branchMode: 'existing',
+            },
+            registry,
+        })).resolves.toEqual({
+            realization: {
+                kind: 'git_worktree',
+                targetPath: '/repo/.dev/worktree/feature-auth',
+                branchName: 'feature-auth',
+                created: false,
+            },
+            sourceRootPath: '/repo',
         });
     });
 

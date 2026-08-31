@@ -9,6 +9,9 @@ import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 
 const LEGACY_DIRECTORY_NAME = 'workspace-replication';
 const RETIRED_DIRECTORY_PREFIX = 'workspace-replication.retired-v1-';
+// Exact plan-owned quarantine shape: <prefix><detectedAtMs>-<randomSuffix>.
+const RETIRED_QUARANTINE_NAME_PATTERN = /^workspace-replication\.retired-v1-(\d{10,16})-([A-Za-z0-9_-]{1,64})$/u;
+const INVENTORY_HASH_PATTERN = /^[0-9a-f]{64}$/u;
 const RETIREMENT_MARKER_NAME = 'retirement.json';
 const LEGACY_CHILD_DIRECTORIES = new Set(['cas', 'jobs', 'relationships', 'staging']);
 const MAX_RECORD_BYTES = 256 * 1024;
@@ -47,12 +50,18 @@ function isKnownLockOrTemporaryName(name: string): boolean {
   return /^(?:\.?lock(?:[.-].*)?|.*[.-]lock|(?:\.?tmp|temp)(?:[.-].*)?|.*[.-](?:tmp|temp)(?:[.-].*)?)$/u.test(name);
 }
 
-async function readInventory(rootPath: string): Promise<Readonly<{ entries: readonly InventoryEntry[]; hash: string }> | null> {
+async function readInventory(
+  rootPath: string,
+  options: Readonly<{ ignoreRetirementMarker?: boolean }> = {},
+): Promise<Readonly<{ entries: readonly InventoryEntry[]; hash: string }> | null> {
   const entries = await readdir(rootPath, { withFileTypes: true });
   if (entries.length > MAX_SCAN_ENTRIES) return null;
   const inventory: InventoryEntry[] = [];
   for (const entry of entries) {
-    if (entry.name === RETIREMENT_MARKER_NAME) return null;
+    if (entry.name === RETIREMENT_MARKER_NAME) {
+      if (options.ignoreRetirementMarker) continue;
+      return null;
+    }
     if (!LEGACY_CHILD_DIRECTORIES.has(entry.name) && !isKnownLockOrTemporaryName(entry.name)) return null;
     const entryPath = join(rootPath, entry.name);
     const entryStat = await lstat(entryPath).catch(() => null);
@@ -110,6 +119,106 @@ function isOwnedAndPrivate(rootStat: Awaited<ReturnType<typeof lstat>>): boolean
   return true;
 }
 
+/**
+ * Validates a previously written quarantine against the exact plan-owned
+ * retirement marker/directory shape. Anything ambiguous or malformed fails
+ * closed: a similarly named directory is never treated as authoritative.
+ */
+async function validateRetiredQuarantine(
+  quarantinePath: string,
+  name: string,
+): Promise<Readonly<{ valid: true; inventoryHash: string }> | Readonly<{ valid: false }>> {
+  const match = RETIRED_QUARANTINE_NAME_PATTERN.exec(name);
+  if (!match) return { valid: false };
+  const namedAtMs = Number(match[1]);
+  const statEntry = await lstat(quarantinePath).catch(() => null);
+  if (!statEntry || !statEntry.isDirectory() || statEntry.isSymbolicLink()) return { valid: false };
+  if (!isOwnedAndPrivate(statEntry)) return { valid: false };
+  const rawMarker = await readFile(join(quarantinePath, RETIREMENT_MARKER_NAME), 'utf8').catch(() => null);
+  if (rawMarker === null || rawMarker.length > MAX_RECORD_BYTES) return { valid: false };
+  let marker: unknown;
+  try {
+    marker = JSON.parse(rawMarker);
+  } catch {
+    return { valid: false };
+  }
+  if (!marker || typeof marker !== 'object' || Array.isArray(marker)) return { valid: false };
+  const record = marker as Record<string, unknown>;
+  if (record.detectedSchemaVersion !== WORKSPACE_REPLICATION_SCHEMA_VERSION) return { valid: false };
+  if (typeof record.detectedAtMs !== 'number' || !Number.isSafeInteger(record.detectedAtMs)
+    || record.detectedAtMs !== namedAtMs) {
+    return { valid: false };
+  }
+  if (typeof record.installationId !== 'string' || record.installationId.length < 1
+    || record.installationId.length > MAX_INSTALLATION_ID_LENGTH) {
+    return { valid: false };
+  }
+  if (typeof record.inventoryHash !== 'string' || !INVENTORY_HASH_PATTERN.test(record.inventoryHash)) {
+    return { valid: false };
+  }
+  // The recorded inventory must still describe the quarantined children
+  // (excluding the marker itself); drift makes the directory ambiguous.
+  const inventory = await readInventory(quarantinePath, { ignoreRetirementMarker: true }).catch(() => null);
+  if (!inventory || inventory.hash !== record.inventoryHash) return { valid: false };
+  return { valid: true, inventoryHash: inventory.hash };
+}
+
+/**
+ * Recognizes a valid prior quarantine once the live state root is gone, so a
+ * restart keeps reporting the retired state instead of forgetting it. Only
+ * immediate children of the active server directory are considered; no broad
+ * scan runs and no quarantine is modified.
+ */
+async function classifyRetiredQuarantine(
+  activeServerDir: string,
+  statePath: string,
+): Promise<WorkspaceSyncLegacyStateInspection> {
+  const entries = await readdir(activeServerDir, { withFileTypes: true }).catch((error: unknown) => (
+    (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? [] : null
+  ));
+  if (!entries) return unknown(statePath, 'active_server_dir_unreadable');
+  const candidates = entries
+    .filter((entry) => RETIRED_QUARANTINE_NAME_PATTERN.test(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+  if (candidates.length === 0) return { status: 'absent', path: statePath };
+  if (candidates.length > 1) return unknown(statePath, 'multiple_retired_quarantines');
+  const validated: Array<Readonly<{ path: string; inventoryHash: string }>> = [];
+  for (const name of candidates) {
+    const quarantinePath = join(activeServerDir, name);
+    const outcome = await validateRetiredQuarantine(quarantinePath, name);
+    if (!outcome.valid) return unknown(statePath, 'malformed_retired_quarantine');
+    validated.push({ path: quarantinePath, inventoryHash: outcome.inventoryHash });
+  }
+  const recognized = validated[0]!;
+  return {
+    status: 'legacy_workspace_sync_state_unsupported',
+    classification: 'retired_v1',
+    path: recognized.path,
+    quarantinePath: recognized.path,
+    schemaVersion: WORKSPACE_REPLICATION_SCHEMA_VERSION,
+    inventoryHash: recognized.inventoryHash,
+  };
+}
+
+/**
+ * The one owner-local availability assertion, derived once from the startup
+ * inspection. When retired v1 state is present or unrecognized, every
+ * workspace-sync entry point must fail closed with the exact typed status
+ * before any relationship, copy, bootstrap, agent or target mutation runs.
+ * The message is bounded and never contains paths or inventory details.
+ */
+export function createWorkspaceSyncLegacyStateGate(inspection: WorkspaceSyncLegacyStateInspection): () => void {
+  if (inspection.status === 'absent') return () => undefined;
+  const message = inspection.status === 'legacy_workspace_sync_state_unsupported'
+    ? 'Retired workspace replication state is present and unsupported; workspace sync stays disabled'
+    : 'Workspace sync legacy state could not be safely classified; workspace sync stays disabled';
+  const { status } = inspection;
+  return () => {
+    throw Object.assign(new Error(message), { code: status });
+  };
+}
+
 export async function inspectRetiredWorkspaceReplicationState(
   input: InspectRetiredWorkspaceReplicationStateInput,
 ): Promise<WorkspaceSyncLegacyStateInspection> {
@@ -118,7 +227,7 @@ export async function inspectRetiredWorkspaceReplicationState(
   const initialStat = await lstat(statePath).catch((error: unknown) => {
     return (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? null : undefined;
   });
-  if (initialStat === null) return { status: 'absent', path: statePath };
+  if (initialStat === null) return await classifyRetiredQuarantine(activeServerDir, statePath);
   if (!initialStat || !initialStat.isDirectory() || initialStat.isSymbolicLink()) {
     return unknown(statePath, 'not_a_real_directory');
   }

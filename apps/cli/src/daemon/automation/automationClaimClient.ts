@@ -53,6 +53,18 @@ function getErrorUrl(error: unknown): string | null {
   return typeof url === 'string' && url.trim().length > 0 ? url.trim() : null;
 }
 
+/**
+ * A claim may have committed after its response was lost. Only retry a request
+ * for which Axios received no HTTP response and the caller did not cancel, so
+ * the same signed request can rejoin the server-owned claim receipt without
+ * replaying received failures or overriding cancellation.
+ */
+function isAmbiguousAutomationClaimTransportFailure(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return true;
+  if ('code' in error && error.code === 'ERR_CANCELED') return false;
+  return !('response' in error && error.response !== undefined);
+}
+
 /** A missing protocol endpoint is a version negotiation result, never a retry signal. */
 export function isMissingAutomationWorkerEndpointError(
   error: unknown,
@@ -265,18 +277,24 @@ export function createAutomationClaimClient(params: {
         leaseDurationMs: paramsClaim.leaseDurationMs,
       };
       if (version === 'v3') {
-        const response = await axios.post<AutomationV3WorkerClaimResponse>(
-          `${baseUrl}/v3/automations/runs/claim`,
+        const headers = await workerHeaders({
+          method: 'POST',
+          path: '/v3/automations/runs/claim',
           body,
-          {
-            headers: await workerHeaders({
-              method: 'POST',
-              path: '/v3/automations/runs/claim',
-              body,
-            }),
-            timeout: 15_000,
-          },
+        });
+        const request = {
+          headers,
+          timeout: 15_000,
+        };
+        const postClaim = () => axios.post<AutomationV3WorkerClaimResponse>(
+            `${baseUrl}/v3/automations/runs/claim`,
+            body,
+            request,
         );
+        const response = await postClaim().catch(async (error: unknown) => {
+          if (!isAmbiguousAutomationClaimTransportFailure(error)) throw error;
+          return await postClaim();
+        });
         return toWorkerClaimResponse(AutomationV3WorkerClaimResponseSchema.parse(response.data));
       }
 

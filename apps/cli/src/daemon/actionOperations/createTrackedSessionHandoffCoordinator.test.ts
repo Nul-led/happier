@@ -6,6 +6,8 @@ import {
   buildTrackedSessionHandoffSpawnOptions,
   createTrackedSessionHandoffCoordinator,
 } from './createTrackedSessionHandoffCoordinator';
+import { computeWorkspaceSyncPolicyDigest } from '@/workspaces/sync/workspaceSyncTypes';
+import type { WorkspaceSyncHandoffAdapter } from '@/workspaces/sync/workspaceSyncHandoffAdapter';
 
 describe('createTrackedSessionHandoffCoordinator', () => {
   it('fails closed when a current V3 prepare response omits its qualified Agent target', () => {
@@ -111,16 +113,69 @@ describe('createTrackedSessionHandoffCoordinator', () => {
       }
       return { ok: true };
     });
+    const policyInput = {
+      v: 1 as const,
+      selection: 'all_files' as const,
+      extraIgnorePatterns: [],
+      extraIncludePatterns: [],
+      includeGitDirectory: false,
+    };
+    const contentPolicy = {
+      ...policyInput,
+      policyDigest: computeWorkspaceSyncPolicyDigest(policyInput),
+    };
+    const workspaceSyncAdapter: WorkspaceSyncHandoffAdapter = {
+      prepare: vi.fn(async (input) => ({
+        kind: input.action.kind,
+        operationId: input.operationId,
+        action: input.action,
+      })),
+      finalize: vi.fn(async (input) => ({
+        kind: input.prepared.kind,
+        operationId: input.operationId,
+      })),
+      commit: vi.fn(async (input) => ({
+        kind: input.prepared.kind,
+        operationId: input.operationId,
+      })),
+      abort: vi.fn(async () => undefined),
+    };
+    const refreshWorkspaceSettings = vi.fn(async () => ({
+      settingsVersion: 8,
+      settings: {
+        workspaceRefsV1: [
+          { id: 'source-ref', serverId: 'server-1', machineId: 'source-1', rootPath: '/source/workspace', createdAtMs: 1 },
+          { id: 'target-ref', serverId: 'server-1', machineId: 'target-1', rootPath: '/target/workspace', createdAtMs: 1 },
+        ],
+        workspaceSyncRelationshipsV1: [],
+      },
+    }));
     const coordinate = createTrackedSessionHandoffCoordinator({
       readCredentials: async () => ({ token: 'token' } as never),
-      resolveSource: async () => ({ ok: true, sourceMachineId: 'source-1', sessionStorageMode: 'persisted' }),
+      resolveSource: async () => ({
+        ok: true,
+        sourceMachineId: 'source-1',
+        sourceRootPath: '/source/workspace',
+        sessionStorageMode: 'persisted',
+      }),
       callMachine,
       awaitTargetCustody: async () => ({ type: 'success', sessionId: 'session-1' }),
       wait: async () => undefined,
+      workspaceSyncAdapter,
+      refreshWorkspaceSettings,
     });
 
     const result = await coordinate({
-      actionInput: { sessionId: 'session-1', targetMachineId: 'target-1' },
+      operationId: 'action-request-1',
+      actionInput: {
+        sessionId: 'session-1',
+        targetMachineId: 'target-1',
+        targetPath: '/target/workspace',
+        workspaceAction: { kind: 'copy_once', contentPolicy },
+        workspaceSyncSourceWorkspaceRefId: 'source-ref',
+        workspaceSyncTargetWorkspaceRefId: 'target-ref',
+        workspaceSyncSettingsVersion: 8,
+      },
       start: async () => ({
         ok: true,
         result: {
@@ -148,5 +203,15 @@ describe('createTrackedSessionHandoffCoordinator', () => {
     ]);
     expect((calls[4]!.request as { sessionId?: string }).sessionId).toBe('session-1');
     expect(calls[4]!.timeoutMs).toBe(5 * 60_000);
+    expect(refreshWorkspaceSettings).toHaveBeenCalledWith(expect.objectContaining({
+      minSettingsVersion: 8,
+    }));
+    expect(workspaceSyncAdapter.prepare).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: 'action-request-1',
+      sourceWorkspaceRefId: 'source-ref',
+      targetWorkspaceRefId: 'target-ref',
+      sourceRootPath: '/source/workspace',
+      targetRootPath: '/target/workspace',
+    }));
   });
 });

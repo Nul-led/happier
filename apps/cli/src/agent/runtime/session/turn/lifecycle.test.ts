@@ -212,6 +212,30 @@ describe('createSessionTurnLifecycle', () => {
         expect(drained).toBe(true);
     });
 
+    it('retires a rejected accepted-begin publication so cleanup can drain', async () => {
+        const onAcceptedTurnLifecycle = vi.fn(async () => {
+            throw new Error('daemon is quiescing');
+        });
+        const lifecycle = createSessionTurnLifecycle({
+            session: {
+                sessionId: 'session-1',
+                enqueueSessionTurnMutation: async () => undefined,
+            },
+            onAcceptedTurnLifecycle,
+        });
+
+        lifecycle.observeRuntimeEvent(canonicalRuntimeEvent({
+            kind: 'turn-start',
+            sessionId: 'session-1',
+            emittedAtMs: 100,
+            turnId: 'turn-1',
+        }));
+
+        await vi.waitFor(() => expect(onAcceptedTurnLifecycle).toHaveBeenCalled());
+        lifecycle.retireAcceptedLifecyclePublication();
+        await lifecycle.drainAcceptedLifecycle();
+    });
+
     it('authors no broad terminal when runtime-ended has no active exact turn', () => {
         const mutations: SessionTurnMutationV1[] = [];
         const lifecycle = createSessionTurnLifecycle({

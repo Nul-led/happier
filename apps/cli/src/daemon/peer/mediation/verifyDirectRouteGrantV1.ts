@@ -8,6 +8,7 @@ import {
     createPeerRouteNonceSigningInputV1,
     verifyPeerRouteEphemeralProofV2,
     type AuthorizedPeerEndpointRouteKindV1,
+    type IrohPeerRouteBindingV2,
     type PeerFlowKindV1,
     type SignedDirectRouteGrantV1,
     type SignedDirectRouteGrantV2,
@@ -27,7 +28,8 @@ export type DirectRouteGrantVerifyReasonCode =
     | 'grant_machine_mismatch'
     | 'grant_flow_mismatch'
     | 'grant_route_mismatch'
-    | 'grant_endpoint_mismatch';
+    | 'grant_endpoint_mismatch'
+    | 'grant_iroh_binding_mismatch';
 
 export type DirectRouteGrantVerificationResult =
     | Readonly<{ valid: true; payload: SignedDirectRouteGrantV1['payload']; receipt: 'peer.route_grant.verified' }>
@@ -55,7 +57,11 @@ export type PeerRouteNonceVerificationResult =
 export type DirectRouteGrantTrustRoot = Readonly<{
     keyId: string;
     publicKey: string;
+    expiresAt?: number | null;
 }>;
+
+/** Full signed machine/1 relationship expected for `iroh_peer` admissions. */
+export type DirectRouteGrantIrohExpectedBinding = IrohPeerRouteBindingV2;
 
 export type DirectRouteGrantExpectedBinding = Readonly<{
     accountId: string;
@@ -63,6 +69,13 @@ export type DirectRouteGrantExpectedBinding = Readonly<{
     flowKind: PeerFlowKindV1;
     routeKind: AuthorizedPeerEndpointRouteKindV1;
     endpointFingerprint?: string;
+    /**
+     * Required when `routeKind` is `iroh_peer` and forbidden otherwise: the full signed machine/1
+     * relationship. `role` is the signed transport role of the SOURCE machine (`initiator` dials,
+     * `acceptor` listens); a verifying side derives its own local role from its machine id
+     * (source machine → binding role, target machine → complementary role).
+     */
+    iroh?: DirectRouteGrantIrohExpectedBinding;
 }>;
 
 function fromBase64Url(value: string): Uint8Array | null {
@@ -76,9 +89,10 @@ function fromBase64Url(value: string): Uint8Array | null {
 function findTrustRoot(
     roots: readonly DirectRouteGrantTrustRoot[],
     keyId: string,
+    nowMs: number,
 ): Uint8Array | null {
     const root = roots.find((entry) => entry.keyId === keyId);
-    if (!root) return null;
+    if (!root || (root.expiresAt != null && nowMs >= root.expiresAt)) return null;
     const publicKey = fromBase64Url(root.publicKey);
     if (!publicKey || publicKey.length !== tweetnacl.sign.publicKeyLength) return null;
     return publicKey;
@@ -95,6 +109,21 @@ function matchesExpectedBinding(
     if (expected.endpointFingerprint && payload.endpointFingerprint !== expected.endpointFingerprint) {
         return 'grant_endpoint_mismatch';
     }
+    if (expected.routeKind === 'iroh_peer' || expected.iroh) {
+        const grantIroh = 'iroh' in payload ? payload.iroh : undefined;
+        if (
+            !expected.iroh
+            || !grantIroh
+            || grantIroh.sourceMachineId !== expected.iroh.sourceMachineId
+            || grantIroh.targetMachineId !== expected.iroh.targetMachineId
+            || grantIroh.sourceEndpointId !== expected.iroh.sourceEndpointId
+            || grantIroh.targetEndpointId !== expected.iroh.targetEndpointId
+            || grantIroh.role !== expected.iroh.role
+            || grantIroh.operationKind !== expected.iroh.operationKind
+        ) {
+            return 'grant_iroh_binding_mismatch';
+        }
+    }
     return null;
 }
 
@@ -109,7 +138,7 @@ export function verifyDirectRouteGrantV2(input: Readonly<{
     if (!parsed.success) return { valid: false, reasonCode: 'grant_invalid', receipt: 'peer.route_grant.rejected' };
 
     const grant = parsed.data;
-    const publicKey = findTrustRoot(input.trustRoots, grant.signature.keyId);
+    const publicKey = findTrustRoot(input.trustRoots, grant.signature.keyId, input.nowMs);
     if (!publicKey) return { valid: false, reasonCode: 'grant_unknown_key' };
     if (input.nowMs >= grant.payload.exp) return { valid: false, reasonCode: 'grant_expired' };
     if (input.nowMs < grant.payload.iat) return { valid: false, reasonCode: 'grant_not_yet_valid' };
@@ -139,7 +168,7 @@ export function verifyDirectRouteGrantV1(input: Readonly<{
     if (!parsed.success) return { valid: false, reasonCode: 'grant_invalid', receipt: 'peer.route_grant.rejected' };
 
     const grant = parsed.data;
-    const publicKey = findTrustRoot(input.trustRoots, grant.signature.keyId);
+    const publicKey = findTrustRoot(input.trustRoots, grant.signature.keyId, input.nowMs);
     if (!publicKey) return { valid: false, reasonCode: 'grant_unknown_key' };
 
     if (input.nowMs >= grant.payload.exp) return { valid: false, reasonCode: 'grant_expired' };
@@ -196,6 +225,12 @@ export function verifyPeerRouteNonceV1(input: Readonly<{
     const parsed = PeerRouteNonceProofV1Schema.safeParse(input.proof);
     if (!parsed.success) return { valid: false, reasonCode: 'nonce_invalid' };
     const proof = parsed.data;
+
+    // An iroh_peer nonce must link the grant's target endpoint fingerprint; without an expected
+    // fingerprint the proof does not link to the signed machine/1 binding at all.
+    if (input.expected.routeKind === 'iroh_peer' && !input.expected.endpointFingerprint) {
+        return { valid: false, reasonCode: 'nonce_binding_mismatch' };
+    }
 
     if (
         proof.grantId !== input.expected.grantId

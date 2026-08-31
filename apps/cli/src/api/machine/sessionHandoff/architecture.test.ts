@@ -2,6 +2,14 @@ import { readFile } from 'node:fs/promises';
 
 import { describe, expect, it } from 'vitest';
 
+import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+
+import {
+    classifyWorkspaceSyncAdmission,
+    hasRetiredWorkspaceTransfer,
+} from './workspaceSyncGuard';
+import { projectReleasedSessionHandoffRequestForMethod } from './predecessorCompatibility';
+
 const FORBIDDEN_SESSION_HANDOFF_RPC_HANDLER_TOKENS = [
     'DAEMON_SESSION_HANDOFF_COMMIT',
     'applyWorkspaceReplicationPlan',
@@ -38,7 +46,69 @@ const FORBIDDEN_PREPARE_TARGET_WORKFLOW_TOKENS = [
     'restartPrepareTargetJobFromPersistedRequest',
 ] as const;
 
+const RETIRED_WORKSPACE_TRANSFER_CORRIDOR_TOKENS = [
+    'SessionHandoffWorkspaceTransferSchema',
+    'SessionHandoffWorkspaceTransferStrategySchema',
+    'SessionHandoffConflictPolicySchema',
+    'type SessionHandoffWorkspaceTransfer,',
+    'type SessionHandoffWorkspaceReplicationManifestTransferPublication,',
+    'SessionHandoffWorkspaceReplicationManifestTransferPublicationSchema',
+    'workspaceReplicationSourceRootPath',
+    'workspaceReplicationHandoffBackTargetRootPath',
+    'workspaceReplicationManifestTransferPublication',
+    'workspaceReplicationSourceControllerMetadata',
+    'workspaceReplicationReverseSourceRootPath',
+    'workspaceReplicationReverseTargetRootPath',
+] as const;
+
+const PUBLIC_HANDOFF_PROTOCOL_SOURCES = [
+    '../../../../../../packages/protocol/src/sessions/control/handoff/handoffTypes.ts',
+    '../../../../../../packages/protocol/src/sessions/control/handoff/handoffSchemas.ts',
+    '../../../../../../packages/protocol/src/sessions/control/handoff/handoffStatus.ts',
+    '../../../../../../packages/protocol/src/sessions/control/handoff/handoffRpc.ts',
+    '../../../../../../packages/protocol/src/index.ts',
+] as const;
+
 describe('sessionHandoff architecture', () => {
+    it('keeps the retired workspace transfer corridor out of the public handoff protocol surface', async () => {
+        for (const relativeSource of PUBLIC_HANDOFF_PROTOCOL_SOURCES) {
+            const source = await readFile(new URL(relativeSource, import.meta.url), 'utf8');
+            for (const token of RETIRED_WORKSPACE_TRANSFER_CORRIDOR_TOKENS) {
+                expect(source.includes(token), `${relativeSource} must not declare retired token ${token}`).toBe(false);
+            }
+        }
+    });
+
+    it('keeps the boundary-local retired corridor detectors returning typed update-required', () => {
+        const retiredTransferRequest = {
+            handoffId: 'handoff_retired',
+            workspaceTransfer: { enabled: true, strategy: 'sync_changes', conflictPolicy: 'replace_existing' },
+        };
+        expect(hasRetiredWorkspaceTransfer(retiredTransferRequest)).toBe(true);
+        expect(classifyWorkspaceSyncAdmission(retiredTransferRequest)).toEqual({ kind: 'update_required' });
+        expect(classifyWorkspaceSyncAdmission({
+            handoffId: 'handoff_retired_reverse',
+            workspaceReplicationReverseSourceRootPath: '/repo/source',
+            workspaceReplicationReverseTargetRootPath: '/repo/target',
+        })).toEqual({ kind: 'update_required' });
+
+        // The released predecessor request projection stays frozen on the released shape, so a
+        // retired reverse-root commit is admitted by the compatibility seam and then answered by
+        // the boundary guard with the typed update-required result (never invalid_request).
+        expect(projectReleasedSessionHandoffRequestForMethod(RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT, {
+            handoffId: 'handoff_released_reverse',
+            mode: 'source_cleanup',
+            workspaceReplicationReverseSourceRootPath: '/repo/source',
+            workspaceReplicationReverseTargetRootPath: '/repo/target',
+        })).toMatchObject({ accepted: true });
+        expect(classifyWorkspaceSyncAdmission({
+            handoffId: 'handoff_released_reverse',
+            mode: 'source_cleanup',
+            workspaceReplicationReverseSourceRootPath: '/repo/source',
+            workspaceReplicationReverseTargetRootPath: '/repo/target',
+        })).toEqual({ kind: 'update_required' });
+    });
+
     it('keeps workspace replication engine plumbing out of the RPC handler', async () => {
         const sourcePath = new URL('./handlers.ts', import.meta.url);
         const source = await readFile(sourcePath, 'utf8');

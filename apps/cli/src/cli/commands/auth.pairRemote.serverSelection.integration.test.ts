@@ -11,6 +11,30 @@ import { setStdioTtyForTest } from '@/testkit/process/stdio';
 import { safeBashSingleQuote } from '@/capabilities/systemTasks/ssh/sshTransport';
 
 const spawnSyncMock = vi.fn();
+const SERVER_IDENTITY_ID = 'srv_pair_remote_home';
+
+function currentPairingContext(): Readonly<{
+  secretB64Url: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+}> {
+  const nowMs = Date.now();
+  return {
+    secretB64Url: Buffer.from(new Uint8Array(32).fill(11)).toString('base64url'),
+    createdAtMs: nowMs - 60_000,
+    expiresAtMs: nowMs + 600_000,
+  };
+}
+
+async function writeCurrentDataKeyCredentials(): Promise<void> {
+  const machineKey = new Uint8Array(32).fill(9);
+  const { writeCredentialsDataKey } = await import('@/persistence');
+  await writeCredentialsDataKey({
+    publicKey: tweetnacl.box.keyPair.fromSecretKey(machineKey).publicKey,
+    machineKey,
+    token: 'local-token',
+  });
+}
 
 function expectPairRemoteSshInvocation(
   call: readonly unknown[] | undefined,
@@ -38,6 +62,13 @@ vi.mock('cross-spawn', () => {
     },
   };
 });
+
+vi.mock('@/features/serverFeaturesClient', () => ({
+  fetchServerFeaturesSnapshot: vi.fn(async () => ({
+    status: 'ready',
+    features: { capabilities: { serverIdentity: { serverIdentityId: 'srv_pair_remote_home' } } },
+  })),
+}));
 
 describe('auth pair-remote server selection', () => {
   const envKeys = [
@@ -101,14 +132,15 @@ describe('auth pair-remote server selection', () => {
         HAPPIER_VARIANT: 'stable',
       });
       vi.resetModules();
-      const { writeCredentialsLegacy } = await import('@/persistence');
-      await writeCredentialsLegacy({ secret: new Uint8Array(32).fill(9), token: 'local-token' });
+      await writeCurrentDataKeyCredentials();
 
       const remoteKeypair = tweetnacl.box.keyPair();
       const remotePublicKey = Buffer.from(remoteKeypair.publicKey).toString('base64');
       const remoteRequestJson = JSON.stringify({
         publicKey: remotePublicKey,
+        serverIdentityId: SERVER_IDENTITY_ID,
         serverUrl: 'https://relay.example.test',
+        pairing: currentPairingContext(),
       });
 
       spawnSyncMock
@@ -190,8 +222,7 @@ describe('auth pair-remote server selection', () => {
         HAPPIER_VARIANT: 'stable',
       });
       vi.resetModules();
-      const { writeCredentialsLegacy } = await import('@/persistence');
-      await writeCredentialsLegacy({ secret: new Uint8Array(32).fill(9), token: 'local-token' });
+      await writeCurrentDataKeyCredentials();
 
       const remoteKeypair = tweetnacl.box.keyPair();
       const remotePublicKey = Buffer.from(remoteKeypair.publicKey).toString('base64');
@@ -202,7 +233,9 @@ describe('auth pair-remote server selection', () => {
           status: 0,
           stdout: Buffer.from(JSON.stringify({
             publicKey: remotePublicKey,
+            serverIdentityId: SERVER_IDENTITY_ID,
             serverUrl: remoteReachableUrl,
+            pairing: currentPairingContext(),
           }) + '\n', 'utf8'),
           stderr: Buffer.alloc(0),
         }))
@@ -310,8 +343,7 @@ describe('auth pair-remote server selection', () => {
         HAPPIER_VARIANT: 'stable',
       });
       vi.resetModules();
-      const { writeCredentialsLegacy } = await import('@/persistence');
-      await writeCredentialsLegacy({ secret: new Uint8Array(32).fill(9), token: 'local-token' });
+      await writeCurrentDataKeyCredentials();
 
       const remotePublicKey = Buffer.from(tweetnacl.box.keyPair().publicKey).toString('base64');
       spawnSyncMock
@@ -319,6 +351,7 @@ describe('auth pair-remote server selection', () => {
           status: 0,
           stdout: Buffer.from(JSON.stringify({
             publicKey: remotePublicKey,
+            serverIdentityId: SERVER_IDENTITY_ID,
             serverUrl: 'https://other-relay.example.test',
           }) + '\n', 'utf8'),
           stderr: Buffer.alloc(0),
@@ -375,8 +408,7 @@ describe('auth pair-remote server selection', () => {
         HAPPIER_VARIANT: 'stable',
       });
       vi.resetModules();
-      const { writeCredentialsLegacy } = await import('@/persistence');
-      await writeCredentialsLegacy({ secret: new Uint8Array(32).fill(9), token: 'local-token' });
+      await writeCurrentDataKeyCredentials();
 
       const remotePublicKey = Buffer.from(tweetnacl.box.keyPair().publicKey).toString('base64');
       spawnSyncMock
@@ -384,8 +416,10 @@ describe('auth pair-remote server selection', () => {
           status: 0,
           stdout: Buffer.from(JSON.stringify({
             publicKey: remotePublicKey,
+            serverIdentityId: SERVER_IDENTITY_ID,
             serverUrl: 'http://127.0.0.1:52753',
             publicServerUrl: 'https://relay.example.test',
+            pairing: currentPairingContext(),
           }) + '\n', 'utf8'),
           stderr: Buffer.alloc(0),
         }))

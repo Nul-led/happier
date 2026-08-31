@@ -3,10 +3,20 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildSystemdUserScopedLaunchSpec,
   isSystemdUserResourceGovernorReady,
+  shouldUseSystemdUserSessionResourceGovernor,
 } from './systemdUserResourceGovernor';
 
 describe('systemd user resource governor', () => {
-  it('wraps an admitted daemon control process in the protected critical slice without imposing a memory cap', () => {
+  it.each([
+    ['linux background service', 'linux', 'background-service', true],
+    ['linux self-restart', 'linux', 'self-restart', true],
+    ['linux manual daemon', 'linux', 'manual', true],
+    ['non-linux self-restart', 'darwin', 'self-restart', false],
+  ] as const)('selects the session governor for %s', (_label, platform, startupSource, expected) => {
+    expect(shouldUseSystemdUserSessionResourceGovernor({ platform, startupSource })).toBe(expected);
+  });
+
+  it('wraps an admitted agent session in the lower-weight jobs slice without imposing a cap', () => {
     const spec = buildSystemdUserScopedLaunchSpec({
       launchSpec: {
         filePath: '/opt/happier/runtime/bin/happier-js-runtime',
@@ -27,7 +37,8 @@ describe('systemd user resource governor', () => {
         '--user',
         '--scope',
         '--quiet',
-        '--slice=happier-critical.slice',
+        '--slice=happier-jobs.slice',
+        '--nice=10',
         '--',
         '/opt/happier/runtime/bin/happier-js-runtime',
         '--no-warnings',
@@ -41,9 +52,9 @@ describe('systemd user resource governor', () => {
     expect(spec.args.join(' ')).not.toMatch(/CPUQuota|MemoryMax|MemoryHigh|TasksMax/u);
   });
 
-  it('only enables the Linux wrapper when the provisioned critical slice has its expected MemoryLow reservation', async () => {
+  it('only enables the Linux wrapper when the provisioned jobs slice has its expected shares and finite soft memory boundary', async () => {
     const execFile = vi.fn(async () => ({
-      stdout: 'LoadState=loaded\nMemoryLow=4294967296\n',
+      stdout: 'LoadState=loaded\nCPUWeight=50\nIOWeight=50\nMemoryHigh=60129542144\n',
       stderr: '',
     }));
 
@@ -58,9 +69,11 @@ describe('systemd user resource governor', () => {
       [
         '--user',
         'show',
-        'happier-critical.slice',
+        'happier-jobs.slice',
         '--property=LoadState',
-        '--property=MemoryLow',
+        '--property=CPUWeight',
+        '--property=IOWeight',
+        '--property=MemoryHigh',
       ],
       expect.objectContaining({
         timeout: 1_000,
@@ -72,10 +85,15 @@ describe('systemd user resource governor', () => {
   it.each([
     ['a non-Linux platform', { platform: 'darwin' as const, environment: { DBUS_SESSION_BUS_ADDRESS: 'x' }, stdout: '' }],
     ['no user-systemd bus', { platform: 'linux' as const, environment: {}, stdout: '' }],
-    ['a critical slice without its protected memory reservation', {
+    ['a jobs slice without its configured shares', {
       platform: 'linux' as const,
       environment: { DBUS_SESSION_BUS_ADDRESS: 'x' },
-      stdout: 'LoadState=loaded\nMemoryLow=0\n',
+      stdout: 'LoadState=loaded\nCPUWeight=100\nIOWeight=100\n',
+    }],
+    ['a jobs slice without a finite soft memory boundary', {
+      platform: 'linux' as const,
+      environment: { DBUS_SESSION_BUS_ADDRESS: 'x' },
+      stdout: 'LoadState=loaded\nCPUWeight=50\nIOWeight=50\nMemoryHigh=infinity\n',
     }],
   ])('fails closed for %s', async (_label, fixture) => {
     const execFile = vi.fn(async () => ({ stdout: fixture.stdout ?? '', stderr: '' }));

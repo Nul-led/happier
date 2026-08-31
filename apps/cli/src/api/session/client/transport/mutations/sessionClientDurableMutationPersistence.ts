@@ -40,6 +40,8 @@ import type {
     SessionEndMutationV1,
 } from './sessionClientDurableMutationTypes';
 import {
+    resolveDaemonObservedExitMutationId,
+    resolveLegacyDaemonObservedExitMutationId,
     resolveRuntimeActivitySnapshotMutationId,
     resolveTranscriptMessageAppendMutationId,
     resolveVoiceAgentTranscriptTurnMutationId,
@@ -1095,6 +1097,25 @@ export function parseDaemonSessionClientDurableMutation(
     if (!mutation) return parsed;
     const rawPayload = isRecord(value) && isRecord(value.payload) ? value.payload : null;
     const exactTurnEnd = ExactSessionTurnEndMutationV1Schema.safeParse(rawPayload);
+    if (
+        mutation.kind === 'session_turn_mutation'
+        && exactTurnEnd.success
+        && exactTurnEnd.data.sessionId === expectedSessionId
+        && mutation.mutationId === exactTurnEnd.data.mutationId
+        && exactTurnEnd.data.mutationId === resolveLegacyDaemonObservedExitMutationId(exactTurnEnd.data)
+        && mutation.dependsOn === undefined
+        && mutation.paused === undefined
+    ) {
+        const canonicalMutationId = resolveDaemonObservedExitMutationId(exactTurnEnd.data);
+        return {
+            ...parsed,
+            mutations: [{
+                ...mutation,
+                mutationId: canonicalMutationId,
+                payload: { ...mutation.payload, mutationId: canonicalMutationId },
+            }],
+        };
+    }
     const admittedExactTurnEnd = mutation.kind === 'session_turn_mutation'
         && exactTurnEnd.success
         && exactTurnEnd.data.sessionId === expectedSessionId

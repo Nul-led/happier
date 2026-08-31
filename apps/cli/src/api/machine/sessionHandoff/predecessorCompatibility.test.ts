@@ -601,9 +601,6 @@ describe('session handoff predecessor wire compatibility', () => {
         } as never,
         runtimeConfig: {
           activeServerDir,
-          workspaceReplicationBlobPackTargetBytes: 1024,
-          workspaceReplicationBlobPackMaxBlobs: 16,
-          workspaceReplicationBlobPackMaxSingleBlobBytes: 1024,
         },
         spawnSessionForHandoff: vi.fn(async () => ({
           type: 'success' as const,
@@ -629,6 +626,18 @@ describe('session handoff predecessor wire compatibility', () => {
           atomicTargetResume: false,
           targetCleanup: false,
         });
+      await expect(registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT_V2)!({
+        handoffId: 'retired-reverse-roots',
+        sessionId: 'session-v2',
+        attemptId: 'attempt-v2',
+        mode: 'target',
+        workspaceReplicationReverseSourceRootPath: '/retired/source',
+        workspaceReplicationReverseTargetRootPath: '/retired/target',
+      })).resolves.toEqual({
+        ok: false,
+        errorCode: 'workspace_sync_update_required',
+        error: 'workspace_sync_update_required',
+      });
     } finally {
       await rm(activeServerDir, { recursive: true, force: true });
     }

@@ -1179,10 +1179,11 @@ describe('happier relay --json', () => {
     it('prints a JSON envelope for relay host uninstall over ssh', async () => {
         const fakeSsh = createFakeSsh({
             outputs: [
-                { status: 0, stdout: `${JSON.stringify({ platform: 'linux', arch: 'x86_64' })}\n` },
-                { status: 0, stdout: '/home/remote-user\n' },
-                { status: 0, stdout: '', stderr: '' },
-                { status: 0, stdout: '', stderr: '' },
+                {
+                    status: 0,
+                    stdout: `${JSON.stringify({ v: 1, ok: true, kind: 'relay_host_uninstall', data: { ok: true } })}\n`,
+                    stderr: '',
+                },
             ],
         });
 
@@ -1205,6 +1206,17 @@ describe('happier relay --json', () => {
             expect(parsed.kind).toBe('relay_host_uninstall');
             expect(parsed.data?.ok).toBe(true);
             expect(process.exitCode).toBe(0);
+
+            // The exact production caller delegated to the installed remote CLI exactly once,
+            // and emitted no direct service or file cleanup command.
+            const sshInvocations = fakeSsh.readInvocations().map((invocation) => invocation.join(' '));
+            expect(sshInvocations).toHaveLength(1);
+            expect(sshInvocations[0]).toContain('relay host uninstall');
+            expect(sshInvocations[0]).toContain('--yes');
+            expect(sshInvocations[0]).toContain('--json');
+            expect(sshInvocations[0]).not.toMatch(/rm -rf/u);
+            expect(sshInvocations[0]).not.toContain('systemctl');
+            expect(sshInvocations[0]).not.toContain('launchctl');
         } finally {
             output.restore();
             process.exitCode = prevExitCode;

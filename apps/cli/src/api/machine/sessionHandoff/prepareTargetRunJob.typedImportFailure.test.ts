@@ -48,12 +48,8 @@ describe('runSessionHandoffPrepareTargetJob typed native-import failures', () =>
 
       await runSessionHandoffPrepareTargetJob({
         activeServerDir,
-        homeDir: targetPath,
         runtimeConfig: {
           activeServerDir,
-          workspaceReplicationBlobPackTargetBytes: 1024,
-          workspaceReplicationBlobPackMaxBlobs: 10,
-          workspaceReplicationBlobPackMaxSingleBlobBytes: 1024,
         },
         jobId,
         handoffId,
@@ -67,6 +63,10 @@ describe('runSessionHandoffPrepareTargetJob typed native-import failures', () =>
           load: vi.fn(async () => ({
             agentBundle: { filePath: bundlePath },
           })),
+          prepareReceivedAgentBundleFilePath: vi.fn(async () => join(
+            activeServerDir,
+            'unused-received-agent-bundle.bin',
+          )),
         } as never,
         prepareTargetJobLeaseOwnerId: `cli-daemon:${process.pid}:typed-import-failure`,
         prepareTargetJobLeaseTtlMs: 5_000,
@@ -204,12 +204,8 @@ describe('runSessionHandoffPrepareTargetJob typed native-import failures', () =>
 
       await runSessionHandoffPrepareTargetJob({
         activeServerDir,
-        homeDir: targetPath,
         runtimeConfig: {
           activeServerDir,
-          workspaceReplicationBlobPackTargetBytes: 1024,
-          workspaceReplicationBlobPackMaxBlobs: 10,
-          workspaceReplicationBlobPackMaxSingleBlobBytes: 1024,
         },
         jobId,
         handoffId,
@@ -223,6 +219,10 @@ describe('runSessionHandoffPrepareTargetJob typed native-import failures', () =>
           load: vi.fn(async () => ({
             agentBundle: { filePath: bundlePath },
           })),
+          prepareReceivedAgentBundleFilePath: vi.fn(async () => join(
+            activeServerDir,
+            'unused-received-agent-bundle.bin',
+          )),
         } as never,
         prepareTargetJobLeaseOwnerId: `cli-daemon:${process.pid}:crash-convergence`,
         prepareTargetJobLeaseTtlMs: 5_000,

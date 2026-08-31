@@ -129,7 +129,11 @@ describe('target Agent External Session takeover lease', () => {
             return {
                 ok: true as const,
                 value: {
-                    backendModeHint: 'resume',
+                    runtimeDescriptorV1: {
+                        v: 1 as const,
+                        agentId: 'fixture.agent',
+                        agent: { mode: 'resume' },
+                    },
                     environmentVariables: { TAKEOVER: '1' },
                 },
             };
@@ -149,7 +153,11 @@ describe('target Agent External Session takeover lease', () => {
         ).resolves.toEqual({
             ok: true,
             value: {
-                backendModeHint: 'resume',
+                runtimeDescriptorV1: {
+                    v: 1,
+                    agentId: 'fixture.agent',
+                    agent: { mode: 'resume' },
+                },
                 environmentVariables: { TAKEOVER: '1' },
             },
         });

@@ -1452,13 +1452,17 @@ describe('waitForExecutionRun', () => {
     it('does not apply a product timeout when timeoutMs is null', async () => {
         vi.useFakeTimers();
         const succeededRun = createRun({ runId: 'run_1', status: 'succeeded', startedAtMs: 1 });
+        const completedResult = {
+            run: succeededRun,
+            latestToolResult: false,
+            structuredMeta: { kind: 'execution_result', payload: { accepted: false, count: 0 } },
+            structuredMetaArtifactRef: { artifactId: 'artifact_1' },
+        };
         callSessionRpc
             .mockResolvedValueOnce({
                 run: createRun({ runId: 'run_1', status: 'running', startedAtMs: 1 }),
             })
-            .mockResolvedValueOnce({
-                run: succeededRun,
-            });
+            .mockResolvedValueOnce(completedResult);
 
         const waitPromise = waitForExecutionRun({
             token: 'token',
@@ -1475,9 +1479,12 @@ describe('waitForExecutionRun', () => {
         await expect(waitPromise).resolves.toEqual({
             ok: true,
             status: 'succeeded',
-            result: { run: succeededRun },
+            result: completedResult,
         });
         expect(callSessionRpc).toHaveBeenCalledTimes(2);
+        expect(callSessionRpc).toHaveBeenLastCalledWith(expect.objectContaining({
+            request: { runId: 'run_1', includeStructured: true },
+        }));
     });
 
     it('clamps tiny poll intervals to avoid near-zero-delay server loops', async () => {

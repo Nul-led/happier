@@ -5,6 +5,7 @@ import {
   type ProviderCatalogDeclarationV1,
   type ProviderBoundModelRef,
   type ProviderConnectionId,
+  type PersistedBackendTargetRefV2,
   type ProviderRuntimeStateFileV1,
   type ProviderSettingsV1,
 } from '@happier-dev/protocol';
@@ -72,6 +73,11 @@ import {
 import { selectCurrentProviderEndpointHealthByTemplateId } from '@/providers/connections/runtimeSummary';
 import { activateAgentRuntimeContributionOnDemand } from '@/agent/runtime/registry/activationDemand';
 import {
+  indexAgentRoutingIdsByContributionIdentity,
+  readAgentRoutingIdForContributionIdentity,
+} from '@/plugins/projection/registry/agentRoutingIdentity';
+import type { ResolvedContributionRegistry } from '@/plugins/projection/registry/types';
+import {
   resolveManagedProviderPurposeBindingSnapshot,
   type ResolveManagedProviderPurposeBindingIntent,
 } from '@/providers/managed/resolvePurposeBindingSnapshot';
@@ -79,6 +85,17 @@ import {
 export type ProviderModelManagementFeatureGate = Readonly<{
   isEnabled(featureId: 'providers' | 'providers.localModelManagement'): boolean;
 }>;
+
+function resolveAgentRoutingIdForTarget(
+  registry: Pick<ResolvedContributionRegistry, 'agentDefinitionsById'>,
+  target: PersistedBackendTargetRefV2,
+): string | null {
+  if (target.kind === 'backend') return target.backendId;
+  return readAgentRoutingIdForContributionIdentity(
+    indexAgentRoutingIdsByContributionIdentity([...registry.agentDefinitionsById.values()]),
+    target.identity,
+  );
+}
 
 export type RuntimeProviderModelManagementServices = Readonly<{
   probe: RuntimeProviderServices['probe'];
@@ -309,9 +326,18 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
           }),
         };
       }
+      const agentId = resolveAgentRoutingIdForTarget(lease.registry.contributes, target);
+      if (!agentId) {
+        return {
+          status: 'error',
+          error: createProviderErrorV1('provider_endpoint_unavailable', {
+            machineId: request.machineId,
+          }),
+        };
+      }
       try {
         await awaitWithinProviderOperation(
-          activateAgentRuntimeContributionOnDemand(lease.registry, target.backendId),
+          activateAgentRuntimeContributionOnDemand(lease.registry, agentId),
           operationLifetime,
         );
       } catch (error) {
@@ -325,7 +351,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
         }
         throw error;
       }
-      const adapter = readLeasedAgentProviderBindingAdapter({ lease, agentId: target.backendId });
+      const adapter = readLeasedAgentProviderBindingAdapter({ lease, agentId });
       if (!adapter) return { status: 'success', agentTargetKey: request.agentTargetKey, groups: [] };
       const settingsRead = readProviderSettingsForCli(snapshot.settings);
       const registry = resolveProviderContributionRegistryView(
@@ -766,9 +792,16 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
           error: createProviderErrorV1('provider_endpoint_unavailable', errorContext),
         };
       }
+      const agentId = resolveAgentRoutingIdForTarget(lease.registry.contributes, target);
+      if (!agentId) {
+        return {
+          status: 'incompatible',
+          error: createProviderErrorV1('provider_endpoint_unavailable', errorContext),
+        };
+      }
       try {
         await awaitWithinProviderOperation(
-          activateAgentRuntimeContributionOnDemand(lease.registry, target.backendId),
+          activateAgentRuntimeContributionOnDemand(lease.registry, agentId),
           operationLifetime,
         );
       } catch (error) {
@@ -885,7 +918,7 @@ export function createRuntimeProviderModelManagementServices(input: Readonly<{
         selection: request.selection,
         machineId: request.machineId,
         agentTargetKey: request.agentTargetKey,
-        agentId: target.backendId,
+        agentId,
         accountSettings: snapshot.settings,
         providerSettings,
         registry,

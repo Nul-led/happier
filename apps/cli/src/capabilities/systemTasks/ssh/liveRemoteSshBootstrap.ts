@@ -787,14 +787,27 @@ export function createLiveRemoteSshBootstrapTaskKind() {
         },
       });
     },
-    approveLocalAuthRequest: async ({ publicKey, parsed }) => {
+    approveLocalAuthRequest: async ({ publicKey, pairing, supportsTokenOnly, parsed }) => {
       const knownHostsMode = parsed.knownHostsMode ?? 'app';
       const knownHostsPath = resolveKnownHostsPath(parsed.ssh, knownHostsMode);
+      // Forward the remote request's v3 pairing context verbatim so the
+      // approval seals a pairing-secret-bound v3 response. The approval owner
+      // is the single validator: absent, malformed, or expired context fails
+      // closed there instead of degrading to an unbound legacy response. Only
+      // the short-lived pairing context crosses this boundary — never the
+      // claim secret or any persisted credential.
+      const approvalRequest: Parameters<typeof approveTerminalAuthRequest>[0] = {
+        publicKey,
+        ...(pairing !== undefined && pairing !== null
+          ? { pairing }
+          : {}),
+        ...(supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
+      };
       const loopbackPort = parseLoopbackPort(parsed.relay.relayUrl);
       if (loopbackPort) {
         const tunnelAuth = resolveSshAuthForTunnel(parsed.ssh);
         if (!tunnelAuth) {
-          await approveTerminalAuthRequest({ publicKey });
+          await approveTerminalAuthRequest(approvalRequest);
           return;
         }
         const requestedPort = Number(loopbackPort);
@@ -818,7 +831,7 @@ export function createLiveRemoteSshBootstrapTaskKind() {
               serverAliveIntervalSec: 15,
               serverAliveCountMax: 2,
             }, async () => {
-              await approveTerminalAuthRequest({ publicKey });
+              await approveTerminalAuthRequest(approvalRequest);
             });
           },
         });
@@ -830,7 +843,7 @@ export function createLiveRemoteSshBootstrapTaskKind() {
         publicRelayUrl: parsed.relay.publicRelayUrl,
         webappUrl: parsed.relay.webappUrl,
         fn: async () => {
-          await approveTerminalAuthRequest({ publicKey });
+          await approveTerminalAuthRequest(approvalRequest);
         },
       });
     },

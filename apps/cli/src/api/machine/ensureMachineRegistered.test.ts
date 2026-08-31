@@ -28,6 +28,65 @@ describe('ensureMachineRegistered', () => {
     vi.resetModules();
   });
 
+  it('records server confirmation only after the canonical registration request succeeds', async () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'happier-cli-machine-confirmed-'));
+    process.env.HAPPIER_HOME_DIR = homeDir;
+    process.env.HAPPIER_ACTIVE_SERVER_ID = 'cloud';
+
+    try {
+      const machineId = 'machine-confirmed';
+      writeFileSync(
+        join(homeDir, 'settings.json'),
+        JSON.stringify({
+          schemaVersion: 6,
+          onboardingCompleted: true,
+          activeServerId: 'cloud',
+          servers: {
+            cloud: {
+              id: 'cloud',
+              name: 'cloud',
+              serverUrl: 'https://api.happier.dev',
+              webappUrl: 'https://app.happier.dev',
+              createdAt: 0,
+              updatedAt: 0,
+              lastUsedAt: 0,
+            },
+          },
+          machineIdByServerId: { cloud: machineId },
+          machineIdConfirmedByServerByServerId: {},
+          lastChangesCursorByServerIdByAccountId: {},
+        }),
+        'utf8',
+      );
+
+      vi.resetModules();
+      const { ensureMachineRegistered } = await import('./ensureMachineRegistered');
+      const { readSettings } = await import('@/persistence');
+      await ensureMachineRegistered({
+        api: {
+          getOrCreateMachine: async (options) => ({
+            id: options.machineId,
+            encryptionKey: new Uint8Array(),
+            encryptionVariant: 'legacy',
+            metadata: options.metadata,
+            metadataVersion: 0,
+            daemonState: options.daemonState ?? null,
+            daemonStateVersion: 0,
+          }),
+        },
+        machineId,
+        metadata: { host: 'host1' } as MachineMetadata,
+      });
+
+      await expect(readSettings()).resolves.toMatchObject({
+        machineId,
+        machineIdConfirmedByServer: true,
+      });
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it('uses the provided recovery logger instead of the shared UI logger', async () => {
     vi.useRealTimers();
     const customRecoveryLogger = { info: vi.fn() };
@@ -183,7 +242,7 @@ describe('ensureMachineRegistered', () => {
 
       const settings = await readSettings();
       expect(settings.machineId).toBe(calls[1]);
-      expect(settings.machineIdConfirmedByServer).toBeUndefined();
+      expect(settings.machineIdConfirmedByServer).toBe(true);
       expect(settings.machineReplacementCandidatesByServerIdByAccountId?.cloud?.['account-1']).toEqual({
         machineId: oldMachineId,
         replacementReason: 'rotation',
@@ -357,7 +416,7 @@ describe('ensureMachineRegistered', () => {
 
       const settings = await readSettings();
       expect(settings.machineId).toBe(calls[1]);
-      expect(settings.machineIdConfirmedByServer).toBeUndefined();
+      expect(settings.machineIdConfirmedByServer).toBe(true);
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
     }
@@ -460,7 +519,7 @@ describe('ensureMachineRegistered', () => {
       const raw = JSON.parse(readFileSync(join(homeDir, 'settings.json'), 'utf8'));
       expect(raw.machineIdByServerId.cloud).toBe(replacementMachineId);
       expect(raw.machineIdByServerIdByAccountId.cloud['acct-a']).toBe(replacementMachineId);
-      expect(raw.machineIdConfirmedByServerByServerId?.cloud).toBeUndefined();
+      expect(raw.machineIdConfirmedByServerByServerId?.cloud).toBe(true);
       expect(raw.machineReplacementCandidatesByServerIdByAccountId?.cloud?.['acct-a']).toBeUndefined();
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
@@ -554,7 +613,7 @@ describe('ensureMachineRegistered', () => {
       const raw = JSON.parse(readFileSync(join(homeDir, 'settings.json'), 'utf8'));
       expect(raw.machineIdByServerId.cloud).toBe(calls[1]);
       expect(raw.machineIdByServerIdByAccountId?.cloud?.['acct-a']).toBe(calls[1]);
-      expect(raw.machineIdConfirmedByServerByServerId?.cloud).toBeUndefined();
+      expect(raw.machineIdConfirmedByServerByServerId?.cloud).toBe(true);
     } finally {
       rmSync(homeDir, { recursive: true, force: true });
     }

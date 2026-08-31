@@ -36,6 +36,7 @@ import {
     type SessionClientTranscriptApi,
     type SessionInputTransformBeforeCommitResult,
 } from './client/transcript/sessionClientTranscriptApi';
+import { findPersistedSessionUserMessageAdmission } from './client/transcript/sessionUserMessageAdmissionRejoin';
 import type { SendAgentSessionMediaCommittedRequest } from './client/transcript/sessionMediaBridge';
 import type { SessionStructuredInputAdmissionPolicyV1 } from '@/session/services/admitSessionStructuredInputV1';
 import type { EphemeralSendOutcome } from './client/transcript/ephemeralSendOutcome';
@@ -1016,6 +1017,13 @@ export class ApiSessionClient extends EventEmitter {
             toolCallInputByProviderAndId: this.toolCallInputByProviderAndId,
             maxToolCallCacheEntries: SESSION_CLIENT_TOOL_CALL_CACHE_MAX_ENTRIES,
             transformSessionInputBeforeCommit: options.transformSessionInputBeforeCommit,
+            findPersistedSessionUserMessageAdmission: ({ localId }) =>
+                findPersistedSessionUserMessageAdmission({
+                    token: this.token,
+                    sessionId: this.sessionId,
+                    localId,
+                    queryContext: this.getTranscriptQueryContext(),
+                }),
             admitSessionUserMessage: async ({
                 localId,
                 text,

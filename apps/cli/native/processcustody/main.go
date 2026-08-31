@@ -13,6 +13,12 @@
 //     start identity (kinfo_proc p_starttime) via the numeric sysctl MIB
 //     {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid}. The parse is validated at
 //     runtime and fails closed instead of guessing a layout.
+//   - linux/darwin/windows: `peer-identity [--pipe-handle=<handle>]` inspects
+//     the inherited accepted local IPC connection (fixed extra descriptor 3,
+//     never a path in argv) with the platform's real peer primitive —
+//     SO_PEERCRED on Linux, LOCAL_PEERPID plus LOCAL_PEERCRED on Darwin,
+//     GetNamedPipeClientProcessId on
+//     Windows — and emits the one proven peer identity or fails closed.
 //   - any other platform: every subcommand fails closed; Linux SVC09 custody
 //     stays on its process-group owner and never consumes this helper.
 //
@@ -50,10 +56,11 @@ func emit(payload map[string]any) error {
 func usage() {
 	fmt.Fprintln(os.Stderr, strings.TrimSpace(`
 usage:
-  happier-process-custody run --job=<name> [--target-windows-verbatim] -- <command> [args...]
+  happier-process-custody run --job=<name> [--target-windows-verbatim] [--target-inherited-stdin-arg=<arg>] -- <command> [args...]
   happier-process-custody terminate --job=<name> [--timeout-ms=<ms>]
   happier-process-custody query --job=<name>
-  happier-process-custody pid-startidentity <pid>`))
+  happier-process-custody pid-startidentity <pid>
+  happier-process-custody peer-identity [--pipe-handle=<handle>]`))
 }
 
 func main() {
@@ -73,6 +80,8 @@ func main() {
 		err = queryCustodyJob(rest)
 	case "pid-startidentity":
 		err = pidStartIdentityCommand(rest)
+	case "peer-identity":
+		err = peerIdentityCommand(rest)
 	default:
 		usage()
 		os.Exit(exitUsage)

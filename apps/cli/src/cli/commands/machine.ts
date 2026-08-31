@@ -22,21 +22,11 @@ import {
 } from '@happier-dev/protocol';
 
 import { showMachineHelp } from './machine/help';
-
-type SystemTasksRunnerAdapter = Readonly<{
-  start: (params: Readonly<{ spec: SystemTaskSpec }>) => Promise<Readonly<{ taskId: string }>>;
-  poll: (params: Readonly<{ taskId: string; cursor: number }>) => Promise<Readonly<{
-    events: SystemTaskEvent[];
-    nextCursor: number;
-    result: SystemTaskResult | null;
-    pendingPrompt: Readonly<{ kind: string; data: SystemTaskJsonObject }> | null;
-  }>>;
-  respond: (params: Readonly<{ taskId: string; answer: unknown }>) => Promise<void>;
-}>;
+import { type CliSystemTasksRunnerAdapter, runSystemTaskToCompletion } from './systemTaskCliRunner';
 
 export type MachineCommandDeps = Readonly<{
   applyServerSelectionFromArgs: typeof applyServerSelectionFromArgs;
-  createRunner: () => SystemTasksRunnerAdapter;
+  createRunner: () => CliSystemTasksRunnerAdapter;
   readRelaySelection: () => Readonly<{
     relayUrl: string;
     webappUrl: string;
@@ -398,115 +388,79 @@ async function runSetupSubcommand(argsRaw: string[], deps: MachineCommandDeps): 
     relaySelection: deps.readRelaySelection(),
   });
   const runner = deps.createRunner();
-  const { taskId } = await runner.start({ spec });
-  let cursor = 0;
-  let lastPromptMessage = '';
-  let lastPromptEnvelopeFromEvents: Readonly<{ kind: string; data: SystemTaskJsonObject }> | null = null;
-
-  while (true) {
-    const snapshot = await runner.poll({
-      taskId,
-      cursor,
-    });
-    cursor = snapshot.nextCursor;
-    lastPromptEnvelopeFromEvents = null;
-
-    for (const event of snapshot.events) {
+  const result = await runSystemTaskToCompletion({
+    runner,
+    spec,
+    sleep: deps.sleep,
+    onEvent: async (event) => {
       if (event.type === 'prompt') {
-        lastPromptMessage = event.message ?? '';
-        if (event.data && typeof event.data === 'object' && !Array.isArray(event.data)) {
-          const kind = typeof (event.data as SystemTaskJsonObject).kind === 'string'
-            ? String((event.data as SystemTaskJsonObject).kind).trim()
-            : '';
-          if (kind) {
-            lastPromptEnvelopeFromEvents = {
-              kind,
-              data: event.data as SystemTaskJsonObject,
-            };
-          }
-        }
         if (json) {
           await writeJsonStdout(event);
         }
-        continue;
+        return;
       }
-
       if (json) {
         await writeJsonStdout(event);
-        continue;
+        return;
       }
       printHumanEvent(event);
-    }
-
-    const pendingPrompt = snapshot.pendingPrompt ?? lastPromptEnvelopeFromEvents;
-    if (pendingPrompt) {
-      const promptMessage = formatPromptMessage(pendingPrompt, lastPromptMessage);
-      const answer = await resolvePromptAnswer({
-        prompt: pendingPrompt,
+    },
+    onPrompt: async (prompt, eventMessage) => {
+      const promptMessage = formatPromptMessage(prompt, eventMessage);
+      return await resolvePromptAnswer({
+        prompt,
         interactive: deps.isInteractiveTerminal() && !json,
         assumeYes: yes.present,
         promptInput: deps.promptInput,
         promptSecret: deps.promptSecret,
         message: promptMessage,
       });
-      await runner.respond({
-        taskId,
-        answer,
-      });
-      lastPromptMessage = '';
-      continue;
+    },
+  });
+  if (json) {
+    await writeJsonStdout(result);
+    if (!result.ok) {
+      process.exitCode = typeof process.exitCode === 'number' && process.exitCode > 1 ? process.exitCode : 1;
     }
-
-    if (snapshot.result) {
-      if (json) {
-        await writeJsonStdout(snapshot.result);
-        if (!snapshot.result.ok) {
-          process.exitCode = typeof process.exitCode === 'number' && process.exitCode > 1 ? process.exitCode : 1;
-        }
-        return;
-      }
-
-      if (!snapshot.result.ok) {
-        throw Object.assign(new Error(snapshot.result.error.message), {
-          code: snapshot.result.error.code,
-        });
-      }
-
-      const data = (snapshot.result.data ?? {}) as {
-        machineId?: unknown;
-        relayRuntime?: { relayUrl?: unknown } | null;
-      };
-      const details: Array<{ label: string; value: string }> = [];
-      if (typeof data.machineId === 'string' && data.machineId.trim()) {
-        details.push({ label: 'Machine ID', value: data.machineId.trim() });
-      }
-      const relayRuntimeUrl = typeof data.relayRuntime?.relayUrl === 'string'
-        ? data.relayRuntime.relayUrl.trim()
-        : '';
-      if (relayRuntimeUrl) {
-        details.push({ label: 'Remote relay URL', value: relayRuntimeUrl });
-      }
-      const relayRuntimeIsLoopback = relayRuntimeUrl ? isLoopbackServerHost(relayRuntimeUrl) : false;
-      const out = createOutputBuilder();
-      out.line(ok('Remote machine ready.'));
-      if (details.length > 0) {
-        out.definitionList(details, { indent: '  ' });
-      }
-      if (relayRuntimeUrl) {
-        if (relayRuntimeIsLoopback) {
-          out.blank();
-          out.line(warn('The remote relay URL is a loopback address and is only reachable from the remote machine.'));
-          out.line('  Set up remote access (Tailscale/Cloudflare/reverse proxy) before switching other devices to it.');
-        } else {
-          out.line(`  Switch this computer to it with: ${cmd(`happier relay set ${relayRuntimeUrl} --use`)}`);
-        }
-      }
-      console.log(out.render());
-      return;
-    }
-
-    await deps.sleep(50);
+    return;
   }
+
+  if (!result.ok) {
+    throw Object.assign(new Error(result.error.message), {
+      code: result.error.code,
+    });
+  }
+
+  const data = (result.data ?? {}) as {
+    machineId?: unknown;
+    relayRuntime?: { relayUrl?: unknown } | null;
+  };
+  const details: Array<{ label: string; value: string }> = [];
+  if (typeof data.machineId === 'string' && data.machineId.trim()) {
+    details.push({ label: 'Machine ID', value: data.machineId.trim() });
+  }
+  const relayRuntimeUrl = typeof data.relayRuntime?.relayUrl === 'string'
+    ? data.relayRuntime.relayUrl.trim()
+    : '';
+  if (relayRuntimeUrl) {
+    details.push({ label: 'Remote relay URL', value: relayRuntimeUrl });
+  }
+  const relayRuntimeIsLoopback = relayRuntimeUrl ? isLoopbackServerHost(relayRuntimeUrl) : false;
+  const out = createOutputBuilder();
+  out.line(ok('Remote machine ready.'));
+  if (details.length > 0) {
+    out.definitionList(details, { indent: '  ' });
+  }
+  if (relayRuntimeUrl) {
+    if (relayRuntimeIsLoopback) {
+      out.blank();
+      out.line(warn('The remote relay URL is a loopback address and is only reachable from the remote machine.'));
+      out.line('  Set up remote access (Tailscale/Cloudflare/reverse proxy) before switching other devices to it.');
+    } else {
+      out.line(`  Switch this computer to it with: ${cmd(`happier relay set ${relayRuntimeUrl} --use`)}`);
+    }
+  }
+  console.log(out.render());
 }
 
 export async function handleMachineCommand(args: string[], deps: Partial<MachineCommandDeps> = {}): Promise<void> {

@@ -104,6 +104,10 @@ function jsonResult(data: Record<string, unknown>) {
   };
 }
 
+// The remote `auth request --json` pairing context the kind must forward to the
+// local approval so it seals a pairing-bound v3 response.
+const REMOTE_REQUEST_PAIRING = { secretB64Url: 'pairing-secret-b64url', createdAtMs: 123, expiresAtMs: 456 };
+
 	const TRUSTED_HOST_KEY = 'example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
 	const MISMATCHED_TRUSTED_HOST_KEY = 'example.test ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
 	const BRACKETED_PORT_HOST_KEY = '[127.0.0.1]:54470 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
@@ -215,6 +219,8 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
             publicKey: 'pub-key',
             claimSecret: 'secret',
             stateFile: '/tmp/state.json',
+            pairing: REMOTE_REQUEST_PAIRING,
+            supportsTokenOnly: true,
           },
         });
       }
@@ -223,6 +229,16 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
           ok: true,
           data: {
             machineId: 'machine-1',
+          },
+        });
+      }
+      if (remoteCommand.includes('relay host install')) {
+        return jsonResult({
+          ok: true,
+          kind: 'relay_host_install',
+          data: {
+            relayUrl: 'http://127.0.0.1:4001',
+            mode: 'user',
           },
         });
       }
@@ -520,7 +536,11 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
 
     expect(sshRemoteCommands.some((command) => command.includes('ln -sfn'))).toBe(true);
     expect(sshRemoteCommands.join('\n')).not.toContain('curl -fsSL https://happier.dev/install');
-    expect(approveTerminalAuthRequest).toHaveBeenCalledWith({ publicKey: 'pub-key' });
+    expect(approveTerminalAuthRequest).toHaveBeenCalledWith({
+      publicKey: 'pub-key',
+      pairing: REMOTE_REQUEST_PAIRING,
+      supportsTokenOnly: true,
+    });
   });
 
   it('executes remote shell commands via bash -lc to avoid /bin/sh pipefail incompatibilities', async () => {
@@ -860,7 +880,11 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
       },
     })).resolves.toBeDefined();
 
-    expect(approveTerminalAuthRequest).toHaveBeenCalledWith({ publicKey: 'pub-key' });
+    expect(approveTerminalAuthRequest).toHaveBeenCalledWith({
+      publicKey: 'pub-key',
+      pairing: REMOTE_REQUEST_PAIRING,
+      supportsTokenOnly: true,
+    });
   });
 
   it('temporarily applies the target relay selection when approving remote provisioning against a non-loopback relay URL', async () => {
@@ -1054,7 +1078,11 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
       .find((arg) => typeof arg === 'string' && arg.startsWith('ControlPath='));
     expect(controlPathArg).toMatch(/^ControlPath=\/tmp\//u);
     expect(observedServerUrl).toMatch(new RegExp(`^http://(127\\\\.0\\\\.0\\\\.1|localhost):${relayPort}$`, 'u'));
-    expect(approveTerminalAuthRequest).toHaveBeenCalledWith({ publicKey: 'pub-key' });
+    expect(approveTerminalAuthRequest).toHaveBeenCalledWith({
+      publicKey: 'pub-key',
+      pairing: REMOTE_REQUEST_PAIRING,
+      supportsTokenOnly: true,
+    });
     expect(reloadConfiguration).toHaveBeenCalled();
     expect(process.env.HAPPIER_SERVER_URL).toBe(previousServerUrl);
     expect(process.env.HAPPIER_WEBAPP_URL).toBe(previousWebappUrl);
@@ -1130,7 +1158,11 @@ describe('createLiveRemoteSshBootstrapTaskKind', () => {
       expect(Number.isFinite(localPort)).toBe(true);
       expect(localPort).not.toBe(occupiedPort);
       expect(observedServerUrl).toMatch(new RegExp(`^http://(127\\\\.0\\\\.0\\\\.1|localhost):${localPort}$`, 'u'));
-      expect(approveTerminalAuthRequest).toHaveBeenCalledWith({ publicKey: 'pub-key' });
+      expect(approveTerminalAuthRequest).toHaveBeenCalledWith({
+        publicKey: 'pub-key',
+        pairing: REMOTE_REQUEST_PAIRING,
+        supportsTokenOnly: true,
+      });
       expect(reloadConfiguration).toHaveBeenCalled();
       expect(process.env.HAPPIER_SERVER_URL).toBe(previousServerUrl);
       expect(process.env.HAPPIER_WEBAPP_URL).toBe(previousWebappUrl);

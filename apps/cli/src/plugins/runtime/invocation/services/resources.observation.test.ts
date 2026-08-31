@@ -2965,6 +2965,60 @@ describe('dynamic resource reads stay inside the aggregate byte bound (EU-4b)', 
             digest: digest(new Uint8Array(admitted)),
         });
     });
+
+    it('wakes stale observers and retries when aggregate capacity rejects a watch settlement', async () => {
+        vi.useFakeTimers();
+        try {
+            const admittedBytes = 12 * 1024 * 1024;
+            const grownBytes = MAX_PLUGIN_RESOURCE_BYTES;
+            const admitted = Buffer.alloc(admittedBytes, 1);
+            const grown = Buffer.alloc(grownBytes, 2);
+            const localIds = ['r0', 'r1', 'r2', 'r3', 'r4'];
+            const currentById = new Map(localIds.map((localId) => [localId, admitted]));
+            const invalidators = new Map<string, () => void>();
+            const owner = await createStablePluginResourcesOwner({
+                registry: registry(localIds.map((localId) => dynamicContribution('acme.alpha', localId))),
+                generations: new Map(),
+                immutableGenerationIdsByPluginId: dynamicGenerationIds(),
+                dynamicProducers: localIds.map((localId) => ({
+                    pluginId: 'acme.alpha',
+                    localId,
+                    runtime: {
+                        read: () => new Uint8Array(currentById.get(localId)!),
+                        observe: (notify) => {
+                            invalidators.set(localId, notify);
+                            return { dispose: () => undefined };
+                        },
+                    },
+                })),
+            });
+            const service = owner.bind({
+                pluginId: 'acme.alpha',
+                signal: new AbortController().signal,
+                isGenerationCurrent: () => true,
+            });
+            const changes: Array<{ digest: string }> = [];
+            service.watch('r1', (change) => { changes.push(change); });
+            await vi.advanceTimersByTimeAsync(1);
+
+            currentById.set('r0', grown);
+            await service.read('r0');
+            currentById.set('r1', grown);
+            invalidators.get('r1')!();
+            await vi.advanceTimersByTimeAsync(1);
+            expect(changes).toEqual([{ digest: digest(new Uint8Array(admitted)) }]);
+
+            currentById.set('r0', admitted);
+            await service.read('r0');
+            await vi.advanceTimersByTimeAsync(300);
+            expect(changes).toEqual([
+                { digest: digest(new Uint8Array(admitted)) },
+                { digest: digest(new Uint8Array(grown)) },
+            ]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
 });
 
 describe('surface-scoped dynamic Resources (SDK-EU-28)', () => {

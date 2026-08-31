@@ -1169,11 +1169,13 @@ describe('rpcHandlers (session handoff async prepare)', () => {
 
       const start = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_START_V3);
       const prepare = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_V3);
+      const commit = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT_V3);
       const statusGet = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_STATUS_GET_V3);
       const resultGet = registered.get(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESULT_GET_V3);
 
       expect(start).toBeDefined();
       expect(prepare).toBeDefined();
+      expect(commit).toBeDefined();
       expect(statusGet).toBeDefined();
       expect(resultGet).toBeDefined();
 
@@ -1237,6 +1239,14 @@ describe('rpcHandlers (session handoff async prepare)', () => {
         });
       });
       expect(importSessionBundle).toHaveBeenCalledTimes(1);
+
+      const handoffDirectory = join(activeServerDir, 'session-handoff', handoffId);
+      await expect(readFile(join(handoffDirectory, 'agent-bundle.bin'))).resolves.toBeInstanceOf(Buffer);
+      await expect(commit!({ handoffId })).resolves.toMatchObject({
+        handoffId,
+        status: { status: 'completed' },
+      });
+      await expect(readFile(join(handoffDirectory, 'agent-bundle.bin'))).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       vi.resetModules();
       await rm(activeServerDir, { recursive: true, force: true });
@@ -1341,6 +1351,9 @@ describe('rpcHandlers (session handoff async prepare)', () => {
         },
       });
 
+      const handoffDirectory = join(activeServerDir, 'session-handoff', handoffId);
+      await expect(readFile(join(handoffDirectory, 'agent-bundle.bin'))).resolves.toBeInstanceOf(Buffer);
+
       await expect(abort!({
         handoffId,
         reason: 'user_cancelled',
@@ -1352,6 +1365,7 @@ describe('rpcHandlers (session handoff async prepare)', () => {
           jobId: prepareAck.status.jobId,
         },
       });
+      await expect(readFile(join(handoffDirectory, 'agent-bundle.bin'))).rejects.toMatchObject({ code: 'ENOENT' });
 
       continueImportSession.resolve();
 

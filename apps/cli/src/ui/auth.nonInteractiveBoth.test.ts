@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import tweetnacl from 'tweetnacl';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { sealTerminalProvisioningV3TokenOnlyPayload } from '@happier-dev/protocol';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
@@ -11,6 +11,28 @@ const runTailscaleServeStatusMock = vi.fn<
 >();
 
 const displayQRCodeMock = vi.fn<(url: string) => void>();
+const fixedNowMs = 1_800_000_000_000;
+const deterministicRandomByte = 7;
+type ServerFeaturesSnapshotMock =
+  | Readonly<{
+      status: 'ready';
+      features: Readonly<{
+        capabilities: Readonly<{
+          serverIdentity: Readonly<{ serverIdentityId: string }>;
+        }>;
+      }>;
+    }>
+  | Readonly<{ status: 'unsupported'; reason: 'endpoint_missing' }>;
+const fetchServerFeaturesSnapshotMock = vi.fn<
+  (params: Readonly<{ serverUrl: string }>) => Promise<ServerFeaturesSnapshotMock>
+>(async () => ({
+  status: 'ready' as const,
+  features: {
+    capabilities: {
+      serverIdentity: { serverIdentityId: 'srv_interactive_auth_home' },
+    },
+  },
+}));
 
 vi.mock('@/integrations/tailscale/tailscaleCommand', () => ({
   runTailscaleServeStatus: (params: Readonly<{ timeoutMs: number; env: NodeJS.ProcessEnv; tailscaleBin: string }>) =>
@@ -20,6 +42,18 @@ vi.mock('@/integrations/tailscale/tailscaleCommand', () => ({
 vi.mock('./qrcode', () => ({
   displayQRCode: (url: string) => displayQRCodeMock(url),
 }));
+
+vi.mock('@/features/serverFeaturesClient', () => ({
+  fetchServerFeaturesSnapshot: fetchServerFeaturesSnapshotMock,
+}));
+
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:crypto')>();
+  return {
+    ...actual,
+    randomBytes: (length: number) => Buffer.alloc(length, 7),
+  };
+});
 
 type AxiosRequestResponse = { state: 'requested' };
 type AxiosClaimResponse = { state: 'authorized'; token: string; response: string };
@@ -32,21 +66,16 @@ type AxiosLike = {
 };
 
 let capturedPublicKeyBase64: string | null = null;
+let claimServerIdentityId = 'srv_interactive_auth_home';
 
-function encryptLegacyBundleForRecipientPublicKey(recipientPublicKeyBase64: string): string {
-  const recipientPublicKey = new Uint8Array(Buffer.from(recipientPublicKeyBase64, 'base64'));
-  const payload = new Uint8Array(32).fill(7);
-
-  const ephemeralKeyPair = tweetnacl.box.keyPair();
-  const nonce = new Uint8Array(24).fill(9);
-  const encrypted = tweetnacl.box(payload, nonce, recipientPublicKey, ephemeralKeyPair.secretKey);
-
-  const bundle = new Uint8Array(ephemeralKeyPair.publicKey.length + nonce.length + encrypted.length);
-  bundle.set(ephemeralKeyPair.publicKey, 0);
-  bundle.set(nonce, ephemeralKeyPair.publicKey.length);
-  bundle.set(encrypted, ephemeralKeyPair.publicKey.length + nonce.length);
-
-  return Buffer.from(bundle).toString('base64');
+function sealCurrentTerminalResponse(recipientPublicKeyBase64: string): string {
+  return Buffer.from(sealTerminalProvisioningV3TokenOnlyPayload({
+    terminalEphemeralPublicKey: new Uint8Array(Buffer.from(recipientPublicKeyBase64, 'base64')),
+    pairingSecret: new Uint8Array(32).fill(deterministicRandomByte),
+    createdAtMs: fixedNowMs,
+    expiresAtMs: fixedNowMs + 60 * 60 * 1_000,
+    randomBytes: (length) => new Uint8Array(length).fill(9),
+  })).toString('base64');
 }
 
 vi.mock('axios', async () => {
@@ -64,7 +93,8 @@ vi.mock('axios', async () => {
           data: {
             state: 'authorized',
             token: 'tok',
-            response: encryptLegacyBundleForRecipientPublicKey(publicKey),
+            response: sealCurrentTerminalResponse(publicKey),
+            serverIdentityId: claimServerIdentityId,
           },
         };
       }
@@ -92,12 +122,25 @@ describe.sequential('doAuth (non-interactive)', () => {
     'HAPPIER_TAILSCALE_AUTO_PUBLIC_URL',
   ] as const;
 
+  beforeEach(() => {
+    claimServerIdentityId = 'srv_interactive_auth_home';
+    capturedPublicKeyBase64 = null;
+    displayQRCodeMock.mockClear();
+    fetchServerFeaturesSnapshotMock.mockClear();
+    vi.spyOn(Date, 'now').mockReturnValue(fixedNowMs);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('prints both web + mobile instructions when method is not specified', async () => {
     const home = await createTempDir('happier-cli-auth-noninteractive-');
     const envScope = createEnvKeyScope(envKeys);
     const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
     const output = captureConsoleLogAndMuteStdout();
     displayQRCodeMock.mockClear();
+    fetchServerFeaturesSnapshotMock.mockClear();
 
     try {
       envScope.patch({
@@ -123,6 +166,84 @@ describe.sequential('doAuth (non-interactive)', () => {
       expect(out).toContain('webapp.example.test/terminal/connect#key=');
       expect(out).toContain('happier://terminal?');
       expect(displayQRCodeMock).toHaveBeenCalledTimes(1);
+      expect(displayQRCodeMock).toHaveBeenCalledWith(expect.stringContaining(
+        'serverIdentityId=srv_interactive_auth_home',
+      ));
+      expect(fetchServerFeaturesSnapshotMock).toHaveBeenCalledTimes(1);
+      expect(fetchServerFeaturesSnapshotMock).toHaveBeenCalledWith({
+        serverUrl: 'https://server.example.test',
+      });
+    } finally {
+      output.restore();
+      restoreTty();
+      envScope.restore();
+      await removeTempDir(home);
+    }
+  }, 15_000);
+
+  it('rejects a claimed credential from a different stable Home before persistence', async () => {
+    const home = await createTempDir('happier-cli-auth-wrong-home-');
+    const envScope = createEnvKeyScope(envKeys);
+    const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
+    const output = captureConsoleLogAndMuteStdout();
+    claimServerIdentityId = 'srv_other_home';
+
+    try {
+      envScope.patch({
+        HAPPIER_HOME_DIR: home,
+        HAPPIER_SERVER_URL: 'https://server.example.test',
+        HAPPIER_WEBAPP_URL: 'https://webapp.example.test',
+        HAPPIER_NO_BROWSER_OPEN: '1',
+        HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
+        HAPPIER_AUTH_METHOD: undefined,
+      });
+
+      vi.resetModules();
+      const { doAuth } = await import('./auth');
+
+      await expect(doAuth()).resolves.toBeNull();
+      expect(output.logs.join('\n')).toContain('different Home identity');
+
+      const { readStoredCredentials } = await import('@/persistence');
+      await expect(readStoredCredentials()).resolves.toBeNull();
+    } finally {
+      output.restore();
+      restoreTty();
+      envScope.restore();
+      await removeTempDir(home);
+    }
+  }, 15_000);
+
+  it('does not create or publish an authentication request when the Home identity is unavailable', async () => {
+    const home = await createTempDir('happier-cli-auth-no-home-identity-');
+    const envScope = createEnvKeyScope(envKeys);
+    const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
+    const output = captureConsoleLogAndMuteStdout();
+    capturedPublicKeyBase64 = null;
+    displayQRCodeMock.mockClear();
+    fetchServerFeaturesSnapshotMock.mockResolvedValueOnce({
+      status: 'unsupported',
+      reason: 'endpoint_missing',
+    });
+
+    try {
+      envScope.patch({
+        HAPPIER_HOME_DIR: home,
+        HAPPIER_SERVER_URL: 'https://server.example.test',
+        HAPPIER_WEBAPP_URL: 'https://webapp.example.test',
+        HAPPIER_NO_BROWSER_OPEN: '1',
+        HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
+        HAPPIER_AUTH_METHOD: undefined,
+      });
+
+      vi.resetModules();
+      const { doAuth } = await import('./auth');
+
+      await expect(doAuth()).resolves.toBeNull();
+      expect(output.logs.join('\n')).toContain('authentication request was not created');
+      expect(capturedPublicKeyBase64).toBeNull();
+      expect(displayQRCodeMock).not.toHaveBeenCalled();
+      expect(fetchServerFeaturesSnapshotMock).toHaveBeenCalledTimes(1);
     } finally {
       output.restore();
       restoreTty();

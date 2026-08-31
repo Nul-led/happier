@@ -235,9 +235,6 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                         params.prepareNativeManagedProviderBinding,
                                 }
                                 : {}),
-                            ...(runtimeRegistry?.publishHostEvent
-                                ? { publishHostEvent: runtimeRegistry.publishHostEvent }
-                                : {}),
                             createSessionHostServiceOwners: ({
                                 hostRuntimeParams,
                                 sessionId,

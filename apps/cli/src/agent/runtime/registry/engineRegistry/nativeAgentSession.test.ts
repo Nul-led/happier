@@ -164,9 +164,8 @@ type NativeAgentSessionOperationsTestArguments = [
     sanitizeDisposeError?: Parameters<typeof createNativeAgentSessionOperationsBase>[11],
     authorizeNewTurn?: Parameters<typeof createNativeAgentSessionOperationsBase>[12],
     bindActiveTurnAdmissionWitnessReader?: Parameters<typeof createNativeAgentSessionOperationsBase>[13],
-    publishHostEvent?: Parameters<typeof createNativeAgentSessionOperationsBase>[14],
-    toolExecutionLifecycle?: Parameters<typeof createNativeAgentSessionOperationsBase>[15],
-    runtimeIncarnationId?: Parameters<typeof createNativeAgentSessionOperationsBase>[16],
+    toolExecutionLifecycle?: Parameters<typeof createNativeAgentSessionOperationsBase>[14],
+    runtimeIncarnationId?: Parameters<typeof createNativeAgentSessionOperationsBase>[15],
 ];
 
 function createNativeAgentSessionOperations(
@@ -187,7 +186,6 @@ function createNativeAgentSessionOperations(
         sanitizeDisposeError,
         authorizeNewTurn,
         bindActiveTurnAdmissionWitnessReader,
-        publishHostEvent,
         toolExecutionLifecycle,
         runtimeIncarnationId,
     ] = args;
@@ -266,7 +264,6 @@ function createNativeAgentSessionOperations(
         sanitizeDisposeError,
         authorizeNewTurn,
         bindActiveTurnAdmissionWitnessReader,
-        publishHostEvent,
         toolExecutionLifecycle,
         runtimeIncarnationId,
     );
@@ -4087,95 +4084,6 @@ describe('native Agent session host adapter', () => {
             .resolves.toMatchObject({ status: 'unsupported' });
         expect(updateConfiguration).not.toHaveBeenCalled();
         expect(compact).not.toHaveBeenCalled();
-    });
-
-    it('fans canonical Agent events into Host Events once without coupling producer success', () => {
-        let observe!: (event: AgentSessionRuntimeEvent) => void;
-        const session: AgentSessionRuntime = {
-            send: vi.fn(async () => ({ status: 'admitted' as const })),
-            watch: (listener) => {
-                observe = listener;
-                return { dispose: () => undefined };
-            },
-            dispose: vi.fn(),
-        };
-        const publishHostEvent = vi.fn((_event: unknown) => undefined);
-        publishHostEvent.mockImplementationOnce(() => {
-            throw new Error('listener-side host publication failure');
-        });
-        const runtime = createNativeAgentSessionOperations(
-            session,
-            'session-host-events',
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            [],
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            publishHostEvent,
-        );
-        runtime.subscribeRuntimeEvents(() => undefined);
-        const event = AgentSessionRuntimeEventSchema.parse({
-            sequence: 1,
-            sessionId: 'session-host-events',
-            emittedAtMs: 2,
-            kind: 'runtime-activity-snapshot',
-            state: 'idle',
-            activeCount: 0,
-        });
-
-        expect(() => observe(event)).not.toThrow();
-        expect(publishHostEvent).toHaveBeenCalledOnce();
-        expect(publishHostEvent).toHaveBeenCalledWith(event);
-
-        const centrallyPublishedEvent = AgentSessionRuntimeEventSchema.parse({
-            sequence: 2,
-            sessionId: 'session-host-events',
-            emittedAtMs: 3,
-            kind: 'context-compaction',
-            compactionId: 'compact-1',
-            phase: 'progress',
-            trigger: 'manual',
-        });
-        // The transcript/compaction owner has already emitted this ordinary
-        // lifecycle fact. The native adapter must not emit it a second time.
-        publishHostEvent(centrallyPublishedEvent);
-        expect(() => observe(centrallyPublishedEvent)).not.toThrow();
-        expect(publishHostEvent).toHaveBeenCalledTimes(2);
-        expect(publishHostEvent.mock.calls.filter(
-            ([published]) => published === centrallyPublishedEvent,
-        )).toHaveLength(1);
-
-        const divergentCompactionEvent = AgentSessionRuntimeEventSchema.parse({
-            sequence: 3,
-            sessionId: 'session-host-events',
-            emittedAtMs: 4,
-            kind: 'context-compaction',
-            compactionId: 'compact-2',
-            phase: 'outcomeUnknown',
-            trigger: 'manual',
-            diagnostic: {
-                code: 'compaction_outcome_unknown',
-                severity: 'warning',
-            },
-        });
-        expect(() => observe(divergentCompactionEvent)).not.toThrow();
-        expect(publishHostEvent).toHaveBeenCalledTimes(3);
-        expect(publishHostEvent).toHaveBeenLastCalledWith(expect.objectContaining({
-            kind: 'context-compaction',
-            compactionId: 'compact-2',
-            phase: 'outcomeUnknown',
-            diagnostic: {
-                code: 'compaction_outcome_unknown',
-                severity: 'warning',
-            },
-        }));
     });
 
     it('passes the exact host-private Provider binding through a live configuration update', async () => {
@@ -9326,6 +9234,103 @@ describe('native Agent session host adapter', () => {
         )).rejects.toThrow('exactly one Queue localId');
         expect(send).toHaveBeenCalledOnce();
         warn.mockRestore();
+    });
+
+    it('publishes exact native provider evidence through the canonical delivery outcome', async () => {
+        const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
+        const send = vi.fn<AgentSessionRuntime['send']>(async () => ({ status: 'admitted' }));
+        const session: AgentSessionRuntime = {
+            send,
+            watch(listener) {
+                listeners.add(listener);
+                return { dispose: () => { listeners.delete(listener); } };
+            },
+            dispose: vi.fn(),
+        };
+        const runtime = createNativeAgentSessionOperations(session, 'session-1');
+        const deliveryOutcomes: unknown[] = [];
+        runtime.setOnPromptDeliveryOutcome?.((outcome) => deliveryOutcomes.push(outcome));
+
+        await expect(runtime.sendTurnPrompt('hello', {
+            localId: 'queue-local-acceptance',
+            turnId: 'turn-acceptance',
+        })).resolves.toBeUndefined();
+        expect(send).toHaveBeenCalledWith({
+            inputIds: ['queue-local-acceptance'],
+            input: { text: 'hello' },
+            delivery: { kind: 'newTurn', turnId: 'turn-acceptance' },
+        });
+        // Native `send()` admitting transport custody is not provider acceptance.
+        expect(deliveryOutcomes).toEqual([]);
+
+        for (const listener of listeners) {
+            listener({
+                sequence: 1,
+                sessionId: 'session-1',
+                emittedAtMs: 1,
+                kind: 'input-accepted',
+                inputIds: ['foreign-local-id'],
+                delivery: { kind: 'newTurn', turnId: 'turn-acceptance' },
+            });
+            listener({
+                sequence: 2,
+                sessionId: 'session-1',
+                emittedAtMs: 2,
+                kind: 'input-accepted',
+                inputIds: ['queue-local-acceptance'],
+                delivery: { kind: 'newTurn', turnId: 'turn-acceptance' },
+            });
+            listener({
+                sequence: 3,
+                sessionId: 'session-1',
+                emittedAtMs: 3,
+                kind: 'input-accepted',
+                inputIds: ['queue-local-acceptance'],
+                delivery: { kind: 'newTurn', turnId: 'turn-acceptance' },
+            });
+        }
+
+        expect(deliveryOutcomes).toContainEqual(expect.objectContaining({
+            type: 'input-accepted',
+            localId: 'queue-local-acceptance',
+        }));
+        for (const listener of listeners) {
+            listener({
+                sequence: 4,
+                sessionId: 'session-1',
+                emittedAtMs: 4,
+                kind: 'turn-start',
+                turnId: 'turn-acceptance',
+                startedBy: 'host',
+            });
+        }
+
+        await expect(runtime.steerInFlightTurn('follow up', {
+            localId: 'queue-local-steer-acceptance',
+        })).resolves.toBeUndefined();
+        expect(send).toHaveBeenLastCalledWith({
+            inputIds: ['queue-local-steer-acceptance'],
+            input: { text: 'follow up' },
+            delivery: { kind: 'steer', turnId: 'turn-acceptance' },
+        });
+        expect(deliveryOutcomes).not.toContainEqual(expect.objectContaining({
+            localId: 'queue-local-steer-acceptance',
+        }));
+
+        for (const listener of listeners) {
+            listener({
+                sequence: 5,
+                sessionId: 'session-1',
+                emittedAtMs: 5,
+                kind: 'input-accepted',
+                inputIds: ['queue-local-steer-acceptance'],
+                delivery: { kind: 'steer', turnId: 'turn-acceptance' },
+            });
+        }
+        expect(deliveryOutcomes).toContainEqual(expect.objectContaining({
+            type: 'input-accepted',
+            localId: 'queue-local-steer-acceptance',
+        }));
     });
 
     it('preserves a nonblank opaque Queue localId through native send and typed acceptance', async () => {

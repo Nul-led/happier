@@ -429,6 +429,53 @@ describe('createSessionHandleAuthService runtime auth refresh', () => {
         });
     });
 
+    it('reports one group-bound usage-limit classification when selection is missing but recovery context is present', async () => {
+        const recovery = {
+            handled: true,
+            report: null,
+            statusCode: null,
+            statusMessage: null,
+            ok: true,
+        };
+        const reportFailure = vi.fn(async () => recovery);
+        const resolveAdapter = vi.fn();
+        const auth = createSessionHandleAuthService({
+            readSessionId: async () => 'happy-session-1',
+            readAgentId: async () => 'opencode',
+            resolveAdapter,
+            reportFailure,
+        });
+        const classification = {
+            kind: 'usage_limit',
+            limitCategory: 'usage_limit',
+            serviceId: 'openai-codex',
+            profileId: 'codex-profile',
+            groupId: 'codex-group',
+            resetsAtMs: null,
+            retryAfterMs: null,
+            planType: null,
+            connectedServiceRecovery: 'available',
+            rateLimits: null,
+            source: 'structured_provider_error',
+        };
+
+        await expect(auth.services.refreshRuntimeAuth({
+            serviceId: 'openai-codex',
+            classification,
+        })).resolves.toEqual({
+            status: 'unavailable',
+            reason: 'runtime_auth_selection_unavailable',
+            recovery,
+        });
+
+        expect(resolveAdapter).not.toHaveBeenCalled();
+        expect(reportFailure).toHaveBeenCalledTimes(1);
+        expect(reportFailure).toHaveBeenCalledWith({
+            sessionId: 'happy-session-1',
+            classification,
+        });
+    });
+
     it('omits a non-portable recovery report from the strict session result', async () => {
         const reportFailure = vi.fn(async () => ({
             handled: true,

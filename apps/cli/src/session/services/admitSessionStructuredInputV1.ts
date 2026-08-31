@@ -149,6 +149,17 @@ function validatePreparedAttachments(params: Readonly<{
   return prepared;
 }
 
+/** Validates raw retry identity against an already admitted prepared attachment set. */
+export function validateComposerAttachmentRejoinCorrespondenceV1(params: Readonly<{
+  meta: MetadataRecord;
+  preparedComposerAttachments: readonly ComposerAttachmentInputV1[];
+}>): void {
+  validatePreparedAttachments({
+    selected: readSelectedRawAttachments(params.meta),
+    prepared: params.preparedComposerAttachments,
+  });
+}
+
 function readSessionMediaMetadata(meta: MetadataRecord): readonly unknown[] {
   return ['happier', 'happierMedia']
     .map((key) => asRecord(meta[key]))

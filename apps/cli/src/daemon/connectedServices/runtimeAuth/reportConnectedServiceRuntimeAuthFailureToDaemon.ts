@@ -37,7 +37,7 @@ type RuntimeAuthFailureNotifyBody = Readonly<{
 }>;
 
 type RuntimeAuthFailureNotifyOptions = Readonly<{
-  timeoutMs?: number;
+  timeoutMs?: number | null;
 }>;
 
 type RuntimeAuthFailureNotify = (
@@ -70,10 +70,11 @@ export type ConnectedServiceRuntimeAuthFailureDaemonReport = Readonly<{
   projection?: ConnectedServiceRuntimeAuthRecoveryProjection;
 }>;
 
-// The daemon may perform the same bounded OAuth rotation/evidence sequence as the
-// request-auth owner. This report is a recovery transport, not a model-turn timeout;
-// keep it just above the 300-second daemon recovery ceiling.
-export const CONNECTED_SERVICE_RUNTIME_AUTH_FAILURE_REPORT_TIMEOUT_MS = 310_000;
+// The local daemon owns recovery after the report is durably staged. A fixed
+// caller deadline can only manufacture an ambiguous failure while healthy
+// multi-session fan-out continues; process exit/caller cancellation still
+// settles the underlying local transport.
+export const CONNECTED_SERVICE_RUNTIME_AUTH_FAILURE_REPORT_TIMEOUT_MS = null;
 
 // Incident Jun-11 H-C / FIX-2: one failed turn can be observed by multiple independent
 // triggers, each of which calls this shared report path. Dedupe lives HERE — the single

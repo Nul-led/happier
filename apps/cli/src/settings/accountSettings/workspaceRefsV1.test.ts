@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { AccountSettings } from '@happier-dev/protocol';
 
-import { resolveWorkspaceRefForMachineRoot } from './workspaceRefsV1';
+import { resolveWorkspaceRefById, resolveWorkspaceRefForMachineRoot } from './workspaceRefsV1';
 
 describe('workspace ref resolution', () => {
     it('resolves one canonical workspace identity from machine and normalized root', () => {
@@ -16,5 +16,16 @@ describe('workspace ref resolution', () => {
             ...refs,
             { ...refs[0]!, id: 'ambiguous', serverId: 'server_other' },
         ], { machineId: 'machine_a', rootPath: 'c:/repo' })).toBeNull();
+    });
+
+    it('resolves an id only when exactly one current workspace ref owns it', () => {
+        const refs: AccountSettings['workspaceRefsV1'] = [
+            { id: 'workspace_a', serverId: 'server_a', machineId: 'machine_a', rootPath: '/repo-a', createdAtMs: 1 },
+            { id: 'workspace_b', serverId: 'server_b', machineId: 'machine_b', rootPath: '/repo-b', createdAtMs: 1 },
+        ];
+
+        expect(resolveWorkspaceRefById(refs, ' workspace_a ')).toEqual(refs[0]);
+        expect(resolveWorkspaceRefById(refs, 'workspace_missing')).toBeNull();
+        expect(resolveWorkspaceRefById([...refs, { ...refs[0]!, serverId: 'server_other' }], 'workspace_a')).toBeNull();
     });
 });

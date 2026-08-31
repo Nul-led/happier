@@ -37,22 +37,6 @@ function resolveShellBridgeContextEnvMode(env: NodeJS.ProcessEnv): ShellBridgeCo
   return 'off';
 }
 
-/**
- * Workspace replication job status heartbeat interval.
- *
- * During long-running apply operations we periodically "touch" the job record (updatedAtMs)
- * so UI liveness/idle-timeout logic can rely on durable progress, even when the apply layer
- * itself does not emit incremental checkpoints.
- */
-export function resolveWorkspaceReplicationJobStatusHeartbeatIntervalMs(): number {
-  // Default: 5s. Defensive min: 250ms. Defensive max: 60s.
-  return resolveIntEnvWithBounds('HAPPIER_WORKSPACE_REPLICATION_JOB_STATUS_HEARTBEAT_INTERVAL_MS', {
-    min: 250,
-    max: 60_000,
-    default: 5_000,
-  });
-}
-
 export function isDaemonProcessArgv(args: readonly string[]): boolean {
   if (args.length < 2) return false
   if (args[0] !== 'daemon') return false

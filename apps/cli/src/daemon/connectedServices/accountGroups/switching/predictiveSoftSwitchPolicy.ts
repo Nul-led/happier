@@ -6,7 +6,7 @@ type PredictiveSoftSwitchReason =
   | 'account_changed'
   | 'refresh_failed';
 
-type PredictiveSoftSwitchCapability = 'supported' | 'unsupported';
+export type PredictiveSoftSwitchCapability = 'supported' | 'supported_in_turn' | 'unsupported';
 type PredictiveSoftSwitchSessionApplyMode = 'hot_apply' | 'restart_resume' | 'spawn_next_turn';
 
 type PredictiveSoftSwitchTurnState = Readonly<{
@@ -41,13 +41,16 @@ export function evaluatePredictiveSoftSwitchPolicy(input: Readonly<{
   if (input.reason !== 'soft_threshold' && input.reason !== 'same_provider_account_exhausted') {
     return { status: 'allow' };
   }
-  if (input.predictiveSoftSwitchMode !== 'supported') {
+  if (input.predictiveSoftSwitchMode === 'unsupported') {
     return {
       status: 'suppress',
       reason: 'predictive_soft_switch_restart_required',
     };
   }
   if (input.turnState?.inFlight === true) {
+    if (input.predictiveSoftSwitchMode === 'supported_in_turn') {
+      return { status: 'allow' };
+    }
     if (input.reason === 'same_provider_account_exhausted') {
       return {
         status: 'defer',

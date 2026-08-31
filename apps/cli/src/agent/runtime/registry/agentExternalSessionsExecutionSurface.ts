@@ -183,6 +183,9 @@ export function createAgentExternalSessionsExecutionSurface(
                 ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
                 ...(request.searchTerm === undefined ? {} : { searchTerm: request.searchTerm }),
                 ...(request.searchMode === undefined ? {} : { searchMode: request.searchMode }),
+                ...(request.readCandidateIndexState === undefined
+                    ? {}
+                    : { readCandidateIndexState: request.readCandidateIndexState }),
             }));
             return {
                 candidates: result.candidates,

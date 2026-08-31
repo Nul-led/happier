@@ -388,7 +388,7 @@ describe('target composer attachment registry', () => {
     expect(registry.isDeclared({ pluginId: ATTACHMENT.pluginId, localId: 'missing' })).toBe(false);
   });
 
-  it('admits only declaration-valid values, enforces cardinality, and stamps its immutable fallback title', () => {
+  it('admits only declaration-valid values, enforces cardinality, and preserves the UI-admitted localized type label', () => {
     const declaredAttachments = [{
       attachment: ATTACHMENT,
       title: { key: 'attachment.issue.title', fallback: 'Issue context' },
@@ -428,13 +428,10 @@ describe('target composer attachment registry', () => {
       attachment: ATTACHMENT,
       key: 'issue-42',
       value: { issueId: '42' },
-      presentation: { label: 'Issue #42', typeLabel: 'Forged label' },
+      presentation: { label: 'Issue #42', typeLabel: 'Contexte du problème' },
     } as const satisfies ComposerAttachmentInputV1;
 
-    expect(registry.admit({ phase: 'draft', attachments: [draft] })).toEqual([{
-      ...draft,
-      presentation: { label: 'Issue #42', typeLabel: 'Issue context' },
-    }]);
+    expect(registry.admit({ phase: 'draft', attachments: [draft] })).toEqual([draft]);
     expect(() => registry.admit({
       phase: 'draft',
       attachments: [{ ...draft, value: { issueId: 42 } }],
@@ -452,12 +449,12 @@ describe('target composer attachment registry', () => {
       attachments: [{
         ...draft,
         value: { issueId: '42', prepared: true },
-        presentation: { label: 'Issue #42 (prepared)', typeLabel: 'Still forged' },
+        presentation: { label: 'Issue #42 (prepared)', typeLabel: 'Contexte du problème' },
       }],
     })).toEqual([{
       ...draft,
       value: { issueId: '42', prepared: true },
-      presentation: { label: 'Issue #42 (prepared)', typeLabel: 'Issue context' },
+      presentation: { label: 'Issue #42 (prepared)', typeLabel: 'Contexte du problème' },
     }]);
   });
 
@@ -506,10 +503,7 @@ describe('target composer attachment registry', () => {
     expect(registry.admit({
       phase: 'draft',
       attachments: [stagedDraft],
-    })).toEqual([{
-      ...stagedDraft,
-      presentation: { label: 'Image #42', typeLabel: 'Issue context' },
-    }]);
+    })).toEqual([stagedDraft]);
   });
 
   it('fences a retired direct declaration before schema admission without requiring a callback registration', () => {

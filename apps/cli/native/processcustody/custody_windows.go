@@ -194,7 +194,7 @@ func writeHandshakeFile(path string, pid int, job string) error {
 	return os.Rename(temporary, path)
 }
 
-func parseRunArgs(args []string) (job string, handshakePath string, verbatimArguments bool, target []string, err error) {
+func parseRunArgs(args []string) (job string, handshakePath string, inheritedStdinArg string, verbatimArguments bool, target []string, err error) {
 	parsingOptions := true
 	for _, arg := range args {
 		if parsingOptions && strings.HasPrefix(arg, "--job=") {
@@ -203,6 +203,16 @@ func parseRunArgs(args []string) (job string, handshakePath string, verbatimArgu
 		}
 		if parsingOptions && strings.HasPrefix(arg, "--handshake=") {
 			handshakePath = strings.TrimPrefix(arg, "--handshake=")
+			continue
+		}
+		if parsingOptions && strings.HasPrefix(arg, "--target-inherited-stdin-arg=") {
+			if inheritedStdinArg != "" {
+				return "", "", "", false, nil, fmt.Errorf("run accepts one --target-inherited-stdin-arg")
+			}
+			inheritedStdinArg = strings.TrimPrefix(arg, "--target-inherited-stdin-arg=")
+			if inheritedStdinArg == "" || strings.ContainsRune(inheritedStdinArg, '\x00') {
+				return "", "", "", false, nil, fmt.Errorf("run requires a non-empty inherited stdin argument name")
+			}
 			continue
 		}
 		if parsingOptions && arg == "--target-windows-verbatim" {
@@ -214,18 +224,18 @@ func parseRunArgs(args []string) (job string, handshakePath string, verbatimArgu
 			continue
 		}
 		if parsingOptions {
-			return "", "", false, nil, fmt.Errorf("run requires --job=<name> before --")
+			return "", "", "", false, nil, fmt.Errorf("run requires --job=<name> before --")
 		}
 		target = append(target, arg)
 	}
 	if job == "" || len(target) == 0 {
-		return "", "", false, nil, fmt.Errorf("run requires --job=<name> and a target command after --")
+		return "", "", "", false, nil, fmt.Errorf("run requires --job=<name> and a target command after --")
 	}
-	return job, handshakePath, verbatimArguments, target, nil
+	return job, handshakePath, inheritedStdinArg, verbatimArguments, target, nil
 }
 
 func runCustodyCommand(args []string) error {
-	job, handshakePath, verbatimArguments, target, err := parseRunArgs(args)
+	job, handshakePath, inheritedStdinArg, verbatimArguments, target, err := parseRunArgs(args)
 	if err != nil {
 		usage()
 		os.Exit(exitUsage)
@@ -258,10 +268,6 @@ func runCustodyCommand(args []string) error {
 		return fmt.Errorf("SetInformationJobObject failed: %v", callErr)
 	}
 
-	commandLinePtr, err := syscall.UTF16PtrFromString(windowsCommandLine(target, verbatimArguments))
-	if err != nil {
-		return err
-	}
 	si := startupInfoW{Cb: uint32(unsafe.Sizeof(startupInfoW{}))}
 	si.DwFlags = startfUseStdHandles
 	for index, pseudoHandle := range []uintptr{stdInputHandle, stdOutputHandle, stdErrorHandle} {
@@ -277,6 +283,13 @@ func runCustodyCommand(args []string) error {
 		case 2:
 			si.HStdError = handle
 		}
+	}
+	if inheritedStdinArg != "" {
+		target = append(target, inheritedStdinArg, strconv.FormatUint(uint64(si.HStdInput), 10))
+	}
+	commandLinePtr, err := syscall.UTF16PtrFromString(windowsCommandLine(target, verbatimArguments))
+	if err != nil {
+		return err
 	}
 	var pi processInformation
 	if result, _, callErr := procCreateProcessW.Call(

@@ -1,9 +1,27 @@
 export {
   MACHINE_CARRIER_ALPN_V1,
+  MACHINE_CARRIER_ROUTE_MISMATCH_CODE,
+  MACHINE_CARRIER_UNAVAILABLE_CODE,
   MachineCarrierError,
+  machineCarrierRouteMismatchError,
+  machineCarrierUnavailableError,
   createMachineCarrierAdapter,
+  verifyMachineCarrierHandshakeV1,
   type MachineCarrierConnection,
-  type MachineCarrierHandshake,
+  type MachineCarrierStreamOpen,
+  type MachineCarrierAdmission,
+  type MachineCarrierAdmissionInput,
   type MachineCarrierOperationKind,
   type MachineCarrierRole,
+  type MachineCarrierTransportConnection,
+  type MachineCarrierTransportOpenInput,
+  type MachineCarrierHandshakeVerificationInput,
+  type MachineCarrierVerifiedHandshake,
 } from './machineCarrier';
+export {
+  createDaemonMachineIrohRuntime,
+  type DaemonMachineIrohRelayConfig,
+  type DaemonMachineIrohRuntime,
+  type UnavailableDaemonMachineIrohRuntime,
+} from './daemonMachineIrohRuntime';
+export { createWorkspaceMachineCarrierTunnelOpen } from './workspaceMachineCarrierTunnelOpen';

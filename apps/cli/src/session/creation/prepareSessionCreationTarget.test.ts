@@ -9,7 +9,7 @@ vi.mock('@/scm/rpc/dispatch', () => ({
   runScmRoute: vi.fn(),
 }));
 vi.mock('@/scm/workspace', () => ({
-  realizeWorkspaceCheckoutWithScmWorkspace: vi.fn(),
+  realizeWorkspaceCheckoutWithScmWorkspaceSource: vi.fn(),
 }));
 
 import { prepareSessionCreationTarget } from './prepareSessionCreationTarget';
@@ -95,6 +95,89 @@ describe('prepareSessionCreationTarget', () => {
       baseRef: 'main',
       branchMode: 'existing',
       signal: undefined,
+    });
+  });
+
+  it('rebases a nested source directory into the worktree and retains the known-created receipt', async () => {
+    const createCheckout = vi.fn(async () => ({
+      success: true as const,
+      worktreePath: '/repo/.dev/worktree/feature-session',
+      branchName: 'feature-session',
+      sourceRootPath: '/repo',
+      created: true,
+    }));
+
+    await expect(prepareSessionCreationTarget({
+      request: {
+        directory: '/repo/packages/app',
+        checkoutCreationDraft: {
+          kind: 'git_worktree',
+          displayName: 'feature-session',
+          baseRef: null,
+          branchMode: 'new',
+        },
+      },
+      platform: 'linux',
+      createCheckout,
+    })).resolves.toEqual({
+      ok: true,
+      directory: '/repo/.dev/worktree/feature-session/packages/app',
+      directoryCreationRequired: false,
+      checkout: {
+        kind: 'git_worktree',
+        finalDirectory: '/repo/.dev/worktree/feature-session',
+        baseRef: null,
+        branchMode: 'new',
+        created: true,
+      },
+    });
+  });
+
+  it('rebases Windows source subpaths case-insensitively and contains sibling-prefix mismatches', async () => {
+    const createCheckout = vi.fn(async () => ({
+      success: true as const,
+      worktreePath: 'C:\\Repo\\.dev\\worktree\\feature-session',
+      branchName: 'feature-session',
+      sourceRootPath: 'c:\\repo',
+      created: false,
+    }));
+    const checkoutCreationDraft = {
+      kind: 'git_worktree' as const,
+      displayName: 'feature-session',
+      baseRef: null,
+      branchMode: 'existing' as const,
+    };
+
+    await expect(prepareSessionCreationTarget({
+      request: {
+        directory: 'C:\\Repo\\Packages\\App',
+        checkoutCreationDraft,
+      },
+      platform: 'win32',
+      createCheckout,
+    })).resolves.toMatchObject({
+      ok: true,
+      directory: 'C:\\Repo\\.dev\\worktree\\feature-session\\Packages\\App',
+      checkout: { created: false },
+    });
+
+    createCheckout.mockResolvedValueOnce({
+      success: true as const,
+      worktreePath: 'C:\\Repo\\.dev\\worktree\\feature-session',
+      branchName: 'feature-session',
+      sourceRootPath: 'C:\\Repo',
+      created: false,
+    });
+    await expect(prepareSessionCreationTarget({
+      request: {
+        directory: 'C:\\Repo-Other\\Packages\\App',
+        checkoutCreationDraft,
+      },
+      platform: 'win32',
+      createCheckout,
+    })).resolves.toMatchObject({
+      ok: true,
+      directory: 'C:\\Repo\\.dev\\worktree\\feature-session',
     });
   });
 

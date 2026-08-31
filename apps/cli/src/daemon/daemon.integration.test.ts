@@ -26,7 +26,6 @@ import {
 import { readCredentials, readDaemonState, clearDaemonStateForTestTeardown, writeDaemonState } from '@/persistence';
 import { Metadata } from '@/api/types';
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
-import { getLatestDaemonLog } from '@/ui/logger';
 import { waitForCondition } from '@/testkit/async/waitFor';
 import type { SpawnDaemonSessionRequest } from '@/rpc/handlers/spawnSessionOptionsContract';
 import { prepareIsolatedDaemonTestHome, type PreparedDaemonTestHome } from './testkit/realIntegration.testkit';
@@ -440,6 +439,7 @@ async function isServerHealthy(): Promise<boolean> {
 
 describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout: 120_000 }, () => {
   let daemonPid: number | null = null;
+  let daemonLogPath: string | null = null;
 
   beforeAll(async () => {
     preparedDaemonHome = await prepareIsolatedDaemonTestHome({
@@ -473,6 +473,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
       throw new Error('Daemon failed to start within timeout');
     }
     daemonPid = daemonState.pid;
+    daemonLogPath = typeof daemonState.daemonLogPath === 'string' ? daemonState.daemonLogPath : null;
 
   });
 
@@ -480,6 +481,7 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
     await stopAllTrackedSessionsBestEffort();
     await stopDaemon();
     daemonPid = null;
+    daemonLogPath = null;
   });
 
   afterAll(async () => {
@@ -745,32 +747,42 @@ describe.skipIf(!await isServerHealthy())('Daemon Integration Tests', { timeout:
   });
 
   it('should die with cleanup logs when SIGTERM is sent', async () => {
-    // SIGTERM test - daemon should cleanup gracefully
-    const logFile = await getLatestDaemonLog();
-    if (!logFile) {
-      throw new Error('No log file found');
-    }
-    
+    // SIGTERM test - daemon should cleanup gracefully. Use the log path published by
+    // this daemon instance and wait for its startup marker so the signal cannot race
+    // startup or accidentally inspect a previous test's log.
     if (daemonPid === null) {
       throw new Error('Expected daemon PID from beforeEach');
     }
+    const logPath = daemonLogPath;
+    if (!logPath) {
+      throw new Error('Expected daemon log path from beforeEach');
+    }
+
+    await waitForCondition(
+      () => existsSync(logPath) && readFileSync(logPath, 'utf8').includes('Daemon started successfully'),
+      { ...PROCESS_EXIT_WAIT, label: 'daemon startup log marker' },
+    );
 
     // Send SIGTERM to daemon (graceful shutdown)
     process.kill(daemonPid, 'SIGTERM');
-    
+
     // Wait for graceful shutdown
     await waitForDaemonExit(daemonPid, PROCESS_EXIT_WAIT);
-    
+
     // Check if process is dead
     expect(isProcessAlive(daemonPid)).toBe(false);
-    
-    // Read the log file to check for cleanup messages
-    const logContent = readFileSync(logFile.path, 'utf8');
-    
+
+    // Wait for the logger flush before checking the signal and cleanup evidence.
+    await waitForCondition(
+      () => existsSync(logPath) && readFileSync(logPath, 'utf8').includes('Received SIGTERM'),
+      { ...PROCESS_EXIT_WAIT, label: 'daemon SIGTERM log evidence' },
+    );
+    const logContent = readFileSync(logPath, 'utf8');
+
     // Should contain cleanup messages
     expect(logContent).toContain('SIGTERM');
     expect(logContent).toContain('cleanup');
-    
+
     // Clean up state file if it still exists (should have been cleaned by SIGTERM handler)
     await clearDaemonStateForTestTeardown();
   });

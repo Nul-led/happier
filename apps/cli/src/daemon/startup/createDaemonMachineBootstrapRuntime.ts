@@ -1,5 +1,8 @@
 import type { ApiClient } from '@/api/api';
-import type { ApiMachineClient } from '@/api/apiMachine';
+import type {
+  ApiMachineClient,
+  ApiMachineClientLifecycleDependencies,
+} from '@/api/apiMachine';
 import type { DaemonState } from '@/api/types';
 import type { ConnectedServiceQuotasLoopHandle } from '../connectedServices/quotas/startConnectedServiceQuotasLoop';
 import type { MachineLiveStreamControlLeaseV1 } from '@happier-dev/protocol';
@@ -32,6 +35,7 @@ import { MemorySettingsSecretsUnavailableError } from '@/settings/memorySettings
 import type { DaemonSessionMutationCustody } from '../connectedServices/usageLimitRecovery/createDaemonUsageLimitRecoveryMutationCustody';
 import type { ExternalActionIngressOwner } from '@/rpc/handlers/externalAction';
 import { resolveCliFeatureDecision } from '@/features/featureDecisionService';
+import type { WorkspaceSyncHandoffAdapter } from '@/workspaces/sync/workspaceSyncHandoffAdapter';
 
 type BootstrapRuntime = Omit<
   Parameters<typeof startDaemonMachineRegistration>[0]['bootstrapRuntime'],
@@ -56,6 +60,17 @@ export function createDaemonMachineBootstrapRuntime(
     credentials: StoredCredentials;
     daemonSessionMutationCustody?: DaemonSessionMutationCustody;
     deviceLocalSecretStorage?: DeviceLocalSecretStorage;
+    workspaceSyncHandoffAdapter?: WorkspaceSyncHandoffAdapter;
+    workspaceSync?: ApiMachineClientLifecycleDependencies['workspaceSync'];
+    createWorkspaceSyncRuntime?: (input: Readonly<{
+      machineId: string;
+    }>) => Promise<Readonly<{
+      handoffAdapter: WorkspaceSyncHandoffAdapter;
+      workspaceSync: NonNullable<ApiMachineClientLifecycleDependencies['workspaceSync']>;
+    }>> | Readonly<{
+      handoffAdapter: WorkspaceSyncHandoffAdapter;
+      workspaceSync: NonNullable<ApiMachineClientLifecycleDependencies['workspaceSync']>;
+    }>;
     diagnosticSubsystemGates: Readonly<{
       disableMachineSync: boolean;
       disableAutomationWorker: boolean;
@@ -76,6 +91,8 @@ export function createDaemonMachineBootstrapRuntime(
     beforeShutdown: BootstrapRuntime['beforeShutdown'];
     requestShutdown: BootstrapRuntime['requestShutdown'];
     directPeerServerLifecycle: BootstrapRuntime['directPeerServerLifecycle'];
+    machineIrohRuntime?: BootstrapRuntime['machineIrohRuntime'];
+    acquireWorkspaceSyncMachineIngress?: BootstrapRuntime['acquireWorkspaceSyncMachineIngress'];
     directTransferPromptAssetAdapterRegistry: BootstrapRuntime['directTransferPromptAssetAdapterRegistry'];
     directTransferPromptRegistryRegistry: BootstrapRuntime['directTransferPromptRegistryRegistry'];
     daemonServerWorkScheduler: BootstrapRuntime['daemonServerWorkScheduler'];
@@ -129,11 +146,21 @@ export function createDaemonMachineBootstrapRuntime(
       ? { subscribeConnectedAccountInvalidations: params.subscribeConnectedAccountInvalidations }
       : {}),
     isShuttingDown: params.isShuttingDown,
+    ...(params.machineIrohRuntime ? { machineIrohRuntime: params.machineIrohRuntime } : {}),
+    ...(params.acquireWorkspaceSyncMachineIngress
+      ? { acquireWorkspaceSyncMachineIngress: params.acquireWorkspaceSyncMachineIngress }
+      : {}),
     ...(params.getServerFeaturesSnapshot
       ? { getServerFeaturesSnapshot: params.getServerFeaturesSnapshot }
       : {}),
-    createConnectedApiMachine: (registeredMachine) => {
+    createConnectedApiMachine: async (registeredMachine) => {
       if (params.diagnosticSubsystemGates.disableMachineSync) return null;
+      const workspaceRuntime = params.createWorkspaceSyncRuntime
+        ? await params.createWorkspaceSyncRuntime({ machineId: registeredMachine.id })
+        : null;
+      const workspaceSyncHandoffAdapter = workspaceRuntime?.handoffAdapter
+        ?? params.workspaceSyncHandoffAdapter;
+      const workspaceSync = workspaceRuntime?.workspaceSync ?? params.workspaceSync;
       const apiMachine = params.api.machineSyncClient(registeredMachine, {
             runtimeId: params.runtimeId,
             cliVersion: packageJson.version,
@@ -143,6 +170,10 @@ export function createDaemonMachineBootstrapRuntime(
             ...(params.serviceLabel ? { serviceLabel: params.serviceLabel } : null),
           }, {
             isDaemonQuiescing: params.isShuttingDown,
+            ...(workspaceSyncHandoffAdapter
+              ? { workspaceSyncHandoffAdapter }
+              : {}),
+            ...(workspaceSync ? { workspaceSync } : {}),
       });
       connectedApiMachine = apiMachine;
       params.prepareApiMachineForSessions?.(apiMachine);

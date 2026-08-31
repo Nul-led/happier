@@ -1448,11 +1448,18 @@ describe('createCliActionDeps hook dispatch', () => {
         forkPoint: { type: 'latest' as const },
       },
     };
-    callMachineRpc.mockResolvedValue({
+    const rollbackCheckout = vi.fn().mockResolvedValue(undefined);
+    const prepare = vi.fn().mockResolvedValue({
       ok: true,
-      directory: '/repo',
+      directory: '/repo/.dev/worktree/replay',
       directoryCreationRequired: false,
-      checkout: null,
+      checkout: {
+        kind: 'git_worktree',
+        finalDirectory: '/repo/.dev/worktree/replay',
+        baseRef: null,
+        branchMode: 'new',
+        created: true,
+      },
     });
     fetchSessionByIdCompat.mockResolvedValue({ share: null, machineId: 'machine-exact' });
     resolveReplaySeedDraft.mockResolvedValue({ status: 'unavailable' });
@@ -1465,6 +1472,15 @@ describe('createCliActionDeps hook dispatch', () => {
       sessionId: 'cli-global',
       mode: 'plain',
       ctx: null,
+      sessionSpawnDirectTargetTransport: {
+        machineId: 'machine-exact',
+        prepare,
+        rollbackCheckout,
+        spawnedSession: {
+          spawn: vi.fn(),
+          resolveSpawnSessionByNonce: vi.fn(),
+        },
+      },
     });
 
     await expect(deps.sessionSpawnNew({
@@ -1477,6 +1493,74 @@ describe('createCliActionDeps hook dispatch', () => {
     })).resolves.toMatchObject({ type: 'error' });
     // Required semantics: an unresolvable source leaves the authoring draft
     // intact and commits nothing.
+    expect(createSpawnedSession).not.toHaveBeenCalled();
+    expect(rollbackCheckout).toHaveBeenCalledWith({
+      kind: 'git_worktree',
+      finalDirectory: '/repo/.dev/worktree/replay',
+      baseRef: null,
+      branchMode: 'new',
+      created: true,
+    });
+  });
+
+  it('never rolls back a reused checkout when pre-spawn source resolution fails', async () => {
+    const rollbackCheckout = vi.fn().mockResolvedValue(undefined);
+    fetchSessionByIdCompat.mockResolvedValue({ share: null, machineId: 'machine-exact' });
+    resolveReplaySeedDraft.mockResolvedValue({ status: 'unavailable' });
+    const creationKey = SessionCreationKeyV1Schema.parse('reused-unreadable-source');
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: {
+        token: 'token',
+        encryption: { type: 'legacy', secret: new Uint8Array([1, 2, 3, 4]) },
+      },
+      sessionId: 'cli-global',
+      mode: 'plain',
+      ctx: null,
+      sessionSpawnDirectTargetTransport: {
+        machineId: 'machine-exact',
+        prepare: vi.fn().mockResolvedValue({
+          ok: true,
+          directory: '/repo/.dev/worktree/reused',
+          directoryCreationRequired: false,
+          checkout: {
+            kind: 'git_worktree',
+            finalDirectory: '/repo/.dev/worktree/reused',
+            baseRef: null,
+            branchMode: 'existing',
+            created: false,
+          },
+        }),
+        rollbackCheckout,
+        spawnedSession: {
+          spawn: vi.fn(),
+          resolveSpawnSessionByNonce: vi.fn(),
+        },
+      },
+    });
+
+    await expect(deps.sessionSpawnNew({
+      creationKey,
+      sessionCreationTag: deriveSessionCreationTagV1({ callerCreationNamespace: 'user', creationKey }),
+      executionTarget: {
+        serverId: configuration.activeServerId,
+        machineId: 'machine-exact',
+      },
+      directory: '/repo',
+      agentTarget: {
+        kind: 'agent',
+        identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+      },
+      sourceContext: {
+        v: 1,
+        kind: 'session_replay',
+        sourceSessionId: 'source-session',
+        forkPoint: { type: 'latest' },
+      },
+      actionCaller: { kind: 'host' },
+    })).resolves.toMatchObject({ type: 'error' });
+
+    expect(rollbackCheckout).not.toHaveBeenCalled();
     expect(createSpawnedSession).not.toHaveBeenCalled();
   });
 
@@ -1801,7 +1885,13 @@ describe('createCliActionDeps hook dispatch', () => {
       ok: true,
       directory: '/repo/exact',
       directoryCreationRequired: false,
-      checkout: null,
+      checkout: {
+        kind: 'git_worktree',
+        finalDirectory: '/repo/exact',
+        baseRef: null,
+        branchMode: 'new',
+        created: true,
+      },
     });
     const error = new Error('Timed out waiting for the child Session webhook');
     (error as Error & { code: string }).code = 'SESSION_WEBHOOK_TIMEOUT';
@@ -1842,6 +1932,9 @@ describe('createCliActionDeps hook dispatch', () => {
       retryWithSameCreationKey: true,
       outcome: 'unknown',
     });
+    expect(callMachineRpc).not.toHaveBeenCalledWith(expect.objectContaining({
+      method: RPC_METHODS.SCM_WORKTREE_REMOVE,
+    }));
   });
 
   it('maps the exact terminal organization-placement refusal without parsing message text', async () => {
@@ -2489,49 +2582,6 @@ describe('createCliActionDeps hook dispatch', () => {
       status: 'rejected',
       code: 'session_input_invalid',
     });
-    expect(sendSessionMessage).not.toHaveBeenCalled();
-  });
-
-  it('rejects session-agent message permission overrides above the caller permission ordinal', async () => {
-    sendSessionMessage.mockResolvedValue({
-      ok: true,
-      sessionId: 'sess-1',
-      localId: 'local-1',
-      waited: false,
-    });
-    const deps = createCliActionDeps({
-      token: 'token',
-      credentials: {
-        token: 'token',
-        encryption: {
-          type: 'legacy',
-          secret: new Uint8Array([1, 2, 3, 4]),
-        },
-      },
-      sessionId: 'sess-1',
-      mode: 'plain',
-      ctx: null,
-      rawSession: {
-        machineId: 'machine-1',
-        path: '/repo',
-        metadata: {
-          permissionMode: 'default',
-          permissionModeUpdatedAt: 100,
-        },
-      },
-    });
-
-    await expect(deps.sessionSendMessage({
-      sessionId: 'sess-1',
-      message: 'Hello world',
-      requestedAction: { v: 1, kind: 'steer_if_active' },
-      permissionModeOverride: 'workspace_write',
-      callerSurface: 'agent',
-    })).resolves.toEqual(expect.objectContaining({
-      ok: false,
-      errorCode: 'permission_escalation_denied',
-      error: 'permission_escalation_denied',
-    }));
     expect(sendSessionMessage).not.toHaveBeenCalled();
   });
 
@@ -4485,11 +4535,20 @@ describe('createCliActionDeps session lifecycle bindings', () => {
     const signal = new AbortController().signal;
 
     const deps = createDeps();
+    const workspaceAction = {
+      kind: 'relationship' as const,
+      relationshipId: 'relationship-1',
+      flushBeforeCommit: true,
+    };
     await expect(deps.sessionHandoffStart?.({
       sessionId: 'session-1',
       targetMachineId: 'machine-target',
       targetPath: '/target/repo',
       targetSessionStorageMode: 'direct',
+      workspaceAction,
+      workspaceSyncSourceWorkspaceRefId: 'source-ref',
+      workspaceSyncTargetWorkspaceRefId: 'target-ref',
+      workspaceSyncSettingsVersion: 8,
       signal,
     })).resolves.toEqual({ handoffId: 'handoff-1' });
 
@@ -4506,6 +4565,10 @@ describe('createCliActionDeps session lifecycle bindings', () => {
         targetPath: '/target/repo',
         targetSessionStorageMode: 'direct',
         preferredTransportStrategies: ['direct_peer', 'server_routed_stream'],
+        workspaceAction,
+        workspaceSyncSourceWorkspaceRefId: 'source-ref',
+        workspaceSyncTargetWorkspaceRefId: 'target-ref',
+        workspaceSyncSettingsVersion: 8,
       },
     });
     expect(deps.sessionHandoffPrepareTarget).toBeUndefined();

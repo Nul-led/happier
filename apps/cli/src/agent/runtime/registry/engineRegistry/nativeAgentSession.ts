@@ -23,7 +23,6 @@ import {
     type ExternalSessionsSource,
     type SessionEnvOverlayV1,
     type SessionRuntimeIssueV1,
-    type HostSemanticEventV1,
     type SessionInputCausalPermissionAuthorityV1,
     type PluginMachineMaterializationRefV1,
 } from '@happier-dev/protocol';
@@ -1685,15 +1684,6 @@ function projectPublicNativeAgentRuntimeEvent(
     }
 }
 
-function shouldPublishNativeAgentRuntimeHostEvent(
-    event: AgentSessionRuntimeEvent,
-): boolean {
-    return event.kind !== 'context-compaction'
-        || event.phase === 'failed'
-        || event.phase === 'cancelled'
-        || event.phase === 'outcomeUnknown';
-}
-
 function createNativeAgentRuntimeEndedError(issue: SessionRuntimeIssueV1 | null): Error {
     if (!issue) {
         return new Error('Native Agent runtime is ended, disposing, or disposed');
@@ -1847,14 +1837,7 @@ function resolveNativeInputCorrelation(
     deliveryKind: NativeInputCorrelation['deliveryKind'],
     fallbackTurnId: string,
 ): NativeInputCorrelation | null {
-    const suppliedIds = [
-        ...(meta?.localId ? [meta.localId] : []),
-        ...(meta?.localIds ?? []),
-    ];
-    if (suppliedIds.some((value) => readNonBlankOpaqueIdentifier(value) === null)) return null;
-    const inputIds = [...new Set(suppliedIds)];
-    if (inputIds.length !== 1) return null;
-    const inputId = inputIds[0];
+    const inputId = resolveSingleNativeInputId(meta);
     if (!inputId) return null;
     const hasCausalPermissionAuthority = meta !== undefined
         && Object.hasOwn(meta, 'causalPermissionAuthority');
@@ -1878,6 +1861,21 @@ function resolveNativeInputCorrelation(
             ? { causalPermissionAuthority }
             : {}),
     });
+}
+
+function resolveSingleNativeInputId(
+    meta: RuntimeTurnPromptMeta | undefined,
+): string | null {
+    const suppliedIds = [
+        ...(meta?.localId ? [meta.localId] : []),
+        ...(meta?.localIds ?? []),
+    ];
+    if (suppliedIds.some((value) => readNonBlankOpaqueIdentifier(value) === null)) return null;
+    const inputIds = [...new Set(suppliedIds)];
+    if (inputIds.length !== 1) return null;
+    const inputId = inputIds[0];
+    if (!inputId) return null;
+    return inputId;
 }
 
 function parseNativeStructuredInput(
@@ -2067,7 +2065,6 @@ export function createNativeAgentSessionOperations(
     bindActiveTurnAdmissionWitnessReader?: (
         reader: () => NativeAgentNewTurnAdmissionWitness | null,
     ) => void,
-    publishHostEvent?: (event: HostSemanticEventV1) => void,
     toolExecutionLifecycle?: NativeAgentToolExecutionLifecycleObserver,
     runtimeIncarnationId = randomUUID(),
 ): PluginRuntimeHookOperations {
@@ -2515,13 +2512,6 @@ export function createNativeAgentSessionOperations(
         }
         const publishCanonicalEvent = () => {
             const publicEvent = projectPublicNativeAgentRuntimeEvent(event);
-            if (shouldPublishNativeAgentRuntimeHostEvent(event)) {
-                try {
-                    publishHostEvent?.(publicEvent);
-                } catch {
-                    logger.debug('[NativeAgentSession] failed to publish Host Event (non-fatal)');
-                }
-            }
             observeTurnCompletion(event);
             for (const listener of listeners) {
                 try {
@@ -3082,7 +3072,7 @@ export function createNativeAgentSessionOperations(
         })
         : Object.freeze({});
     const manualCompaction = directFacets.manualCompaction;
-    return Object.freeze({
+    const operations: PluginRuntimeHookOperations = Object.freeze({
         ...directHostControls,
         isProviderNativeCommand(prompt: string) {
             const commandName = readLeadingSlashCommandName(prompt);
@@ -3692,6 +3682,7 @@ export function createNativeAgentSessionOperations(
             }
         },
     });
+    return operations;
 }
 
 function openNativeAgentSessionUntilAbort(
@@ -3838,7 +3829,6 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
         signal?: AbortSignal;
     }>) => Promise<Readonly<Record<string, unknown>>>;
     generationSignal?: AbortSignal;
-    publishHostEvent?: (event: HostSemanticEventV1) => void;
     isMediatorPluginCurrent?: (pluginId: string) => boolean;
     isMediatorContributionCurrent?: HostSessionRuntimeConfig['isMediatorContributionCurrent'];
     agentSessionRealtimeVoiceAuthority?:
@@ -5184,7 +5174,6 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                 (reader) => {
                     readActiveTurnAdmissionWitness = reader;
                 },
-                params.publishHostEvent,
                 toolExecutionCapability
                     ? {
                         capability: toolExecutionCapability,

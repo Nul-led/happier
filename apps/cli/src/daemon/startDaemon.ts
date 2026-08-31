@@ -46,6 +46,7 @@ import { notifyActiveAccountConnectedServicesProjection } from '@/settings/accou
 import { resolveAccountSettingsScopeKey } from '@/settings/accountSettings/accountSettingsScopeKey';
 import { warmActiveAccountSettingsSnapshotBestEffort } from '@/settings/accountSettings/warmActiveAccountSettingsSnapshot';
 import { migrateTrackedSessionProcessesOutOfDaemonServiceCgroup } from './platform/linux/migrateTrackedSessionsOutOfDaemonServiceCgroup';
+import { shouldUseSystemdUserSessionResourceGovernor } from './platform/linux/systemdUserResourceGovernor';
 import { resolveFilesystemAccessPolicy } from '@/rpc/handlers/fileSystem/accessPolicy/filesystemAccessPolicy';
 export { buildTmuxSpawnConfig, buildTmuxWindowEnv } from './platform/tmux/spawnConfig';
 import { SPAWN_SESSION_ERROR_CODES } from '@/session/shared/spawnSessionContract';
@@ -73,6 +74,7 @@ import {
   readServerEnabledBit,
   type ConnectedServiceId,
 } from '@happier-dev/protocol';
+import { readIrohRelayConfigFromEnv } from '@happier-dev/iroh-native';
 import { readOrCreateInstallationIdentity } from './identity/store';
 import {
   startPluginWebhookDaemonWorkerV1,
@@ -88,6 +90,10 @@ import {
 } from './startup/startDaemonSessionControlRuntime';
 import { prepareDaemonBootstrapContext } from './startup/prepareDaemonBootstrapContext';
 import { createDaemonMachineBootstrapRuntime } from './startup/createDaemonMachineBootstrapRuntime';
+import {
+  createProductionDaemonWorkspaceSyncRuntime,
+  type ProductionDaemonWorkspaceSyncRuntime,
+} from './startup/createProductionDaemonWorkspaceSyncRuntime';
 import { createSshTunnelSupervisor } from './ssh/tunnels';
 import { createConnectedServiceGroupHomeCleanupScheduler } from './connectedServices/homes/createConnectedServiceGroupHomeCleanupScheduler';
 import { createConnectedServiceMaterializedHomeCleanupScheduler } from './connectedServices/materialize/cleanup/createConnectedServiceMaterializedHomeCleanupScheduler';
@@ -117,6 +123,11 @@ import type {
 import { createCurrentMachineExecutionOriginContextResolver } from '@/api/machine/resolveCurrentMachineExecutionOriginContext';
 import { createServerUrlServerFeaturesSnapshotStore } from '@/features/serverFeaturesSnapshotStore';
 import { createDaemonPeerMediationObservabilityRuntime } from './machine/peerMediationObservabilityRuntime';
+import {
+  createDaemonMachineIrohRuntime,
+  type DaemonMachineIrohRuntime,
+} from './peer/iroh/daemonMachineIrohRuntime';
+import { createWorkspaceMachineCarrierTunnelOpen } from './peer/iroh/workspaceMachineCarrierTunnelOpen';
 import { createDaemonSessionMutationCustody } from './connectedServices/usageLimitRecovery/createDaemonUsageLimitRecoveryMutationCustody';
 import { installPeerMediationObservabilityRuntimeActionContextProvider } from './peer/mediation/observability/runtimeActionContextProvider';
 import {
@@ -218,6 +229,16 @@ export async function startDaemon(
 
   let daemonLockHandle: Awaited<ReturnType<typeof acquireDaemonLock>> = null;
   let daemonStateOwner: DaemonStateOwner | null = null;
+  let workspaceSyncRuntime: ProductionDaemonWorkspaceSyncRuntime | null = null;
+  let workspaceSyncRuntimeMachineId: string | null = null;
+  let machineIrohRuntime: DaemonMachineIrohRuntime | null = null;
+  let stopMachineIrohAcceptor: () => Promise<void> = async () => {};
+  const stopWorkspaceSyncRuntime = async (): Promise<void> => {
+    const runtime = workspaceSyncRuntime;
+    workspaceSyncRuntime = null;
+    workspaceSyncRuntimeMachineId = null;
+    await runtime?.stop();
+  };
   const runtimeId = resolveDaemonRuntimeId(process.env);
   const startupSource = resolveDaemonStartupSourceFromEnv(process.env);
   const serviceLabel = resolveDaemonServiceLabelFromEnv(process.env);
@@ -520,6 +541,7 @@ export async function startDaemon(
           'startup_retirement_incomplete:exit_cleanup_incomplete',
       }),
       drainBackgroundServerWork: async () => {
+        await stopWorkspaceSyncRuntime();
         pluginWebhookWakeCleanup?.();
         pluginWebhookWakeCleanup = null;
         await pluginWebhookWorker?.stop();
@@ -627,7 +649,7 @@ export async function startDaemon(
     pruneHappyCliRunnerSnapshots(
       resolveLiveRunnerSnapshotFingerprints(pidToTrackedSession.values()),
     );
-    if (process.platform === 'linux' && startupSource === 'background-service') {
+    if (shouldUseSystemdUserSessionResourceGovernor({ platform: process.platform, startupSource })) {
       const migratedTrackedSessionProcesses = await migrateTrackedSessionProcessesOutOfDaemonServiceCgroup({
         trackedSessions: pidToTrackedSession.values(),
         daemonPid: process.pid,
@@ -1405,6 +1427,15 @@ export async function startDaemon(
       );
     });
 
+    const createdMachineIrohRuntime = await createDaemonMachineIrohRuntime({
+      happyHomeDir: configuration.happyHomeDir,
+      relayConfig: readIrohRelayConfigFromEnv(process.env),
+    }).catch((error) => {
+      logger.warn('[DAEMON RUN] Iroh machine endpoint is unavailable', error);
+      return null;
+    });
+    machineIrohRuntime = createdMachineIrohRuntime?.available ? createdMachineIrohRuntime : null;
+
     const machineRegistrationRuntime = startDaemonMachineRegistrationRuntime({
       api,
       credentials,
@@ -1442,6 +1473,42 @@ export async function startDaemon(
         credentials,
         daemonSessionMutationCustody,
         deviceLocalSecretStorage,
+        createWorkspaceSyncRuntime: async ({ machineId: registeredMachineId }) => {
+          if (
+            workspaceSyncRuntime
+            && workspaceSyncRuntimeMachineId === registeredMachineId
+          ) {
+            return workspaceSyncRuntime;
+          }
+          await stopWorkspaceSyncRuntime();
+          const featureSnapshot = serverFeaturesSnapshotStore.getSnapshot();
+          const trustRoots = featureSnapshot?.status === 'ready'
+            ? featureSnapshot.features.capabilities.machines.peerMediation.grantSigningKeys
+                .filter((key) => key.expiresAt == null || key.expiresAt > Date.now())
+                .map((key) => ({ keyId: key.keyId, publicKey: key.publicKey, expiresAt: key.expiresAt }))
+            : [];
+          const openMachineCarrierTunnel = machineIrohRuntime && externalActionAccountId && trustRoots.length > 0
+            ? createWorkspaceMachineCarrierTunnelOpen({
+                accountId: externalActionAccountId,
+                localMachineId: registeredMachineId,
+                runtime: machineIrohRuntime,
+                trustRoots,
+                readTargetMachine: async (targetMachineId) => await api.getMachine(targetMachineId),
+                mintGrant: async (request) => await api.mintPeerMediationRouteGrant(request),
+              })
+            : undefined;
+          const created = await createProductionDaemonWorkspaceSyncRuntime({
+            happyHomeDir: configuration.happyHomeDir,
+            activeServerDir: configuration.activeServerDir,
+            localMachineId: registeredMachineId,
+            releaseChannel: configuration.publicReleaseRing,
+            credentials,
+            ...(openMachineCarrierTunnel ? { openMachineCarrierTunnel } : {}),
+          });
+          workspaceSyncRuntime = created;
+          workspaceSyncRuntimeMachineId = registeredMachineId;
+          return created;
+        },
         diagnosticSubsystemGates,
         runtimeId,
         publicReleaseChannel,
@@ -1458,6 +1525,12 @@ export async function startDaemon(
         beforeShutdown,
         requestShutdown,
         directPeerServerLifecycle,
+        ...(machineIrohRuntime ? { machineIrohRuntime } : {}),
+        acquireWorkspaceSyncMachineIngress: async (input) => {
+          const runtime = workspaceSyncRuntime;
+          if (!runtime) throw new Error('Workspace sync runtime is not ready');
+          return await runtime.acquireWorkspaceSyncMachineIngress(input);
+        },
         directTransferPromptAssetAdapterRegistry,
         directTransferPromptRegistryRegistry,
         daemonServerWorkScheduler,
@@ -1654,6 +1727,7 @@ export async function startDaemon(
           daemonConnectivityCoordinator = machineSyncRuntime.daemonConnectivityCoordinator;
           machineConnectionStateCleanup = machineSyncRuntime.machineConnectionStateCleanup;
           stopPeerMediationLoopbackServer = machineSyncRuntime.stopPeerMediationLoopbackServer;
+          stopMachineIrohAcceptor = machineSyncRuntime.stopMachineIrohAcceptor;
           resumeQuiescedMachineConnectionPublications =
             machineSyncRuntime.resumeMachineConnectionPublications;
         } catch (error) {
@@ -1752,8 +1826,10 @@ export async function startDaemon(
       voiceInferenceWorker,
       trackedSessionCount: pidToTrackedSession.size,
       stopDirectPeerServer: async () => {
+        await stopMachineIrohAcceptor();
         await stopPeerMediationLoopbackServer();
         await stopDirectPeerServer();
+        await machineIrohRuntime?.shutdown();
       },
       stopTailscaleTransferServeLifecycle,
       stopSshTunnelsOnShutdown: sshTunnelSupervisor.stopAllTunnels,
@@ -1764,6 +1840,8 @@ export async function startDaemon(
     });
     await cleanupAndShutdown(shutdownRequest.source, shutdownRequest.errorMessage);
   } catch (error) {
+    await stopWorkspaceSyncRuntime().catch(() => undefined);
+    await machineIrohRuntime?.shutdown().catch(() => undefined);
     try {
       await releaseDaemonOwnershipAfterFatal({
         daemonLockHandle,

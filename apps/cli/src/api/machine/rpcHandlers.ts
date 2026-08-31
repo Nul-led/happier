@@ -80,6 +80,10 @@ import {
   type DirectTransferExportPrepareRequest,
 } from './rpcHandlers.directTransferExports';
 import { registerMachineDiagnosticsRpcHandlers } from './rpcHandlers.diagnostics';
+import {
+  registerMachineWorkspaceSyncRpcHandlers,
+  type MachineWorkspaceSyncRpcService,
+} from './rpcHandlers.workspaceSync';
 import { registerMachineSessionRpcHandlers } from './rpcHandlers.sessions';
 import { registerMachineSessionGoalRpcHandlers } from './rpcHandlers.sessionGoals';
 import { registerMachineConnectedServiceQuotaRpcHandlers } from './rpcHandlers.connectedServiceQuotas';
@@ -275,6 +279,7 @@ export type MachineRpcHandlerDeps = Readonly<{
   sessionHandoffCoordinator?: NonNullable<
     Parameters<typeof registerMachineSessionHandoffRpcHandlers>[0]['coordinateSessionHandoff']
   >;
+  workspaceSync?: MachineWorkspaceSyncRpcService;
   /**
    * Host-private server-origin Session-start binding. The session RPC owner
    * supplies its lifecycle and nonce handlers at registration time.
@@ -406,6 +411,10 @@ function registerMachineRpcHandlersOnce(params: Readonly<{
   if (params.deps?.actionOperations) {
     registerActionOperationRpcHandlers(rpcHandlerManager, params.deps.actionOperations.handlers);
   }
+  registerMachineWorkspaceSyncRpcHandlers({
+    rpcHandlerManager,
+    ...(params.deps?.workspaceSync ? { service: params.deps.workspaceSync } : {}),
+  });
 
   const sessionRpcRegistration = registerMachineSessionRpcHandlers({
     rpcHandlerManager,

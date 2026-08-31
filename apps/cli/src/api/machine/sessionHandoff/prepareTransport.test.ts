@@ -9,6 +9,35 @@ import { buildSessionHandoffAgentBundleTransferId } from '../../../session/hando
 import { resolvePrepareAgentBundle } from './prepareTransport';
 
 describe('resolvePrepareAgentBundle', () => {
+  it('keeps finite session-bundle transport independent from the workspace machine carrier', async () => {
+    const admission = vi.fn(async () => undefined);
+    const existingAgentBundle = { agentId: 'claude', remoteSessionId: 'session-source' };
+
+    await expect(resolvePrepareAgentBundle({
+      request: {
+        handoffId: 'handoff-finite-transfer',
+        sourceMachineId: 'machine-source',
+        targetMachineId: 'machine-target',
+        negotiatedTransportStrategy: 'server_routed_stream',
+        sourceSessionStorageMode: 'persisted',
+        targetPath: '/repo',
+        endpointCandidates: [],
+      },
+      actualTransportStrategy: 'server_routed_stream',
+      existingAgentBundle,
+      receivedAgentBundlePath: '/tmp/unused-agent-bundle.bin',
+      // Compatibility-shaped extras deliberately exercise the old admission
+      // path. The finite bundle owner must ignore them: only the workspace
+      // sync adapter may consume happier/machine/1 for Mutagen bytes.
+      machineCarrierRequired: true,
+      machineCarrierAdmission: admission,
+    } as Parameters<typeof resolvePrepareAgentBundle>[0] & {
+      machineCarrierRequired: boolean;
+      machineCarrierAdmission: typeof admission;
+    })).resolves.toBe(existingAgentBundle);
+    expect(admission).not.toHaveBeenCalled();
+  });
+
   it('keeps a received binary agent bundle available until its file slices are consumed', async () => {
     const sourceDirectory = await mkdtemp(join(os.tmpdir(), 'happier-agent-bundle-source-'));
     const targetDirectory = await mkdtemp(join(os.tmpdir(), 'happier-agent-bundle-target-'));

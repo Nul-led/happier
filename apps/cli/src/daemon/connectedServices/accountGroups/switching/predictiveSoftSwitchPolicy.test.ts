@@ -57,4 +57,12 @@ describe('evaluatePredictiveSoftSwitchPolicy', () => {
     });
   });
 
+  it('hot-applies proven same-provider-account exhaustion during a turn when the runtime declares in-turn support', () => {
+    expect(evaluatePredictiveSoftSwitchPolicy({
+      reason: 'same_provider_account_exhausted',
+      predictiveSoftSwitchMode: 'supported_in_turn',
+      turnState: { inFlight: true },
+    })).toEqual({ status: 'allow' });
+  });
+
 });

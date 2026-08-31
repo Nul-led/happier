@@ -42,14 +42,7 @@ type StrictJson =
 
 type StrictJsonObject = Readonly<{ [key: string]: StrictJson }>;
 
-/**
- * `title` is the one content-derived field the index persists, by approved
- * amendment (2026-08-07): a session's FIRST user message is immutable, so it is
- * not volatile state, and a partial page is served without hydration — without
- * it, every row of every in-progress build is a bare identifier, which on a
- * large corpus is the permanent state. It is stored only when the source chunk
- * supplies it; the host never derives, hydrates or invents one here.
- */
+/** The host persists Agent-owned enrichment state but never interprets it. */
 type StoredCandidate = Readonly<{
     remoteSessionId: string;
     updatedAtMs: number;
@@ -57,6 +50,7 @@ type StoredCandidate = Readonly<{
     archived?: boolean;
     title?: string;
     linkData?: StrictJsonObject;
+    candidateIndexState?: StrictJsonObject;
 }>;
 
 type PersistedCompleteCandidate = StoredCandidate & Readonly<{
@@ -77,6 +71,8 @@ type CandidateIndexValidation = Readonly<{
     corpus: CandidateCorpusDigest;
     continuationHistory: readonly string[];
 }>;
+
+type CandidateIndexStateSeed = Readonly<Record<string, StrictJsonObject>>;
 
 type CandidateIndexRecord = Readonly<{
     v: 2;
@@ -104,6 +100,11 @@ type CandidateIndexRecord = Readonly<{
     corpus: CandidateCorpusDigest;
     validation?: CandidateIndexValidation;
     continuationHistory?: readonly string[];
+    /**
+     * Enrichment checkpoints from the previous generation, retained only while
+     * its replacement crawl has not revisited every identity.
+     */
+    candidateIndexStateSeed?: CandidateIndexStateSeed;
     indexGeneration?: string;
     /**
      * The Agent runtime generation that produced these rows, or `null` when the
@@ -469,6 +470,10 @@ function sanitizeCandidate(value: ExternalSessionCandidatesPage['candidates'][nu
     ) return null;
     const rawLinkData = Reflect.get(value as object, 'linkData');
     const parsedLinkData = rawLinkData === undefined ? undefined : readStrictJson(rawLinkData);
+    const rawCandidateIndexState = Reflect.get(value as object, 'candidateIndexState');
+    const parsedCandidateIndexState = rawCandidateIndexState === undefined
+        ? undefined
+        : readStrictJson(rawCandidateIndexState);
     if (
         rawLinkData !== undefined
         && (
@@ -477,7 +482,16 @@ function sanitizeCandidate(value: ExternalSessionCandidatesPage['candidates'][nu
             || Array.isArray(parsedLinkData)
         )
     ) return null;
+    if (
+        rawCandidateIndexState !== undefined
+        && (
+            !parsedCandidateIndexState
+            || typeof parsedCandidateIndexState !== 'object'
+            || Array.isArray(parsedCandidateIndexState)
+        )
+    ) return null;
     const linkData = parsedLinkData as StrictJsonObject | undefined;
+    const candidateIndexState = parsedCandidateIndexState as StrictJsonObject | undefined;
     return Object.freeze({
         remoteSessionId: value.remoteSessionId,
         updatedAtMs: value.updatedAtMs,
@@ -485,6 +499,7 @@ function sanitizeCandidate(value: ExternalSessionCandidatesPage['candidates'][nu
         ...(value.archived === undefined ? {} : { archived: value.archived }),
         ...(value.title === undefined ? {} : { title: value.title }),
         ...(linkData === undefined ? {} : { linkData }),
+        ...(candidateIndexState === undefined ? {} : { candidateIndexState }),
     });
 }
 
@@ -502,6 +517,7 @@ export async function hydrateExternalSessionCandidateThroughAgentSource(params: 
         createdAtMs?: number;
         archived?: boolean;
         linkData?: StrictJsonObject;
+        candidateIndexState?: StrictJsonObject;
     }>;
     providerOps: Pick<ExternalSessionExecutionSurface, 'listCandidates' | 'resolveLinkIdentity'>;
     maxBytes?: number;
@@ -539,6 +555,15 @@ export async function hydrateExternalSessionCandidateThroughAgentSource(params: 
         limit: 1,
         searchTerm: params.candidate.remoteSessionId,
         searchMode: 'fast',
+        ...(params.candidate.candidateIndexState === undefined
+            ? {}
+            : {
+                readCandidateIndexState: (candidate) => (
+                    resolveExternalSessionCandidateIdentityKey(candidate) === expectedIdentity
+                        ? params.candidate.candidateIndexState
+                        : undefined
+                ),
+            }),
         ...(params.maxBytes === undefined ? {} : { maxBytes: params.maxBytes }),
         ...(params.signal === undefined ? {} : { signal: params.signal }),
     });
@@ -563,6 +588,15 @@ export async function hydrateExternalSessionCandidateThroughAgentSource(params: 
             limit: 1,
             searchTerm: params.candidate.remoteSessionId,
             searchMode: 'fast',
+            ...(params.candidate.candidateIndexState === undefined
+                ? {}
+                : {
+                    readCandidateIndexState: (candidate) => (
+                        resolveExternalSessionCandidateIdentityKey(candidate) === expectedIdentity
+                            ? params.candidate.candidateIndexState
+                            : undefined
+                    ),
+                }),
             ...(params.maxBytes === undefined ? {} : { maxBytes: params.maxBytes }),
             ...(params.signal === undefined ? {} : { signal: params.signal }),
         });
@@ -705,9 +739,63 @@ function isExactKeys(record: Record<string, unknown>, keys: readonly string[]): 
 function parseStoredCandidate(value: unknown): StoredCandidate | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
-    const optionalKeys = ['createdAtMs', 'archived', 'title', 'linkData'].filter((key) => record[key] !== undefined);
+    const optionalKeys = [
+        'createdAtMs',
+        'archived',
+        'title',
+        'linkData',
+        'candidateIndexState',
+    ].filter((key) => record[key] !== undefined);
     if (!isExactKeys(record, ['remoteSessionId', 'updatedAtMs', ...optionalKeys])) return null;
     return sanitizeCandidate(record as ExternalSessionCandidatesPage['candidates'][number]);
+}
+
+function readCandidateIndexStateSeed(value: unknown): CandidateIndexStateSeed | null {
+    const parsed = readStrictJson(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    for (const [identity, state] of Object.entries(parsed)) {
+        if (
+            !/^[a-f0-9]{64}$/.test(identity)
+            || !state
+            || typeof state !== 'object'
+            || Array.isArray(state)
+        ) return null;
+    }
+    return parsed as CandidateIndexStateSeed;
+}
+
+function createCandidateIndexStateSeed(
+    candidates: readonly StoredCandidate[],
+    previous?: CandidateIndexStateSeed,
+): CandidateIndexStateSeed | undefined {
+    const seed: Record<string, StrictJsonObject> = Object.assign(
+        Object.create(null) as Record<string, StrictJsonObject>,
+        previous,
+    );
+    for (const candidate of candidates) {
+        if (candidate.candidateIndexState !== undefined) {
+            seed[candidateIdentity(candidate)] = candidate.candidateIndexState;
+        }
+    }
+    return Object.keys(seed).length === 0 ? undefined : Object.freeze(seed);
+}
+
+function candidateIndexStateSeedSerializedBytes(
+    seed: CandidateIndexStateSeed | undefined,
+): number {
+    return seed === undefined ? 0 : Buffer.byteLength(JSON.stringify(seed), 'utf8');
+}
+
+function removeIndexedCandidateStatesFromSeed(
+    seed: CandidateIndexStateSeed | undefined,
+    candidates: readonly StoredCandidate[],
+): CandidateIndexStateSeed | undefined {
+    if (seed === undefined) return undefined;
+    const remaining: Record<string, StrictJsonObject> = { ...seed };
+    for (const candidate of candidates) {
+        delete remaining[candidateIdentity(candidate)];
+    }
+    return Object.keys(remaining).length === 0 ? undefined : Object.freeze(remaining);
 }
 
 function parsePersistedCompleteCandidate(
@@ -718,7 +806,13 @@ function parsePersistedCompleteCandidate(
 ): StoredCandidate | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const record = value as Record<string, unknown>;
-    const optionalKeys = ['createdAtMs', 'archived', 'title', 'linkData'].filter((key) => record[key] !== undefined);
+    const optionalKeys = [
+        'createdAtMs',
+        'archived',
+        'title',
+        'linkData',
+        'candidateIndexState',
+    ].filter((key) => record[key] !== undefined);
     if (!isExactKeys(record, [
         'remoteSessionId',
         'updatedAtMs',
@@ -850,6 +944,7 @@ function parseIndexRecord(
             'head',
             'validation',
             'continuationHistory',
+            'candidateIndexStateSeed',
             'indexGeneration',
             'candidateCount',
         ].filter(
@@ -889,6 +984,7 @@ function parseIndexRecord(
             || (record.state === 'building' && record.candidateCount !== undefined)
             || (record.state === 'building' && record.continuationHistory === undefined)
             || (record.state === 'complete' && record.continuationHistory !== undefined)
+            || (record.state === 'complete' && record.candidateIndexStateSeed !== undefined)
             || (
                 record.state === 'complete'
                 && (
@@ -959,6 +1055,10 @@ function parseIndexRecord(
             if (!parsedValidation) return null;
             validation = parsedValidation;
         }
+        const candidateIndexStateSeed = record.candidateIndexStateSeed === undefined
+            ? undefined
+            : readCandidateIndexStateSeed(record.candidateIndexStateSeed);
+        if (candidateIndexStateSeed === null) return null;
         const continuationStateBytes = (
             continuationHistory === undefined
                 ? 0
@@ -967,6 +1067,10 @@ function parseIndexRecord(
             validation === undefined
                 ? 0
                 : Buffer.byteLength(JSON.stringify(validation.continuationHistory), 'utf8')
+        ) + (
+            candidateIndexStateSeed === undefined
+                ? 0
+                : Buffer.byteLength(JSON.stringify(candidateIndexStateSeed), 'utf8')
         );
         if (!isExternalSessionCandidateIndexStateWithinByteCapacity(
             candidatesSerializedBytes,
@@ -988,6 +1092,7 @@ function parseIndexRecord(
             corpus,
             ...(validation === undefined ? {} : { validation }),
             ...(continuationHistory === undefined ? {} : { continuationHistory }),
+            ...(candidateIndexStateSeed === undefined ? {} : { candidateIndexStateSeed }),
             ...(record.indexGeneration === undefined ? {} : { indexGeneration: record.indexGeneration as string }),
             candidates: parsedCandidates,
         });
@@ -1574,14 +1679,20 @@ function readPreparedChunk(page: ExternalSessionCandidatesPage): Readonly<{
 function createBuildingRecord(
     keys: CandidateIndexKeys,
     initialPage: ExternalSessionCandidatesPage,
+    candidateIndexStateSeed?: CandidateIndexStateSeed,
 ): CandidateIndexRecord {
     const chunk = readPreparedChunk(initialPage);
+    const remainingCandidateIndexStateSeed = removeIndexedCandidateStatesFromSeed(
+        candidateIndexStateSeed,
+        chunk.candidates,
+    );
     const continuationHistory = Object.freeze(
         chunk.nextCursor ? [continuationCursorIdentity(chunk.nextCursor)] : [],
     );
     assertCandidateIndexStateWithinByteCapacity(
         Buffer.byteLength(JSON.stringify(chunk.candidates), 'utf8'),
-        Buffer.byteLength(JSON.stringify(continuationHistory), 'utf8'),
+        Buffer.byteLength(JSON.stringify(continuationHistory), 'utf8')
+            + candidateIndexStateSeedSerializedBytes(remainingCandidateIndexStateSeed),
     );
     const head = candidateHeadAnchor(initialPage);
     return Object.freeze({
@@ -1597,6 +1708,9 @@ function createBuildingRecord(
         ...(chunk.total === undefined ? {} : { total: chunk.total }),
         corpus: chunk.corpus,
         continuationHistory,
+        ...(remainingCandidateIndexStateSeed === undefined
+            ? {}
+            : { candidateIndexStateSeed: remainingCandidateIndexStateSeed }),
         candidates: chunk.candidates,
     });
 }
@@ -1680,10 +1794,13 @@ function publishCandidatePage(
 ): ExternalSessionCandidatesPage {
     const published = Object.freeze({
         ...page,
-        candidates: Object.freeze(page.candidates.map((candidate) => Object.freeze({
-            ...candidate,
-            candidateKey: resolveExternalSessionCandidateIdentityKey(candidate),
-        }))),
+        candidates: Object.freeze(page.candidates.map((candidate) => {
+            const { candidateIndexState: _candidateIndexState, ...publicCandidate } = candidate;
+            return Object.freeze({
+                ...publicCandidate,
+                candidateKey: resolveExternalSessionCandidateIdentityKey(candidate),
+            });
+        })),
     });
     if (
         published.candidates.length > maxItems
@@ -1748,16 +1865,9 @@ function decodeIndexCursor(value: string): CandidateIndexCursor | null {
 }
 
 /**
- * A persisted row already carries every field the Agent candidate contract
- * admits: `parseCandidate` in the invocation policy owner accepts exactly
- * `remoteSessionId`, `updatedAtMs`, `title`, `createdAtMs`, `archived` and
- * `linkData` and rejects any other key, and {@link StoredCandidate} persists all
- * six. The one field a source may withhold from its bounded index chunk and
- * still supply on an exact read is the title, because reading it can cost a
- * transcript read the crawl deliberately avoids. So a stored row that already
- * has a title is source-complete: re-reading it through the leaf can only
- * return the same six values it already holds, at the cost of one Agent
- * round-trip per row.
+ * A source-supplied title is already complete. Agent-owned candidate index
+ * state additionally proves the valid no-title result; legacy titleless rows
+ * without that proof hydrate once.
  *
  * Existence is not re-checked per row here either. The corpus digest that every
  * root request revalidates is the single owner of create/delete/replace
@@ -1767,7 +1877,7 @@ function decodeIndexCursor(value: string): CandidateIndexCursor | null {
  * that happened to need a title.
  */
 function isSourceCompleteStoredCandidate(candidate: StoredCandidate): boolean {
-    return candidate.title !== undefined;
+    return candidate.title !== undefined || candidate.candidateIndexState !== undefined;
 }
 
 async function hydrateAndPublishStoredCandidatePage(params: Readonly<{
@@ -1929,6 +2039,10 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
         limit: number;
         searchTerm?: string;
         searchMode?: 'fast' | 'full';
+        readCandidateIndexState?(candidate: Readonly<{
+            remoteSessionId: string;
+            linkData?: StrictJsonObject;
+        }>): StrictJsonObject | undefined;
     }>): Promise<ExternalSessionCandidatesPage>;
     hydrateCandidate?(
         candidate: Readonly<{
@@ -1967,12 +2081,41 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
     const indexCursor = params.cursor ? decodeIndexCursor(params.cursor) : null;
     if (params.cursor && params.cursor.startsWith(INDEX_CURSOR_PREFIX) && !indexCursor) invalidCursor();
 
+    const indexedStateSnapshot = indexCursor
+        ? null
+        : await readIndexRecord(paths.indexPath, keys);
+    const candidateIndexStateByIdentity = new Map<string, StrictJsonObject>(
+        Object.entries(indexedStateSnapshot?.candidateIndexStateSeed ?? {}),
+    );
+    for (const [identity, state] of (
+        indexedStateSnapshot?.candidates ?? []
+    ).flatMap((candidate) => (
+        candidate.candidateIndexState === undefined
+            ? []
+            : [[candidateIdentity(candidate), candidate.candidateIndexState] as const]
+    ))) {
+        candidateIndexStateByIdentity.set(identity, state);
+    }
+    const readCandidateIndexState = (candidate: Readonly<{
+        remoteSessionId: string;
+        linkData?: StrictJsonObject;
+    }>): StrictJsonObject | undefined => {
+        try {
+            return candidateIndexStateByIdentity.get(
+                resolveExternalSessionCandidateIdentityKey(candidate),
+            );
+        } catch {
+            return undefined;
+        }
+    };
+
     if (params.searchTerm || (params.cursor && !indexCursor)) {
         return publishCandidatePage(await params.listCandidates({
             ...(params.cursor ? { cursor: params.cursor } : {}),
             limit,
             ...(params.searchTerm ? { searchTerm: params.searchTerm } : {}),
             ...(params.searchMode ? { searchMode: params.searchMode } : {}),
+            readCandidateIndexState,
         }), limit, maxBytes);
     }
 
@@ -2108,6 +2251,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
 
     const initialPage = await params.listCandidates({
         limit: Math.min(INDEX_SCAN_CHUNK_LIMIT, limit),
+        readCandidateIndexState,
     });
     if (!initialPage.preparation) {
         return publishCandidatePage(initialPage, limit, maxBytes);
@@ -2117,6 +2261,18 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
     const initialAnchor = candidateHeadAnchor(initialPage);
     return await withCandidateIndexLock(paths.lockPath, params.signal, async () => {
         const freshBuilding = createBuildingRecord(keys, initialPage);
+        const replacementBuilding = (
+            previous: CandidateIndexRecord | null = indexedStateSnapshot,
+        ): CandidateIndexRecord => createBuildingRecord(
+            keys,
+            initialPage,
+            previous === null
+                ? undefined
+                : createCandidateIndexStateSeed(
+                    previous.candidates,
+                    previous.candidateIndexStateSeed,
+                ),
+        );
         const continuationWorkStartedAt = performance.now();
         let continuationCalls = 0;
         const canContinueWorkSlice = (): boolean => (
@@ -2128,12 +2284,9 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
          * holds digest-verified rows, the page it has crawled so far. It never emits
          * a continuation cursor: only a completed generation is page-addressable.
          *
-         * Partial rows preserve the one immutable content-derived field admitted by
-         * `StoredCandidate`: a source-supplied first-message title. The host neither
-         * derives nor refreshes titles during preparation, and it does not persist a
-         * working directory or another candidate representation. The shared publish
-         * path still applies the normal bounds and link-identity projection to the
-         * selected page without making the entire in-progress index page-addressable.
+         * Partial rows preserve source-supplied enrichment and its opaque resume
+         * checkpoint. The host persists both in this one index, interprets neither,
+         * and strips the checkpoint on the shared publication path.
          */
         const preparationResponse = async (
             page: ExternalSessionCandidatesPage,
@@ -2168,7 +2321,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
             });
         };
         const rebuildAndThrow = async (message: string): Promise<never> => {
-            await writeIndexRecord(paths.indexPath, freshBuilding);
+            await writeIndexRecord(paths.indexPath, replacementBuilding());
             throw sourceInvalid(message);
         };
         /**
@@ -2176,8 +2329,10 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
          * restarts from the fresh first chunk and the caller keeps seeing
          * preparation progress instead of a typed source failure.
          */
-        const rebuildAndReport = async (): Promise<ExternalSessionCandidatesPage> => {
-            await writeIndexRecord(paths.indexPath, freshBuilding);
+        const rebuildAndReport = async (
+            previous?: CandidateIndexRecord,
+        ): Promise<ExternalSessionCandidatesPage> => {
+            await writeIndexRecord(paths.indexPath, replacementBuilding(previous));
             return await preparationResponse(
                 initialPage,
                 [],
@@ -2210,6 +2365,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
             nextCursor: string | null,
             phase: 'build' | 'validation',
             candidatesSerializedBytes: number,
+            otherStateSerializedBytes = 0,
         ): Promise<void> => {
             if (!nextCursor) return;
             const cursorIdentity = continuationCursorIdentity(nextCursor);
@@ -2228,7 +2384,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
             const additionalSerializedBytes = history.identities.length === 0 ? 66 : 67;
             assertCandidateIndexStateWithinByteCapacity(
                 candidatesSerializedBytes,
-                history.serializedBytes + additionalSerializedBytes,
+                history.serializedBytes + additionalSerializedBytes + otherStateSerializedBytes,
             );
             history.identities.push(cursorIdentity);
             history.identitySet.add(cursorIdentity);
@@ -2242,6 +2398,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
                     page: await params.listCandidates({
                         cursor,
                         limit: INDEX_SCAN_CHUNK_LIMIT,
+                        readCandidateIndexState,
                     }),
                 };
             } catch (error) {
@@ -2269,6 +2426,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
                     chunk.nextCursor,
                     'validation',
                     Buffer.byteLength(JSON.stringify(record.candidates), 'utf8'),
+                    candidateIndexStateSeedSerializedBytes(record.candidateIndexStateSeed),
                 );
                 const validating: CandidateIndexRecord = Object.freeze({
                     ...record,
@@ -2291,7 +2449,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
                 );
             }
             if (!corpusDigestsEqual(record.corpus, corpus)) {
-                return await rebuildAndReport();
+                return await rebuildAndReport(record);
             }
             const sorted = record.state === 'complete'
                 ? record.candidates
@@ -2360,6 +2518,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
                     chunk.nextCursor,
                     'validation',
                     candidatesSerializedBytes,
+                    candidateIndexStateSeedSerializedBytes(record.candidateIndexStateSeed),
                 );
                 scanCursor = chunk.nextCursor;
                 scanned = chunk.scanned;
@@ -2389,7 +2548,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
             allowContinuation: boolean,
         ): Promise<ExternalSessionCandidatesPage> => {
             if (!candidateIndexAnchorHolds(record, initialAnchor)) {
-                return await rebuildAndReport();
+                return await rebuildAndReport(record);
             }
             const initialChunk = readPreparedChunk(initialPage);
             const initialCorpus = beginValidationCorpus(record, initialChunk.candidates);
@@ -2405,7 +2564,8 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
             ]);
             assertCandidateIndexStateWithinByteCapacity(
                 Buffer.byteLength(JSON.stringify(record.candidates), 'utf8'),
-                Buffer.byteLength(JSON.stringify(initialContinuationHistory), 'utf8'),
+                Buffer.byteLength(JSON.stringify(initialContinuationHistory), 'utf8')
+                    + candidateIndexStateSeedSerializedBytes(record.candidateIndexStateSeed),
             );
             if (!allowContinuation) {
                 const validating: CandidateIndexRecord = Object.freeze({
@@ -2452,7 +2612,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
         }
 
         if (!candidateIndexAnchorHolds(existing, initialAnchor)) {
-            return await rebuildAndReport();
+            return await rebuildAndReport(existing);
         }
 
         if (existing.validation) {
@@ -2474,21 +2634,29 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
                 existing.continuationHistory!,
             );
             const candidateAccumulator = createCandidateAccumulator(existing.candidates);
-            const snapshotBuilding = (): CandidateIndexRecord => Object.freeze({
-                v: 2,
-                state: 'building',
-                agentKey: existing.agentKey,
-                sourceKey: existing.sourceKey,
-                runtimeGeneration: existing.runtimeGeneration,
-                startToken: existing.startToken,
-                ...(existing.head === undefined ? {} : { head: existing.head }),
-                scanCursor,
-                scanned,
-                ...(total === undefined ? {} : { total }),
-                corpus,
-                continuationHistory: snapshotContinuationHistory(continuationHistory),
-                candidates: Object.freeze([...candidateAccumulator.candidates.values()]),
-            });
+            const snapshotBuilding = (): CandidateIndexRecord => {
+                const candidates = Object.freeze([...candidateAccumulator.candidates.values()]);
+                const candidateIndexStateSeed = removeIndexedCandidateStatesFromSeed(
+                    existing.candidateIndexStateSeed,
+                    candidates,
+                );
+                return Object.freeze({
+                    v: 2,
+                    state: 'building',
+                    agentKey: existing.agentKey,
+                    sourceKey: existing.sourceKey,
+                    runtimeGeneration: existing.runtimeGeneration,
+                    startToken: existing.startToken,
+                    ...(existing.head === undefined ? {} : { head: existing.head }),
+                    scanCursor,
+                    scanned,
+                    ...(total === undefined ? {} : { total }),
+                    corpus,
+                    continuationHistory: snapshotContinuationHistory(continuationHistory),
+                    ...(candidateIndexStateSeed === undefined ? {} : { candidateIndexStateSeed }),
+                    candidates,
+                });
+            };
             while (scanCursor) {
                 const consumedCursor = scanCursor;
                 const read = await readContinuation(consumedCursor);
@@ -2511,6 +2679,7 @@ export async function executeExternalSessionCandidateQuery(params: Readonly<{
                     chunk.nextCursor,
                     'build',
                     candidateAccumulator.serializedBytes.value,
+                    candidateIndexStateSeedSerializedBytes(existing.candidateIndexStateSeed),
                 );
                 if (!chunk.nextCursor) {
                     return await beginValidation(snapshotBuilding(), false);

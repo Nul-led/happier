@@ -112,6 +112,7 @@ function createTranscriptApi(params: Readonly<{
         permissionToolCallRawInputByProviderAndId: new Map(),
         toolCallInputByProviderAndId: new Map(),
         admitSessionUserMessage: vi.fn(async () => undefined),
+        findPersistedSessionUserMessageAdmission: vi.fn(async () => null),
         getTranscriptQueryContext: () => ({ encryptionMode: 'plain' }),
     });
 }

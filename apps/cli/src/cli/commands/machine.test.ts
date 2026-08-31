@@ -11,10 +11,18 @@ import { handleMachineCommand } from './machine';
 describe('handleMachineCommand', () => {
   const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const stdoutChunks: string[] = [];
+  vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array, encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+    stdoutChunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+    if (typeof encodingOrCallback === 'function') encodingOrCallback(null);
+    else callback?.(null);
+    return true;
+  }) as typeof process.stdout.write);
 
   afterEach(() => {
     logSpy.mockClear();
     errorSpy.mockClear();
+    stdoutChunks.length = 0;
     process.exitCode = undefined;
   });
 
@@ -128,9 +136,9 @@ describe('handleMachineCommand', () => {
         },
       },
     });
-    expect(logSpy.mock.calls.map((call) => call[0])).toEqual([
-      JSON.stringify(event),
-      JSON.stringify(result),
+    expect(stdoutChunks).toEqual([
+      `${JSON.stringify(event)}\n`,
+      `${JSON.stringify(result)}\n`,
     ]);
   });
 
@@ -826,8 +834,8 @@ describe('handleMachineCommand', () => {
       taskId: 'task-1',
       answer: { trusted: true },
     });
-    expect(logSpy.mock.calls.map((call) => call[0])).toContain(JSON.stringify(promptEvent));
-    expect(logSpy.mock.calls.map((call) => call[0])).toContain(JSON.stringify(result));
+    expect(stdoutChunks).toContain(`${JSON.stringify(promptEvent)}\n`);
+    expect(stdoutChunks).toContain(`${JSON.stringify(result)}\n`);
   });
 
   it('fails closed in non-interactive mode without --yes when a prompt is required', async () => {
@@ -960,8 +968,8 @@ describe('handleMachineCommand', () => {
       },
     );
 
-    expect(logSpy.mock.calls.flat().join('\n')).toContain('"ok":false');
-    expect(logSpy.mock.calls.flat().join('\n')).toContain('invalid_arguments');
+    expect(stdoutChunks.join('')).toContain('"ok":false');
+    expect(stdoutChunks.join('')).toContain('invalid_arguments');
   });
 
   it('rejects multi-line --trusted-host-key values', async () => {
@@ -1001,8 +1009,8 @@ describe('handleMachineCommand', () => {
       },
     );
 
-    expect(logSpy.mock.calls.flat().join('\n')).toContain('"ok":false');
-    expect(logSpy.mock.calls.flat().join('\n')).toContain('invalid_arguments');
+    expect(stdoutChunks.join('')).toContain('"ok":false');
+    expect(stdoutChunks.join('')).toContain('invalid_arguments');
   });
 
   it('rejects specifying a port in --ssh with actionable guidance', async () => {
@@ -1086,7 +1094,7 @@ describe('handleMachineCommand', () => {
       },
     );
 
-    expect(logSpy.mock.calls.map((call) => call[0])).toContain(JSON.stringify(result));
+    expect(stdoutChunks).toContain(`${JSON.stringify(result)}\n`);
     expect(process.exitCode).toBe(1);
   });
 });

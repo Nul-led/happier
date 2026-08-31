@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SPAWN_SESSION_ERROR_CODES, type SpawnSessionResult } from '@/rpc/handlers/registerSessionHandlers';
+import { SPAWN_SESSION_ERROR_CODES, type SpawnSessionResult } from '@/session/shared/spawnSessionContract';
 import type { TrackedSession } from '@/daemon/types';
 import { resolveSpawnWebhookResult } from './resolveSpawnWebhookResult';
 

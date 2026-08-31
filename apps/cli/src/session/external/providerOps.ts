@@ -9,9 +9,18 @@ import type {
   SessionStateUpdateV1,
   TranscriptSourcePage,
 } from '@happier-dev/agents';
+import type {
+  AgentExternalSessionCandidateIndexLookup,
+  AgentExternalSessionCandidateIndexState,
+} from '@happier-dev/plugin-sdk/sessions/external';
+
+export type IndexedExternalSessionCandidate = ExternalSessionCandidateV1 & Readonly<{
+  /** Private Agent checkpoint consumed and persisted only by candidateQuery. */
+  candidateIndexState?: AgentExternalSessionCandidateIndexState;
+}>;
 
 export type ExternalSessionCandidatesPage = Readonly<{
-  candidates: readonly ExternalSessionCandidateV1[];
+  candidates: readonly IndexedExternalSessionCandidate[];
   nextCursor: string | null;
   searchIncomplete?: boolean;
   preparation?: Readonly<{
@@ -90,6 +99,7 @@ export type ExternalSessionProviderOps = Readonly<{
     searchMode?: 'fast' | 'full';
     maxBytes?: number;
     signal?: AbortSignal;
+    readCandidateIndexState?: AgentExternalSessionCandidateIndexLookup;
   }>) => Promise<ExternalSessionCandidatesPage>;
   pageTranscript: (params: Readonly<{
     source: ExternalSessionsSource;

@@ -52,6 +52,10 @@ export async function resolveActiveServerAuthReadiness(
   const machineId = typeof machineIdRaw === 'string' && machineIdRaw.trim().length > 0
     ? machineIdRaw.trim()
     : null;
+  // `machineId` is only a locally allocated identity. The scoped confirmation
+  // bit is written by the canonical registration owner after the Home accepts
+  // that identity, and is cleared when credentials/account identity changes.
+  const machineRegistered = machineId !== null && settings?.machineIdConfirmedByServer === true;
 
   if (!credentials) {
     return {
@@ -59,7 +63,7 @@ export async function resolveActiveServerAuthReadiness(
       authenticated: false,
       unusableReason: 'no-credentials',
       machineId,
-      machineRegistered: machineId !== null,
+      machineRegistered: false,
     };
   }
 
@@ -70,6 +74,6 @@ export async function resolveActiveServerAuthReadiness(
     authenticated: !rejected,
     unusableReason: rejected ? 'credentials-rejected' : null,
     machineId,
-    machineRegistered: machineId !== null,
+    machineRegistered,
   };
 }

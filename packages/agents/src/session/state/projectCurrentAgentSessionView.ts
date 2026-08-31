@@ -52,6 +52,7 @@ const AGENT_SCOPED_CURRENT_METADATA_KEYS: readonly string[] = Object.freeze([
   'agentRuntimeCapabilitiesV1',
   'agentRuntimeFacetsV1',
   'mcpSelectionV1',
+  'mcpSelectionRestartRequiredV1',
   // Mode/model/config catalogs and applied values belonging to the source Agent.
   'acpSessionModesV1',
   'sessionModesV1',

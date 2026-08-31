@@ -14,6 +14,21 @@ describe('workspace sync relationship settings', () => {
   });
   it('rejects invalid policy digests and oversized pattern lists', () => {
     expect(() => validateWorkspaceSyncRelationships([{ ...relationship('r1'), contentPolicy: { ...policy, policyDigest: 'bad' } }])).toThrow(/policyDigest/);
-    expect(() => validateWorkspaceSyncRelationships([{ ...relationship('r1'), contentPolicy: { ...policy, extraIgnorePatterns: Array.from({ length: 257 }, () => 'x') } }])).toThrow(/patterns/);
+    const protocolMaximum = { ...policy, extraIgnorePatterns: Array.from({ length: 128 }, (_, index) => `${index}-${'x'.repeat(1018)}`), policyDigest: '' };
+    protocolMaximum.policyDigest = computeWorkspaceSyncPolicyDigest(protocolMaximum);
+    expect(validateWorkspaceSyncRelationships([{ ...relationship('r1'), contentPolicy: protocolMaximum }])).toHaveLength(1);
+    const oversized = { ...policy, extraIgnorePatterns: Array.from({ length: 129 }, (_, index) => `${index}-x`), policyDigest: '' };
+    oversized.policyDigest = computeWorkspaceSyncPolicyDigest(oversized);
+    expect(() => validateWorkspaceSyncRelationships([{ ...relationship('r1'), contentPolicy: oversized }])).toThrow();
+  });
+  it('preserves ignore/include order because Git negation semantics are order-sensitive', () => {
+    const ordered = { ...policy, extraIgnorePatterns: ['dist/**', '!dist/keep.txt'], policyDigest: '' };
+    ordered.policyDigest = computeWorkspaceSyncPolicyDigest(ordered);
+    expect(validateWorkspaceSyncRelationships([{ ...relationship('r1'), contentPolicy: ordered }])[0]?.contentPolicy.extraIgnorePatterns)
+      .toEqual(['dist/**', '!dist/keep.txt']);
+  });
+  it('rejects unknown authority-bearing relationship and policy fields', () => {
+    expect(() => validateWorkspaceSyncRelationships([{ ...relationship('r1'), futureAuthority: true }])).toThrow(/futureAuthority/i);
+    expect(() => validateWorkspaceSyncRelationships([{ ...relationship('r1'), contentPolicy: { ...policy, fallbackSelection: 'all_files' } }])).toThrow(/fallbackSelection/i);
   });
 });

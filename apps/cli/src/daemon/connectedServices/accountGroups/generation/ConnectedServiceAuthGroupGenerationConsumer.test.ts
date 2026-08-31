@@ -68,6 +68,42 @@ describe('ConnectedServiceAuthGroupGenerationConsumer', () => {
     },
   };
 
+  it.each([
+    ['automatic_runtime_failure', 'same_provider_account_exhausted'],
+    ['pre_turn_group_policy', 'soft_threshold'],
+    ['manual', 'manual'],
+  ] as const)('classifies %s generation recipients as %s instead of reusing the generic switch reason', async (
+    switchReason,
+    expectedGenerationApplyReason,
+  ) => {
+    const hardLimitGeneration = buildConnectedServiceAuthGroupCommittedGenerationFact({
+      decisionId: `decision-${switchReason}`,
+      provenance: 'hard_limit',
+      decisionCommittedTarget: generation.decisionCommittedTarget,
+    });
+    const applyCommittedGeneration = vi.fn(async () => ({
+      reconciliationDisposition: 'converged' as const,
+      errorCode: null,
+      providerAdoptedTarget,
+    }));
+    const consumer = new ConnectedServiceAuthGroupGenerationConsumer({
+      ...perSessionGenerationApplicationDeps,
+      applyCommittedGeneration,
+      clearAdoptedGeneration: vi.fn(async () => {}),
+    });
+
+    await consumer.consume({
+      executionAuthority: 'runtime_recovery',
+      committedGeneration: hardLimitGeneration,
+      switchReason,
+      sessions: [{ sessionId: 'recipient', activity: 'live' }],
+    });
+
+    expect(applyCommittedGeneration).toHaveBeenCalledWith(expect.objectContaining({
+      generationApplyReason: expectedGenerationApplyReason,
+    }));
+  });
+
   it('invokes the decision owner once for one source plus four siblings', async () => {
     const decideCommittedGeneration = vi.fn(async () => generation);
     const applyCommittedGeneration = vi.fn(async (_input: ApplyInput) => ({

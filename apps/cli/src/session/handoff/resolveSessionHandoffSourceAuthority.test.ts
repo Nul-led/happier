@@ -43,12 +43,12 @@ function resolve(rawSession: Record<string, unknown>) {
 describe('resolveSessionHandoffSourceAuthority', () => {
   it('classifies a Session with no link as persisted and a valid link as direct', () => {
     expect(resolve(layoutZeroSession({ machineId: 'machine-source', path: '/repo', flavor: 'claude' })))
-      .toEqual({ ok: true, sourceMachineId: 'machine-source', sessionStorageMode: 'persisted' });
+      .toEqual({ ok: true, sourceMachineId: 'machine-source', sourceRootPath: '/repo', sessionStorageMode: 'persisted' });
     expect(resolve(layoutZeroSession({
       machineId: 'machine-source',
       path: '/repo',
       externalSessionV1: VALID_LINK,
-    }))).toEqual({ ok: true, sourceMachineId: 'machine-source', sessionStorageMode: 'direct' });
+    }))).toEqual({ ok: true, sourceMachineId: 'machine-source', sourceRootPath: '/repo', sessionStorageMode: 'direct' });
   });
 
   /**
@@ -121,6 +121,6 @@ describe('resolveSessionHandoffSourceAuthority', () => {
       metadataLayoutVersion: SESSION_METADATA_LAYOUT_VERSION_V1,
       ownerMetadata: createPlainSessionOwnerMetadataEnvelopeV1(ownerMetadata.ownerMetadata),
       encryptionMode: 'plain',
-    })).toEqual({ ok: true, sourceMachineId: 'machine-source', sessionStorageMode: 'direct' });
+    })).toEqual({ ok: true, sourceMachineId: 'machine-source', sourceRootPath: '/repo', sessionStorageMode: 'direct' });
   });
 });

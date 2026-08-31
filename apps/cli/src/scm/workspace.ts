@@ -3,6 +3,7 @@ export {
     materializeWorkspaceCheckoutWithScmWorkspace,
     realizeWorkspaceCheckoutWithResolvedScmSelection,
     realizeWorkspaceCheckoutWithScmWorkspace,
+    realizeWorkspaceCheckoutWithScmWorkspaceSource,
 } from './workspace/workspaceCheckoutOperations';
 export {
     assertPortableWorkspaceTransferEntriesWithScmWorkspace,

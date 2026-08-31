@@ -10,21 +10,36 @@ import {
   createDaemonServiceStartTaskKind,
   createDaemonServiceStatusTaskKind,
   createDaemonServiceStopTaskKind,
+  createDeferredPersonalHomeSystemTaskOperations,
+  createPersonalHomeBackupTaskKind,
+  createPersonalHomeEraseTaskKind,
+  createPersonalHomeInspectTaskKind,
+  createPersonalHomeRelocateTaskKind,
+  createPersonalHomeRestoreTaskKind,
+  createPersonalHomeVerifyBackupTaskKind,
+  PERSONAL_HOME_SYSTEM_TASK_KINDS,
   createRelayRuntimeInstallOrUpdateTaskKind,
+  createRelayRuntimeRestartTaskKind,
   createRelayRuntimeStartTaskKind,
   createRelayRuntimeStatusTaskKind,
   createRelayRuntimeStopTaskKind,
+  createRelayRuntimeUninstallTaskKind,
   SystemTaskExecutionError,
   type DaemonServiceStatusSnapshot,
   type DaemonServiceTaskParams,
   type RelayRuntimeStatusSnapshot,
   type RelayRuntimeTaskParams,
+  type PersonalHomeSystemTaskOperations,
 } from '@happier-dev/cli-common/systemTasks';
 import {
+  checkLiveRelayRuntimeHealth,
+  createLivePersonalHomeSystemTaskOperations,
   installOrUpdateLiveRelayRuntime,
   readLiveRelayRuntimeStatus,
+  restartLiveRelayRuntime,
   startLiveRelayRuntime,
   stopLiveRelayRuntime,
+  uninstallLiveRelayRuntime,
 } from './relayRuntime/liveRelayRuntime';
 import {
   createDiscoverConfiguredSshHostsSystemTaskKind,
@@ -83,26 +98,11 @@ async function runLiveDaemonServiceLifecycleAction(_params: DaemonServiceTaskPar
   runCommandsBestEffort(plan.commands);
 }
 
-function requireLocalRelayRuntimeParams(params: RelayRuntimeTaskParams): Readonly<{
-  mode?: 'user' | 'system';
-  channel?: 'stable' | 'preview' | 'dev';
-}> {
+function requireLocalRelayRuntimeParams(params: RelayRuntimeTaskParams): RelayRuntimeTaskParams {
   if (params.target.kind !== 'local') {
     throw new Error('Live relay runtime tasks only support local targets');
   }
-  return {
-    mode: params.mode,
-    channel: params.channel,
-  };
-}
-
-function deriveBaseUrl(status: Awaited<ReturnType<typeof readLiveRelayRuntimeStatus>>): string {
-  try {
-    const url = new URL(status.health.url);
-    return `${url.protocol}//${url.host}`;
-  } catch {
-    return 'http://127.0.0.1:3005';
-  }
+  return { ...params, target: { kind: 'local' as const } };
 }
 
 function stableStringify(value: unknown): string {
@@ -185,18 +185,7 @@ function parseNoopParams(params: unknown): Readonly<{
 }
 
 async function readLiveRelayRuntimeSnapshot(params: RelayRuntimeTaskParams): Promise<RelayRuntimeStatusSnapshot> {
-  const localParams = requireLocalRelayRuntimeParams(params);
-  const status = await readLiveRelayRuntimeStatus(localParams);
-  return {
-    installed: status.installed,
-    version: status.version,
-    service: {
-      active: status.service.active,
-      enabled: status.service.enabled,
-    },
-    baseUrl: deriveBaseUrl(status),
-    healthy: status.health.reachable,
-  };
+  return await readLiveRelayRuntimeStatus(requireLocalRelayRuntimeParams(params));
 }
 
 type SystemTasksRunnerAdapter = Readonly<{
@@ -207,10 +196,36 @@ type SystemTasksRunnerAdapter = Readonly<{
 
 let liveRunnerAdapter: SystemTasksRunnerAdapter | null = null;
 
-export function getLiveSystemTasksRunnerAdapter(): SystemTasksRunnerAdapter {
-  if (liveRunnerAdapter) {
+export function getLiveSystemTasksRunnerAdapter(params: Readonly<{
+  personalHomeOperations?: PersonalHomeSystemTaskOperations;
+  personalHomeRuntime?: Readonly<{
+    channel: 'stable' | 'preview' | 'dev';
+    mode: 'user' | 'system';
+  }>;
+}> = {}): SystemTasksRunnerAdapter {
+  const isExplicitInvocation = params.personalHomeOperations !== undefined
+    || params.personalHomeRuntime !== undefined;
+  if (!isExplicitInvocation && liveRunnerAdapter) {
     return liveRunnerAdapter;
   }
+
+  const adapter = createLiveSystemTasksRunnerAdapter(params);
+  if (!isExplicitInvocation) liveRunnerAdapter = adapter;
+  return adapter;
+}
+
+function createLiveSystemTasksRunnerAdapter(params: Readonly<{
+  personalHomeOperations?: PersonalHomeSystemTaskOperations;
+  personalHomeRuntime?: Readonly<{
+    channel: 'stable' | 'preview' | 'dev';
+    mode: 'user' | 'system';
+  }>;
+}>): SystemTasksRunnerAdapter {
+  const personalHomeRuntime = params.personalHomeRuntime ?? { channel: 'stable', mode: 'user' } as const;
+  const personalHomeOperations = params.personalHomeOperations
+    ?? createDeferredPersonalHomeSystemTaskOperations(
+      async () => await createLivePersonalHomeSystemTaskOperations(personalHomeRuntime),
+    );
 
   const runner = createSystemTasksRunner({
     kinds: {
@@ -276,13 +291,7 @@ export function getLiveSystemTasksRunnerAdapter(): SystemTasksRunnerAdapter {
       [SSH_TUNNEL_SYSTEM_TASK_KINDS.stop]: createDaemonSshTunnelStopTaskKind(),
       'relay.runtime.installOrUpdate.v1': createRelayRuntimeInstallOrUpdateTaskKind({
         installOrUpdate: async (params) => {
-          const localParams = requireLocalRelayRuntimeParams(params);
-          await installOrUpdateLiveRelayRuntime(localParams);
-          const status = await readLiveRelayRuntimeSnapshot(params);
-          return {
-            relayUrl: status.baseUrl,
-            mode: params.mode === 'system' ? 'system' : 'user',
-          };
+          return await installOrUpdateLiveRelayRuntime(requireLocalRelayRuntimeParams(params));
         },
       }),
       'relay.runtime.start.v1': createRelayRuntimeStartTaskKind({
@@ -291,25 +300,18 @@ export function getLiveSystemTasksRunnerAdapter(): SystemTasksRunnerAdapter {
           await startLiveRelayRuntime(localParams);
         },
         readStatus: readLiveRelayRuntimeSnapshot,
-        checkHealth: async ({ baseUrl }) => {
-          const snapshot = await readLiveRelayRuntimeSnapshot({
-            target: { kind: 'local' },
-            mode: 'user',
-            channel: 'stable',
-          });
-          return snapshot.baseUrl === baseUrl && snapshot.healthy === true;
+        checkHealth: checkLiveRelayRuntimeHealth,
+      }),
+      'relay.runtime.restart.v1': createRelayRuntimeRestartTaskKind({
+        control: async (params) => {
+          await restartLiveRelayRuntime(requireLocalRelayRuntimeParams(params));
         },
+        readStatus: readLiveRelayRuntimeSnapshot,
+        checkHealth: checkLiveRelayRuntimeHealth,
       }),
       'relay.runtime.status.v1': createRelayRuntimeStatusTaskKind({
         readStatus: readLiveRelayRuntimeSnapshot,
-        checkHealth: async ({ baseUrl }) => {
-          const snapshot = await readLiveRelayRuntimeSnapshot({
-            target: { kind: 'local' },
-            mode: 'user',
-            channel: 'stable',
-          });
-          return snapshot.baseUrl === baseUrl && snapshot.healthy === true;
-        },
+        checkHealth: checkLiveRelayRuntimeHealth,
       }),
       'relay.runtime.stop.v1': createRelayRuntimeStopTaskKind({
         control: async (params) => {
@@ -317,10 +319,22 @@ export function getLiveSystemTasksRunnerAdapter(): SystemTasksRunnerAdapter {
           await stopLiveRelayRuntime(localParams);
         },
       }),
+      'relay.runtime.uninstall.v1': createRelayRuntimeUninstallTaskKind({
+        control: async (params) => {
+          const localParams = requireLocalRelayRuntimeParams(params);
+          await uninstallLiveRelayRuntime(localParams);
+        },
+      }),
+      [PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect]: createPersonalHomeInspectTaskKind({ operations: personalHomeOperations }),
+      [PERSONAL_HOME_SYSTEM_TASK_KINDS.backup]: createPersonalHomeBackupTaskKind({ operations: personalHomeOperations }),
+      [PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup]: createPersonalHomeVerifyBackupTaskKind({ operations: personalHomeOperations }),
+      [PERSONAL_HOME_SYSTEM_TASK_KINDS.restore]: createPersonalHomeRestoreTaskKind({ operations: personalHomeOperations }),
+      [PERSONAL_HOME_SYSTEM_TASK_KINDS.erase]: createPersonalHomeEraseTaskKind({ operations: personalHomeOperations }),
+      [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocate]: createPersonalHomeRelocateTaskKind({ operations: personalHomeOperations }),
     },
   });
 
-  liveRunnerAdapter = {
+  return {
     start: async (params) => {
       const spec = SystemTaskSpecSchema.parse(params.spec ?? null);
       return await runner.start({
@@ -343,5 +357,4 @@ export function getLiveSystemTasksRunnerAdapter(): SystemTasksRunnerAdapter {
     },
   };
 
-  return liveRunnerAdapter;
 }

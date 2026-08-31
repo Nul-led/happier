@@ -3,6 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { DaemonStateSchema } from './types';
 
 describe('DaemonStateSchema', () => {
+  it('parses the additive Iroh machine endpoint publication while preserving unknown fields', () => {
+    const endpoint = { endpointId: 'a'.repeat(64), relayUrls: ['https://relay.example.test/'] };
+    const result = DaemonStateSchema.parse({
+      status: 'running',
+      peerMediation: { iroh: { endpoint, futureField: true } },
+    });
+    expect(result.peerMediation?.iroh?.endpoint).toEqual(endpoint);
+    expect(result.peerMediation?.iroh).toHaveProperty('futureField', true);
+  });
+
   it('preserves supported transfer runtime capability metadata and strips undeclared listener classes', () => {
     const result = DaemonStateSchema.safeParse({
       status: 'running',

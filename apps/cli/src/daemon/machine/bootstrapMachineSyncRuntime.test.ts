@@ -52,6 +52,7 @@ import { buildUnavailableMemoryEmbeddingsDiagnostics } from '../memory/resolveOp
 import type { MemoryWorkerHandle } from '../memory/memoryWorker';
 import type { AutomationWorkerHandle } from '../automation/automationWorker';
 import type { VoiceInferenceWorkerHandle } from '../voiceInference/voiceInferenceWorker';
+import type { StartPeerMediationLoopbackServerOptions } from '../peer/mediation/loopback/server';
 
 import { bootstrapMachineSyncRuntime, retireMachineSyncRuntimeAttempt } from './bootstrapMachineSyncRuntime';
 import type {
@@ -62,7 +63,7 @@ import type { SpawnSessionResult } from '@/rpc/handlers/registerSessionHandlers'
 import type { CliServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
 import { createDeferred } from '@/testkit/async/deferred';
 
-type ConnectedApiMachineForBootstrap = NonNullable<ReturnType<BootstrapMachineSyncRuntimeParams['createConnectedApiMachine']>>;
+type ConnectedApiMachineForBootstrap = NonNullable<Awaited<ReturnType<BootstrapMachineSyncRuntimeParams['createConnectedApiMachine']>>>;
 
 function emptyMachineRpcLifecycleRegistration(
     ..._args: Parameters<ConnectedApiMachineForBootstrap['setRPCHandlers']>
@@ -613,6 +614,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             providerOperationsProducer: null,
             machineConnectionStateCleanup: null,
             stopPeerMediationLoopbackServer: expect.any(Function),
+            stopMachineIrohAcceptor: expect.any(Function),
             resumeMachineConnectionPublications: expect.any(Function),
         });
     });
@@ -1831,8 +1833,9 @@ describe('bootstrapMachineSyncRuntime', () => {
     });
 
     it('starts the peer mediation TCP tunnel loopback route through the daemon lifecycle when RPC is disabled', async () => {
+        const lifecycleOrder: string[] = [];
         const loopbackApp = fastify();
-        const stopPeerMediationLoopbackServer = vi.fn(async () => {});
+        const stopPeerMediationLoopbackServer = vi.fn(async () => { lifecycleOrder.push('loopback:stop'); });
         const appendSttStreamBinaryFrame = vi.fn(async () => ({
             ok: true,
             streamId: 'stream-1',
@@ -1860,12 +1863,28 @@ describe('bootstrapMachineSyncRuntime', () => {
             endpointFingerprint: 'endpoint_tunnel_1',
             expiresAt: 602_000,
         };
-        const startPeerMediationLoopbackServer = vi.fn(async () => ({
-            app: loopbackApp,
-            url: 'http://127.0.0.1:46012/peer-mediation/v1/probe',
-            endpoint,
-            stop: stopPeerMediationLoopbackServer,
-        }));
+        let loopbackStartOptions: StartPeerMediationLoopbackServerOptions | null = null;
+        const startPeerMediationLoopbackServer = vi.fn(async (options: StartPeerMediationLoopbackServerOptions) => {
+            loopbackStartOptions = options;
+            lifecycleOrder.push('loopback:start');
+            return {
+                app: loopbackApp,
+                url: 'http://127.0.0.1:46012/peer-mediation/v1/probe',
+                endpoint,
+                stop: stopPeerMediationLoopbackServer,
+            };
+        });
+        const ingressClose = vi.fn(async () => { lifecycleOrder.push('ingress:stop'); });
+        const acquireWorkspaceSyncMachineIngress = vi.fn(async () => ({ port: 48191, close: ingressClose }));
+        const machineIrohRuntime = {
+            available: true as const,
+            endpoint: { endpointId: 'a'.repeat(64), directAddresses: ['127.0.0.1:7777'] },
+            startAttemptAcceptor: vi.fn(async () => { lifecycleOrder.push('acceptor:start'); }),
+            stopActiveTunnels: vi.fn(async () => { lifecycleOrder.push('tunnels:stop'); }),
+            stopAttemptAcceptor: vi.fn(async () => { lifecycleOrder.push('acceptor:stop'); }),
+            openTransport: vi.fn(),
+            shutdown: vi.fn(async () => {}),
+        };
         const connectOptionsRef: { current: { onConnect?: () => Promise<void> | void } | null } = { current: null };
         let daemonState: DaemonState | null = { status: 'running' };
         const updateDaemonState = vi.fn(async (handler: (state: DaemonState | null) => DaemonState) => {
@@ -1929,6 +1948,8 @@ describe('bootstrapMachineSyncRuntime', () => {
             beforeShutdown: vi.fn(async () => {}),
             requestShutdown: vi.fn(),
             directPeerServerLifecycle: null,
+            machineIrohRuntime,
+            acquireWorkspaceSyncMachineIngress,
             directTransferPromptAssetAdapterRegistry: createPromptAssetAdapterRegistry(),
             directTransferPromptRegistryRegistry: createPromptRegistryAdapterRegistry(),
             connectedServiceRefreshLoopHandle: null,
@@ -1967,6 +1988,23 @@ describe('bootstrapMachineSyncRuntime', () => {
         expect(startPeerMediationLoopbackServer).toHaveBeenCalledWith(expect.not.objectContaining({
             rpc: expect.any(Object),
         }));
+        expect(lifecycleOrder).toEqual(['loopback:start', 'acceptor:start']);
+        const admission = (loopbackStartOptions as StartPeerMediationLoopbackServerOptions | null)?.irohMachineAdmission;
+        if (!admission) throw new Error('expected Iroh machine admission');
+        await expect(admission.resolveApplicationPort({
+            handshake: {
+                flow: 'workspace_sync',
+                operationId: 'operation-1',
+                sourceMachineId: 'machine-source',
+                targetMachineId: 'machine-1',
+            },
+            authenticatedRemoteEndpointId: 'b'.repeat(64),
+        } as never)).resolves.toBe(48191);
+        expect(acquireWorkspaceSyncMachineIngress).toHaveBeenCalledWith({
+            operationId: 'operation-1',
+            sourceMachineId: 'machine-source',
+            targetMachineId: 'machine-1',
+        });
         expect(daemonState).toMatchObject({
             status: 'running',
             peerMediation: {
@@ -1979,10 +2017,21 @@ describe('bootstrapMachineSyncRuntime', () => {
                         tcp_tunnel: { active: true },
                     },
                 },
+                iroh: { endpoint: machineIrohRuntime.endpoint },
             },
         });
 
+        await result.stopMachineIrohAcceptor();
         await result.stopPeerMediationLoopbackServer();
+        expect(daemonState?.peerMediation?.iroh).toBeUndefined();
+        expect(lifecycleOrder).toEqual([
+            'loopback:start',
+            'acceptor:start',
+            'tunnels:stop',
+            'acceptor:stop',
+            'ingress:stop',
+            'loopback:stop',
+        ]);
         expect(stopPeerMediationLoopbackServer).toHaveBeenCalledOnce();
     });
 });

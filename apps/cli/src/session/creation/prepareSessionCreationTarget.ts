@@ -1,17 +1,29 @@
+import { posix, win32 } from 'node:path';
+
 import {
   SCM_OPERATION_ERROR_CODES,
+  SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN,
   SessionCreationTargetPreparationRequestV1Schema,
   SessionCreationTargetPreparationResultV1Schema,
-  type ScmWorktreeCreateRequest,
   type ScmWorktreeCreateResponse,
+  type ScmWorktreeRemoveRequest,
+  type ScmWorktreeRemoveResponse,
+  type SessionCreationPreparedCheckoutV1,
   type SessionCreationTargetPreparationRequestV1,
   type SessionCreationTargetPreparationResultV1,
 } from '@happier-dev/protocol';
 
 import { notRepositoryResponse, runScmRoute } from '@/scm/rpc/dispatch';
-import { realizeWorkspaceCheckoutWithScmWorkspace } from '@/scm/workspace';
+import { realizeWorkspaceCheckoutWithScmWorkspaceSource } from '@/scm/workspace';
 import { ensureSessionDirectory } from '@/daemon/startup/ensureSessionDirectory';
-import { resolveCanonicalAbsolutePath } from '@/utils/path/expandHomeDirPath';
+import {
+  isCanonicalAbsolutePathInsideRoot,
+  resolveCanonicalAbsolutePath,
+} from '@/utils/path/expandHomeDirPath';
+
+type SessionCheckoutCreationResult = ScmWorktreeCreateResponse & Readonly<{
+  created?: boolean;
+}>;
 
 type CreateSessionCheckout = (input: Readonly<{
   sourceDirectory: string;
@@ -19,52 +31,111 @@ type CreateSessionCheckout = (input: Readonly<{
   baseRef: string | null;
   branchMode: 'new' | 'existing';
   signal?: AbortSignal;
-}>) => Promise<ScmWorktreeCreateResponse>;
+}>) => Promise<SessionCheckoutCreationResult>;
 
-async function createSessionCheckoutWithScm(input: Parameters<CreateSessionCheckout>[0]): Promise<ScmWorktreeCreateResponse> {
-  if (input.branchMode === 'new') {
-    const realized = await realizeWorkspaceCheckoutWithScmWorkspace({
-      sourcePath: input.sourceDirectory,
-      checkoutCreation: {
-        kind: 'git_worktree',
-        displayName: input.displayName,
-        baseRef: input.baseRef,
-        branchMode: input.branchMode,
-      },
-    });
-    return realized
-      ? {
-          success: true,
-          worktreePath: realized.targetPath,
-          branchName: input.displayName,
-        }
-      : {
-          success: false,
-          worktreePath: '',
-          branchName: '',
-          errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED,
-        };
-  }
-  const request: ScmWorktreeCreateRequest = {
-    cwd: input.sourceDirectory,
-    displayName: input.displayName,
-    ...(input.baseRef ? { baseRef: input.baseRef } : {}),
-    branchMode: input.branchMode,
-  };
-  return await runScmRoute<ScmWorktreeCreateRequest, ScmWorktreeCreateResponse>({
-    request,
-    workingDirectory: input.sourceDirectory,
-    ...(input.signal ? { signal: input.signal } : {}),
-    onNonRepository: async () => notRepositoryResponse<ScmWorktreeCreateResponse>(),
-    runWithBackend: async ({ context, selection }) =>
-      await selection.backend.worktreeCreate({ context, request }),
+async function createSessionCheckoutWithScm(input: Parameters<CreateSessionCheckout>[0]): Promise<SessionCheckoutCreationResult> {
+  const resolved = await realizeWorkspaceCheckoutWithScmWorkspaceSource({
+    sourcePath: input.sourceDirectory,
+    checkoutCreation: {
+      kind: 'git_worktree',
+      displayName: input.displayName,
+      baseRef: input.baseRef,
+      branchMode: input.branchMode,
+    },
   });
+  return resolved
+    ? {
+        success: true,
+        worktreePath: resolved.realization.targetPath,
+        branchName: resolved.realization.branchName,
+        sourceRootPath: resolved.sourceRootPath,
+        created: resolved.realization.created,
+      }
+    : {
+        success: false,
+        worktreePath: '',
+        branchName: '',
+        errorCode: SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED,
+      };
 }
 
 function isCheckoutUnavailable(errorCode: string | undefined): boolean {
   return errorCode === SCM_OPERATION_ERROR_CODES.NOT_REPOSITORY
     || errorCode === SCM_OPERATION_ERROR_CODES.FEATURE_UNSUPPORTED
     || errorCode === SCM_OPERATION_ERROR_CODES.BACKEND_UNAVAILABLE;
+}
+
+function resolveSessionDirectoryInCheckout(input: Readonly<{
+  sourceDirectory: string;
+  sourceRootPath: string | undefined;
+  checkoutRootPath: string;
+  env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
+}>): string {
+  const platform = input.platform ?? process.platform;
+  const sourceRoot = input.sourceRootPath
+    ? resolveCanonicalAbsolutePath(input.sourceRootPath, {
+        env: input.env,
+        platform,
+      })
+    : null;
+  const sourceDirectory = resolveCanonicalAbsolutePath(input.sourceDirectory, {
+    env: input.env,
+    platform,
+  });
+  const checkoutRoot = resolveCanonicalAbsolutePath(input.checkoutRootPath, {
+    env: input.env,
+    platform,
+  });
+  if (
+    !sourceRoot
+    || !sourceDirectory
+    || !checkoutRoot
+    || !isCanonicalAbsolutePathInsideRoot(sourceRoot.path, sourceDirectory.path, { platform })
+  ) {
+    return checkoutRoot?.path ?? input.checkoutRootPath;
+  }
+
+  const pathApi = platform === 'win32' ? win32 : posix;
+  const relativeSourcePath = pathApi.relative(sourceRoot.path, sourceDirectory.path);
+  if (!relativeSourcePath) {
+    return checkoutRoot.path;
+  }
+  const candidate = resolveCanonicalAbsolutePath(
+    pathApi.resolve(checkoutRoot.path, relativeSourcePath),
+    { env: input.env, platform },
+  );
+  return candidate
+    && isCanonicalAbsolutePathInsideRoot(checkoutRoot.path, candidate.path, { platform })
+    ? candidate.path
+    : checkoutRoot.path;
+}
+
+/**
+ * Compensates only a checkout this exact preparation proved it created. The
+ * canonical SCM remove operation retains confirmation and path validation;
+ * missing, reused, or older receipts are deliberate no-ops.
+ */
+export async function rollbackSessionCreationTargetCheckout(
+  checkout: SessionCreationPreparedCheckoutV1,
+): Promise<void> {
+  if (checkout.created !== true) return;
+  const request: ScmWorktreeRemoveRequest = {
+    cwd: checkout.finalDirectory,
+    worktreePath: checkout.finalDirectory,
+    confirmed: true,
+    authorizationToken: SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN,
+  };
+  const response = await runScmRoute<ScmWorktreeRemoveRequest, ScmWorktreeRemoveResponse>({
+    request,
+    workingDirectory: checkout.finalDirectory,
+    onNonRepository: async () => notRepositoryResponse<ScmWorktreeRemoveResponse>(),
+    runWithBackend: async ({ context, selection }) =>
+      await selection.backend.worktreeRemove({ context, request }),
+  });
+  if (!response.success) {
+    throw new Error(response.error || 'Failed to roll back prepared Session checkout');
+  }
 }
 
 /**
@@ -105,7 +176,7 @@ export async function prepareSessionCreationTarget(input: Readonly<{
   }
 
   input.signal?.throwIfAborted();
-  let checkoutResult: ScmWorktreeCreateResponse;
+  let checkoutResult: SessionCheckoutCreationResult;
   try {
     checkoutResult = await (input.createCheckout ?? createSessionCheckoutWithScm)({
       sourceDirectory: canonicalSource.path,
@@ -136,7 +207,13 @@ export async function prepareSessionCreationTarget(input: Readonly<{
   }
   return SessionCreationTargetPreparationResultV1Schema.parse({
     ok: true,
-    directory: canonicalFinal.path,
+    directory: resolveSessionDirectoryInCheckout({
+      sourceDirectory: canonicalSource.path,
+      sourceRootPath: checkoutResult.sourceRootPath,
+      checkoutRootPath: canonicalFinal.path,
+      env: input.env,
+      platform: input.platform,
+    }),
     // SCM owns worktree materialization. A worktree request never delegates a
     // raw directory mkdir to the Session-spawn authorization path.
     directoryCreationRequired: false,
@@ -145,6 +222,9 @@ export async function prepareSessionCreationTarget(input: Readonly<{
       finalDirectory: canonicalFinal.path,
       baseRef: draft.baseRef ?? null,
       branchMode: draft.branchMode ?? 'new',
+      ...(typeof checkoutResult.created === 'boolean'
+        ? { created: checkoutResult.created }
+        : {}),
     },
   });
 }

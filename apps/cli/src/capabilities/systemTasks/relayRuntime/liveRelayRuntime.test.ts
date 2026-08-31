@@ -1,40 +1,149 @@
-import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const trackedEnvKeys = [
-  'HOME',
-  'USERPROFILE',
-  'PATH',
-  'HAPPIER_SELF_HOST_INSTALL_ROOT',
-  'HAPPIER_SELF_HOST_CONFIG_DIR',
-  'HAPPIER_SELF_HOST_DATA_DIR',
-  'HAPPIER_SELF_HOST_LOG_DIR',
-  'HAPPIER_SQLITE_CONNECTION_LIMIT',
-  'HAPPY_SQLITE_CONNECTION_LIMIT',
-] as const;
+// The live adapter's contract is delegation to the canonical cli-common relay
+// host engine; the engine facade is the genuine system boundary this adapter
+// owns, so the tests observe the delegation seam instead of re-testing the
+// engine's platform internals (those are covered by cli-common's own suite).
+type RelayEngineStub = Readonly<{
+  readStatus: ReturnType<typeof vi.fn>;
+  installOrUpdate: ReturnType<typeof vi.fn>;
+  control: ReturnType<typeof vi.fn>;
+}>;
 
+type AdapterHarness = Readonly<{
+  engine: RelayEngineStub;
+  engineFactoryDeps: unknown[];
+  ensureLocalFirstPartyComponentCommand: ReturnType<typeof vi.fn>;
+  checkRelayRuntimeHealth: ReturnType<typeof vi.fn>;
+  createCanonicalPersonalHomeOperations: ReturnType<typeof vi.fn>;
+  runCommandStreaming: ReturnType<typeof vi.fn>;
+}>;
+
+let harness: AdapterHarness;
+let tempHomeDir: string;
 const previousEnv = new Map<string, string | undefined>();
 
-function patchEnv(patch: Partial<Record<(typeof trackedEnvKeys)[number], string | undefined>>): void {
-  for (const key of trackedEnvKeys) {
-    if (!previousEnv.has(key)) {
-      previousEnv.set(key, process.env[key]);
-    }
-    const value = patch[key];
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
+function patchEnv(key: string, value: string | undefined): void {
+  if (!previousEnv.has(key)) {
+    previousEnv.set(key, process.env[key]);
+  }
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
   }
 }
 
-afterEach(() => {
-  for (const key of trackedEnvKeys) {
-    const value = previousEnv.get(key);
+function statusSnapshot() {
+  return {
+    installed: true,
+    version: 'happier-server-v9',
+    service: { active: true, enabled: true },
+    baseUrl: 'http://127.0.0.1:4123',
+    healthy: true,
+    purpose: { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:4123' },
+  };
+}
+
+function healthResult() {
+  return {
+    reachable: true,
+    portOpen: true,
+    pingOk: true,
+    url: 'http://127.0.0.1:4123/health',
+    statusCode: 200,
+    version: null,
+  };
+}
+
+function createHarness(): AdapterHarness {
+  return {
+    engine: {
+      readStatus: vi.fn(async () => statusSnapshot()),
+      installOrUpdate: vi.fn(async () => ({ relayUrl: 'http://127.0.0.1:4123', mode: 'system' as const })),
+      control: vi.fn(async () => undefined),
+    },
+    engineFactoryDeps: [],
+    ensureLocalFirstPartyComponentCommand: vi.fn(async (_params: Record<string, unknown>) => '/resolved/happier-server'),
+    checkRelayRuntimeHealth: vi.fn(async (_params: Record<string, unknown>) => healthResult()),
+    runCommandStreaming: vi.fn(async () => undefined),
+    createCanonicalPersonalHomeOperations: vi.fn(async () => ({
+      inspect: async () => ({
+        purpose: 'personal-home' as const,
+        canonicalServerUrl: 'http://127.0.0.1:4123',
+        layout: {},
+        running: true,
+        identity: null,
+        masterSecret: { present: false, fingerprint: null },
+        storage: {
+          databasePresent: false,
+          databaseBytes: null,
+          publicFilesPresent: false,
+          privateFilesPresent: false,
+          backupsCount: 0,
+        },
+      }),
+      backup: async () => ({}),
+      verifyBackup: async () => ({}),
+      restore: async () => ({}),
+      erase: async () => ({}),
+      relocate: async () => ({}),
+    })),
+  };
+}
+
+async function importAdapter(): Promise<typeof import('./liveRelayRuntime')> {
+  vi.doMock('@happier-dev/cli-common/systemTasks', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@happier-dev/cli-common/systemTasks')>();
+    return {
+      ...actual,
+      createRelayHostEngine: ((deps: unknown) => {
+        harness.engineFactoryDeps.push(deps);
+        return harness.engine;
+      }) as unknown as typeof actual.createRelayHostEngine,
+      ensureLocalFirstPartyComponentCommand: harness.ensureLocalFirstPartyComponentCommand as unknown as typeof actual.ensureLocalFirstPartyComponentCommand,
+    };
+  });
+  vi.doMock('@happier-dev/cli-common/firstPartyRuntime', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@happier-dev/cli-common/firstPartyRuntime')>();
+    return {
+      ...actual,
+      checkRelayRuntimeHealth: harness.checkRelayRuntimeHealth as unknown as typeof actual.checkRelayRuntimeHealth,
+      createCanonicalPersonalHomeOperations:
+        harness.createCanonicalPersonalHomeOperations as unknown as typeof actual.createCanonicalPersonalHomeOperations,
+    };
+  });
+  vi.doMock('@happier-dev/cli-common/process', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@happier-dev/cli-common/process')>();
+    return { ...actual, runCommandStreaming: harness.runCommandStreaming };
+  });
+  // Guard against accidental GitHub network access from any pre-existing
+  // implementation path; the canonical engine resolves binaries through the
+  // shared first-party component dependency instead.
+  vi.doMock('@happier-dev/release-runtime/github', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@happier-dev/release-runtime/github')>();
+    return {
+      ...actual,
+      fetchGitHubReleaseByTag: async () => {
+        throw new Error('GitHub release fetch is disabled in relay runtime adapter tests');
+      },
+    };
+  });
+  return await import('./liveRelayRuntime');
+}
+
+beforeEach(async () => {
+  harness = createHarness();
+  tempHomeDir = await mkdtemp(path.join(tmpdir(), 'happier-live-relay-adapter-'));
+  patchEnv('HOME', tempHomeDir);
+  patchEnv('USERPROFILE', tempHomeDir);
+});
+
+afterEach(async () => {
+  for (const [key, value] of previousEnv) {
     if (value === undefined) {
       delete process.env[key];
     } else {
@@ -42,173 +151,184 @@ afterEach(() => {
     }
   }
   previousEnv.clear();
+  vi.resetModules();
+  vi.clearAllMocks();
+  await rm(tempHomeDir, { recursive: true, force: true });
 });
 
-describe('readLiveRelayRuntimeStatus', () => {
-  it('treats localized Windows scheduled-task status as active when the task is running', async () => {
-    const scopedHomeDir = await mkdtemp(path.join(tmpdir(), 'happier-relay-runtime-win-home-'));
-    const installRoot = path.join(scopedHomeDir, 'self-host', 'install');
-    const configDir = path.join(scopedHomeDir, 'self-host', 'config');
-    const originalPlatform = process.platform;
-    const originalFetch = globalThis.fetch;
+const fullLocalParams = {
+  target: { kind: 'local' as const },
+  channel: 'preview' as const,
+  mode: 'user' as const,
+  env: { PORT: '4123' },
+  purpose: { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:4123' },
+  selfHostRelayBinaryOverride: '/tmp/happier-server-override',
+};
 
-    Object.defineProperty(process, 'platform', { value: 'win32' });
+describe('liveRelayRuntime adapter delegation', () => {
+  it('composes default Personal Home task operations through the canonical facade and relay host engine lifecycle', { timeout: 60_000 }, async () => {
+    const module = await importAdapter();
+    const operations = await module.createLivePersonalHomeSystemTaskOperations();
 
-    try {
-      patchEnv({
-        HOME: scopedHomeDir,
-        USERPROFILE: scopedHomeDir,
-        PATH: 'C:\\Windows\\System32',
-        HAPPIER_SELF_HOST_INSTALL_ROOT: '~/self-host/install',
-        HAPPIER_SELF_HOST_CONFIG_DIR: '~/self-host/config',
-        HAPPIER_SELF_HOST_DATA_DIR: '~/self-host/data',
-        HAPPIER_SELF_HOST_LOG_DIR: '~/self-host/logs',
-      });
+    await expect(operations.inspect({
+      requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:4123' },
+      progress: () => undefined,
+    })).resolves.toMatchObject({ purpose: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:4123' });
 
-      await mkdir(installRoot, { recursive: true });
-      await mkdir(configDir, { recursive: true });
-      await writeFile(
-        path.join(installRoot, 'relay-runtime-state.json'),
-        `${JSON.stringify({ version: 'happier-server-v0.2.4-windows-x64' })}\n`,
-        'utf8',
-      );
-      await writeFile(path.join(configDir, 'server.env'), 'PORT=3005\r\nHOST=127.0.0.1\r\n', 'utf8');
-
-      globalThis.fetch = vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({ ok: true }),
-      })) as unknown as typeof fetch;
-
-      vi.doMock('@happier-dev/cli-common/process', async (importOriginal) => {
-        const actual = await importOriginal<typeof import('@happier-dev/cli-common/process')>();
-        return {
-          ...actual,
-          commandExistsOnPath: () => true,
-        };
-      });
-
-      vi.doMock('node:child_process', async () => {
-        const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
-        return {
-          ...actual,
-          spawnSync: (cmd: string) => {
-            if (cmd === 'powershell.exe') {
-              return {
-                status: 0,
-                stdout: '{"exists":true,"enabled":true,"active":true,"stateLabel":"Running"}',
-                stderr: '',
-              };
-            }
-            if (cmd === 'schtasks') {
-              return {
-                status: 0,
-                stdout: 'Statut: En cours\r\nStatut de la tâche planifiée: Activée\r\n',
-                stderr: '',
-              };
-            }
-            return { status: 0, stdout: '', stderr: '' };
-          },
-        };
-      });
-
-      vi.doMock('node:net', async () => {
-        const actual = await vi.importActual<typeof import('node:net')>('node:net');
-        const createConnection = () => {
-          const socket = new EventEmitter() as EventEmitter & {
-            setTimeout: (timeoutMs: number, handler?: () => void) => void;
-            destroy: () => void;
-            removeAllListeners: () => EventEmitter;
-          };
-          socket.setTimeout = (_timeoutMs: number, _handler?: () => void) => undefined;
-          socket.destroy = () => undefined;
-          process.nextTick(() => socket.emit('connect'));
-          return socket;
-        };
-        return {
-          ...actual,
-          createConnection,
-          default: {
-            ...actual,
-            createConnection,
-          },
-        };
-      });
-
-      const { readLiveRelayRuntimeStatus } = await import('./liveRelayRuntime');
-      const status = await readLiveRelayRuntimeStatus({
-        platform: 'win32',
-        mode: 'user',
-        channel: 'preview',
-        homeDir: scopedHomeDir,
-      });
-
-      expect(status.service.enabled).toBe(true);
-      expect(status.service.active).toBe(true);
-      expect(status.service.stateLabel).toBe('Running');
-      expect(status.health.reachable).toBe(true);
-    } finally {
-      Object.defineProperty(process, 'platform', { value: originalPlatform });
-      globalThis.fetch = originalFetch;
-      vi.resetModules();
-      vi.clearAllMocks();
-      await rm(scopedHomeDir, { recursive: true, force: true });
-    }
+    expect(harness.createCanonicalPersonalHomeOperations).toHaveBeenCalledTimes(1);
+    const composition = harness.createCanonicalPersonalHomeOperations.mock.calls[0]?.[0] as {
+      lifecycle: { isRunning(): Promise<boolean>; stop(): Promise<void>; start(): Promise<void>; healthCheck(): Promise<boolean> };
+      readPurpose(): Promise<{ kind: 'personal-home'; canonicalServerUrl: string }>;
+      readHappierVersion(): Promise<string>;
+      runMigrationProcess(input: Readonly<{ command: string; args: readonly string[]; env: NodeJS.ProcessEnv }>): Promise<void>;
+    };
+    await expect(composition.readHappierVersion()).resolves.toBe('happier-server-v9');
+    await expect(composition.readPurpose()).resolves.toEqual({
+      kind: 'personal-home',
+      canonicalServerUrl: 'http://127.0.0.1:4123',
+    });
+    harness.engine.readStatus.mockResolvedValueOnce({
+      ...statusSnapshot(),
+      purpose: { kind: 'generic' },
+    });
+    await expect(composition.readPurpose()).rejects.toThrow(/Personal Home/u);
+    await expect(operations.restore({
+      archivePath: '/tmp/home.tar',
+      requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:4123' },
+      progress: () => undefined,
+    })).resolves.toEqual({});
+    const migrationEnv = { DATABASE_URL: 'file:/tmp/staged.sqlite' };
+    await composition.runMigrationProcess({
+      command: '/installed/bin/happier-server',
+      args: ['--migrate-only'],
+      env: migrationEnv,
+    });
+    expect(harness.runCommandStreaming).toHaveBeenCalledWith({
+      cmd: '/installed/bin/happier-server',
+      args: ['--migrate-only'],
+      env: migrationEnv,
+      context: 'personal-home staged migration',
+    });
+    await expect(composition.lifecycle.isRunning()).resolves.toBe(true);
+    await composition.lifecycle.stop();
+    await composition.lifecycle.start();
+    await expect(composition.lifecycle.healthCheck()).resolves.toBe(true);
+    expect(harness.engine.control).toHaveBeenCalledWith(expect.objectContaining({ action: 'stop' }));
+    expect(harness.engine.control).toHaveBeenCalledWith(expect.objectContaining({ action: 'start' }));
   });
-});
 
-describe('startLiveRelayRuntime', () => {
-  it.each([
-    {
-      scenario: 'the canonical server-light default when no override is configured',
-      connectionLimit: undefined,
-      expectedConnectionLimit: '4',
-    },
-    {
-      scenario: 'an explicit server-light override',
-      connectionLimit: '1',
-      expectedConnectionLimit: '1',
-    },
-  ])('writes $scenario', async ({ connectionLimit, expectedConnectionLimit }) => {
-    const scopedHomeDir = await mkdtemp(path.join(tmpdir(), 'happier-relay-runtime-sqlite-default-'));
-    const installRoot = path.join(scopedHomeDir, 'self-host', 'install');
-    const configDir = path.join(scopedHomeDir, 'self-host', 'config');
+  it('composes Personal Home operations for the explicitly selected runtime channel and mode', async () => {
+    const module = await importAdapter();
+    const operations = await module.createLivePersonalHomeSystemTaskOperations({
+      channel: 'preview',
+      mode: 'system',
+    });
 
-    try {
-      patchEnv({
-        HOME: scopedHomeDir,
-        USERPROFILE: scopedHomeDir,
-        PATH: process.env.PATH,
-        HAPPIER_SELF_HOST_INSTALL_ROOT: installRoot,
-        HAPPIER_SELF_HOST_CONFIG_DIR: configDir,
-        HAPPIER_SELF_HOST_DATA_DIR: path.join(scopedHomeDir, 'self-host', 'data'),
-        HAPPIER_SELF_HOST_LOG_DIR: path.join(scopedHomeDir, 'self-host', 'logs'),
-        HAPPIER_SQLITE_CONNECTION_LIMIT: connectionLimit,
-        HAPPY_SQLITE_CONNECTION_LIMIT: undefined,
-      });
+    await operations.inspect({
+      requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:4123' },
+      progress: () => undefined,
+    });
 
-      vi.doMock('@happier-dev/cli-common/service', async (importOriginal) => {
-        const actual = await importOriginal<typeof import('@happier-dev/cli-common/service')>();
-        return {
-          ...actual,
-          applyServicePlan: vi.fn(async () => undefined),
-        };
-      });
+    const composition = harness.createCanonicalPersonalHomeOperations.mock.calls[0]?.[0] as {
+      channel: 'stable' | 'preview' | 'publicdev';
+      mode: 'user' | 'system';
+      readPurpose(): Promise<unknown>;
+    };
+    expect(composition.channel).toBe('preview');
+    expect(composition.mode).toBe('system');
+    await composition.readPurpose();
+    expect(harness.engine.readStatus).toHaveBeenCalledWith({
+      target: { kind: 'local' },
+      channel: 'preview',
+      mode: 'system',
+    });
+  });
+  it('delegates readLiveRelayRuntimeStatus to the canonical engine with every parsed param field', async () => {
+    const adapter = await importAdapter();
 
-      const { startLiveRelayRuntime } = await import('./liveRelayRuntime');
-      await startLiveRelayRuntime({
-        platform: process.platform,
-        mode: 'user',
-        channel: 'stable',
-        homeDir: scopedHomeDir,
-      });
+    const status = await adapter.readLiveRelayRuntimeStatus(fullLocalParams);
 
-      const renderedEnv = await readFile(path.join(configDir, 'server.env'), 'utf8');
-      expect(renderedEnv).toContain(`connection_limit=${expectedConnectionLimit}`);
-    } finally {
-      vi.resetModules();
-      vi.clearAllMocks();
-      await rm(scopedHomeDir, { recursive: true, force: true });
-    }
+    expect(harness.engine.readStatus).toHaveBeenCalledTimes(1);
+    expect(harness.engine.readStatus).toHaveBeenCalledWith(fullLocalParams);
+    expect(status).toEqual(statusSnapshot());
+  });
+
+  it('rejects ssh targets because live relay runtime tasks are local-only', async () => {
+    const adapter = await importAdapter();
+
+    await expect(adapter.readLiveRelayRuntimeStatus({
+      target: { kind: 'ssh', ssh: { target: 'relay.example.test', auth: 'agent' } },
+    })).rejects.toThrow(/local/u);
+
+    expect(harness.engine.readStatus).not.toHaveBeenCalled();
+  });
+
+  it('delegates start, restart, stop, and safe uninstall to engine control with the same full params', async () => {
+    const adapter = await importAdapter();
+
+    await adapter.startLiveRelayRuntime(fullLocalParams);
+    await adapter.restartLiveRelayRuntime(fullLocalParams);
+    await adapter.stopLiveRelayRuntime(fullLocalParams);
+    await adapter.uninstallLiveRelayRuntime(fullLocalParams);
+
+    expect(harness.engine.control).toHaveBeenCalledTimes(4);
+    expect(harness.engine.control).toHaveBeenNthCalledWith(1, { ...fullLocalParams, action: 'start' });
+    expect(harness.engine.control).toHaveBeenNthCalledWith(2, { ...fullLocalParams, action: 'restart' });
+    expect(harness.engine.control).toHaveBeenNthCalledWith(3, { ...fullLocalParams, action: 'stop' });
+    expect(harness.engine.control).toHaveBeenNthCalledWith(4, { ...fullLocalParams, action: 'uninstall' });
+  });
+
+  it('delegates installOrUpdate with the explicit server binary override intact', async () => {
+    const adapter = await importAdapter();
+
+    const result = await adapter.installOrUpdateLiveRelayRuntime(fullLocalParams);
+
+    expect(harness.engine.installOrUpdate).toHaveBeenCalledTimes(1);
+    expect(harness.engine.installOrUpdate).toHaveBeenCalledWith(fullLocalParams);
+    expect(harness.ensureLocalFirstPartyComponentCommand).not.toHaveBeenCalled();
+    expect(result).toEqual({ relayUrl: 'http://127.0.0.1:4123', mode: 'system' });
+  });
+
+  it('resolves the server binary through the shared first-party component dependency when no override is provided', async () => {
+    const adapter = await importAdapter();
+
+    await adapter.installOrUpdateLiveRelayRuntime({
+      target: { kind: 'local' },
+      channel: 'dev',
+      mode: 'user',
+      env: { PORT: '4123' },
+    });
+
+    expect(harness.ensureLocalFirstPartyComponentCommand).toHaveBeenCalledTimes(1);
+    expect(harness.ensureLocalFirstPartyComponentCommand).toHaveBeenCalledWith(expect.objectContaining({
+      componentId: 'happier-server',
+      envVarNames: ['HAPPIER_SELF_HOST_SERVER_BINARY'],
+      releaseRing: 'publicdev',
+    }));
+    expect(harness.engine.installOrUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      target: { kind: 'local' },
+      channel: 'dev',
+      mode: 'user',
+      env: { PORT: '4123' },
+      selfHostRelayBinaryOverride: '/resolved/happier-server',
+    }));
+  });
+
+  it('probes health at the engine-resolved base URL instead of reconstructed defaults', async () => {
+    const adapter = await importAdapter();
+
+    const health = await adapter.readLiveRelayRuntimeHealth({
+      target: { kind: 'local' },
+      channel: 'preview',
+      mode: 'user',
+    });
+
+    expect(harness.engine.readStatus).toHaveBeenCalledTimes(1);
+    expect(harness.checkRelayRuntimeHealth).toHaveBeenCalledTimes(1);
+    expect(harness.checkRelayRuntimeHealth).toHaveBeenCalledWith(expect.objectContaining({
+      host: '127.0.0.1',
+      port: 4123,
+    }));
+    expect(health).toEqual(healthResult());
   });
 });

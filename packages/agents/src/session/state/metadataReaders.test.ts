@@ -161,7 +161,7 @@ describe('readActiveSessionModelSelectionFromMetadata', () => {
           modelId: 'proposed-provider-model',
         },
       },
-    }, 'backend:antigravity', {
+    }, 'antigravity', 'backend:antigravity', {
       pid: 123,
       processStartTimeMs: 1_000,
     })).toEqual({
@@ -191,7 +191,7 @@ describe('readActiveSessionModelSelectionFromMetadata', () => {
           modelId: 'proposed-provider-model',
         },
       },
-    }, 'backend:antigravity', null)).toBeNull();
+    }, 'antigravity', 'backend:antigravity', null)).toBeNull();
   });
 
   it('invalidates old proof after a same-build physical runner replacement', () => {
@@ -205,7 +205,7 @@ describe('readActiveSessionModelSelectionFromMetadata', () => {
           processStartTimeMs: 2_000,
         },
       },
-    }, 'backend:antigravity', {
+    }, 'antigravity', 'backend:antigravity', {
       pid: 456,
       processStartTimeMs: 2_000,
     })).toBeNull();

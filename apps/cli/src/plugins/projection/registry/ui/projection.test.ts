@@ -803,6 +803,9 @@ describe('plugin UI projection family', () => {
                     resourceId: 'session-overview',
                     order: 25,
                     actions: ['open-details'],
+                    availability: {
+                        when: { fact: 'session.exists', operator: 'equals', value: true },
+                    },
                 },
             }],
         } satisfies ResolvedContributionRegistry;
@@ -841,6 +844,9 @@ describe('plugin UI projection family', () => {
             order: 25,
             resource: { pluginId: 'acme.preview', localId: 'session-overview' },
             actions: [{ pluginId: 'acme.preview', localId: 'open-details' }],
+            availability: {
+                when: { fact: 'session.exists', operator: 'equals', value: true },
+            },
             renderer: {
                 kind: 'declarative',
                 contributionId: 'session-info-overview',
@@ -850,6 +856,10 @@ describe('plugin UI projection family', () => {
             placement: {
                 contributionKind: 'surfacePlacement',
                 descriptorId: 'overview',
+                // Outer section applicability is Session-owned. The physical
+                // placement remains a valid admitted mount and receives the
+                // exact Session policy context for inner renderer policies.
+                availability: { state: 'available', reason: 'available', diagnostics: [] },
                 binding: expect.objectContaining({
                     kind: 'inline',
                     role: 'sessionInfoSection',

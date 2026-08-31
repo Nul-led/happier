@@ -1,3 +1,5 @@
+import { HandoffWorkspaceActionV1Schema } from '@happier-dev/protocol';
+
 /**
  * The pre-0.3 workspaceTransfer payload is intentionally not interpreted by the
  * handoff API anymore.  Keep the boundary diagnostic in one place so every
@@ -39,18 +41,29 @@ export function hasRetiredWorkspaceTransfer(raw: unknown): boolean {
  * the source session.  Legacy reverse-root fields are included because they
  * can still arrive through the released commit compatibility envelope.
  */
-export function hasUnsupportedWorkspaceAction(raw: unknown): boolean {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
-  const value = raw as Readonly<Record<string, unknown>>;
-  if (hasRetiredWorkspaceTransfer(raw)) return true;
-  if (Object.prototype.hasOwnProperty.call(value, 'workspaceTransfer')) return true;
+export type WorkspaceSyncAdmission = Readonly<
+  | { kind: 'none' }
+  | { kind: 'canonical' }
+  | { kind: 'malformed' }
+  | { kind: 'update_required' }
+>;
 
-  const action = value.workspaceAction;
-  if (action !== undefined) {
-    if (!action || typeof action !== 'object' || Array.isArray(action)) return true;
-    if ((action as Readonly<Record<string, unknown>>).kind !== 'none') return true;
+export function classifyWorkspaceSyncAdmission(raw: unknown): WorkspaceSyncAdmission {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { kind: 'none' };
+  const value = raw as Readonly<Record<string, unknown>>;
+  if (Object.prototype.hasOwnProperty.call(value, 'workspaceTransfer')) return { kind: 'update_required' };
+  if (Object.prototype.hasOwnProperty.call(value, 'workspaceReplicationReverseSourceRootPath')
+    || Object.prototype.hasOwnProperty.call(value, 'workspaceReplicationReverseTargetRootPath')) {
+    return { kind: 'update_required' };
   }
 
-  return Object.prototype.hasOwnProperty.call(value, 'workspaceReplicationReverseSourceRootPath')
-    || Object.prototype.hasOwnProperty.call(value, 'workspaceReplicationReverseTargetRootPath');
+  const action = value.workspaceAction;
+  if (action === undefined) return { kind: 'none' };
+  return HandoffWorkspaceActionV1Schema.safeParse(action).success
+    ? { kind: 'canonical' }
+    : { kind: 'malformed' };
+}
+
+export function hasUnsupportedWorkspaceAction(raw: unknown): boolean {
+  return classifyWorkspaceSyncAdmission(raw).kind === 'update_required';
 }

@@ -897,14 +897,21 @@ export async function createStablePluginResourcesOwner(params: Readonly<{
     resolveSessionResourceAccess?: ResolveSessionResourceAccess;
     isCommittedGenerationCurrent?: () => boolean | Promise<boolean>;
 }>): Promise<StablePluginResourcesOwner> {
-    if (!Array.isArray(params.registry.resources) || params.registry.resources.length > MAX_PLUGIN_RESOURCES_PER_GENERATION) {
+    if (!Array.isArray(params.registry.resources)) {
         return fail('plugin_resource_capacity_exceeded', 'Resource generation exceeds its declaration bound');
+    }
+    const contributions = params.registry.resources.map(normalizeContribution);
+    const resourceCountByPluginId = new Map<string, number>();
+    for (const contribution of contributions) {
+        const nextCount = (resourceCountByPluginId.get(contribution.pluginId) ?? 0) + 1;
+        if (nextCount > MAX_PLUGIN_RESOURCES_PER_GENERATION) {
+            return fail('plugin_resource_capacity_exceeded', 'Resource generation exceeds its declaration bound');
+        }
+        resourceCountByPluginId.set(contribution.pluginId, nextCount);
     }
 
     return await createStablePluginResourcesOwnerFromNormalized({
-        contributions: params.registry.resources.map(
-            normalizeContribution,
-        ),
+        contributions,
         generations: params.generations,
         ...(params.immutableGenerationIdsByPluginId
             ? { immutableGenerationIdsByPluginId: params.immutableGenerationIdsByPluginId }
@@ -1655,6 +1662,22 @@ async function createStablePluginResourcesOwnerFromNormalized(
         resolveRetry?.();
     }
 
+    async function retryDynamicWatchAfterSettlementFailure(
+        watch: DynamicWatch,
+        context: DynamicResourceContextState,
+        callbackController: AbortController,
+    ): Promise<boolean> {
+        if (!await isDynamicWatchSettlementCurrent(watch, callbackController)) return false;
+        if (!watch.failureWakeDelivered && context.observedDigest !== '') {
+            watch.failureWakeDelivered = true;
+            if (!await isDynamicWatchSettlementCurrent(watch, callbackController)) return false;
+            deliverDynamicWatchers(watch, context.observedDigest, true);
+        }
+        if (!isDynamicWatchCurrent(watch, callbackController)) return false;
+        await waitForDynamicResettlementRetry(watch);
+        return isDynamicWatchCurrent(watch, callbackController);
+    }
+
     function settleDynamicInvalidation(
         resource: AdmittedDynamicResource,
         context: DynamicResourceContextState,
@@ -1718,23 +1741,13 @@ async function createStablePluginResourcesOwnerFromNormalized(
                             settlementReadController.abort();
                         }
                     } catch {
-                        // An ignored abort can resolve after this watch has lost
-                        // ownership. Fence it before it can retry or wake a
-                        // consumer through a replacement watch/context.
-                        if (!await isDynamicWatchSettlementCurrent(watch, callbackController)) return;
-                        // A failed settlement has no new bytes to publish, but
-                        // its existing LKG must become stale at the generic
-                        // digest-only consumer. One forced same-digest wake
-                        // represents the whole failure episode; recovery gets
-                        // one matching wake even when the digest is unchanged.
-                        if (!watch.failureWakeDelivered && context.observedDigest !== '') {
-                            watch.failureWakeDelivered = true;
-                            if (!await isDynamicWatchSettlementCurrent(watch, callbackController)) return;
-                            deliverDynamicWatchers(watch, context.observedDigest, true);
-                        }
-                        if (!isDynamicWatchCurrent(watch, callbackController)) return;
-                        await waitForDynamicResettlementRetry(watch);
-                        if (!isDynamicWatchCurrent(watch, callbackController)) return;
+                        // Producer and admission failures share one stale/LKG
+                        // episode and one retry cadence at the watch owner.
+                        if (!await retryDynamicWatchAfterSettlementFailure(
+                            watch,
+                            context,
+                            callbackController,
+                        )) return;
                         continue;
                     }
                     // Fence ignored-abort producer results before every state
@@ -1748,10 +1761,13 @@ async function createStablePluginResourcesOwnerFromNormalized(
                     if (!isDynamicWatchCurrent(watch, callbackController)) return;
                     if (!isDynamicResourceAccountLifetimeCurrent(resource, accountLifetimeToken)) return;
                     if (!admitDynamicObservation(resource, context, observed, accountLifetimeToken)) {
-                        // Bytes this generation is not allowed to hold are not a
-                        // change it may publish: retain the last known good
-                        // observation and tell nobody.
-                        if (!watch.pending) return;
+                        // Retain the LKG, but surface the same stale episode and
+                        // retry through the existing watch convergence owner.
+                        if (!await retryDynamicWatchAfterSettlementFailure(
+                            watch,
+                            context,
+                            callbackController,
+                        )) return;
                         continue;
                     }
                     if (!isDynamicWatchCurrent(watch, callbackController)) return;

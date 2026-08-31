@@ -441,6 +441,41 @@ describe('bounded Agent External Sessions invocation', () => {
         });
     });
 
+    it('round-trips private candidate index state through the bounded Agent boundary', async () => {
+        const priorState = Object.freeze({ kind: 'fixture-index', offset: 41 });
+        const wrapped = createWrapper({
+            contribution: contributionWith((_method, request) => {
+                const listRequest = request as AgentExternalSessionsListCandidatesRequest;
+                const candidateIndexState = listRequest.readCandidateIndexState?.({
+                    remoteSessionId: 'remote-1',
+                    linkData: { projectId: 'project-a' },
+                });
+                return {
+                    ok: true,
+                    value: {
+                        candidates: [{
+                            remoteSessionId: 'remote-1',
+                            updatedAtMs: 1,
+                            linkData: { projectId: 'project-a' },
+                            candidateIndexState,
+                        }],
+                        nextCursor: null,
+                    },
+                };
+            }),
+        });
+
+        await expect(wrapped.listCandidates({
+            ...requestFor('listCandidates'),
+            readCandidateIndexState: () => priorState,
+        })).resolves.toMatchObject({
+            ok: true,
+            value: {
+                candidates: [{ candidateIndexState: priorState }],
+            },
+        });
+    });
+
     it.each([
         ['resolveSource', 262_144, undefined],
         ['listCandidates', 1_048_576, 50],

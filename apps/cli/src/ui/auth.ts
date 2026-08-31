@@ -35,11 +35,20 @@ import {
     type TerminalPairingAuthentication,
     type TerminalPairingRequirement,
 } from '@/auth/terminalProvisioningResponse';
+import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+
+type InteractiveTerminalAuthContext = Readonly<{
+    keypair: tweetnacl.BoxKeyPair;
+    claimSecret: string;
+    pairing: TerminalPairingAuthentication;
+    pairingRequirement: TerminalPairingRequirement | null;
+    serverIdentityId: string;
+}>;
 
 export type PostTerminalAuthRequestCompatibleResponse =
     | { state: 'requested' }
     | { state: 'authorized' }
-    | { state: 'authorized'; token: string; response: string };
+    | { state: 'authorized'; token: string; response: string; serverIdentityId?: string };
 
 function isAuthorizedWithTokenAndResponse(
     value: PostTerminalAuthRequestCompatibleResponse,
@@ -198,6 +207,18 @@ export async function doAuth(): Promise<StoredCredentials | null> {
 
     await applyAutoPublicServerUrlFromTailscaleServeBestEffort();
 
+    const featuresSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: configuration.apiServerUrl });
+    const serverIdentityId = featuresSnapshot.status === 'ready'
+        ? featuresSnapshot.features.capabilities.serverIdentity.serverIdentityId?.trim() ?? ''
+        : '';
+    if (!serverIdentityId) {
+        console.log(
+            `Unable to verify the selected Home identity at ${configuration.apiServerUrl}; `
+            + 'the authentication request was not created.',
+        );
+        return null;
+    }
+
     // Generating ephemeral key
     const secret = new Uint8Array(randomBytes(32));
     const keypair = tweetnacl.box.keyPair.fromSecretKey(secret);
@@ -235,12 +256,12 @@ export async function doAuth(): Promise<StoredCredentials | null> {
 
     // Handle authentication based on selected method
     if (authMethod === 'mobile') {
-        return await doMobileAuth({ keypair, claimSecret: claimSecretB64Url, pairing, pairingRequirement });
+        return await doMobileAuth({ keypair, claimSecret: claimSecretB64Url, pairing, pairingRequirement, serverIdentityId });
     }
     if (authMethod === 'web') {
-        return await doWebAuth({ keypair, claimSecret: claimSecretB64Url, pairing, pairingRequirement });
+        return await doWebAuth({ keypair, claimSecret: claimSecretB64Url, pairing, pairingRequirement, serverIdentityId });
     }
-    return await doBothAuth({ keypair, claimSecret: claimSecretB64Url, pairing, pairingRequirement });
+    return await doBothAuth({ keypair, claimSecret: claimSecretB64Url, pairing, pairingRequirement, serverIdentityId });
 }
 
 function toTerminalConnectPairingContext(pairing: TerminalPairingAuthentication): Readonly<{
@@ -255,12 +276,7 @@ function toTerminalConnectPairingContext(pairing: TerminalPairingAuthentication)
     };
 }
 
-async function doBothAuth(params: Readonly<{
-    keypair: tweetnacl.BoxKeyPair;
-    claimSecret: string;
-    pairing: TerminalPairingAuthentication;
-    pairingRequirement: TerminalPairingRequirement | null;
-}>): Promise<StoredCredentials | null> {
+async function doBothAuth(params: InteractiveTerminalAuthContext): Promise<StoredCredentials | null> {
     if (process.stdout.isTTY) {
         console.clear();
     }
@@ -270,6 +286,7 @@ async function doBothAuth(params: Readonly<{
         webappUrl: configuration.webappUrl,
         serverUrl: configuration.serverUrl,
         publicKeyB64Url,
+        serverIdentityId: params.serverIdentityId,
         pairing: toTerminalConnectPairingContext(params.pairing),
         supportsTokenOnly: true,
     });
@@ -413,12 +430,7 @@ function selectAuthenticationMethod(): Promise<AuthMethod | null> {
 /**
  * Handle mobile authentication flow
  */
-async function doMobileAuth(params: Readonly<{
-    keypair: tweetnacl.BoxKeyPair;
-    claimSecret: string;
-    pairing: TerminalPairingAuthentication;
-    pairingRequirement: TerminalPairingRequirement | null;
-}>): Promise<StoredCredentials | null> {
+async function doMobileAuth(params: InteractiveTerminalAuthContext): Promise<StoredCredentials | null> {
     if (process.stdout.isTTY) {
         console.clear();
     }
@@ -440,6 +452,7 @@ async function doMobileAuth(params: Readonly<{
         webappUrl: configuration.webappUrl,
         serverUrl: configuration.serverUrl,
         publicKeyB64Url,
+        serverIdentityId: params.serverIdentityId,
         pairing: toTerminalConnectPairingContext(params.pairing),
         supportsTokenOnly: true,
     });
@@ -484,12 +497,7 @@ async function doMobileAuth(params: Readonly<{
 /**
  * Handle web authentication flow
  */
-async function doWebAuth(params: Readonly<{
-    keypair: tweetnacl.BoxKeyPair;
-    claimSecret: string;
-    pairing: TerminalPairingAuthentication;
-    pairingRequirement: TerminalPairingRequirement | null;
-}>): Promise<StoredCredentials | null> {
+async function doWebAuth(params: InteractiveTerminalAuthContext): Promise<StoredCredentials | null> {
     if (process.stdout.isTTY) {
         console.clear();
     }
@@ -510,6 +518,7 @@ async function doWebAuth(params: Readonly<{
         webappUrl: configuration.webappUrl,
         serverUrl: configuration.serverUrl,
         publicKeyB64Url,
+        serverIdentityId: params.serverIdentityId,
         pairing: toTerminalConnectPairingContext(params.pairing),
         supportsTokenOnly: true,
     });
@@ -552,12 +561,7 @@ async function doWebAuth(params: Readonly<{
 /**
  * Wait for authentication to complete and return credentials
  */
-async function waitForAuthentication(params: Readonly<{
-    keypair: tweetnacl.BoxKeyPair;
-    claimSecret: string;
-    pairing: TerminalPairingAuthentication;
-    pairingRequirement: TerminalPairingRequirement | null;
-}>): Promise<StoredCredentials | null> {
+async function waitForAuthentication(params: InteractiveTerminalAuthContext): Promise<StoredCredentials | null> {
     process.stdout.write('Waiting for authentication');
     let dots = 0;
     let cancelled = false;
@@ -596,7 +600,18 @@ async function waitForAuthentication(params: Readonly<{
                 return null;
             }
             try {
-                const tryFinalizeWithTokenAndEncryptedResponse = async (token: string, responseB64: string): Promise<StoredCredentials | null> => {
+                const tryFinalizeWithTokenAndEncryptedResponse = async (
+                    token: string,
+                    responseB64: string,
+                    observedServerIdentityId: unknown,
+                ): Promise<StoredCredentials | null> => {
+                    if (String(observedServerIdentityId ?? '').trim() !== params.serverIdentityId) {
+                        console.log(
+                            '\n\nThe authentication response came from a different Home identity. '
+                            + 'Credentials were not changed; run `happier auth login` again for the intended Home.',
+                        );
+                        return null;
+                    }
                     const r = decodeBase64(responseB64);
                     const opened = openTerminalProvisioningResponse({
                         payload: r,
@@ -648,7 +663,11 @@ async function waitForAuthentication(params: Readonly<{
                 if (mode === 'legacy-post') {
                     const legacy = await legacyPollOnce();
                     if (isAuthorizedWithTokenAndResponse(legacy)) {
-                        const finalized = await tryFinalizeWithTokenAndEncryptedResponse(legacy.token, legacy.response);
+                        const finalized = await tryFinalizeWithTokenAndEncryptedResponse(
+                            legacy.token,
+                            legacy.response,
+                            legacy.serverIdentityId,
+                        );
                         if (finalized) return finalized;
                         return null;
                     }
@@ -666,7 +685,11 @@ async function waitForAuthentication(params: Readonly<{
                             mode = 'legacy-post';
                             const legacy = await legacyPollOnce();
                             if (isAuthorizedWithTokenAndResponse(legacy)) {
-                                const finalized = await tryFinalizeWithTokenAndEncryptedResponse(legacy.token, legacy.response);
+                                const finalized = await tryFinalizeWithTokenAndEncryptedResponse(
+                                    legacy.token,
+                                    legacy.response,
+                                    legacy.serverIdentityId,
+                                );
                                 if (finalized) return finalized;
                                 return null;
                             }
@@ -705,7 +728,11 @@ async function waitForAuthentication(params: Readonly<{
 
                             const token = claimData.token;
                             const responseB64 = claimData.response;
-                            const finalized = await tryFinalizeWithTokenAndEncryptedResponse(token, responseB64);
+                            const finalized = await tryFinalizeWithTokenAndEncryptedResponse(
+                                token,
+                                responseB64,
+                                claimData.serverIdentityId,
+                            );
                             if (finalized) return finalized;
                             return null;
                         } catch (e: any) {
@@ -723,7 +750,11 @@ async function waitForAuthentication(params: Readonly<{
                                 mode = 'legacy-post';
                                 const legacy = await legacyPollOnce();
                                 if (isAuthorizedWithTokenAndResponse(legacy)) {
-                                    const finalized = await tryFinalizeWithTokenAndEncryptedResponse(legacy.token, legacy.response);
+                                    const finalized = await tryFinalizeWithTokenAndEncryptedResponse(
+                                        legacy.token,
+                                        legacy.response,
+                                        legacy.serverIdentityId,
+                                    );
                                     if (finalized) return finalized;
                                     return null;
                                 }

@@ -465,13 +465,7 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
             if (!isValidPluginJsonSchemaValue(validator, attachment.value)) {
                 throw invalidValueError(attachment.attachment);
             }
-            const normalized = parse({
-                ...attachment,
-                presentation: {
-                    ...attachment.presentation,
-                    typeLabel: declaration.typeLabel,
-                },
-            });
+            const normalized = parse(attachment);
             if (!normalized) {
                 throw invalidDeclarationError(attachment.attachment);
             }

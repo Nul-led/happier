@@ -18,6 +18,7 @@ import { SPAWN_SESSION_ERROR_CODES, type SpawnSessionOptions, type SpawnSessionR
 import { buildSpawnChildProcessEnv } from './buildSpawnChildProcessEnv';
 import { applySpawnedChildOomScoreAdjustment } from '../platform/linux/applySpawnedChildOomScoreAdjustment';
 import { buildCgroupSelfMigratingHappyCliLaunchSpec } from '../platform/linux/buildCgroupSelfMigratingHappyCliLaunchSpec';
+import { shouldUseSystemdUserSessionResourceGovernor } from '../platform/linux/systemdUserResourceGovernor';
 import type { SpawnLifecycleCallbacks } from './createSpawnLifecycleCallbacks';
 import {
   tombstoneTrackedSessionWebhookPids,
@@ -93,9 +94,10 @@ export async function spawnRegularProcessAndWaitForWebhook(params: Readonly<{
     extraEnv: params.extraEnvForChildWithMessage,
     unsetEnvKeys: params.unsetEnvKeys,
   });
-  const useLinuxCgroupSelfMigration =
-    process.platform === 'linux'
-    && String(params.processEnv.HAPPIER_DAEMON_STARTUP_SOURCE ?? '').trim() === 'background-service';
+  const useLinuxCgroupSelfMigration = shouldUseSystemdUserSessionResourceGovernor({
+    platform: process.platform,
+    startupSource: String(params.processEnv.HAPPIER_DAEMON_STARTUP_SOURCE ?? '').trim(),
+  });
   const cgroupSelfMigratingLaunchSpec = useLinuxCgroupSelfMigration
     ? await buildCgroupSelfMigratingHappyCliLaunchSpec({
       args: Array.from(params.args),

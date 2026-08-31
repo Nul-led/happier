@@ -707,6 +707,58 @@ export class ApiClient {
    * Register or update machine with the server
    * Returns the current machine state from the server with decrypted metadata and daemonState
    */
+  async getMachine(machineId: string): Promise<Machine | null> {
+    const accountMode = await this.getAccountEncryptionMode();
+    const machineStorageMode = accountMode === 'plain' ? 'plain' : 'e2ee';
+    const encryptionContext = machineStorageMode === 'e2ee'
+      ? resolveMachineEncryptionContext(this.credential)
+      : null;
+    const decodeMachineContent = (value: string): unknown => {
+      if (machineStorageMode === 'plain') return decodePlainMachineStoredContent(value);
+      if (!encryptionContext) throw new Error('Machine encryption context is unavailable for encrypted storage');
+      return decrypt(encryptionContext.encryptionKey, encryptionContext.encryptionVariant, decodeBase64(value));
+    };
+    try {
+      const response = await axios.get(
+        `${resolveServerHttpBaseUrl()}/v1/machines/${encodeURIComponent(machineId)}`,
+        { headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), Authorization: `Bearer ${this.credential.token}` } },
+      );
+      const raw = response.data.machine;
+      const common = {
+        id: raw.id,
+        metadata: raw.metadata ? decodeMachineContent(raw.metadata) as MachineMetadata : null,
+        metadataVersion: raw.metadataVersion || 0,
+        daemonState: raw.daemonState ? decodeMachineContent(raw.daemonState) as DaemonState : null,
+        daemonStateVersion: raw.daemonStateVersion || 0,
+        operationProtocolCapabilities: null,
+        operationProtocolCapabilitiesRevision: null,
+      };
+      return machineStorageMode === 'plain'
+        ? { ...common, encryptionMode: 'plain' }
+        : {
+            ...common,
+            encryptionMode: 'e2ee',
+            encryptionKey: encryptionContext!.encryptionKey,
+            encryptionVariant: encryptionContext!.encryptionVariant,
+          };
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 404) return null;
+      throw error;
+    }
+  }
+
+  async mintPeerMediationRouteGrant(request: unknown): Promise<unknown> {
+    const response = await axios.post(
+      `${resolveServerHttpBaseUrl()}/v1/machines/peer/mediation/route-grants`,
+      request,
+      { headers: { Authorization: `Bearer ${this.credential.token}`, 'Content-Type': 'application/json' } },
+    );
+    if (response.data?.ok !== true || response.data.grant === undefined) {
+      throw new Error('Peer mediation route grant is unavailable');
+    }
+    return response.data.grant;
+  }
+
   async getOrCreateMachine(opts: {
     machineId: string,
     metadata: MachineMetadata,

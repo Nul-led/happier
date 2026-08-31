@@ -21,9 +21,12 @@ import { z } from 'zod';
 
 import { callMcpToolWithResolvedTimeout } from '@/mcp/mcpToolCallRequestOptions';
 import { removeConsumedMcpRuntimeConfigFile } from '@/mcp/runtime/isSafeTmpMcpConfigFilePath';
+import { withMcpTimeout } from '@/mcp/runtime/withMcpTimeout';
+import { runMcpStdioBridgeLifecycle } from '@/mcp/runtime/runMcpStdioBridgeLifecycle';
 import { registerHappierBridgeTools } from './registerHappierBridgeTools';
 
 const REMOTE_BRIDGE_CONFIG_PREFIX = 'happier-mcp-remote-bridge';
+const MCP_BRIDGE_STARTUP_STEP_TIMEOUT_MS = 60_000;
 
 const RemoteBridgeConfigSchema = z.object({
   transport: z.enum(['http', 'sse']),
@@ -57,7 +60,10 @@ async function connectRemoteClient(config: RemoteBridgeConfig): Promise<Client> 
       });
 
   try {
-    await client.connect(transport);
+    await withMcpTimeout(client.connect(transport), {
+      timeoutMs: MCP_BRIDGE_STARTUP_STEP_TIMEOUT_MS,
+      label: 'happier_mcp_bridge_connect_timeout',
+    });
     return client;
   } catch (error) {
     await client.close().catch(() => {});
@@ -86,66 +92,31 @@ async function main(): Promise<void> {
 
   const remoteClient = await connectRemoteClient(config);
   const server = new McpServer({ name: 'Happier MCP Remote Bridge', version: '1.0.0' });
-  let resolveShutdown!: () => void;
-  const shutdownRequested = new Promise<void>((resolve) => {
-    resolveShutdown = resolve;
+  const requestedSignal = await runMcpStdioBridgeLifecycle({
+    stdin: process.stdin,
+    start: async () => {
+      const toolList = await withMcpTimeout(remoteClient.listTools(), {
+        timeoutMs: MCP_BRIDGE_STARTUP_STEP_TIMEOUT_MS,
+        label: 'happier_mcp_bridge_list_tools_timeout',
+      });
+      registerHappierBridgeTools(server, {
+        tools: toolList.tools,
+        callHttpTool: async (name, args, options) =>
+          await callMcpToolWithResolvedTimeout({
+            client: remoteClient,
+            toolName: name,
+            args,
+            ...(options?.signal === undefined ? {} : { signal: options.signal }),
+          }),
+      });
+
+      const stdio = new StdioServerTransport();
+      await server.connect(stdio);
+      return { transport: stdio, upstream: remoteClient };
+    },
+    closeServer: async () => await server.close(),
+    closeUpstream: async () => await remoteClient.close(),
   });
-  let shutdownStarted = false;
-  let requestedSignal: NodeJS.Signals | null = null;
-  const requestShutdown = () => {
-    if (shutdownStarted) return;
-    shutdownStarted = true;
-    resolveShutdown();
-  };
-  const onStdinEnd = () => requestShutdown();
-  const onStdinError = () => requestShutdown();
-  const onSigint = () => {
-    requestedSignal = 'SIGINT';
-    requestShutdown();
-  };
-  const onSigterm = () => {
-    requestedSignal = 'SIGTERM';
-    requestShutdown();
-  };
-  process.stdin.once('end', onStdinEnd);
-  process.stdin.once('error', onStdinError);
-  process.once('SIGINT', onSigint);
-  process.once('SIGTERM', onSigterm);
-  remoteClient.onclose = requestShutdown;
-
-  try {
-    const toolList = await remoteClient.listTools();
-    registerHappierBridgeTools(server, {
-      tools: toolList.tools,
-      callHttpTool: async (name, args, options) =>
-        await callMcpToolWithResolvedTimeout({
-          client: remoteClient,
-          toolName: name,
-          args,
-          ...(options?.signal === undefined ? {} : { signal: options.signal }),
-        }),
-    });
-
-    const stdio = new StdioServerTransport();
-    await server.connect(stdio);
-    if (process.stdin.readableEnded || process.stdin.destroyed) {
-      requestShutdown();
-    }
-    await shutdownRequested;
-  } finally {
-    process.stdin.off('end', onStdinEnd);
-    process.stdin.off('error', onStdinError);
-    process.off('SIGINT', onSigint);
-    process.off('SIGTERM', onSigterm);
-    const cleanup = await Promise.allSettled([
-      server.close(),
-      remoteClient.close(),
-    ]);
-    const failures = cleanup.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
-    if (failures.length > 0) {
-      throw new AggregateError(failures, 'Remote MCP bridge cleanup failed');
-    }
-  }
   if (requestedSignal === 'SIGINT') process.exitCode = 130;
   if (requestedSignal === 'SIGTERM') process.exitCode = 143;
 }

@@ -2,24 +2,21 @@ import {
     type WorkspaceRefV1,
 } from '@happier-dev/protocol';
 
+import { getPathRemainderWithinBase } from '@/session/handoff/paths/sessionHandoffPathNormalization';
+
 function normalizeIdentifier(value: string): string {
     return value.trim();
 }
 
-function normalizeWorkspaceRootPath(path: string): string {
-    const trimmed = path.trim();
-    if (!trimmed) return '';
-
-    const slashNormalized = trimmed.replace(/\\/g, '/');
-    const isUncPath = slashNormalized.startsWith('//');
-    const collapsed = slashNormalized.replace(/\/+/g, '/');
-    const withUncPrefix = isUncPath ? `/${collapsed}` : collapsed;
-    const withoutTrailingSlash = withUncPrefix.length > 1
-        ? withUncPrefix.replace(/\/+$/g, '')
-        : withUncPrefix;
-    return /^[a-zA-Z]:\//.test(withoutTrailingSlash) || withoutTrailingSlash.startsWith('//')
-        ? withoutTrailingSlash.toLowerCase()
-        : withoutTrailingSlash;
+/** Resolve an Account-settings workspace identity only when the id is unique. */
+export function resolveWorkspaceRefById(
+    workspaceRefs: readonly WorkspaceRefV1[],
+    workspaceRefId: string,
+): WorkspaceRefV1 | null {
+    const id = normalizeIdentifier(workspaceRefId);
+    if (!id) return null;
+    const matches = workspaceRefs.filter((ref) => normalizeIdentifier(ref.id) === id);
+    return matches.length === 1 ? matches[0] ?? null : null;
 }
 
 export function resolveWorkspaceRefForMachineRoot(
@@ -27,11 +24,11 @@ export function resolveWorkspaceRefForMachineRoot(
     scope: Readonly<{ machineId: string; rootPath: string }>,
 ): WorkspaceRefV1 | null {
     const machineId = normalizeIdentifier(scope.machineId);
-    const rootPath = normalizeWorkspaceRootPath(scope.rootPath);
+    const rootPath = scope.rootPath.trim();
     if (!machineId || !rootPath) return null;
     const matches = workspaceRefs.filter((ref) => (
         normalizeIdentifier(ref.machineId) === machineId
-        && normalizeWorkspaceRootPath(ref.rootPath) === rootPath
+        && getPathRemainderWithinBase(ref.rootPath, rootPath) === ''
     ));
     return matches.length === 1 ? matches[0] ?? null : null;
 }

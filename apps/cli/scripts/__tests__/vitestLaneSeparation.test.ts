@@ -36,6 +36,22 @@ describe('Vitest lane separation', () => {
         expect(integrationConfig.test?.passWithNoTests).toBeUndefined();
     });
 
+    it('keeps the source-built workspace-sync test in its fail-closed dedicated lane', () => {
+        expect(integrationConfig.test?.exclude).toContain(
+            'src/daemon/startup/createDaemonWorkspaceSyncRuntime.real.integration.test.ts',
+        );
+
+        const packageJson = JSON.parse(
+            readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+        ) as { scripts?: Record<string, string> };
+        expect(packageJson.scripts?.['test:workspace-sync:real']).toContain(
+            '--script=test:workspace-sync:real:local',
+        );
+        expect(packageJson.scripts?.['test:workspace-sync:real:local']).toBe(
+            'node scripts/runWorkspaceSyncRealIntegration.mjs',
+        );
+    });
+
     it('caps parallel CLI test workers at six', () => {
         expect(unitConfig.test?.maxWorkers).toBe(6);
         expect(slowConfig.test?.maxWorkers).toBe(6);

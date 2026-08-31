@@ -196,7 +196,8 @@ export async function runSessionHandoffPrepareTargetJob(
       actualTransportStrategy = request.negotiatedTransportStrategy;
       const requestResolvedHandoffMetadataV2 = request.handoffMetadataV2;
       const allowServerRoutedFallback = request.allowServerRoutedFallback !== false;
-      const canFallbackToServerRouted = allowServerRoutedFallback && machineTransferChannel !== undefined;
+      const canFallbackToServerRouted = allowServerRoutedFallback
+        && machineTransferChannel !== undefined;
       const directPeerRequester = directPeerTransfer?.requestPayloadFile;
       const localSourceExport = await sourceExportStore.load(handoffId);
       const localAgentBundle =
@@ -272,20 +273,19 @@ export async function runSessionHandoffPrepareTargetJob(
           }));
         }
         : undefined;
-      const resolvedAgentBundle =
-        localAgentBundle
-        ?? await resolvePrepareAgentBundle({
-          request,
-          actualTransportStrategy,
-          handoffMetadataV2: requestResolvedHandoffMetadataV2,
-          machineTransferChannel,
-          directPeerTransfer,
-          transferRouteCache: getTransferRouteCache(machineTransferChannel),
-          transferTimeoutMs,
-          invalidateDirectPeerRouteCacheForHandoffMachines,
-          receivedAgentBundlePath: await sourceExportStore.prepareReceivedAgentBundleFilePath(handoffId),
-          ...(reportAgentBundleTransferProgress ? { onProgress: reportAgentBundleTransferProgress } : {}),
-        });
+      const resolvedAgentBundle = await resolvePrepareAgentBundle({
+        request,
+        actualTransportStrategy,
+        handoffMetadataV2: requestResolvedHandoffMetadataV2,
+        machineTransferChannel,
+        directPeerTransfer,
+        transferRouteCache: getTransferRouteCache(machineTransferChannel),
+        transferTimeoutMs,
+        invalidateDirectPeerRouteCacheForHandoffMachines,
+        receivedAgentBundlePath: await sourceExportStore.prepareReceivedAgentBundleFilePath(handoffId),
+        ...(localAgentBundle ? { existingAgentBundle: localAgentBundle } : {}),
+        ...(reportAgentBundleTransferProgress ? { onProgress: reportAgentBundleTransferProgress } : {}),
+      });
       if (!resolvedAgentBundle) {
         throw new Error('Invalid session handoff provider bundle');
       }

@@ -3,8 +3,7 @@ import type { TransportHandler } from '@/agent/transport/TransportHandler';
 export type DroppedStdoutLine = {
   reason:
     | 'transport_filter_null'
-    | 'multiline_overflow'
-    | 'multiline_incomplete';
+    | 'multiline_overflow';
   line: string;
 };
 
@@ -119,19 +118,24 @@ export function createAcpFilteredStdoutReadable(params: Readonly<{
           }
         }
 
-        // Flush any remaining buffered lines.
+        buffer += decoder.decode();
+
+        // The ACP stream accepts one final complete frame without a trailing LF.
+        // Feed that fragment through the same transport filter instead of
+        // treating valid provider output as an incomplete diagnostic.
         if (multiline) {
-          if (!tryFlushMultiline(multiline.buf)) {
-            drop('multiline_incomplete', multiline.buf);
+          const candidate = buffer.length > 0 ? `${multiline.buf}\n${buffer}` : multiline.buf;
+          if (!tryFlushMultiline(candidate)) {
+            // Let the transport make the one diagnostic-vs-protocol decision.
+            // If it keeps this malformed candidate, the canonical ACP stream
+            // reports the typed protocol failure instead of silently dropping it.
+            enqueueLine(candidate);
           }
           multiline = null;
+          buffer = '';
         }
 
-        const trailing = buffer.trim();
-        if (trailing) {
-          // Treat trailing fragment as a dropped line; it can't be framed as ndJSON.
-          drop('multiline_incomplete', buffer);
-        }
+        if (buffer.trim()) enqueueLine(buffer);
       } finally {
         reader.releaseLock();
         try {

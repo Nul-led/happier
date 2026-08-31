@@ -28,10 +28,9 @@ const classification = {
 } satisfies ConnectedServiceRuntimeFailureClassification;
 
 describe('reportConnectedServiceRuntimeAuthFailureToDaemon', () => {
-  it('keeps the recovery-report transport above the daemon recovery owner', () => {
-    expect(CONNECTED_SERVICE_RUNTIME_AUTH_FAILURE_REPORT_TIMEOUT_MS).toBeGreaterThan(
-      DEFAULT_REQUEST_AUTH_RECOVERY_DEADLINE_MS,
-    );
+  it('keeps the local recovery report lifecycle-owned instead of imposing a wall-clock deadline', () => {
+    expect(CONNECTED_SERVICE_RUNTIME_AUTH_FAILURE_REPORT_TIMEOUT_MS).toBeNull();
+    expect(DEFAULT_REQUEST_AUTH_RECOVERY_DEADLINE_MS).toBeGreaterThan(0);
   });
 
   it('preserves the daemon stable recovery receipt for exact cancellation projection', async () => {
@@ -724,7 +723,7 @@ describe('reportConnectedServiceRuntimeAuthFailureToDaemon', () => {
     expect(report).not.toHaveProperty('resumePromptMode');
   });
 
-  it('uses a runtime-auth-specific daemon timeout so quota probing and switch application can finish', async () => {
+  it('does not abort a healthy runtime-auth recovery because its fan-out outlasts a fixed deadline', async () => {
     const notify = vi.fn(async () => ({
       ok: true,
       result: {

@@ -39,6 +39,7 @@ import {
     createHostActionOperationRuntime,
     type HostActionOperationRuntime,
 } from '@/daemon/actionOperations';
+import type { WorkspaceSyncHandoffAdapter } from '@/workspaces/sync/workspaceSyncHandoffAdapter';
 import {
     registerDaemonLocalServicePreviewSnapshotHandler,
 } from '@/rpc/handlers/daemonLocalServicePreviewSnapshot';
@@ -278,6 +279,10 @@ export type ApiMachineClientLifecycleDependencies = Readonly<{
         PluginReloadController,
         'applyResourceSessionAccessWitness'
     >;
+    /** Daemon-owned workspace-sync adapter shared with the canonical handoff coordinator. */
+    workspaceSyncHandoffAdapter?: WorkspaceSyncHandoffAdapter;
+    /** Daemon-owned workspace-sync controller and target-local RPC authority. */
+    workspaceSync?: MachineRpcHandlerDeps['workspaceSync'];
 }>;
 
 export type ApiMachineDaemonStatePublicationOptions = Readonly<{
@@ -887,6 +892,9 @@ export class ApiMachineClient {
                     handlers: this.actionOperationRuntime.handlers,
                     observeExecution: this.actionOperationRuntime.observeExecution,
                 },
+                ...(this.lifecycleDependencies.workspaceSync
+                    ? { workspaceSync: this.lifecycleDependencies.workspaceSync }
+                    : {}),
                 sessionHandoffCoordinator: createTrackedSessionHandoffCoordinator({
                     readCredentials: async () => await readStoredCredentials().catch(() => null),
                     callMachine: async (input) => input.machineId === this.machine.id
@@ -896,6 +904,12 @@ export class ApiMachineClient {
                             input.signal ? { signal: input.signal } : undefined,
                         )
                         : await callMachineRpc(input),
+                    ...(this.lifecycleDependencies.workspaceSyncHandoffAdapter
+                        ? {
+                            workspaceSyncAdapter:
+                                this.lifecycleDependencies.workspaceSyncHandoffAdapter,
+                        }
+                        : {}),
                 }),
                 ...(this.lifecycleDependencies.createCapabilitiesApiClient
                     ? {

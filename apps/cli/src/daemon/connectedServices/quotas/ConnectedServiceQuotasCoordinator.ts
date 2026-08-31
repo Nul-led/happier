@@ -1091,6 +1091,7 @@ export class ConnectedServiceQuotasCoordinator {
   private readonly recoveryCreditConsumeResultsByKey = new Map<string, ConnectedServiceQuotaRecoveryCreditConsumeResult>();
   private readonly recoveryCreditConsumeInFlightByKey = new Map<string, Promise<ConnectedServiceQuotaRecoveryCreditConsumeResult>>();
   private readonly startupCurrentSourceRefreshByKey = new Map<string, LegacyConnectedServiceUsageSource>();
+  private readonly legacyDiscoveredProfileIdsByServiceId = new Map<ConnectedServiceId, ReadonlySet<string>>();
   private lastDiscoveryAt = 0;
 
   public constructor(params: Readonly<{
@@ -4903,7 +4904,7 @@ export class ConnectedServiceQuotasCoordinator {
     if (this.discoveryEnabled && typeof this.api.listConnectedServiceProfiles === 'function') {
       const discoveryDue = this.lastDiscoveryAt <= 0 || now - this.lastDiscoveryAt >= this.discoveryIntervalMs;
       if (discoveryDue) {
-        this.lastDiscoveryAt = now;
+        let discoverySucceeded = true;
         for (const serviceId of this.quotaFetchersByServiceId.keys()) {
           if (!this.shouldRunLegacyQuotaFetcher(serviceId, qualifiedPeerClass)) {
             continue;
@@ -4911,22 +4912,30 @@ export class ConnectedServiceQuotasCoordinator {
           try {
             const result = await this.api.listConnectedServiceProfiles({ serviceId });
             const profiles = Array.isArray(result?.profiles) ? result.profiles : [];
+            const usableProfileIds = new Set<string>();
             for (const prof of profiles) {
               if (!prof || typeof prof !== 'object') continue;
               if (!isConnectedServiceCredentialHealthStatusUsable(prof.status)) continue;
               const profileId = typeof prof.profileId === 'string' ? String(prof.profileId).trim() : '';
               if (!profileId) continue;
-              const existing = bindingsByServiceId.get(serviceId);
-              if (existing) {
-                existing.add(profileId);
-              } else {
-                bindingsByServiceId.set(serviceId, new Set([profileId]));
-              }
+              usableProfileIds.add(profileId);
             }
+            this.legacyDiscoveredProfileIdsByServiceId.set(serviceId, usableProfileIds);
           } catch {
-            // Best-effort only.
+            discoverySucceeded = false;
             continue;
           }
+        }
+        if (discoverySucceeded) this.lastDiscoveryAt = now;
+      }
+
+      for (const [serviceId, profileIds] of this.legacyDiscoveredProfileIdsByServiceId.entries()) {
+        if (!this.shouldRunLegacyQuotaFetcher(serviceId, qualifiedPeerClass)) continue;
+        const existing = bindingsByServiceId.get(serviceId);
+        if (existing) {
+          for (const profileId of profileIds) existing.add(profileId);
+        } else if (profileIds.size > 0) {
+          bindingsByServiceId.set(serviceId, new Set(profileIds));
         }
       }
     }

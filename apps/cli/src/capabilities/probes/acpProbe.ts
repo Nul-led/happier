@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
-    ndJsonStream,
     PROTOCOL_VERSION,
     type InitializeRequest,
     type InitializeResponse,
@@ -9,6 +8,8 @@ import {
 import { logger } from '@/ui/logger';
 import type { TransportHandler } from '@/agent/transport';
 import { nodeToWebStreams } from '@/agent/acp/nodeToWebStreams';
+import { createAcpFilteredStdoutReadable } from '@/agent/acp/createAcpFilteredStdoutReadable';
+import { createAcpNdJsonStream } from '@/agent/acp/createAcpNdJsonStream';
 import { killProcessTree } from '@/agent/runtime/process/killProcessTree';
 import { AsyncTtlCache } from '@happier-dev/protocol';
 import { resolveWindowsCommandInvocation } from '@happier-dev/cli-common/process';
@@ -159,52 +160,21 @@ export async function probeAcpAgentCapabilities(params: {
 
         const { writable, readable } = nodeToWebStreams(child.stdin, child.stdout);
 
-        const filteredReadable = new ReadableStream<Uint8Array>({
-            async start(controller) {
-                const reader = readable.getReader();
-                const decoder = new TextDecoder();
-                const encoder = new TextEncoder();
-                let buffer = '';
-                let filteredCount = 0;
-
-                try {
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) {
-                            if (buffer.trim()) {
-                                const filtered = params.transport.filterStdoutLine?.(buffer);
-                                if (filtered === undefined) controller.enqueue(encoder.encode(buffer));
-                                else if (filtered !== null) controller.enqueue(encoder.encode(filtered));
-                                else filteredCount++;
-                            }
-                            if (filteredCount > 0) {
-                                logger.debug(`[acpProbe] filtered ${filteredCount} lines from ${params.transport.agentName} stdout`);
-                            }
-                            controller.close();
-                            break;
-                        }
-
-                        buffer += decoder.decode(value, { stream: true });
-                        const lines = buffer.split('\n');
-                        buffer = lines.pop() || '';
-
-                        for (const line of lines) {
-                            if (!line.trim()) continue;
-                            const filtered = params.transport.filterStdoutLine?.(line);
-                            if (filtered === undefined) controller.enqueue(encoder.encode(`${line}\n`));
-                            else if (filtered !== null) controller.enqueue(encoder.encode(`${filtered}\n`));
-                            else filteredCount++;
-                        }
-                    }
-                } catch (error) {
-                    controller.error(error);
-                } finally {
-                    reader.releaseLock();
+        let filteredCount = 0;
+        const filteredReadable = createAcpFilteredStdoutReadable({
+            readable,
+            transport: params.transport,
+            onDroppedLine: () => {
+                filteredCount += 1;
+            },
+            onDone: () => {
+                if (filteredCount > 0) {
+                    logger.debug(`[acpProbe] filtered ${filteredCount} lines from ${params.transport.agentName} stdout`);
                 }
             },
         });
 
-        const stream = ndJsonStream(writable, filteredReadable);
+        const stream = createAcpNdJsonStream(writable, filteredReadable);
 
         connection = createAcpClientConnection({
             name: 'happier-cli-capabilities',

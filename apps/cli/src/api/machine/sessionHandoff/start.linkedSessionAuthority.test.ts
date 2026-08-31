@@ -78,7 +78,6 @@ describe('session handoff start — source-derived transcript-storage authority'
         exportSessionBundle: exportSessionBundle as never,
         waitForPersistedSourceExport: vi.fn() as never,
         invalidateDirectPeerRouteCacheForHandoffMachines,
-        resolveWorkspaceReplicationHandoffBackTargetRootPath: () => null,
         buildStartPendingStatus: vi.fn() as never,
         buildStartRecoveryStatus: vi.fn() as never,
         buildPrepareJobRecord: vi.fn() as never,

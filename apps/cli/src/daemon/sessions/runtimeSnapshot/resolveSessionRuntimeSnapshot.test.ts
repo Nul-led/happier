@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { PermissionMode } from '@/api/types';
 import type { SpawnSessionOptions } from '@/rpc/handlers/registerSessionHandlers';
-import type { ConnectedServiceBindingsV1, ProviderBoundModelRef } from '@happier-dev/protocol';
+import type { ConnectedServiceBindingsV1, ProviderBoundModelRef, SessionMcpSelectionV1 } from '@happier-dev/protocol';
 import { ProviderConnectionIdSchema } from '@happier-dev/protocol';
 
 type RuntimeSnapshotValue<T> = Readonly<{ value: T; updatedAt: number }>;
@@ -20,6 +20,7 @@ type RuntimeSnapshotModule = Readonly<{
       sessionId: string | null;
       connectedServices: ConnectedServiceBindingsV1 | null;
       connectedServicesUpdatedAt: number | null;
+      mcpSelection: SessionMcpSelectionV1 | null;
       permissionMode: RuntimeSnapshotValue<PermissionMode> | null;
       agentModeId: RuntimeSnapshotValue<string> | null;
       modelSelection: RuntimeSnapshotValue<ProviderBoundModelRef | null> | null;
@@ -70,6 +71,39 @@ const persistedProviderBinding = {
 } as const;
 
 describe('resolveSessionRuntimeSnapshot', () => {
+  it('restores persisted per-session MCP selection into resume and respawn options', async () => {
+    const runtimeSnapshot = await loadRuntimeSnapshotModule();
+    expect(runtimeSnapshot).not.toBeNull();
+    if (!runtimeSnapshot) return;
+    const persistedSelection = {
+      v: 1 as const,
+      managedServersEnabled: true,
+      forceIncludeServerIds: ['managed-1'],
+      forceExcludeServerIds: ['managed-2'],
+    };
+
+    const result = runtimeSnapshot.resolveSessionRuntimeSnapshot({
+      incomingOptions: {
+        directory: '/tmp/repo',
+        existingSessionId: 'session-1',
+        backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
+      },
+      persistedMetadata: { mcpSelectionV1: persistedSelection },
+      trackedSpawnOptions: {
+        directory: '/tmp/repo',
+        mcpSelection: {
+          v: 1,
+          managedServersEnabled: false,
+          forceIncludeServerIds: [],
+          forceExcludeServerIds: [],
+        },
+      },
+    });
+
+    expect(result.snapshot.mcpSelection).toEqual(persistedSelection);
+    expect(result.spawnOptions.mcpSelection).toEqual(persistedSelection);
+  });
+
   it('restores persisted runtime controls over stale incoming defaults', async () => {
     const runtimeSnapshot = await loadRuntimeSnapshotModule();
     expect(runtimeSnapshot).not.toBeNull();

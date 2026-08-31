@@ -22,6 +22,8 @@ import {
     type PluginLocalizedStringV2,
     type NormalizedPluginCollectionUiQueryDescriptorV1,
     type PluginCollectionUiQueryRequestV1,
+    PluginDeclarativeProjectedModelV1Schema,
+    type PluginUiHostMethodV1,
     type PluginUiIconTokenV1,
     type PluginUiRendererV2,
     type PluginUiTargetedContributionSurfaceV1,
@@ -251,7 +253,7 @@ export type StablePluginDeclarativeModel = Readonly<{
         generation: string;
     }>;
     visible: boolean;
-    requiredHostMethods: readonly string[];
+    requiredHostMethods: readonly PluginUiHostMethodV1[];
     declarativeInventory: StablePluginDeclarativeInventory;
     /**
      * The whole projected document, and the only representation any reader
@@ -819,7 +821,7 @@ export function createStablePluginDeclarativeModel(params: Readonly<{
 
     const root = projectNode(document.root);
     const identity = createPluginContributionIdentity({ pluginId, localId: renderer.id });
-    return Object.freeze({
+    const model = Object.freeze({
         identity: Object.freeze({
             ...identity,
             qualifiedId: buildQualifiedPluginContributionKey(identity),
@@ -835,6 +837,17 @@ export function createStablePluginDeclarativeModel(params: Readonly<{
         }),
         root,
     });
+    // The final projected model is the wire contract shared with the daemon
+    // contribution-registry projection and the UI host. A producer defect is a
+    // typed rejection here, never an opaque payload discovered downstream.
+    const projected = PluginDeclarativeProjectedModelV1Schema.safeParse(model);
+    if (!projected.success) {
+        throw modelError(
+            'plugin_declarative_projected_model_invalid',
+            `Projected declarative model is invalid: ${projected.error.issues[0]?.message ?? 'unknown'}`,
+        );
+    }
+    return model;
 }
 
 function compilePayloadValidator(schema: HostStructuredMessageDescriptorV1['payloadSchema']) {

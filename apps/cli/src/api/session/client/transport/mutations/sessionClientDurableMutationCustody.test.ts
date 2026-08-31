@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -5,7 +6,10 @@ import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { SessionIndexedIdentifierMaxLengthV1 } from '@happier-dev/protocol/sessions';
 
-import { createRegisteredSessionStateFieldMutation } from './sessionClientDurableMutationTypes';
+import {
+    createRegisteredSessionStateFieldMutation,
+    resolveDaemonObservedExitMutationId,
+} from './sessionClientDurableMutationTypes';
 import {
     discoverDaemonSessionClientDurableMutationJournalSessionIds,
     parseDaemonSessionClientDurableMutation,
@@ -250,5 +254,29 @@ describe('session client durable mutation custody', () => {
             expect(parsed.mutations).toEqual([]);
             expect(parsed.deadLetters).toHaveLength(1);
         }
+    });
+
+    it('rekeys the legacy daemon observed-exit identity to the full persisted receipt identity', () => {
+        const payload = {
+            v: 1 as const,
+            sessionId: 's1',
+            action: 'end_session' as const,
+            turnId: 'turn-1',
+            observedAt: 42,
+        };
+        const legacyMutationId = `daemon-observed-exit:${createHash('sha256')
+            .update(JSON.stringify({ sessionId: payload.sessionId, turnId: payload.turnId }))
+            .digest('hex')}`;
+        const parsed = parseDaemonSessionClientDurableMutation(queued({
+            ...payload,
+            mutationId: legacyMutationId,
+        }), payload.sessionId);
+
+        expect(parsed.deadLetters).toEqual([]);
+        expect(parsed.mutations).toHaveLength(1);
+        expect(parsed.mutations[0]).toMatchObject({
+            mutationId: resolveDaemonObservedExitMutationId(payload),
+            payload: { mutationId: resolveDaemonObservedExitMutationId(payload) },
+        });
     });
 });

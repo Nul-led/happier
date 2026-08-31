@@ -37,6 +37,8 @@ export type DirectTransferServerLifecycleState = Readonly<{
 }>;
 
 export type DirectTransferServerLifecycle = Readonly<{
+  /** Starts/reuses the canonical loopback listener and returns its actual bound port. */
+  ensureListening: () => Promise<number>;
   publishTransfer: (input: DirectTransferPublishInput) => PublishedDirectPeerTransfer;
   publishTransferWhenReady: (input: DirectTransferPublishInput) => Promise<PublishedDirectPeerTransfer>;
   prepareImportSession: (input: DirectTransferImportOpenRequest) => Promise<Readonly<{
@@ -379,6 +381,7 @@ export function createDirectTransferServerLifecycle(params: Readonly<{
   };
 
   return {
+    ensureListening: async () => (await ensureServerStarted()).port,
     publishTransfer(input) {
       if (terminalStopped) {
         throw new Error('Direct transfer server lifecycle is stopped');

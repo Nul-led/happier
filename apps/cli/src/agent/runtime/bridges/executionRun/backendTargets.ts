@@ -3,7 +3,7 @@ import {
   AgentExecutionTargetV1Schema,
   BackendTargetKeyV2Schema,
   buildBackendTargetKeyV2,
-  parseQualifiedPluginContributionKey,
+  parseBackendTargetKeyV2,
   readBackendTargetRefV2,
   type BackendTargetRefV1,
   type BackendTargetRefV2Input,
@@ -18,8 +18,11 @@ function resolveExecutionRunCanonicalBackendTargetKey(
   const keyedTarget = typeof input === 'string'
     ? BackendTargetKeyV2Schema.safeParse(input)
     : null;
-  const keyedAgentIdentity = keyedTarget?.success && keyedTarget.data.startsWith('agent:')
-    ? parseQualifiedPluginContributionKey(keyedTarget.data.slice('agent:'.length))
+  const parsedKeyedTarget = keyedTarget?.success
+    ? parseBackendTargetKeyV2(keyedTarget.data)
+    : null;
+  const keyedAgentIdentity = parsedKeyedTarget?.kind === 'agent'
+    ? parsedKeyedTarget.identity
     : null;
   const requestedAgentIdentity = agentTarget.success ? agentTarget.data.identity : keyedAgentIdentity;
 

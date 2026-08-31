@@ -18,6 +18,19 @@ type LocalGenerationSession = Readonly<{
   applicationOwnerId?: string | null;
 }>;
 
+type ConnectedServiceAuthGenerationRecipientApplyReason =
+  | 'same_provider_account_exhausted'
+  | 'soft_threshold'
+  | 'manual';
+
+function resolveGenerationRecipientApplyReason(
+  switchReason: ConnectedServiceSessionAuthSwitchReason,
+): ConnectedServiceAuthGenerationRecipientApplyReason {
+  if (switchReason === 'automatic_runtime_failure') return 'same_provider_account_exhausted';
+  if (switchReason === 'pre_turn_group_policy') return 'soft_threshold';
+  return 'manual';
+}
+
 type RecipientResult = Readonly<{
   disposition: 'applied_hot' | 'deferred_persisted' | 'restart_requested' | 'failed' | 'unavailable';
   reconciliationDisposition: ConnectedServiceAuthGenerationReconciliationDisposition;
@@ -59,6 +72,7 @@ export class ConnectedServiceAuthGroupGenerationConsumer {
       fromProfileId: string | null;
       committedGeneration: ConnectedServiceAuthGroupCommittedGenerationFact;
       switchReason: ConnectedServiceSessionAuthSwitchReason;
+      generationApplyReason: ConnectedServiceAuthGenerationRecipientApplyReason;
       executionAuthority: ConnectedServiceGenerationExecutionAuthority;
       applicationOwnerId?: string;
       applicationCohortSessionIds?: readonly string[];
@@ -268,7 +282,10 @@ export class ConnectedServiceAuthGroupGenerationConsumer {
       targets: liveTargets,
       executionAuthority: input.executionAuthority,
       ...(input.signal ? { signal: input.signal } : {}),
-      applyCommittedGeneration: this.deps.applyCommittedGeneration,
+      applyCommittedGeneration: async (applyInput) => await this.deps.applyCommittedGeneration({
+        ...applyInput,
+        generationApplyReason: resolveGenerationRecipientApplyReason(input.switchReason),
+      }),
       ...(this.deps.applySharedGenerationApplication
         ? { applySharedGenerationApplication: this.deps.applySharedGenerationApplication }
         : {}),

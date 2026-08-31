@@ -100,8 +100,14 @@ export async function resolvePrepareAgentBundle(params: Readonly<{
   invalidateDirectPeerRouteCacheForHandoffMachines?: (machineIds: readonly (string | undefined)[]) => void;
   receivedAgentBundlePath: string;
   onProgress?: (receivedBytes: number) => Promise<void> | void;
+  signal?: AbortSignal;
+  /** A locally exported bundle may still use the carrier admission gate. */
+  existingAgentBundle?: SessionHandoffAgentBundle;
 }>): Promise<SessionHandoffAgentBundle | undefined> {
   const transferPublication = params.handoffMetadataV2?.agentBundleTransferPublication;
+  if (params.existingAgentBundle) {
+    return params.existingAgentBundle;
+  }
   if (!transferPublication) {
     if (params.actualTransportStrategy === 'server_routed_stream' && params.machineTransferChannel) {
       return await requestServerRoutedPrepareAgentBundle({
@@ -117,7 +123,8 @@ export async function resolvePrepareAgentBundle(params: Readonly<{
   }
   const transferEndpointCandidates = transferPublication.endpointCandidates ?? params.request.endpointCandidates;
   const allowServerRoutedFallback = params.request.allowServerRoutedFallback !== false;
-  const canFallbackToServerRouted = allowServerRoutedFallback && params.machineTransferChannel !== undefined;
+  const canFallbackToServerRouted = allowServerRoutedFallback
+    && params.machineTransferChannel !== undefined;
 
   const agentBundle =
     params.actualTransportStrategy === 'server_routed_stream' && params.machineTransferChannel

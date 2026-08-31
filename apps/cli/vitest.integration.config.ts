@@ -16,6 +16,7 @@ const mergedTestEnv: NodeJS.ProcessEnv = {
     ...process.env,
     ...testEnv,
 };
+const workspaceSyncRealIntegrationTest = 'src/daemon/startup/createDaemonWorkspaceSyncRuntime.real.integration.test.ts';
 
 if (mergedTestEnv.HAPPIER_SERVER_URL && !mergedTestEnv.HAPPIER_WEBAPP_URL) {
     mergedTestEnv.HAPPIER_WEBAPP_URL = mergedTestEnv.HAPPIER_SERVER_URL;
@@ -54,7 +55,13 @@ export default defineConfig({
             'src/**/*.e2e.test.ts',
             'scripts/**/*.integration.test.ts',
         ],
-        exclude: [...configDefaults.exclude, ...resolveVitestFeatureTestExcludeGlobs(process.env)],
+        exclude: [
+            ...configDefaults.exclude,
+            ...resolveVitestFeatureTestExcludeGlobs(process.env),
+            ...(process.env.HAPPIER_RUN_MUTAGEN_REAL_INTEGRATION === '1'
+                ? []
+                : [workspaceSyncRealIntegrationTest]),
+        ],
         globalSetup: ['./src/test-setup.integration.ts'],
         coverage: {
             provider: 'v8',

@@ -1,14 +1,13 @@
 import { createHash } from 'node:crypto';
-import { readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import axios from 'axios';
 import tweetnacl from 'tweetnacl';
+import { normalizeServerIdentityIdCapability } from '@happier-dev/protocol';
 
 import { decodeBase64 } from '@/api/encryption';
 import { writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { configuration } from '@/configuration';
 import {
-  readStoredCredentials,
   writeCredentialsDataKey,
   writeCredentialsLegacy,
   writeCredentialsTokenOnly,
@@ -17,16 +16,24 @@ import {
 } from '@/persistence';
 import { applyServerSelectionFromArgs } from '@/server/serverSelection';
 import { ensureMachineIdForCredentials } from '@/ui/auth';
+import { ApiClient } from '@/api/api';
+import { ensureMachineRegistered } from '@/api/machine/ensureMachineRegistered';
+import { initialMachineMetadata } from '@/daemon/machine/metadata';
 import {
   openTerminalProvisioningResponse,
   readTerminalPairingRequirement,
   type TerminalPairingRequirement,
 } from '@/auth/terminalProvisioningResponse';
+import {
+  readProtectedLocalStateFile,
+  removeProtectedLocalStateFile,
+} from '@/utils/fs/protectedLocalState';
 
 type PendingAuthState = Readonly<{
   publicKey: string;
   secretKey: string;
   claimSecret: string;
+  serverIdentityId: string;
   pairingSecret?: string;
   pairingCreatedAtMs?: number;
   pairingExpiresAtMs?: number;
@@ -37,6 +44,11 @@ type PendingAuthState = Readonly<{
 
 const V3_REQUIRED_ERROR =
   'Authenticated terminal pairing v3 is required. Update the Happier mobile app and scan a new QR code.';
+
+// Bound the claim response before decoding: legitimate v3 payloads are ~141
+// bytes (188 base64 chars), so anything beyond this is malformed server input.
+const MAX_PROVISIONING_RESPONSE_B64_CHARS = 4096;
+const PENDING_AUTH_STATE_PROTECTION = { authority: 'owned' } as const;
 
 function pendingAuthStateDir(): string {
   return join(configuration.activeServerDir, 'auth', 'pending');
@@ -64,40 +76,123 @@ function decodePublicKey(value: string): Uint8Array {
   })();
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasCanonicalEncodedLength(
+  value: string,
+  encoding: 'base64' | 'base64url',
+  expectedLength: number,
+): boolean {
+  try {
+    const decoded = Buffer.from(value, encoding);
+    return decoded.length === expectedLength && decoded.toString(encoding) === value;
+  } catch {
+    return false;
+  }
+}
+
 function parsePendingAuthState(raw: string): PendingAuthState {
-  const parsed = JSON.parse(raw);
-  if (!parsed || typeof parsed !== 'object') throw new Error('Invalid auth state');
-  const publicKey = (parsed as any).publicKey;
-  const secretKey = (parsed as any).secretKey;
-  const claimSecret = (parsed as any).claimSecret;
-  const createdAt = (parsed as any).createdAt;
-  const pairingSecret = (parsed as any).pairingSecret;
-  const pairingCreatedAtMs = (parsed as any).pairingCreatedAtMs;
-  const pairingExpiresAtMs = (parsed as any).pairingExpiresAtMs;
-  const supportsTokenOnly = (parsed as any).supportsTokenOnly;
-  const pairingRequirement = (parsed as any).pairingRequirement;
-  if (typeof publicKey !== 'string') throw new Error('Invalid auth state (publicKey)');
-  if (typeof secretKey !== 'string') throw new Error('Invalid auth state (secretKey)');
-  if (typeof claimSecret !== 'string') throw new Error('Invalid auth state (claimSecret)');
+  const parsed: unknown = JSON.parse(raw);
+  if (!isRecord(parsed)) throw new Error('Invalid auth state');
+  const {
+    publicKey,
+    secretKey,
+    claimSecret,
+    serverIdentityId,
+    createdAt,
+    pairingSecret,
+    pairingCreatedAtMs,
+    pairingExpiresAtMs,
+    supportsTokenOnly,
+    pairingRequirement,
+  } = parsed;
+  if (typeof publicKey !== 'string' || !hasCanonicalEncodedLength(publicKey, 'base64', 32)) {
+    throw new Error('Invalid auth state (publicKey)');
+  }
+  if (typeof secretKey !== 'string' || !hasCanonicalEncodedLength(secretKey, 'base64', 32)) {
+    throw new Error('Invalid auth state (secretKey)');
+  }
+  if (typeof claimSecret !== 'string' || !hasCanonicalEncodedLength(claimSecret, 'base64url', 32)) {
+    throw new Error('Invalid auth state (claimSecret)');
+  }
   if (typeof createdAt !== 'string') throw new Error('Invalid auth state (createdAt)');
+  const normalizedServerIdentityId = normalizeServerIdentityIdCapability(serverIdentityId);
+  if (!normalizedServerIdentityId) throw new Error('Invalid auth state (serverIdentityId)');
+  if (supportsTokenOnly !== undefined && supportsTokenOnly !== true) {
+    throw new Error('Invalid auth state (supportsTokenOnly)');
+  }
   if (pairingRequirement !== undefined && pairingRequirement !== 'v3') {
     throw new Error('Invalid auth state (pairingRequirement)');
   }
-  const hasValidPairing =
-    typeof pairingSecret === 'string'
-    && Number.isSafeInteger(pairingCreatedAtMs)
-    && Number.isSafeInteger(pairingExpiresAtMs)
-    && pairingCreatedAtMs >= 0
-    && pairingExpiresAtMs > pairingCreatedAtMs;
+
+  const hasPairingField = pairingSecret !== undefined
+    || pairingCreatedAtMs !== undefined
+    || pairingExpiresAtMs !== undefined;
+  let validatedPairing: Readonly<{
+    pairingSecret: string;
+    pairingCreatedAtMs: number;
+    pairingExpiresAtMs: number;
+  }> | null = null;
+  if (hasPairingField) {
+    if (
+      typeof pairingSecret !== 'string'
+      || !hasCanonicalEncodedLength(pairingSecret, 'base64url', 32)
+    ) {
+      throw new Error('Invalid auth state (pairingSecret)');
+    }
+    if (typeof pairingCreatedAtMs !== 'number' || !Number.isSafeInteger(pairingCreatedAtMs) || pairingCreatedAtMs < 0) {
+      throw new Error('Invalid auth state (pairingCreatedAtMs)');
+    }
+    if (
+      typeof pairingExpiresAtMs !== 'number'
+      || !Number.isSafeInteger(pairingExpiresAtMs)
+      || pairingExpiresAtMs <= pairingCreatedAtMs
+    ) {
+      throw new Error('Invalid auth state (pairingExpiresAtMs)');
+    }
+    validatedPairing = { pairingSecret, pairingCreatedAtMs, pairingExpiresAtMs };
+  } else if (supportsTokenOnly === true || pairingRequirement === 'v3') {
+    throw new Error('Invalid auth state (pairing context)');
+  }
+
   return {
     publicKey,
     secretKey,
     claimSecret,
+    serverIdentityId: normalizedServerIdentityId,
     createdAt,
-    ...(hasValidPairing ? { pairingSecret, pairingCreatedAtMs, pairingExpiresAtMs } : {}),
-    ...(hasValidPairing && supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
+    ...(validatedPairing ?? {}),
+    ...(supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
     ...(pairingRequirement === 'v3' ? { pairingRequirement } : {}),
   };
+}
+
+async function completeClaimedCredentialHandoff(params: Readonly<{
+  credentials: StoredCredentials;
+  statePath: string;
+}>): Promise<string> {
+  // The relay claim is one-shot. Once credentials are durable, this request
+  // must no longer be retryable even if the subsequent registration fails.
+  await removeProtectedLocalStateFile(params.statePath, PENDING_AUTH_STATE_PROTECTION);
+  try {
+    const { machineId } = await ensureMachineIdForCredentials(params.credentials);
+    const api = await ApiClient.create(params.credentials);
+    const registered = await ensureMachineRegistered({
+      api,
+      machineId,
+      metadata: initialMachineMetadata,
+      caller: 'auth.wait',
+    });
+    return registered.machineId;
+  } catch (cause) {
+    throw new Error(
+      'Authentication credentials were saved, but machine registration is incomplete. '
+      + 'Run `happier auth login` to retry machine setup.',
+      { cause },
+    );
+  }
 }
 
 export async function handleAuthWait(argsRaw: string[]): Promise<void> {
@@ -118,7 +213,10 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
 
   const publicKeyBytes = decodePublicKey(String(publicKeyRaw));
   const statePath = pendingAuthStatePath(publicKeyBytes);
-  const state = parsePendingAuthState(await readFile(statePath, 'utf8'));
+  const state = parsePendingAuthState(await readProtectedLocalStateFile(
+    statePath,
+    PENDING_AUTH_STATE_PROTECTION,
+  ));
   const pairingRequirement = state.pairingRequirement ?? readTerminalPairingRequirement();
   const pairing =
     state.pairingSecret !== undefined
@@ -130,18 +228,6 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
           expiresAtMs: state.pairingExpiresAtMs,
         }
       : null;
-  // If already authenticated, keep things idempotent (useful for scripts).
-  const existing = await readStoredCredentials();
-  if (existing) {
-    const { machineId } = await ensureMachineIdForCredentials(existing);
-    await writeJsonStdout({
-      success: true,
-      token: existing.token,
-      encryptionType: existing.encryption?.type ?? 'tokenOnly',
-      machineId,
-    });
-    return;
-  }
   if (pairingRequirement === 'v3' && !pairing) {
     console.error(`${V3_REQUIRED_ERROR} Run \`happier auth request --json\` again.`);
     process.exit(1);
@@ -170,9 +256,18 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
         await new Promise((r) => setTimeout(r, pollIntervalMs));
         continue;
       }
+      const claimedServerIdentityId = normalizeServerIdentityIdCapability(claimData.serverIdentityId);
+      if (claimedServerIdentityId !== state.serverIdentityId) {
+        console.error(
+          `The authentication response came from a different Home identity `
+          + `(expected ${state.serverIdentityId}, received ${claimedServerIdentityId ?? 'missing'}). `
+          + 'Credentials were not changed; create a new request for the intended Home.',
+        );
+        process.exit(1);
+      }
       const token = String(claimData.token ?? '');
       const responseB64 = String(claimData.response ?? '');
-      if (!token || !responseB64) {
+      if (!token || !responseB64 || responseB64.length > MAX_PROVISIONING_RESPONSE_B64_CHARS) {
         console.error('Unexpected response from server.');
         process.exit(1);
       }
@@ -205,8 +300,7 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
             secret: opened.key,
           },
         };
-        const { machineId } = await ensureMachineIdForCredentials(credentials);
-        await unlink(statePath).catch(() => {});
+        const machineId = await completeClaimedCredentialHandoff({ credentials, statePath });
         await writeJsonStdout({
           success: true,
           token,
@@ -229,8 +323,7 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
             machineKey,
           },
         };
-        const { machineId } = await ensureMachineIdForCredentials(credentials);
-        await unlink(statePath).catch(() => {});
+        const machineId = await completeClaimedCredentialHandoff({ credentials, statePath });
         await writeJsonStdout({
           success: true,
           token,
@@ -246,8 +339,7 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
         token,
         encryption: null,
       };
-      const { machineId } = await ensureMachineIdForCredentials(credentials);
-      await unlink(statePath).catch(() => {});
+      const machineId = await completeClaimedCredentialHandoff({ credentials, statePath });
       await writeJsonStdout({
         success: true,
         token,

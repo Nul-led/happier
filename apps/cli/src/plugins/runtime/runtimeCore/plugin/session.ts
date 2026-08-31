@@ -333,7 +333,9 @@ function bindReplaceableNativeAgentSessionOperations(params: Readonly<{
             await currentOperations.steerInFlightTurn(message, meta);
         },
         async steerPrompt(message, options) {
-            await currentOperations.steerPrompt?.(message, options);
+            const steerPrompt = currentOperations.steerPrompt
+                ?? currentOperations.steerInFlightTurn;
+            await steerPrompt.call(currentOperations, message, options);
         },
         supportsInFlightSteer: () => currentOperations.supportsInFlightSteer?.() ?? false,
         isTurnInFlight: () => currentOperations.isTurnInFlight?.() ?? false,

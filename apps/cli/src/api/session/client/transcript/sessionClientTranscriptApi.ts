@@ -69,8 +69,10 @@ import {
 import {
     admitSessionStructuredInputV1,
     preserveComposerAttachmentSelectionAcrossSessionInputTransformV1,
+    validateComposerAttachmentRejoinCorrespondenceV1,
     type SessionStructuredInputAdmissionPolicyV1,
 } from '@/session/services/admitSessionStructuredInputV1';
+import type { PersistedSessionUserMessageAdmission } from './sessionUserMessageAdmissionRejoin';
 
 type PlainOrEncryptedPayload = string | { t: 'plain'; v: unknown };
 type SessionMessageRole = 'user' | 'agent' | 'event' | 'unknown';
@@ -261,6 +263,9 @@ export type SessionClientTranscriptApiDeps = Readonly<{
             request: SessionInputRequestV1;
         }>;
     }>) => Promise<void>;
+    findPersistedSessionUserMessageAdmission: (params: Readonly<{
+        localId: string;
+    }>) => Promise<PersistedSessionUserMessageAdmission | null>;
     getTranscriptQueryContext: () => Readonly<
         | { encryptionMode: 'plain' }
         | {
@@ -763,7 +768,25 @@ export function createSessionClientTranscriptApi(
             if (typeof meta.sentFrom !== 'string' || meta.sentFrom.trim().length === 0) {
                 meta.sentFrom = 'ui';
             }
-            if (originalText.length === 0 && !hasRawComposerAttachmentSelectionV1(meta)) return;
+            const selectedComposerAttachment = hasRawComposerAttachmentSelectionV1(meta);
+            if (originalText.length === 0 && !selectedComposerAttachment) return;
+            if (selectedComposerAttachment) {
+                const persisted = await deps.findPersistedSessionUserMessageAdmission({ localId });
+                if (persisted !== null) {
+                    validateComposerAttachmentRejoinCorrespondenceV1({
+                        meta,
+                        preparedComposerAttachments: persisted.composerAttachments,
+                    });
+                    await deps.admitSessionUserMessage({
+                        localId,
+                        text: persisted.text,
+                        meta: persisted.meta,
+                        composerAttachments: persisted.composerAttachments,
+                        ...(params.inputAdmission ? { inputAdmission: params.inputAdmission } : {}),
+                    });
+                    return;
+                }
+            }
             const createdAt = Date.now();
             const transformed = await transformSessionInputPayloadBeforeCommit({
                 localId,

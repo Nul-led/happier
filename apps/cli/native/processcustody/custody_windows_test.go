@@ -70,9 +70,10 @@ func decodeMSVCRTArgument(argument string) string {
 }
 
 func TestParseRunArgsRequiresJobAndTarget(t *testing.T) {
-	job, handshake, verbatim, target, err := parseRunArgs([]string{
+	job, handshake, inheritedStdinArg, verbatim, target, err := parseRunArgs([]string{
 		"--handshake=C:\\tmp\\hs.json",
 		"--job=Local\\happier-svc09-abc",
+		"--target-inherited-stdin-arg=--broker-descriptor",
 		"--target-windows-verbatim",
 		"--",
 		"tool.exe",
@@ -82,17 +83,20 @@ func TestParseRunArgsRequiresJobAndTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
-	if job != `Local\happier-svc09-abc` || handshake != `C:\tmp\hs.json` || !verbatim {
+	if job != `Local\happier-svc09-abc` || handshake != `C:\tmp\hs.json` || inheritedStdinArg != "--broker-descriptor" || !verbatim {
 		t.Fatalf("unexpected options: job=%q handshake=%q", job, handshake)
 	}
 	if len(target) != 3 || target[0] != "tool.exe" || target[2] != "443" {
 		t.Fatalf("unexpected target: %v", target)
 	}
-	if _, _, _, _, err := parseRunArgs([]string{"--job=x", "tool.exe"}); err == nil {
+	if _, _, _, _, _, err := parseRunArgs([]string{"--job=x", "tool.exe"}); err == nil {
 		t.Fatalf("target before -- must be rejected")
 	}
-	if _, _, _, _, err := parseRunArgs([]string{"--", "tool.exe"}); err == nil {
+	if _, _, _, _, _, err := parseRunArgs([]string{"--", "tool.exe"}); err == nil {
 		t.Fatalf("missing --job must be rejected")
+	}
+	if _, _, _, _, _, err := parseRunArgs([]string{"--job=x", "--target-inherited-stdin-arg=", "--", "tool.exe"}); err == nil {
+		t.Fatalf("empty inherited-stdin argument name must be rejected")
 	}
 }
 

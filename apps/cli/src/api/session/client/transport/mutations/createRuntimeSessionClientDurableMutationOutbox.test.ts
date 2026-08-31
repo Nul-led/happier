@@ -364,6 +364,64 @@ describe('runtime session client durable mutation outbox', () => {
         await outbox.close();
     });
 
+    it('delivers runtime-activity terminal state despite an earlier retryable session-turn failure', async () => {
+        const deliveredActivityStates: string[] = [];
+        const outbox = createRuntimeSessionClientDurableMutationOutbox({
+            token: 'token',
+            sessionId: 'runtime-activity-turn-order',
+            getSocket: () => null,
+            requestReconnect: () => undefined,
+            initialRegisteredSessionStateFieldMutations: [createRegisteredSessionStateFieldMutation({
+                sessionId: 'runtime-activity-turn-order',
+                fieldId: 'runtime.activity',
+                deliveryClass: 'durable_best_effort',
+                source: 'runtime',
+                observedAt: 1,
+                op: { kind: 'set', value: { state: 'active', activeCount: 1 } },
+            })],
+            deliverRegisteredSessionStateFieldMutation: async (mutation) => {
+                if (mutation.fieldId === 'runtime.activity' && mutation.op.kind === 'set') {
+                    const value = mutation.op.value as { state: string };
+                    deliveredActivityStates.push(value.state);
+                    return {
+                        delivered: true,
+                        settlement: {
+                            status: 'applied',
+                            committedProjection: mutation.op.value,
+                            committedRevision: deliveredActivityStates.length,
+                        },
+                    };
+                }
+                return { delivered: false };
+            },
+        });
+        await outbox.setSessionSyncPendingInputServerContract(serverContract('session_sync_v2_pending_input_v1'));
+        expect(deliveredActivityStates.length).toBeGreaterThan(0);
+        deliveredActivityStates.length = 0;
+        outbox.deactivateDelivery();
+        await outbox.enqueueSessionTurnMutation({
+            v: 1,
+            sessionId: 'runtime-activity-turn-order',
+            mutationId: 'blocked-turn',
+            action: 'begin',
+            turnId: 'blocked-turn',
+            observedAt: 2,
+        });
+        await outbox.enqueueRegisteredSessionStateFieldMutation(createRegisteredSessionStateFieldMutation({
+            sessionId: 'runtime-activity-turn-order',
+            fieldId: 'runtime.activity',
+            deliveryClass: 'durable_best_effort',
+            source: 'runtime',
+            observedAt: 3,
+            op: { kind: 'set', value: { state: 'idle', activeCount: 0 } },
+        }));
+
+        await outbox.activateDelivery();
+
+        expect(deliveredActivityStates).toContain('idle');
+        await outbox.close();
+    });
+
     it('keeps an inactive replacement from stealing delivery until explicit activation', async () => {
         const deliveredBy: string[] = [];
         const old = createRuntimeSessionClientDurableMutationOutbox({

@@ -216,6 +216,53 @@ describe('createAutomationClaimClient', () => {
     );
   });
 
+  it('retries one ambiguous V3 claim response with the exact signed request', async () => {
+    axiosGet.mockResolvedValue({ data: { assignments: [], settings: DEFAULT_WORKER_SETTINGS } });
+    const createPublisherHeader = vi.fn(async () => 'signed-machine-proof');
+    axiosPost
+      .mockRejectedValueOnce({ request: {} })
+      .mockResolvedValueOnce({ data: { run: null, automation: null, accountCurrentness: null } });
+
+    const client = createAutomationClaimClient({ token: 'token-claim-retry', createPublisherHeader });
+    await client.fetchAssignments('machine-claim-retry');
+
+    await expect(client.claimRun({ machineId: 'machine-claim-retry', leaseDurationMs: 45_000 })).resolves.toEqual({
+      protocol: 'v3',
+      run: null,
+      automation: null,
+    });
+    expect(axiosPost).toHaveBeenCalledTimes(2);
+    expect(axiosPost.mock.calls[0]?.[1]).toBe(axiosPost.mock.calls[1]?.[1]);
+    expect(axiosPost.mock.calls[0]?.[2]?.headers).toBe(axiosPost.mock.calls[1]?.[2]?.headers);
+    expect(createPublisherHeader).toHaveBeenCalledTimes(2);
+    expect(createPublisherHeader.mock.calls.filter(([request]) => request.method === 'POST')).toHaveLength(1);
+  });
+
+  it('does not retry a V3 claim after receiving an HTTP response', async () => {
+    axiosGet.mockResolvedValue({ data: { assignments: [], settings: DEFAULT_WORKER_SETTINGS } });
+    axiosPost.mockRejectedValue({ response: { status: 503 } });
+
+    const client = createAutomationClaimClient({ token: 'token-claim-http-failure' });
+    await client.fetchAssignments('machine-claim-http-failure');
+
+    await expect(client.claimRun({ machineId: 'machine-claim-http-failure', leaseDurationMs: 45_000 })).rejects.toEqual({
+      response: { status: 503 },
+    });
+    expect(axiosPost).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a cancelled V3 claim request', async () => {
+    axiosGet.mockResolvedValue({ data: { assignments: [], settings: DEFAULT_WORKER_SETTINGS } });
+    const cancelled = Object.assign(new Error('cancelled'), { code: 'ERR_CANCELED' });
+    axiosPost.mockRejectedValue(cancelled);
+
+    const client = createAutomationClaimClient({ token: 'token-claim-cancelled' });
+    await client.fetchAssignments('machine-claim-cancelled');
+
+    await expect(client.claimRun({ machineId: 'machine-claim-cancelled', leaseDurationMs: 45_000 })).rejects.toBe(cancelled);
+    expect(axiosPost).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves one server-admitted session-lifecycle trigger cause without re-evaluating it in the worker', async () => {
     axiosGet.mockResolvedValue({ data: { assignments: [], settings: DEFAULT_WORKER_SETTINGS } });
     const cause = {

@@ -74,6 +74,7 @@ const handleDaemonCliCommand = lazyCommandHandler(async () => (await import('./c
 const handleDoctorCliCommand = lazyCommandHandler(async () => (await import('./commands/doctor')).handleDoctorCliCommand);
 const handleInstallCliCommand = lazyCommandHandler(async () => (await import('./commands/install')).handleInstallCliCommand);
 const handleLogoutCliCommand = lazyCommandHandler(async () => (await import('./commands/logout')).handleLogoutCliCommand);
+const handleHomeCliCommand = lazyCommandHandler(async () => (await import('./commands/home')).handleHomeCliCommand);
 const handleMachineCliCommand = lazyCommandHandler(async () => (await import('./commands/machine')).handleMachineCliCommand);
 const handleMachinesCliCommand = lazyCommandHandler(async () => (await import('./commands/machines')).handleMachinesCliCommand);
 const handleMcpCliCommand = lazyCommandHandler(async () => (await import('./commands/mcp')).handleMcpCliCommand);
@@ -147,6 +148,7 @@ const staticCommandRegistryEntries: Readonly<Record<string, CommandRegistryEntry
   status: { handler: handleStatusCliCommand, surface: { rootHelpLabel: 'happier status', rootHelpDescription: 'Show system status and recommended repairs', allowTmux: false } },
   service: { handler: handleServiceCliCommand, surface: { rootHelpLabel: 'happier service', rootHelpDescription: 'Manage the background service that allows', rootHelpDetail: 'to spawn new sessions away from your computer', allowTmux: false } },
   daemon: { handler: handleDaemonCliCommand, surface: { rootHelpLabel: 'happier daemon', rootHelpDescription: 'Manage daemon status and sessions', allowTmux: false } },
+  home: { handler: handleHomeCliCommand, surface: { rootHelpLabel: 'happier home', rootHelpDescription: 'Inspect, back up, restore, erase, or relocate your Personal Home', allowTmux: false } },
   machine: { handler: handleMachineCliCommand, surface: { rootHelpLabel: 'happier machine', rootHelpDescription: 'Set up remote machines over SSH', allowTmux: false } },
   machines: { handler: handleMachinesCliCommand, surface: { rootHelpLabel: 'happier machines', rootHelpDescription: 'Discover Account machines for API targeting', allowTmux: false } },
   actions: { handler: handleActionsCliCommand, surface: { rootHelpLabel: 'happier actions', rootHelpDescription: 'Discover and invoke built-in and contributed Actions', allowTmux: false } },

@@ -112,6 +112,27 @@ export async function realizeWorkspaceCheckoutWithScmWorkspace(input: Readonly<{
     >;
     registry?: ScmBackendRegistry;
 }>): Promise<ScmWorkspaceIntegrationWorkspaceCheckoutRealizationResult | null> {
+    const resolved = await realizeWorkspaceCheckoutWithScmWorkspaceSource(input);
+    return resolved?.realization ?? null;
+}
+
+/**
+ * Retains the SCM-selected source root beside the checkout realization. This
+ * remains daemon-internal evidence used to preserve a selected nested cwd;
+ * callers do not need to rediscover or guess the repository root.
+ */
+export async function realizeWorkspaceCheckoutWithScmWorkspaceSource(input: Readonly<{
+    sourcePath: string;
+    targetPath?: string;
+    checkoutCreation: Pick<
+        ScmWorkspaceIntegrationWorkspaceCheckoutMaterializationInput['workspaceCheckoutMaterialization'],
+        'kind' | 'displayName' | 'baseRef' | 'branchMode'
+    >;
+    registry?: ScmBackendRegistry;
+}>): Promise<Readonly<{
+    realization: ScmWorkspaceIntegrationWorkspaceCheckoutRealizationResult;
+    sourceRootPath: string;
+}> | null> {
     return runWithScmBackendRegistryLease(input.registry, async (registry) => {
         const resolved = await resolveScmSelection({
             workingDirectory: input.sourcePath,
@@ -122,13 +143,19 @@ export async function realizeWorkspaceCheckoutWithScmWorkspace(input: Readonly<{
             return null;
         }
 
-        return await realizeWorkspaceCheckoutWithResolvedScmSelection({
+        const realization = await realizeWorkspaceCheckoutWithResolvedScmSelection({
             sourcePath: input.sourcePath,
             targetPath: input.targetPath,
             checkoutCreation: input.checkoutCreation,
             context: resolved.context,
             selection: resolved.selection,
         });
+        return realization
+            ? {
+                realization,
+                sourceRootPath: resolved.context.detection.rootPath ?? input.sourcePath,
+            }
+            : null;
     });
 }
 

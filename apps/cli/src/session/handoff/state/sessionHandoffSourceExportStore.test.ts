@@ -69,6 +69,45 @@ describe('sessionHandoffSourceExportStore', () => {
     }
   });
 
+  it('releases completed transfer payloads while preserving durable handoff metadata', async () => {
+    const activeServerDir = await mkdtemp(join(os.tmpdir(), 'happier-session-handoff-store-release-'));
+    try {
+      const store = createSessionHandoffSourceExportStore({ activeServerDir });
+      const handoffId = 'handoff-release-1';
+      const agentBundle = await store.writeAgentBundleFile({
+        handoffId,
+        agentBundle: {
+          agentId: 'codex',
+          remoteSessionId: 'remote-session-release',
+          files: [],
+        },
+      });
+      const receivedBundlePath = await store.prepareReceivedAgentBundleFilePath(handoffId);
+      await writeFile(receivedBundlePath, Buffer.from('received'));
+      await store.save({
+        handoffId,
+        exportedAtMs: 1234,
+        sourceMachineId: 'machine_source',
+        targetMachineId: 'machine_target',
+        agentBundle,
+      });
+
+      await store.releaseTransferFiles(handoffId);
+
+      await expect(stat(agentBundle.filePath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(receivedBundlePath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(store.load(handoffId)).resolves.toEqual(expect.objectContaining({
+        handoffId,
+        exportedAtMs: 1234,
+        sourceMachineId: 'machine_source',
+        targetMachineId: 'machine_target',
+      }));
+      expect((await store.load(handoffId))?.agentBundle).toBeUndefined();
+    } finally {
+      await rm(activeServerDir, { recursive: true, force: true });
+    }
+  });
+
   it('persists referenced files as a portable binary artifact', async () => {
     const activeServerDir = await mkdtemp(join(os.tmpdir(), 'happier-session-handoff-store-binary-'));
     const sourceDirectory = await mkdtemp(join(os.tmpdir(), 'happier-session-handoff-store-source-'));

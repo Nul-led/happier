@@ -1,6 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { coordinateTrackedSessionHandoff } from './sessionHandoffCoordinator';
+import { computeWorkspaceSyncPolicyDigest } from '@/workspaces/sync/workspaceSyncTypes';
+
+const allFilesPolicyInput = {
+  v: 1 as const,
+  selection: 'all_files' as const,
+  extraIgnorePatterns: [],
+  extraIncludePatterns: [],
+  includeGitDirectory: false,
+};
+const allFilesContentPolicy = {
+  ...allFilesPolicyInput,
+  policyDigest: computeWorkspaceSyncPolicyDigest(allFilesPolicyInput),
+};
 
 const status = (phase: 'preparing' | 'staging_target' | 'finalizing', state: 'in_progress' | 'ready_for_cutover' | 'completed' = 'in_progress') => ({
   handoffId: 'handoff-1',
@@ -77,6 +90,36 @@ function createDeps(overrides: Record<string, unknown> = {}) {
 }
 
 describe('tracked session handoff coordinator', () => {
+  it('fails closed before stopping the source when a canonical workspace action has no production adapter', async () => {
+    const { deps } = createDeps();
+
+    const result = await coordinateTrackedSessionHandoff({
+      input: {
+        operationId: 'action-request-1',
+        sessionId: 'session-1',
+        targetMachineId: 'target-machine',
+        workspaceAction: {
+          kind: 'copy_once',
+          contentPolicy: allFilesContentPolicy,
+        },
+        workspaceSyncSourceRootPath: '/source/repo',
+        workspaceSyncTargetRootPath: '/target/repo',
+        workspaceSyncSourceWorkspaceRefId: 'source-ref',
+        workspaceSyncTargetWorkspaceRefId: 'target-ref',
+      },
+      signal: new AbortController().signal,
+      ...deps,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'workspace_sync_unavailable',
+      error: 'workspace_sync_unavailable',
+    });
+    expect(deps.start).not.toHaveBeenCalled();
+    expect(deps.prepareTarget).not.toHaveBeenCalled();
+  });
+
   it('owns the full parent sequence and publishes the handoff id before settlement', async () => {
     const { deps, calls } = createDeps();
     const result = await coordinateTrackedSessionHandoff({
@@ -308,6 +351,187 @@ describe('tracked session handoff coordinator', () => {
     expect(deps.abort).toHaveBeenCalledWith(expect.objectContaining({ machineId: 'source-machine' }));
   });
 
+  it('compensates a committed workspace operation when target commit fails', async () => {
+    const workspaceSyncAdapter = {
+      prepare: vi.fn(async (input: { operationId: string; action: { kind: 'copy_once' } }) => ({
+        kind: input.action.kind,
+        operationId: input.operationId,
+        action: input.action,
+      })),
+      finalize: vi.fn(async (input: { operationId: string }) => ({
+        kind: 'copy_once' as const,
+        operationId: input.operationId,
+      })),
+      commit: vi.fn(async (input: { operationId: string }) => ({
+        kind: 'copy_once' as const,
+        operationId: input.operationId,
+      })),
+      abort: vi.fn(async () => undefined),
+    };
+    const { deps } = createDeps({
+      workspaceSyncAdapter,
+      commitTarget: vi.fn(async () => ({
+        ok: false,
+        errorCode: 'target_commit_failed',
+        error: 'target_commit_failed',
+      })),
+    });
+
+    const result = await coordinateTrackedSessionHandoff({
+      input: {
+        operationId: 'action-request-1',
+        sessionId: 'session-1',
+        targetMachineId: 'target-machine',
+        workspaceAction: {
+          kind: 'copy_once',
+          contentPolicy: allFilesContentPolicy,
+        },
+        workspaceSyncSourceRootPath: '/source/repo',
+        workspaceSyncTargetRootPath: '/target/repo',
+        workspaceSyncSourceWorkspaceRefId: 'source-ref',
+        workspaceSyncTargetWorkspaceRefId: 'target-ref',
+      },
+      signal: new AbortController().signal,
+      ...deps,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      errorCode: 'target_commit_failed',
+      error: 'target_commit_failed',
+    });
+    expect(workspaceSyncAdapter.commit).not.toHaveBeenCalled();
+    expect(workspaceSyncAdapter.abort).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: 'action-request-1',
+    }));
+  });
+
+  it('finalizes workspace bytes after source quiescence and before target preparation or resume', async () => {
+    const calls: string[] = [];
+    const workspaceSyncAdapter = {
+      prepare: vi.fn(async (input: { operationId: string; action: { kind: 'copy_once' } }) => {
+        calls.push('workspace-prepare');
+        return {
+          kind: input.action.kind,
+          operationId: input.operationId,
+          action: input.action,
+        };
+      }),
+      finalize: vi.fn(async (input: { operationId: string }) => {
+        calls.push('workspace-finalize');
+        return { kind: 'copy_once' as const, operationId: input.operationId };
+      }),
+      commit: vi.fn(async (input: { operationId: string }) => {
+        calls.push('workspace-commit');
+        return { kind: 'copy_once' as const, operationId: input.operationId };
+      }),
+      abort: vi.fn(async () => undefined),
+    };
+    const { deps } = createDeps({
+      workspaceSyncAdapter,
+      start: vi.fn(async () => {
+        calls.push('source-quiesced');
+        return { ok: true as const, result: started };
+      }),
+      prepareTarget: vi.fn(async () => {
+        calls.push('target-prepare');
+        return prepared;
+      }),
+      resumeTarget: vi.fn(async () => {
+        calls.push('target-resume');
+        return { ok: true as const };
+      }),
+      confirmTarget: vi.fn(async () => {
+        calls.push('target-confirm');
+        return { ok: true as const };
+      }),
+      commitTarget: vi.fn(async () => {
+        calls.push('target-commit');
+        return { handoffId: 'handoff-1', status: status('finalizing', 'completed') };
+      }),
+    });
+
+    const result = await coordinateTrackedSessionHandoff({
+      input: {
+        operationId: 'action-request-1',
+        sessionId: 'session-1',
+        targetMachineId: 'target-machine',
+        workspaceAction: {
+          kind: 'copy_once',
+          contentPolicy: allFilesContentPolicy,
+        },
+        workspaceSyncSourceRootPath: '/source/repo',
+        workspaceSyncTargetRootPath: '/target/repo',
+        workspaceSyncSourceWorkspaceRefId: 'source-ref',
+        workspaceSyncTargetWorkspaceRefId: 'target-ref',
+      },
+      signal: new AbortController().signal,
+      ...deps,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([
+      'workspace-prepare',
+      'source-quiesced',
+      'workspace-finalize',
+      'target-prepare',
+      'target-resume',
+      'target-confirm',
+      'target-commit',
+      'workspace-commit',
+    ]);
+    expect(workspaceSyncAdapter.prepare).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: 'action-request-1',
+      sourceWorkspaceRefId: 'source-ref',
+      targetWorkspaceRefId: 'target-ref',
+    }));
+  });
+
+  it('releases a prepared workspace when cancellation happens before a handoff id exists', async () => {
+    const controller = new AbortController();
+    const workspaceSyncAdapter = {
+      prepare: vi.fn(async (input: { operationId: string; action: { kind: 'copy_once' } }) => ({
+        kind: input.action.kind,
+        operationId: input.operationId,
+        action: input.action,
+      })),
+      finalize: vi.fn(),
+      commit: vi.fn(),
+      abort: vi.fn(async () => undefined),
+    };
+    const { deps } = createDeps({
+      workspaceSyncAdapter,
+      start: vi.fn(async () => await new Promise<never>((_resolve, reject) => {
+        controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true });
+      })),
+    });
+    const operation = coordinateTrackedSessionHandoff({
+      input: {
+        operationId: 'action-request-before-start',
+        sessionId: 'session-1',
+        targetMachineId: 'target-machine',
+        workspaceAction: {
+          kind: 'copy_once',
+          contentPolicy: allFilesContentPolicy,
+        },
+        workspaceSyncSourceRootPath: '/source/repo',
+        workspaceSyncTargetRootPath: '/target/repo',
+        workspaceSyncSourceWorkspaceRefId: 'source-ref',
+        workspaceSyncTargetWorkspaceRefId: 'target-ref',
+      },
+      signal: controller.signal,
+      ...deps,
+    });
+    await vi.waitFor(() => expect(workspaceSyncAdapter.prepare).toHaveBeenCalledTimes(1));
+    controller.abort(new Error('cancel'));
+
+    await expect(operation).resolves.toEqual({ ok: false, errorCode: 'cancelled', error: 'cancelled' });
+    expect(workspaceSyncAdapter.abort).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: 'action-request-before-start',
+    }));
+    expect(deps.abort).not.toHaveBeenCalled();
+  });
+
   it('acknowledges cancellation only after both handoff owners report aborted', async () => {
     const controller = new AbortController();
     const { deps } = createDeps({
@@ -385,5 +609,55 @@ describe('tracked session handoff coordinator', () => {
         warning: { code: 'source_cleanup_failed', message: 'cleanup_failed' },
       },
     });
+  });
+
+  it('keeps target-commit success when workspace authority cleanup fails after commit', async () => {
+    const workspaceSyncAdapter = {
+      prepare: vi.fn(async (input: { operationId: string; action: { kind: 'copy_once' } }) => ({
+        kind: input.action.kind,
+        operationId: input.operationId,
+        action: input.action,
+      })),
+      finalize: vi.fn(async (input: { operationId: string }) => ({
+        kind: 'copy_once' as const,
+        operationId: input.operationId,
+      })),
+      commit: vi.fn(async () => {
+        throw Object.assign(new Error('target workspace authority release failed'), { code: 'peer_unavailable' });
+      }),
+      abort: vi.fn(async () => undefined),
+    };
+    const { deps } = createDeps({ workspaceSyncAdapter });
+
+    const result = await coordinateTrackedSessionHandoff({
+      input: {
+        operationId: 'action-request-1',
+        sessionId: 'session-1',
+        targetMachineId: 'target-machine',
+        workspaceAction: {
+          kind: 'copy_once',
+          contentPolicy: allFilesContentPolicy,
+        },
+        workspaceSyncSourceRootPath: '/source/repo',
+        workspaceSyncTargetRootPath: '/target/repo',
+        workspaceSyncSourceWorkspaceRefId: 'source-ref',
+        workspaceSyncTargetWorkspaceRefId: 'target-ref',
+      },
+      signal: new AbortController().signal,
+      ...deps,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      result: {
+        handoffId: 'handoff-1',
+        warning: {
+          code: 'source_cleanup_failed',
+          message: 'target workspace authority release failed',
+        },
+      },
+    });
+    expect(deps.cleanupSource).toHaveBeenCalledTimes(1);
+    expect(workspaceSyncAdapter.abort).toHaveBeenCalledTimes(1);
   });
 });

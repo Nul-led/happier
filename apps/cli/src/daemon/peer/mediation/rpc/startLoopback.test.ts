@@ -135,6 +135,62 @@ describe('startPeerMediationLoopback', () => {
     }));
   });
 
+  it('starts the shared loopback app for Iroh admission alone and forwards the admission owner unchanged', async () => {
+    const grantKeyPair = tweetnacl.sign.keyPair();
+    const irohMachineAdmission = {
+      localEndpointId: 'a'.repeat(64),
+      role: 'acceptor' as const,
+      allowedFlows: ['file_transfer', 'attachment_transfer', 'workspace_sync'] as const,
+      resolveApplicationPort: vi.fn(async () => 47321),
+    };
+    const startPeerMediationLoopbackServer = vi.fn(async (options) => ({
+      app: {} as never,
+      url: 'http://127.0.0.1:47002/peer-mediation/v1/probe',
+      endpoint: {
+        v: 1 as const,
+        routeKind: 'loopback_direct' as const,
+        url: 'http://127.0.0.1:47002/peer-mediation/v1/probe',
+        endpointFingerprint: options.expected.endpointFingerprint,
+        expiresAt: options.endpointExpiresAt,
+        directRouteGrantProofVerifierVersions: [2] as 2[],
+      },
+      stop: async () => undefined,
+    }));
+
+    const started = await startPeerMediationLoopback({
+      accountId: 'account_1',
+      machineId: 'machine_1',
+      serverFeatures: createServerFeatures(grantKeyPair.publicKey, true),
+      irohMachineAdmission,
+      nowMs: () => 2_000,
+      startPeerMediationLoopbackServer,
+    });
+
+    expect(started).not.toBeNull();
+    expect(startPeerMediationLoopbackServer).toHaveBeenCalledWith(expect.objectContaining({
+      irohMachineAdmission,
+    }));
+  });
+
+  it('fails Iroh-only startup closed when the feature snapshot has no grant trust roots', async () => {
+    const features = createServerFeatures(tweetnacl.sign.keyPair().publicKey, true);
+    features.capabilities.machines.peerMediation.grantSigningKeys = [];
+    const startPeerMediationLoopbackServer = vi.fn();
+    await expect(startPeerMediationLoopback({
+      accountId: 'account_1',
+      machineId: 'machine_1',
+      serverFeatures: features,
+      irohMachineAdmission: {
+        localEndpointId: 'a'.repeat(64),
+        role: 'acceptor',
+        allowedFlows: ['workspace_sync'],
+        resolveApplicationPort: async () => 47321,
+      },
+      startPeerMediationLoopbackServer,
+    })).resolves.toBeNull();
+    expect(startPeerMediationLoopbackServer).not.toHaveBeenCalled();
+  });
+
   it('generates a fresh endpoint fingerprint for each loopback lifetime', async () => {
     const grantKeyPair = tweetnacl.sign.keyPair();
     const capturedFingerprints: string[] = [];

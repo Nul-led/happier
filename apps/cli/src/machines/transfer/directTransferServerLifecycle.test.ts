@@ -1373,4 +1373,27 @@ describe('createDirectTransferServerLifecycle', () => {
       payloadSource: createBufferTransferPayloadSource(Buffer.from('payload', 'utf8')),
     })).rejects.toThrow('listen EADDRINUSE 127.0.0.1:46001');
   });
+
+  it('exposes the actual bound port through one reusable listener and rejects after terminal stop', async () => {
+    const startServer = vi.fn(async () => ({
+      port: 47321,
+      stop: vi.fn(async () => {}),
+      issueImportOpenAuthorizationToken: vi.fn(() => ({ authorizationToken: 'unused', expiresAt: 2_000 })),
+      openTrustedImportSession: vi.fn(async () => ({ success: false as const, error: 'unused' })),
+      abortImportTransferSession: vi.fn(async () => {}),
+    }));
+    const lifecycle = createDirectTransferServerLifecycle({
+      bindPort: 0,
+      listenerClasses: ['loopback_http'],
+      startServer,
+    });
+
+    await expect(Promise.all([lifecycle.ensureListening(), lifecycle.ensureListening()]))
+      .resolves.toEqual([47321, 47321]);
+    expect(startServer).toHaveBeenCalledTimes(1);
+
+    await lifecycle.stop();
+    await expect(lifecycle.ensureListening()).rejects.toThrow('Direct transfer server lifecycle is stopped');
+    expect(startServer).toHaveBeenCalledTimes(1);
+  });
 });

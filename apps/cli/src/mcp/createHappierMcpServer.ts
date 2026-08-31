@@ -236,7 +236,6 @@ export function createHappierMcpServer(
       sessionId: client.sessionId,
       ...cryptoContext,
       rawSession,
-      getCallerPermissionMode: () => resolveLiveClientPermissionMode(client),
       getCurrentSessionBackendTarget: () => resolveLiveClientBackendTarget(client),
     },
     {

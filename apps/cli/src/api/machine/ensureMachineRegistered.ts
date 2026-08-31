@@ -143,6 +143,27 @@ async function adoptReplacementMachineIdForActiveServer(opts: Readonly<{
   return updated.machineId ?? opts.replacementMachineId;
 }
 
+async function markMachineIdConfirmedForActiveServer(machineId: string): Promise<void> {
+  await updateSettings((settings) => {
+    const activeServerId = sanitizeServerIdForFilesystem(
+      configuration.activeServerId ?? settings.activeServerId ?? 'cloud',
+      'cloud',
+    );
+    const currentMachineId = settings.machineIdByServerId?.[activeServerId]?.trim();
+    if (currentMachineId !== machineId) return settings;
+    if (settings.machineIdConfirmedByServerByServerId?.[activeServerId] === true) return settings;
+    return {
+      ...settings,
+      machineIdConfirmedByServerByServerId: {
+        ...(settings.machineIdConfirmedByServerByServerId ?? {}),
+        [activeServerId]: true,
+      },
+      // derived (not persisted in v5+)
+      machineId,
+    };
+  });
+}
+
 export async function ensureMachineRegistered(opts: Readonly<{
   api: Pick<ApiClient, 'getOrCreateMachine'>;
   machineId: string;
@@ -157,6 +178,15 @@ export async function ensureMachineRegistered(opts: Readonly<{
   machineId: string;
   didRotateMachineId: boolean;
 }> {
+  const completed = async (
+    machine: Machine,
+    machineId: string,
+    didRotateMachineId: boolean,
+  ) => {
+    await markMachineIdConfirmedForActiveServer(machineId);
+    return { machine, machineId, didRotateMachineId };
+  };
+
   throwIfMachineRegistrationIsQuiescing(opts.isShuttingDown);
   try {
     const machine = await opts.api.getOrCreateMachine({
@@ -165,7 +195,7 @@ export async function ensureMachineRegistered(opts: Readonly<{
       daemonState: opts.daemonState,
       timeoutMs: opts.timeoutMs,
     });
-    return { machine, machineId: opts.machineId, didRotateMachineId: false };
+    return await completed(machine, opts.machineId, false);
   } catch (error) {
     throwIfMachineRegistrationIsQuiescing(opts.isShuttingDown);
 
@@ -189,7 +219,7 @@ export async function ensureMachineRegistered(opts: Readonly<{
         timeoutMs: opts.timeoutMs,
       });
 
-      return { machine, machineId: replacementMachineId, didRotateMachineId: true };
+      return await completed(machine, replacementMachineId, true);
     }
 
     if (!isMachineIdConflictError(error) && !isMachineRevokedError(error)) {
@@ -215,6 +245,6 @@ export async function ensureMachineRegistered(opts: Readonly<{
 
     recoveryLogger.info(`[MACHINE] [RECOVERED] Machine id rotated${caller}: ${opts.machineId} -> ${rotated}`);
 
-    return { machine, machineId: rotated, didRotateMachineId: true };
+    return await completed(machine, rotated, true);
   }
 }

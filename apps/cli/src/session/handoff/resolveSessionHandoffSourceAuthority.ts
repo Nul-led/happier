@@ -1,4 +1,5 @@
 import {
+  normalizeSessionHandoffWorkspaceRootPath,
   resolveLinkedExternalSessionAuthorityV1,
   type SessionHandoffStorageMode,
 } from '@happier-dev/protocol';
@@ -10,6 +11,7 @@ export type SessionHandoffSourceAuthority =
   | Readonly<{
       ok: true;
       sourceMachineId: string;
+      sourceRootPath?: string;
       sessionStorageMode: SessionHandoffStorageMode;
     }>
   | Readonly<{
@@ -32,6 +34,7 @@ export type ResolveSessionHandoffSourceAuthorityInput = Readonly<{
     ownerMetadata?: unknown;
     dataEncryptionKey?: unknown;
     encryptionMode?: unknown;
+    path?: unknown;
   }>;
   decryptOwnerMetadataView?: typeof tryDecryptSessionOwnerMetadataView;
 }>;
@@ -88,9 +91,15 @@ export function resolveSessionHandoffSourceAuthority(
     return { ok: false, errorCode: 'machine_not_found', error: 'machine_not_found' };
   }
 
+  const sourceRootPath = normalizeSessionHandoffWorkspaceRootPath(
+    readNonEmptyString(input.rawSession.path)
+      ?? readNonEmptyString(ownerMetadata.path)
+      ?? '',
+  );
   return {
     ok: true,
     sourceMachineId,
+    ...(sourceRootPath ? { sourceRootPath } : {}),
     sessionStorageMode: transcriptAuthority.transcriptStorage,
   };
 }

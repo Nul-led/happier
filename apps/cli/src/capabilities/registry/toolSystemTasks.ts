@@ -4,6 +4,7 @@ import {
   SystemTaskSpecSchema,
   type SystemTaskJsonValue,
 } from '@happier-dev/protocol';
+import { PERSONAL_HOME_SYSTEM_TASK_KIND_IDS } from '@happier-dev/cli-common/systemTasks';
 
 import { type Capability } from '../service';
 import { DISCOVER_CONFIGURED_SSH_HOSTS_SYSTEM_TASK_KIND } from '../systemTasks/ssh/discoverConfiguredSshHosts/task';
@@ -15,8 +16,11 @@ export const SYSTEM_TASK_KIND_IDS = [
   'remote.ssh.bootstrapMachine.v1',
   'relay.runtime.installOrUpdate.v1',
   'relay.runtime.start.v1',
+  'relay.runtime.restart.v1',
   'relay.runtime.status.v1',
   'relay.runtime.stop.v1',
+  'relay.runtime.uninstall.v1',
+  ...PERSONAL_HOME_SYSTEM_TASK_KIND_IDS,
 ] as const;
 
 type SystemTasksRunnerAdapter = Readonly<{

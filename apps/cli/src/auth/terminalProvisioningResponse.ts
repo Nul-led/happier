@@ -91,6 +91,10 @@ export function openTerminalProvisioningResponse(params: Readonly<{
     recipientSecretKeyOrSeed: params.terminalSecretKey,
   });
   if (!opened) return null;
+  // Fail closed: the terminal holds an authenticated pairing context, so any
+  // unbound v1/v2 material cannot be trusted (a relay could have downgraded
+  // the exchange); it must never yield credentials.
+  if (params.pairing) return null;
   if (opened.length === 32) {
     return { type: 'legacy', key: opened, authenticated: false };
   }

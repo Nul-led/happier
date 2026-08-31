@@ -528,6 +528,33 @@ describe('mergeSessionMetadataForStartup', () => {
             forceIncludeServerIds: ['server-a'],
             forceExcludeServerIds: ['server-b'],
         });
+        expect((merged as any).mcpSelectionRestartRequiredV1).toBeUndefined();
+    });
+
+    it('clears the MCP restart marker when startup applies the desired selection', () => {
+        const merged = mergeSessionMetadataForStartup({
+            current: {
+                mcpSelectionV1: {
+                    v: 1,
+                    managedServersEnabled: true,
+                    forceIncludeServerIds: ['server-new'],
+                    forceExcludeServerIds: [],
+                },
+                mcpSelectionRestartRequiredV1: {
+                    v: 1,
+                    appliedSelection: {
+                        v: 1,
+                        managedServersEnabled: true,
+                        forceIncludeServerIds: [],
+                        forceExcludeServerIds: [],
+                    },
+                },
+            } as any,
+            next: {} as any,
+            nowMs: 50,
+        } as any);
+
+        expect((merged as any).mcpSelectionRestartRequiredV1).toBeUndefined();
     });
 
     it('can remove specific attach-only metadata keys during startup merge', () => {

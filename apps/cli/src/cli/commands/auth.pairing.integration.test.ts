@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import fastify from 'fastify';
+import fastify, { type FastifyInstance } from 'fastify';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 import {
-  deriveAccountMachineKeyFromRecoverySecret,
+  CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+  sealTerminalProvisioningV3Payload,
   sealTerminalProvisioningV3TokenOnlyPayload,
 } from '@happier-dev/protocol';
+import tweetnacl from 'tweetnacl';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
@@ -20,8 +22,45 @@ type RequestRow = {
   responseAccountId: string | null;
 };
 
+const SERVER_IDENTITY_ID = 'srv_terminal_pairing_home';
+
+function createFeaturesResponse(serverIdentityId = SERVER_IDENTITY_ID): Response {
+  return new Response(JSON.stringify({
+    features: {},
+    capabilities: {
+      serverIdentity: { serverIdentityId },
+      accountStoredContentCompatibility: {
+        v: 1,
+        minimumProtocolVersion: 2,
+        currentProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+        declarationTransport: 'http-header-and-socket-auth-v1',
+      },
+    },
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 function sha256Base64Url(input: Buffer): string {
   return createHash('sha256').update(input).digest('base64url');
+}
+
+function registerMachineSetupRoutes(app: FastifyInstance, mode: 'plain' | 'e2ee'): void {
+  app.get('/v1/account/encryption', async () => ({ mode, updatedAt: 1 }));
+  app.post('/v1/machines', async (request) => {
+    const body = request.body as Record<string, unknown>;
+    return {
+      machine: {
+        id: body.id,
+        metadata: body.metadata,
+        metadataVersion: 1,
+        daemonState: body.daemonState ?? null,
+        daemonStateVersion: body.daemonState ? 1 : 0,
+        dataEncryptionKey: body.dataEncryptionKey,
+      },
+    };
+  });
 }
 
 describe('auth pairing commands (request/approve/wait) (json)', () => {
@@ -48,6 +87,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
     remoteHomeDir = await createTempDir('happier-cli-auth-remote-');
     localHomeDir = await createTempDir('happier-cli-auth-local-');
     restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
+    vi.stubGlobal('fetch', vi.fn(async () => createFeaturesResponse()));
   });
 
   afterEach(async () => {
@@ -61,8 +101,12 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
   });
 
   it('persists an opt-in v3 requirement with split request/wait state', async () => {
+    const events: string[] = [];
     const app = fastify({ logger: false });
-    app.post('/v1/auth/request', async (_req, reply) => reply.send({ state: 'requested' }));
+    app.post('/v1/auth/request', async (_req, reply) => {
+      events.push('request');
+      return reply.send({ state: 'requested' });
+    });
     await app.ready();
     const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
 
@@ -75,6 +119,11 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         HAPPIER_TERMINAL_PAIRING_REQUIRE: 'v3',
       });
       vi.resetModules();
+      vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+        expect(String(input)).toContain('/v1/features');
+        events.push('features');
+        return createFeaturesResponse();
+      }));
 
       const { handleAuthRequest } = await import('./auth/request');
       const output = captureConsoleLogAndMuteStdout();
@@ -84,6 +133,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
           pairingRequirement?: string;
           stateFile?: string;
           supportsTokenOnly?: boolean;
+          serverIdentityId?: string;
           links?: {
             webUrl?: string;
             mobileUrl?: string;
@@ -91,14 +141,20 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         };
         expect(request.pairingRequirement).toBe('v3');
         expect(request.supportsTokenOnly).toBe(true);
+        expect(request.serverIdentityId).toBe(SERVER_IDENTITY_ID);
+        expect(events).toEqual(['features', 'request']);
         expect(request.links?.webUrl).toContain('supportsTokenOnly=1');
         expect(request.links?.mobileUrl).toContain('supportsTokenOnly=1');
         const state = JSON.parse(await readFile(String(request.stateFile), 'utf8')) as {
           pairingRequirement?: string;
           supportsTokenOnly?: boolean;
+          serverIdentityId?: string;
         };
         expect(state.pairingRequirement).toBe('v3');
         expect(state.supportsTokenOnly).toBe(true);
+        expect(state.serverIdentityId).toBe(SERVER_IDENTITY_ID);
+        expect(request.links?.webUrl).toContain(`serverIdentityId=${SERVER_IDENTITY_ID}`);
+        expect(request.links?.mobileUrl).toContain(`serverIdentityId=${SERVER_IDENTITY_ID}`);
       } finally {
         output.restore();
       }
@@ -111,6 +167,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
   it('pairs a remote machine by creating a claim-gated request, approving it with an authenticated local CLI, then waiting and writing dataKey credentials on the remote', async () => {
     const requests = new Map<string, RequestRow>();
     const app = fastify({ logger: false });
+    registerMachineSetupRoutes(app, 'e2ee');
 
     app.post('/v1/auth/request', async (req, reply) => {
       const body = req.body as { publicKey?: unknown; claimSecretHash?: unknown; supportsV2?: unknown } | undefined;
@@ -159,7 +216,12 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         return reply.code(401).send({ error: 'unauthorized' });
       }
       if (!row.response || !row.responseAccountId) return reply.send({ state: 'requested' });
-      return reply.send({ state: 'authorized', token: 'issued-token', response: row.response });
+      return reply.send({
+        state: 'authorized',
+        token: 'issued-token',
+        response: row.response,
+        serverIdentityId: SERVER_IDENTITY_ID,
+      });
     });
 
     await app.ready();
@@ -206,20 +268,24 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         HAPPIER_VARIANT: 'stable',
       });
       vi.resetModules();
-      const { writeCredentialsLegacy } = await import('@/persistence');
-      const legacySecret = new Uint8Array(32).fill(9);
-      await writeCredentialsLegacy({ secret: legacySecret, token: 'local-token' });
+      const machineKey = new Uint8Array(32).fill(7);
+      const { writeCredentialsDataKey } = await import('@/persistence');
+      await writeCredentialsDataKey({
+        publicKey: tweetnacl.box.keyPair.fromSecretKey(machineKey).publicKey,
+        machineKey,
+        token: 'local-token',
+      });
 
+      // 2) Local: approve using existing local credentials (token never leaves local machine).
+      // The approval carries the remote request's v3 pairing context exactly as
+      // `auth pair-remote` does, so the response is bound to the pairing secret.
       vi.resetModules();
-      const { handleAuthApprove } = await import('./auth/approve');
-      const approveOut = captureConsoleLogAndMuteStdout();
-      try {
-        await handleAuthApprove(['--public-key', requestJson.publicKey, '--json']);
-        expect(approveOut.logs.length).toBe(1);
-        expect(JSON.parse(approveOut.logs[0] ?? '')).toEqual({ success: true });
-      } finally {
-        approveOut.restore();
-      }
+      const { approveTerminalAuthRequest } = await import('@/auth/terminalAuthApproval');
+      await approveTerminalAuthRequest({
+        publicKey: requestJson.publicKey,
+        pairing: requestJson.pairing,
+        supportsTokenOnly: requestJson.supportsTokenOnly === true,
+      });
 
       // 3) Remote: wait + claim, then write credentials (dataKey)
       envScope.patch({
@@ -240,7 +306,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         expect(parsed.success).toBe(true);
         expect(parsed.token).toBe('issued-token');
         expect(parsed.encryptionType).toBe('dataKey');
-        expect(parsed.pairingAuthentication).toBe('legacy');
+        expect(parsed.pairingAuthentication).toBe('v3');
       } finally {
         waitOut.restore();
       }
@@ -250,7 +316,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       expect(creds?.token).toBe('issued-token');
       expect(creds?.encryption.type).toBe('dataKey');
       expect(Array.from(creds?.encryption.type === 'dataKey' ? creds.encryption.machineKey : [])).toEqual(
-        Array.from(deriveAccountMachineKeyFromRecoverySecret(legacySecret)),
+        Array.from(machineKey),
       );
     } finally {
       restoreAxios();
@@ -261,6 +327,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
   it('writes exact token-only credentials from an authenticated token-only pairing response', async () => {
     const app = fastify({ logger: false });
     let response = '';
+    registerMachineSetupRoutes(app, 'plain');
 
     app.post('/v1/auth/request', async (_req, reply) => reply.send({ state: 'requested' }));
     app.get('/v1/auth/request/status', async (_req, reply) => {
@@ -271,6 +338,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
         state: 'authorized',
         token: 'plain-issued-token',
         response,
+        serverIdentityId: SERVER_IDENTITY_ID,
       });
     });
 
@@ -335,6 +403,7 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       await expect(readStoredCredentials()).resolves.toEqual({
         token: 'plain-issued-token',
         encryption: null,
+        credentialProvenance: 'stored_session',
       });
       await expect(readCredentials()).resolves.toBeNull();
     } finally {
@@ -343,9 +412,10 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
     }
   }, 20_000);
 
-  it('recognizes stored token-only credentials idempotently without polling or fabricating a key', async () => {
+  it('claims its pending request and replaces a stale stored token', async () => {
     const requests = new Map<string, RequestRow>();
     const app = fastify({ logger: false });
+    let response = '';
 
     app.post('/v1/auth/request', async (req, reply) => {
       const body = req.body as { publicKey?: unknown; claimSecretHash?: unknown } | undefined;
@@ -354,6 +424,26 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       if (!publicKey || !claimSecretHash) return reply.code(400).send({ error: 'claim_required' });
       requests.set(publicKey, { claimSecretHash, response: null, responseAccountId: null });
       return reply.send({ state: 'requested' });
+    });
+    app.get('/v1/auth/request/status', async () => ({ status: 'authorized', supportsV2: true }));
+    app.post('/v1/auth/request/claim', async () => ({
+      state: 'authorized',
+      token: 'fresh-approved-token',
+      response,
+      serverIdentityId: SERVER_IDENTITY_ID,
+    }));
+    app.get('/v1/account/encryption', async () => ({ mode: 'e2ee', updatedAt: 1 }));
+    app.post('/v1/machines', async (request) => {
+      const body = request.body as Record<string, unknown>;
+      return {
+        machine: {
+          id: body.id,
+          metadata: body.metadata,
+          metadataVersion: 1,
+          daemonState: null,
+          daemonStateVersion: 0,
+        },
+      };
     });
 
     await app.ready();
@@ -374,10 +464,13 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       vi.resetModules();
       const { handleAuthRequest } = await import('./auth/request');
       const requestOut = captureConsoleLogAndMuteStdout();
-      let requestJson: { publicKey: string };
+      let requestJson: {
+        publicKey: string;
+        pairing: { secretB64Url: string; createdAtMs: number; expiresAtMs: number };
+      };
       try {
         await handleAuthRequest(['--json']);
-        requestJson = JSON.parse(requestOut.logs[0] ?? '') as { publicKey: string };
+        requestJson = JSON.parse(requestOut.logs[0] ?? '') as typeof requestJson;
       } finally {
         requestOut.restore();
       }
@@ -386,6 +479,16 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       const { writeCredentialsTokenOnly, readSettings } = await import('@/persistence');
       const tokenPayload = Buffer.from(JSON.stringify({ sub: 'acct_local' })).toString('base64url');
       await writeCredentialsTokenOnly({ token: `header.${tokenPayload}.sig` });
+
+      const freshMachineKey = new Uint8Array(32).fill(23);
+      response = Buffer.from(sealTerminalProvisioningV3Payload({
+        terminalEphemeralPublicKey: new Uint8Array(Buffer.from(requestJson.publicKey, 'base64')),
+        contentPrivateKey: freshMachineKey,
+        pairingSecret: new Uint8Array(Buffer.from(requestJson.pairing.secretB64Url, 'base64url')),
+        createdAtMs: requestJson.pairing.createdAtMs,
+        expiresAtMs: requestJson.pairing.expiresAtMs,
+        randomBytes: (length) => new Uint8Array(length).fill(19),
+      })).toString('base64');
 
       vi.resetModules();
       const { handleAuthWait } = await import('./auth/wait');
@@ -399,7 +502,8 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
           encryptionType?: string;
         };
         expect(parsed.success).toBe(true);
-        expect(parsed.encryptionType).toBe('tokenOnly');
+        expect(parsed.encryptionType).toBe('dataKey');
+        expect((parsed as { token?: string }).token).toBe('fresh-approved-token');
         expect(typeof parsed.machineId).toBe('string');
         expect(parsed.machineId?.length).toBeGreaterThan(0);
       } finally {
@@ -410,8 +514,13 @@ describe('auth pairing commands (request/approve/wait) (json)', () => {
       expect(settings.machineId).toMatch(/^[-a-z0-9]+$/i);
       const { readStoredCredentials } = await import('@/persistence');
       await expect(readStoredCredentials()).resolves.toEqual({
-        token: `header.${tokenPayload}.sig`,
-        encryption: null,
+        token: 'fresh-approved-token',
+        encryption: {
+          type: 'dataKey',
+          publicKey: tweetnacl.box.keyPair.fromSecretKey(freshMachineKey).publicKey,
+          machineKey: freshMachineKey,
+        },
+        credentialProvenance: 'stored_session',
       });
     } finally {
       restoreAxios();

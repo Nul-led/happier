@@ -5,6 +5,7 @@ import {
   buildBackendTargetKeyV2,
   convertBackendTargetRefV2ToV1,
   parseBackendTargetKey,
+  parseBackendTargetKeyV2,
   readBackendTargetRefV2,
   type BackendTargetRefV1,
 } from '@happier-dev/protocol';
@@ -43,18 +44,13 @@ function normalizeSearchText(value: string): string {
 function readBackendTargetAliases(value: string): string[] {
   const v2Target = BackendTargetKeyV2Schema.safeParse(value);
   if (v2Target.success) {
-    if (v2Target.data.startsWith('agent:')) {
-      const qualifiedIdentity = v2Target.data.slice('agent:'.length);
-      const separatorIndex = qualifiedIdentity.indexOf('/');
-      return separatorIndex >= 0 ? [qualifiedIdentity.slice(separatorIndex + 1)] : [];
+    const parsed = parseBackendTargetKeyV2(v2Target.data);
+    if (parsed.kind === 'agent') {
+      return [parsed.identity.localId];
     }
-
-    const target = v2Target.data.slice('backend:'.length);
-    const configuredMarker = ':configured:';
-    const configuredIndex = target.indexOf(configuredMarker);
-    return configuredIndex >= 0
-      ? [target.slice(0, configuredIndex), target.slice(configuredIndex + configuredMarker.length)]
-      : [target];
+    return parsed.configuredBackendId
+      ? [parsed.backendId, parsed.configuredBackendId]
+      : [parsed.backendId];
   }
 
   const legacyTarget = BackendTargetKeySchema.safeParse(value);

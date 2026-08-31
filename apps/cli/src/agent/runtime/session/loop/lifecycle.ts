@@ -958,6 +958,7 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
     cleanupPromise ??= (async () => {
       unsubscribeRuntimeEventsOnce();
       await drainRuntimeTranscriptProjections('cleanup');
+      sessionTurnLifecycle.retireAcceptedLifecyclePublication();
       await sessionTurnLifecycle.drainAcceptedLifecycle();
       await params.config.lifecycleHooks?.onBeforeDispose?.({ session: params.session, runtime: hookRuntimeForCallbacks });
       await cleanupBackendRunResourcesFn({
@@ -984,6 +985,7 @@ export async function runSessionLoopLifecycle(params: SessionLoopLifecycleParams
         await handleAbort();
         unsubscribeRuntimeEventsOnce();
         await drainRuntimeTranscriptProjections('termination');
+        sessionTurnLifecycle.retireAcceptedLifecyclePublication();
         await sessionTurnLifecycle.drainAcceptedLifecycle();
         try {
           await onBeforeSessionClose?.({

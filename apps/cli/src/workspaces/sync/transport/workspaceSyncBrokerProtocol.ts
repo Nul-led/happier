@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 export const WORKSPACE_SYNC_BROKER_PROTOCOL = 1 as const;
 export const WORKSPACE_SYNC_BROKER_MAX_FRAME_BYTES = 64 * 1024;
@@ -6,10 +6,103 @@ export const WORKSPACE_SYNC_BROKER_MAX_ID_BYTES = 256;
 export const WORKSPACE_SYNC_BROKER_MAX_MESSAGE_BYTES = 4096;
 export const WORKSPACE_SYNC_BROKER_ATTACH_TTL_MS = 30_000;
 export const OPEN_REMOTE_DEADLINE_MS = 15_000;
+export const WORKSPACE_SYNC_BROKER_COMMAND_DEADLINE_MS = 30_000;
 export const MAX_CONCURRENT_DATA_STREAMS = 8;
 export const MAX_CONTROL_FRAME_BYTES = WORKSPACE_SYNC_BROKER_MAX_FRAME_BYTES;
 
-export type MutagenControlCommandV1 = Readonly<{ t: 'create' | 'copy_once' | 'get' | 'list' | 'flush' | 'pause' | 'resume' | 'terminate' | 'list_conflicts' | 'delete_conflict_loser' | 'shutdown'; requestId: string; [key: string]: unknown }>;
+export type MutagenSynchronizationMode = 'one-way-safe' | 'one-way-replica' | 'two-way-safe';
+export type MutagenContentPolicy = Readonly<{
+  selection: 'git_worktree' | 'all_files';
+  extraIgnorePatterns: readonly string[];
+  extraIncludePatterns: readonly string[];
+  includeGitDirectory: boolean;
+}>;
+export type MutagenSessionDefinition = Readonly<{
+  alpha: string;
+  beta: string;
+  mode: MutagenSynchronizationMode;
+  contentPolicy: MutagenContentPolicy;
+  name: string;
+  labels: Readonly<Record<string, string>>;
+}>;
+export type MutagenControlCommandV1 =
+  | Readonly<{ t: 'create'; requestId: string; session: MutagenSessionDefinition }>
+  | Readonly<{ t: 'get'; requestId: string; sessionIdentifier: string }>
+  | Readonly<{ t: 'list'; requestId: string }>
+  | Readonly<{ t: 'flush'; requestId: string; sessionIdentifier: string }>
+  | Readonly<{ t: 'pause'; requestId: string; sessionIdentifier: string }>
+  | Readonly<{ t: 'resume'; requestId: string; sessionIdentifier: string }>
+  | Readonly<{ t: 'terminate'; requestId: string; sessionIdentifier: string }>
+  | Readonly<{ t: 'list_conflicts'; requestId: string; sessionIdentifier: string; limit: number }>
+  | Readonly<{ t: 'shutdown'; requestId: string }>;
+
+export const WORKSPACE_SYNC_BROKER_TERMINAL_ERROR_CODES = [
+  'unauthorized',
+  'malformed_control',
+  'relationship_not_owned',
+  'root_mismatch',
+  'root_changed',
+  'peer_unavailable',
+  'agent_unavailable',
+  'engine_unavailable',
+  'stream_limit',
+  'expired_request',
+  'data_attach_failed',
+  'cancelled',
+  'protocol_error',
+  'indeterminate',
+] as const;
+export type BrokerTerminalErrorCode = (typeof WORKSPACE_SYNC_BROKER_TERMINAL_ERROR_CODES)[number];
+
+export class BrokerProtocolError extends Error {
+  constructor(readonly code: BrokerTerminalErrorCode, message: string) {
+    super(message);
+    this.name = 'BrokerProtocolError';
+  }
+}
+
+export function isBrokerTerminalErrorCode(value: unknown): value is BrokerTerminalErrorCode {
+  return typeof value === 'string'
+    && (WORKSPACE_SYNC_BROKER_TERMINAL_ERROR_CODES as readonly string[]).includes(value);
+}
+
+const BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
+
+function base32NoPadding(bytes: Uint8Array): string {
+  let bits = 0;
+  let value = 0;
+  let result = '';
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      result += BASE32_ALPHABET[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) result += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+  return result;
+}
+
+/** Stable, non-reversible identifier persisted as external://<id>. */
+export function deriveWorkspaceSyncEndpointId(
+  relationshipId: string,
+  role: 'alpha' | 'beta',
+): string {
+  const relationship = relationshipId.trim();
+  if (!relationship || Buffer.byteLength(relationship, 'utf8') > WORKSPACE_SYNC_BROKER_MAX_ID_BYTES) {
+    throw new Error('invalid relationshipId');
+  }
+  if (role !== 'alpha' && role !== 'beta') throw new Error('invalid endpoint role');
+  const digest = createHash('sha256')
+    .update('happier-workspace-endpoint-v1\0', 'utf8')
+    .update(relationship, 'utf8')
+    .update('\0', 'utf8')
+    .update(role, 'utf8')
+    .digest()
+    .subarray(0, 20);
+  return `ws1_${base32NoPadding(digest)}`;
+}
 
 export type BrokerControlV1 =
   | { t: 'hello'; protocol: 1; brokerInstanceId: string; launchNonce: string; sidecarPid: number; proof: string }
@@ -62,26 +155,99 @@ function finiteNumber(value: unknown, name: string): number {
 }
 
 const commandFields: Record<MutagenControlCommandV1['t'], readonly string[]> = {
-  create: ['t', 'requestId', 'relationship', 'sessionName'], copy_once: ['t', 'requestId', 'operation', 'sessionName'],
-  get: ['t', 'requestId', 'relationshipId'], list: ['t', 'requestId'], flush: ['t', 'requestId', 'relationshipId'],
-  pause: ['t', 'requestId', 'relationshipId'], resume: ['t', 'requestId', 'relationshipId'], terminate: ['t', 'requestId', 'relationshipId'],
-  list_conflicts: ['t', 'requestId', 'relationshipId', 'limit'], delete_conflict_loser: ['t', 'requestId', 'relationshipId', 'path', 'keep', 'expectedDigest', 'expectedKind'], shutdown: ['t', 'requestId'],
+  create: ['t', 'requestId', 'session'],
+  get: ['t', 'requestId', 'sessionIdentifier'], list: ['t', 'requestId'], flush: ['t', 'requestId', 'sessionIdentifier'],
+  pause: ['t', 'requestId', 'sessionIdentifier'], resume: ['t', 'requestId', 'sessionIdentifier'], terminate: ['t', 'requestId', 'sessionIdentifier'],
+  list_conflicts: ['t', 'requestId', 'sessionIdentifier', 'limit'], shutdown: ['t', 'requestId'],
 };
+
+function strictFields(value: Record<string, unknown>, allowed: readonly string[], owner: string): void {
+  for (const key of Object.keys(value)) if (!allowed.includes(key)) throw new Error(`unknown ${owner} field: ${key}`);
+}
+
+function parseExternalEndpoint(value: unknown, name: string): string {
+  const raw = boundedString(value, name, 267);
+  const match = /^external:\/\/([\x21-\x7e]+)$/u.exec(raw);
+  if (!match || !match[1] || match[1].includes('/') || match[1].includes('?') || match[1].includes('#')) {
+    throw new Error(`invalid ${name}: expected opaque external endpoint`);
+  }
+  boundedIdentifier(match[1], `${name} identifier`);
+  return raw;
+}
+
+function parsePatterns(value: unknown, name: string): readonly string[] {
+  if (!Array.isArray(value) || value.length > 256) throw new Error(`invalid ${name}`);
+  return value.map((pattern) => boundedString(pattern, name, 4096));
+}
+
+function parseMutagenContentPolicy(value: unknown): MutagenContentPolicy {
+  if (!isRecord(value)) throw new Error('invalid contentPolicy');
+  strictFields(value, ['selection', 'extraIgnorePatterns', 'extraIncludePatterns', 'includeGitDirectory'], 'contentPolicy');
+  if (value.selection !== 'git_worktree' && value.selection !== 'all_files') throw new Error('invalid contentPolicy selection');
+  if (typeof value.includeGitDirectory !== 'boolean') throw new Error('invalid includeGitDirectory');
+  return {
+    selection: value.selection,
+    extraIgnorePatterns: parsePatterns(value.extraIgnorePatterns, 'extraIgnorePatterns'),
+    extraIncludePatterns: parsePatterns(value.extraIncludePatterns, 'extraIncludePatterns'),
+    includeGitDirectory: value.includeGitDirectory,
+  };
+}
+
+function parseMutagenSessionDefinition(value: unknown): MutagenSessionDefinition {
+  if (!isRecord(value)) throw new Error('invalid session definition');
+  strictFields(value, ['alpha', 'beta', 'mode', 'contentPolicy', 'name', 'labels'], 'session');
+  const alpha = parseExternalEndpoint(value.alpha, 'alpha');
+  const beta = parseExternalEndpoint(value.beta, 'beta');
+  if (alpha === beta) throw new Error('session endpoints must be distinct');
+  if (value.mode !== 'one-way-safe' && value.mode !== 'one-way-replica' && value.mode !== 'two-way-safe') {
+    throw new Error('invalid synchronization mode');
+  }
+  if (!isRecord(value.labels) || Object.keys(value.labels).length > 16) throw new Error('invalid session labels');
+  const labels: Record<string, string> = {};
+  for (const [key, label] of Object.entries(value.labels)) {
+    labels[boundedIdentifier(key, 'label key')] = boundedString(label, 'label value');
+  }
+  return {
+    alpha,
+    beta,
+    mode: value.mode,
+    contentPolicy: parseMutagenContentPolicy(value.contentPolicy),
+    name: boundedIdentifier(value.name, 'session name'),
+    labels,
+  };
+}
 
 export function parseMutagenControlCommandV1(value: unknown): MutagenControlCommandV1 {
   if (!isRecord(value) || typeof value.t !== 'string' || !Object.hasOwn(commandFields, value.t)) throw new Error('unknown mutagen control command');
   const tag = value.t as MutagenControlCommandV1['t'];
   for (const key of Object.keys(value)) if (!commandFields[tag].includes(key)) throw new Error(`unknown mutagen command field: ${key}`);
   boundedIdentifier(value.requestId, 'requestId');
-  if (tag === 'list_conflicts' && (!Number.isInteger(value.limit) || (value.limit as number) < 0 || (value.limit as number) > 1000)) throw new Error('invalid conflict limit');
-  if (tag === 'delete_conflict_loser') {
-    boundedIdentifier(value.relationshipId, 'relationshipId'); boundedString(value.path, 'path');
-    if (value.keep !== 'alpha' && value.keep !== 'beta') throw new Error('invalid conflict keep');
-    if (!['missing', 'file', 'directory', 'symlink'].includes(String(value.expectedKind))) throw new Error('invalid conflict kind');
-    if (value.expectedDigest !== undefined) boundedString(value.expectedDigest, 'expectedDigest', 512);
+  const requestId = boundedIdentifier(value.requestId, 'requestId');
+  switch (tag) {
+    case 'create': {
+      return { t: tag, requestId, session: parseMutagenSessionDefinition(value.session) };
+    }
+    case 'get':
+    case 'flush':
+    case 'pause':
+    case 'resume':
+    case 'terminate':
+      return { t: tag, requestId, sessionIdentifier: boundedIdentifier(value.sessionIdentifier, 'sessionIdentifier') };
+    case 'list':
+    case 'shutdown':
+      return { t: tag, requestId };
+    case 'list_conflicts': {
+      if (!Number.isInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 100) {
+        throw new Error('invalid conflict limit');
+      }
+      return {
+        t: tag,
+        requestId,
+        sessionIdentifier: boundedIdentifier(value.sessionIdentifier, 'sessionIdentifier'),
+        limit: value.limit as number,
+      };
+    }
   }
-  for (const key of ['relationshipId', 'sessionName']) if (key in value) boundedIdentifier(value[key], key);
-  return value as MutagenControlCommandV1;
 }
 
 /** Parses and validates a complete v1 control envelope, rejecting unknown fields/tags. */

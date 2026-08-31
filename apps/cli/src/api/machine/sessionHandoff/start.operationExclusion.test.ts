@@ -50,7 +50,6 @@ describe('session handoff start operation exclusion', () => {
       exportSessionBundle: vi.fn() as never,
       waitForPersistedSourceExport: vi.fn() as never,
       invalidateDirectPeerRouteCacheForHandoffMachines: vi.fn(),
-      resolveWorkspaceReplicationHandoffBackTargetRootPath: () => null,
       buildStartPendingStatus: vi.fn() as never,
       buildStartRecoveryStatus: vi.fn() as never,
       buildPrepareJobRecord: vi.fn() as never,
@@ -133,7 +132,6 @@ describe('session handoff start operation exclusion', () => {
       exportSessionBundle: vi.fn() as never,
       waitForPersistedSourceExport: vi.fn() as never,
       invalidateDirectPeerRouteCacheForHandoffMachines: vi.fn(),
-      resolveWorkspaceReplicationHandoffBackTargetRootPath: () => null,
       buildStartPendingStatus: vi.fn() as never,
       buildStartRecoveryStatus: vi.fn() as never,
       buildPrepareJobRecord: vi.fn() as never,
@@ -216,7 +214,6 @@ describe('session handoff start operation exclusion', () => {
         exportSessionBundle: vi.fn() as never,
         waitForPersistedSourceExport: vi.fn() as never,
         invalidateDirectPeerRouteCacheForHandoffMachines: vi.fn(),
-        resolveWorkspaceReplicationHandoffBackTargetRootPath: () => null,
         buildStartPendingStatus: vi.fn() as never,
         buildStartRecoveryStatus: (handoffId) => ({
           handoffId,

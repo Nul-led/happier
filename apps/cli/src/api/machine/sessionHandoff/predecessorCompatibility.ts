@@ -496,6 +496,8 @@ const PredecessorTargetConfirmRequestV2Schema = z.object({
 const PredecessorCommitRequestV2Schema = SessionHandoffCommitRequestSchema.extend({
   sessionId: z.string().min(1).max(256),
   attemptId: z.string().min(1).max(256),
+  workspaceReplicationReverseSourceRootPath: z.string().min(1).max(RELEASED_PATH_MAX).optional(),
+  workspaceReplicationReverseTargetRootPath: z.string().min(1).max(RELEASED_PATH_MAX).optional(),
 }).strict();
 
 const PredecessorAbortRequestV2Schema = SessionHandoffAbortRequestSchema.extend({
@@ -664,6 +666,16 @@ export function registerSessionHandoffPredecessorCompatibilityHandlers(input: Re
     async (raw: unknown) => {
       const parsed = PredecessorCommitRequestV2Schema.safeParse(raw);
       if (!parsed.success || (parsed.data.mode ?? 'target') !== 'target') return invalidRequest();
+      if (
+        parsed.data.workspaceReplicationReverseSourceRootPath !== undefined
+        || parsed.data.workspaceReplicationReverseTargetRootPath !== undefined
+      ) {
+        return {
+          ok: false,
+          errorCode: 'workspace_sync_update_required',
+          error: 'workspace_sync_update_required',
+        } as const;
+      }
       const found = await input.prepareJobStore.findByHandoffId(parsed.data.handoffId);
       const job = found?.schemaVersion === 2 ? found : null;
       if (!isExactPreparedTarget(job, parsed.data)) {
@@ -677,18 +689,6 @@ export function registerSessionHandoffPredecessorCompatibilityHandlers(input: Re
         return projectStatusResponseForPredecessor(await input.commit({
           handoffId: parsed.data.handoffId,
           mode: 'target',
-          ...(parsed.data.workspaceReplicationReverseSourceRootPath
-            ? {
-                workspaceReplicationReverseSourceRootPath:
-                  parsed.data.workspaceReplicationReverseSourceRootPath,
-              }
-            : {}),
-          ...(parsed.data.workspaceReplicationReverseTargetRootPath
-            ? {
-                workspaceReplicationReverseTargetRootPath:
-                  parsed.data.workspaceReplicationReverseTargetRootPath,
-              }
-            : {}),
         }));
       }
       const committedAtMs = now();
@@ -722,18 +722,6 @@ export function registerSessionHandoffPredecessorCompatibilityHandlers(input: Re
       return projectStatusResponseForPredecessor(await input.commit({
         handoffId: parsed.data.handoffId,
         mode: 'target',
-        ...(parsed.data.workspaceReplicationReverseSourceRootPath
-          ? {
-              workspaceReplicationReverseSourceRootPath:
-                parsed.data.workspaceReplicationReverseSourceRootPath,
-            }
-          : {}),
-        ...(parsed.data.workspaceReplicationReverseTargetRootPath
-          ? {
-              workspaceReplicationReverseTargetRootPath:
-                parsed.data.workspaceReplicationReverseTargetRootPath,
-            }
-          : {}),
       }));
     },
   );

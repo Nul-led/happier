@@ -660,6 +660,42 @@ export async function listPendingQueueV2LocalIdsFromServer(params: {
     }
 }
 
+/** Reads the exact stored content already held by one pending local identity. */
+export async function readPendingQueueV2MessageContentByLocalIdFromServer(params: {
+    token: string;
+    sessionId: string;
+    localId: string;
+}): Promise<SessionMessageContent | null> {
+    const localId = readPendingLocalId(params.localId);
+    if (localId === null) throw new Error('Invalid pending local id');
+    const serverUrl = resolveServerHttpBaseUrl();
+    const response = await axios.get(
+        `${serverUrl}/v2/sessions/${encodeURIComponent(params.sessionId)}/pending`,
+        {
+            headers: {
+                ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
+                Authorization: `Bearer ${params.token}`,
+            },
+            timeout: 10_000,
+        },
+    );
+    const data = response?.data;
+    if (!data || typeof data !== 'object' || !Array.isArray((data as { pending?: unknown }).pending)) {
+        throw new Error('Malformed pending queue response');
+    }
+    let found: SessionMessageContent | null = null;
+    for (const row of (data as { pending: unknown[] }).pending) {
+        if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+        const record = row as Record<string, unknown>;
+        if (readPendingLocalId(record.localId) !== localId) continue;
+        if (found !== null) throw new Error('Duplicate pending local id');
+        const content = SessionMessageContentSchema.safeParse(record.content);
+        if (!content.success) throw new Error('Malformed pending message content');
+        found = content.data;
+    }
+    return found;
+}
+
 export type PendingQueueV2DeliveryStatusEntry = Readonly<{
     localId: string;
     status: PendingDeliveryStatusV1['status'];

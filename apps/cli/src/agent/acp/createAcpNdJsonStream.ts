@@ -3,6 +3,15 @@ import { createWriteStream, type WriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+export class AcpNdJsonProtocolError extends Error {
+  readonly code = 'acp_ndjson_protocol_error' as const;
+
+  constructor(options?: ErrorOptions) {
+    super('ACP transport received a malformed newline-delimited JSON frame', options);
+    this.name = 'AcpNdJsonProtocolError';
+  }
+}
+
 export function createAcpNdJsonStream(
   output: WritableStream<Uint8Array>,
   input: ReadableStream<Uint8Array>,
@@ -21,6 +30,16 @@ export function createAcpNdJsonStream(
     async start(controller) {
       let content = '';
       const reader = input.getReader();
+      const enqueueLine = (line: string): void => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        try {
+          controller.enqueue(JSON.parse(trimmed) as AnyMessage);
+        } catch (cause) {
+          throw new AcpNdJsonProtocolError({ cause });
+        }
+      };
+      let terminalError: unknown = null;
       try {
         // eslint-disable-next-line no-constant-condition
         while (true) {
@@ -31,22 +50,26 @@ export function createAcpNdJsonStream(
           const lines = content.split('\n');
           content = lines.pop() || '';
           for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            controller.enqueue(JSON.parse(trimmed) as AnyMessage);
+            enqueueLine(line);
           }
         }
 
         content += textDecoder.decode();
         for (const line of content.split('\n')) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          controller.enqueue(JSON.parse(trimmed) as AnyMessage);
+          enqueueLine(line);
+        }
+      } catch (error) {
+        terminalError = error;
+        controller.error(error);
+        try {
+          await reader.cancel(error);
+        } catch {
+          // The protocol failure remains authoritative if the source is already closed.
         }
       } finally {
         reader.releaseLock();
-        controller.close();
       }
+      if (terminalError === null) controller.close();
     },
   });
 

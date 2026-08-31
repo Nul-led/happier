@@ -1,11 +1,14 @@
 import {
   AgentExecutionTargetV1Schema,
+  HandoffWorkspaceActionV1Schema,
   normalizeSpawnSessionNonceResolution,
   readRuntimeDescriptorV1,
   SpawnSessionExecutionAuthorizationSchema,
   type ActionExecuteResult,
   type SessionHandoffPrepareTargetResponse,
   type SessionHandoffStorageMode,
+  type WorkspaceRefV1,
+  type WorkspaceSyncRelationshipV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
@@ -17,14 +20,21 @@ import { resolveSessionTransportContext } from '@/session/services/resolveSessio
 import type { SpawnSessionOptions } from '@/session/shared/spawnSessionContract';
 import { createStableSpawnNonce } from '@/session/shared/spawnNonce';
 import { callMachineRpc } from '@/session/transport/rpc/machineRpc';
+import { refreshAccountSettingsForMinimumVersion } from '@/settings/accountSettings/refreshAccountSettingsForMinimumVersion';
 
 import type { ActionOperationOwnerUpdate } from './actionOperationTypes';
 import { coordinateTrackedSessionHandoff } from './sessionHandoffCoordinator';
+import { resolveSessionHandoffWorkspaceContext } from './sessionHandoffWorkspaceContext';
 import { buildTrackedSessionHandoffMachineCall } from './trackedSessionHandoffMachineCall';
 import type { WorkspaceSyncHandoffAdapter } from '@/workspaces/sync/workspaceSyncHandoffAdapter';
 
 type SourceContext =
-  | Readonly<{ ok: true; sourceMachineId: string; sessionStorageMode: SessionHandoffStorageMode }>
+  | Readonly<{
+      ok: true;
+      sourceMachineId: string;
+      sourceRootPath?: string;
+      sessionStorageMode: SessionHandoffStorageMode;
+    }>
   | Readonly<{ ok: false; errorCode: string; error: string }>;
 
 type MachineCall = (input: Readonly<{
@@ -54,9 +64,20 @@ type CoordinatorDeps = Readonly<{
   }>) => Promise<Readonly<{ type: 'success'; sessionId: string } | { type: 'error'; errorCode: string; errorMessage: string }>>;
   wait?: (signal: AbortSignal) => Promise<void>;
   workspaceSyncAdapter?: WorkspaceSyncHandoffAdapter;
+  refreshWorkspaceSettings?: (input: Readonly<{
+    credentials: StoredCredentials;
+    minSettingsVersion?: number;
+  }>) => Promise<Readonly<{
+    settingsVersion: number;
+    settings: Readonly<{
+      workspaceRefsV1: readonly WorkspaceRefV1[];
+      workspaceSyncRelationshipsV1: readonly WorkspaceSyncRelationshipV1[];
+    }>;
+  }>>;
 }>;
 
 type HostCoordinatorInput = Readonly<{
+  operationId: string;
   actionInput: unknown;
   start: () => Promise<ActionExecuteResult>;
   signal: AbortSignal;
@@ -71,6 +92,20 @@ type PreparedHandoffTarget = SessionHandoffPrepareTargetResponse & Readonly<{
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function readWorkspaceFailure(error: unknown, fallback: string): ActionExecuteResult {
+  const record = error && typeof error === 'object' && !Array.isArray(error)
+    ? error as Readonly<Record<string, unknown>>
+    : null;
+  const errorCode = typeof record?.code === 'string' && record.code.trim()
+    ? record.code.trim()
+    : fallback;
+  return {
+    ok: false,
+    errorCode,
+    error: error instanceof Error && error.message.trim() ? error.message.trim() : errorCode,
+  };
 }
 
 async function resolveSourceContext(
@@ -146,6 +181,16 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
   const resolveSource = deps.resolveSource ?? resolveSourceContext;
   const callMachine: MachineCall = deps.callMachine ?? (async (input) => await callMachineRpc(input));
   const awaitTargetCustody = deps.awaitTargetCustody ?? waitForTargetCustody;
+  const refreshWorkspaceSettings = deps.refreshWorkspaceSettings ?? (async (input) => {
+    const context = await refreshAccountSettingsForMinimumVersion(input);
+    return {
+      settingsVersion: context.settingsVersion,
+      settings: {
+        workspaceRefsV1: context.settings.workspaceRefsV1,
+        workspaceSyncRelationshipsV1: context.settings.workspaceSyncRelationshipsV1,
+      },
+    };
+  });
 
   return async (hostInput: HostCoordinatorInput): Promise<ActionExecuteResult> => {
     const rawInput = hostInput.actionInput && typeof hostInput.actionInput === 'object'
@@ -155,12 +200,57 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
     const sessionId = readNonEmptyString(rawInput.sessionId);
     const targetMachineId = readNonEmptyString(rawInput.targetMachineId);
     const targetPath = readNonEmptyString(rawInput.targetPath);
-    if (!sessionId || !targetMachineId) {
+    const operationId = readNonEmptyString(hostInput.operationId);
+    if (!operationId || !sessionId || !targetMachineId) {
       return { ok: false, errorCode: 'invalid_input', error: 'invalid_input' };
     }
     const credentials = await deps.readCredentials();
     if (!credentials) {
       return { ok: false, errorCode: 'not_authenticated', error: 'not_authenticated' };
+    }
+    const source = await resolveSource(credentials, sessionId, hostInput.signal);
+    if (!source.ok) return source;
+
+    const parsedWorkspaceAction = rawInput.workspaceAction === undefined
+      ? null
+      : HandoffWorkspaceActionV1Schema.safeParse(rawInput.workspaceAction);
+    if (parsedWorkspaceAction && !parsedWorkspaceAction.success) {
+      return { ok: false, errorCode: 'invalid_input', error: 'invalid_input' };
+    }
+    const workspaceAction = parsedWorkspaceAction?.data;
+    let workspaceContext: ReturnType<typeof resolveSessionHandoffWorkspaceContext> | undefined;
+    if (workspaceAction && workspaceAction.kind !== 'none' && deps.workspaceSyncAdapter) {
+      const minSettingsVersion = typeof rawInput.workspaceSyncSettingsVersion === 'number'
+        && Number.isSafeInteger(rawInput.workspaceSyncSettingsVersion)
+        && rawInput.workspaceSyncSettingsVersion >= 0
+        ? rawInput.workspaceSyncSettingsVersion
+        : undefined;
+      if (workspaceAction.kind === 'copy_once' && minSettingsVersion === undefined) {
+        return { ok: false, errorCode: 'workspace_ref_not_ready', error: 'workspace_ref_not_ready' };
+      }
+      try {
+        const settings = await refreshWorkspaceSettings({
+          credentials,
+          ...(minSettingsVersion === undefined ? {} : { minSettingsVersion }),
+        });
+        workspaceContext = resolveSessionHandoffWorkspaceContext({
+          action: workspaceAction,
+          workspaceRefs: settings.settings.workspaceRefsV1,
+          relationships: settings.settings.workspaceSyncRelationshipsV1,
+          sourceMachineId: source.sourceMachineId,
+          sourceRootPath: source.sourceRootPath,
+          targetMachineId,
+          ...(targetPath ? { targetRootPath: targetPath } : {}),
+          ...(readNonEmptyString(rawInput.workspaceSyncSourceWorkspaceRefId)
+            ? { requestedSourceWorkspaceRefId: readNonEmptyString(rawInput.workspaceSyncSourceWorkspaceRefId)! }
+            : {}),
+          ...(readNonEmptyString(rawInput.workspaceSyncTargetWorkspaceRefId)
+            ? { requestedTargetWorkspaceRefId: readNonEmptyString(rawInput.workspaceSyncTargetWorkspaceRefId)! }
+            : {}),
+        });
+      } catch (error) {
+        return readWorkspaceFailure(error, 'workspace_ref_not_ready');
+      }
     }
 
     let spawnResult: unknown;
@@ -177,23 +267,28 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
 
     return await coordinateTrackedSessionHandoff({
       input: {
+        operationId,
         sessionId,
         targetMachineId,
-        ...(targetPath ? { targetPath } : {}),
+        ...(workspaceContext
+          ? { targetPath: workspaceContext.targetRootPath }
+          : targetPath
+            ? { targetPath }
+            : {}),
         ...(rawInput.targetSessionStorageMode === 'direct' || rawInput.targetSessionStorageMode === 'persisted'
           ? { targetSessionStorageMode: rawInput.targetSessionStorageMode }
           : {}),
-        ...(rawInput.workspaceTransfer && typeof rawInput.workspaceTransfer === 'object'
-          ? { workspaceTransfer: rawInput.workspaceTransfer as never }
-          : {}),
-        ...(rawInput.workspaceSyncAction && typeof rawInput.workspaceSyncAction === 'object'
-          ? { workspaceSyncAction: rawInput.workspaceSyncAction as never }
-          : {}),
-        ...(targetPath ? { workspaceSyncTargetRootPath: targetPath } : {}),
+        ...(workspaceAction ? { workspaceAction } : {}),
+        ...(workspaceContext ? {
+          workspaceSyncSourceRootPath: workspaceContext.sourceRootPath,
+          workspaceSyncTargetRootPath: workspaceContext.targetRootPath,
+          workspaceSyncSourceWorkspaceRefId: workspaceContext.sourceWorkspaceRefId,
+          workspaceSyncTargetWorkspaceRefId: workspaceContext.targetWorkspaceRefId,
+        } : {}),
       },
       signal: hostInput.signal,
       start: hostInput.start,
-      resolveSource: async (id, signal) => await resolveSource(credentials, id, signal),
+      resolveSource: async () => source,
       prepareTarget: async (request, signal) => await rpc(
         targetMachineId,
         RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_V3,

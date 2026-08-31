@@ -17,6 +17,7 @@ import {
 } from '../loopback/server';
 import type { PeerMachineLiveStreamDirectRuntimeOptions } from '../stream/registerRoutes';
 import type { DirectRouteGrantTrustRoot } from '../verifyDirectRouteGrantV1';
+import type { PeerMediationLoopbackIrohMachineAdmissionOptions } from '../loopback/irohMachineAdmission';
 import type { PeerMachineRpcDirectHandlerManager } from './registerRoutes';
 
 const PEER_MEDIATION_MACHINE_RPC_DEFAULT_HOST = '127.0.0.1';
@@ -31,6 +32,7 @@ export type StartPeerMediationLoopbackInput = Readonly<{
   rpcHandlerManager?: PeerMachineRpcDirectHandlerManager;
   stream?: PeerMachineLiveStreamDirectRuntimeOptions;
   tunnel?: PeerTcpTunnelDirectRuntimeOptions;
+  irohMachineAdmission?: PeerMediationLoopbackIrohMachineAdmissionOptions;
   nowMs?: () => number;
   endpointFingerprint?: () => string;
   endpointTtlMs?: number;
@@ -80,6 +82,7 @@ function resolveGrantTrustRoots(input: Readonly<{
     .map((key) => ({
       keyId: key.keyId,
       publicKey: key.publicKey,
+      expiresAt: key.expiresAt,
     }));
 }
 
@@ -97,6 +100,7 @@ export async function startPeerMediationLoopback(
   const rpcHandlerManager = input.rpcHandlerManager;
   const streamOptions = input.stream;
   const tunnelOptions = input.tunnel;
+  const irohMachineAdmission = input.irohMachineAdmission;
   const rpcEnabled =
     rpcHandlerManager !== undefined && readServerEnabledBit(input.serverFeatures, 'machines.rpc.directPeer') === true;
   const liveStreamEnabled =
@@ -111,7 +115,7 @@ export async function startPeerMediationLoopback(
       input.serverFeatures,
       resolvePeerRouteFeatureId({ flowKind: 'voice_media', routeKind: 'loopback_direct' }),
     ) === true;
-  if (!rpcEnabled && !liveStreamEnabled && !tunnelEnabled) return null;
+  if (!rpcEnabled && !liveStreamEnabled && !tunnelEnabled && !irohMachineAdmission) return null;
 
   const nowMs = input.nowMs ?? Date.now;
   const now = nowMs();
@@ -159,11 +163,21 @@ export async function startPeerMediationLoopback(
     endpointFingerprint,
     ...(accountPublicKey ? { accountPublicKey } : {}),
   };
-  const primaryExpected = rpcEnabled ? machineRpcExpected : liveStreamEnabled ? liveStreamExpected : tcpTunnelExpected;
+  // `expected` also supplies the shared app's local account/machine binding.
+  // Iroh-only startup registers no legacy route, so this placeholder is never
+  // used for direct admission; the Iroh route verifies its canonical handshake.
+  const primaryExpected = rpcEnabled
+    ? machineRpcExpected
+    : liveStreamEnabled
+      ? liveStreamExpected
+      : tunnelEnabled
+        ? tcpTunnelExpected
+        : machineRpcExpected;
   const defaultEndpointTtlMs = Math.max(
     rpcEnabled ? DIRECT_ROUTE_GRANT_TTL_MS.loopbackMachineRpcDefault : 0,
     liveStreamEnabled ? DIRECT_ROUTE_GRANT_TTL_MS.directLiveStream : 0,
     tunnelEnabled ? DIRECT_ROUTE_GRANT_TTL_MS.directTcpTunnel : 0,
+    irohMachineAdmission ? DIRECT_ROUTE_GRANT_TTL_MS.loopbackMachineRpcDefault : 0,
   );
   const startPeerMediationLoopbackServer =
     input.startPeerMediationLoopbackServer ?? startPeerMediationLoopbackServerDefault;
@@ -193,6 +207,7 @@ export async function startPeerMediationLoopback(
       : {}),
     ...(liveStreamEnabled ? { stream: streamOptions ?? {} } : {}),
     ...(tunnelEnabled ? { tunnel: tunnelOptions } : {}),
+    ...(irohMachineAdmission ? { irohMachineAdmission } : {}),
     ...(input.observability ? { observability: input.observability } : {}),
   });
 

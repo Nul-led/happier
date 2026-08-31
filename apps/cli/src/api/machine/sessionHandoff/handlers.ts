@@ -122,6 +122,7 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
   runtimeDependencies?: Partial<SessionHandoffRuntimeDependencies>;
   observeExecution?: RegisterActionSpecRpcHandlersParams['observeExecution'];
   coordinateSessionHandoff?: (input: Readonly<{
+    operationId: string;
     actionInput: unknown;
     start: () => Promise<import('@happier-dev/protocol/actions').ActionExecuteResult>;
     signal: AbortSignal;
@@ -494,6 +495,9 @@ export function registerMachineSessionHandoffRpcHandlers(params: Readonly<{
               return await lifecycleExecutor.execute(actionId, input, context);
             }
             return await params.coordinateSessionHandoff!({
+              operationId: typeof context?.actionRequestId === 'string' && context.actionRequestId.trim()
+                ? context.actionRequestId.trim()
+                : createUuid(),
               actionInput: input,
               start: async () => await lifecycleExecutor.execute(actionId, input, context),
               signal: context?.signal ?? new AbortController().signal,

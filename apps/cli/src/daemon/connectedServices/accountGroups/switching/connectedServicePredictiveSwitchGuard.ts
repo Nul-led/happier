@@ -1,5 +1,8 @@
 import type { ConnectedAccountServiceKey } from '@happier-dev/protocol';
-import { evaluatePredictiveSoftSwitchPolicy } from './predictiveSoftSwitchPolicy';
+import {
+  evaluatePredictiveSoftSwitchPolicy,
+  type PredictiveSoftSwitchCapability,
+} from './predictiveSoftSwitchPolicy';
 
 export type ConnectedServicePredictiveSwitchGuardInput = Readonly<{
   sessionId: string;
@@ -14,7 +17,6 @@ export type ConnectedServicePredictiveSwitchGuardResult =
   | Readonly<{ status: 'allow' }>
   | Readonly<{ status: 'suppress'; reason: string }>;
 
-type PredictiveSoftSwitchMode = 'supported' | 'unsupported';
 type ConnectedServicePredictiveSwitchTurnState = Readonly<{
   inFlight: boolean;
 }>;
@@ -22,7 +24,7 @@ export function createConnectedServicePredictiveSwitchGuard(deps: Readonly<{
   readTurnState?: (sessionId: string) => ConnectedServicePredictiveSwitchTurnState | null;
   resolvePredictiveSoftSwitchMode?: (
     input: ConnectedServicePredictiveSwitchGuardInput,
-  ) => PredictiveSoftSwitchMode | Promise<PredictiveSoftSwitchMode>;
+  ) => PredictiveSoftSwitchCapability | Promise<PredictiveSoftSwitchCapability>;
 }>): (input: ConnectedServicePredictiveSwitchGuardInput) => Promise<ConnectedServicePredictiveSwitchGuardResult> {
   return async (input) => {
     if (input.reason === 'soft_threshold' || input.reason === 'same_provider_account_exhausted') {

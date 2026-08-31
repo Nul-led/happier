@@ -610,6 +610,7 @@ import type {
     ConnectedServiceRuntimeFailureClassification,
 } from '../connectedServices/runtimeAuth/types';
 import { createConnectedServicePredictiveSwitchGuard } from '../connectedServices/accountGroups/switching/connectedServicePredictiveSwitchGuard';
+import type { PredictiveSoftSwitchCapability } from '../connectedServices/accountGroups/switching/predictiveSoftSwitchPolicy';
 import {
     isConnectedServiceRestartSignalStaleProcessError,
     requestConnectedServiceSessionRestartSignal,
@@ -4619,7 +4620,7 @@ export async function startDaemonSessionControlRuntime(
         activeProfileId: string;
         agentId?: string | null;
         reason: 'soft_threshold' | 'same_provider_account_exhausted' | 'usage_limit' | 'auth_expired';
-    }>): Promise<'supported' | 'unsupported'> => {
+    }>): Promise<PredictiveSoftSwitchCapability> => {
         const tracked = findTrackedSessionByHappySessionId(params.pidToTrackedSession.values(), input.sessionId);
         const resolvedAgentId = typeof input.agentId === 'string' && input.agentId.trim()
             ? input.agentId.trim()
@@ -4639,9 +4640,10 @@ export async function startDaemonSessionControlRuntime(
                     profileId: input.activeProfileId,
                 },
             });
-            return materialization?.supported === true
-                ? 'supported'
-                : 'unsupported';
+            if (materialization?.supported !== true) return 'unsupported';
+            return materialization.supportsInTurnApply === true
+                ? 'supported_in_turn'
+                : 'supported';
         } catch {
             return 'unsupported';
         }
@@ -10141,7 +10143,7 @@ export async function startDaemonSessionControlRuntime(
         applyCommittedGeneration: async ({
             sessionId,
             committedGeneration,
-            switchReason,
+            generationApplyReason,
             executionAuthority,
             applicationOwnerId,
             applicationCohortSessionIds,
@@ -10163,7 +10165,7 @@ export async function startDaemonSessionControlRuntime(
                 activeProfileId: target.profileId,
                 generation: target.generation,
                 credentialRevision: target.credentialRevision,
-                reason: switchReason,
+                reason: generationApplyReason,
                 allowRestart: executionAuthority !== 'passive_projection',
                 executionAuthority,
             });

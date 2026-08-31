@@ -5,6 +5,11 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { RuntimeCheckpointToolProtocolV1 } from '@happier-dev/agents';
+import type {
+  AgentSessionRuntime,
+  AgentSessionRuntimeContext,
+  AgentSessionRuntimeEvent,
+} from '@happier-dev/plugin-sdk/agents/runtime';
 import {
   AgentSessionRuntimeEventV1Schema,
   type AgentSessionRuntimeEventV1,
@@ -21,6 +26,7 @@ import {
 } from '@/agent/runtime/lifecycle/runnerTerminationOutcome';
 import type { RuntimeTurnMessageHandler } from '@/agent/runtime/turns/runtimeTurnOperations';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
+import { createNativeAgentSessionOperations } from '@/agent/runtime/registry/engineRegistry/nativeAgentSession';
 
 const { loggerDebugMock } = vi.hoisted(() => ({
   loggerDebugMock: vi.fn(),
@@ -1180,6 +1186,73 @@ describe('runSessionLoopLifecycle daemon exact-turn custody', () => {
 });
 
 describe('runSessionLoopLifecycle runtime transcript projection', () => {
+  it('publishes one native runtime observation to the Host Event broker exactly once', async () => {
+    const baseParams = createLifecycleParams({ policyAgentId: 'codex' });
+    let observeNativeEvent!: (event: AgentSessionRuntimeEvent) => void;
+    const nativeSession: AgentSessionRuntime = {
+      send: vi.fn(async () => ({ status: 'admitted' as const })),
+      watch: (listener) => {
+        observeNativeEvent = listener;
+        return { dispose: () => undefined };
+      },
+      dispose: vi.fn(),
+    };
+    const publishHostRuntimeEvent = vi.fn<(event: AgentSessionRuntimeEventV1) => void>();
+    const runtime = createNativeAgentSessionOperations(
+      nativeSession,
+      'session-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        context: {} as AgentSessionRuntimeContext,
+        cwd: '/repo',
+        connectedAccounts: [],
+        capabilities: {
+          open: ['create'],
+          delivery: ['newTurn'],
+          cancel: false,
+        },
+        cancellation: { declared: false },
+        configuration: { declared: false },
+        manualCompaction: { declared: false },
+      },
+      undefined,
+      [],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    );
+    const event = canonicalRuntimeEvent({
+      kind: 'runtime-activity-snapshot',
+      sessionId: 'session-1',
+      emittedAtMs: 1,
+      state: 'idle',
+      activeCount: 0,
+    });
+
+    await runSessionLoopLifecycle({
+      ...baseParams,
+      runtime,
+      config: {
+        ...baseParams.config,
+        publishHostRuntimeEvent,
+      },
+      deps: {
+        ...baseParams.deps,
+        runPermissionModePromptLoopFn: vi.fn(async () => {
+          observeNativeEvent(event);
+        }),
+      },
+    });
+
+    expect(publishHostRuntimeEvent).toHaveBeenCalledOnce();
+    expect(publishHostRuntimeEvent).toHaveBeenCalledWith(event);
+  });
+
   it('fans strict agent-session lifecycle classes into Host Events without coupling producer success', async () => {
     const baseParams = createLifecycleParams({ policyAgentId: 'codex' });
     let runtimeEventHandler: RuntimeTurnMessageHandler | null = null;

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fastify from 'fastify';
 import tweetnacl from 'tweetnacl';
-import { deriveAccountMachineKeyFromRecoverySecret } from '@happier-dev/protocol';
+import { openTerminalProvisioningV3Response } from '@happier-dev/protocol';
 
 import { decodeBase64 } from '@/api/encryption';
 import { safeBashSingleQuote } from '@/capabilities/systemTasks/ssh/sshTransport';
@@ -12,6 +12,7 @@ import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
 import { setStdioTtyForTest } from '@/testkit/process/stdio';
 
 const spawnSyncMock = vi.fn();
+const SERVER_IDENTITY_ID = 'srv_pair_remote_home';
 
 function normalizeExpectedUrl(raw: string): string {
   return new URL(raw).toString().replace(/\/+$/, '');
@@ -51,6 +52,13 @@ vi.mock('cross-spawn', () => {
     },
   };
 });
+
+vi.mock('@/features/serverFeaturesClient', () => ({
+  fetchServerFeaturesSnapshot: vi.fn(async () => ({
+    status: 'ready',
+    features: { capabilities: { serverIdentity: { serverIdentityId: 'srv_pair_remote_home' } } },
+  })),
+}));
 
 describe('auth pair-remote (ssh)', () => {
   const envKeys = [
@@ -112,13 +120,30 @@ describe('auth pair-remote (ssh)', () => {
         HAPPIER_VARIANT: 'stable',
       });
       vi.resetModules();
-      const { writeCredentialsLegacy } = await import('@/persistence');
-      const legacySecret = new Uint8Array(32).fill(9);
-      await writeCredentialsLegacy({ secret: legacySecret, token: 'local-token' });
+      const machineKey = new Uint8Array(32).fill(7);
+      const { writeCredentialsDataKey } = await import('@/persistence');
+      await writeCredentialsDataKey({
+        publicKey: tweetnacl.box.keyPair.fromSecretKey(machineKey).publicKey,
+        machineKey,
+        token: 'local-token',
+      });
 
       const remoteKeypair = tweetnacl.box.keyPair();
       const remotePublicKey = Buffer.from(remoteKeypair.publicKey).toString('base64');
-      const remoteRequestJson = JSON.stringify({ publicKey: remotePublicKey, claimSecret: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url') });
+      const pairingSecret = new Uint8Array(32).fill(11);
+      const pairingCreatedAtMs = Date.now() - 60_000;
+      const pairingExpiresAtMs = Date.now() + 3_600_000;
+      const remoteRequestJson = JSON.stringify({
+        publicKey: remotePublicKey,
+        serverIdentityId: SERVER_IDENTITY_ID,
+        claimSecret: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
+        pairing: {
+          secretB64Url: Buffer.from(pairingSecret).toString('base64url'),
+          createdAtMs: pairingCreatedAtMs,
+          expiresAtMs: pairingExpiresAtMs,
+        },
+        supportsTokenOnly: true,
+      });
 
       spawnSyncMock
         // remote request
@@ -136,7 +161,6 @@ describe('auth pair-remote (ssh)', () => {
 
       vi.resetModules();
       const { handleAuthPairRemote } = await import('./auth/pairRemote');
-      const { decryptWithEphemeralKey } = await import('@/ui/auth');
       const output = captureConsoleLogAndMuteStdout();
       try {
         await handleAuthPairRemote(['--ssh', 'user@host', '--json', '--no-post-check']);
@@ -184,16 +208,63 @@ describe('auth pair-remote (ssh)', () => {
       expect(requests.has(remotePublicKey)).toBe(true);
       const response = requests.get(remotePublicKey)?.response;
       expect(typeof response).toBe('string');
-      const decrypted = decryptWithEphemeralKey(decodeBase64(String(response)), remoteKeypair.secretKey);
-      const expectedMachineKey = deriveAccountMachineKeyFromRecoverySecret(legacySecret);
-      expect(decrypted).not.toBeNull();
-      expect(decrypted?.[0]).toBe(0);
-      expect(Array.from(decrypted?.slice(1, 33) ?? [])).toEqual(Array.from(expectedMachineKey));
+      const opened = openTerminalProvisioningV3Response({
+        payload: decodeBase64(String(response)),
+        recipientSecretKeyOrSeed: remoteKeypair.secretKey,
+        terminalEphemeralPublicKey: remoteKeypair.publicKey,
+        pairingSecret,
+        createdAtMs: pairingCreatedAtMs,
+        expiresAtMs: pairingExpiresAtMs,
+        nowMs: Date.now(),
+      });
+      expect(opened).toEqual({ type: 'dataKey', key: machineKey });
     } finally {
       restoreAxios();
       await app.close().catch(() => {});
     }
   }, 40_000);
+
+  it('rejects a remote request for a different stable Home identity before approval', async () => {
+    envScope.patch({
+      HAPPIER_HOME_DIR: localHomeDir,
+      HAPPIER_SERVER_URL: 'http://happier-auth.test',
+      HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+      HAPPIER_WEBAPP_URL: 'http://webapp.test',
+      HAPPIER_VARIANT: 'stable',
+    });
+    const remotePublicKey = Buffer.from(tweetnacl.box.keyPair().publicKey).toString('base64');
+    spawnSyncMock.mockImplementationOnce(() => ({
+      status: 0,
+      stdout: Buffer.from(JSON.stringify({
+        publicKey: remotePublicKey,
+        serverIdentityId: 'srv_different_home',
+        pairing: {
+          secretB64Url: Buffer.from(new Uint8Array(32).fill(11)).toString('base64url'),
+          createdAtMs: Date.now() - 60_000,
+          expiresAtMs: Date.now() + 600_000,
+        },
+        supportsTokenOnly: true,
+      }) + '\n', 'utf8'),
+      stderr: Buffer.alloc(0),
+    }));
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null): never => {
+      throw new Error(`process.exit:${String(code ?? '')}`);
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      vi.resetModules();
+      const { handleAuthPairRemote } = await import('./auth/pairRemote');
+      await expect(handleAuthPairRemote([
+        '--ssh', 'user@host', '--json', '--no-post-check',
+      ])).rejects.toThrow('process.exit:1');
+      expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('No approval was sent'));
+    } finally {
+      errorSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+  });
 
   it('skips the post-pair repair check when the remote CLI cannot report the paired server id', async () => {
     const requests = new Map<string, { response: string | null }>();
@@ -222,14 +293,26 @@ describe('auth pair-remote (ssh)', () => {
         HAPPIER_VARIANT: 'stable',
       });
       vi.resetModules();
-      const { writeCredentialsLegacy } = await import('@/persistence');
-      await writeCredentialsLegacy({ secret: new Uint8Array(32).fill(9), token: 'local-token' });
+      const pairingSecret = new Uint8Array(32).fill(11);
+      const { writeCredentialsDataKey } = await import('@/persistence');
+      await writeCredentialsDataKey({
+        publicKey: tweetnacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(7)).publicKey,
+        machineKey: new Uint8Array(32).fill(7),
+        token: 'local-token',
+      });
 
       const remoteKeypair = tweetnacl.box.keyPair();
       const remotePublicKey = Buffer.from(remoteKeypair.publicKey).toString('base64');
       const remoteRequestJson = JSON.stringify({
         publicKey: remotePublicKey,
+        serverIdentityId: SERVER_IDENTITY_ID,
         claimSecret: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
+        pairing: {
+          secretB64Url: Buffer.from(pairingSecret).toString('base64url'),
+          createdAtMs: Date.now() - 60_000,
+          expiresAtMs: Date.now() + 3_600_000,
+        },
+        supportsTokenOnly: true,
       });
 
       spawnSyncMock
@@ -273,23 +356,20 @@ describe('auth pair-remote (ssh)', () => {
     }
   }, 20_000);
 
-  it('reuses the approving machine data key when pairing a remote machine', async () => {
-    const requests = new Map<string, { response: string | null }>();
+  it('fails closed without posting when the remote request predates the pairing context', async () => {
     const app = fastify({ logger: false });
-
-    app.post('/v1/auth/response', async (req, reply) => {
-      const authHeader = String((req.headers as any)?.authorization ?? '');
-      if (authHeader !== 'Bearer local-token') return reply.code(401).send({ error: 'unauthorized' });
-      const body = req.body as { publicKey?: unknown; response?: unknown } | undefined;
-      const publicKey = typeof body?.publicKey === 'string' ? body.publicKey : '';
-      const response = typeof body?.response === 'string' ? body.response : '';
-      if (!publicKey || !response) return reply.code(400).send({ error: 'invalid' });
-      requests.set(publicKey, { response });
-      return reply.send({ success: true });
+    let approvalPostCount = 0;
+    app.post('/v1/auth/response', async () => {
+      approvalPostCount += 1;
+      return { success: true };
     });
 
     await app.ready();
     const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined): never => {
+      throw new Error(`process.exit:${String(code ?? '')}`);
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
       envScope.patch({
@@ -301,8 +381,7 @@ describe('auth pair-remote (ssh)', () => {
       });
       vi.resetModules();
       const machineKey = new Uint8Array(32).fill(7);
-      const { writeCredentialsDataKey, writeCredentialsLegacy } = await import('@/persistence');
-      await writeCredentialsLegacy({ secret: new Uint8Array(32).fill(9), token: 'local-token' });
+      const { writeCredentialsDataKey } = await import('@/persistence');
       await writeCredentialsDataKey({
         publicKey: tweetnacl.box.keyPair.fromSecretKey(machineKey).publicKey,
         machineKey,
@@ -311,37 +390,36 @@ describe('auth pair-remote (ssh)', () => {
 
       const remoteKeypair = tweetnacl.box.keyPair();
       const remotePublicKey = Buffer.from(remoteKeypair.publicKey).toString('base64');
-      const remoteRequestJson = JSON.stringify({ publicKey: remotePublicKey, claimSecret: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url') });
+      const remoteRequestJson = JSON.stringify({
+        publicKey: remotePublicKey,
+        serverIdentityId: SERVER_IDENTITY_ID,
+        claimSecret: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
+      });
 
       spawnSyncMock
         .mockImplementationOnce((_cmd, _args) => ({
           status: 0,
           stdout: Buffer.from(remoteRequestJson + '\n', 'utf8'),
           stderr: Buffer.alloc(0),
-        }))
-        .mockImplementationOnce((_cmd, _args) => ({
-          status: 0,
-          stdout: Buffer.from(JSON.stringify({ success: true }) + '\n', 'utf8'),
-          stderr: Buffer.alloc(0),
         }));
 
       vi.resetModules();
       const { handleAuthPairRemote } = await import('./auth/pairRemote');
-      const { decryptWithEphemeralKey } = await import('@/ui/auth');
       const output = captureConsoleLogAndMuteStdout();
       try {
-        await handleAuthPairRemote(['--ssh', 'user@host', '--json', '--no-post-check']);
+        await expect(
+          handleAuthPairRemote(['--ssh', 'user@host', '--json', '--no-post-check']),
+        ).rejects.toThrow('process.exit:1');
       } finally {
         output.restore();
       }
 
-      const response = requests.get(remotePublicKey)?.response;
-      expect(typeof response).toBe('string');
-      const decrypted = decryptWithEphemeralKey(decodeBase64(String(response)), remoteKeypair.secretKey);
-      expect(decrypted).not.toBeNull();
-      expect(decrypted?.[0]).toBe(0);
-      expect(Array.from(decrypted?.slice(1, 33) ?? [])).toEqual(Array.from(machineKey));
+      expect(approvalPostCount).toBe(0);
+      expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('pairing context'));
     } finally {
+      errorSpy.mockRestore();
+      exitSpy.mockRestore();
       restoreAxios();
       await app.close().catch(() => {});
     }
@@ -374,8 +452,15 @@ describe('auth pair-remote (ssh)', () => {
         HAPPIER_VARIANT: 'stable',
       });
       vi.resetModules();
-      const { writeCredentialsLegacy } = await import('@/persistence');
-      await writeCredentialsLegacy({ secret: new Uint8Array(32).fill(9), token: 'local-token' });
+      const remotePairingSecret = new Uint8Array(32).fill(11);
+      const remotePairingCreatedAtMs = Date.now() - 60_000;
+      const remotePairingExpiresAtMs = Date.now() + 3_600_000;
+      const { writeCredentialsDataKey } = await import('@/persistence');
+      await writeCredentialsDataKey({
+        publicKey: tweetnacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(7)).publicKey,
+        machineKey: new Uint8Array(32).fill(7),
+        token: 'local-token',
+      });
 
       const remoteExecutable = "happier; touch /tmp/pwn";
       const remoteServerUrl = "https://relay.example.test/with;semi?x='quoted'";
@@ -389,7 +474,14 @@ describe('auth pair-remote (ssh)', () => {
           status: 0,
           stdout: Buffer.from(JSON.stringify({
             publicKey: remotePublicKey,
+            serverIdentityId: SERVER_IDENTITY_ID,
             serverId: 'server-123',
+            pairing: {
+              secretB64Url: Buffer.from(remotePairingSecret).toString('base64url'),
+              createdAtMs: remotePairingCreatedAtMs,
+              expiresAtMs: remotePairingExpiresAtMs,
+            },
+            supportsTokenOnly: true,
           }) + '\n', 'utf8'),
           stderr: Buffer.alloc(0),
         }))
@@ -501,8 +593,15 @@ describe('auth pair-remote (ssh)', () => {
         HAPPIER_VARIANT: 'stable',
       });
       vi.resetModules();
-      const { writeCredentialsLegacy } = await import('@/persistence');
-      await writeCredentialsLegacy({ secret: new Uint8Array(32).fill(9), token: 'local-token' });
+      const remotePairingSecret = new Uint8Array(32).fill(11);
+      const remotePairingCreatedAtMs = Date.now() - 60_000;
+      const remotePairingExpiresAtMs = Date.now() + 3_600_000;
+      const { writeCredentialsDataKey } = await import('@/persistence');
+      await writeCredentialsDataKey({
+        publicKey: tweetnacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(7)).publicKey,
+        machineKey: new Uint8Array(32).fill(7),
+        token: 'local-token',
+      });
 
       const remoteExecutable = "happier; touch /tmp/pwn";
       const remotePublicKey = Buffer.from(tweetnacl.box.keyPair().publicKey).toString('base64');
@@ -511,7 +610,14 @@ describe('auth pair-remote (ssh)', () => {
           status: 0,
           stdout: Buffer.from(JSON.stringify({
             publicKey: remotePublicKey,
+            serverIdentityId: SERVER_IDENTITY_ID,
             serverId: 'server-456',
+            pairing: {
+              secretB64Url: Buffer.from(remotePairingSecret).toString('base64url'),
+              createdAtMs: remotePairingCreatedAtMs,
+              expiresAtMs: remotePairingExpiresAtMs,
+            },
+            supportsTokenOnly: true,
           }) + '\n', 'utf8'),
           stderr: Buffer.alloc(0),
         }))
@@ -583,4 +689,185 @@ describe('auth pair-remote (ssh)', () => {
       exitSpy.mockRestore();
     }
   });
+
+  it('propagates the remote v3 pairing context into the approval response', async () => {
+    const requests = new Map<string, { response: string | null }>();
+    const app = fastify({ logger: false });
+
+    app.post('/v1/auth/response', async (req, reply) => {
+      const authHeader = String((req.headers as any)?.authorization ?? '');
+      if (authHeader !== 'Bearer local-token') return reply.code(401).send({ error: 'unauthorized' });
+      const body = req.body as { publicKey?: unknown; response?: unknown } | undefined;
+      const publicKey = typeof body?.publicKey === 'string' ? body.publicKey : '';
+      const response = typeof body?.response === 'string' ? body.response : '';
+      if (!publicKey || !response) return reply.code(400).send({ error: 'invalid' });
+      requests.set(publicKey, { response });
+      return reply.send({ success: true });
+    });
+
+    await app.ready();
+    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+
+    try {
+      envScope.patch({
+        HAPPIER_HOME_DIR: localHomeDir,
+        HAPPIER_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_WEBAPP_URL: 'http://webapp.test',
+        HAPPIER_VARIANT: 'stable',
+      });
+      vi.resetModules();
+      const machineKey = new Uint8Array(32).fill(7);
+      const { writeCredentialsDataKey } = await import('@/persistence');
+      await writeCredentialsDataKey({
+        publicKey: tweetnacl.box.keyPair.fromSecretKey(machineKey).publicKey,
+        machineKey,
+        token: 'local-token',
+      });
+
+      const remoteKeypair = tweetnacl.box.keyPair();
+      const remotePublicKey = Buffer.from(remoteKeypair.publicKey).toString('base64');
+      const pairingSecret = new Uint8Array(32).fill(11);
+      const createdAtMs = Date.now() - 60_000;
+      const expiresAtMs = Date.now() + 3_600_000;
+      const remoteRequestJson = JSON.stringify({
+        publicKey: remotePublicKey,
+        serverIdentityId: SERVER_IDENTITY_ID,
+        claimSecret: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
+        pairing: {
+          secretB64Url: Buffer.from(pairingSecret).toString('base64url'),
+          createdAtMs,
+          expiresAtMs,
+        },
+        supportsTokenOnly: true,
+      });
+
+      spawnSyncMock
+        .mockImplementationOnce((_cmd, _args) => ({
+          status: 0,
+          stdout: Buffer.from(remoteRequestJson + '\n', 'utf8'),
+          stderr: Buffer.alloc(0),
+        }))
+        .mockImplementationOnce((_cmd, _args) => ({
+          status: 0,
+          stdout: Buffer.from(JSON.stringify({ success: true }) + '\n', 'utf8'),
+          stderr: Buffer.alloc(0),
+        }));
+
+      vi.resetModules();
+      const { handleAuthPairRemote } = await import('./auth/pairRemote');
+      const output = captureConsoleLogAndMuteStdout();
+      try {
+        await handleAuthPairRemote(['--ssh', 'user@host', '--json', '--no-post-check']);
+      } finally {
+        output.restore();
+      }
+
+      const response = requests.get(remotePublicKey)?.response;
+      expect(typeof response).toBe('string');
+      const opened = openTerminalProvisioningV3Response({
+        payload: decodeBase64(String(response)),
+        recipientSecretKeyOrSeed: remoteKeypair.secretKey,
+        terminalEphemeralPublicKey: remoteKeypair.publicKey,
+        pairingSecret,
+        createdAtMs,
+        expiresAtMs,
+        nowMs: Date.now(),
+      });
+      expect(opened).toEqual({ type: 'dataKey', key: machineKey });
+    } finally {
+      restoreAxios();
+      await app.close().catch(() => {});
+    }
+  }, 20_000);
+
+  it('approves a token-only remote pairing without synthesizing secret material', async () => {
+    const requests = new Map<string, { response: string | null }>();
+    const app = fastify({ logger: false });
+
+    app.post('/v1/auth/response', async (req, reply) => {
+      const authHeader = String((req.headers as any)?.authorization ?? '');
+      if (authHeader !== 'Bearer local-token') return reply.code(401).send({ error: 'unauthorized' });
+      const body = req.body as { publicKey?: unknown; response?: unknown } | undefined;
+      const publicKey = typeof body?.publicKey === 'string' ? body.publicKey : '';
+      const response = typeof body?.response === 'string' ? body.response : '';
+      if (!publicKey || !response) return reply.code(400).send({ error: 'invalid' });
+      requests.set(publicKey, { response });
+      return reply.send({ success: true });
+    });
+
+    await app.ready();
+    const restoreAxios = installAxiosFastifyAdapter({ app, origin: 'http://happier-auth.test' });
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined): never => {
+      throw new Error(`process.exit:${String(code ?? '')}`);
+    });
+
+    try {
+      envScope.patch({
+        HAPPIER_HOME_DIR: localHomeDir,
+        HAPPIER_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_PUBLIC_SERVER_URL: 'http://happier-auth.test',
+        HAPPIER_WEBAPP_URL: 'http://webapp.test',
+        HAPPIER_VARIANT: 'stable',
+      });
+      vi.resetModules();
+      const { writeCredentialsTokenOnly } = await import('@/persistence');
+      await writeCredentialsTokenOnly({ token: 'local-token' });
+
+      const remoteKeypair = tweetnacl.box.keyPair();
+      const remotePublicKey = Buffer.from(remoteKeypair.publicKey).toString('base64');
+      const pairingSecret = new Uint8Array(32).fill(11);
+      const createdAtMs = Date.now() - 60_000;
+      const expiresAtMs = Date.now() + 3_600_000;
+      const remoteRequestJson = JSON.stringify({
+        publicKey: remotePublicKey,
+        serverIdentityId: SERVER_IDENTITY_ID,
+        claimSecret: Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
+        pairing: {
+          secretB64Url: Buffer.from(pairingSecret).toString('base64url'),
+          createdAtMs,
+          expiresAtMs,
+        },
+        supportsTokenOnly: true,
+      });
+
+      spawnSyncMock
+        .mockImplementationOnce((_cmd, _args) => ({
+          status: 0,
+          stdout: Buffer.from(remoteRequestJson + '\n', 'utf8'),
+          stderr: Buffer.alloc(0),
+        }))
+        .mockImplementationOnce((_cmd, _args) => ({
+          status: 0,
+          stdout: Buffer.from(JSON.stringify({ success: true }) + '\n', 'utf8'),
+          stderr: Buffer.alloc(0),
+        }));
+
+      vi.resetModules();
+      const { handleAuthPairRemote } = await import('./auth/pairRemote');
+      const output = captureConsoleLogAndMuteStdout();
+      try {
+        await handleAuthPairRemote(['--ssh', 'user@host', '--json', '--no-post-check']);
+      } finally {
+        output.restore();
+      }
+
+      const response = requests.get(remotePublicKey)?.response;
+      expect(typeof response).toBe('string');
+      const opened = openTerminalProvisioningV3Response({
+        payload: decodeBase64(String(response)),
+        recipientSecretKeyOrSeed: remoteKeypair.secretKey,
+        terminalEphemeralPublicKey: remoteKeypair.publicKey,
+        pairingSecret,
+        createdAtMs,
+        expiresAtMs,
+        nowMs: Date.now(),
+      });
+      expect(opened).toEqual({ type: 'tokenOnly' });
+    } finally {
+      exitSpy.mockRestore();
+      restoreAxios();
+      await app.close().catch(() => {});
+    }
+  }, 20_000);
 });

@@ -54,9 +54,7 @@ function resolvedIdentity(
 describe('mapExternalTakeoverLaunchPlanToSpawnOptions', () => {
     it('keeps the host-selected local target when a plugin returns remote provider context', () => {
         expect(mapExternalTakeoverLaunchPlanToSpawnOptions({
-            plan: {
-                backendModeHint: 'native-mode',
-            },
+            plan: {},
             targetDirectory: '/local/selected/workspace',
             resolvedIdentity: resolvedIdentity(),
             linkedSessionId: 'session-linked',
@@ -66,10 +64,18 @@ describe('mapExternalTakeoverLaunchPlanToSpawnOptions', () => {
         });
     });
 
-    it('routes a backend-mode hint through the Agent-owned runtime descriptor, never a spawn field', () => {
+    it('copies the validated Agent-owned runtime descriptor without generic interpretation', () => {
+        const runtimeDescriptorV1 = {
+            v: 1 as const,
+            agentId: 'codex',
+            agent: {
+                backendMode: 'appServer',
+                nested: { retained: true },
+            },
+        };
         const options = mapExternalTakeoverLaunchPlanToSpawnOptions({
             plan: {
-                backendModeHint: 'appServer',
+                runtimeDescriptorV1,
             },
             targetDirectory: '/local/selected/workspace',
             resolvedIdentity: resolvedIdentity(),
@@ -77,41 +83,14 @@ describe('mapExternalTakeoverLaunchPlanToSpawnOptions', () => {
             targetAgent: targetAgent({ id: 'codex' }),
         });
         expect(options).not.toHaveProperty('backendMode');
-        expect(options?.runtimeDescriptorV1).toEqual({
-            v: 1,
-            agentId: 'codex',
-            agent: { backendMode: 'appServer' },
-        });
-    });
-
-    it('keeps the Agent descriptor authoritative when it already carries a backend mode', () => {
-        const options = mapExternalTakeoverLaunchPlanToSpawnOptions({
-            plan: {
-                backendModeHint: 'appServer',
-                runtimeDescriptorV1: {
-                    v: 1,
-                    agentId: 'codex',
-                    agent: { backendMode: 'acp' },
-                },
-            },
-            targetDirectory: '/local/selected/workspace',
-            resolvedIdentity: resolvedIdentity(),
-            linkedSessionId: 'session-linked',
-            targetAgent: targetAgent({ id: 'codex' }),
-        });
-        expect(options).not.toHaveProperty('backendMode');
-        expect(options?.runtimeDescriptorV1).toEqual({
-            v: 1,
-            agentId: 'codex',
-            agent: { backendMode: 'acp' },
-        });
+        expect(options?.runtimeDescriptorV1).toEqual(runtimeDescriptorV1);
     });
 
     it('preserves every byte of an already-admitted POSIX target directory', () => {
         // The launch plan carries no directory member: even provider context
         // must never displace the host-selected spawn cwd, byte for byte.
         expect(mapExternalTakeoverLaunchPlanToSpawnOptions({
-            plan: { backendModeHint: 'remote-provider-mode' },
+            plan: {},
             targetDirectory: '/work/repo ',
             resolvedIdentity: resolvedIdentity(),
             linkedSessionId: 'session-linked',
@@ -121,9 +100,8 @@ describe('mapExternalTakeoverLaunchPlanToSpawnOptions', () => {
         });
     });
 
-    it('maps only accepted launch hints while the host supplies target and fresh resume identity', () => {
+    it('maps only accepted launch context while the host supplies target and fresh resume identity', () => {
         const plan: AgentExternalSessionTakeoverLaunchPlan = {
-            backendModeHint: 'native-mode',
             runtimeDescriptorV1: {
                 v: 1,
                 agentId: 'fixture-agent',
@@ -161,7 +139,6 @@ describe('mapExternalTakeoverLaunchPlanToSpawnOptions', () => {
                 v: 1,
                 agentId: 'fixture-agent',
                 agent: {
-                    backendMode: 'native-mode',
                     providerSessionId: 'remote-fresh',
                     sessionFile: '/agent/sessions/remote-fresh.jsonl',
                 },

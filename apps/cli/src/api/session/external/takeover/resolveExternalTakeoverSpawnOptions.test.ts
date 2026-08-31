@@ -188,7 +188,11 @@ function contributions(params: Readonly<{
   const resolveLaunch = vi.fn(params.resolveLaunch ?? (async () => ({
     ok: true as const,
     value: {
-      backendModeHint: 'native-mode',
+      runtimeDescriptorV1: {
+        v: 1 as const,
+        agentId: AGENT_ID,
+        agent: { mode: 'native-mode' },
+      },
       environmentVariables: {
         FIXTURE_HOME: '/fresh/runtime',
       },
@@ -256,7 +260,7 @@ describe('External Session takeover launch consumption', () => {
           runtimeDescriptorV1: {
             v: 1,
             agentId: AGENT_ID,
-            agent: { backendMode: 'native-mode' },
+            agent: { mode: 'native-mode' },
           },
           environmentVariables: {
             FIXTURE_HOME: '/fresh/runtime',

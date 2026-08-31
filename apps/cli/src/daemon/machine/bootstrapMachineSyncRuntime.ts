@@ -80,6 +80,7 @@ import { registerPeerTcpTunnelRelayTerminator } from '../peer/mediation/tunnel/r
 import { createDaemonPeerMediationObservabilityRuntime } from './peerMediationObservabilityRuntime';
 import type { DaemonPeerMediationObservabilityEmitter } from '../peer/mediation/observability/events';
 import { connectPeerTcpTunnelTcp } from '../peer/mediation/tunnel/open';
+import type { DaemonMachineIrohRuntime } from '../peer/iroh/daemonMachineIrohRuntime';
 import type {
   PeerTcpTunnelVoiceBinaryAppendConsumer,
   PeerTcpTunnelVoiceBinaryTerminalConsumer,
@@ -320,6 +321,31 @@ function mergePeerMediationLoopbackEndpoint(
   };
 }
 
+function mergeMachineIrohEndpoint(
+  state: DaemonState,
+  runtime: DaemonMachineIrohRuntime | undefined,
+): DaemonState {
+  if (!runtime) return state;
+  return {
+    ...state,
+    peerMediation: {
+      ...state.peerMediation,
+      iroh: { endpoint: runtime.endpoint },
+    },
+  };
+}
+
+function removeMachineIrohEndpoint(state: DaemonState | null): DaemonState {
+  if (!state) throw new Error('Cannot remove an Iroh endpoint from an unpublished daemon state');
+  return {
+    ...state,
+    peerMediation: {
+      ...state.peerMediation,
+      iroh: undefined,
+    },
+  };
+}
+
 async function maybeStartPeerMediationLoopback(params: Readonly<{
   config: PeerMediationMachineRpcBootstrapConfig | undefined;
   connectedApiMachine: ApiMachineClient;
@@ -330,6 +356,9 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
   voiceBinaryTerminalConsumer?: PeerTcpTunnelVoiceBinaryTerminalConsumer;
   /** PMS-9 / P1-9: shared emitter so the DIRECT loopback routes publish flow facts too. */
   observability?: DaemonPeerMediationObservabilityEmitter;
+  machineIrohRuntime?: DaemonMachineIrohRuntime;
+  directPeerServerLifecycle: DirectTransferServerLifecycle | null;
+  acquireWorkspaceSyncMachineIngress?: BootstrapMachineSyncRuntimeParams['acquireWorkspaceSyncMachineIngress'];
 }>): Promise<StartedPeerMediationLoopback | null> {
   const serverFeatures = await resolvePeerMediationMachineRpcServerFeatures(params.config);
   if (!serverFeatures) return null;
@@ -364,6 +393,27 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
     ...(params.config?.startPeerMediationLoopbackServer
       ? { startPeerMediationLoopbackServer: params.config.startPeerMediationLoopbackServer }
       : {}),
+    ...(params.machineIrohRuntime ? {
+      irohMachineAdmission: {
+        localEndpointId: params.machineIrohRuntime.endpoint.endpointId,
+        role: 'acceptor' as const,
+        allowedFlows: ['file_transfer', 'attachment_transfer', 'workspace_sync'] as const,
+        resolveApplicationPort: async ({ handshake }) => {
+          if (handshake.flow === 'file_transfer' || handshake.flow === 'attachment_transfer') {
+            return params.directPeerServerLifecycle
+              ? await params.directPeerServerLifecycle.ensureListening()
+              : null;
+          }
+          if (!params.acquireWorkspaceSyncMachineIngress) return null;
+          const ingress = await params.acquireWorkspaceSyncMachineIngress({
+            operationId: handshake.operationId,
+            sourceMachineId: handshake.sourceMachineId,
+            targetMachineId: handshake.targetMachineId,
+          });
+          return ingress.port;
+        },
+      },
+    } : {}),
   });
 }
 
@@ -383,12 +433,13 @@ async function resolvePeerTcpTunnelRelayBootstrapContext(params: Readonly<{
 function resolvePeerTcpTunnelRelayTrustRoots(input: Readonly<{
   serverFeatures: FeaturesResponse;
   nowMs: number;
-}>): Array<Readonly<{ keyId: string; publicKeyBase64Url: string }>> {
+}>): Array<Readonly<{ keyId: string; publicKeyBase64Url: string; expiresAt: number | null }>> {
   return input.serverFeatures.capabilities.machines.peerMediation.grantSigningKeys
     .filter((key) => key.expiresAt == null || key.expiresAt > input.nowMs)
     .map((key) => ({
       keyId: key.keyId,
       publicKeyBase64Url: key.publicKey,
+      expiresAt: key.expiresAt,
     }));
 }
 
@@ -404,6 +455,7 @@ export type BootstrapMachineSyncRuntimeResult = Readonly<{
   daemonConnectivityCoordinator: ReturnType<typeof createDaemonConnectivityCoordinator> | null;
   machineConnectionStateCleanup: (() => void) | null;
   stopPeerMediationLoopbackServer: () => Promise<void>;
+  stopMachineIrohAcceptor: () => Promise<void>;
   resumeMachineConnectionPublications: () => Promise<void>;
   daemonSessionMutationCustody: DaemonSessionMutationCustody | null;
   cancelInactiveSessionUsageLimitRecoveryAfterExplicitStop(input: Readonly<{
@@ -427,6 +479,7 @@ export type MachineSyncRuntimeAttemptResources = Readonly<
     | 'voiceInferenceWorker'
     | 'machineConnectionStateCleanup'
     | 'stopPeerMediationLoopbackServer'
+    | 'stopMachineIrohAcceptor'
   > & {
     disposeInactiveSessionUsageLimitRecovery: (() => void) | null;
     cleanupMachineLiveStreamRelay?: (() => void) | null;
@@ -461,6 +514,11 @@ export async function retireMachineSyncRuntimeAttempt(
     params.cleanupPeerTcpTunnelRelay?.();
   } catch (error) {
     logger.warn('[DAEMON RUN] Failed to retire peer TCP relay after machine-sync attempt failure', error);
+  }
+  try {
+    await params.stopMachineIrohAcceptor();
+  } catch (error) {
+    logger.warn('[DAEMON RUN] Failed to stop Iroh machine acceptor after machine-sync attempt failure', error);
   }
   try {
     await params.stopPeerMediationLoopbackServer();
@@ -502,7 +560,9 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
   filesystemAccessPolicy: FilesystemAccessPolicy;
   takeoverRequested: boolean;
   isShuttingDown: () => boolean;
-  createConnectedApiMachine: (machine: Machine) => ApiMachineClient | null;
+  createConnectedApiMachine: (
+    machine: Machine,
+  ) => ApiMachineClient | null | Promise<ApiMachineClient | null>;
   attachTransferRuntimeStatePublisher: (apiMachine: ApiMachineClient) => Promise<void>;
   startAutomationWorkerForMachine: (machineId: string) => AutomationWorkerHandle | null;
   startMemoryWorkerForMachine: (machineId: string) => Promise<MemoryWorkerHandle | null>;
@@ -515,6 +575,13 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
   beforeShutdown: () => Promise<void>;
   requestShutdown: (source: 'happier-app', errorMessage?: string) => void;
   directPeerServerLifecycle: DirectTransferServerLifecycle | null;
+  machineIrohRuntime?: DaemonMachineIrohRuntime;
+  acquireWorkspaceSyncMachineIngress?: (input: Readonly<{
+    operationId: string;
+    sourceMachineId: string;
+    targetMachineId: string;
+    signal?: AbortSignal;
+  }>) => Promise<Readonly<{ port: number; close(): Promise<void> }>>;
   directTransferPromptAssetAdapterRegistry: ReturnType<typeof createPromptAssetAdapterRegistry>;
   directTransferPromptRegistryRegistry: PromptRegistryRegistry;
   connectedServiceRefreshLoopHandle: ConnectedServiceRefreshLoopHandle | null;
@@ -570,6 +637,7 @@ export async function bootstrapMachineSyncRuntime(
       daemonConnectivityCoordinator: null,
       machineConnectionStateCleanup: null,
       stopPeerMediationLoopbackServer: async () => {},
+      stopMachineIrohAcceptor: async () => {},
       resumeMachineConnectionPublications: async () => {},
       daemonSessionMutationCustody: null,
       cancelInactiveSessionUsageLimitRecoveryAfterExplicitStop: async () => null,
@@ -578,7 +646,7 @@ export async function bootstrapMachineSyncRuntime(
     };
   }
 
-  const connectedApiMachine = params.createConnectedApiMachine(params.machine);
+  const connectedApiMachine = await params.createConnectedApiMachine(params.machine);
   let automationWorker: AutomationWorkerHandle | null = null;
   let externalSessionPluginAdmissionOwner:
     ExternalSessionPluginAdmissionOwner | undefined;
@@ -593,6 +661,8 @@ export async function bootstrapMachineSyncRuntime(
   let machineConnectionStateCleanup: (() => void) | null = null;
   let peerMediationLoopback: StartedPeerMediationLoopback | null = null;
   let stopPeerMediationLoopbackServer: () => Promise<void> = async () => {};
+  let stopMachineIrohAcceptor: () => Promise<void> = async () => {};
+  const activeWorkspaceIrohIngresses = new Set<Readonly<{ close(): Promise<void> }>>();
   let cleanupMachineLiveStreamRelay: (() => void) | null = null;
   let cleanupPeerTcpTunnelRelay: (() => void) | null = null;
   let resumeMachineConnectionPublications = async (): Promise<void> => {};
@@ -605,6 +675,7 @@ export async function bootstrapMachineSyncRuntime(
     voiceInferenceWorker,
     machineConnectionStateCleanup,
     stopPeerMediationLoopbackServer,
+    stopMachineIrohAcceptor,
     cleanupMachineLiveStreamRelay,
     cleanupPeerTcpTunnelRelay,
     disposeInactiveSessionUsageLimitRecovery,
@@ -1113,6 +1184,17 @@ export async function bootstrapMachineSyncRuntime(
       credentials: params.credentials,
       machine: params.machine,
       machineId: params.machineId,
+      ...(params.machineIrohRuntime ? { machineIrohRuntime: params.machineIrohRuntime } : {}),
+      directPeerServerLifecycle: params.directPeerServerLifecycle,
+      ...(params.acquireWorkspaceSyncMachineIngress
+        ? {
+            acquireWorkspaceSyncMachineIngress: async (request) => {
+              const ingress = await params.acquireWorkspaceSyncMachineIngress!(request);
+              activeWorkspaceIrohIngresses.add(ingress);
+              return ingress;
+            },
+          }
+        : {}),
       ...(voiceBinaryAppendConsumer ? { voiceBinaryAppendConsumer } : {}),
       ...(voiceBinaryTerminalConsumer ? { voiceBinaryTerminalConsumer } : {}),
     }).catch((error) => {
@@ -1121,6 +1203,39 @@ export async function bootstrapMachineSyncRuntime(
     });
     if (peerMediationLoopback) {
       stopPeerMediationLoopbackServer = peerMediationLoopback.stop;
+      if (params.machineIrohRuntime) {
+        const admissionPort = Number(new URL(peerMediationLoopback.endpoint.url).port);
+        try {
+          await params.machineIrohRuntime.startAttemptAcceptor({ admissionPort });
+          let stopped = false;
+          stopMachineIrohAcceptor = async () => {
+            if (stopped) return;
+            stopped = true;
+            await params.machineIrohRuntime!.stopActiveTunnels().catch((error) => {
+              logger.warn('[DAEMON RUN] Failed to close active Iroh machine tunnels', error);
+            });
+            await params.machineIrohRuntime!.stopAttemptAcceptor().catch((error) => {
+              logger.warn('[DAEMON RUN] Failed to stop Iroh machine acceptor', error);
+            });
+            await Promise.all([...activeWorkspaceIrohIngresses].map(async (ingress) => {
+              await ingress.close().catch((error) => {
+                logger.warn('[DAEMON RUN] Failed to close workspace Iroh ingress', error);
+              });
+            }));
+            activeWorkspaceIrohIngresses.clear();
+            await connectedApiMachine.updateDaemonState(removeMachineIrohEndpoint, {
+              allowWhileQuiescing: true,
+            }).catch((error) => {
+              logger.warn('[DAEMON RUN] Failed to remove retired Iroh machine endpoint publication', error);
+            });
+          };
+        } catch (error) {
+          await peerMediationLoopback.stop().catch(() => undefined);
+          peerMediationLoopback = null;
+          stopPeerMediationLoopbackServer = async () => {};
+          logger.warn('[DAEMON RUN] Failed to start Iroh machine acceptor', error);
+        }
+      }
     }
 
     const peerTcpTunnelRelayContext = await resolvePeerTcpTunnelRelayBootstrapContext({
@@ -1435,10 +1550,13 @@ export async function bootstrapMachineSyncRuntime(
         const activePeerMediationLoopback = peerMediationLoopback;
         if (activePeerMediationLoopback) {
           const outcome = await connectedApiMachine
-            .updateDaemonState((state) => mergePeerMediationLoopbackEndpoint(
-              state,
-              activePeerMediationLoopback.endpoint,
-              activePeerMediationLoopback.activeFlows,
+            .updateDaemonState((state) => mergeMachineIrohEndpoint(
+              mergePeerMediationLoopbackEndpoint(
+                state,
+                activePeerMediationLoopback.endpoint,
+                activePeerMediationLoopback.activeFlows,
+              ),
+              params.machineIrohRuntime,
             ))
             .catch((error) => {
               logger.warn('[DAEMON RUN] Failed to publish peer mediation loopback endpoint', error);
@@ -1505,6 +1623,7 @@ export async function bootstrapMachineSyncRuntime(
     daemonConnectivityCoordinator,
     machineConnectionStateCleanup,
     stopPeerMediationLoopbackServer,
+    stopMachineIrohAcceptor,
     resumeMachineConnectionPublications,
     daemonSessionMutationCustody: usageLimitRecoveryMutationCustody,
     cancelInactiveSessionUsageLimitRecoveryAfterExplicitStop: async ({ sessionId }) =>
