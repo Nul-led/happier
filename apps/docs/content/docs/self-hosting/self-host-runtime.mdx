@@ -61,6 +61,16 @@ Keep `HANDY_MASTER_SECRET` unchanged. Persistent auth tokens and encrypted serve
 
 When updating from a preview relay that used Bun 1.3.5, stop or drain every old relay process before starting the new version. Do not run old and new relay binaries behind the same endpoint during the rollout: the corrected version accepts both the canonical historical key and the Bun-retry key, but an old process may reject tokens newly issued with the canonical key. A complete restart removes that mixed-version direction while preserving existing sessions.
 
+### Personal Home data: uninstall, erase, backup
+
+When the managed runtime on this computer runs your Personal Home, its lifecycle commands are data-safe by design. `happier relay host uninstall` removes the service registration, the runtime binaries, and the logs — and deliberately preserves the Home's SQLite database, public and private files, master secret, configuration, and local backups. Reinstalling finds the same Home with its sessions and trusted devices intact.
+
+Deleting that data is a separate, explicit step: `happier home erase`. It stops the Home, shows the exact resolved paths and estimated size it intends to delete, offers a verified backup first in interactive runs, and requires explicit confirmation — a typed prompt interactively, `--yes` in non-interactive runs. Automated callers can add `--backup-first`; `--yes` confirms deletion only and never creates a backup by itself. It never runs as a side effect of uninstall, logout, or profile removal.
+
+The CLI also owns complete-Home backups: `happier home backup` creates and verifies a plaintext archive of the database, files, master secret, and Home configuration, `happier home verify-backup` re-checks any archive, and `happier home restore PATH` restores a verified archive with validation, forward-only migrations, and automatic rollback on failure. See [Personal Home data operations](/apps/cli) for the full command reference. A backup is plaintext and contains readable conversations, the Home master secret, and trusted-device state — store it somewhere you trust.
+
+Two boundaries keep this distinct from the rest of Happier: standard relay and Happier Cloud behavior is unchanged, and end-to-end-encrypted Homes are never searched server-side. The Personal Home's transcript search is a local, rebuildable plaintext index (FTS5) served by this runtime; while that index is indexing or unavailable, a known plaintext Personal Home keeps its own Home provider instead of falling back to daemon search. E2EE, shared, and non-Personal-Home paths continue to use their existing daemon or external search provider.
+
 After installing a local Relay, you can save or activate the matching local Relay profile with:
 
 ```bash

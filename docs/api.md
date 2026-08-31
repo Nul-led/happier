@@ -12,6 +12,24 @@ We intentionally avoid the full REST verb palette because many operations span m
 ## Authentication
 Most endpoints require `Authorization: Bearer <token>`.
 
+### Signed bearer provenance (0.3 development source)
+
+New signed credentials carry a signed top-level provenance marker with a
+closed token kind and authority. The server validates that marker before
+projecting an authenticated principal; a missing, malformed, unknown, or
+future marker never defaults to ordinary Account authority.
+
+The `account_directory` kind is a restricted Account Service credential. It is
+accepted only by Account Directory routes that explicitly opt in through the
+central route-admission policy. Normal Home APIs, Socket.IO, terminal and API
+Token paths, and other direct bearer consumers reject it. Database-backed API
+Tokens remain a separate opaque credential format and are never inferred from
+signed-token payload fields.
+
+During the 0.3 transition, the named legacy ordinary-Home verifier may read
+pre-marker Home credentials on ordinary Home routes. That compatibility reader
+cannot authorize Account Directory routes or classify a malformed new token.
+
 ### Key-challenge login (v2)
 
 The current challenge contract is a server-issued, single-use challenge bound
@@ -43,6 +61,12 @@ challenge material:
      correspondence, consumes the challenge atomically, and returns
      `{ success, token }`. A challenge that was already redeemed, expired, or
      issued for a different audience or account fails with `401`.
+
+Account Service key login uses the same canonical v2 encoding through the
+dedicated `POST /v1/auth/account-directory/challenge` and
+`POST /v1/auth/account-directory` endpoints. These routes are always v2-only,
+even when ordinary Home compatibility still permits v1, and they mint only the
+restricted `account_directory` credential kind.
 
 Clients do not advertise their challenge version. A client uses v2 only after
 the ready server capability says `capabilities.auth.keyChallenge.v2` is

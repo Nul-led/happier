@@ -98,6 +98,11 @@ This is the manual fallback for QR-driven flows. It is especially useful on lock
 
 After approval, the phone signs in to the same account.
 
+The QR invite identifies one specific Home and carries that Home's connection details. Every start,
+request, wait, and completion call goes to that Home; Happier does not temporarily switch to it or
+reuse whichever Home happens to be focused. The new credential is saved under the invited Home, and
+adding it leaves your current Home, sidebar groups, and other saved credentials unchanged.
+
 ### Restore a new browser or desktop from another signed-in device
 
 1. On the new browser/computer, open **Restore account**
@@ -126,7 +131,13 @@ Recommended checks:
 - verify the device label when Happier shows it
 - do not approve unexpected requests
 
-The QR code itself is not the final credential. Approval still happens from a signed-in device.
+The QR code itself is not the final credential. Approval still happens from a fully signed-in device
+on the same Home. A directory/Account Service login, API token, terminal credential, or assertion
+cannot approve a Home-device request or mint the Home credential.
+
+Direct Home QR linking continues to work without an Account Service. If you discover a Home through
+an Account Service instead, that service supplies only a short-lived assertion; the selected Home
+still owns redemption, any required existing-device approval, and the final Home credential.
 
 ## Self-hosted servers and localhost
 
@@ -137,12 +148,13 @@ If your server is configured as `localhost`, `127.0.0.1`, `::1`, or another loop
 - desktop/web can still talk to it locally
 - a phone cannot reach that same address, because `localhost` on the phone means the phone itself
 
-To avoid creating broken mobile links, Happier intentionally omits the server URL from mobile-oriented QR codes and deep links when the current server is loopback-only.
+Current Home-device QR invites are strict and explicitly name the target Home, its canonical URL,
+and a reachable connection endpoint. Happier does not remove that target and fall back to the
+currently active Home. If it cannot construct a reachable descriptor—for example, because the only
+known endpoint is loopback-only—it will not produce a usable cross-device invite.
 
-In that situation:
-
-- configure the phone to use a server URL it can actually reach
-- then retry the scan
+In that situation, configure the Home with a URL the phone can actually reach, refresh its server
+profile, and create a new QR invite.
 
 Typical working choices:
 

@@ -22,9 +22,10 @@ point the PRs & Issues plugin declares. Happier ships six:
 | Sentry | Error issues, with their own detail body |
 | PostHog | Error issues, with their own detail body |
 
-Each source is configured as an *instance* — an account, an origin, and what to
-watch. Self-managed GitLab and Azure DevOps Server are configured by origin, so
-an origin change is explicit reconfiguration rather than a silent alias.
+Each source is configured as an *instance* — an account, a service base, and
+what to watch. Self-managed GitLab and Azure DevOps Server keep that configured
+base explicit, including any path prefix, rather than silently treating another
+deployment as the same source.
 
 Because sources are a contribution point, a plugin you write can add one. See
 [SCM plugins](/plugins/guides/scm).
@@ -52,9 +53,9 @@ what decides which actions apply:
 - **Attach it to a message.** The composer has a **PRs & Issues** attachment, so you can hand an agent the entry itself rather than pasting a link and hoping it fetches the right thing.
 - **Save a view.** Filters you use often become saved views, under **Saved views** in the plugin's settings.
 
-Three things sync with your account: the sources you configured, the links
-between entries and sessions, and your pins. Nothing else about the list is
-stored — entries themselves are read from their source each time.
+Your configured sources, pins, Session links, saved views, and action
+configuration sync with your account. Provider entries are not copied into a
+Happier database; they are read from their source when the list is refreshed.
 
 ## Give an entry to an Agent
 

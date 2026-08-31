@@ -13,6 +13,7 @@ The Happier CLI is the power-user client for:
 - discovering and invoking built-in and plugin-contributed Actions
 - running the external Happier MCP server
 - inspecting Happier tools and action-driven workflows
+- backing up, restoring, verifying, and erasing Personal Home data
 
 ## Install
 
@@ -473,6 +474,61 @@ happier relay host uninstall
 
 Background service reference: [Background service](/apps/daemon).
 
+## Personal Home data operations
+
+When the managed runtime on this computer runs your Personal Home, the `happier home` commands let you inspect, back up, restore, and erase that data from the terminal. Every operation runs through Happier's managed system tasks and one shared operation owner, so you never copy or edit the Home's data directory by hand, and two operations cannot run on the same Home at once.
+
+All subcommands require the installed managed runtime to be a Personal Home. They target the current CLI release channel and user-mode runtime by default; use `--channel stable|preview|dev` and `--mode user|system` to select another installed managed runtime explicitly. With `--json`, successful operations stream machine-readable JSON Lines task events followed by the final task result; command-level failures use the CLI error envelope. Running `happier home` with no arguments prints the usage summary.
+
+### Inspect and back up
+
+```bash
+happier home status
+happier home backup [--output PATH]
+happier home verify-backup PATH
+```
+
+`status` shows where the Home keeps its data — the data directory, database, public and private file stores, and backups directory — plus whether the Home is running, the database size, how many backup archives are present, and the exact data paths erase would remove with their estimated size. Add `--json` for the full machine-readable inspection, including the Home identity and master-secret fingerprint (never the secret itself). Use `verify-backup` when you need to establish that an archive is valid.
+
+`backup` creates a verified archive of the complete Personal Home: the SQLite database, public and private files, the master secret, and a small, fixed allowlist of Home configuration — the Home's identity, its canonical server URL, and its plain-at-rest policy settings, taken from the runtime's own managed configuration. Credentials, ports, and transport keys are never copied; restore re-applies exactly this allowlist before the Home starts again. If the Home is running, it is stopped first, the database is checkpointed and integrity-checked before any bytes are copied, and the Home is started again afterwards. The archive is created with restrictive permissions (0600 on POSIX), hash-verified by reading it back, and only then reported as usable. Without `--output PATH` the archive is written into the Home's backups directory with a timestamped name. After verification, Happier retains the five newest verified default-location backups and never removes the last verified backup; a failed backup never rotates an earlier one.
+
+`verify-backup` re-checks an archive's integrity and manifest and reports the backup's Home identity, creation time, and schema version, along with whether that identity matches, mismatches, or cannot be compared against the current Home.
+
+A backup is plaintext by design. It contains readable conversations, Home data, the Home master secret, and trusted-device state. Anyone who can restore the complete archive can operate a clone of this Home, so save backups somewhere you trust.
+
+### Restore
+
+```bash
+happier home restore PATH [--yes]
+happier home recover-restore [--yes]
+```
+
+Restore verifies the archive and inspects the destination before touching anything. A backup whose Home identity mismatches the current Home is refused, as is an archive whose schema is newer than the installed runtime can handle. Restoring over a Home that already contains data requires an explicit confirmation — the interactive prompt, or `--yes` in non-interactive runs.
+
+The restore itself is staged: the new data is extracted and validated beside the Home, migrated forward using only the migrations shipped with the installed runtime (never a downgrade), then swapped in and health-checked with its Home identity verified before success is reported. If a step after the swap fails, Happier attempts to restore the previous data; if rollback itself cannot finish, the Home stays stopped with recovery material retained instead of silently running mixed data.
+
+`recover-restore` inspects the canonical restore journal and, when a rollback is available, requires explicit confirmation before restoring the retained previous destination. It is a no-op when no interrupted restore exists. Ambiguous recovery state fails closed and leaves the Home stopped for manual repair instead of guessing which bytes are authoritative.
+
+### Erase
+
+```bash
+happier home erase [--backup-first] [--yes]
+```
+
+`erase` permanently deletes the Personal Home's data — the database, public and private files, master secret, configuration, and local backups. It is explicit and destructive, runs under the same operation lock as backup and restore, and is never triggered by uninstall, logout, or restore. In an interactive run it first offers to create a verified backup, then shows the exact resolved paths and estimated byte count it intends to delete and requires typed confirmation. For automation, add `--backup-first` to require a verified backup before erase. Non-interactive runs require `--yes`; that flag confirms deletion only and never creates a backup by itself.
+
+Uninstalling the managed runtime (`happier relay host uninstall`) is different and safe: it removes the service registration, runtime binaries, and logs, and preserves the database, files, master secret, configuration, and backups. Deleting data is always `happier home erase`, never uninstall.
+
+### Relocation
+
+```bash
+happier home relocate --target TARGET [--yes]
+```
+
+`relocate` currently fails closed with a typed unavailable error and starts no task: the destination-resolution and transfer contracts it requires are not in place yet. Cross-host relocation is not usable today — do not script against this command.
+
+Related: [Self-host runtime](/self-hosting/self-host-runtime).
+
 ## Relay access (share/public URL strategy)
 
 If your self-hosted Relay is only reachable locally (for example `localhost`), other devices (phones, other computers) won’t be able to use it until you expose a reachable Relay URL (often HTTPS).
@@ -511,15 +567,25 @@ Notes:
 Split the flow when you want full control (automation, custom SSH, etc):
 
 ```bash
-# On the remote host (prints a request + publicKey)
-happier auth request --json
+# On the remote host (creates private pending state and prints the request envelope)
+happier auth request --json > remote-auth-request.json
 
-# On a local machine that's already authenticated (approves the public key)
-happier auth approve --public-key <publicKey> --json
+# Transfer that short-lived file privately to an already authenticated machine,
+# then approve the matching public key with the complete request context.
+happier auth approve --public-key <publicKey> --request-json-file ./remote-auth-request.json --json
 
 # Back on the remote host (waits, claims, and writes credentials)
 happier auth wait --public-key <publicKey> --json
 ```
+
+The request JSON contains short-lived secret pairing and claim context. Treat it as sensitive,
+transfer it only between the two trusted machines, and delete the copied file after the request
+finishes or expires. `auth pair-remote` carries the same context automatically over its SSH flow.
+
+Current approvals produce one authenticated terminal-v3 result. Plain Homes persist a token-only
+credential without synthesizing a secret; E2EE data-key Homes persist their data-key fields without
+converting them to legacy secret material. Previously issued legacy responses remain a bounded
+reader-compatibility path and are not newly emitted by current approval writers.
 
 This is terminal/CLI pairing, not the same flow as device restore inside the app.
 

@@ -38,8 +38,11 @@ The React Native scaffold declares web, iOS, and Android artifacts through the
 public build contract. The hosted scaffold emits its isolated artifact and
 bootstrap client. Its packaged runtime availability is not one global claim:
 each host reports the single frame adapter it can construct, so the browser,
-iOS, and Android hosts admit the artifact today while every packaged-desktop
-host reports a typed unavailable reason. Read the per-host state from
+iOS, Android, and structurally supported packaged-desktop hosts can admit the
+artifact today. macOS, Windows, and Linux/X11 have direct Wry adapters; Wayland
+and display-less Linux report their exact typed unavailable reasons. Runtime
+availability is not loaded-platform proof, and the desktop rows still require
+current packaged QA before a Preview support claim. Read the per-host state from
 [Hosted web UI](/plugins/ui/hosted-web#build-and-runtime-availability) rather
 than assuming either answer.
 

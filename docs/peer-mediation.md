@@ -22,7 +22,7 @@ they physically travel).
 | Axis | Members | Declared at |
 | --- | --- | --- |
 | Flow kind | `bounded_transfer`, `tcp_tunnel`, `live_stream`, `machine_rpc`, `voice_media` | `packages/protocol/src/machines/peer/mediation/**` |
-| Route kind | `loopback_direct`, `lan_direct`, `tailscale_serve_direct`, `server_relay` | same |
+| Route kind | `loopback_direct`, `lan_direct`, `tailscale_serve_direct`, `server_relay`, `iroh_peer` | same |
 
 The five moving parts and their canonical owners:
 
@@ -30,6 +30,7 @@ The five moving parts and their canonical owners:
 | --- | --- |
 | Route decision (pure fold of feature bits, account preferences, daemon policy, grant state → a route or a typed refusal) | `packages/peer-mediation/src/route/**`, `.../flows/**` |
 | Route grants (Ed25519, bound to account + machine + flow + route + destination + expiry) | `packages/protocol/src/machines/peer/mediation/**`; minted at `apps/server/sources/app/machines/peer/mediation/**` |
+| `iroh_peer` machine/1 grant binding (source/target machine + EndpointId, initiator/acceptor role, operation kind; payload `machineId`/`endpointFingerprint` are enforced aliases of the binding's target) | `IrohPeerRouteBindingV1Schema` in `packages/protocol/src/machines/peer/mediation/directRouteGrantV1.ts`; verified at `apps/cli/src/daemon/peer/mediation/verifyDirectRouteGrantV1.ts` (`DirectRouteGrantExpectedBinding.iroh` is required for `iroh_peer`). `server_relay` is never grantable or verifiable at this endpoint ingress |
 | Direct transport (daemon loopback HTTP server, grant + nonce on every operation) | `apps/cli/src/daemon/peer/mediation/**` |
 | Relay transport (framed envelopes over the existing Socket.IO connection) | `apps/server/sources/app/api/socket/peer/mediation/**` |
 | Observability (sequenced ring buffer of flow lifecycle events, with metadata redaction) | **One** engine: `createPeerMediationObservabilityFlowStore` in `packages/protocol/src/machines/peer/mediation/observability/`. The daemon and server modules named `observability/store.ts` are ~50-line bindings that only adapt their own call signature to it (DEC-8) — they are not second owners. The UI keeps its own read-side store for subscriptions and selectors. |

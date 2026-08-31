@@ -699,7 +699,6 @@ with exactly:
 {
   ok: true,
   value: {
-    backendModeHint?: string;
     environmentVariables?: Readonly<Record<string, string>>;
     runtimeDescriptorV1?: RuntimeDescriptorV1;
   };
@@ -710,19 +709,15 @@ The plan carries no launch directory. The host-selected `targetDirectory` is
 the spawned process working directory, and the request's optional
 `linkedDirectory` is informational history a plugin may inspect — it never
 gates the launch or selects the cwd.
-`backendModeHint`, when used, is the Agent's existing narrow backend-mode
-vocabulary and is limited to 256 code units. The host routes it through the
-launch's Agent-owned `runtimeDescriptorV1` — the same selection carrier the
-canonical spawn path uses — and never turns it into a generic spawn field;
-when the plan also carries a descriptor that already selects a backend mode,
-the descriptor wins. Environment variables are limited
- to 64 entries, 128 code units per key, and 16,384 code units per value. Every
+Environment variables are limited to 64 entries, 128 code units per key, and
+16,384 code units per value. Every
 key must also pass that Agent's existing process-environment authorization and
 the host's reserved/custody-key denial; one invalid key rejects the whole plan.
 `runtimeDescriptorV1`, when present, is the strict bounded Agent-owned runtime
-identity carried to the target Agent's Session opener. The host validates the
-descriptor and transports it without interpreting its Agent-specific payload;
-do not replace it with a private native-resume alias or generic metadata bag.
+selection and identity carried to the target Agent's Session opener. It is the
+only takeover runtime-selection carrier. The host validates the descriptor and
+transports it without interpreting or mutating its Agent-specific payload; do
+not replace it with a private hint, native-resume alias, or generic metadata bag.
 
 This callback does not choose the target Agent, existing/resume identity,
 transcript storage or authority, directory admission, Connected Services,

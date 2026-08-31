@@ -31,6 +31,11 @@ Stack deliberately does not install or update the host's SSH server, Node.js, Co
 CLI. Those are machine prerequisites. Mutagen automatically installs its own small synchronization
 agent over SSH when a project starts.
 
+The PATH-provided `mutagen` process and its `MUTAGEN_DATA_DIRECTORY` belong only to Stack's
+development-target mirror. Happier workspace relationships use the separately managed,
+license-checked `happier-mutagen` manager/agent artifact under the daemon data root; they never
+reuse this Stack data directory or a system Mutagen executable.
+
 Verify a target without changing it:
 
 ```bash

@@ -971,18 +971,16 @@ the current approved contract and extends these `.8` outcomes. The
 owns mutable execution status and exact QA evidence. No source result alone activates
 the transition.
 
-## Terminal pairing authentication rollout
+## Terminal pairing authentication
 
-Terminal pairing v3 adds a 32-byte secret to the QR/deep link and authenticates the sealed
-content-key response with HMAC-SHA-256. The terminal keeps that secret local and does not include it
-in the relay auth request.
+Terminal pairing v3 adds a 32-byte request secret to the QR/deep link and authenticates the sealed
+provisioning response with HMAC-SHA-256. The requesting terminal keeps that secret in its private,
+short-lived pending state and does not include it in the relay auth request. Current approval writers
+require this v3 context and never emit an unbound legacy response.
 
-The current rollout is an **expansion phase**: new native clients produce v3 responses, while the
-terminal still accepts legacy v1/v2 responses for compatibility. Until a later release activates
-v3 enforcement, a malicious relay can still downgrade the exchange to a forged legacy response.
-
-Users who want to opt into enforcement during the expansion phase can require the current
-authenticated protocol locally:
+Readers retain v1/v2 compatibility only for a previously issued request that has no v3 context. Once
+a request carries v3 context, an absent, malformed, expired, or unauthenticated response fails closed
+instead of falling back to legacy material. Users can require v3 for every accepted response:
 
 ```bash
 HAPPIER_TERMINAL_PAIRING_REQUIRE=v3 happier auth
@@ -990,25 +988,27 @@ HAPPIER_TERMINAL_PAIRING_REQUIRE=v3 happier auth
 
 `v3` is a minimum accepted pairing-protocol requirement: legacy v1/v2 responses are rejected, and
 future supported versions may satisfy the same or a stronger requirement. Unknown values fail
-closed with a configuration error. For `auth request --json` plus `auth wait`, the requirement is
-persisted in the private pending-auth state so the wait process cannot accidentally lose it.
+closed with a configuration error. `auth request --json` persists the requirement and complete v3
+context in private pending-auth state so `auth wait` cannot accidentally lose the binding.
 
 Native-app QR pairing can provide relay-independent authentication once enforcement is active
 because the secret travels camera-to-app. Web pairing cannot make the same guarantee against a
 hostile self-hosted relay: that relay also serves the JavaScript which receives the secret, so the
 web flow necessarily trusts its web origin.
 
-Plain-account terminal pairing uses a strict authenticated token-only discriminator (`0x01`) inside
-the sealed v3 response and carries zero Account E2EE material. The claim endpoint independently
-mints and returns the terminal bearer under claim-secret authorization; the approving client never
-exports or reuses its own bearer. The terminal composes those two authenticated facts and persists
-`{ token, encryption: null }`.
+The terminal-v3 provisioning union has one semantic owner and exactly two current material results:
 
-The requesting terminal advertises token-only reader support as `supportsTokenOnly=1` only alongside
-complete v3 pairing context. The approver requires that capability plus confirmed plain Account mode
-and enabled `encryption.plaintextStorage` and `e2ee.keylessAccounts` decisions. Missing capability,
-legacy links, malformed context, older readers, and CLI-to-remote approval from token-only
-credentials fail closed; keyed v1/v2/v3 behavior remains unchanged.
+- `tokenOnly` carries no Account E2EE material. The claim endpoint independently returns the new
+  terminal bearer under claim-secret authorization, and the terminal persists a token-only
+  credential without fabricating a secret.
+- `dataKey` carries the exact 32-byte Account data-key material. The approver validates that its
+  public key is consistent with the machine key before sealing it, and the terminal persists the
+  data-key fields without collapsing them into a legacy secret.
+
+Persisted `Account.encryptionMode`, together with available consistent data-key material, determines
+which result is permitted. A requester capability may reject an unsupported result but cannot choose
+or downgrade it. Legacy recovery-secret credentials remain reader-only compatibility material: a
+current writer never exports a new raw or unbound legacy secret.
 
 ## External Sessions secure refresh and publication
 
