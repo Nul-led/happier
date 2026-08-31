@@ -504,6 +504,8 @@ export async function readStackInfoSnapshot({
       pendingManualRestart,
       snapshotPath: runtimeInspection.snapshotPath,
       sourceFingerprint: runtimeInspection.sourceFingerprint,
+      buildSourceFingerprint:
+        String(runtimeInspection.manifest?.source?.buildSourceFingerprint ?? '').trim() || null,
       valid: runtimeInspection.valid,
       errors: runtimeInspection.errors,
       snapshotComponents: runtimeInspection.manifest?.components ?? null,

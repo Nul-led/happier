@@ -157,6 +157,41 @@ test('runtime projection exposes the pinned Expo endpoint when Expo runs on a De
       placement: { server: 'mac-host', expo: 'mac-host', daemon: 'local' },
       remoteTargets: {
         'mac-host': {
+          repoDir: '/Users/example/.happier-stack/workspace-mirror/0.3',
+          services: { server: true, expo: true, daemon: true },
+          servicePorts: { server: 53103, expo: 39179 },
+          serviceStatus: { server: 'running', expo: 'running', daemon: 'running' },
+          status: 'running',
+        },
+      },
+      expo: null,
+    }),
+  ].join('\n'));
+
+  const result = await inspectExecutionHostStackRuntime({
+    profile: profile('/Users/example/.happier-stack/lima'),
+    workspaceId: '0.3',
+    stackName: 'repo-dev-1234567890',
+    executor,
+  });
+
+  assert.deepEqual(result.forwards, [
+    { service: 'server', transport: 'host', listenHost: '0.0.0.0', listenPort: 52753, targetHost: '127.0.0.1', targetPort: 53103 },
+    { service: 'expo', transport: 'host', listenHost: '0.0.0.0', listenPort: 18829, targetHost: '127.0.0.1', targetPort: 39179 },
+  ]);
+});
+
+test('runtime projection keeps the guest tunnel route for predecessor declarations without target-local endpoints', async () => {
+  const executor = runtimeExecutor([
+    'stackName=repo-dev-1234567890',
+    'serverPort=52753',
+    'expoPort=18829',
+    JSON.stringify({
+      stackName: 'repo-dev-1234567890',
+      ports: { server: 52753, serverBackend: null },
+      placement: { server: 'mac-host', expo: 'mac-host', daemon: 'local' },
+      remoteTargets: {
+        'mac-host': {
           services: { server: true, expo: true, daemon: true },
           serviceStatus: { server: 'running', expo: 'running', daemon: 'running' },
           status: 'running',
@@ -177,6 +212,55 @@ test('runtime projection exposes the pinned Expo endpoint when Expo runs on a De
     { service: 'server', listenHost: '0.0.0.0', listenPort: 52753, targetHost: '127.0.0.1', targetPort: 52753 },
     { service: 'expo', listenHost: '0.0.0.0', listenPort: 18829, targetHost: '127.0.0.1', targetPort: 18829 },
   ]);
+});
+
+test('runtime projection keeps one coherent guest transport when only one target service publishes its host endpoint', async () => {
+  const executor = runtimeExecutor([
+    'stackName=repo-dev-1234567890',
+    'serverPort=52753',
+    'expoPort=18829',
+    JSON.stringify({
+      stackName: 'repo-dev-1234567890',
+      ports: { server: 52753, serverBackend: null },
+      placement: { server: 'mac-host', expo: 'mac-host', daemon: 'local' },
+      remoteTargets: {
+        'mac-host': {
+          repoDir: '/Users/example/.happier-stack/workspace-mirror/0.3',
+          services: { server: true, expo: true, daemon: true },
+          servicePorts: { server: 53103 },
+          serviceStatus: { server: 'running', expo: 'running', daemon: 'running' },
+          status: 'running',
+        },
+      },
+      expo: null,
+    }),
+  ].join('\n'));
+
+  const result = await inspectExecutionHostStackRuntime({
+    profile: profile('/Users/example/.happier-stack/lima'),
+    workspaceId: '0.3',
+    stackName: 'repo-dev-1234567890',
+    executor,
+  });
+
+  assert.deepEqual(result.forwards, [
+    { service: 'server', listenHost: '0.0.0.0', listenPort: 52753, targetHost: '127.0.0.1', targetPort: 52753 },
+    { service: 'expo', listenHost: '0.0.0.0', listenPort: 18829, targetHost: '127.0.0.1', targetPort: 18829 },
+  ]);
+});
+
+test('runtime projection uses the workspace-configured Stack identity when callers omit --stack', async () => {
+  const configuredProfile = profile('/Users/example/.happier-stack/lima');
+  configuredProfile.workspaces[0].stackName = 'repo-dev-1234567890';
+  const executor = runtimeExecutor(runtimeProjection());
+
+  await inspectExecutionHostStackRuntime({
+    profile: configuredProfile,
+    workspaceId: '0.3',
+    executor,
+  });
+
+  assert.equal(executor.calls[0].args.at(-1), 'repo-dev-1234567890');
 });
 
 test('execution-host service tunnel starts one detached SSH transport with all runtime-declared public TCP services and is idempotent', async (t) => {
@@ -224,6 +308,54 @@ test('execution-host service tunnel starts one detached SSH transport with all r
   assert.equal(state.pid, 731);
   assert.equal(state.processInstanceFingerprint, 'darwin-ps:started');
   assert.equal(state.transition, undefined, 'steady-state records retain the established active shape');
+});
+
+test('execution-host service tunnel starts one local forwarder process for controller-host services', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-local-service-forwarder-' });
+  const env = { HAPPIER_STACK_HOME_DIR: fixture.path('home') };
+  const boundary = tunnelBoundary({ listenerPids: new Map([[52753, [731]], [18829, [731]]]) });
+  const executor = runtimeExecutor([
+    'stackName=repo-dev-1234567890',
+    'serverPort=52753',
+    'expoPort=18829',
+    JSON.stringify({
+      stackName: 'repo-dev-1234567890',
+      ports: { server: 52753, serverBackend: null },
+      placement: { server: 'mac-host', expo: 'mac-host', daemon: 'local' },
+      remoteTargets: {
+        'mac-host': {
+          repoDir: '/Users/example/.happier-stack/workspace-mirror/0.3',
+          services: { server: true, expo: true, daemon: true },
+          servicePorts: { server: 53103, expo: 39179 },
+          serviceStatus: { server: 'running', expo: 'running', daemon: 'running' },
+          status: 'running',
+        },
+      },
+      expo: null,
+    }),
+  ].join('\n'));
+
+  const result = await ensureExecutionHostServiceTunnel({
+    profile: profile(fixture.path('lima')),
+    workspaceId: '0.3',
+    executor,
+    env,
+    boundary,
+  });
+
+  assert.equal(result.status, 'running');
+  assert.equal(boundary.spawned.length, 1);
+  const spawn = boundary.spawned[0];
+  assert.equal(spawn.command, process.execPath);
+  assert.match(spawn.args[0], /tcp_forward\.mjs$/);
+  const forwards = JSON.parse(spawn.args.find((arg) => arg.startsWith('--forwards-json=')).slice('--forwards-json='.length));
+  assert.deepEqual(forwards, [
+    { listenHost: '0.0.0.0', listenPort: 52753, targetHost: '127.0.0.1', targetPort: 53103 },
+    { listenHost: '0.0.0.0', listenPort: 18829, targetHost: '127.0.0.1', targetPort: 39179 },
+  ]);
+  const state = JSON.parse(await readFile(result.statePath, 'utf8'));
+  assert.equal(state.transport, 'host');
+  assert.equal(state.sshConfigFile, undefined);
 });
 
 test('service tunnel admits free ports by binding and scopes listener ownership checks to its SSH PID', async (t) => {

@@ -38,8 +38,14 @@ export function classifyRemoteCommand(commandArgs, { cwd = '.' } = {}) {
   if (REMOTE_COMMAND_CLASSIFICATION.sourceSearchDirectCommands.includes(commandBasename(commandArgs[0]))) {
     return { placement: 'worker-eligible', commandClass: 'source-search' };
   }
+  const directCommand = commandBasename(commandArgs[0]);
+  const isNativeTypeScriptCli = directCommand === 'node'
+    && commandBasename(commandArgs[1]) === 'runTypeScriptCli.mjs';
+  const isNestedPreferredExecution = directCommand === 'hstack-exec';
   if (
     REMOTE_COMMAND_CLASSIFICATION.validationDirectCommands.includes(commandBasename(commandArgs[0]))
+    || isNativeTypeScriptCli
+    || isNestedPreferredExecution
     || REMOTE_COMMAND_CLASSIFICATION.validationScriptFamilies.includes(resolvePackageManagerScriptFamily(commandArgs))
   ) {
     return {

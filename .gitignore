@@ -103,6 +103,7 @@ apps/server/output/
 
 # macOS
 .DS_Store
+._*
 *.pem
 
 # local env files
@@ -142,6 +143,7 @@ notes/
 packages/*/android/build/
 packages/*/android/.cxx/
 packages/*/ios/vendor/
+/packages/cli-common/mutagen-engine/vendor/
 packages/*/rust/*/target/
 /.tmp
 /packages/tests/playwright-report/

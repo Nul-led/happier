@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 
 import { readProcessInstanceFingerprintSync } from '@happier-dev/cli-common/processInstance';
 
@@ -29,6 +30,7 @@ const TUNNEL_STATE_LOCK_TIMEOUT_MS = 30_000;
 const TUNNEL_STATE_LOCK_STALE_AFTER_MS = 60_000;
 const SAFE_STACK_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_STATE_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const LOCAL_FORWARDER_ENTRYPOINT = fileURLToPath(new URL('../net/tcp_forward.mjs', import.meta.url));
 
 // This runs inside the managed guest. It intentionally projects only the stack
 // identity and public service declarations; it never copies an env file (which
@@ -140,7 +142,26 @@ function parseProjectedStackRuntime(output) {
   };
 }
 
-function buildForwards(projection) {
+function hostTargetServicePort(projection, workspace, service) {
+  const targetName = String(projection.runtime.placement?.[service] ?? '').trim();
+  const target = targetName ? projection.runtime.remoteTargets?.[targetName] : null;
+  if (!target || String(target.repoDir ?? '').trim() !== workspace.hostMirrorDir) return null;
+  if (target.status !== 'running' || target.serviceStatus?.[service] !== 'running') return null;
+  return servicePort(target.servicePorts?.[service]);
+}
+
+function selectCoherentForwardTransport(forwards) {
+  const hostForwardCount = forwards.filter((forward) => forward.transport === 'host').length;
+  const useHostTransport = hostForwardCount > 0 && hostForwardCount === forwards.length;
+  return forwards.map(({ guestTargetPort, ...forward }) => {
+    if (useHostTransport) return forward;
+    if (forward.transport !== 'host') return forward;
+    const { transport: _transport, ...guestForward } = forward;
+    return { ...guestForward, targetPort: guestTargetPort };
+  });
+}
+
+function buildForwards(projection, workspace) {
   const runtimePorts = projection.runtime.ports && typeof projection.runtime.ports === 'object'
     ? projection.runtime.ports
     : {};
@@ -151,14 +172,16 @@ function buildForwards(projection) {
   const serverBackend = serverProxy.enabled === true
     ? servicePort(runtimePorts.serverBackend) ?? serverPort
     : serverPort;
+  const hostServerPort = hostTargetServicePort(projection, workspace, 'server');
   const forwards = [];
   if (serverPort && serverBackend) {
     forwards.push({
       service: 'server',
+      ...(hostServerPort ? { transport: 'host', guestTargetPort: serverBackend } : {}),
       listenHost: '0.0.0.0',
       listenPort: serverPort,
       targetHost: '127.0.0.1',
-      targetPort: serverBackend,
+      targetPort: hostServerPort ?? serverBackend,
     });
   }
 
@@ -175,42 +198,49 @@ function buildForwards(projection) {
   const remoteExpoReady = remoteExpoTarget?.services?.expo === true
     && remoteExpoTarget?.serviceStatus?.expo === 'running'
     && remoteExpoTarget?.status === 'running';
+  const hostExpoPort = hostTargetServicePort(projection, workspace, 'expo');
   if (remoteExpoReady && expoPort) {
     forwards.push({
       service: 'expo',
+      ...(hostExpoPort ? { transport: 'host', guestTargetPort: expoPort } : {}),
       listenHost: '0.0.0.0',
       listenPort: expoPort,
       targetHost: '127.0.0.1',
-      targetPort: expoPort,
+      targetPort: hostExpoPort ?? expoPort,
     });
   }
   if (expo.webEnabled === true && webPort) {
     forwards.push({
       service: 'expo-web',
+      ...(hostExpoPort ? { transport: 'host', guestTargetPort: webPort } : {}),
       listenHost: '0.0.0.0',
       listenPort: webPort,
       targetHost: '127.0.0.1',
-      targetPort: webPort,
+      targetPort: hostExpoPort ?? webPort,
     });
   }
   if (expo.devClientEnabled === true && mobilePort) {
     forwards.push({
       service: 'expo-mobile',
+      ...(hostExpoPort ? { transport: 'host', guestTargetPort: mobilePort } : {}),
       listenHost: '0.0.0.0',
       listenPort: mobilePort,
       targetHost: '127.0.0.1',
-      targetPort: mobilePort,
+      targetPort: hostExpoPort ?? mobilePort,
     });
   }
 
+  const selectedForwards = selectCoherentForwardTransport(forwards);
   const byListenPort = new Map();
-  for (const forward of forwards) {
+  for (const forward of selectedForwards) {
     const existing = byListenPort.get(forward.listenPort);
     if (!existing) {
       byListenPort.set(forward.listenPort, forward);
       continue;
     }
-    if (existing.targetHost !== forward.targetHost || existing.targetPort !== forward.targetPort) {
+    if (existing.transport !== forward.transport
+      || existing.targetHost !== forward.targetHost
+      || existing.targetPort !== forward.targetPort) {
       throw tunnelError(
         'EXECUTION_HOST_SERVICE_TUNNEL_PORT_COLLISION',
         `[dev-vm] Stack declares incompatible public services on TCP port ${forward.listenPort}`,
@@ -273,9 +303,11 @@ function validTunnelState(raw) {
   if (!SAFE_STACK_NAME.test(String(raw.stackName ?? ''))) return false;
   if (!String(raw.marker ?? '').trim()) return false;
   if (!Array.isArray(raw.forwards) || raw.forwards.length === 0) return false;
+  if (raw.transport != null && raw.transport !== 'guest' && raw.transport !== 'host') return false;
   return raw.forwards.every((forward) => (
     forward?.listenHost === '0.0.0.0'
     && forward?.targetHost === '127.0.0.1'
+    && (forward?.transport == null || forward.transport === 'host')
     && servicePort(forward.listenPort) != null
     && servicePort(forward.targetPort) != null
   ));
@@ -371,7 +403,7 @@ async function inspectSavedTunnel(state, boundary) {
   // child's environment, so adopt only the exact saved forwarding plan once;
   // every newly spawned tunnel carries the visible SetEnv marker above.
   const paddedCommand = ` ${String(observed.line ?? '').trim()} `;
-  const ownsLegacyExactSshPlan = [
+  const ownsLegacyExactSshPlan = state.transport !== 'host' && [
     ' ssh -T ',
     ` -F ${state.sshConfigFile} `,
     ' -o ControlMaster=no ',
@@ -459,7 +491,7 @@ async function waitForTunnelListeners({ pid, forwards, boundary }) {
       if (listeners?.status !== 'ok') {
         throw tunnelError(
           'EXECUTION_HOST_SERVICE_TUNNEL_PORT_UNAVAILABLE',
-          `[dev-vm] unable to verify SSH forwarding on TCP port ${forward.listenPort}`,
+          `[dev-vm] unable to verify service forwarding on TCP port ${forward.listenPort}`,
           { port: forward.listenPort, listenerStatus: listeners?.status ?? 'unknown' },
         );
       }
@@ -473,7 +505,7 @@ async function waitForTunnelListeners({ pid, forwards, boundary }) {
   }
   throw tunnelError(
     'EXECUTION_HOST_SERVICE_TUNNEL_START_FAILED',
-    '[dev-vm] SSH forwarding did not bind every declared Stack service port',
+    '[dev-vm] service forwarding did not bind every declared Stack service port',
   );
 }
 
@@ -485,7 +517,7 @@ export async function inspectExecutionHostStackRuntime({
 } = {}) {
   if (!executor?.capture) throw new Error('[dev-vm] managed Lima executor is required');
   const workspace = requireWorkspace(profile, workspaceId);
-  const expectedStack = normalizeStackName(stackName);
+  const expectedStack = normalizeStackName(stackName || workspace.stackName);
   const result = await executor.capture('limactl', [
     'shell', '--workdir', workspace.guestDir, profile.instance, '--',
     'sh', '-lc', GUEST_STACK_PROJECTION_SCRIPT, 'sh', workspace.guestDir, expectedStack,
@@ -514,7 +546,7 @@ export async function inspectExecutionHostStackRuntime({
     status: 'ready',
     workspaceId: workspace.id,
     stackName: projection.stackName,
-    forwards: buildForwards(projection),
+    forwards: buildForwards(projection, workspace),
     pendingServices: pendingProjectedServices(projection),
     ...(runtimeStartedAt ? { runtimeStartedAt } : {}),
   };
@@ -662,22 +694,32 @@ async function ensureExecutionHostServiceTunnelUnlocked({
       }
     }
     await assertPortsUnclaimed(projection.forwards, processBoundary);
-    const resolvedSsh = resolveExecutionHostWorkspaceMount(profile, env);
-    const args = buildSshForwardArgs(
-      { ssh: resolvedSsh.sshHost },
-      {
-        forwards: projection.forwards.map(({ listenHost, listenPort, targetHost, targetPort }) => ({
-          direction: 'local', listenHost, listenPort, targetHost, targetPort,
-        })),
-        sshArgs: [
-          '-F', resolvedSsh.sshConfigFile,
-          '-o', 'ControlMaster=no',
-          '-o', 'ControlPath=none',
-          '-o', `SetEnv=HAPPIER_STACK_EXECUTION_HOST_TUNNEL=${marker}`,
-        ],
-      },
-    );
-    const child = processBoundary.spawn('ssh', args, {
+    const hostTransport = projection.forwards.every((forward) => forward.transport === 'host');
+    const resolvedSsh = hostTransport ? null : resolveExecutionHostWorkspaceMount(profile, env);
+    const command = hostTransport ? process.execPath : 'ssh';
+    const args = hostTransport
+      ? [
+          LOCAL_FORWARDER_ENTRYPOINT,
+          `--forwards-json=${JSON.stringify(projection.forwards.map(({
+            listenHost, listenPort, targetHost, targetPort,
+          }) => ({ listenHost, listenPort, targetHost, targetPort })))}`,
+          `--label=dev-vm-${workspace.id || 'default'}-${projection.stackName}`,
+        ]
+      : buildSshForwardArgs(
+          { ssh: resolvedSsh.sshHost },
+          {
+            forwards: projection.forwards.map(({ listenHost, listenPort, targetHost, targetPort }) => ({
+              direction: 'local', listenHost, listenPort, targetHost, targetPort,
+            })),
+            sshArgs: [
+              '-F', resolvedSsh.sshConfigFile,
+              '-o', 'ControlMaster=no',
+              '-o', 'ControlPath=none',
+              '-o', `SetEnv=HAPPIER_STACK_EXECUTION_HOST_TUNNEL=${marker}`,
+            ],
+          },
+        );
+    const child = processBoundary.spawn(command, args, {
       detached: true,
       stdio: 'ignore',
       shell: false,
@@ -716,8 +758,11 @@ async function ensureExecutionHostServiceTunnelUnlocked({
       marker,
       pid,
       processInstanceFingerprint: fingerprint,
-      sshConfigFile: resolvedSsh.sshConfigFile,
-      sshHost: resolvedSsh.sshHost,
+      transport: hostTransport ? 'host' : 'guest',
+      ...(resolvedSsh ? {
+        sshConfigFile: resolvedSsh.sshConfigFile,
+        sshHost: resolvedSsh.sshHost,
+      } : {}),
       forwards: projection.forwards,
     };
     await writeTunnelState(statePath, state);

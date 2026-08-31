@@ -50,6 +50,7 @@ export async function inspectExecutionHost({ profile, doctor = doctorManagedLima
     executor,
     instance: profile.instance,
     profileName: profile.profile,
+    diskImageFormat: profile.diskImageFormat,
   });
   return {
     configured: true,
@@ -78,6 +79,7 @@ export async function executeCandidateHostCommand({
     executor,
     instance: profile.instance,
     profileName: profile.profile,
+    diskImageFormat: profile.diskImageFormat,
   });
   if (diagnosis.ok !== true) {
     throw new Error('[execution-host] managed Lima doctor reported drift; run `hstack dev-vm doctor` before execution');

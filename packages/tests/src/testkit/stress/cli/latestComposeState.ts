@@ -9,6 +9,7 @@ export type LatestComposeState = Readonly<{
   baseUrl: string;
   composeProjectName: string;
   composeFilePath: string;
+  runtimeComposeFile?: string;
   gatewayConfigFile?: string;
   generatedEnvFile?: string;
   dockerLogsFile?: string;
@@ -36,6 +37,7 @@ export function normalizeLatestComposeState(state: LatestComposeStateDiskShape):
     baseUrl: state.baseUrl,
     composeProjectName: state.composeProjectName,
     composeFilePath: state.composeFilePath,
+    runtimeComposeFile: state.runtimeComposeFile,
     gatewayConfigFile: state.gatewayConfigFile,
     generatedEnvFile: state.generatedEnvFile,
     dockerLogsFile: state.dockerLogsFile,

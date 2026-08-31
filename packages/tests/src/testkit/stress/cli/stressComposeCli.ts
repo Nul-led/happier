@@ -1,10 +1,15 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { scrubKnownSecretValues } from '../../artifactSecretSafety';
 import { createRunDirs, type RunDirs } from '../../runDir';
 import { repoRootDir } from '../../paths';
 import { readStressConfig } from '../config/readStressConfig';
 import { createComposeRuntime, type ComposeRuntime } from '../docker/composeRuntime';
+import {
+  deletePrivateComposeRuntimeMaterial,
+  registerPrivateComposeRuntimeSecretValues,
+} from '../docker/privateComposeRuntimeMaterial';
 import {
   preflightFullComposeFrozenImage,
   startFullComposeStressTarget,
@@ -67,6 +72,7 @@ function createLatestComposeState(target: StartedStressTarget, currentRepoRootDi
     baseUrl: target.baseUrl,
     composeProjectName: target.topology.composeProjectName,
     composeFilePath: target.artifacts.composeFile,
+    runtimeComposeFile: target.artifacts.runtimeComposeFile,
     gatewayConfigFile: target.artifacts.gatewayConfigFile,
     generatedEnvFile: target.artifacts.generatedEnvFile,
     dockerLogsFile: target.artifacts.dockerLogsFile,
@@ -80,8 +86,11 @@ async function stopComposeProject(
   state: LatestComposeState,
   deps: Pick<StressComposeCliDeps, 'createComposeRuntime'>,
 ): Promise<void> {
+  if (state.runtimeComposeFile) {
+    registerPrivateComposeRuntimeSecretValues(state.runtimeComposeFile);
+  }
   const runtime = deps.createComposeRuntime({
-    composeFilePath: state.composeFilePath,
+    composeFilePath: state.runtimeComposeFile ?? state.composeFilePath,
     composeProjectName: state.composeProjectName,
     cwd: state.repoRootDir,
   });
@@ -100,8 +109,11 @@ export function createStressComposeCli(overrides: Partial<StressComposeCliDeps> 
       const statePath = deps.latestComposeStatePath();
       const previousState = readLatestComposeStateIfExists(statePath);
       if (previousState && previousState.status === 'running' && !previousState.preserved) {
+        if (previousState.runtimeComposeFile) {
+          registerPrivateComposeRuntimeSecretValues(previousState.runtimeComposeFile);
+        }
         const previousRuntime = deps.createComposeRuntime({
-          composeFilePath: previousState.composeFilePath,
+          composeFilePath: previousState.runtimeComposeFile ?? previousState.composeFilePath,
           composeProjectName: previousState.composeProjectName,
           cwd: previousState.repoRootDir,
         });
@@ -112,6 +124,7 @@ export function createStressComposeCli(overrides: Partial<StressComposeCliDeps> 
         });
         await previousRuntime.down();
         writeLatestComposeState(statePath, markComposeStateStopped(previousState, deps.now()));
+        deletePrivateComposeRuntimeMaterial(previousState.runtimeComposeFile);
       }
 
       const run = deps.createRunDirs({ runLabel: 'stress' });
@@ -136,6 +149,7 @@ export function createStressComposeCli(overrides: Partial<StressComposeCliDeps> 
 
       const nextState = markComposeStateStopped(state, deps.now());
       writeLatestComposeState(statePath, nextState);
+      deletePrivateComposeRuntimeMaterial(state.runtimeComposeFile);
       return {
         stopped: true,
         composeProjectName: state.composeProjectName,
@@ -176,7 +190,7 @@ function isDirectExecution(): boolean {
 if (isDirectExecution()) {
   void main().catch((error: unknown) => {
     const message = error instanceof Error ? error.stack ?? error.message : String(error);
-    process.stderr.write(`${message}\n`);
+    process.stderr.write(`${scrubKnownSecretValues(message)}\n`);
     process.exitCode = 1;
   });
 }

@@ -21,7 +21,7 @@ on:
           - github
           - blacksmith-linux-4vcpu
       custom_checks:
-        description: "Custom — Comma-separated checks used only when profile=custom (ui,ui_e2e,wsrepl_lima,mobile_e2e_android,mobile_e2e_ios,plugin_workspaces,server,cli,stack,typecheck,daemon_e2e,e2e_core,e2e_core_slow,server_db_contract,providers,stress,release_contracts,installers_smoke,binary_smoke,cli_update_continuity,daemon_continuity,session_continuity,release_assets_docker,self_host_systemd,self_host_launchd,self_host_schtasks,self_host_daemon)"
+        description: "Custom — Comma-separated checks used only when profile=custom (ui,ui_e2e,wsrepl_lima,mobile_e2e_android,mobile_e2e_ios,plugin_workspaces,server,home_iroh_real,cli,stack,typecheck,daemon_e2e,e2e_core,e2e_core_slow,server_db_contract,providers,stress,release_contracts,installers_smoke,binary_smoke,cli_update_continuity,daemon_continuity,session_continuity,release_assets_docker,self_host_systemd,self_host_launchd,self_host_schtasks,self_host_daemon)"
         required: true
         default: ""
         type: string
@@ -71,6 +71,7 @@ jobs:
       run_ui: ${{ steps.flags.outputs.run_ui }}
       run_plugin_workspaces: ${{ steps.flags.outputs.run_plugin_workspaces }}
       run_server: ${{ steps.flags.outputs.run_server }}
+      run_home_iroh_real: ${{ steps.flags.outputs.run_home_iroh_real }}
       run_cli: ${{ steps.flags.outputs.run_cli }}
       run_stack: ${{ steps.flags.outputs.run_stack }}
       run_typecheck: ${{ steps.flags.outputs.run_typecheck }}
@@ -133,6 +134,7 @@ jobs:
             run_ui=true
             run_plugin_workspaces=true
             run_server=true
+            run_home_iroh_real=true
             run_cli=true
             run_stack=true
             run_typecheck=true
@@ -161,6 +163,7 @@ jobs:
             run_ui=true
             run_plugin_workspaces=true
             run_server=true
+            run_home_iroh_real=false
             run_cli=true
             run_stack=true
             run_typecheck=true
@@ -189,6 +192,7 @@ jobs:
             run_ui=false
             run_plugin_workspaces=false
             run_server=false
+            run_home_iroh_real=false
             run_cli=false
             run_stack=false
             run_typecheck=false
@@ -217,6 +221,7 @@ jobs:
             if has mobile_e2e_android; then run_mobile_e2e_android=true; fi
             if has mobile_e2e_ios; then run_mobile_e2e_ios=true; fi
             if has server; then run_server=true; fi
+            if has home_iroh_real; then run_home_iroh_real=true; fi
             if has cli; then run_cli=true; fi
             if has stack; then run_stack=true; fi
             if has typecheck; then run_typecheck=true; fi
@@ -248,6 +253,7 @@ jobs:
             echo "run_ui=${run_ui}"
             echo "run_plugin_workspaces=${run_plugin_workspaces}"
             echo "run_server=${run_server}"
+            echo "run_home_iroh_real=${run_home_iroh_real}"
             echo "run_cli=${run_cli}"
             echo "run_stack=${run_stack}"
             echo "run_typecheck=${run_typecheck}"
@@ -285,6 +291,7 @@ jobs:
       run_ui: ${{ needs.resolve.outputs.run_ui == 'true' }}
       run_plugin_workspaces: ${{ needs.resolve.outputs.run_plugin_workspaces == 'true' }}
       run_server: ${{ needs.resolve.outputs.run_server == 'true' }}
+      run_home_iroh_real: ${{ needs.resolve.outputs.run_home_iroh_real == 'true' }}
       run_cli: ${{ needs.resolve.outputs.run_cli == 'true' }}
       run_stack: ${{ needs.resolve.outputs.run_stack == 'true' }}
       run_typecheck: ${{ needs.resolve.outputs.run_typecheck == 'true' }}

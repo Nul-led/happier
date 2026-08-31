@@ -1,9 +1,14 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { scrubKnownSecretValues } from '../../artifactSecretSafety';
 import { repoRootDir } from '../../paths';
 import { latestComposeStatePath, readLatestComposeState } from '../cli/latestComposeState';
 import { createComposeRuntime, type ComposeRuntime } from '../docker/composeRuntime';
+import {
+  isPrivateComposeRuntimePath,
+  registerPrivateComposeRuntimeSecretValues,
+} from '../docker/privateComposeRuntimeMaterial';
 import { inspectComposeTopology, type ComposeTopologySnapshot } from '../docker/inspectComposeTopology';
 import { waitForComposeRpcGatewayReadiness } from '../docker/waitForComposeRpcGatewayReadiness';
 import { waitForComposeTopology } from '../docker/waitForComposeTopology';
@@ -160,8 +165,17 @@ export async function attachRunningFullComposeStressTarget(
   });
   const expectedPorts = generatedMetadata.ports;
 
+  if (
+    !state.runtimeComposeFile
+    || !isPrivateComposeRuntimePath(state.runtimeComposeFile)
+    || !existsSync(state.runtimeComposeFile)
+  ) {
+    throw new Error('Running full-compose topology runtime compose material is missing');
+  }
+  registerPrivateComposeRuntimeSecretValues(state.runtimeComposeFile);
+
   const runtime = deps.createComposeRuntime({
-    composeFilePath: state.composeFilePath,
+    composeFilePath: state.runtimeComposeFile,
     composeProjectName: state.composeProjectName,
     cwd: state.repoRootDir,
   });
@@ -204,6 +218,7 @@ export async function attachRunningFullComposeStressTarget(
     },
     artifacts: {
       composeFile: state.composeFilePath,
+      runtimeComposeFile: state.runtimeComposeFile,
       gatewayConfigFile: state.gatewayConfigFile,
       generatedEnvFile: state.generatedEnvFile,
       dockerLogsFile,
@@ -289,8 +304,8 @@ export async function attachRunningFullComposeStressTarget(
       await runtime.down();
     },
     collectDiagnostics: async () => {
-      writeFileSync(dockerLogsFile, `${await runtime.logs()}\n`, 'utf8');
-      writeFileSync(dockerPsFile, `${await runtime.ps()}\n`, 'utf8');
+      writeFileSync(dockerLogsFile, scrubKnownSecretValues(`${await runtime.logs()}\n`), 'utf8');
+      writeFileSync(dockerPsFile, scrubKnownSecretValues(`${await runtime.ps()}\n`), 'utf8');
     },
   };
 }

@@ -1,17 +1,36 @@
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
 
-import { personalHomeScenarios } from '../../src/scenarios/personalHome.scenario';
+import {
+  assertPersonalHomeBootstrapRecoveryContract,
+  assertPersonalHomeDaemonSetupNonBlockingContract,
+  assertPersonalHomeNoIngressContract,
+  assertPersonalHomeRuntimeSpecContract,
+  assertPersonalHomeSignupClosureContract,
+} from '../../src/scenarios/personalHome.scenario';
 
-describe('Personal Home contract scenarios', () => {
-  it('keeps the named F-PH coverage set stable', () => {
-    expect(personalHomeScenarios.map(({ id }) => id)).toEqual([
-      'F-PH-01', 'F-PH-02', 'F-PH-03', 'F-PH-04', 'F-PH-05',
-    ]);
+/**
+ * Ordinary owner-level supporting contracts for the Personal Home shell-first corridor. These
+ * names describe the behavior each check proves; acceptance IDs and run status are owned by the
+ * Lane 09 plan and its sole release report, not by test titles or source registries.
+ */
+describe('Personal Home shell-first owner contracts', () => {
+  it('runtime spec stays loopback, plaintext, and renders the signup closure', async () => {
+    await assertPersonalHomeRuntimeSpecContract();
   });
 
-  describe.each(personalHomeScenarios)('$id: $name', (scenario) => {
-    it('passes against canonical Personal Home owners', async () => {
-      await expect(scenario.run()).resolves.toBeUndefined();
-    });
+  it('bootstrap resumes from persisted facts after an interruption without duplicating state', async () => {
+    await assertPersonalHomeBootstrapRecoveryContract();
+  });
+
+  it('persists and reapplies signup closure and refuses unverified non-loopback exposure', async () => {
+    await assertPersonalHomeSignupClosureContract();
+  });
+
+  it('returns typed unavailable states for public exposure without a proxy fallback', async () => {
+    await assertPersonalHomeNoIngressContract();
+  });
+
+  it('fails daemon setup typed and scoped while provisioned Home data stays untouched', async () => {
+    await assertPersonalHomeDaemonSetupNonBlockingContract();
   });
 });

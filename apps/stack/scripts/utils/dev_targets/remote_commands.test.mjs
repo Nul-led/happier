@@ -229,6 +229,17 @@ test('remote exec validates repo-relative cwd and preserves POSIX argument and e
   );
 });
 
+test('remote classification recognizes direct native TypeScript and nested launcher validation', () => {
+  assert.deepEqual(
+    classifyRemoteCommand(['node', '../../scripts/workspaces/runTypeScriptCli.mjs', '--noEmit'], { cwd: 'apps/ui' }),
+    { placement: 'worker-eligible', commandClass: 'targeted-validation' },
+  );
+  assert.deepEqual(
+    classifyRemoteCommand(['apps/stack/bin/hstack-exec', '--local', '--', 'sh', '-lc', 'typecheck']),
+    { placement: 'worker-eligible', commandClass: 'full-validation' },
+  );
+});
+
 test('remote exec POSIX shell layer preserves live native argument boundaries', async () => {
   const command = buildRemoteExecCommand(
     { ...posix, repoDir: '/tmp', cliHomeDir: '/tmp/happier-remote-command-test' },

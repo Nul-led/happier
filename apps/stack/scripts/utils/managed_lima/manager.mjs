@@ -54,6 +54,7 @@ export async function setupManagedLimaInstance({
   instance,
   profileName = 'balanced',
   architecture = 'aarch64',
+  diskImageFormat = 'raw',
   allowInstall = false,
 }) {
   let installed = false;
@@ -67,7 +68,7 @@ export async function setupManagedLimaInstance({
     await installLima(executor);
     installed = true;
   }
-  const profile = resolveManagedLimaProfile(profileName, { architecture });
+  const profile = resolveManagedLimaProfile(profileName, { architecture, diskImageFormat });
   let reconciliation;
   try {
     reconciliation = await reconcileManagedLimaInstance({ executor, instance, profile });
@@ -98,6 +99,7 @@ export async function setupManagedLimaRuntime({
   instance,
   profileName = 'balanced',
   architecture = 'aarch64',
+  diskImageFormat = 'raw',
   allowInstall = false,
   guestProvisionScriptSource,
   guestProvisionProfile = 'happier',
@@ -116,6 +118,7 @@ export async function setupManagedLimaRuntime({
     instance,
     profileName,
     architecture,
+    diskImageFormat,
     allowInstall,
   });
   const provision = await provisionGuest({
@@ -150,6 +153,7 @@ export async function doctorManagedLimaInstance({
   instance,
   profileName = 'balanced',
   architecture = 'aarch64',
+  diskImageFormat = 'raw',
 }) {
   const host = await executor.capture('uname', ['-s']);
   const lima = await executor.capture('limactl', ['--version']);
@@ -174,7 +178,7 @@ export async function doctorManagedLimaInstance({
       drift: { creation: [], resources: [], configuration: [] },
     };
   }
-  const profile = resolveManagedLimaProfile(profileName, { architecture });
+  const profile = resolveManagedLimaProfile(profileName, { architecture, diskImageFormat });
   const drift = evaluateManagedLimaInstance(current.instance, profile);
   const guestLoginManager = current.status.toLowerCase() === 'running'
     ? await inspectManagedLimaGuestLoginManager({ executor, instance })

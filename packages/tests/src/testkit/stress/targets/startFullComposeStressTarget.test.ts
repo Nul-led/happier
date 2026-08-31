@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { clearRegisteredRuntimeSecretValues, REDACTED_SECRET_PLACEHOLDER } from '../../artifactSecretSafety';
 import type { StressConfig } from '../config/stressScenarioSchema';
 import { startFullComposeStressTarget } from './startFullComposeStressTarget';
 
@@ -174,11 +175,10 @@ describe('startFullComposeStressTarget', () => {
     const composeYaml = readFileSync(composePath, 'utf8');
     expect(composeYaml).toContain('gateway:');
     expect(composeYaml).toContain('HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__ENABLED: "1"');
-    expect(composeYaml).toContain(
-      `HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_PRIVATE_KEY: ${
-        result.testRuntime?.peerMediation.routeGrantSigning.privateKeySeedBase64Url
-      }`,
+    expect(composeYaml).not.toContain(
+      result.testRuntime?.peerMediation.routeGrantSigning.privateKeySeedBase64Url ?? 'missing-relay-key',
     );
+    expect(composeYaml).toContain('HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_PRIVATE_KEY:');
     expect(readFileSync(generatedEnvPath, 'utf8')).not.toContain(
       result.testRuntime?.peerMediation.routeGrantSigning.privateKeySeedBase64Url ?? 'missing-relay-key',
     );
@@ -1381,7 +1381,6 @@ describe('startFullComposeStressTarget', () => {
       inspectContainers: vi.fn(async () => []),
       serviceContainerIds: vi.fn(async () => []),
     };
-
     await expect(
       startFullComposeStressTarget(
         {
@@ -1414,5 +1413,323 @@ describe('startFullComposeStressTarget', () => {
     ).rejects.toThrow('compose up failed');
 
     expect(runtime.down).toHaveBeenCalledTimes(1);
+  });
+
+  const sentinelQueue = [
+    'sentinel-pg-password-0123456789abcdef',
+    'sentinel-master-secret-0123456789abcdef',
+    'sentinel-access-key-0123456789abcdef',
+    'sentinel-minio-secret-0123456789abcdef',
+    'sentinel-bucket-name-0123456789abcdef',
+  ];
+
+  function collectFilesRecursive(root: string): string[] {
+    const files: string[] = [];
+    const visit = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const entryPath = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          visit(entryPath);
+        } else {
+          files.push(entryPath);
+        }
+      }
+    };
+    visit(root);
+    return files;
+  }
+
+  function findFilesContainingSentinels(root: string, sentinels: readonly string[]): string[] {
+    return collectFilesRecursive(root).filter((file) => {
+      const bytes = readFileSync(file);
+      return sentinels.some((sentinel) => bytes.includes(Buffer.from(sentinel, 'utf8')));
+    });
+  }
+
+  afterEach(() => {
+    clearRegisteredRuntimeSecretValues();
+  });
+
+  it('keeps generated secrets out of the retained run directory and inside restrictive runtime-only material', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'happier-stress-compose-secrets-'));
+    let secretCall = 0;
+    const runtime = {
+      imageExists: vi.fn(async () => true),
+      inspectImage: vi.fn(async () => ({
+        createdAt: 'now',
+        labels: {
+          'happier.stress.owner': 'stress-harness',
+          'happier.stress.repo-root': 'repo-fingerprint',
+          'happier.stress.image-fingerprint': 'current-fingerprint',
+        },
+      })),
+      listOwnedProjects: vi.fn(async () => []),
+      projectHasRunningContainers: vi.fn(async () => false),
+      removeProjectResources: vi.fn(async () => {}),
+      up: vi.fn(async () => {}),
+      down: vi.fn(async () => {}),
+      restart: vi.fn(async () => {}),
+      ps: vi.fn(async () => 'ps output'),
+      logs: vi.fn(async () => 'compose logs'),
+      execCapture: vi.fn(async () => 'worker metrics'),
+      inspectContainers: vi.fn(async () => []),
+      serviceContainerIds: vi.fn(async () => []),
+    };
+    let runtimeComposeFilePath = '';
+
+    const result = await startFullComposeStressTarget(
+      {
+        config,
+        testDir,
+      },
+      {
+        repoRootDir: () => '/repo/root',
+        createRepoRootFingerprint: () => 'repo-fingerprint',
+        computeComposeServerImageFingerprint: () => 'current-fingerprint',
+        randomSecret: () => sentinelQueue[secretCall++] ?? 'sentinel-extra-secret-0123456789',
+        pickAvailablePort: vi
+          .fn()
+          .mockResolvedValueOnce(43080)
+          .mockResolvedValueOnce(45432)
+          .mockResolvedValueOnce(46379)
+          .mockResolvedValueOnce(49000)
+          .mockResolvedValueOnce(49001),
+        createComposeRuntime: vi.fn((params: { composeFilePath: string }) => {
+          runtimeComposeFilePath = params.composeFilePath;
+          return runtime as never;
+        }),
+        waitForComposeTopology: vi.fn(async () => {}),
+        waitForComposeRpcGatewayReadiness: vi.fn(async () => {}),
+        inspectComposeTopology: vi.fn(async () => ({
+          services: ['postgres', 'redis', 'minio', 'minio-init', 'api', 'worker', 'gateway'],
+          resolvedApiReplicas: 3,
+          resolvedWorkerReplicas: 2,
+          ports: {
+            gateway: 43080,
+            postgres: 45432,
+            redis: 46379,
+            minio: 49000,
+            minioConsole: 49001,
+          },
+        })),
+      },
+    );
+
+    const pgPassword = sentinelQueue[0];
+    const masterSecret = sentinelQueue[1];
+    const minioAccessKey = `minio-${sentinelQueue[2].slice(0, 8)}`;
+    const minioSecretKey = sentinelQueue[3];
+    const routeGrantSeed = result.testRuntime?.peerMediation.routeGrantSigning.privateKeySeedBase64Url ?? '';
+    const liveSecrets = [pgPassword, masterSecret, minioAccessKey, minioSecretKey, routeGrantSeed];
+
+    // Runtime material exists outside the retained run directory with restrictive permissions.
+    expect(result.artifacts?.runtimeComposeFile).toBe(runtimeComposeFilePath);
+    expect(runtimeComposeFilePath).toBeTruthy();
+    expect(runtimeComposeFilePath.startsWith(testDir)).toBe(false);
+    const runtimeComposeBytes = readFileSync(runtimeComposeFilePath);
+    for (const secret of liveSecrets) {
+      expect(runtimeComposeBytes.includes(Buffer.from(secret, 'utf8'))).toBe(true);
+    }
+    if (process.platform !== 'win32') {
+      expect(statSync(runtimeComposeFilePath).mode & 0o777).toBe(0o600);
+      expect(statSync(dirname(runtimeComposeFilePath)).mode & 0o777).toBe(0o700);
+    }
+
+    // No live secret value may occur anywhere under the retained/publishable run directory.
+    expect(findFilesContainingSentinels(testDir, liveSecrets)).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain(masterSecret);
+
+    // The retained compose projection stays useful but only contains redacted values.
+    const retainedCompose = readFileSync(join(testDir, 'topology', 'docker-compose.yml'), 'utf8');
+    expect(retainedCompose).toContain('gateway:');
+    expect(retainedCompose).toContain('DATABASE_URL: postgres://stress:__redacted_secret__@postgres:5432/stressdb');
+    expect(retainedCompose).toContain(`HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_PRIVATE_KEY: ${REDACTED_SECRET_PLACEHOLDER}`);
+    expect(result.artifacts?.composeFile).toBe(join(testDir, 'topology', 'docker-compose.yml'));
+
+    // The retained env projection stays useful for attach while carrying no secrets.
+    const generatedEnv = JSON.parse(readFileSync(join(testDir, 'topology', 'env.generated.json'), 'utf8')) as Record<string, unknown>;
+    expect(generatedEnv).toMatchObject({
+      publicBaseUrl: 'http://127.0.0.1:43080',
+      composeProjectName: result.topology.composeProjectName,
+      ports: { gateway: 43080 },
+    });
+    expect(Object.keys(generatedEnv)).not.toContain('secrets');
+
+    // Diagnostics captured from the running topology must be scrubbed before retention.
+    runtime.logs.mockResolvedValueOnce(
+      `api-1 | HANDY_MASTER_SECRET=${masterSecret} DATABASE_URL=postgres://stress:${pgPassword}@postgres:5432/stressdb`,
+    );
+    await result.collectDiagnostics();
+    const dockerLogs = readFileSync(join(testDir, 'topology', 'docker-compose.logs.txt'), 'utf8');
+    expect(dockerLogs).not.toContain(masterSecret);
+    expect(dockerLogs).not.toContain(pgPassword);
+    expect(findFilesContainingSentinels(testDir, liveSecrets)).toEqual([]);
+
+    // Failed teardown retains the only runtime material capable of stopping the live topology.
+    runtime.down.mockRejectedValueOnce(new Error('compose down failed'));
+    await expect(result.stop()).rejects.toThrow('compose down failed');
+    expect(existsSync(runtimeComposeFilePath)).toBe(true);
+    expect(existsSync(dirname(runtimeComposeFilePath))).toBe(true);
+
+    // A successful retry deletes the runtime-only secret material.
+    runtime.down.mockResolvedValueOnce(undefined);
+    await result.stop();
+    expect(runtime.down).toHaveBeenCalledTimes(2);
+    expect(existsSync(runtimeComposeFilePath)).toBe(false);
+    expect(existsSync(dirname(runtimeComposeFilePath))).toBe(false);
+  });
+
+  it('deletes runtime-only secret material and scrubs startup-failure diagnostics when startup fails', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'happier-stress-compose-startup-failure-'));
+    let secretCall = 0;
+    const runtime = {
+      imageExists: vi.fn(async () => true),
+      inspectImage: vi.fn(async () => ({
+        createdAt: 'now',
+        labels: {
+          'happier.stress.owner': 'stress-harness',
+          'happier.stress.repo-root': 'repo-fingerprint',
+          'happier.stress.image-fingerprint': 'current-fingerprint',
+        },
+      })),
+      listOwnedProjects: vi.fn(async () => []),
+      projectHasRunningContainers: vi.fn(async () => false),
+      removeProjectResources: vi.fn(async () => {}),
+      up: vi.fn(async () => {}),
+      down: vi.fn(async () => {}),
+      restart: vi.fn(async () => {}),
+      ps: vi.fn(async () => 'ps output'),
+      logs: vi.fn(async () => `api-1 | fatal HANDY_MASTER_SECRET=${sentinelQueue[1]}`),
+      execCapture: vi.fn(async () => 'worker metrics'),
+      inspectContainers: vi.fn(async () => []),
+      serviceContainerIds: vi.fn(async () => []),
+    };
+    const runtimeComposeFilePaths: string[] = [];
+
+    await expect(
+      startFullComposeStressTarget(
+        {
+          config,
+          testDir,
+        },
+        {
+          repoRootDir: () => '/repo/root',
+          createRepoRootFingerprint: () => 'repo-fingerprint',
+          computeComposeServerImageFingerprint: () => 'current-fingerprint',
+          randomSecret: () => sentinelQueue[secretCall++] ?? 'sentinel-extra-secret-0123456789',
+          pickAvailablePort: vi
+            .fn()
+            .mockResolvedValueOnce(43080)
+            .mockResolvedValueOnce(45432)
+            .mockResolvedValueOnce(46379)
+            .mockResolvedValueOnce(49000)
+            .mockResolvedValueOnce(49001),
+          createComposeRuntime: vi.fn((params: { composeFilePath: string }) => {
+            runtimeComposeFilePaths.push(params.composeFilePath);
+            return runtime as never;
+          }),
+          waitForComposeTopology: vi.fn(async () => {
+            throw new Error('topology did not become ready');
+          }),
+          waitForComposeRpcGatewayReadiness: vi.fn(async () => {}),
+          inspectComposeTopology: vi.fn(async () => ({
+            services: [],
+            resolvedApiReplicas: 0,
+            resolvedWorkerReplicas: 0,
+            ports: {},
+          })),
+        },
+      ),
+    ).rejects.toThrow('topology did not become ready');
+
+    expect(runtime.down).toHaveBeenCalledTimes(1);
+    const startupFailureLogs = readFileSync(
+      join(testDir, 'topology', 'docker-compose.startup-failure.logs.txt'),
+      'utf8',
+    );
+    expect(startupFailureLogs).not.toContain(sentinelQueue[1]);
+    expect(startupFailureLogs).toContain(`HANDY_MASTER_SECRET=${REDACTED_SECRET_PLACEHOLDER}`);
+    expect(findFilesContainingSentinels(testDir, [
+      sentinelQueue[0],
+      sentinelQueue[1],
+      `minio-${sentinelQueue[2].slice(0, 8)}`,
+      sentinelQueue[3],
+    ])).toEqual([]);
+    for (const runtimeComposeFilePath of runtimeComposeFilePaths) {
+      expect(existsSync(runtimeComposeFilePath)).toBe(false);
+      expect(existsSync(dirname(runtimeComposeFilePath))).toBe(false);
+    }
+  });
+
+  it('keeps runtime-only secret material available while the topology is preserved for inspection', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'happier-stress-compose-preserved-'));
+    let secretCall = 0;
+    const runtime = {
+      imageExists: vi.fn(async () => true),
+      inspectImage: vi.fn(async () => ({
+        createdAt: 'now',
+        labels: {
+          'happier.stress.owner': 'stress-harness',
+          'happier.stress.repo-root': 'repo-fingerprint',
+          'happier.stress.image-fingerprint': 'current-fingerprint',
+        },
+      })),
+      listOwnedProjects: vi.fn(async () => []),
+      projectHasRunningContainers: vi.fn(async () => false),
+      removeProjectResources: vi.fn(async () => {}),
+      up: vi.fn(async () => {}),
+      down: vi.fn(async () => {}),
+      restart: vi.fn(async () => {}),
+      ps: vi.fn(async () => 'ps output'),
+      logs: vi.fn(async () => 'compose logs'),
+      execCapture: vi.fn(async () => 'worker metrics'),
+      inspectContainers: vi.fn(async () => []),
+      serviceContainerIds: vi.fn(async () => []),
+    };
+    let runtimeComposeFilePath = '';
+
+    const result = await startFullComposeStressTarget(
+      {
+        config,
+        testDir,
+      },
+      {
+        repoRootDir: () => '/repo/root',
+        createRepoRootFingerprint: () => 'repo-fingerprint',
+        computeComposeServerImageFingerprint: () => 'current-fingerprint',
+        randomSecret: () => sentinelQueue[secretCall++] ?? 'sentinel-extra-secret-0123456789',
+        pickAvailablePort: vi
+          .fn()
+          .mockResolvedValueOnce(43080)
+          .mockResolvedValueOnce(45432)
+          .mockResolvedValueOnce(46379)
+          .mockResolvedValueOnce(49000)
+          .mockResolvedValueOnce(49001),
+        createComposeRuntime: vi.fn((params: { composeFilePath: string }) => {
+          runtimeComposeFilePath = params.composeFilePath;
+          return runtime as never;
+        }),
+        waitForComposeTopology: vi.fn(async () => {}),
+        waitForComposeRpcGatewayReadiness: vi.fn(async () => {}),
+        inspectComposeTopology: vi.fn(async () => ({
+          services: ['postgres', 'redis', 'minio', 'minio-init', 'api', 'worker', 'gateway'],
+          resolvedApiReplicas: 3,
+          resolvedWorkerReplicas: 2,
+          ports: {
+            gateway: 43080,
+            postgres: 45432,
+            redis: 46379,
+            minio: 49000,
+            minioConsole: 49001,
+          },
+        })),
+      },
+    );
+
+    result.preserveForInspection();
+    await result.stop();
+
+    expect(runtime.down).not.toHaveBeenCalled();
+    expect(existsSync(runtimeComposeFilePath)).toBe(true);
   });
 });

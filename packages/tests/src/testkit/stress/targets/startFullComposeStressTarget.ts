@@ -4,6 +4,9 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
 import nacl from 'tweetnacl';
 
+import {
+  scrubKnownSecretValues,
+} from '../../artifactSecretSafety';
 import { repoRootDir } from '../../paths';
 import type { StressConfig } from '../config/stressScenarioSchema';
 import { computeComposeServerImageFingerprint } from '../docker/computeComposeServerImageFingerprint';
@@ -17,6 +20,11 @@ import {
 import { createComposeRuntime, type ComposeRuntime } from '../docker/composeRuntime';
 import { inspectComposeTopology, type ComposeTopologySnapshot } from '../docker/inspectComposeTopology';
 import { renderStressComposeYaml } from '../docker/renderStressComposeYaml';
+import {
+  createPrivateComposeRuntimeMaterial,
+  deletePrivateComposeRuntimeMaterial,
+  registerPrivateComposeRuntimeSecretValues,
+} from '../docker/privateComposeRuntimeMaterial';
 import { renderStressGatewayNginxConf } from '../docker/renderStressGatewayNginxConf';
 import { waitForComposeTopology } from '../docker/waitForComposeTopology';
 import { waitForComposeRpcGatewayReadiness } from '../docker/waitForComposeRpcGatewayReadiness';
@@ -188,10 +196,10 @@ async function writeStartupFailureDiagnostics(params: {
 }): Promise<void> {
   await Promise.all([
     params.runtime.logs()
-      .then((value) => writeFileSync(params.logsPath, `${value}\n`, 'utf8'))
+      .then((value) => writeFileSync(params.logsPath, scrubKnownSecretValues(`${value}\n`), 'utf8'))
       .catch(() => undefined),
     params.runtime.ps()
-      .then((value) => writeFileSync(params.psPath, `${value}\n`, 'utf8'))
+      .then((value) => writeFileSync(params.psPath, scrubKnownSecretValues(`${value}\n`), 'utf8'))
       .catch(() => undefined),
   ]);
 }
@@ -404,6 +412,13 @@ export async function startFullComposeStressTarget(
     routeGrantSigningPublicKey: Buffer.from(relaySigningKeyPair.publicKey).toString('base64url'),
     routeGrantSigningExpiresAt: String(Date.now() + 7 * 24 * 60 * 60 * 1000),
   };
+  const runtimeSecretValues = [
+    secrets.postgresPassword,
+    secrets.masterSecret,
+    secrets.minioAccessKey,
+    secrets.minioSecretKey,
+    peerMediation.routeGrantSigningPrivateKey,
+  ];
 
   const composeFilePath = join(topologyDir, 'docker-compose.yml');
   const gatewayConfigPath = join(topologyDir, 'nginx.conf');
@@ -421,29 +436,32 @@ export async function startFullComposeStressTarget(
     'utf8',
   );
   writeFileSync(generatedStressDockerfilePath, renderGeneratedStressServerDockerfile(), 'utf8');
-  writeFileSync(
-    composeFilePath,
-    renderStressComposeYaml({
-      repoRootDir: resolvedRepoRootDir,
-      repoRootFingerprint,
-      composeDir: topologyDir,
-      serverImageName,
-      gatewayConfigPath,
-      publicBaseUrl,
-      config: {
-        ...params.config.compose,
-        gatewayPort,
-        apiDirectPort,
-        postgresPort,
-        redisPort,
-        minioPort,
-        minioConsolePort,
-      },
-      secrets,
-      peerMediation,
-    }),
-    'utf8',
-  );
+  const runtimeComposeYaml = renderStressComposeYaml({
+    repoRootDir: resolvedRepoRootDir,
+    repoRootFingerprint,
+    composeDir: topologyDir,
+    serverImageName,
+    gatewayConfigPath,
+    publicBaseUrl,
+    config: {
+      ...params.config.compose,
+      gatewayPort,
+      apiDirectPort,
+      postgresPort,
+      redisPort,
+      minioPort,
+      minioConsolePort,
+    },
+    secrets,
+    peerMediation,
+  });
+  const privateRuntimeMaterial = createPrivateComposeRuntimeMaterial({
+    composeProjectName,
+    composeYaml: runtimeComposeYaml,
+    secretValues: runtimeSecretValues,
+  });
+  registerPrivateComposeRuntimeSecretValues(privateRuntimeMaterial.composeFile);
+  writeFileSync(composeFilePath, scrubKnownSecretValues(runtimeComposeYaml), 'utf8');
 
   writeJsonFile(generatedEnvPath, {
     composeProjectName,
@@ -473,30 +491,37 @@ export async function startFullComposeStressTarget(
       minio: minioPort,
       minioConsole: minioConsolePort,
     },
-    secrets,
   });
 
-  const runtime = deps.createComposeRuntime({
-    composeFilePath,
-    composeProjectName,
-    cwd: resolvedRepoRootDir,
-  });
-
-  if (pinnedFrozenImageFingerprint) {
-    await requirePinnedFrozenImage({
-      runtime,
-      serverImageName,
-      expectedImageFingerprint: pinnedFrozenImageFingerprint,
-      expectedRepoRootFingerprint: repoRootFingerprint,
+  let runtime: ComposeRuntime;
+  try {
+    runtime = deps.createComposeRuntime({
+      composeFilePath: privateRuntimeMaterial.composeFile,
+      composeProjectName,
+      cwd: resolvedRepoRootDir,
     });
+  } catch (error) {
+    deletePrivateComposeRuntimeMaterial(privateRuntimeMaterial.composeFile);
+    throw error;
   }
 
   let topologyIsRunning = false;
   let startupAttemptActive = false;
   let startupFailureCleanedUp = false;
+  let startupCleanupArmed = false;
+  let startupTeardownFailed = false;
 
   try {
+    if (pinnedFrozenImageFingerprint) {
+      await requirePinnedFrozenImage({
+        runtime,
+        serverImageName,
+        expectedImageFingerprint: pinnedFrozenImageFingerprint,
+        expectedRepoRootFingerprint: repoRootFingerprint,
+      });
+    }
     await cleanupOwnedStressComposeProjects(runtime, composeProjectName, repoRootFingerprint);
+    startupCleanupArmed = true;
 
     if (params.config.compose.imageBuildStrategy !== 'never') {
       const imageExists = await runtime.imageExists(serverImageName);
@@ -589,10 +614,18 @@ export async function startFullComposeStressTarget(
         });
 
         if (startupAttemptActive || topologyIsRunning) {
-          await runtime.down().catch(() => undefined);
-          startupFailureCleanedUp = true;
-          topologyIsRunning = false;
-          startupAttemptActive = false;
+          try {
+            await runtime.down();
+            startupFailureCleanedUp = true;
+            topologyIsRunning = false;
+            startupAttemptActive = false;
+          } catch (teardownError) {
+            startupTeardownFailed = true;
+            throw new AggregateError(
+              [error, teardownError],
+              `Compose startup and teardown failed; private runtime material retained at ${privateRuntimeMaterial.composeFile}`,
+            );
+          }
         }
 
         if (attempt === startupAttempts) {
@@ -626,6 +659,7 @@ export async function startFullComposeStressTarget(
       },
       artifacts: {
         composeFile: composeFilePath,
+        runtimeComposeFile: privateRuntimeMaterial.composeFile,
         gatewayConfigFile: gatewayConfigPath,
         generatedEnvFile: generatedEnvPath,
         dockerLogsFile: logsPath,
@@ -718,10 +752,11 @@ export async function startFullComposeStressTarget(
         }
         await runtime.down();
         topologyIsRunning = false;
+        deletePrivateComposeRuntimeMaterial(privateRuntimeMaterial.composeFile);
       },
       collectDiagnostics: async () => {
-        writeFileSync(logsPath, `${await runtime.logs()}\n`, 'utf8');
-        writeFileSync(psPath, `${await runtime.ps()}\n`, 'utf8');
+        writeFileSync(logsPath, scrubKnownSecretValues(`${await runtime.logs()}\n`), 'utf8');
+        writeFileSync(psPath, scrubKnownSecretValues(`${await runtime.ps()}\n`), 'utf8');
       },
     };
     Object.defineProperty(startedTarget, 'testRuntime', {
@@ -742,8 +777,21 @@ export async function startFullComposeStressTarget(
     });
     return startedTarget;
   } catch (error) {
-    if (!startupFailureCleanedUp || startupAttemptActive || topologyIsRunning) {
-      await runtime.down().catch(() => undefined);
+    let teardownSucceeded = !startupTeardownFailed;
+    if (
+      !startupTeardownFailed
+      && ((startupCleanupArmed && !startupFailureCleanedUp) || startupAttemptActive || topologyIsRunning)
+    ) {
+      try {
+        await runtime.down();
+        topologyIsRunning = false;
+        startupAttemptActive = false;
+      } catch {
+        teardownSucceeded = false;
+      }
+    }
+    if (teardownSucceeded) {
+      deletePrivateComposeRuntimeMaterial(privateRuntimeMaterial.composeFile);
     }
     throw error;
   }

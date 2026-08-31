@@ -514,6 +514,83 @@ run_local() {
   exec "$@"
 }
 
+run_selected_local() {
+  # Automatic placement treats the primary Linux guest as another execution
+  # target. Apply the same nested-worker policy used for remote Linux targets
+  # before entering its existing machine-wide admission gate. An explicit
+  # `--local` invocation continues to call run_local directly as the documented
+  # per-invocation escape hatch.
+  selected_local_workers=
+  selected_local_cpu=${local_candidate_cpu-}
+  selected_local_load=${local_candidate_load-}
+  case "$selected_local_cpu:$selected_local_load" in
+    *[!0-9:.]*|'':*|*:)
+      selected_local_workers=
+      ;;
+    *)
+      selected_local_cpu_psi=$(awk '/^some / {for (field = 1; field <= NF; field += 1) if ($field ~ /^avg10=/) {sub(/^avg10=/, "", $field); print $field; exit}}' /proc/pressure/cpu 2>/dev/null || true)
+      selected_local_memory_psi=$(awk '/^some / {for (field = 1; field <= NF; field += 1) if ($field ~ /^avg10=/) {sub(/^avg10=/, "", $field); print $field; exit}}' /proc/pressure/memory 2>/dev/null || true)
+      selected_local_workers=$(awk \
+        -v cpu="$selected_local_cpu" \
+        -v load_value="$selected_local_load" \
+        -v cpu_psi="${selected_local_cpu_psi:-0}" \
+        -v memory_psi="${selected_local_memory_psi:-0}" '
+          BEGIN {
+            if (cpu !~ /^[0-9]+$/ || cpu < 1) exit
+            if (load_value !~ /^[0-9]+([.][0-9]+)?$/ || load_value < 0) load_value = cpu
+            if (cpu_psi !~ /^[0-9]+([.][0-9]+)?$/ || cpu_psi < 0) cpu_psi = 0
+            if (memory_psi !~ /^[0-9]+([.][0-9]+)?$/ || memory_psi < 0) memory_psi = 0
+            denominator = 1 + (load_value / cpu) + (cpu_psi / 100) + (memory_psi / 100)
+            workers = int(cpu / denominator)
+            if (workers < 1) workers = 1
+            if (workers > cpu) workers = cpu
+            print workers
+          }
+        ')
+      ;;
+  esac
+  case "$selected_local_workers" in ''|*[!0-9]*) selected_local_workers= ;; esac
+
+  if [ -n "$selected_local_workers" ] && [ "$selected_local_workers" -lt "$selected_local_cpu" ]; then
+    selected_local_explicit_vitest=0
+    selected_local_explicit_rg=0
+    selected_local_explicit_typescript=0
+    for selected_local_argument in "$@"; do
+      case "$selected_local_argument" in
+        --maxWorkers|--maxWorkers=*|--max-workers|--max-workers=*|--minWorkers|--minWorkers=*|--min-workers|--min-workers=*|--poolOptions.*.maxThreads|--poolOptions.*.maxThreads=*|--poolOptions.*.minThreads|--poolOptions.*.minThreads=*|--poolOptions.*.maxForks|--poolOptions.*.maxForks=*|--poolOptions.*.minForks|--poolOptions.*.minForks=*) selected_local_explicit_vitest=1 ;;
+        --threads|--threads=*|-j|-j[0-9]*) selected_local_explicit_rg=1 ;;
+        --singleThreaded) selected_local_explicit_typescript=1 ;;
+      esac
+    done
+    case "$nested_worker_tool" in
+      vitest)
+        if [ "$selected_local_explicit_vitest" -ne 1 ] \
+          && [ -z "${VITEST_MAX_THREADS+x}" ] && [ -z "${VITEST_MIN_THREADS+x}" ] \
+          && [ -z "${VITEST_MAX_FORKS+x}" ] && [ -z "${VITEST_MIN_FORKS+x}" ]; then
+          export VITEST_MAX_THREADS=$selected_local_workers
+          export VITEST_MIN_THREADS=1
+          export VITEST_MAX_FORKS=$selected_local_workers
+          export VITEST_MIN_FORKS=1
+          set -- "$@" "--maxWorkers=$selected_local_workers" "--minWorkers=1"
+        fi
+        ;;
+      rg)
+        if [ "$selected_local_explicit_rg" -ne 1 ]; then
+          selected_local_command=$1
+          shift
+          set -- "$selected_local_command" "--threads=$selected_local_workers" "$@"
+        fi
+        ;;
+      typescript-native)
+        if [ "$selected_local_explicit_typescript" -ne 1 ] && [ -z "${GOMAXPROCS+x}" ]; then
+          export GOMAXPROCS=$selected_local_workers
+        fi
+        ;;
+    esac
+  fi
+  run_local "$@"
+}
+
 run_local_without_target_config() {
   if [ -n "$explicit_target" ]; then
     printf '%s\n' '[preferred-execution] no target configuration is available for exact-target execution' >&2
@@ -1172,6 +1249,8 @@ if [ "${include_local-0}" = 1 ] && [ -z "$explicit_target" ]; then
   free=$(memory_pressure -Q 2>/dev/null | awk '/free percentage/ {gsub(/%/,"",$5); print $5/100; exit}')
   [ -n "$free" ] || free=$(awk '/MemTotal:/ {t=$2} /MemAvailable:/ {a=$2} END {if(t>0) print a/t}' /proc/meminfo 2>/dev/null)
   [ -n "$free" ] || free=1
+  local_candidate_cpu=$cpu
+  local_candidate_load=$load_value
   local_disk_free=$(df -Pk "$repo_root" 2>/dev/null | awk 'NR==2 {print $4}')
   local_score=$(awk -v load_value="$load_value" -v cpu="$cpu" -v free="$free" 'BEGIN {if(cpu>0) printf "%.6f", (load_value/cpu)+((free<0.1)?1:0); else print "999999"}')
   if [ -n "$local_disk_free" ] && [ "$local_disk_free" -lt 1048576 ]; then
@@ -1365,7 +1444,7 @@ $selected
 EOF
 if [ "$selected_number" = 0 ]; then
   rmdir "$dispatch_lock" 2>/dev/null || true
-  run_local "$@"
+  run_selected_local "$@"
 fi
 execution_id="native-$$-${selected_number}-$(date +%s)"
 reservation_path="$cache_dir/$selected_name.active.$$"
@@ -1584,6 +1663,10 @@ for argument in "$@"; do
     fi
   fi
 done
+if [ "$governor_inject_vitest_environment" -eq 1 ]; then
+  append_remote_command_argument "--maxWorkers=$resource_governor_workers"
+  append_remote_command_argument "--minWorkers=1"
+fi
 heavyweight_admission_prefix=
 if [ "$heavyweight_admission_required" -eq 1 ]; then
   # The same native launcher owns local and target admission. The target's

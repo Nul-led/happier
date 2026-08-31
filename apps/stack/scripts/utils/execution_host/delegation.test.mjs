@@ -73,6 +73,7 @@ test('managed host preparation mounts an enabled guest workspace after the VM is
   const calls = [];
   const mountedProfile = {
     ...namedProfile,
+    diskImageFormat: 'asif',
     autoMount: true,
     hostMountDir: '/Users/example/.happier-stack/workspace',
   };
@@ -80,8 +81,8 @@ test('managed host preparation mounts an enabled guest workspace after the VM is
     workspaceId: '0.3',
     executor: { kind: 'test-executor' },
     start: async ({ instance }) => { calls.push(['start', instance]); },
-    doctor: async ({ instance, profileName }) => {
-      calls.push(['doctor', instance, profileName]);
+    doctor: async ({ instance, profileName, diskImageFormat }) => {
+      calls.push(['doctor', instance, profileName, diskImageFormat]);
       return { ok: true };
     },
     reconcileServiceTunnel: async ({ profile: received, workspaceId, executor: receivedExecutor }) => {
@@ -94,7 +95,7 @@ test('managed host preparation mounts an enabled guest workspace after the VM is
 
   assert.deepEqual(calls, [
     ['start', 'primary'],
-    ['doctor', 'primary', 'balanced'],
+    ['doctor', 'primary', 'balanced', 'asif'],
     ['forward', 'primary', '0.3', { kind: 'test-executor' }],
     ['mount', 'primary', '/Users/example/.happier-stack/workspace', { kind: 'test-executor' }],
   ]);

@@ -44,6 +44,8 @@ export type StartedStressTarget = Readonly<{
   }>;
   artifacts?: {
     composeFile?: string;
+    /** Runtime-only compose input. Never retain or publish this path as an artifact. */
+    runtimeComposeFile?: string;
     gatewayConfigFile?: string;
     generatedEnvFile?: string;
     dockerLogsFile?: string;

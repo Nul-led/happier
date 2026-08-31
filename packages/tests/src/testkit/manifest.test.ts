@@ -1,10 +1,16 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  clearRegisteredRuntimeSecretValues,
+  REDACTED_SECRET_PLACEHOLDER,
+  registerRuntimeSecretValues,
+} from './artifactSecretSafety';
+import {
+  CredentialShapedManifestFieldError,
   sanitizeDaemonRunnerContinuityManifestEvidence,
   writeTestManifest,
   type DaemonRunnerContinuityManifestEvidence,
@@ -555,5 +561,98 @@ describe('writeTestManifest', () => {
         },
       },
     })).toThrow(/distinct retained plugin lifecycle generation/u);
+  });
+});
+
+describe('writeTestManifest secret safety', () => {
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), 'happier-manifest-secrets-'));
+    clearRegisteredRuntimeSecretValues();
+  });
+
+  afterEach(() => {
+    clearRegisteredRuntimeSecretValues();
+  });
+
+  it('redacts credential-shaped env values while keeping the rest of the env record useful', () => {
+    const manifestPath = writeTestManifest(testDir, {
+      startedAt: '2026-08-30T12:00:00.000Z',
+      env: {
+        CI: '1',
+        HAPPIER_STRESS_USERS: '25',
+        HANDY_MASTER_SECRET: 'sentinel-master-secret-0123456789abcdef',
+        S3_SECRET_KEY: 'sentinel-minio-secret-0123456789abcdef',
+      },
+    });
+
+    const raw = readFileSync(manifestPath, 'utf8');
+    expect(raw).not.toContain('sentinel-master-secret-0123456789abcdef');
+    expect(raw).not.toContain('sentinel-minio-secret-0123456789abcdef');
+    const written = JSON.parse(raw) as { env: Record<string, string> };
+    expect(written.env.CI).toBe('1');
+    expect(written.env.HAPPIER_STRESS_USERS).toBe('25');
+    expect(written.env.HANDY_MASTER_SECRET).toBe(REDACTED_SECRET_PLACEHOLDER);
+    expect(written.env.S3_SECRET_KEY).toBe(REDACTED_SECRET_PLACEHOLDER);
+  });
+
+  it('fails closed when a caller puts credential-shaped fields outside the env record', () => {
+    expect(() => writeTestManifest(testDir, {
+      startedAt: '2026-08-30T12:00:00.000Z',
+      expected: { masterSecret: 'sentinel-master-secret-0123456789abcdef' },
+    })).toThrow(CredentialShapedManifestFieldError);
+    expect(() => writeTestManifest(testDir, {
+      startedAt: '2026-08-30T12:00:00.000Z',
+      scenario: {
+        name: 'leaky',
+        resolvedConfig: { credentials: { postgresPassword: 'sentinel-pg-0123456789abcdef' } },
+      },
+    })).toThrow(/scenario.resolvedConfig.credentials.postgresPassword/u);
+    expect(existsSync(join(testDir, 'manifest.json'))).toBe(false);
+  });
+
+  it('scrubs registered runtime secret values from every manifest string', () => {
+    registerRuntimeSecretValues('sentinel-route-grant-seed-0123456789');
+
+    const manifestPath = writeTestManifest(testDir, {
+      startedAt: '2026-08-30T12:00:00.000Z',
+      observed: {
+        note: 'route grant seed leaked: sentinel-route-grant-seed-0123456789',
+      },
+    });
+
+    const raw = readFileSync(manifestPath, 'utf8');
+    expect(raw).not.toContain('sentinel-route-grant-seed-0123456789');
+    expect(raw).toContain(`route grant seed leaked: ${REDACTED_SECRET_PLACEHOLDER}`);
+  });
+
+  it('never treats benign secret_link values or reason codes as credentials', () => {
+    const manifestPath = writeTestManifest(testDir, {
+      startedAt: '2026-08-30T12:00:00.000Z',
+      observed: {
+        exposure: { mode: 'secret_link' },
+        code: 'secret_link_mode_unavailable',
+      },
+    });
+
+    const written = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      observed: { exposure: { mode: string }; code: string };
+    };
+    expect(written.observed.exposure.mode).toBe('secret_link');
+    expect(written.observed.code).toBe('secret_link_mode_unavailable');
+  });
+
+  it('keeps numeric seed fields while rejecting string-valued seed material', () => {
+    const manifestPath = writeTestManifest(testDir, {
+      startedAt: '2026-08-30T12:00:00.000Z',
+      seed: 42,
+    });
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).seed).toBe(42);
+
+    expect(() => writeTestManifest(testDir, {
+      startedAt: '2026-08-30T12:00:00.000Z',
+      expected: { signingSeed: 'sentinel-signing-seed-0123456789ab' },
+    })).toThrow(CredentialShapedManifestFieldError);
   });
 });

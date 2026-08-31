@@ -423,6 +423,10 @@ jobs:
             --no-bundle \
             --secrets-source env
 
+      - name: Install pinned linuxdeploy
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-linuxdeploy
+
       - name: Pack bounded desktop candidate
         env:
           PLATFORM_KEY: ${{ matrix.platform_key }}
@@ -528,13 +532,17 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            desktop-file-utils gstreamer1.0-tools gstreamer1.0-plugins-base squashfs-tools patchelf
+            desktop-file-utils gstreamer1.0-tools gstreamer1.0-plugins-base squashfs-tools patchelf xvfb weston rpm
 
       - name: Download desktop candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: tauri-candidate-${{ matrix.platform_key }}
           path: dist/tauri/candidate/${{ matrix.platform_key }}
+
+      - name: Install pinned linuxdeploy
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-linuxdeploy
 
       - name: Validate and materialize desktop candidate
         env:
@@ -664,6 +672,27 @@ jobs:
             --ui-version "${UI_VERSION}" \
             --tauri-target "${TAURI_TARGET}" \
             --ui-dir "apps/ui"
+
+      - name: Audit and smoke-test Linux desktop artifacts
+        if: runner.os == 'Linux'
+        env:
+          UI_VERSION: ${{ needs.resolve_source.outputs.ui_version }}
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          case "${RELEASE_ENVIRONMENT}" in
+            dev) base="happier-ui-desktop-dev-linux-x86_64" ;;
+            preview) base="happier-ui-desktop-preview-linux-x86_64" ;;
+            production) base="happier-ui-desktop-linux-x86_64-v${UI_VERSION}" ;;
+            *) echo "Unsupported environment: ${RELEASE_ENVIRONMENT}" >&2; exit 1 ;;
+          esac
+          appimage="dist/tauri/updates/linux-x86_64/${base}.AppImage"
+          mapfile -t packages < <(find dist/tauri/updates/linux-x86_64 -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' \) -print)
+          package_args=()
+          for package in "${packages[@]}"; do package_args+=(--package "$package"); done
+          node scripts/pipeline/tauri/audit-linux-desktop-artifacts.mjs --appimage "$appimage" "${package_args[@]}"
+          node scripts/pipeline/tauri/smoke-linux-appimage.mjs --appimage "$appimage"
+          node scripts/pipeline/tauri/smoke-linux-appimage-wayland.mjs --appimage "$appimage"
 
       - name: Clean private signing material
         if: always()

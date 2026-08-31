@@ -450,30 +450,40 @@ jobs:
             runner: ubuntu-24.04
             platform_os: linux
             cli_target: linux-x64
+            bun_target: bun-linux-x64-baseline
+            iroh_addon_target: linux-x64
             go_target: linux-amd64
             wrapper_name: happier-cliproxyapi-managed
           - platform_key: linux-arm64
             runner: ubuntu-24.04-arm
             platform_os: linux
             cli_target: linux-arm64
+            bun_target: bun-linux-arm64
+            iroh_addon_target: linux-arm64
             go_target: linux-arm64
             wrapper_name: happier-cliproxyapi-managed
           - platform_key: darwin-x64
             runner: macos-15-intel
             platform_os: macos
             cli_target: darwin-x64
+            bun_target: bun-darwin-x64
+            iroh_addon_target: darwin-x64
             go_target: darwin-amd64
             wrapper_name: happier-cliproxyapi-managed
           - platform_key: darwin-arm64
             runner: macos-15
             platform_os: macos
             cli_target: darwin-arm64
+            bun_target: bun-darwin-arm64
+            iroh_addon_target: darwin-arm64
             go_target: darwin-arm64
             wrapper_name: happier-cliproxyapi-managed
           - platform_key: windows-x64
             runner: windows-2025
             platform_os: windows
             cli_target: windows-x64
+            bun_target: bun-windows-x64
+            iroh_addon_target: win32-x64
             go_target: windows-amd64
             wrapper_name: happier-cliproxyapi-managed.exe
     steps:
@@ -514,6 +524,14 @@ jobs:
         with:
           bun-version: 1.3.5
 
+      - name: Setup pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.94.1 --profile minimal
+          rustup default 1.94.1
+          rustc --version | grep -F 'rustc 1.94.1 '
+
       - name: Setup pinned Go toolchain and module cache
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
@@ -529,6 +547,22 @@ jobs:
         uses: ./.github/actions/install-yarn-dependencies
         with:
           args: --frozen-lockfile --ignore-engines
+
+      - name: Build and load the target Iroh lifecycle addon
+        shell: bash
+        env:
+          BUN_TARGET: ${{ matrix.bun_target }}
+        run: |
+          set -euo pipefail
+          yarn workspace @happier-dev/iroh-native build
+          yarn workspace @happier-dev/iroh-native build:native
+          yarn workspace @happier-dev/iroh-native verify:native
+          yarn workspace @happier-dev/iroh-native verify:native:bun
+          IROH_COMPILED_SMOKE="${GITHUB_WORKSPACE}/dist/iroh-native-compiled-smoke${{ matrix.platform_key == 'windows-x64' && '.exe' || '' }}"
+          bun build --compile --target "$BUN_TARGET" \
+            packages/iroh-native/scripts/verify-node-addon-load.mjs \
+            --outfile "$IROH_COMPILED_SMOKE"
+          "$IROH_COMPILED_SMOKE" --package-root "$GITHUB_WORKSPACE/packages/iroh-native"
 
       - name: Run retained source conformance harness
         shell: bash
@@ -604,6 +638,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           CLI_TARGET: ${{ matrix.cli_target }}
           PLATFORM_KEY: ${{ matrix.platform_key }}
+          IROH_ADDON_TARGET: ${{ matrix.iroh_addon_target }}
           WRAPPER_NAME: ${{ matrix.wrapper_name }}
           GO_TARGET: ${{ matrix.go_target }}
         run: |
@@ -616,6 +651,13 @@ jobs:
             --extract-dir "${EXTRACT_DIR}"
           PACKAGED_PAYLOAD_PATH="${EXTRACT_DIR}/happier-v${RELEASE_VERSION}-${CLI_TARGET}"
           test -d "${PACKAGED_PAYLOAD_PATH}"
+          PACKAGED_IROH_ROOT="${PACKAGED_PAYLOAD_PATH}/node_modules/@happier-dev/iroh-native"
+          test -f "${PACKAGED_IROH_ROOT}/native/happier-iroh-native-lifecycle.${IROH_ADDON_TARGET}.node"
+          node "${PACKAGED_IROH_ROOT}/scripts/verify-node-addon-load.mjs" --package-root "$PACKAGED_IROH_ROOT"
+          bun "${PACKAGED_IROH_ROOT}/scripts/verify-node-addon-load.mjs" --package-root "$PACKAGED_IROH_ROOT"
+          PACKAGED_IROH_SMOKE="${PACKAGED_PAYLOAD_PATH}/iroh-native-compiled-smoke${{ matrix.platform_key == 'windows-x64' && '.exe' || '' }}"
+          cp "${GITHUB_WORKSPACE}/dist/iroh-native-compiled-smoke${{ matrix.platform_key == 'windows-x64' && '.exe' || '' }}" "$PACKAGED_IROH_SMOKE"
+          "$PACKAGED_IROH_SMOKE"
           PACKAGED_WRAPPER_PATH="$(find "${EXTRACT_DIR}" -type f -name "$WRAPPER_NAME" -print)"
           CUSTODY_NAME="happier-process-custody"
           if [ "${RUNNER_OS}" = "Windows" ]; then CUSTODY_NAME="${CUSTODY_NAME}.exe"; fi

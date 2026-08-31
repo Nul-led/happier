@@ -42,6 +42,7 @@
     // production sources; the composed contract remains covered by its Vitest lane.
     "suites/core-e2e/simulatorRelay.productPath.l6LiveQa.slow.e2e.test.ts",
     "suites/core-e2e/plugins.voicePackedInstalledArtifact.e2e.test.ts",
-    "suites/core-e2e/voice.agentTranscriptPersistence.e2e.test.ts"
+    "suites/core-e2e/voice.agentTranscriptPersistence.e2e.test.ts",
+    "suites/core-e2e/accountDirectory.homeEnrollment.composedCaller.slow.e2e.test.ts"
   ]
 }

@@ -1,6 +1,12 @@
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import {
+  findCredentialShapedValuePath,
+  redactCredentialShapedRecord,
+  scrubKnownSecretValuesDeep,
+} from './artifactSecretSafety';
+
 type DaemonRunnerContinuityPhaseValues<T> = Readonly<{
   a: T;
   b: T;
@@ -587,6 +593,16 @@ export type TestManifest = {
   lane?: string;
   /** Source revision used by the test process; never a credential or runtime secret. */
   commit?: string;
+  /** Exact loaded target observed by the scenario runner for current/current release evidence. */
+  targetIdentity?: {
+    repository: string;
+    head: string;
+    dirtyStatus: string;
+    changedPathsManifest: string;
+    processBuild: string;
+    stackSession: string;
+    planRevision: string;
+  };
   seed?: number;
   ports?: { server?: number };
   baseUrl?: string;
@@ -654,9 +670,21 @@ export type TestManifest = {
   };
 };
 
+export class CredentialShapedManifestFieldError extends Error {
+  constructor(readonly fieldPath: string) {
+    super(`Credential-shaped manifest field is forbidden: ${fieldPath}`);
+    this.name = 'CredentialShapedManifestFieldError';
+  }
+}
+
 export function writeTestManifest(testDir: string, manifest: TestManifest): string {
   const path = resolve(testDir, 'manifest.json');
-  const sanitizedManifest = manifest.results?.daemonRunnerContinuity === undefined
+  const { env, ...manifestWithoutEnv } = manifest;
+  const credentialPath = findCredentialShapedValuePath(manifestWithoutEnv);
+  if (credentialPath) {
+    throw new CredentialShapedManifestFieldError(credentialPath);
+  }
+  const continuitySanitizedManifest = manifest.results?.daemonRunnerContinuity === undefined
     ? manifest
     : {
         ...manifest,
@@ -667,6 +695,10 @@ export function writeTestManifest(testDir: string, manifest: TestManifest): stri
           ),
         },
       };
+  const sanitizedManifest = scrubKnownSecretValuesDeep({
+    ...continuitySanitizedManifest,
+    ...(env === undefined ? {} : { env: redactCredentialShapedRecord(env) }),
+  });
   writeFileSync(path, `${JSON.stringify(sanitizedManifest, null, 2)}\n`, 'utf8');
   return path;
 }

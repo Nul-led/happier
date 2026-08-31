@@ -23,6 +23,9 @@ export const INDEPENDENT_DEV_TARGET_SYNC_OWNER = 'dev-target-sync-service';
 // process in the existing slice.
 const HAPPIER_CRITICAL_SLICE_NAME = 'happier-critical.slice';
 const HAPPIER_CRITICAL_SLICE_MEMORY_LOW_BYTES = 4 * 1024 * 1024 * 1024;
+const DEV_TARGET_CONTROL_MEMORY_LOW_BYTES = 256 * 1024 * 1024;
+const DEV_TARGET_CONTROL_CPU_WEIGHT = 200;
+const DEV_TARGET_CONTROL_IO_WEIGHT = 200;
 const SYSTEMD_USER_CRITICAL_SCOPE_PROBE_TIMEOUT_MS = 1_000;
 
 function hasSystemdUserBus(env) {
@@ -73,6 +76,9 @@ async function resolveDevTargetControlLaunch({ command, args, env }) {
       '--scope',
       '--quiet',
       `--slice=${HAPPIER_CRITICAL_SLICE_NAME}`,
+      `--property=MemoryLow=${DEV_TARGET_CONTROL_MEMORY_LOW_BYTES}`,
+      `--property=CPUWeight=${DEV_TARGET_CONTROL_CPU_WEIGHT}`,
+      `--property=IOWeight=${DEV_TARGET_CONTROL_IO_WEIGHT}`,
       '--',
       command,
       ...args,
@@ -210,6 +216,7 @@ export async function ensureDevTargetSyncProject(
       args: buildMutagenProjectArgs('list', mutagenRuntime.projectFile),
       env: mutagenRuntime.env,
     }), 'independent Mutagen project status');
+    const unhealthyTargets = new Map();
     for (const target of requiredTargets) {
       const sessionName = resolveMutagenSessionName(target.name);
       const result = await runProcess({
@@ -221,15 +228,14 @@ export async function ensureDevTargetSyncProject(
       requireSuccessful(result, `${target.name} independent synchronization status`);
       const status = parseMutagenSyncList(result.out, sessionName);
       if (status.state !== 'ready' && status.state !== 'synchronizing') {
-        throw new Error(
-          `[dev-targets] ${target.name} independent synchronization is ${status.state}`,
-        );
+        unhealthyTargets.set(target.name, status.state);
       }
     }
     return {
       ...mutagenRuntime,
       openSsh,
       ownership: 'independent',
+      unhealthyTargets,
       projectCreated: false,
       release: async () => {},
     };

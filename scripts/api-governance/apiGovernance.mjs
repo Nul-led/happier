@@ -15,6 +15,10 @@ import {
 } from './emittedDeclarationSurface.mjs';
 import { renderDeclarationDiffSample, summarizeDeclarationDiff } from './declarationDiff.mjs';
 import {
+  createPublicSurfaceProgram,
+  projectEntrypointExportRows,
+} from './publicDeclarationReport.mjs';
+import {
   isExactCanonicalPublishedVersion,
   projectPublishedInventoryProvenance,
 } from './publicationProvenance.mjs';
@@ -55,6 +59,7 @@ export const API_GOVERNANCE_PROFILES = Object.freeze({
     kind: 'entrypoint-declarations',
     title: 'Plugin UI public API',
     declarationTitle: 'Plugin UI public declaration report',
+    sourceEntrypointSpecs: true,
   }),
   sdk: Object.freeze({
     id: 'sdk',
@@ -84,6 +89,80 @@ function unexpectedKeys(value, allowedKeys) {
 
 function entrypointSymbolKey(symbol) {
   return `${symbol.specifier}:${symbol.exportName}`;
+}
+
+function authorEntrypointSpecModule(specifier) {
+  return specifier === '.'
+    ? 'src/index.public.ts'
+    : `src/${specifier.slice(2)}/index.public.ts`;
+}
+
+function publicExportKey(row) {
+  return `${row.specifier}\u0000${row.exportName}\u0000${row.kind}`;
+}
+
+function sortedDifference(left, right) {
+  return [...left].filter((value) => !right.has(value)).sort(compareCodePoints);
+}
+
+/**
+ * Reads the author-owned source specification for every package export. The
+ * package entrypoint barrel remains the emitted module root; these specs are
+ * the source declaration of the names it is meant to carry.
+ */
+async function projectAuthorEntrypointSpecSurface({ packageRoot, entrypoints }) {
+  const sourceEntrypoints = await Promise.all(entrypoints.map(async (entrypoint) => {
+    const sourceModule = authorEntrypointSpecModule(entrypoint.specifier);
+    const absolutePath = resolve(packageRoot, sourceModule);
+    let sourceStat;
+    try {
+      sourceStat = await lstat(absolutePath);
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        throw new Error(
+          `Missing author-owned source spec for ${entrypoint.specifier}: ${sourceModule}`,
+        );
+      }
+      throw error;
+    }
+    if (!sourceStat.isFile()) {
+      throw new Error(
+        `Author-owned source spec for ${entrypoint.specifier} must be a regular file: ${sourceModule}`,
+      );
+    }
+    return Object.freeze({
+      specifier: entrypoint.specifier,
+      sourceModule,
+      absolutePath,
+    });
+  }));
+  const program = createPublicSurfaceProgram(
+    sourceEntrypoints.map((entrypoint) => entrypoint.absolutePath),
+    packageRoot,
+  );
+  const rows = projectEntrypointExportRows({
+    program,
+    packageRoot,
+    entrypoints: sourceEntrypoints,
+  });
+  return Object.freeze({ sourceEntrypoints, rows });
+}
+
+function assertAuthorEntrypointSpecsMatchPreparedDeclarations({ sourceRows, emittedRows }) {
+  const sourceExports = new Set(sourceRows.map(publicExportKey));
+  const emittedExports = new Set(emittedRows.map(publicExportKey));
+  const missingFromDeclarations = sortedDifference(sourceExports, emittedExports);
+  const missingFromSourceSpecs = sortedDifference(emittedExports, sourceExports);
+  if (missingFromDeclarations.length === 0 && missingFromSourceSpecs.length === 0) return;
+  throw new Error([
+    'Author-owned source specs do not match prepared public declarations:',
+    ...missingFromDeclarations.map((key) => (
+      `- prepared declarations are missing source-spec export ${key.replaceAll('\u0000', ':')}`
+    )),
+    ...missingFromSourceSpecs.map((key) => (
+      `- source specs are missing prepared declaration export ${key.replaceAll('\u0000', ':')}`
+    )),
+  ].join('\n'));
 }
 
 /**
@@ -438,6 +517,16 @@ async function runEntrypointDeclarationProfile(profile, options) {
     bundledDependencies: packageJson.bundledDependencies ?? [],
   });
   const { entrypoints, rows } = emitted;
+  if (profile.sourceEntrypointSpecs === true) {
+    const sourceSpecs = await projectAuthorEntrypointSpecSurface({
+      packageRoot,
+      entrypoints,
+    });
+    assertAuthorEntrypointSpecsMatchPreparedDeclarations({
+      sourceRows: sourceSpecs.rows,
+      emittedRows: rows,
+    });
+  }
   const emittedInventory = projectEntrypointInventory({
     packageName: packageJson.name,
     entrypoints,

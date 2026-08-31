@@ -1,6 +1,6 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -373,5 +373,204 @@ describe('stressComposeCli', () => {
       composeProjectName: 'compose-running',
       status: 'stopped',
     });
+  });
+
+  it('carries the runtime compose pointer and deletes the private runtime material on final down', async () => {
+    const mod = await loadStressComposeCliModule();
+    const privateMaterial = await import('../docker/privateComposeRuntimeMaterial');
+    const secretSafety = await import('../../artifactSecretSafety');
+
+    const scratchDir = mkdtempSync(join(tmpdir(), 'happier-stress-compose-cli-'));
+    const statePath = join(scratchDir, 'latest-full-compose.json');
+    const retainedComposeFile = join(scratchDir, 'topology', 'docker-compose.yml');
+    mkdirSync(dirname(retainedComposeFile), { recursive: true });
+    writeFileSync(retainedComposeFile, 'services: {}\n', 'utf8');
+    const material = privateMaterial.createPrivateComposeRuntimeMaterial({
+      composeProjectName: 'compose-running',
+      composeYaml: 'services: {}\n',
+      secretValues: ['sentinel-cross-process-compose-secret-0123456789abcdef'],
+    });
+    secretSafety.clearRegisteredRuntimeSecretValues();
+    let scrubbedInsideDown = '';
+    const down = vi.fn(async () => {
+      scrubbedInsideDown = secretSafety.scrubKnownSecretValues(
+        'failure sentinel-cross-process-compose-secret-0123456789abcdef',
+      );
+    });
+
+    const cli = mod.createStressComposeCli({
+      latestComposeStatePath: () => statePath,
+      readStressConfig: () => baseConfig,
+      createRunDirs: () => ({
+        runId: 'stress-run',
+        runDir: scratchDir,
+        testDir: () => join(scratchDir, 'compose-topology'),
+      }),
+      startFullComposeStressTarget: vi.fn(async () => ({
+        ...createStartedTarget({
+          baseUrl: 'http://127.0.0.1:43080',
+          composeProjectName: 'compose-running',
+          composeFilePath: retainedComposeFile,
+        }),
+        artifacts: {
+          composeFile: retainedComposeFile,
+          runtimeComposeFile: material.composeFile,
+        },
+      })),
+      createComposeRuntime: vi.fn(() => ({
+        down,
+        imageExists: vi.fn(async () => false),
+        inspectImage: vi.fn(async () => null),
+      })),
+      repoRootDir: () => '/repo/root',
+    });
+
+    await cli.up();
+    expect(JSON.parse(readFileSync(statePath, 'utf8'))).toMatchObject({
+      composeFilePath: retainedComposeFile,
+      runtimeComposeFile: material.composeFile,
+    });
+
+    await cli.down();
+
+    expect(down).toHaveBeenCalledTimes(1);
+    expect(scrubbedInsideDown).toBe(`failure ${secretSafety.REDACTED_SECRET_PLACEHOLDER}`);
+    expect(existsSync(material.composeFile)).toBe(false);
+    expect(existsSync(material.dir)).toBe(false);
+    expect(existsSync(retainedComposeFile)).toBe(true);
+    secretSafety.clearRegisteredRuntimeSecretValues();
+  });
+
+  it('cleans up the previous private runtime material when up replaces a running topology', async () => {
+    const mod = await loadStressComposeCliModule();
+    const privateMaterial = await import('../docker/privateComposeRuntimeMaterial');
+
+    const scratchDir = mkdtempSync(join(tmpdir(), 'happier-stress-compose-cli-'));
+    const statePath = join(scratchDir, 'latest-full-compose.json');
+    const previousMaterial = privateMaterial.createPrivateComposeRuntimeMaterial({
+      composeProjectName: 'compose-first',
+      composeYaml: 'services: {}\n',
+    });
+    const firstDown = vi.fn(async () => {});
+
+    const cli = mod.createStressComposeCli({
+      latestComposeStatePath: () => statePath,
+      readStressConfig: () => baseConfig,
+      createRunDirs: () => ({
+        runId: 'stress-run',
+        runDir: scratchDir,
+        testDir: () => join(scratchDir, 'compose-topology'),
+      }),
+      startFullComposeStressTarget: vi.fn(async () =>
+        createStartedTarget({
+          baseUrl: 'http://127.0.0.1:43081',
+          composeProjectName: 'compose-second',
+          composeFilePath: '/tmp/compose-second.yml',
+        })),
+      createComposeRuntime: vi.fn(() => ({
+        down: firstDown,
+        imageExists: vi.fn(async () => false),
+        inspectImage: vi.fn(async () => null),
+      })),
+      repoRootDir: () => '/repo/root',
+    });
+
+    writeFileSync(
+      statePath,
+      `${JSON.stringify({
+        baseUrl: 'http://127.0.0.1:43080',
+        composeProjectName: 'compose-first',
+        composeFilePath: '/tmp/compose-first.yml',
+        runtimeComposeFile: previousMaterial.composeFile,
+        repoRootDir: '/repo/root',
+        status: 'running',
+        preserved: false,
+      }, null, 2)}\n`,
+      'utf8',
+    );
+
+    await cli.up();
+
+    expect(firstDown).toHaveBeenCalledTimes(1);
+    expect(existsSync(previousMaterial.dir)).toBe(false);
+  });
+
+  it('retains private runtime material and running state when final down fails so teardown can retry', async () => {
+    const mod = await loadStressComposeCliModule();
+    const privateMaterial = await import('../docker/privateComposeRuntimeMaterial');
+    const scratchDir = mkdtempSync(join(tmpdir(), 'happier-stress-compose-cli-'));
+    const statePath = join(scratchDir, 'latest-full-compose.json');
+    const material = privateMaterial.createPrivateComposeRuntimeMaterial({
+      composeProjectName: 'compose-running',
+      composeYaml: 'services: {}\n',
+      secretValues: ['sentinel-retry-secret-0123456789abcdef'],
+    });
+    writeFileSync(statePath, `${JSON.stringify({
+      baseUrl: 'http://127.0.0.1:43080',
+      composeProjectName: 'compose-running',
+      composeFilePath: join(scratchDir, 'retained-compose.yml'),
+      runtimeComposeFile: material.composeFile,
+      repoRootDir: '/repo/root',
+      status: 'running',
+      preserved: false,
+    }, null, 2)}\n`, 'utf8');
+    const teardownFailure = new Error('docker teardown failed');
+    const cli = mod.createStressComposeCli({
+      latestComposeStatePath: () => statePath,
+      createComposeRuntime: vi.fn(() => ({
+        down: vi.fn(async () => { throw teardownFailure; }),
+        imageExists: vi.fn(async () => false),
+        inspectImage: vi.fn(async () => null),
+      })),
+    });
+
+    await expect(cli.down()).rejects.toBe(teardownFailure);
+
+    expect(existsSync(material.composeFile)).toBe(true);
+    expect(existsSync(material.secretValuesFile)).toBe(true);
+    expect(await cli.status()).toMatchObject({ status: 'running', runtimeComposeFile: material.composeFile });
+    privateMaterial.deletePrivateComposeRuntimeMaterial(material.composeFile);
+  });
+
+  it('retains prior private runtime material and does not start replacement when replacement teardown fails', async () => {
+    const mod = await loadStressComposeCliModule();
+    const privateMaterial = await import('../docker/privateComposeRuntimeMaterial');
+    const scratchDir = mkdtempSync(join(tmpdir(), 'happier-stress-compose-cli-'));
+    const statePath = join(scratchDir, 'latest-full-compose.json');
+    const material = privateMaterial.createPrivateComposeRuntimeMaterial({
+      composeProjectName: 'compose-running',
+      composeYaml: 'services: {}\n',
+      secretValues: ['sentinel-replacement-retry-secret-0123456789abcdef'],
+    });
+    writeFileSync(statePath, `${JSON.stringify({
+      baseUrl: 'http://127.0.0.1:43080',
+      composeProjectName: 'compose-running',
+      composeFilePath: join(scratchDir, 'retained-compose.yml'),
+      runtimeComposeFile: material.composeFile,
+      repoRootDir: '/repo/root',
+      status: 'running',
+      preserved: false,
+    }, null, 2)}\n`, 'utf8');
+    const teardownFailure = new Error('replacement teardown failed');
+    const startReplacement = vi.fn();
+    const cli = mod.createStressComposeCli({
+      latestComposeStatePath: () => statePath,
+      readStressConfig: () => baseConfig,
+      preflightFullComposeFrozenImage: vi.fn(async () => {}),
+      startFullComposeStressTarget: startReplacement,
+      createComposeRuntime: vi.fn(() => ({
+        down: vi.fn(async () => { throw teardownFailure; }),
+        imageExists: vi.fn(async () => false),
+        inspectImage: vi.fn(async () => null),
+      })),
+      repoRootDir: () => '/repo/root',
+    });
+
+    await expect(cli.up()).rejects.toBe(teardownFailure);
+
+    expect(startReplacement).not.toHaveBeenCalled();
+    expect(existsSync(material.composeFile)).toBe(true);
+    expect(await cli.status()).toMatchObject({ status: 'running', runtimeComposeFile: material.composeFile });
+    privateMaterial.deletePrivateComposeRuntimeMaterial(material.composeFile);
   });
 });

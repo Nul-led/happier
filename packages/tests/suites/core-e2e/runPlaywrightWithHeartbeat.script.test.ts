@@ -237,4 +237,185 @@ describe('runPlaywrightWithHeartbeat helpers', () => {
     void errorSpy;
     void exitSpy;
   });
+
+  it('writes a secret-free timeout artifact and exits with code 124', async () => {
+    vi.resetModules();
+    const tempDir = await mkdtemp(join(tmpdir(), 'happier-heartbeat-timeout-'));
+    const artifactPath = join(tempDir, 'timeout.json');
+    const expectedExecutionCwd = process.cwd();
+    try {
+      vi.stubEnv('HAPPIER_TEST_WRAPPER_TIMEOUT_MS', '1500');
+      vi.stubEnv('HAPPIER_TEST_TIMEOUT_ARTIFACT_PATH', artifactPath);
+      vi.stubEnv('HAPPIER_STACK_REPO_DIR', '/workspace/happier');
+      vi.stubEnv('HAPPIER_STACK_STACK', 'test-stack');
+      vi.stubEnv('HAPPIER_SESSION_ID', 'session-123');
+      vi.stubEnv('GITHUB_SHA', '');
+      vi.stubEnv('CI_COMMIT_SHA', '');
+
+      const runManagedChildCommand = vi.fn(async (params: { onMaxRuntime?: (timeoutMs: number) => void }) => {
+        params.onMaxRuntime?.(1500);
+        return {
+          child: { pid: 12345 },
+          ok: true,
+          code: null,
+          signal: 'SIGTERM',
+          timedOut: true,
+        };
+      });
+      vi.doMock('../../../../scripts/testing/process/managedChildLifecycle.mjs', () => ({
+        installParentDeathCleanupWatchdog: () => () => {},
+        resolveSignalExitCode: () => 143,
+        runManagedChildCommand,
+      }));
+      vi.doMock('../../scripts/sweepProcessOwnershipLeases.mjs', () => ({
+        sweepStaleProcessOwnershipLeases: vi.fn(async () => {}),
+      }));
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        throw new Error(`process.exit:${code ?? ''}`);
+      }) as never);
+
+      const { runHeartbeatWrappedCommand } = await import('../../scripts/runPlaywrightWithHeartbeat.shared.mjs');
+
+      await expect(runHeartbeatWrappedCommand({
+        command: 'yarn',
+        args: [
+          '-s',
+          'playwright',
+          'test',
+          '--token',
+          'do-not-record',
+          '--header',
+          'Authorization: Bearer header-secret',
+          '--env=API_TOKEN=environment-secret',
+          'https://user:url-secret@example.test/suite',
+        ],
+        config: 'config-secret',
+        toolName: 'playwright',
+        spawnOptions: createPlaywrightSpawnOptions({ CI: '1' }),
+        resolveExitCode: () => 143,
+      })).rejects.toThrow('process.exit:124');
+
+      expect(runManagedChildCommand).toHaveBeenCalledOnce();
+      expect(JSON.parse(await readFile(artifactPath, 'utf8'))).toEqual(expect.objectContaining({
+        classification: 'timeout',
+        timeoutMs: 1500,
+        timestamp: expect.any(String),
+        command: {
+          tool: 'playwright',
+          argumentCount: 9,
+          configured: true,
+        },
+        identity: {
+          executionCwd: expectedExecutionCwd,
+          stackRepoDir: '/workspace/happier',
+          stack: 'test-stack',
+          session: 'session-123',
+        },
+      }));
+      const artifactText = await readFile(artifactPath, 'utf8');
+      const logText = [...logSpy.mock.calls, ...errorSpy.mock.calls].flat().join(' ');
+      for (const secret of [
+        'do-not-record',
+        'header-secret',
+        'environment-secret',
+        'url-secret',
+        'config-secret',
+      ]) {
+        expect(artifactText).not.toContain(secret);
+        expect(logText).not.toContain(secret);
+      }
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not write a timeout artifact after a successful run', async () => {
+    vi.resetModules();
+    const tempDir = await mkdtemp(join(tmpdir(), 'happier-heartbeat-success-'));
+    const artifactPath = join(tempDir, 'timeout.json');
+    try {
+      vi.stubEnv('HAPPIER_TEST_TIMEOUT_ARTIFACT_PATH', artifactPath);
+      vi.doMock('../../../../scripts/testing/process/managedChildLifecycle.mjs', () => ({
+        installParentDeathCleanupWatchdog: () => () => {},
+        resolveSignalExitCode: () => 1,
+        runManagedChildCommand: vi.fn(async () => ({
+          child: { pid: 12345 },
+          ok: true,
+          code: 0,
+          signal: null,
+          timedOut: false,
+        })),
+      }));
+      vi.doMock('../../scripts/sweepProcessOwnershipLeases.mjs', () => ({
+        sweepStaleProcessOwnershipLeases: vi.fn(async () => {}),
+      }));
+
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        throw new Error(`process.exit:${code ?? ''}`);
+      }) as never);
+
+      const { runHeartbeatWrappedCommand } = await import('../../scripts/runPlaywrightWithHeartbeat.shared.mjs');
+      await expect(runHeartbeatWrappedCommand({
+        command: 'yarn',
+        args: ['-s', 'playwright', 'test'],
+        config: 'playwright.ui.config.mjs',
+        toolName: 'playwright',
+        spawnOptions: createPlaywrightSpawnOptions({ CI: '1' }),
+        resolveExitCode: () => 0,
+      })).rejects.toThrow('process.exit:0');
+
+      await expect(readFile(artifactPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('warns without masking exit code 124 when the timeout artifact cannot be written', async () => {
+    vi.resetModules();
+    const tempDir = await mkdtemp(join(tmpdir(), 'happier-heartbeat-timeout-write-failure-secret-marker-'));
+    try {
+      vi.stubEnv('HAPPIER_TEST_WRAPPER_TIMEOUT_MS', '1500');
+      vi.stubEnv('HAPPIER_TEST_TIMEOUT_ARTIFACT_PATH', tempDir);
+      vi.doMock('../../../../scripts/testing/process/managedChildLifecycle.mjs', () => ({
+        installParentDeathCleanupWatchdog: () => () => {},
+        resolveSignalExitCode: () => 143,
+        runManagedChildCommand: vi.fn(async () => ({
+          child: { pid: 12345 },
+          ok: true,
+          code: null,
+          signal: 'SIGTERM',
+          timedOut: true,
+        })),
+      }));
+      vi.doMock('../../scripts/sweepProcessOwnershipLeases.mjs', () => ({
+        sweepStaleProcessOwnershipLeases: vi.fn(async () => {}),
+      }));
+
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+        throw new Error(`process.exit:${code ?? ''}`);
+      }) as never);
+
+      const { runHeartbeatWrappedCommand } = await import('../../scripts/runPlaywrightWithHeartbeat.shared.mjs');
+      await expect(runHeartbeatWrappedCommand({
+        command: 'yarn',
+        args: ['-s', 'playwright', 'test'],
+        config: 'playwright.ui.config.mjs',
+        toolName: 'playwright',
+        spawnOptions: createPlaywrightSpawnOptions({ CI: '1' }),
+        resolveExitCode: () => 143,
+      })).rejects.toThrow('process.exit:124');
+
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('timeout artifact'));
+      expect(errorSpy.mock.calls.flat().join(' ')).not.toContain('secret-marker');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });

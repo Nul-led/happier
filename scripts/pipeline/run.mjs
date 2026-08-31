@@ -4500,6 +4500,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
               'attempt-id': { type: 'string', default: 'attempt_1' },
               'release-notes-id': { type: 'string', default: '' },
               'resume-run-id': { type: 'string', default: '' },
+              'ci-run-id': { type: 'string', default: '' },
               'qualified-v4-activation-approval': { type: 'string', default: 'false' },
               'allow-dirty': { type: 'string', default: 'false' },
               'dry-run': { type: 'boolean', default: false },
@@ -4548,6 +4549,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
           const attemptId = String(values['attempt-id'] ?? '').trim();
           const releaseNotesId = String(values['release-notes-id'] ?? '').trim();
           const resumeRunId = String(values['resume-run-id'] ?? '');
+          const ciRunId = String(values['ci-run-id'] ?? '');
           const qualifiedV4ActivationApproval = parseBoolString(
             values['qualified-v4-activation-approval'],
             '--qualified-v4-activation-approval',
@@ -4570,6 +4572,9 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
           }
           if (workflowControlSha && !FULL_GIT_SHA.test(workflowControlSha)) {
             fail('--workflow-control-sha must be a full 40-character lowercase Git commit SHA.');
+          }
+          if (ciRunId && !/^[1-9][0-9]*$/u.test(ciRunId)) {
+            fail('--ci-run-id must be a positive GitHub Actions run ID.');
           }
           if (resumeRunId && !/^[1-9][0-9]*$/u.test(resumeRunId)) {
             fail('--resume-run-id must be a positive GitHub Actions run ID.');
@@ -4734,6 +4739,7 @@ function runJsonScript({ repoRoot, env, scriptRel, args }) {
               ...(operationId ? ['-f', `hmaint_operation_id=${operationId}`] : []),
               ...(operationId ? ['-f', `hmaint_attempt_id=${attemptId}`] : []),
               ...(resumeRunId ? ['-f', `resume_run_id=${resumeRunId}`] : []),
+              ...(ciRunId ? ['-f', `ci_run_id=${ciRunId}`] : []),
             ], {
               cwd: repoRoot,
               env: process.env,

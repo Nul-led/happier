@@ -898,6 +898,7 @@ test('readStackInfoSnapshot reports the loaded runtime snapshot while its truste
     assert.equal(out.runtime.selectedSnapshotId, 'snap-1');
     assert.equal(out.runtime.loadedSnapshotId, 'snap-1');
     assert.equal(out.runtime.pendingManualRestart, false);
+    assert.equal(out.runtime.buildSourceFingerprint, 'src-build-1');
   } finally {
     restore();
   }

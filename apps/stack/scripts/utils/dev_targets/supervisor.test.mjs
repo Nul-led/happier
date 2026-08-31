@@ -673,6 +673,7 @@ test('remote server placement is not reported running until its stable tunneled 
     ssh: 'mac-ssh',
     repoDir: '/Users/test/happier',
     cliHomeDir: '/Users/test/.happier/mac',
+    remoteServerPort: 43005,
   };
   let controller = null;
 
@@ -726,6 +727,8 @@ test('remote server placement is not reported running until its stable tunneled 
       'a live remote worker is not evidence that the local tunnel reaches a ready server',
     );
     assert.equal(targetStates.at(-1)?.serviceStatus?.server, 'starting');
+    assert.deepEqual(targetStates.at(-1)?.servicePorts, { server: 43005 });
+    assert.equal(targetStates.at(-1)?.repoDir, '/Users/test/happier');
 
     resolveServerReady();
     assert.equal(await Promise.race([
@@ -733,6 +736,7 @@ test('remote server placement is not reported running until its stable tunneled 
       new Promise((resolve) => setTimeout(() => resolve(false), 100)),
     ]), true);
     assert.equal(targetStates.at(-1)?.serviceStatus?.server, 'running');
+    assert.deepEqual(targetStates.at(-1)?.servicePorts, { server: 43005 });
 
     await controller.close();
     controller = null;
@@ -1119,9 +1123,10 @@ test('dev target supervisor borrows an all-target independent project when only 
   }
 });
 
-test('an unhealthy command-only independent target does not gate a service assigned to another target', async () => {
+test('an unhealthy daemon target retries independently without gating a service assigned to another target', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hstack-dev-target-independent-service-isolation-'));
   const stackBaseDir = join(root, 'stack');
+  const credentialPath = join(root, 'access.key');
   const projectFile = join(stackBaseDir, 'mutagen', 'mutagen.yml');
   const sourceDir = '/source/happier';
   const serviceTarget = {
@@ -1140,6 +1145,7 @@ test('an unhealthy command-only independent target does not gate a service assig
   };
   const calls = [];
   try {
+    await writeFile(credentialPath, '{"token":"secret"}\n', { mode: 0o600 });
     await mkdir(join(stackBaseDir, 'mutagen'), { recursive: true });
     await writeFile(
       projectFile,
@@ -1160,6 +1166,7 @@ test('an unhealthy command-only independent target does not gate a service assig
         publicServerUrl: 'http://127.0.0.1:3005',
         activeServerId: 'stack_repo-test__id_default',
         remoteServerRuntimeConfig: remoteLightSqliteRuntimeConfig,
+        credentialPath,
         syncTargets: [serviceTarget, commandTarget],
         targetPlans: [
           {
@@ -1170,7 +1177,7 @@ test('an unhealthy command-only independent target does not gate a service assig
           {
             target: commandTarget,
             commands: true,
-            services: { server: false, expo: false, daemon: false },
+            services: { server: false, expo: false, daemon: true },
           },
         ],
         env: {},
@@ -1199,24 +1206,41 @@ test('an unhealthy command-only independent target does not gate a service assig
           return child;
         },
         stopProcess: async (child) => { child.exitCode = 0; },
+        inspectSync: async ({ target }) => ({
+          state: target.name === 'mac2' ? 'unhealthy' : 'ready',
+          sessionName: `happier-${target.name}`,
+        }),
+        waitForProcess: async (child) => (
+          child.label === 'remote:mac2' && !child.args.includes('-N')
+            ? { code: 1 }
+            : await new Promise(() => {})
+        ),
+        waitForRetry: async () => await new Promise(() => {}),
       },
     );
-
-    assert.equal(
-      calls.some((call) => call.kind === 'spawn' && call.label === 'remote:mac' && !call.args.includes('-N')),
-      true,
-    );
-    assert.equal(
-      calls.some((call) => (
-        call.kind === 'run'
-        && call.command === 'mutagen'
-        && call.args[0] === 'sync'
-        && call.args[1] === 'list'
-        && call.args[2] === 'happier-mac2'
-      )),
-      false,
-    );
-    await controller.close();
+    try {
+      assert.equal(
+        calls.some((call) => call.kind === 'spawn' && call.label === 'remote:mac' && !call.args.includes('-N')),
+        true,
+      );
+      assert.equal(
+        calls.some((call) => (
+          call.kind === 'run'
+          && call.command === 'mutagen'
+          && call.args[0] === 'sync'
+          && call.args[1] === 'list'
+          && call.args[2] === 'happier-mac2'
+        )),
+        true,
+      );
+      assert.equal(
+        calls.some((call) => call.kind === 'spawn' && call.label === 'remote:mac2' && !call.args.includes('-N')),
+        false,
+        'an unhealthy daemon replica must not start while its healthy sibling remains available',
+      );
+    } finally {
+      await controller.close();
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1791,6 +1815,12 @@ test('remote Expo ownership does not launch a competing local workspace publicat
     releaseExpoReadiness();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(targetStates.at(-1)?.status, 'running');
+    assert.equal(targetStates.at(-1)?.repoDir, '/Users/test/happier');
+    assert.equal(Number.isInteger(targetStates.at(-1)?.servicePorts?.expo), true);
+    assert.ok(
+      tunnel.args.includes(`*:18081:localhost:${targetStates.at(-1).servicePorts.expo}`),
+      'the published Expo endpoint must be the target-local listener reached by the owned tunnel',
+    );
   } finally {
     releaseExpoReadiness?.();
     await controller?.close?.();

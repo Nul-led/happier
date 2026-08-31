@@ -1,3 +1,6 @@
+import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+
 import { runManagedChildCommand } from '../../../scripts/testing/process/managedChildLifecycle.mjs';
 import { sweepStaleProcessOwnershipLeases } from './sweepProcessOwnershipLeases.mjs';
 
@@ -51,13 +54,80 @@ function elapsedSeconds(startedAtMs) {
   return Math.floor((Date.now() - startedAtMs) / 1000);
 }
 
+const TIMEOUT_ARTIFACT_TOOL_NAMES = new Set(['playwright', 'vitest', 'wsrepl-lima-matrix']);
+
+function safeCommandMetadata(params) {
+  return {
+    tool: TIMEOUT_ARTIFACT_TOOL_NAMES.has(params.toolName) ? params.toolName : 'test-command',
+    argumentCount: Array.isArray(params.args) ? params.args.length : 0,
+    configured: Boolean(params.config),
+  };
+}
+
+function firstNonEmptyEnv(env, names) {
+  for (const name of names) {
+    const value = String(env?.[name] ?? '').trim();
+    if (value.length > 0) return value;
+  }
+  return null;
+}
+
+function timeoutArtifactIdentity(env) {
+  const values = {
+    executionCwd: process.cwd(),
+    stackRepoDir: firstNonEmptyEnv(env, ['HAPPIER_STACK_REPO_DIR']),
+    checkout: firstNonEmptyEnv(env, ['GITHUB_WORKSPACE']),
+    commit: firstNonEmptyEnv(env, ['GITHUB_SHA', 'CI_COMMIT_SHA']),
+    stack: firstNonEmptyEnv(env, ['HAPPIER_STACK_STACK', 'HAPPIER_STACK_ID']),
+    session: firstNonEmptyEnv(env, [
+      'HAPPIER_SESSION_ID',
+      'HAPPIER_QA_SESSION_ID',
+      'CODEX_SESSION_ID',
+      'CODEX_THREAD_ID',
+    ]),
+  };
+
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== null));
+}
+
+async function writeTimeoutArtifact(params, timeoutMs, env) {
+  const outputPath = String(env?.HAPPIER_TEST_TIMEOUT_ARTIFACT_PATH ?? '').trim();
+  if (outputPath.length === 0) return;
+
+  const identity = timeoutArtifactIdentity(env);
+  const artifact = {
+    version: 1,
+    classification: 'timeout',
+    timeoutMs,
+    timestamp: new Date().toISOString(),
+    command: safeCommandMetadata(params),
+    ...(Object.keys(identity).length > 0 ? { identity } : {}),
+  };
+  const temporaryPath = `${outputPath}.${process.pid}.${Date.now()}.tmp`;
+
+  try {
+    await mkdir(dirname(outputPath), { recursive: true });
+    await writeFile(temporaryPath, `${JSON.stringify(artifact)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+    await rename(temporaryPath, outputPath);
+  } catch {
+    await unlink(temporaryPath).catch(() => {});
+    // eslint-disable-next-line no-console
+    console.error('[tests] unable to write timeout artifact');
+  }
+}
+
 export async function runHeartbeatWrappedCommand(params) {
   const startedAt = Date.now();
   // Reap stale detached lease-owned helpers before spawning a new child run.
   // This prevents a previous crashed wrapper from destabilizing the next run.
   await sweepStaleProcessOwnershipLeases().catch(() => {});
+  const commandMetadata = safeCommandMetadata(params);
   // eslint-disable-next-line no-console
-  console.log(`[tests] starting: ${params.command} ${params.args.join(' ')}`);
+  console.log(`[tests] starting: ${commandMetadata.tool} (${commandMetadata.argumentCount} arguments; config=${commandMetadata.configured ? 'set' : 'unset'})`);
 
   const heartbeatMs = Number.parseInt(process.env.HAPPIER_TEST_HEARTBEAT_MS ?? '30000', 10);
   const safeHeartbeatMs = Number.isFinite(heartbeatMs) && heartbeatMs >= 1000 ? heartbeatMs : 30000;
@@ -65,7 +135,7 @@ export async function runHeartbeatWrappedCommand(params) {
 
   const heartbeat = setInterval(() => {
     // eslint-disable-next-line no-console
-    console.log(`[tests] still running (${elapsedSeconds(startedAt)}s elapsed): ${params.config}`);
+    console.log(`[tests] still running (${elapsedSeconds(startedAt)}s elapsed): ${commandMetadata.tool}`);
   }, safeHeartbeatMs);
 
   let finished = false;
@@ -90,7 +160,7 @@ export async function runHeartbeatWrappedCommand(params) {
     onMaxRuntime: (maxRuntimeMs) => {
       clearHeartbeat();
       // eslint-disable-next-line no-console
-      console.error(`[tests] timed out after ${Math.ceil(maxRuntimeMs / 1000)}s: ${params.config}`);
+      console.error(`[tests] timed out after ${Math.ceil(maxRuntimeMs / 1000)}s: ${commandMetadata.tool}`);
     },
     onParentDeath: async () => {
       clearHeartbeat();
@@ -100,6 +170,10 @@ export async function runHeartbeatWrappedCommand(params) {
 
   clearHeartbeat();
 
+  if (result.ok && result.timedOut === true && wrapperTimeoutMs !== null) {
+    await writeTimeoutArtifact(params, wrapperTimeoutMs, process.env);
+  }
+
   // Ensure detached lease-owned processes (Metro, server-light, etc.) do not survive a failed run.
   // These are tracked under `.project/tmp/*-processes` and should be safe to reap once the
   // Playwright child has exited (owners are dead/stale by definition at this point).
@@ -107,7 +181,7 @@ export async function runHeartbeatWrappedCommand(params) {
 
   if (!result.ok) {
     // eslint-disable-next-line no-console
-    console.error(`[tests] failed to start ${params.toolName}: ${result.error.message}`);
+    console.error(`[tests] failed to start ${commandMetadata.tool}`);
     process.exit(1);
   }
 

@@ -145,6 +145,10 @@ Description=Happier session jobs
 [Slice]
 CPUWeight=50
 IOWeight=50
+# Reclaim and throttle disposable session work before it can starve the guest
+# OS and the protected Happier control plane. This is deliberately soft: jobs
+# can exceed it under pressure and are never OOM-killed by this policy.
+MemoryHigh=80%
 EOF
   chmod 0644 "${unit_dir}/happier-jobs.slice"
 
@@ -160,6 +164,7 @@ as_root apt-get install -y --no-install-recommends \
   ca-certificates \
   curl \
   git \
+  gh \
   gnupg \
   jq \
   ripgrep \
@@ -340,7 +345,7 @@ desired = {
         "model": '"gpt-5.6-sol"',
         "model_reasoning_effort": '"medium"',
         "cli_auth_credentials_store": '"file"',
-        "project_doc_max_bytes": "81920",
+        "project_doc_max_bytes": "98304",
         "startup_timeout_sec": "20",
         "web_search": '"live"',
         "preferred_auth_method": '"chatgpt"',

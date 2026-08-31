@@ -90,7 +90,7 @@ test('runs a future independent Mutagen daemon control launch in the protected c
   assert.equal(result.code, 0);
   assert.match(
     await readFile(systemdRunLog, 'utf8'),
-    /--user --scope --quiet --slice=happier-critical\.slice -- mutagen version/,
+    /--user --scope --quiet --slice=happier-critical\.slice --property=MemoryLow=268435456 --property=CPUWeight=200 --property=IOWeight=200 -- mutagen version/,
   );
 });
 
@@ -120,7 +120,7 @@ test('runs Stack outbound SSH control launches in the protected critical user sl
   assert.equal(result.code, 0);
   assert.match(
     await readFile(systemdRunLog, 'utf8'),
-    /--user --scope --quiet --slice=happier-critical\.slice -- ssh guest true/,
+    /--user --scope --quiet --slice=happier-critical\.slice --property=MemoryLow=268435456 --property=CPUWeight=200 --property=IOWeight=200 -- ssh guest true/,
   );
 });
 
@@ -296,6 +296,45 @@ test('Stack borrows an equivalent independent project without changing its lifec
   assert.deepEqual(calls.map((call) => call.args[1] ?? call.args[0]), ['version', 'list', 'list']);
   await result.release('pause');
   assert.deepEqual(calls.map((call) => call.args[1] ?? call.args[0]), ['version', 'list', 'list']);
+});
+
+test('Stack reports unhealthy borrowed sessions without rejecting the whole independent project', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-sync-project-borrow-partial-health-'));
+  const projectFile = join(root, 'mutagen', 'mutagen.yml');
+  const healthyTarget = target;
+  const unhealthyTarget = { ...target, name: 'mac2', ssh: 'mac2-ssh' };
+  await mkdir(join(root, 'mutagen'), { recursive: true });
+  await writeFile(projectFile, renderMutagenProject({
+    sourceDir: '/source/happier',
+    targets: [healthyTarget, unhealthyTarget],
+    ownerId: INDEPENDENT_DEV_TARGET_SYNC_OWNER,
+  }));
+
+  const result = await ensureDevTargetSyncProject({
+    stackBaseDir: root,
+    sourceDir: '/source/happier',
+    targets: [healthyTarget, unhealthyTarget],
+    requiredTargets: [healthyTarget, unhealthyTarget],
+    ownerId: 123,
+    allowIndependentBorrow: true,
+    env: {},
+  }, {
+    runProcess: async ({ args }) => ({
+      code: 0,
+      ...(args[0] === 'sync'
+        ? {
+            out: JSON.stringify([{
+              name: args[2],
+              status: args[2] === 'happier-mac2' ? 'disconnected' : 'watching',
+              successfulCycles: args[2] === 'happier-mac2' ? 0 : 1,
+            }]),
+          }
+        : {}),
+    }),
+  });
+
+  assert.equal(result.ownership, 'independent');
+  assert.deepEqual(result.unhealthyTargets, new Map([['mac2', 'unhealthy']]));
 });
 
 test('Stack refuses to replace a changed independent project owned by the sync service', async () => {

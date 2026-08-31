@@ -140,7 +140,7 @@ test('release-validation registry owns the integrated, stable, and deep release 
   assert.equal(stable?.checksProfile, 'full');
   assert.equal(deep?.normalRelease, false);
   assert.equal(deep?.checksProfile, null);
-  assert.equal(deep?.manualEntrypoint, 'skills/happier-release-validation/SKILL.md');
+  assert.equal(deep?.manualEntrypoint, '.agents/skills/happier-release-validation/SKILL.md');
   assert.deepEqual(deep?.automaticSuiteIds, []);
   assert.equal(integrated?.automaticSuiteIds.includes('sdk-dual-origin'), false);
   assert.equal(stable?.automaticSuiteIds.includes('sdk-dual-origin'), false);

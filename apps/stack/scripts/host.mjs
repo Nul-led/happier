@@ -73,7 +73,7 @@ function usage(json) {
     data: { commands: ['setup', 'activate', 'mirror', 'mount', 'unmount', 'backup', 'forward', 'recovery', 'status', 'doctor', 'start', 'stop', 'shell', 'exec'] },
     text: [
       '[dev-vm] usage:',
-      '  hstack dev-vm setup [--instance=happier-agent-primary] [--profile=balanced] [--workspace=ID=/absolute/source ...] [--workspace-stack=ID=STACK_NAME ...] [--json]',
+      '  hstack dev-vm setup [--instance=happier-agent-primary] [--profile=balanced] [--disk-image-format=raw|asif] [--workspace=ID=/absolute/source ...] [--workspace-stack=ID=STACK_NAME ...] [--json]',
       '  hstack dev-vm activate [--json]',
       '  hstack dev-vm mirror [--workspace-id=ID] [--source-dir=/absolute/path/to/repo] [--json]',
       '  hstack dev-vm mirror status|sync|stop|adopt-legacy|recover [--workspace-id=ID] [--json]',
@@ -162,6 +162,7 @@ async function main() {
       instance: flagValue(argv, '--instance').trim(),
       limaHome: flagValue(argv, '--lima-home').trim(),
       profile: flagValue(argv, '--profile').trim(),
+      diskImageFormat: flagValue(argv, '--disk-image-format').trim(),
       pressureProfile: flagValue(argv, '--pressure-profile').trim(),
       guestWorkspaceDir: flagValue(argv, '--guest-workspace-dir').trim(),
       mirrorWorkspaceDir: flagValue(argv, '--mirror-workspace-dir').trim(),
@@ -181,6 +182,7 @@ async function main() {
       instance: selected.instance,
       limaHome: selected.limaHome,
       profile: selected.profile,
+      ...(selected.diskImageFormat ? { diskImageFormat: selected.diskImageFormat } : {}),
     };
     const guestProvisionScriptSource = await readFile(
       new URL('./provision/linux-ubuntu-provision.sh', import.meta.url),
@@ -195,6 +197,7 @@ async function main() {
       executor: executorFor(runtimeConfig),
       instance: runtimeConfig.instance,
       profileName: runtimeConfig.profile,
+      diskImageFormat: runtimeConfig.diskImageFormat,
       allowInstall: !argv.includes('--no-install'),
       guestProvisionScriptSource,
       guestPressureScriptSource,

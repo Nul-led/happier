@@ -80,6 +80,7 @@ test('execution host setup preserves omitted retained-candidate identity and wor
     instance: 'retained-worker',
     limaHome: '/Users/example/.happier/stacks/repo-dev/lima',
     profile: 'balanced',
+    diskImageFormat: 'asif',
     pressureProfile: 'swap64',
     autoMount: true,
     hostMountDir: '/Users/example/.happier-stack/vm-home',
@@ -100,6 +101,7 @@ test('execution host setup preserves omitted retained-candidate identity and wor
     instance: 'retained-worker',
     limaHome: '/Users/example/.happier/stacks/repo-dev/lima',
     profile: 'performance',
+    diskImageFormat: 'asif',
     pressureProfile: 'swap64',
     guestWorkspaceDir: current.guestWorkspaceDir,
     mirrorWorkspaceDir: current.mirrorWorkspaceDir,
@@ -115,6 +117,19 @@ test('execution host setup preserves omitted retained-candidate identity and wor
       defaults: {},
     }),
     /cannot reconfigure an active execution host/,
+  );
+});
+
+test('execution host profiles persist an explicit managed disk format and reject unsupported formats', async (t) => {
+  const fixture = await createTempFixture(t, { prefix: 'execution-host-disk-format-' });
+  const env = { HAPPIER_STACK_HOME_DIR: fixture.path('stack-home') };
+  const profile = candidate({ diskImageFormat: 'asif' });
+
+  await writeCandidateExecutionHostProfile(profile, env);
+  assert.deepEqual(readExecutionHostProfile(env), profile);
+  await assert.rejects(
+    writeCandidateExecutionHostProfile(candidate({ diskImageFormat: 'qcow2' }), env),
+    /unsupported managed Lima disk image format/,
   );
 });
 

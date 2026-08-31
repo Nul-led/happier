@@ -129,7 +129,7 @@ export const RELEASE_VALIDATION_PROFILES = Object.freeze([
     automaticSuiteIds: Object.freeze([]),
     // Presentation metadata only. Deep remains a human-run certification
     // profile and never becomes a normal release dispatch selector.
-    manualEntrypoint: 'skills/happier-release-validation/SKILL.md',
+    manualEntrypoint: '.agents/skills/happier-release-validation/SKILL.md',
   }),
 ]);
 

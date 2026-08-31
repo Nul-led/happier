@@ -138,7 +138,7 @@ test(
       if (!installSucceeded) return;
       run(
         hstackPath,
-        ['self-host', 'uninstall', '--channel=preview', '--mode=user', '--yes', '--purge-data', '--json'],
+        ['self-host', 'uninstall', '--channel=preview', '--mode=user', '--yes', '--json'],
         {
           env: commonEnv,
           allowFail: true,
@@ -206,7 +206,7 @@ test(
 
     run(
       hstackPath,
-      ['self-host', 'uninstall', '--channel=preview', '--mode=user', '--yes', '--purge-data', '--json'],
+      ['self-host', 'uninstall', '--channel=preview', '--mode=user', '--yes', '--json'],
       { label: 'self-host-schtasks', env: commonEnv, timeoutMs: 180_000, cwd: sandboxDir }
     );
     installSucceeded = false;

@@ -147,4 +147,39 @@ describe('writeStressScenarioManifest', () => {
       },
     });
   });
+
+  it('redacts credential-shaped env values in the stress manifest while keeping failure evidence usable', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'happier-stress-manifest-redact-'));
+    const testDir = join(runDir, 'rpc-multi-replica');
+    mkdirSync(testDir, { recursive: true });
+
+    const manifestPath = writeStressScenarioManifest({
+      run: {
+        runId: 'run-123',
+        runDir,
+        testDir: () => testDir,
+      },
+      testDir,
+      testName: 'rpc.multiReplica',
+      target,
+      config,
+      startedAt: '2026-04-18T12:00:00.000Z',
+      endedAt: '2026-04-18T12:00:02.500Z',
+      status: 'failed',
+      failureClassification: 'deterministic',
+      env: {
+        HAPPIER_STRESS_USERS: '5',
+        HANDY_MASTER_SECRET: 'sentinel-manifest-secret-0123456789abcdef',
+      },
+    });
+
+    const raw = readFileSync(manifestPath, 'utf8');
+    expect(raw).not.toContain('sentinel-manifest-secret-0123456789abcdef');
+    const written = JSON.parse(raw) as {
+      env: Record<string, string>;
+      results: { status: string };
+    };
+    expect(written.env.HAPPIER_STRESS_USERS).toBe('5');
+    expect(written.results.status).toBe('failed');
+  });
 });

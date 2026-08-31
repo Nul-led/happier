@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import tweetnacl from 'tweetnacl';
 import * as privacyKit from 'privacy-kit';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 
 import { createRunDirs } from '../../src/testkit/runDir';
 import { startServerLight, type StartedServer } from '../../src/testkit/process/serverLight';
@@ -10,7 +10,21 @@ import { waitFor } from '../../src/testkit/timing';
 import { writeTestManifestForServer } from '../../src/testkit/manifestForServer';
 import { FailureArtifacts } from '../../src/testkit/failureArtifacts';
 import { envFlag } from '../../src/testkit/env';
-import { sealBoxBundle, openBoxBundle } from '@happier-dev/protocol';
+import {
+  FeaturesResponseSchema,
+  computeHomeQrBindingProofV2,
+  computeHomeQrConfirmationCodeV2,
+  deriveHomeQrBindingKeyV2,
+  deriveHomeQrRendezvousSecretV2,
+  deriveHomeQrRendezvousVerifierV2,
+  encodeHomeQrInviteV2Payload,
+  openBoxBundle,
+  openTerminalProvisioningV3Response,
+  parseHomeQrInviteV2Payload,
+  sealTerminalProvisioningV3TokenOnlyPayload,
+  verifyHomeQrBindingProofV2,
+  type HomeQrInviteV2,
+} from '@happier-dev/protocol';
 
 const run = createRunDirs({ runLabel: 'core' });
 
@@ -18,10 +32,6 @@ function toPrivacyKitBytes(input: Uint8Array): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(input.byteLength);
   out.set(input);
   return out;
-}
-
-function computeSecretHash(secret: string): string {
-  return createHash('sha256').update(secret, 'utf8').digest('base64url');
 }
 
 async function createTokenFromSecretSeed(baseUrl: string, seed: Uint8Array): Promise<string> {
@@ -46,15 +56,21 @@ async function createTokenFromSecretSeed(baseUrl: string, seed: Uint8Array): Pro
   return res.data.token;
 }
 
+async function fetchHomeServerIdentityId(baseUrl: string): Promise<string> {
+  const response = await fetchJson<unknown>(`${baseUrl}/v1/features`, { timeoutMs: 15_000 });
+  expect(response.status).toBe(200);
+  const payload = FeaturesResponseSchema.parse(response.data);
+  const serverIdentityId = payload.capabilities.serverIdentity.serverIdentityId;
+  expect(typeof serverIdentityId).toBe('string');
+  if (!serverIdentityId) throw new Error('Expected Home server identity');
+  return serverIdentityId;
+}
+
 function decryptTokenEncryptedBundle(params: { tokenEncryptedBase64: string; recipientSecretKey: Uint8Array }): string {
-  const bundle = privacyKit.decodeBase64(params.tokenEncryptedBase64);
-  const ephemeralPublicKey = bundle.slice(0, tweetnacl.box.publicKeyLength);
-  const nonce = bundle.slice(
-    tweetnacl.box.publicKeyLength,
-    tweetnacl.box.publicKeyLength + tweetnacl.box.nonceLength,
-  );
-  const ciphertext = bundle.slice(tweetnacl.box.publicKeyLength + tweetnacl.box.nonceLength);
-  const opened = tweetnacl.box.open(ciphertext, nonce, ephemeralPublicKey, params.recipientSecretKey);
+  const opened = openBoxBundle({
+    bundle: privacyKit.decodeBase64(params.tokenEncryptedBase64),
+    recipientSecretKeyOrSeed: params.recipientSecretKey,
+  });
   if (!opened) {
     throw new Error('Failed to decrypt tokenEncrypted bundle');
   }
@@ -73,7 +89,14 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
     const saveArtifactsOnSuccess = envFlag(['HAPPIER_E2E_SAVE_ARTIFACTS', 'HAPPY_E2E_SAVE_ARTIFACTS'], false);
     const startedAt = new Date().toISOString();
 
-    server = await startServerLight({ testDir });
+    server = await startServerLight({
+      testDir,
+      extraEnv: {
+        HAPPIER_FEATURE_AUTH_PAIRING__DESKTOP_QR_MOBILE_SCAN_ENABLED: '1',
+        HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional',
+        HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
+      },
+    });
     const startedServer = server;
     if (!startedServer) throw new Error('missing server fixture');
 
@@ -94,11 +117,13 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
 
     let passed = false;
     try {
-      const accountSecretSeed = Uint8Array.from(randomBytes(32));
-      const desktopToken = await createTokenFromSecretSeed(startedServer.baseUrl, accountSecretSeed);
-
-      const pairingSecret = Buffer.from(randomBytes(24)).toString('base64url');
-      const secretHash = computeSecretHash(pairingSecret);
+      const desktopSigningSeed = Uint8Array.from(randomBytes(32));
+      const desktopToken = await createTokenFromSecretSeed(startedServer.baseUrl, desktopSigningSeed);
+      const homeServerIdentityId = await fetchHomeServerIdentityId(startedServer.baseUrl);
+      const qrSecret = Uint8Array.from(randomBytes(32));
+      const rendezvousSecret = deriveHomeQrRendezvousSecretV2(qrSecret);
+      const rendezvousVerifier = deriveHomeQrRendezvousVerifierV2(qrSecret);
+      const issuedAtMs = Date.now();
 
       const startRes = await fetchJson<{ pairId?: string; expiresAt?: string }>(`${startedServer.baseUrl}/v1/auth/pairing/start`, {
         method: 'POST',
@@ -106,16 +131,46 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
           Authorization: `Bearer ${desktopToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ secretHash }),
+        body: JSON.stringify({ secretHash: Buffer.from(rendezvousVerifier).toString('base64url') }),
         timeoutMs: 15_000,
       });
       expect(startRes.status).toBe(200);
       expect(typeof startRes.data?.pairId).toBe('string');
       expect(typeof startRes.data?.expiresAt).toBe('string');
       const pairId = String(startRes.data.pairId);
+      const expiresAtMs = Date.parse(String(startRes.data.expiresAt));
+      expect(Number.isSafeInteger(expiresAtMs)).toBe(true);
+
+      const invite: HomeQrInviteV2 = {
+        v: 2,
+        intent: 'home_device',
+        pairId,
+        home: {
+          v: 1,
+          homeServerIdentityId,
+          canonicalServerUrl: startedServer.baseUrl,
+          revision: 1,
+          endpoints: [{ kind: 'https', url: startedServer.baseUrl }],
+        },
+        qrSecretBase64Url: Buffer.from(qrSecret).toString('base64url'),
+        issuedAtMs,
+        expiresAtMs,
+      };
+      const parsedInvite = parseHomeQrInviteV2Payload(encodeHomeQrInviteV2Payload(invite), { nowMs: Date.now() });
+      expect(parsedInvite).toEqual(invite);
+      if (!parsedInvite) throw new Error('Expected canonical Home QR V2 invite');
 
       const mobileKp = tweetnacl.box.keyPair();
       const mobilePublicKeyBase64 = privacyKit.encodeBase64(toPrivacyKitBytes(mobileKp.publicKey));
+      const joiningBindingParams = {
+        qrSecret,
+        pairId: parsedInvite.pairId,
+        homeServerIdentityId: parsedInvite.home.homeServerIdentityId,
+        requesterPublicKey: mobileKp.publicKey,
+        expiresAtMs: parsedInvite.expiresAtMs,
+      };
+      const bindingProof = computeHomeQrBindingProofV2(joiningBindingParams);
+      const joiningConfirmationCode = computeHomeQrConfirmationCodeV2(joiningBindingParams);
 
       const requestAuthRes = await fetchJson<{ state?: string }>(`${startedServer.baseUrl}/v1/auth/account/request`, {
         method: 'POST',
@@ -126,32 +181,107 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
       expect(requestAuthRes.status).toBe(200);
       expect(requestAuthRes.data?.state).toBe('requested');
 
-      const requestPairingRes = await fetchJson<{ state?: string; confirmCode?: string }>(`${startedServer.baseUrl}/v1/auth/pairing/request`, {
+      const malformedBindingRes = await fetchJson<{ error?: string }>(`${startedServer.baseUrl}/v1/auth/pairing/request`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           pairId,
-          secret: pairingSecret,
+          secret: Buffer.from(rendezvousSecret).toString('base64url'),
           publicKey: mobilePublicKeyBase64,
+          bindingProof: Buffer.from(randomBytes(31)).toString('base64url'),
+          homeServerIdentityId,
+          expiresAtMs,
+        }),
+        timeoutMs: 15_000,
+      });
+      expect(malformedBindingRes.status).toBe(400);
+
+      const wrongHomeRes = await fetchJson<{ error?: string }>(`${startedServer.baseUrl}/v1/auth/pairing/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pairId,
+          secret: Buffer.from(rendezvousSecret).toString('base64url'),
+          publicKey: mobilePublicKeyBase64,
+          bindingProof,
+          homeServerIdentityId: `${homeServerIdentityId}-wrong`,
+          expiresAtMs,
+        }),
+        timeoutMs: 15_000,
+      });
+      expect(wrongHomeRes.status).toBe(403);
+      expect(wrongHomeRes.data?.error).toBe('wrong_home');
+
+      const requestPairingRes = await fetchJson<{ state?: string }>(`${startedServer.baseUrl}/v1/auth/pairing/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pairId,
+          secret: Buffer.from(rendezvousSecret).toString('base64url'),
+          publicKey: mobilePublicKeyBase64,
+          bindingProof,
+          homeServerIdentityId,
+          expiresAtMs,
           deviceLabel: 'Test Phone',
         }),
         timeoutMs: 15_000,
       });
       expect(requestPairingRes.status).toBe(200);
       expect(requestPairingRes.data?.state).toBe('requested');
-      expect(String(requestPairingRes.data?.confirmCode ?? '')).toMatch(/^[0-9]{3} [0-9]{3}$/);
 
-      const statusRes = await fetchJson<any>(`${startedServer.baseUrl}/v1/auth/pairing/status?pairId=${encodeURIComponent(pairId)}`, {
+      const statusRes = await fetchJson<{
+        state?: string;
+        pairId?: string;
+        expiresAt?: string;
+        homeServerIdentityId?: string;
+        requestedPublicKey?: string;
+        bindingProof?: string;
+        requestedDeviceLabel?: string | null;
+      }>(`${startedServer.baseUrl}/v1/auth/pairing/status?pairId=${encodeURIComponent(pairId)}`, {
         headers: { Authorization: `Bearer ${desktopToken}` },
         timeoutMs: 15_000,
       });
       expect(statusRes.status).toBe(200);
       expect(statusRes.data?.state).toBe('requested');
+      expect(statusRes.data?.pairId).toBe(pairId);
+      expect(Date.parse(String(statusRes.data?.expiresAt))).toBe(expiresAtMs);
       expect(statusRes.data?.requestedPublicKey).toBe(mobilePublicKeyBase64);
+      expect(statusRes.data?.homeServerIdentityId).toBe(homeServerIdentityId);
+      expect(statusRes.data?.bindingProof).toBe(bindingProof);
+      const trustedBindingParams = {
+        qrSecret,
+        pairId: String(statusRes.data?.pairId),
+        homeServerIdentityId: String(statusRes.data?.homeServerIdentityId),
+        requesterPublicKey: privacyKit.decodeBase64(String(statusRes.data?.requestedPublicKey)),
+        expiresAtMs: Date.parse(String(statusRes.data?.expiresAt)),
+      };
+      expect(verifyHomeQrBindingProofV2(trustedBindingParams, String(statusRes.data?.bindingProof))).toBe(true);
+      const wrongBindingProof = `${bindingProof[0] === 'A' ? 'B' : 'A'}${bindingProof.slice(1)}`;
+      expect(verifyHomeQrBindingProofV2(trustedBindingParams, wrongBindingProof)).toBe(false);
+      const trustedConfirmationCode = computeHomeQrConfirmationCodeV2(trustedBindingParams);
+      expect(trustedConfirmationCode).toBe(joiningConfirmationCode);
+      expect(trustedConfirmationCode).toMatch(/^\d{6}$/u);
 
-      const encryptedResponse = sealBoxBundle({
-        plaintext: accountSecretSeed,
-        recipientPublicKey: mobileKp.publicKey,
+      const legacyCompletionRes = await fetchJson<{ error?: string }>(`${startedServer.baseUrl}/v1/auth/account/response`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${desktopToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          publicKey: mobilePublicKeyBase64,
+          response: 'legacy-v1-untyped-response',
+        }),
+        timeoutMs: 15_000,
+      });
+      expect(legacyCompletionRes.status).toBe(426);
+      expect(legacyCompletionRes.data?.error).toBe('account_provisioning_update_required');
+
+      const encryptedResponse = sealTerminalProvisioningV3TokenOnlyPayload({
+        terminalEphemeralPublicKey: mobileKp.publicKey,
+        pairingSecret: deriveHomeQrBindingKeyV2(qrSecret),
+        createdAtMs: issuedAtMs,
+        expiresAtMs,
         randomBytes: (n: number) => Uint8Array.from(randomBytes(n)),
       });
 
@@ -162,17 +292,35 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          pairId,
           publicKey: mobilePublicKeyBase64,
           response: privacyKit.encodeBase64(toPrivacyKitBytes(encryptedResponse)),
+          homeServerIdentityId,
+          responseKind: 'tokenOnly',
         }),
         timeoutMs: 15_000,
       });
       expect(responseRes.status).toBe(200);
       expect(responseRes.data?.success).toBe(true);
 
-      let authorized: any = null;
+      const legacyPollRes = await fetchJson<{ error?: string }>(`${startedServer.baseUrl}/v1/auth/account/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ publicKey: mobilePublicKeyBase64 }),
+        timeoutMs: 15_000,
+      });
+      expect(legacyPollRes.status).toBe(426);
+      expect(legacyPollRes.data?.error).toBe('account_provisioning_update_required');
+
+      const authorizedState: {
+        value: { state: 'authorized'; tokenEncrypted: string; response: string } | null;
+      } = { value: null };
       await waitFor(async () => {
-        const pollRes = await fetchJson<any>(`${startedServer.baseUrl}/v2/auth/account/request`, {
+        const pollRes = await fetchJson<{
+          state?: 'requested' | 'authorized';
+          tokenEncrypted?: string;
+          response?: string;
+        }>(`${startedServer.baseUrl}/v2/auth/account/request`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ publicKey: mobilePublicKeyBase64 }),
@@ -180,9 +328,15 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
         });
         if (pollRes.status !== 200) return false;
         if (pollRes.data?.state !== 'authorized') return false;
-        authorized = pollRes.data;
+        if (typeof pollRes.data.tokenEncrypted !== 'string' || typeof pollRes.data.response !== 'string') return false;
+        authorizedState.value = {
+          state: 'authorized',
+          tokenEncrypted: pollRes.data.tokenEncrypted,
+          response: pollRes.data.response,
+        };
         return true;
       }, { timeoutMs: 20_000, intervalMs: 500 });
+      const authorized = authorizedState.value;
       if (!authorized) {
         throw new Error('Expected authorized payload');
       }
@@ -190,18 +344,21 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
       artifacts.json('authorized.payload.json', () => authorized);
 
       const mobileToken = decryptTokenEncryptedBundle({
-        tokenEncryptedBase64: String(authorized.tokenEncrypted),
+        tokenEncryptedBase64: authorized.tokenEncrypted,
         recipientSecretKey: mobileKp.secretKey,
       });
-      const responseBundle = privacyKit.decodeBase64(String(authorized.response));
-      const decryptedSecret = openBoxBundle({
-        bundle: responseBundle,
+      const provisionedMaterial = openTerminalProvisioningV3Response({
+        payload: privacyKit.decodeBase64(authorized.response),
         recipientSecretKeyOrSeed: mobileKp.secretKey,
+        terminalEphemeralPublicKey: mobileKp.publicKey,
+        pairingSecret: deriveHomeQrBindingKeyV2(qrSecret),
+        createdAtMs: issuedAtMs,
+        expiresAtMs,
+        nowMs: Date.now(),
       });
-      expect(decryptedSecret).not.toBeNull();
-      expect(Buffer.from(decryptedSecret!)).toEqual(Buffer.from(accountSecretSeed));
+      expect(provisionedMaterial).toEqual({ type: 'tokenOnly' });
 
-      const profileRes = await fetchJson<any>(`${startedServer.baseUrl}/v1/account/profile`, {
+      const profileRes = await fetchJson<unknown>(`${startedServer.baseUrl}/v1/account/profile`, {
         headers: { Authorization: `Bearer ${mobileToken}` },
         timeoutMs: 15_000,
       });

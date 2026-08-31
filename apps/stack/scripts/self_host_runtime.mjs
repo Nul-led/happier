@@ -2314,7 +2314,6 @@ async function cmdUninstall({ channel, mode, argv, json }) {
   if (config.mode === 'system' && config.platform !== 'win32') {
     assertRoot();
   }
-  const purgeData = argv.includes('--purge-data');
   const yes = argv.includes('--yes') || parseBoolean(process.env.HAPPIER_NONINTERACTIVE, false);
   if (!yes) {
     throw new Error('[self-host] uninstall requires --yes (or HAPPIER_NONINTERACTIVE=1)');
@@ -2348,17 +2347,10 @@ async function cmdUninstall({ channel, mode, argv, json }) {
   await rm(join(config.binDir, config.serverBinaryName), { force: true });
   await rm(config.statePath, { force: true });
 
-  if (purgeData) {
-    await rm(config.installRoot, { recursive: true, force: true });
-    await rm(config.configDir, { recursive: true, force: true });
-    await rm(config.dataDir, { recursive: true, force: true });
-    await rm(config.logDir, { recursive: true, force: true });
-  }
-
   printResult({
     json,
-    data: { ok: true, purgeData },
-    text: `${green('✓')} self-host uninstalled${purgeData ? ' (data purged)' : ''}`,
+    data: { ok: true },
+    text: `${green('✓')} self-host uninstalled`,
   });
 }
 
@@ -2574,13 +2566,14 @@ export function usageText() {
     `  ${cyan('hstack self-host')} status [--mode=user|system] [--channel=stable|preview|dev] [--json]`,
     `  ${cyan('hstack self-host')} update [--mode=user|system] [--channel=stable|preview|dev] [--json]`,
     `  ${cyan('hstack self-host')} rollback [--mode=user|system] [--to=<version>] [--channel=stable|preview|dev] [--json]`,
-    `  ${cyan('hstack self-host')} uninstall [--mode=user|system] [--purge-data] [--yes] [--json]`,
+    `  ${cyan('hstack self-host')} uninstall [--mode=user|system] [--yes] [--json]`,
     `  ${cyan('hstack self-host')} doctor [--json]`,
     `  ${cyan('hstack self-host')} config view|set [--mode=user|system] [--channel=stable|preview|dev] [--json]`,
     '',
     sectionTitle('notes:'),
     '- works without a repository checkout (binary-safe flow).',
     `- runtime paths are configurable via env vars (${dim('HAPPIER_SELF_HOST_*')}).`,
+    `- uninstall preserves Home data; delete it separately with ${cyan('happier home erase')}.`,
   ].join('\n');
 }
 
@@ -2640,6 +2633,10 @@ export async function runSelfHostCli(argv = process.argv.slice(2)) {
       text: usageText(),
     });
     return;
+  }
+
+  if (parsed.subcommand === 'uninstall' && parsed.rest.includes('--purge-data')) {
+    throw new Error('[self-host] --purge-data is no longer supported. Uninstall preserves Home data; run happier home erase separately to delete it.');
   }
 
   if (

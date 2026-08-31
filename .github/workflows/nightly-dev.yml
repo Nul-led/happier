@@ -12,6 +12,11 @@ on:
         required: true
         default: dev
         type: string
+      ci_run_id:
+        description: "Completed canonical push CI run ID for this exact source (optional; avoids waiting on a hosted runner)"
+        required: false
+        default: ""
+        type: string
       resume_run_id:
         description: "Resume — prior nightly run ID whose verified immutable candidates may be reused"
         required: false
@@ -181,12 +186,20 @@ jobs:
       - name: Verify successful ordinary CI for exact source SHA
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.prepare_release_candidate.outputs.source_sha }}
+          CI_RUN_ID: ${{ inputs.ci_run_id }}
         run: |
-          node scripts/pipeline/release/verify-existing-ci.mjs \
-            --repository "$GITHUB_REPOSITORY" \
-            --workflow tests.yml \
-            --source-sha "${{ needs.prepare_release_candidate.outputs.source_sha }}" \
+          set -euo pipefail
+          args=(
+            --repository "$GITHUB_REPOSITORY"
+            --workflow tests.yml
+            --source-sha "$SOURCE_SHA"
             --source-branch dev
+          )
+          if [ -n "$CI_RUN_ID" ]; then
+            args+=(--run-id "$CI_RUN_ID")
+          fi
+          node scripts/pipeline/release/verify-existing-ci.mjs "${args[@]}"
 
   nightly_noop:
     name: Nightly already current

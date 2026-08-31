@@ -10,7 +10,7 @@ import {
   ensureDevTargetSyncProject,
   runDevTargetControlProcess,
 } from './sync_project.mjs';
-import { runDevTargetDependencyBootstrap } from './executor.mjs';
+import { inspectDevTargetSync, runDevTargetDependencyBootstrap } from './executor.mjs';
 import { startDevTargetRuntime } from './managed_runtime.mjs';
 import { waitForExpoMetroRunning } from '../expo/expo.mjs';
 import { resolveServerReadyTimeoutMs, waitForServerReady as waitForHappierServerReady } from '../server/server.mjs';
@@ -228,6 +228,7 @@ export async function startStackDevTargets(
     waitForExpoReady = defaultWaitForExpoReady,
     waitForDaemonReady = defaultWaitForDaemonReady,
     runDependencyBootstrap = runDevTargetDependencyBootstrap,
+    inspectSync = inspectDevTargetSync,
     startManagedRuntime = startDevTargetRuntime,
     logger = console,
   } = {},
@@ -266,6 +267,7 @@ export async function startStackDevTargets(
   };
   const workersByTarget = new Map();
   const tunnelsByTarget = new Map();
+  const servicePortsByTarget = new Map();
   const targetFailuresByTarget = new Map();
   const provisionedTargets = new Set();
   const deferredCompanionPreparationsByTarget = new Map();
@@ -279,6 +281,8 @@ export async function startStackDevTargets(
   });
   const publishTargetState = (plan, status, details = {}) => {
     if (typeof onTargetStateChange !== 'function') return;
+    const servicePorts = servicePortsByTarget.get(plan.target.name);
+    const publishesServicePorts = servicePorts && Object.keys(servicePorts).length > 0;
     const serviceStatus = Object.fromEntries(
       Object.entries(plan.services)
         .filter(([, enabled]) => enabled === true)
@@ -288,6 +292,7 @@ export async function startStackDevTargets(
       name: plan.target.name,
       commands: plan.commands === true,
       services: { ...plan.services },
+      ...(publishesServicePorts ? { repoDir: plan.target.repoDir, servicePorts } : {}),
       serviceStatus,
       status,
       ...(status === 'running' ? { phase: null, error: null } : {}),
@@ -419,6 +424,16 @@ export async function startStackDevTargets(
       };
       try {
         beginPhase('prepare');
+        if (syncProject.ownership === 'independent' && syncProject.unhealthyTargets?.has(target.name)) {
+          beginPhase('sync');
+          const syncStatus = await inspectSync({ target, stackBaseDir, env: infraEnv });
+          if (syncStatus.state !== 'ready' && syncStatus.state !== 'synchronizing') {
+            throw new Error(
+              `[dev-targets] ${target.name} independent synchronization is ${syncStatus.state}`,
+            );
+          }
+          syncProject.unhealthyTargets.delete(target.name);
+        }
         if (!provisionedTargets.has(target.name)) {
           if (target.managedRuntime || target.limaInstance) {
             await startManagedRuntime({ target, env: infraEnv });
@@ -473,6 +488,10 @@ export async function startStackDevTargets(
         const remoteExpoPort = services.expo
           ? resolveDefaultRemoteExpoPort({ localExpoPort, targetIndex: index, instanceId })
           : null;
+        servicePortsByTarget.set(target.name, {
+          ...(services.server ? { server: remoteServerPort } : {}),
+          ...(services.expo ? { expo: remoteExpoPort } : {}),
+        });
         const forwards = [];
         if (services.server) {
           forwards.push({

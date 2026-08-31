@@ -52,6 +52,12 @@ test('linux provision (happier profile) runs corepack enable as root', async () 
   const apparmorLog = join(logDir, 'apparmor.log');
   const agentBrowserLog = join(logDir, 'agent-browser.log');
   const agentBrowserInstalled = join(logDir, 'agent-browser-installed');
+  const bashEnvPath = join(root, 'test-bash-env');
+  await writeFile(
+    bashEnvPath,
+    `bun() { if [[ -x ${JSON.stringify(join(binDir, 'bun'))} ]]; then ${JSON.stringify(join(binDir, 'bun'))} "$@"; else echo 0.0.0; fi; }\n`,
+    'utf8',
+  );
 
   const idPath = join(binDir, 'id');
   await writeFile(
@@ -195,7 +201,7 @@ test('linux provision (happier profile) runs corepack enable as root', async () 
       'done',
       'bundle_dir="$destination/bun-linux-aarch64"',
       '/bin/mkdir -p "$bundle_dir"',
-      'printf "#!/usr/bin/env bash\\necho 1.3.5\\n" > "$bundle_dir/bun"',
+      'printf "#!/usr/bin/env bash\\necho 9.9.9\\n" > "$bundle_dir/bun"',
       'chmod 755 "$bundle_dir/bun"',
     ].join('\n') + '\n',
     'utf-8',
@@ -229,7 +235,13 @@ test('linux provision (happier profile) runs corepack enable as root', async () 
   const scriptPath = join(__dirname, 'linux-ubuntu-provision.sh');
   const res = spawnSync('bash', [scriptPath, '--profile=happier'], {
     cwd: root,
-    env: { ...process.env, HOME: root, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      HAPPIER_PROVISION_BUN_VERSION: '9.9.9',
+      BASH_ENV: bashEnvPath,
+    },
     encoding: 'utf-8',
   });
 
@@ -242,11 +254,12 @@ test('linux provision (happier profile) runs corepack enable as root', async () 
   assert.match(happierSliceUnit, /^\[Unit\]$/m);
   assert.match(happierCriticalSliceUnit, /^\[Slice\]$/m);
   assert.match(happierCriticalSliceUnit, /^MemoryLow=4G$/m);
-  assert.doesNotMatch(happierCriticalSliceUnit, /MemoryMax|MemoryHigh|TasksMax|OOM/u);
+  assert.doesNotMatch(happierCriticalSliceUnit, /^(?:MemoryMax|MemoryHigh|TasksMax|OOM\w*)=/mu);
   assert.match(happierJobsSliceUnit, /^\[Slice\]$/m);
   assert.match(happierJobsSliceUnit, /^CPUWeight=50$/m);
   assert.match(happierJobsSliceUnit, /^IOWeight=50$/m);
-  assert.doesNotMatch(happierJobsSliceUnit, /MemoryMax|MemoryHigh|TasksMax|OOM/u);
+  assert.match(happierJobsSliceUnit, /^MemoryHigh=80%$/m);
+  assert.doesNotMatch(happierJobsSliceUnit, /^(?:MemoryMax|TasksMax|OOM\w*)=/mu);
 
   const corepackOut = await readIfExists(corepackLog);
   assert.match(corepackOut, /corepack enable root=1/, 'expected corepack enable to be invoked via sudo/as_root');
@@ -256,6 +269,7 @@ test('linux provision (happier profile) runs corepack enable as root', async () 
   assert.match(aptOut, /apt-get update/, 'expected apt-get update to run');
   assert.match(aptOut, /apt-get install/, 'expected apt-get install to run');
   assert.match(aptOut, /ripgrep/, 'expected the worker source-search tool to be installed');
+  assert.match(aptOut, /(?:^|\s)gh(?:\s|$)/, 'expected the GitHub CLI to be installed');
   assert.match(aptOut, /apt-get install[^\n]*[\s\S]*bubblewrap/, 'expected the agent sandbox runtime to be installed');
   const mutagenOut = await readIfExists(mutagenLog);
   assert.match(
@@ -264,9 +278,9 @@ test('linux provision (happier profile) runs corepack enable as root', async () 
     'expected the matching ARM64 Mutagen release to be installed',
   );
   assert.match(mutagenOut, /install .*mutagen-agents\.tar\.gz \/usr\/local\/bin\/mutagen-agents\.tar\.gz/);
-  assert.match(await readIfExists(bunDownloadLog), /bun-v1\.3\.5\/bun-linux-aarch64\.zip/);
+  assert.match(await readIfExists(bunDownloadLog), /bun-v9\.9\.9\/bun-linux-aarch64\.zip/);
   assert.match(mutagenOut, /install .*\/bun-linux-aarch64\/bun \/usr\/local\/bin\/bun/);
-  assert.equal(spawnSync(join(binDir, 'bun'), ['--version'], { encoding: 'utf-8' }).stdout.trim(), '1.3.5');
+  assert.equal(spawnSync(join(binDir, 'bun'), ['--version'], { encoding: 'utf-8' }).stdout.trim(), '9.9.9');
   assert.match(mutagenOut, /install .* \/etc\/apparmor\.d\/happier-bwrap/);
   assert.match(await readIfExists(apparmorLog), /apparmor_parser -r \/etc\/apparmor\.d\/happier-bwrap/);
   assert.match(
@@ -300,7 +314,7 @@ test('linux provision (happier profile) runs corepack enable as root', async () 
     'model = "gpt-5.6-sol"',
     'model_reasoning_effort = "medium"',
     'cli_auth_credentials_store = "file"',
-    'project_doc_max_bytes = 81920',
+    'project_doc_max_bytes = 98304',
     'startup_timeout_sec = 20',
     'web_search = "live"',
     'preferred_auth_method = "chatgpt"',
@@ -334,7 +348,13 @@ test('linux provision (happier profile) runs corepack enable as root', async () 
 
   const secondResult = spawnSync('bash', [scriptPath, '--profile=happier'], {
     cwd: root,
-    env: { ...process.env, HOME: root, PATH: `${binDir}:${process.env.PATH ?? ''}` },
+    env: {
+      ...process.env,
+      HOME: root,
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      HAPPIER_PROVISION_BUN_VERSION: '9.9.9',
+      BASH_ENV: bashEnvPath,
+    },
     encoding: 'utf-8',
   });
   assert.equal(secondResult.status, 0, `expected second exit 0\nstdout:\n${secondResult.stdout}\nstderr:\n${secondResult.stderr}`);
@@ -343,7 +363,7 @@ test('linux provision (happier profile) runs corepack enable as root', async () 
   assert.equal(await readFile(join(userSystemdUnitDir, 'happier-critical.slice'), 'utf8'), happierCriticalSliceUnit);
   assert.equal(await readFile(join(userSystemdUnitDir, 'happier-jobs.slice'), 'utf8'), happierJobsSliceUnit);
   assert.equal(
-    (await readIfExists(bunDownloadLog)).match(/bun-v1\.3\.5\/bun-linux-aarch64\.zip/g)?.length,
+    (await readIfExists(bunDownloadLog)).match(/bun-v9\.9\.9\/bun-linux-aarch64\.zip/g)?.length,
     1,
     'expected an already-pinned Bun installation to avoid a second download',
   );

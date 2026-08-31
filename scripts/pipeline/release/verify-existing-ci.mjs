@@ -39,6 +39,13 @@ export function buildWorkflowRunsEndpoint(repository, workflow, sourceBranch, so
   return `repos/${repository}/actions/workflows/${workflow}/runs?branch=${encodeURIComponent(sourceBranch)}&head_sha=${encodeURIComponent(sourceSha)}&per_page=100`;
 }
 
+function fetchWorkflowRun(repository, runId) {
+  const result = spawnSync('gh', ['api', 'repos/' + repository + '/actions/runs/' + runId], { encoding: 'utf8', env: process.env });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(String(result.stderr || result.stdout || '').trim());
+  return JSON.parse(String(result.stdout ?? ''));
+}
+
 function fetchWorkflowRuns(repository, workflow, sourceBranch, sourceSha) {
   const endpoint = buildWorkflowRunsEndpoint(repository, workflow, sourceBranch, sourceSha);
   const result = spawnSync('gh', ['api', endpoint], { encoding: 'utf8', env: process.env });
@@ -55,6 +62,7 @@ export async function main(argv = process.argv.slice(2)) {
     options: {
       repository: { type: 'string' }, workflow: { type: 'string', default: 'tests.yml' },
       'source-sha': { type: 'string' }, 'source-branch': { type: 'string' },
+      'run-id': { type: 'string', default: '' },
       'github-output': { type: 'string', default: '' },
     },
     allowPositionals: false,
@@ -68,16 +76,18 @@ export async function main(argv = process.argv.slice(2)) {
   if (!['dev', 'preview', 'main'].includes(sourceBranch)) throw new Error('--source-branch must be dev, preview, or main');
   if (!/^[A-Za-z0-9_.-]+\.ya?ml$/u.test(workflow)) throw new Error('--workflow must be a workflow filename');
   const expected = { repository, sourceSha, sourceBranch };
-  let runs = fetchWorkflowRuns(repository, workflow, sourceBranch, sourceSha);
-  const observed = selectExactCanonicalCiRun(runs, expected);
-  if (observed.status !== 'completed') {
-    process.stderr.write(`Waiting for exact-SHA canonical CI ${observed.id} (${observed.status})...\n`);
-    const watched = spawnSync('gh', ['run', 'watch', String(observed.id), '--repo', repository, '--exit-status', '--interval', '60'], { stdio: 'inherit', env: process.env });
-    if (watched.error) throw watched.error;
-    if (watched.status !== 0) throw new Error(`Exact-SHA canonical CI ${observed.id} did not complete successfully`);
-    runs = fetchWorkflowRuns(repository, workflow, sourceBranch, sourceSha);
+  const requestedRunId = String(values['run-id'] ?? '').trim();
+  let run;
+  if (requestedRunId) {
+    if (!/^[1-9][0-9]*$/u.test(requestedRunId)) throw new Error('--run-id must be a positive integer');
+    run = fetchWorkflowRun(repository, requestedRunId);
+    if (run.path !== '.github/workflows/' + workflow || run.head_sha !== sourceSha || run.head_branch !== sourceBranch || run.event !== 'push' || run.head_repository?.full_name !== repository || run.status !== 'completed' || run.conclusion !== 'success') {
+      throw new Error('CI run ' + requestedRunId + ' is not a successful canonical push CI for the requested source');
+    }
+  } else {
+    const runs = fetchWorkflowRuns(repository, workflow, sourceBranch, sourceSha);
+    run = selectExactSuccessfulCiRun(runs, expected);
   }
-  const run = selectExactSuccessfulCiRun(runs, expected);
   const output = { runId: Number(run.id), runUrl: String(run.html_url ?? ''), sourceSha, sourceBranch };
   const githubOutput = String(values['github-output'] ?? '').trim();
   if (githubOutput) await appendFile(githubOutput, `ci_run_id=${output.runId}\nci_run_url=${output.runUrl}\n`, 'utf8');

@@ -1,19 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import { IrohTestController } from './irohTestController';
+import { IrohTestController, type IrohTestControllerNative } from './irohTestController';
+
+function createNativeFixture(): IrohTestControllerNative & { calls: string[]; observedPath: 'direct' | 'relay' | 'unknown' } {
+  return {
+    calls: [],
+    observedPath: 'unknown',
+    async forceDirectOnly() { this.calls.push('direct'); },
+    async forceRelayOnly() { this.calls.push('relay'); },
+    async restoreAutomatic() { this.calls.push('automatic'); this.observedPath = 'unknown'; },
+    getObservedPath() { return this.observedPath; },
+  };
+}
 
 describe('IrohTestController', () => {
-  it('forces direct and relay paths for native fixtures', () => {
-    const controller = new IrohTestController();
-    controller.forceDirectOnly();
-    controller.assertForcedPath('direct');
-    controller.forceRelayOnly();
-    controller.assertForcedPath('relay');
-    controller.restoreAutomatic();
+  it('delegates async topology changes and reports only the native observed path', async () => {
+    const native = createNativeFixture();
+    const controller = new IrohTestController(native);
+    await controller.forceDirectOnly();
     expect(controller.getObservedPath()).toBe('unknown');
+    native.observedPath = 'direct';
+    expect(controller.getObservedPath()).toBe('direct');
+    await controller.forceRelayOnly();
+    native.observedPath = 'relay';
+    expect(controller.getObservedPath()).toBe('relay');
+    await controller.restoreAutomatic();
+    expect(controller.getObservedPath()).toBe('unknown');
+    expect(native.calls).toEqual(['direct', 'relay', 'automatic']);
   });
 
-  it('fails closed when relay is disabled', () => {
-    const controller = new IrohTestController({ policy: 'disabled' });
-    expect(() => controller.forceRelayOnly()).toThrow(/relay policy is disabled/);
+  it('fails closed without a native test-feature boundary', async () => {
+    const controller = new IrohTestController(null);
+    await expect(controller.forceRelayOnly()).rejects.toThrow(/test-relay-fixture/);
+    expect(controller.getObservedPath()).toBe('unknown');
   });
 });

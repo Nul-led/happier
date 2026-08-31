@@ -1,5 +1,6 @@
 const INSTANCE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
 const MANAGED_LIMA_ARCHITECTURES = new Set(['aarch64', 'x86_64']);
+const MANAGED_LIMA_DISK_IMAGE_FORMATS = new Set(['raw', 'asif']);
 
 const BASE_PROFILE = Object.freeze({
   schemaVersion: 1,
@@ -42,7 +43,18 @@ export function normalizeManagedLimaArchitecture(value) {
   return architecture;
 }
 
-export function resolveManagedLimaProfile(name, { architecture = 'aarch64' } = {}) {
+export function normalizeManagedLimaDiskImageFormat(value) {
+  const format = String(value ?? BASE_PROFILE.diskImageFormat).trim().toLowerCase();
+  if (!MANAGED_LIMA_DISK_IMAGE_FORMATS.has(format)) {
+    throw new Error(`[managed-lima] unsupported managed Lima disk image format: ${JSON.stringify(format)}`);
+  }
+  return format;
+}
+
+export function resolveManagedLimaProfile(
+  name,
+  { architecture = 'aarch64', diskImageFormat = BASE_PROFILE.diskImageFormat } = {},
+) {
   const normalizedName = String(name ?? '').trim().toLowerCase();
   const size = PROFILE_SIZES[normalizedName];
   if (!size) throw new Error(`[managed-lima] unknown managed Lima profile: ${JSON.stringify(normalizedName)}`);
@@ -52,7 +64,7 @@ export function resolveManagedLimaProfile(name, { architecture = 'aarch64' } = {
     vmType: BASE_PROFILE.vmType,
     arch: normalizeManagedLimaArchitecture(architecture),
     template: BASE_PROFILE.template,
-    diskImageFormat: BASE_PROFILE.diskImageFormat,
+    diskImageFormat: normalizeManagedLimaDiskImageFormat(diskImageFormat),
     cpus: size.cpus,
     memoryGiB: size.memoryGiB,
     diskGiB: size.diskGiB,

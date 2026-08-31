@@ -13,6 +13,8 @@ export type LaneId =
   | 'test:plugin-platform:source'
   | 'workspace:test'
   | 'test:integration'
+  | 'test:home-iroh:real'
+  | 'cli:test:workspace-sync:real'
   | 'test:e2e:desktop:native'
   | 'cli:test:slow'
   | 'website:test'
@@ -56,6 +58,8 @@ export const TEST_LANE_DEFINITIONS: readonly TestLaneDefinition[] = Object.freez
   },
   { id: 'workspace:test', category: 'unit', rootScriptName: null, rootCommand: null, packageLocalOnly: true },
   { id: 'test:integration', category: 'integration', rootScriptName: 'test:integration', rootCommand: 'yarn test:integration', packageLocalOnly: false },
+  { id: 'test:home-iroh:real', category: 'integration', rootScriptName: null, rootCommand: null, packageLocalOnly: true },
+  { id: 'cli:test:workspace-sync:real', category: 'integration', rootScriptName: null, rootCommand: null, packageLocalOnly: true },
   {
     id: 'test:e2e:desktop:native',
     category: 'e2e',
@@ -387,6 +391,12 @@ export function classifyTestFile(context: TestLaneContext, relativePath: string)
   }
 
   if (relativePath.startsWith('apps/cli/')) {
+    if (relativePath === 'apps/cli/src/daemon/peer/iroh/workspaceMachineCarrierLane08.real.integration.test.ts') {
+      return 'test:home-iroh:real';
+    }
+    if (relativePath === 'apps/cli/src/daemon/startup/createDaemonWorkspaceSyncRuntime.real.integration.test.ts') {
+      return 'cli:test:workspace-sync:real';
+    }
     if (!CLI_VITEST_COVERED_RE.test(relativePath)) {
       // The CLI vitest configs include `src/**/*.test.{ts,tsx}` plus `scripts/**/*.test.ts`; a
       // `.mjs` script test matches none of them and runs only where the package `test` chain
@@ -399,6 +409,9 @@ export function classifyTestFile(context: TestLaneContext, relativePath: string)
   }
 
   if (relativePath.startsWith('apps/server/')) {
+    if (relativePath === 'apps/server/sources/app/iroh/homeIrohEndpoint.real.integration.test.ts') {
+      return 'test:home-iroh:real';
+    }
     if (!SERVER_VITEST_COVERED_RE.test(relativePath)) {
       // The server vitest configs include only `sources/**` and `scripts/**` TypeScript.
       return resolveExplicitlyNamedUnitLane(context, relativePath);
@@ -455,7 +468,9 @@ export function classifyTestFile(context: TestLaneContext, relativePath: string)
     if (relativePath.includes('/suites/core-layer/')) return /\.test\.ts$/.test(relativePath) ? 'test:e2e:core:fast' : null;
     if (relativePath.includes('/suites/runtime-unification/')) return /\.test\.ts$/.test(relativePath) ? 'test:e2e:core:fast' : null;
     if (relativePath.includes('/src/testkit/') && /\.(?:test|spec)\.ts$/.test(relativePath)) return 'test:e2e:core:fast';
-    if (relativePath.includes('/src/scenarios/') && /\.scenario\.ts$/.test(relativePath)) return 'test:e2e:core:fast';
+    // Metadata-only `src/scenarios/*.scenario.ts` modules are ordinary imported source, not test
+    // discovery: they register no test cases, so no lane may claim them. The importing
+    // `*.test.ts` files under suites/ and src/testkit/ carry the lane credit.
     // Everything else in the workspace (`pluginSdkConsumers`, `fixtures/**`,
     // `src/testkit/**/*.test.mjs`) runs through the @happier-dev/tests workspace `test` script, so
     // it resolves through the derived workspace lane.

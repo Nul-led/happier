@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { DEV_TARGET_DISPOSABLE_REPLICA_ARTIFACT_ROOTS } from './mutagen_project.mjs';
 
 export const MUTAGEN_SYNC_LIST_JSON_TEMPLATE = '{{json .}}';
+export const DEV_TARGET_MUTAGEN_RUNTIME_OWNER = 'stack-dev-targets';
 
 const MUTAGEN_SYNCHRONIZING_STATUSES = new Set([
   'scanning',
@@ -39,6 +40,7 @@ export function resolveDevTargetMutagenRuntime({
   const dataDir = join(mutagenDir, 'data');
   const opensshDir = join(mutagenDir, 'openssh');
   return {
+    owner: DEV_TARGET_MUTAGEN_RUNTIME_OWNER,
     mutagenDir,
     dataDir,
     opensshDir,
@@ -51,6 +53,32 @@ export function resolveDevTargetMutagenRuntime({
       ...(pathExists(opensshDir) ? { MUTAGEN_SSH_PATH: opensshDir } : {}),
     },
   };
+}
+
+/**
+ * Stack dev-target Mutagen is an isolated tooling owner.  Product workspace
+ * sync passes its own daemon-owned data directory and must never reuse this
+ * path (or a parent/child of it).
+ */
+export function assertDevTargetMutagenRuntimeIsolation({ runtime, managedDataDir } = {}) {
+  const runtimeDataDir = normalizePath(runtime?.dataDir);
+  const managed = normalizePath(managedDataDir);
+  if (!runtimeDataDir || !managed) throw new Error('[dev-targets] Mutagen isolation paths are required');
+  if (pathsOverlap(runtimeDataDir, managed)) {
+    throw new Error(`[dev-targets] managed workspace-sync Mutagen data overlaps stack dev-target data: ${managed}`);
+  }
+  if (runtime?.env?.MUTAGEN_DATA_DIRECTORY !== runtime?.dataDir) {
+    throw new Error('[dev-targets] MUTAGEN_DATA_DIRECTORY must remain owned by the stack dev-target runtime');
+  }
+  return true;
+}
+
+function normalizePath(value) {
+  return String(value ?? '').trim().replaceAll('\\', '/').replace(/\/+$/u, '').toLowerCase();
+}
+
+function pathsOverlap(left, right) {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 }
 
 export function parseMutagenSyncList(raw, sessionName) {

@@ -444,6 +444,9 @@ test('release workflow consumes the public validation profile, projects exact-ca
 
   assert.deepEqual(inputs.validation_profile.options, ['integrated', 'stable']);
   assert.equal(inputs.validation_profile.default, 'integrated');
+  assert.equal(inputs.ci_run_id.required, false);
+  assert.equal(inputs.ci_run_id.default, '');
+  assert.equal(inputs.ci_run_id.type, 'string');
   assert.equal(inputs.checks_profile, undefined);
   assert.match(ciScripts, /scripts\/pipeline\/release\/validate-release-dispatch\.mjs/);
   assert.match(ciScripts, /scripts\/pipeline\/release\/verify-existing-ci\.mjs/);

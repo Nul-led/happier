@@ -81,13 +81,18 @@ test('candidate host execution refuses drift before running a command', async ()
 });
 
 test('execution host inspection is read-only and keeps candidate status explicit', async () => {
+  let doctorInput;
   const result = await inspectExecutionHost({
-    profile,
-    doctor: async () => ({ ok: true, status: 'Running', drift: {} }),
+    profile: { ...profile, diskImageFormat: 'asif' },
+    doctor: async (input) => {
+      doctorInput = input;
+      return { ok: true, status: 'Running', drift: {} };
+    },
   });
   assert.equal(result.configured, true);
   assert.equal(result.authoritative, false);
   assert.equal(result.activation, 'candidate');
+  assert.equal(doctorInput.diskImageFormat, 'asif');
 });
 
 test('ordinary delegation requires active mode and stays disabled in recursion, sandbox, CI, Linux, and host-only commands', () => {

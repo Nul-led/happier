@@ -50,6 +50,23 @@ function isMissingNamedMutagenSession(result) {
     && /did not match any sessions/i.test(detail);
 }
 
+function commandArgsWithTargetAdmission(target, classification, commandArgs) {
+  if (
+    target.platform === 'windows'
+    || !['full-validation', 'targeted-validation'].includes(classification.commandClass)
+  ) {
+    return commandArgs;
+  }
+  return [
+    `${String(target.repoDir).replace(/[\\/]+$/, '')}/apps/stack/bin/hstack-exec`,
+    '--heavyweight-admission',
+    `--class=${classification.commandClass}`,
+    `--machine=${target.name}`,
+    '--',
+    ...commandArgs,
+  ];
+}
+
 export async function inspectDevTargetSync(
   { target, stackBaseDir, env = process.env, timeoutMs = null },
   { runCaptureResult: runCaptureResultImpl = defaultRunCaptureResult } = {},
@@ -248,7 +265,7 @@ export async function runDevTargetCommand(
   const remoteCommand = buildRemoteExecCommand(target, {
     executionId,
     cwd,
-    commandArgs,
+    commandArgs: commandArgsWithTargetAdmission(target, classification, commandArgs),
     environment,
   });
   const sshArgs = [

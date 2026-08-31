@@ -57,6 +57,21 @@ test('managed Lima worker profile can render a native x86_64 guest without chang
   );
 });
 
+test('managed Lima profile renders an explicitly selected ASIF disk without changing the legacy RAW default', () => {
+  const profile = resolveManagedLimaProfile('heavy', { diskImageFormat: 'asif' });
+
+  assert.equal(profile.diskImageFormat, 'asif');
+  assert.equal(resolveManagedLimaProfile('heavy').diskImageFormat, 'raw');
+  assert.ok(
+    buildManagedLimaCreateArgs({ instance: 'happier-asif', profile })
+      .includes('.vmOpts.vz.diskImageFormat = "asif"'),
+  );
+  assert.throws(
+    () => resolveManagedLimaProfile('heavy', { diskImageFormat: 'qcow2' }),
+    /unsupported managed Lima disk image format/,
+  );
+});
+
 test('managed Lima heavy profile leaves Mac headroom while providing a large sparse guest disk', () => {
   const profile = resolveManagedLimaProfile('heavy');
 

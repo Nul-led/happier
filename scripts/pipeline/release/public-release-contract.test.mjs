@@ -75,7 +75,7 @@ test('public release contract distinguishes automatic release profiles from deep
   assert.deepEqual(deep?.automaticSuiteIds, []);
   assert.equal(
     deep?.manualEntrypoint,
-    'skills/happier-release-validation/SKILL.md',
+    '.agents/skills/happier-release-validation/SKILL.md',
     'deep certification exposes a target-owned human entrypoint without becoming an executable normal profile',
   );
   assert.deepEqual(Object.keys(stable ?? {}).sort(), [

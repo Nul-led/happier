@@ -48,13 +48,18 @@ test('still discovers ordinary dot-directories that are not transient staging tr
   }
 });
 
-test('discovers Lane 09 scenario modules alongside test and spec files', () => {
+test('counts only real runner files: a metadata-only *.scenario.ts module is not test discovery', () => {
   const rootDir = fixture();
   try {
+    // Scenario implementation modules register no describe/it cases; crediting them as test
+    // files gave lanes coverage no runner ever executed. Only *.test/*.spec suffixes count.
     writeTest(rootDir, 'packages/tests/src/scenarios/accountDirectory.registerDiscoverEnroll.scenario.ts');
+    writeTest(rootDir, 'packages/tests/src/scenarios/realOwnerContract.test.ts');
+    writeTest(rootDir, 'packages/tests/src/testkit/scenarios/iroh.scenario.test.ts');
 
     assert.deepEqual(discoverTestFiles({ rootDir, searchRoots: ['packages'] }), [
-      'packages/tests/src/scenarios/accountDirectory.registerDiscoverEnroll.scenario.ts',
+      'packages/tests/src/scenarios/realOwnerContract.test.ts',
+      'packages/tests/src/testkit/scenarios/iroh.scenario.test.ts',
     ]);
   } finally {
     rmSync(rootDir, { recursive: true, force: true });

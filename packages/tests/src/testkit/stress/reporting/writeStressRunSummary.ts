@@ -3,6 +3,12 @@ import { dirname, resolve } from 'node:path';
 
 import { writeJsonArtifact } from '../../artifacts';
 import {
+  CredentialShapedArtifactFieldError,
+  findCredentialShapedValuePath,
+  redactCredentialShapedValuesDeep,
+  scrubKnownSecretValuesDeep,
+} from '../../artifactSecretSafety';
+import {
   flattenStressErrorBuckets,
   type StressErrorBuckets,
   summarizeLatencySamples,
@@ -34,7 +40,7 @@ export function writeStressRunSummary(params: {
   };
   summaryOutputPath?: string;
 }): string {
-  const summary = {
+  const rawSummary = {
     scenarioName: params.scenarioName,
     targetMode: params.targetMode,
     baseUrl: params.baseUrl,
@@ -51,6 +57,11 @@ export function writeStressRunSummary(params: {
     metrics: params.metrics ?? {},
     ...(params.error ? { error: params.error } : {}),
   };
+  const credentialPath = findCredentialShapedValuePath(rawSummary);
+  if (credentialPath) {
+    throw new CredentialShapedArtifactFieldError(credentialPath);
+  }
+  const summary = redactCredentialShapedValuesDeep(scrubKnownSecretValuesDeep(rawSummary));
 
   const summaryPath = writeJsonArtifact(params.testDir, 'stress-summary.json', summary);
   if (params.summaryOutputPath) {

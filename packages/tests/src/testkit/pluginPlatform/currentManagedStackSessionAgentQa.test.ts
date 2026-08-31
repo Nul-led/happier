@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assertCurrentManagedStackSessionAgentIdentity,
+  buildCurrentManagedStackSessionAgentAuthorArgs,
   buildCurrentManagedStackSessionAgentInstallArgs,
   buildCurrentManagedStackSessionAgentSelectors,
   CURRENT_SOURCE_SESSION_AGENT_ASSISTANT_TEXT,
@@ -132,6 +133,27 @@ function fakePostJson(params: Readonly<{
 }
 
 describe('current-source Session Agent harness boundaries', () => {
+  it('uses the public managed author commands for typecheck, test, build, and ephemeral pack proof', () => {
+    const sourceRoot = '/tmp/external-session-agent';
+    expect(buildCurrentManagedStackSessionAgentAuthorArgs({ command: 'typecheck', sourceRoot }))
+      .toEqual(['plugins', 'dev', 'typecheck', sourceRoot]);
+    expect(buildCurrentManagedStackSessionAgentAuthorArgs({ command: 'test', sourceRoot }))
+      .toEqual(['plugins', 'test', sourceRoot]);
+    expect(buildCurrentManagedStackSessionAgentAuthorArgs({ command: 'build', sourceRoot }))
+      .toEqual(['plugins', 'dev', 'build', sourceRoot]);
+    expect(buildCurrentManagedStackSessionAgentAuthorArgs({
+      command: 'pack',
+      sourceRoot,
+      archivePath: '/tmp/external-session-agent.tgz',
+    })).toEqual([
+      'plugins',
+      'pack',
+      sourceRoot,
+      '--out',
+      '/tmp/external-session-agent.tgz',
+    ]);
+  });
+
   it('installs through the canonical headless public development command', () => {
     expect(buildCurrentManagedStackSessionAgentInstallArgs('/tmp/external-session-agent')).toEqual([
       'plugins',

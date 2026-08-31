@@ -157,6 +157,33 @@ export async function startTcpForwarder(options) {
   });
 }
 
+export async function startTcpForwarderGroup({ forwards, label = 'tcp-forward-group' } = {}) {
+  if (!Array.isArray(forwards) || forwards.length === 0) {
+    throw new Error('forwards must be a non-empty array');
+  }
+  const forwarders = [];
+  try {
+    for (const [index, forward] of forwards.entries()) {
+      // Bind in declaration order so a partial startup can be unwound
+      // deterministically before the owner reports failure.
+      // eslint-disable-next-line no-await-in-loop
+      forwarders.push(await startTcpForwarder({
+        ...forward,
+        label: forward?.label || `${label}-${index + 1}`,
+      }));
+    }
+  } catch (error) {
+    await Promise.allSettled(forwarders.map(({ server }) => stopTcpForwarder(server, label)));
+    throw error;
+  }
+  return {
+    forwarders,
+    async stop() {
+      await Promise.allSettled(forwarders.map(({ server }) => stopTcpForwarder(server, label)));
+    },
+  };
+}
+
 function trySendIpc(msg) {
   try {
     if (typeof process.send === 'function') {
@@ -231,22 +258,44 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const targetHost = kv.get('target-host') || kv.get('targetHost') || '127.0.0.1';
   const targetPort = Number(kv.get('target-port') || kv.get('targetPort'));
   const label = kv.get('label') || 'tcp-forward';
+  const forwardsJson = kv.get('forwards-json') || '';
 
-  if (!listenHost || !listenPort || !targetPort) {
+  let forwardGroup = null;
+  if (forwardsJson) {
+    try {
+      const parsed = JSON.parse(forwardsJson);
+      if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('expected a non-empty array');
+      forwardGroup = parsed;
+    } catch (error) {
+      console.error(`Invalid --forwards-json: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  }
+
+  if (!forwardGroup && (!listenHost || !listenPort || !targetPort)) {
     console.error('Usage: node tcp_forward.mjs --listen-host=<ip> --listen-port=<port> --target-host=<ip> --target-port=<port> [--label=<label>]');
     process.exit(1);
   }
 
-  const shutdown = () => {
+  let runningGroup = null;
+  const shutdown = async () => {
     process.stdout.write(`\n[${label}] shutting down...\n`);
+    await runningGroup?.stop?.();
     process.exit(0);
   };
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  startTcpForwarder({ listenHost, listenPort, targetHost, targetPort, label })
-    .then(() => {
+  const startup = forwardGroup
+    ? startTcpForwarderGroup({ forwards: forwardGroup, label })
+    : startTcpForwarder({ listenHost, listenPort, targetHost, targetPort, label });
+
+  startup
+    .then((started) => {
+      runningGroup = forwardGroup
+        ? started
+        : { stop: () => stopTcpForwarder(started.server, label) };
       trySendIpc({ type: 'ready', listenHost, listenPort, targetHost, targetPort, label });
       // Keep running until signal
     })

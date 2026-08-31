@@ -132,7 +132,7 @@ test(
       try {
         run(
           hstackPath,
-          ['self-host', 'uninstall', '--channel=preview', '--mode=user', '--yes', '--purge-data', '--json'],
+          ['self-host', 'uninstall', '--channel=preview', '--mode=user', '--yes', '--json'],
           {
             env: commonEnv,
             allowFail: true,
@@ -223,7 +223,7 @@ test(
 
     run(
       hstackPath,
-      ['self-host', 'uninstall', '--channel=preview', '--mode=user', '--yes', '--purge-data', '--json'],
+      ['self-host', 'uninstall', '--channel=preview', '--mode=user', '--yes', '--json'],
       { label: 'self-host-launchd', env: commonEnv, timeoutMs: 120_000, cwd: sandboxDir }
     );
     installSucceeded = false;

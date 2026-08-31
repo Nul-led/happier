@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import test from 'node:test';
 
-import { startTcpForwarder, stopTcpForwarder } from './tcp_forward.mjs';
+import { startTcpForwarder, startTcpForwarderGroup, stopTcpForwarder } from './tcp_forward.mjs';
 
 async function startEchoServer(label) {
   const sockets = new Set();
@@ -128,5 +128,33 @@ test('targeted drain closes only connections bound to the selected upstream', { 
     await stopTcpForwarder(forwarder?.server, 'tcp-forward-target-drain-test');
     await oldUpstream.stop();
     await newUpstream.stop();
+  }
+});
+
+test('forwarder group owns multiple listeners in one lifecycle', { timeout: 5000 }, async () => {
+  const firstUpstream = await startEchoServer('first');
+  const secondUpstream = await startEchoServer('second');
+  const sockets = [];
+  let group = null;
+  try {
+    group = await startTcpForwarderGroup({
+      label: 'tcp-forward-group-test',
+      forwards: [
+        { listenHost: '127.0.0.1', listenPort: 0, targetHost: '127.0.0.1', targetPort: firstUpstream.port },
+        { listenHost: '127.0.0.1', listenPort: 0, targetHost: '127.0.0.1', targetPort: secondUpstream.port },
+      ],
+    });
+
+    assert.equal(group.forwarders.length, 2);
+    const first = await connect(group.forwarders[0].port);
+    const second = await connect(group.forwarders[1].port);
+    sockets.push(first, second);
+    assert.equal(await writeRead(first, 'one'), 'first:one');
+    assert.equal(await writeRead(second, 'two'), 'second:two');
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await group?.stop();
+    await firstUpstream.stop();
+    await secondUpstream.stop();
   }
 });

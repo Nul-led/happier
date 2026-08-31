@@ -181,6 +181,56 @@ test('parseSelfHostInvocation supports direct command invocation', () => {
   assert.deepEqual(parsed.rest, ['--json']);
 });
 
+test('self-host uninstall rejects the retired purge flag before touching Home data', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'happier-self-host-purge-rejected-'));
+  t.after(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  const paths = {
+    installRoot: join(tmp, 'install'),
+    binDir: join(tmp, 'bin'),
+    configDir: join(tmp, 'config'),
+    dataDir: join(tmp, 'data'),
+    logDir: join(tmp, 'logs'),
+  };
+  for (const path of Object.values(paths)) {
+    await mkdir(path, { recursive: true });
+    await writeFile(join(path, 'must-survive.txt'), path, 'utf8');
+  }
+
+  const envKeys = {
+    HAPPIER_STACK_SELF_HOST_FORWARD: '0',
+    HAPPIER_SELF_HOST_INSTALL_ROOT: paths.installRoot,
+    HAPPIER_SELF_HOST_BIN_DIR: paths.binDir,
+    HAPPIER_SELF_HOST_CONFIG_DIR: paths.configDir,
+    HAPPIER_SELF_HOST_DATA_DIR: paths.dataDir,
+    HAPPIER_SELF_HOST_LOG_DIR: paths.logDir,
+    HAPPIER_SELF_HOST_SERVICE_NAME: `happier-purge-rejected-${process.pid}`,
+  };
+  const previous = Object.fromEntries(Object.keys(envKeys).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, envKeys);
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  await assert.rejects(
+    selfHostRuntimeModule.runSelfHostCli(['uninstall', '--mode=user', '--yes', '--purge-data']),
+    /happier home erase/i,
+  );
+  for (const path of Object.values(paths)) {
+    assert.equal(await readFile(join(path, 'must-survive.txt'), 'utf8'), path);
+  }
+});
+
+test('self-host help never advertises data purge through uninstall', () => {
+  assert.doesNotMatch(selfHostRuntimeModule.usageText(), /--purge-data|data purged/i);
+  assert.match(selfHostRuntimeModule.usageText(), /happier home erase/i);
+});
+
 test('relay-host forwarding maps legacy HStack update onto the canonical idempotent install command', () => {
   assert.deepEqual(
     selfHostRuntimeModule.resolveRelayHostForwardedArgv(['update', '--channel=preview', '--json']),

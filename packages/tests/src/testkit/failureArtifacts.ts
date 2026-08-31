@@ -1,6 +1,12 @@
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import {
+  findCredentialShapedValuePath,
+  scrubKnownSecretValues,
+  scrubKnownSecretValuesDeep,
+} from './artifactSecretSafety';
+
 type Producer<T> = () => T | Promise<T>;
 
 type Artifact =
@@ -25,14 +31,31 @@ export class FailureArtifacts {
       try {
         if (artifact.kind === 'json') {
           const value = await artifact.produce();
-          writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+          const credentialPath = findCredentialShapedValuePath(value);
+          if (credentialPath) {
+            writeFileSync(
+              path,
+              `REJECTED_CREDENTIAL_SHAPED_ARTIFACT: ${credentialPath}\n`,
+              'utf8',
+            );
+            return;
+          }
+          writeFileSync(
+            path,
+            `${JSON.stringify(scrubKnownSecretValuesDeep(value), null, 2)}\n`,
+            'utf8',
+          );
         } else {
           const text = await artifact.produce();
-          writeFileSync(path, text, 'utf8');
+          writeFileSync(path, scrubKnownSecretValues(text), 'utf8');
         }
       } catch (e) {
         const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-        writeFileSync(path, `FAILED_TO_WRITE_ARTIFACT: ${msg}\n`, 'utf8');
+        writeFileSync(
+          path,
+          scrubKnownSecretValues(`FAILED_TO_WRITE_ARTIFACT: ${msg}\n`),
+          'utf8',
+        );
       }
     }));
   }

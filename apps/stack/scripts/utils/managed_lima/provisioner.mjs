@@ -86,6 +86,7 @@ const MANAGED_LIMA_GUEST_COMMANDS = Object.freeze([
   Object.freeze({ command: 'bwrap', label: 'Bubblewrap (bwrap)' }),
   Object.freeze({ command: 'agent-browser', label: 'agent-browser' }),
   Object.freeze({ command: 'bun', label: 'Bun' }),
+  Object.freeze({ command: 'gh', label: 'GitHub CLI (gh)' }),
   Object.freeze({ command: 'jq', label: 'jq' }),
 ]);
 

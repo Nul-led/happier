@@ -45,7 +45,7 @@ hstack wt status
 
 ## Stacks
 
-Do not create a dedicated stack merely because testing or QA involves stack services. When a human explicitly requests a dedicated, isolated, stable, controlled, snapshot-backed, or manual-restart QA stack, invoke `skills/happier-controlled-stack-qa`; that skill owns creation, session-wide reuse of one remembered stack, runtime selection, reload boundaries, borrowed Expo, and teardown. Additional or replacement stacks require an explicit human request.
+Do not create a dedicated stack merely because testing or QA involves stack services. When a human explicitly requests a dedicated, isolated, stable, controlled, snapshot-backed, or manual-restart QA stack, invoke `.agents/skills/happier-controlled-stack-qa`; that skill owns creation, session-wide reuse of one remembered stack, runtime selection, reload boundaries, borrowed Expo, and teardown. Additional or replacement stacks require an explicit human request.
 
 When a human has already authorized or named a stack, use that exact stack for the session rather than creating a replacement because its identity was forgotten.
 

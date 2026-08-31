@@ -176,6 +176,29 @@ test('dependency-consuming commands bootstrap a synchronized target before dispa
   assert.deepEqual(calls.map((call) => call.kind), ['command']);
 });
 
+test('direct POSIX validation execution enters the target machine admission owner', async () => {
+  let remoteCommand = '';
+  await runDevTargetCommand({
+    target,
+    stackBaseDir: '/tmp/stack',
+    commandArgs: ['corepack', 'yarn', '-s', 'typecheck'],
+    env: {},
+  }, {
+    runCaptureResult: async () => readyListResult(),
+    runDependencyBootstrap: async () => ({ code: 0, signal: null }),
+    spawnProcess: ({ args }) => {
+      remoteCommand = args.at(-1);
+      return { completion: Promise.resolve({ code: 0, signal: null }) };
+    },
+    createExecutionId: () => 'exec-12345678',
+  });
+
+  assert.match(remoteCommand, /apps\/stack\/bin\/hstack-exec/);
+  assert.match(remoteCommand, /--heavyweight-admission/);
+  assert.match(remoteCommand, /--class=full-validation/);
+  assert.match(remoteCommand, /--machine=linux/);
+});
+
 test('remote exec flushes the live replica after health inspection and before SSH launch', async () => {
   const calls = [];
   const result = await runDevTargetCommand(

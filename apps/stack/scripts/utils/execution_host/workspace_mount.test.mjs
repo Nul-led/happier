@@ -85,6 +85,9 @@ test('workspace mount resolves the complete current guest home, refreshes SSH co
   assert.equal(first.remote, 'lima-happier-agent-primary:/home/leeroy.guest');
   assert.equal(first.mounted, true);
   assert.match(seenSshConfigs[0], /HostName 127\.0\.0\.1/);
+  const firstMount = calls.find((call) => call.command === 'sshfs' && call.args[0] !== '--version');
+  assert.ok(firstMount.args.includes('ControlMaster=no'));
+  assert.ok(firstMount.args.includes('ControlPath=none'));
 
   await unmountExecutionHostWorkspace({ profile: profile(limaHome), mountDir, boundary });
   await writeFile(sshConfig, 'Host lima-happier-agent-primary\n  HostName 127.0.0.2\n', 'utf8');

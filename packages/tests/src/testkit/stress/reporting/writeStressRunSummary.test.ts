@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { CredentialShapedArtifactFieldError } from '../../artifactSecretSafety';
 import { writeStressRunSummary } from './writeStressRunSummary';
 
 describe('writeStressRunSummary', () => {
@@ -108,5 +109,63 @@ describe('writeStressRunSummary', () => {
       p99Ms: 0,
       maxMs: 0,
     });
+  });
+
+  it('scrubs registered runtime secret values from summary error text before retention', async () => {
+    const { clearRegisteredRuntimeSecretValues, registerRuntimeSecretValues, REDACTED_SECRET_PLACEHOLDER } = await import('../../artifactSecretSafety');
+    registerRuntimeSecretValues('sentinel-summary-secret-0123456789abcdef');
+    const testDir = mkdtempSync(join(tmpdir(), 'happier-stress-summary-scrub-'));
+
+    try {
+      const summaryPath = writeStressRunSummary({
+        testDir,
+        scenarioName: 'rpc.multiReplica',
+        targetMode: 'full-compose',
+        baseUrl: 'http://127.0.0.1:43080',
+        status: 'failed',
+        startedAt: '2026-04-18T12:00:00.000Z',
+        endedAt: '2026-04-18T12:00:01.000Z',
+        durationMs: 1000,
+        resolvedConfig: {},
+        counts: {},
+        error: {
+          name: 'Error',
+          message: 'exec failed HANDY_MASTER_SECRET=sentinel-summary-secret-0123456789abcdef',
+        },
+      });
+
+      const raw = readFileSync(summaryPath, 'utf8');
+      expect(raw).not.toContain('sentinel-summary-secret-0123456789abcdef');
+      expect(raw).toContain(`HANDY_MASTER_SECRET=${REDACTED_SECRET_PLACEHOLDER}`);
+    } finally {
+      clearRegisteredRuntimeSecretValues();
+    }
+  });
+
+  it('rejects credential-shaped object, array, and null values before either summary is retained', () => {
+    for (const [name, resolvedConfig] of [
+      ['object', { authorization: { header: 'Bearer unregistered-secret' } }],
+      ['array', { credentials: ['unregistered-secret'] }],
+      ['null', { apiToken: null }],
+    ] as const) {
+      const testDir = mkdtempSync(join(tmpdir(), `happier-stress-summary-${name}-`));
+      const mirroredSummaryPath = join(testDir, 'mirrored-summary.json');
+      expect(() => writeStressRunSummary({
+        testDir,
+        scenarioName: 'rpc.multiReplica',
+        targetMode: 'full-compose',
+        baseUrl: 'http://127.0.0.1:43080',
+        seed: 1234,
+        status: 'failed',
+        startedAt: '2026-04-18T12:00:00.000Z',
+        endedAt: '2026-04-18T12:00:01.000Z',
+        durationMs: 1000,
+        resolvedConfig,
+        counts: {},
+        summaryOutputPath: mirroredSummaryPath,
+      })).toThrow(CredentialShapedArtifactFieldError);
+      expect(existsSync(join(testDir, 'stress-summary.json'))).toBe(false);
+      expect(existsSync(mirroredSummaryPath)).toBe(false);
+    }
   });
 });

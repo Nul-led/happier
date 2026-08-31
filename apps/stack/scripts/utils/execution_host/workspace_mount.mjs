@@ -289,6 +289,8 @@ export async function mountExecutionHostWorkspace({
   const resolved = withGuestHome(ready, await resolveGuestHome({ profile, executor }));
   const child = await processBoundary.start('sshfs', [
     '-F', resolved.sshConfigFile,
+    '-o', 'ControlMaster=no',
+    '-o', 'ControlPath=none',
     resolved.remote,
     resolved.mountDir,
     '-o', 'reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,defer_permissions,noappledouble,volname=Happier VM',

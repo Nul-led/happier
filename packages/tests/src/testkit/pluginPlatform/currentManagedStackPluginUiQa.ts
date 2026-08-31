@@ -1642,17 +1642,53 @@ async function prepareCurrentManagedStackSessionAgentSource(params: Readonly<{
 }
 
 /**
- * Runs the same managed author commands an ordinary external author invokes
- * (dependency preparation is automatic inside them). The harness never
- * reproduces typecheck, test, or bundling responsibilities itself.
+ * Builds the same managed author command arguments an ordinary external
+ * author invokes. Keeping this derivation public to the testkit lets the
+ * owner-level test prevent the loaded journey from drifting onto private
+ * compiler, test-runner, or pack implementations.
+ */
+export function buildCurrentManagedStackSessionAgentAuthorArgs(params: Readonly<
+  | { command: 'typecheck' | 'test' | 'build'; sourceRoot: string }
+  | { command: 'pack'; sourceRoot: string; archivePath: string }
+>): readonly string[] {
+  if (params.command === 'test') {
+    return Object.freeze(['plugins', 'test', params.sourceRoot]);
+  }
+  if (params.command === 'pack') {
+    return Object.freeze([
+      'plugins',
+      'pack',
+      params.sourceRoot,
+      '--out',
+      params.archivePath,
+    ]);
+  }
+  return Object.freeze(['plugins', 'dev', params.command, params.sourceRoot]);
+}
+
+/**
+ * Runs the canonical managed author command. Dependency preparation is
+ * automatic inside these commands; the harness never reproduces their
+ * typecheck, test, build, or pack responsibilities itself.
  */
 async function runCurrentManagedStackSessionAgentAuthorCommand(params: Readonly<{
-  command: 'typecheck' | 'test' | 'build';
+  command: 'typecheck' | 'test' | 'build' | 'pack';
   sourceRoot: string;
+  archivePath?: string;
 }>): Promise<void> {
-  const args = params.command === 'test'
-    ? ['plugins', 'test', params.sourceRoot]
-    : ['plugins', 'dev', params.command, params.sourceRoot];
+  const args = params.command === 'pack'
+    ? buildCurrentManagedStackSessionAgentAuthorArgs({
+        command: 'pack',
+        sourceRoot: params.sourceRoot,
+        archivePath: requireString(
+          params.archivePath,
+          'plugin_ui_current_stack_session_agent_pack_path_missing',
+        ),
+      })
+    : buildCurrentManagedStackSessionAgentAuthorArgs({
+        command: params.command,
+        sourceRoot: params.sourceRoot,
+      });
   await execFileAsync(
     process.execPath,
     [join(REPOSITORY_ROOT, 'apps/cli/bin/happier.mjs'), ...args],
@@ -1848,10 +1884,11 @@ export function buildCurrentManagedStackSessionAgentSelectors(): CurrentManagedS
 /**
  * Owns one reversible current-source Session Agent row built from the
  * canonical deterministic public example. The example's own managed author
- * commands prepare dependencies and run typecheck/test/build; installation
- * uses the canonical dev-and-trust daemon change path. Every row starts from
- * the pristine example source and cleanup retires the fixture even after a
- * failed client flow.
+ * commands prepare dependencies and run typecheck/test/build/pack;
+ * installation uses the canonical dev-and-trust daemon change path. Every row
+ * starts from the pristine example source and cleanup retires the fixture even
+ * after a failed client flow. Pack output is ephemeral transport proof only
+ * and is removed before the loaded lifecycle begins.
  */
 export async function prepareCurrentManagedStackSessionAgentFixture(params: Readonly<{
   context: CurrentManagedStackPluginUiContext;
@@ -1916,6 +1953,21 @@ export async function prepareCurrentManagedStackSessionAgentFixture(params: Read
     await runCurrentManagedStackSessionAgentAuthorCommand({ command: 'typecheck', sourceRoot });
     await runCurrentManagedStackSessionAgentAuthorCommand({ command: 'test', sourceRoot });
     await runCurrentManagedStackSessionAgentAuthorCommand({ command: 'build', sourceRoot });
+    const packOutputRoot = await mkdtemp(join(tmpdir(), 'happier-current-source-session-agent-pack-'));
+    const packArchivePath = join(packOutputRoot, 'session-agent.tgz');
+    try {
+      await runCurrentManagedStackSessionAgentAuthorCommand({
+        command: 'pack',
+        sourceRoot,
+        archivePath: packArchivePath,
+      });
+      const packed = await stat(packArchivePath);
+      if (!packed.isFile() || packed.size === 0) {
+        throw new Error('plugin_ui_current_stack_session_agent_pack_output_invalid');
+      }
+    } finally {
+      await rm(packOutputRoot, { recursive: true, force: true });
+    }
     const initial = await install();
     return Object.freeze({
       pluginId,

@@ -210,7 +210,7 @@ test(
       if (!installSucceeded) return;
       runAsRoot(
         hstackPath,
-        ['self-host', 'uninstall', '--channel=preview', `--mode=${mode}`, '--yes', '--purge-data', '--json'],
+        ['self-host', 'uninstall', '--channel=preview', `--mode=${mode}`, '--yes', '--json'],
         {
           env: commonEnv,
           allowFail: true,
@@ -285,7 +285,7 @@ test(
 
     runAsRoot(
       hstackPath,
-      ['self-host', 'uninstall', '--channel=preview', `--mode=${mode}`, '--yes', '--purge-data', '--json'],
+      ['self-host', 'uninstall', '--channel=preview', `--mode=${mode}`, '--yes', '--json'],
       { env: commonEnv, timeoutMs: 180_000, cwd: sandboxDir }
     );
     installSucceeded = false;

@@ -36,7 +36,15 @@ async function createEntrypointFixture(packageName = '@happier-dev/plugin-ui-gov
     },
   }, null, 2)}\n`);
   await writeFixtureFile(root, 'src/index.ts', [
-    'class Hidden {',
+    "export * from './index.public.js';",
+    '',
+  ].join('\n'));
+  await writeFixtureFile(root, 'src/index.public.ts', [
+    "export { run } from './runtime.js';",
+    '',
+  ].join('\n'));
+  await writeFixtureFile(root, 'src/runtime.ts', [
+    'export class Hidden {',
     '  value?: string;',
     '}',
     '',
@@ -494,6 +502,46 @@ test('the plugin-ui profile detects a reachable emitted declaration drift even w
     );
     assert.equal(drift.status, 1, drift.stderr);
     assert.match(drift.stdout, /drift publicDeclarationReport api-declarations\.md: dist\/hidden\.d\.ts — Hidden/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the plugin-ui profile requires an author-owned source spec for every public entrypoint', async () => {
+  const root = await createEntrypointFixture();
+  try {
+    await rm(join(root, 'src/index.public.ts'));
+    await assert.rejects(
+      () => runApiGovernance({
+        profileId: 'plugin-ui',
+        packageRoot: root,
+        write: false,
+        check: true,
+      }),
+      /author-owned source spec.*src\/index\.public\.ts/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the plugin-ui profile rejects a source spec export absent from prepared declarations', async () => {
+  const root = await createEntrypointFixture();
+  try {
+    await writeFile(join(root, 'src/index.public.ts'), [
+      "export { Hidden, run } from './runtime.js';",
+      '',
+    ].join('\n'), 'utf8');
+
+    await assert.rejects(
+      () => runApiGovernance({
+        profileId: 'plugin-ui',
+        packageRoot: root,
+        write: false,
+        check: true,
+      }),
+      /prepared declarations are missing source-spec export \.:Hidden:value/u,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -185,6 +185,7 @@ export async function prepareManagedHost(profile, dependencies = {}) {
     executor,
     instance: profile.instance,
     profileName: profile.profile,
+    diskImageFormat: profile.diskImageFormat,
   });
   const pendingLegacyServiceForwardCutover = diagnosis.ok !== true
     && isPendingLegacyServiceForwardCutover(diagnosis);

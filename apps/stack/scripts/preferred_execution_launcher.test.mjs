@@ -734,6 +734,86 @@ test('native launcher automatic placement remains compatible with GNU awk local 
   await assert.rejects(readFile(reservedLoadMarker), { code: 'ENOENT' });
 });
 
+test('native launcher governs nested Vitest workers when automatic placement selects a pressured local Linux candidate', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-local-governor-'));
+  const binDir = join(root, 'bin');
+  const storageDir = join(root, 'stacks');
+  const stackDir = join(storageDir, `repo-${repoToken}-native`);
+  await mkdir(binDir, { recursive: true });
+  await mkdir(join(stackDir, 'mutagen', 'data'), { recursive: true });
+  await writeFile(join(stackDir, 'dev-targets.json'), '{}\n');
+  await writeFile(join(stackDir, 'dev-target-exec-v1.sh'), [
+    "HSTACK_EXEC_PROJECTION_VERSION='2'",
+    `projection_repo_root='${repoRoot}'`,
+    "command_mode='auto'",
+    "include_local='1'",
+    "fallback_mode='error'",
+    "load_ttl_seconds='0'",
+    "unavailable_ttl_seconds='120'",
+    "target_count='1'",
+    "target_1_name='linux'",
+    "target_1_ssh='linux-host'",
+    "target_1_ssh_config=''",
+    "target_1_repo_dir='/remote/repo'",
+    "target_1_cli_home='/remote/home'",
+    "target_1_remote_path='/usr/bin:/bin'",
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'node'), '#!/bin/sh\nexit 97\n');
+  await executable(join(binDir, 'uname'), '#!/bin/sh\nprintf "Linux\\n"\n');
+  await executable(join(binDir, 'getconf'), '#!/bin/sh\nprintf "14\\n"\n');
+  await executable(join(binDir, 'sysctl'), '#!/bin/sh\nprintf "{ 100.0 100.0 100.0 }\\n"\n');
+  await executable(join(binDir, 'memory_pressure'), '#!/bin/sh\nprintf "System-wide memory free percentage: 50%%\\n"\n');
+  await executable(join(binDir, 'mutagen'), '#!/bin/sh\nprintf "%s|Watching|7||false|0\\n" "$3"\n');
+  await executable(join(binDir, 'ssh'), [
+    '#!/bin/sh',
+    'case "$*" in',
+    '  *getconf*) printf "8 120 0.5 22000000 10 120 16000000 24000000 0 0 90 90 0 0 0 linux\\n" ;;',
+    '  *command\\ -v*) exit 0 ;;',
+    '  *) printf "wrong-remote\\n" ;;',
+    'esac',
+    '',
+  ].join('\n'));
+  await executable(join(binDir, 'vitest'), [
+    '#!/bin/sh',
+    'printf "workers:%s:%s:%s:%s\\n" "${VITEST_MAX_THREADS-}" "${VITEST_MIN_THREADS-}" "${VITEST_MAX_FORKS-}" "${VITEST_MIN_FORKS-}"',
+    'printf "args:%s\\n" "$*"',
+    '',
+  ].join('\n'));
+
+  const result = spawnSync('/bin/sh', [launcher, '--', 'vitest', 'run', 'fixture.test.ts'], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      HAPPIER_STACK_STORAGE_DIR: storageDir,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+    },
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /workers:1:1:1:1/);
+  assert.match(result.stdout, /args:run fixture\.test\.ts --maxWorkers=1 --minWorkers=1/);
+  assert.doesNotMatch(result.stdout, /wrong-remote/);
+
+  const explicit = spawnSync('/bin/sh', [launcher, '--', 'vitest', 'run', '--maxWorkers=6'], {
+    cwd: repoRoot,
+    env: {
+      ...executionNeutralEnv,
+      HOME: root,
+      HAPPIER_STACK_STORAGE_DIR: storageDir,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      TMPDIR: root,
+    },
+    encoding: 'utf8',
+  });
+  assert.equal(explicit.status, 0, explicit.stderr);
+  assert.match(explicit.stdout, /workers::::/);
+  assert.match(explicit.stdout, /args:run --maxWorkers=6/);
+});
+
 test('native launcher exact target maps the repository-relative cwd and allocates a requested TTY on only the named healthy target', async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-preferred-launcher-exact-target-'));
   const binDir = join(root, 'bin');
@@ -1769,12 +1849,13 @@ test('native launcher keeps Linux control commands preferred and adapts recogniz
   assert.doesNotMatch(control.stdout, /nice -n 10|--maxWorkers|--threads|--singleThreaded/);
   assert.match(vitest.stdout, /VITEST_MAX_THREADS=1.*VITEST_MIN_THREADS=1.*nice -n 10.*vitest/s);
   assert.match(vitest.stdout, /VITEST_MAX_FORKS=1.*VITEST_MIN_FORKS=1/s);
-  assert.doesNotMatch(vitest.stdout, /--maxWorkers=1/);
+  assert.match(vitest.stdout, /vitest.*--maxWorkers=1.*--minWorkers=1/s);
   assert.doesNotMatch(vitest.stdout, /fi;;/);
   assert.match(search.stdout, /nice -n 10.*rg.*--threads=1/s);
   assert.match(typecheck.stdout, /GOMAXPROCS=1.*nice -n 10.*runTypeScriptCli\.mjs/s);
   assert.doesNotMatch(typecheck.stdout, /--singleThreaded/);
   assert.match(scriptedVitest.stdout, /VITEST_MAX_THREADS=1.*nice -n 10.*corepack.*yarn.*test:local/s);
+  assert.match(scriptedVitest.stdout, /test:local.*--maxWorkers=1.*--minWorkers=1/s);
   assert.match(scriptedTypecheck.stdout, /GOMAXPROCS=1.*nice -n 10.*corepack.*yarn.*typecheck:local/s);
   assert.match(quietVitest.stdout, /nice -n 10.*vitest/s);
   assert.doesNotMatch(quietVitest.stdout, /VITEST_MAX_THREADS=|--maxWorkers/);

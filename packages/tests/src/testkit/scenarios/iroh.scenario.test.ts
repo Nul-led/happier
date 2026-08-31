@@ -1,19 +1,30 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { irohScenarios } from '../../scenarios/iroh.scenario';
+import { createIrohTestController } from '../irohTestController';
 
-describe('Lane 09 Iroh scenarios', () => {
-  it('keeps every Iroh release case explicitly blocked until the real Lane 06 SPI exists', () => {
-    expect(irohScenarios.map(({ id }) => id)).toEqual([
-      'F-IR-01', 'F-IR-02', 'F-IR-03', 'F-IR-04',
-      'F-IR-05', 'F-IR-06', 'F-IR-07', 'F-IR-08',
-    ]);
-    for (const scenario of irohScenarios) {
-      expect(scenario.status).toBe('blocked');
-      expect(scenario.blocker.code).toBe('missing_iroh_test_controller');
-      expect(scenario.blocker.owner).toBe('Lane 06');
-      expect(scenario.blocker.wakeCondition).toContain('forceDirectOnly');
-      expect(scenario).not.toHaveProperty('execute');
-    }
+/**
+ * Supporting Iroh evidence-boundary contracts for Lane 09. They assert real supporting owners
+ * only; no native moving-byte or tunnel acceptance is claimed here, and no run status lives in
+ * source — the sole Lane 09 release report owns certification status.
+ */
+describe('Iroh supporting evidence boundaries', () => {
+  it('fails closed when the native test-feature controller is unavailable', async () => {
+    // A state-only double could falsely claim a relay path without changing real endpoint
+    // topology. The canonical testkit instead requires the feature-gated native boundary.
+    const controller = createIrohTestController();
+    await expect(controller.forceRelayOnly()).rejects.toThrow(/test-relay-fixture/);
+    expect(controller.getObservedPath()).toBe('unknown');
+  });
+
+  it('keeps the checked-in iroh relay fixture holepunch-only by default', () => {
+    // Source-level deployment assertion only: it checks the checked-in relay policy; it does not
+    // force a runtime path or prove that application bytes moved over direct or relayed transport.
+    const configPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../deploy/iroh-relay/relay.toml');
+    const config = readFileSync(configPath, 'utf8');
+    expect(config).toMatch(/^enable_relay\s*=\s*false\b/m);
+    expect(config).toMatch(/^enable_quic_addr_discovery\s*=\s*true\b/m);
   });
 });

@@ -102,14 +102,31 @@ test('classifies representative lane paths', () => {
   assert.equal(classifyTestFile(LANE_CONTEXT, 'packages/tests/scripts/wsrepl-lima-matrix.test.mjs'), 'test:e2e:ui:wsrepl:lima:self');
   assert.equal(classifyTestFile(LANE_CONTEXT, 'packages/tests/scripts/lima-vm.test.mjs'), 'test:e2e:ui:wsrepl:lima:self');
   assert.equal(classifyTestFile(LANE_CONTEXT, 'packages/tests/suites/agents/auth.test.ts'), 'test:agents');
+  // Metadata-only scenario modules register no test cases; they are ordinary imported source,
+  // so no lane may claim them. The importing *.test.ts files carry the lane credit.
   assert.equal(
     classifyTestFile(LANE_CONTEXT, 'packages/tests/src/scenarios/accountDirectory.registerDiscoverEnroll.scenario.ts'),
-    'test:e2e:core:fast',
+    null,
   );
   assert.equal(classifyTestFile(LANE_CONTEXT, 'packages/tests/suites/stress/retry.test.ts'), 'test:stress');
   assert.equal(classifyTestFile(LANE_CONTEXT, 'apps/stack/scripts/runtime.test.mjs'), 'stack:test:unit');
   assert.equal(classifyTestFile(LANE_CONTEXT, 'apps/stack/scripts/runtime.integration.test.mjs'), 'stack:test:integration');
   assert.equal(classifyTestFile(LANE_CONTEXT, 'apps/stack/scripts/runtime.real.integration.test.mjs'), 'stack:test:real-integration');
+  assert.equal(
+    classifyTestFile(LANE_CONTEXT, 'apps/server/sources/app/iroh/homeIrohEndpoint.real.integration.test.ts'),
+    'test:home-iroh:real',
+  );
+  assert.equal(
+    classifyTestFile(
+      LANE_CONTEXT,
+      'apps/cli/src/daemon/peer/iroh/workspaceMachineCarrierLane08.real.integration.test.ts',
+    ),
+    'test:home-iroh:real',
+  );
+  assert.equal(
+    classifyTestFile(LANE_CONTEXT, 'apps/cli/src/daemon/startup/createDaemonWorkspaceSyncRuntime.real.integration.test.ts'),
+    'cli:test:workspace-sync:real',
+  );
 });
 
 test('credits a lane only when that lane\'s script chain names the file', () => {

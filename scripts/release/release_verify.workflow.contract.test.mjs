@@ -8,8 +8,11 @@ import YAML from 'yaml';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 
-test('release-verify workflow exposes and forwards continuity/update release-validation inputs', async () => {
+test('release-verify forwards canonical continuity and update suites from the resolved profile', async () => {
   const raw = await readFile(join(repoRoot, '.github', 'workflows', 'release-verify.yml'), 'utf8');
+  const workflow = YAML.parse(raw);
+  const profile = workflow.jobs.resolve_validation_profile;
+  const verify = workflow.jobs.verify;
 
   for (const inputName of [
     'run_cli_update_continuity',
@@ -17,22 +20,18 @@ test('release-verify workflow exposes and forwards continuity/update release-val
     'run_session_continuity',
     'run_release_assets_docker',
   ]) {
-    assert.match(
-      raw,
-      new RegExp(`${inputName}:\\n\\s+description: "Verify — .*"\\n\\s+required: true\\n\\s+default: true\\n\\s+type: boolean`),
-      `release-verify workflow_dispatch should expose ${inputName} with a release-verification default`,
+    assert.equal(
+      profile.outputs[inputName],
+      `\${{ steps.profile.outputs.${inputName} }}`,
+      `resolved validation profile should own ${inputName}`,
     );
-    assert.match(
-      raw,
-      new RegExp(`${inputName}:\\n\\s+required: false\\n\\s+default: true\\n\\s+type: boolean`),
-      `release-verify workflow_call should expose ${inputName}`,
-    );
-    assert.match(
-      raw,
-      new RegExp(`${inputName}:\\s*\\$\\{\\{ needs\\.resolve_validation_profile\\.outputs\\.${inputName} \\}\\}`),
-      `release-verify should forward the resolved profile value for ${inputName} into tests.yml`,
+    assert.equal(
+      verify.with[inputName],
+      `\${{ needs.resolve_validation_profile.outputs.${inputName} }}`,
+      `release-verify should forward ${inputName} to tests.yml`,
     );
   }
+  assert.match(profile.steps.find((step) => step.id === 'profile').run, /resolve-validation-plan\.mjs/);
 });
 
 test('release-verify proves a deployed server loaded the exact candidate revision', async () => {
@@ -82,6 +81,19 @@ test('release-verify selects expensive candidate checks only for affected immuta
   assert.match(resolver.run, /--risk-relay-upgrade/);
 });
 
+test('release-verify computes published relay predecessor with explicit boolean grouping', async () => {
+  const raw = await readFile(join(repoRoot, '.github', 'workflows', 'release-verify.yml'), 'utf8');
+  assert.ok(
+    raw.includes('--has-published-relay-predecessor "$(if [[ "$RELEASE_CHANNEL" == preview || "$RELEASE_CHANNEL" == production ]]; then echo true; else echo false; fi)"'),
+    'preview and production must both select a published relay predecessor',
+  );
+  assert.doesNotMatch(
+    raw,
+    /--has-published-relay-predecessor "\$\(\[ "\$RELEASE_CHANNEL" = preview \] \|\| \[ "\$RELEASE_CHANNEL" = production/,
+    'release-channel boolean selection must not rely on ambiguous &&/|| precedence',
+  );
+});
+
 test('release-verify workflow supports dev channel and maps installer channel per release lane', async () => {
   const raw = await readFile(join(repoRoot, '.github', 'workflows', 'release-verify.yml'), 'utf8');
 
@@ -97,9 +109,11 @@ test('release-verify workflow supports dev channel and maps installer channel pe
   );
 });
 
-test('release-verify defaults real platform and service validation on and forwards every gate', async () => {
+test('release-verify forwards real platform and service validation from the resolved profile', async () => {
   const raw = await readFile(join(repoRoot, '.github', 'workflows', 'release-verify.yml'), 'utf8');
   const workflow = YAML.parse(raw);
+  const profile = workflow.jobs.resolve_validation_profile;
+  const verify = workflow.jobs.verify;
 
   for (const inputName of [
     'run_self_host_systemd',
@@ -108,21 +122,17 @@ test('release-verify defaults real platform and service validation on and forwar
     'run_self_host_daemon',
   ]) {
     assert.equal(
-      workflow.on.workflow_dispatch.inputs[inputName].default,
-      true,
-      `manual release verification should default ${inputName} on`,
+      profile.outputs[inputName],
+      `\${{ steps.profile.outputs.${inputName} }}`,
+      `resolved validation profile should own ${inputName}`,
     );
     assert.equal(
-      workflow.on.workflow_call.inputs[inputName].default,
-      true,
-      `reusable release verification should default ${inputName} on`,
-    );
-    assert.equal(
-      workflow.jobs.verify.with[inputName],
+      verify.with[inputName],
       `\${{ needs.resolve_validation_profile.outputs.${inputName} }}`,
-      `release verification should forward the resolved profile value for ${inputName} to the real tests workflow job`,
+      `release-verify should forward ${inputName} to tests.yml`,
     );
   }
+  assert.match(profile.steps.find((step) => step.id === 'profile').run, /resolve-validation-plan\.mjs/);
 });
 
 test('release-verify requires and checks the exact candidate and distinct build/publication run identities', async () => {

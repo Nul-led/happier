@@ -3,10 +3,24 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  assertDevTargetMutagenRuntimeIsolation,
   parseMutagenSyncList,
   resolveRecoverableReplicaArtifactConflictRoots,
   resolveDevTargetMutagenRuntime,
 } from './mutagen_runtime.mjs';
+
+test('dev target Mutagen runtime declares its owner and rejects managed workspace-sync overlap', () => {
+  const runtime = resolveDevTargetMutagenRuntime({ stackBaseDir: '/tmp/happier/stacks/repo-test' });
+  assert.equal(runtime.owner, 'stack-dev-targets');
+  assert.doesNotThrow(() => assertDevTargetMutagenRuntimeIsolation({
+    runtime,
+    managedDataDir: '/home/tester/.happier/daemon/workspace-sync/mutagen/data',
+  }));
+  assert.throws(() => assertDevTargetMutagenRuntimeIsolation({
+    runtime,
+    managedDataDir: runtime.dataDir,
+  }), /isolat|overlap|managed/i);
+});
 
 test('dev target Mutagen runtime resolves the same stack-scoped daemon state as the supervisor', () => {
   const stackBaseDir = '/tmp/happier/stacks/repo-test';

@@ -3,7 +3,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 
-import { resolveManagedLimaProfile, validateManagedLimaInstanceName } from '../managed_lima/profiles.mjs';
+import {
+  normalizeManagedLimaDiskImageFormat,
+  resolveManagedLimaProfile,
+  validateManagedLimaInstanceName,
+} from '../managed_lima/profiles.mjs';
 import { resolveManagedLimaPressureProfile } from '../managed_lima/pressure_profiles.mjs';
 import { getHappyStacksHomeDir } from '../paths/paths.mjs';
 import { retireExecutionHostCandidateMirrors } from './candidate_repository.mjs';
@@ -16,6 +20,7 @@ const FIELDS = new Set([
   'instance',
   'limaHome',
   'profile',
+  'diskImageFormat',
   'pressureProfile',
   'guestWorkspaceDir',
   'mirrorWorkspaceDir',
@@ -122,6 +127,9 @@ function normalizeExecutionHostProfile(raw) {
     instance,
     limaHome: requireAbsolutePath(raw.limaHome, 'limaHome'),
     profile,
+    ...(raw.diskImageFormat != null ? {
+      diskImageFormat: normalizeManagedLimaDiskImageFormat(raw.diskImageFormat),
+    } : {}),
     pressureProfile,
     guestWorkspaceDir,
     mirrorWorkspaceDir,
@@ -168,6 +176,7 @@ export function resolveExecutionHostSetupConfiguration({ current, requested = {}
     instance: choose('instance'),
     limaHome: choose('limaHome'),
     profile: choose('profile'),
+    ...(choose('diskImageFormat') != null ? { diskImageFormat: choose('diskImageFormat') } : {}),
     pressureProfile: choose('pressureProfile'),
     guestWorkspaceDir: choose('guestWorkspaceDir'),
     mirrorWorkspaceDir: choose('mirrorWorkspaceDir'),

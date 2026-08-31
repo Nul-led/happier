@@ -53,3 +53,8 @@ test('does not admit a newer failed trusted run merely because an older run succ
     { id: 9, head_sha: sha, head_branch: 'dev', event: 'workflow_dispatch', status: 'completed', conclusion: 'failure', head_repository: { full_name: 'happier-dev/happier' } },
   ], { repository: 'happier-dev/happier', sourceSha: sha, sourceBranch: 'dev' }), /completed\/failure/);
 });
+
+test('exposes an explicit run-id input for completed CI attestation', async () => {
+  const source = await (await import('node:fs/promises')).readFile(new URL('./verify-existing-ci.mjs', import.meta.url), 'utf8');
+  assert.match(source, /['\"]run-id['\"]/);
+});

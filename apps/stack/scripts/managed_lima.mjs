@@ -29,8 +29,8 @@ function usage(json) {
     data: { commands: ['setup', 'status', 'doctor', 'start', 'stop', 'shell', 'ssh-config'] },
     text: [
       '[managed-lima] usage:',
-      '  hstack tools managed-lima setup --instance=NAME [--profile=balanced] [--pressure-profile=none|swap64|swap64-zswap|swap128|swap128-zswap|swap256|swap256-zswap] [--guest-profile=happier] [--lima-home=PATH] [--no-install] [--json]',
-      '  hstack tools managed-lima status|doctor|start|stop --instance=NAME [--profile=balanced] [--lima-home=PATH] [--json]',
+      '  hstack tools managed-lima setup --instance=NAME [--profile=balanced] [--disk-image-format=raw|asif] [--pressure-profile=none|swap64|swap64-zswap|swap128|swap128-zswap|swap256|swap256-zswap] [--guest-profile=happier] [--lima-home=PATH] [--no-install] [--json]',
+      '  hstack tools managed-lima status|doctor|start|stop --instance=NAME [--profile=balanced] [--disk-image-format=raw|asif] [--lima-home=PATH] [--json]',
       '  hstack tools managed-lima shell --instance=NAME [--lima-home=PATH] -- COMMAND [ARG...]',
       '  hstack tools managed-lima ssh-config --instance=NAME --output=/absolute/guest.conf [--alias=happier-agent-primary]',
       '',
@@ -71,6 +71,7 @@ async function main() {
   const instance = flagValue(argv, '--instance').trim();
   if (!instance) throw new Error('[managed-lima] --instance is required');
   const profileName = flagValue(argv, '--profile').trim() || 'balanced';
+  const diskImageFormat = flagValue(argv, '--disk-image-format').trim() || 'raw';
   const limaHome = flagValue(argv, '--lima-home').trim();
   const host = resolveHost(argv);
   const executor = createManagedLimaHostExecutor(
@@ -94,6 +95,7 @@ async function main() {
       executor,
       instance,
       profileName,
+      diskImageFormat,
       allowInstall: !argv.includes('--no-install'),
       guestProvisionScriptSource,
       guestPressureScriptSource,
@@ -105,7 +107,7 @@ async function main() {
   } else if (command === 'status') {
     result = await getManagedLimaStatus({ executor, instance });
   } else if (command === 'doctor') {
-    result = await doctorManagedLimaInstance({ executor, instance, profileName });
+    result = await doctorManagedLimaInstance({ executor, instance, profileName, diskImageFormat });
   } else if (command === 'start') {
     result = await startManagedLimaInstance({ executor, instance });
   } else if (command === 'stop') {
