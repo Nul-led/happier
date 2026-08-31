@@ -79,6 +79,27 @@ describe('WorkspaceSyncHandoffAdapter', () => {
     expect(sync.terminate).not.toHaveBeenCalled();
   });
 
+  it('terminates an indeterminate copy_once operation before releasing bootstrap authority on abort', async () => {
+    const order: string[] = [];
+    const sync = managedSync({
+      copyOnce: vi.fn(async () => { throw Object.assign(new Error('result lost'), { code: 'indeterminate' }); }),
+      terminate: vi.fn(async () => { order.push('terminate'); }),
+    });
+    const adapter = createWorkspaceSyncHandoffAdapter({
+      sync,
+      bootstrap: vi.fn(async () => ({
+        release: vi.fn(async () => { order.push('release'); }),
+      })),
+    });
+    const prepared = await adapter.prepare(copyInput('all_files'));
+    await expect(adapter.finalize({ operationId: 'handoff-copy', prepared })).rejects.toMatchObject({ code: 'indeterminate' });
+
+    await adapter.abort({ operationId: 'handoff-copy', prepared });
+
+    expect(order).toEqual(['terminate', 'release']);
+    expect(sync.terminate).toHaveBeenCalledWith('handoff-copy', undefined);
+  });
+
   it('fails closed when copy commit has lost its prepared endpoint authority', async () => {
     const sync = managedSync();
     const adapter = handoffAdapter(sync);

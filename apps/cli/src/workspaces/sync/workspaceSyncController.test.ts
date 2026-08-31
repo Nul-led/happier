@@ -168,6 +168,46 @@ describe('WorkspaceSyncController', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
+  it('closes and denies endpoint ingress as soon as queued ownership-loss handling takes authority', async () => {
+    vi.useFakeTimers();
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-controller-ingress-'));
+    const rootPath = join(fixture, 'root');
+    await mkdir(rootPath);
+    const agentStream = new PassThrough();
+    const release = vi.fn(async () => undefined);
+    const controller = new WorkspaceSyncController({
+      adapter: completeAdapter({ pause: vi.fn(async () => ({ ...status, state: 'paused' as const })) }),
+      lifecycle: lifecycle(),
+      rootOwnershipManager: { tryAcquire: vi.fn(async (owner) => ({
+        owner: { ...owner, canonicalRoot: rootPath, rootFingerprint: null },
+        bindCurrentRootIdentity: vi.fn(async () => undefined),
+        renew: vi.fn(async () => { throw Object.assign(new Error('lost'), { code: 'workspace_root_ownership_lost' }); }),
+        release,
+      })) },
+      localMachineId: 'm1',
+      resolveWorkspaceRef: (id) => id === 'a'
+        ? { machineId: 'm1', rootPath }
+        : { machineId: 'm2', rootPath: '/remote/b' },
+      openLocalWorkspaceAgentStream: vi.fn(async () => agentStream),
+      ownershipRenewIntervalMs: 15_000,
+    });
+    try {
+      await controller.ensure(definition);
+      await controller.openExternalStream({ endpointId: deriveWorkspaceSyncEndpointId('r1', 'alpha') });
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+
+      expect(agentStream.destroyed).toBe(true);
+      await expect(controller.openExternalStream({
+        endpointId: deriveWorkspaceSyncEndpointId('r1', 'alpha'),
+      })).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
+    } finally {
+      await controller.shutdown();
+      vi.useRealTimers();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('rehydrates enabled relationships from settings without persisted Mutagen IDs', async () => {
     const events: string[] = [];
     const ensure = vi.fn(async () => status);
