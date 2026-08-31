@@ -17,12 +17,15 @@ describe('uninstallRelayRuntimePayloadLocal', () => {
     await mkdir(join(installRoot, 'ui-web'), { recursive: true });
     await mkdir(join(installRoot, 'config'), { recursive: true });
     await mkdir(join(installRoot, 'data'), { recursive: true });
+    await mkdir(join(installRoot, 'operator-backups'), { recursive: true });
     await mkdir(logDir, { recursive: true });
     await mkdir(join(root, 'bin'), { recursive: true });
     await writeFile(join(installRoot, 'bin', 'happier-server'), 'runtime');
     await writeFile(join(installRoot, 'ui-web', 'index.html'), 'runtime');
     await writeFile(join(installRoot, 'config', 'server.env'), 'PORT=3005\n');
     await writeFile(join(installRoot, 'data', 'home.sqlite'), 'home');
+    await writeFile(join(installRoot, 'operator-note.txt'), 'keep me');
+    await writeFile(join(installRoot, 'operator-backups', 'snapshot.tar'), 'keep this too');
     await writeFile(join(installRoot, 'logs', 'server.log'), 'log');
     await writeFile(statePath, '{}');
     await writeFile(shimPath, 'shim');
@@ -36,5 +39,7 @@ describe('uninstallRelayRuntimePayloadLocal', () => {
     await expect(access(logDir)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(join(installRoot, 'config', 'server.env'), 'utf8')).resolves.toBe('PORT=3005\n');
     await expect(readFile(join(installRoot, 'data', 'home.sqlite'), 'utf8')).resolves.toBe('home');
+    await expect(readFile(join(installRoot, 'operator-note.txt'), 'utf8')).resolves.toBe('keep me');
+    await expect(readFile(join(installRoot, 'operator-backups', 'snapshot.tar'), 'utf8')).resolves.toBe('keep this too');
   });
 });

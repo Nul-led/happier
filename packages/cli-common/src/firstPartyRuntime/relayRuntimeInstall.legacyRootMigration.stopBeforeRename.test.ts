@@ -131,8 +131,11 @@ describe('installOrUpdateRelayRuntimeLocal legacy root migration', () => {
                 platform: 'linux',
                 arch: 'arm64',
                 homeDir,
+                purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+                env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
                 runServiceCommands: true,
                 skipHealthCheck: true,
+                assertPersonalHomeStopped: async () => undefined,
             });
 
             const renameIndex = events.indexOf(`rename:${stableDefaults.installRoot}->${previewDefaults.installRoot}`);
@@ -142,6 +145,7 @@ describe('installOrUpdateRelayRuntimeLocal legacy root migration', () => {
             expect(preRenameEvents).toContain('stop:happier-server-preview');
             expect(events.slice(renameIndex + 1)).toContain('uninstall:happier-server');
             expect(events.slice(renameIndex + 1)).toContain('rm-service-definition');
+            expect(existsSync(join(previewDefaults.dataDir, '.operations', 'lock'))).toBe(false);
         } finally {
             await rm(homeDir, { recursive: true, force: true });
         }

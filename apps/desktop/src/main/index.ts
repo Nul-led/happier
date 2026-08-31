@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, protocol, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, ipcMain, protocol, safeStorage, type IpcMainInvokeEvent } from 'electron';
 
 import {
     BRIDGE_CHANNELS,
@@ -7,7 +7,9 @@ import {
     type BridgeInvokeRequest,
 } from '../shared/bridge';
 import { describeRequestTarget } from './commands/httpPlugin';
+import { ElectronIrohTunnelService } from './commands/irohTunnel';
 import { createCommandRegistry, describeNotImplemented, runCommand, type WindowMode } from './commands/registry';
+import { ElectronSecureStorage } from './commands/secureStorage';
 import type { CommandArgs, CommandContext } from './commands/types';
 import { DesktopEventBus } from './ipc/eventBus';
 import { InvokeLog } from './ipc/invokeLog';
@@ -34,6 +36,11 @@ const invokeLog = InvokeLog.fromEnvironment();
 let mainWindow: BrowserWindow | null = null;
 let windowMode: WindowMode = 'main';
 
+// Loaded only in the main process; the renderer/preload never touch the addon.
+const irohTunnel = new ElectronIrohTunnelService({
+    userDataPath: () => app.getPath('userData'),
+});
+
 const registry = createCommandRegistry({
     eventBus,
     showMainWindow: () => {
@@ -52,6 +59,11 @@ const registry = createCommandRegistry({
             return app.getLoginItemSettings().openAtLogin === true;
         },
     },
+    secureStorage: new ElectronSecureStorage({
+        userDataPath: () => app.getPath('userData'),
+        crypto: safeStorage,
+    }),
+    irohTunnel,
 });
 
 function buildCommandContext(event: IpcMainInvokeEvent): CommandContext {
@@ -142,6 +154,24 @@ if (!app.requestSingleInstanceLock()) {
         if (process.platform !== 'darwin') {
             app.quit();
         }
+    });
+
+    // Final application shutdown closes the shared Iroh process endpoint
+    // best-effort; the persistent identity key file is retained so restarts
+    // reuse the same endpoint identity. One settle guard keeps quit linear.
+    let irohShutdownSettled = false;
+    app.on('will-quit', (event) => {
+        if (irohShutdownSettled) return;
+        event.preventDefault();
+        irohShutdownSettled = true;
+        void irohTunnel
+            .shutdownForProcessExit()
+            .catch(() => {
+                // Best-effort: a failed teardown never blocks or fails quit.
+            })
+            .finally(() => {
+                app.quit();
+            });
     });
 
     app.on('activate', () => {

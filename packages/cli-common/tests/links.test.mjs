@@ -24,6 +24,7 @@ test('buildTerminalConnectLinks carries authenticated pairing context in both li
     webappUrl: 'https://app.happier.dev',
     serverUrl: 'https://api.happier.dev',
     publicKeyB64Url: 'terminal-key',
+    serverIdentityId: 'srv_home_expected',
     pairing: {
       secretB64Url: 'pairing-secret',
       createdAtMs: 1_000,
@@ -35,6 +36,7 @@ test('buildTerminalConnectLinks carries authenticated pairing context in both li
     assert.match(value, /pairingSecret=pairing-secret/);
     assert.match(value, /createdAt=1000/);
     assert.match(value, /expiresAt=61000/);
+    assert.match(value, /serverIdentityId=srv_home_expected/);
   }
 });
 
@@ -43,6 +45,7 @@ test('buildTerminalConnectLinks advertises token-only reader support only with a
     webappUrl: 'https://app.happier.dev',
     serverUrl: 'https://api.happier.dev',
     publicKeyB64Url: 'terminal-key',
+    serverIdentityId: 'srv_home_expected',
     pairing: {
       secretB64Url: 'pairing-secret',
       createdAtMs: 1_000,
@@ -61,6 +64,23 @@ test('buildTerminalConnectLinks advertises token-only reader support only with a
   });
   assert.doesNotMatch(unauthenticated.webUrl, /supportsTokenOnly/);
   assert.doesNotMatch(unauthenticated.mobileUrl, /supportsTokenOnly/);
+});
+
+test('buildTerminalConnectLinks rejects authenticated pairing without a stable Home identity', () => {
+  assert.throws(
+    () => buildTerminalConnectLinks({
+      webappUrl: 'https://app.happier.dev',
+      serverUrl: 'https://api.happier.dev',
+      publicKeyB64Url: 'terminal-key',
+      pairing: {
+        secretB64Url: 'pairing-secret',
+        createdAtMs: 1_000,
+        expiresAtMs: 61_000,
+      },
+      supportsTokenOnly: true,
+    }),
+    /stable Home identity/,
+  );
 });
 
 test('buildConfigureServerLinks encodes server URL', () => {

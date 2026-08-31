@@ -23,7 +23,8 @@ export type RemoteBootstrapCommandLabel =
   | 'daemon.service.start'
   | 'daemon.service.stop'
   | 'daemon.service.restart'
-  | 'relay.runtime.install';
+  | 'relay.runtime.install'
+  | 'relay.host.uninstall';
 
 function deriveWebappUrl(serverUrl: string, explicitWebappUrl?: string): string {
   if (typeof explicitWebappUrl === 'string' && explicitWebappUrl.trim()) {
@@ -157,6 +158,16 @@ export function buildRemoteBootstrapCommand(params: Readonly<{
       return `sudo -E ${happier} service restart --mode=system --json`;
     }
     return `${happier} service restart --mode=user --json`;
+  }
+  if (params.label === 'relay.host.uninstall') {
+    const relayRuntimeMode = params.data?.relayRuntimeMode === 'system' ? 'system' : 'user';
+    return [
+      `${happier} relay host uninstall`,
+      `--channel ${safeBashSingleQuote(params.channel ?? 'stable')}`,
+      `--mode ${relayRuntimeMode}`,
+      '--yes',
+      '--json',
+    ].join(' ');
   }
   if (params.label === 'relay.runtime.install') {
     const data = params.data ?? {};

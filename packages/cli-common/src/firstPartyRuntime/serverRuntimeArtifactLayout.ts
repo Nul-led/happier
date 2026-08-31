@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { mkdir, rename, stat } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, posix, win32 } from 'node:path';
 
 export const SERVER_RUNTIME_DIRECTORY_ENTRY_NAMES = Object.freeze([
     'generated',
@@ -35,11 +35,12 @@ export function resolveManagedServerRuntimePaths(params: Readonly<{
     migrationBinaryPath: string;
 }> {
     const names = resolveServerRuntimeExecutableNames(params.platform);
-    const runtimeRoot = join(params.installRoot, 'bin');
+    const pathApi = params.platform === 'win32' ? win32 : posix;
+    const runtimeRoot = pathApi.join(params.installRoot, 'bin');
     return {
         runtimeRoot,
-        serverBinaryPath: join(runtimeRoot, names.server),
-        migrationBinaryPath: join(runtimeRoot, names.migrate),
+        serverBinaryPath: pathApi.join(runtimeRoot, names.server),
+        migrationBinaryPath: pathApi.join(runtimeRoot, names.migrate),
     };
 }
 

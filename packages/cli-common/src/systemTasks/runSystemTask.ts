@@ -89,9 +89,10 @@ export async function executeSystemTask({
 
       const next = await iterator.next();
       if (next.done) {
-        if (effectiveSignal.aborted) {
-          return buildFailureResult(taskId, 'cancelled', 'System task execution was cancelled.');
-        }
+        // Cancellation is cooperative. A handler may deliberately stop consulting
+        // the signal after it crosses an irreversible boundary; once it returns a
+        // final fact snapshot, a concurrently delivered abort must not overwrite
+        // that completed outcome with a misleading cancelled result.
         return buildSuccessResult(taskId, next.value);
       }
 

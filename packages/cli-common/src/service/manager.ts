@@ -419,7 +419,7 @@ export function planServiceAction(params: Readonly<{
       return { writes, commands };
     }
     if (action === 'restart') {
-      commands.push(stopIfRunning());
+      commands.push({ cmd: 'schtasks', args: ['/End', '/TN', name], allowFail: true });
       commands.push({ cmd: 'schtasks', args: ['/Run', '/TN', name] });
       return { writes, commands };
     }

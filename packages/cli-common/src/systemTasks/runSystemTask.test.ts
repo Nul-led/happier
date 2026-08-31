@@ -264,4 +264,49 @@ describe('executeSystemTask', () => {
       },
     });
   });
+
+  it('preserves a completed result when the handler rejects a late cancellation after its boundary', async () => {
+    const controller = new AbortController();
+    let releaseHandler!: () => void;
+    const handlerMayFinish = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    const registry = createSystemTaskRegistry([
+      {
+        kind: 'system.commit-boundary.v1',
+        handler: async function* () {
+          yield {
+            type: 'progress',
+            message: 'committing',
+          };
+          await handlerMayFinish;
+          return { committed: true };
+        },
+      },
+    ]);
+
+    const resultPromise = executeSystemTask({
+      spec: {
+        protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+        kind: 'system.commit-boundary.v1',
+        params: null,
+      },
+      taskId: 'task-committed',
+      registry,
+      signal: controller.signal,
+      emitEvent() {
+        queueMicrotask(() => {
+          controller.abort();
+          releaseHandler();
+        });
+      },
+    });
+
+    await expect(resultPromise).resolves.toEqual({
+      protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+      taskId: 'task-committed',
+      ok: true,
+      data: { committed: true },
+    });
+  });
 });

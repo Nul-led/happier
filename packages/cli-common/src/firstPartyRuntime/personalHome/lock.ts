@@ -1,26 +1,306 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
+import { link, lstat, mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { mkdir, open, readFile, unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
-export type PersonalHomeOperationKind = 'backup'|'restore'|'erase'|'relocate'|'uninstall'|'upgrade';
-export class PersonalHomeOperationError extends Error { constructor(public readonly code: 'operation_in_progress'|'ambiguous_stale_lock', message: string) { super(message); this.name = 'PersonalHomeOperationError'; } }
-type LockRecord = { pid:number; host:string; startedAt:string; operation:PersonalHomeOperationKind };
-const lockPath = (dataDir:string) => resolve(dataDir, '.operations', 'lock');
-async function ownerAlive(r: LockRecord): Promise<boolean|null> {
-  if (r.host !== hostname()) return null;
-  try { process.kill(r.pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'ESRCH' ? false : null; }
-}
-export async function acquirePersonalHomeOperationLock(dataDir:string, operation:PersonalHomeOperationKind): Promise<()=>Promise<void>> {
-  const path = lockPath(dataDir); await mkdir(dirname(path), {recursive:true});
-  const record: LockRecord = {pid:process.pid, host:hostname(), startedAt:new Date().toISOString(), operation};
-  try { const h = await open(path, 'wx', 0o600); await h.writeFile(JSON.stringify(record)); await h.close(); }
-  catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-    let existing: LockRecord; try { existing = JSON.parse(await readFile(path, 'utf8')) as LockRecord; } catch { throw new PersonalHomeOperationError('ambiguous_stale_lock', 'Unable to inspect operation lock'); }
-    const alive = await ownerAlive(existing); if (alive !== false) throw new PersonalHomeOperationError(alive === null ? 'ambiguous_stale_lock' : 'operation_in_progress', 'Personal Home operation is already in progress');
-    await unlink(path); return acquirePersonalHomeOperationLock(dataDir, operation);
+export type PersonalHomeOperationKind = 'inspect' | 'backup' | 'verify_backup' | 'restore' | 'erase' | 'relocate' | 'uninstall' | 'upgrade' | 'lifecycle';
+export type PersonalHomeOperationRole = 'source' | 'destination';
+
+export class PersonalHomeOperationError extends Error {
+  constructor(
+    public readonly code: 'operation_in_progress' | 'ambiguous_stale_lock',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'PersonalHomeOperationError';
   }
-  return async () => { try { const current = JSON.parse(await readFile(path, 'utf8')) as LockRecord; if (current.pid === process.pid && current.host === hostname()) await unlink(path); } catch { /* lock already gone */ } };
 }
-export async function withPersonalHomeOperationLock<T>(dataDir:string, operation:PersonalHomeOperationKind, fn:()=>Promise<T>):Promise<T> { const release = await acquirePersonalHomeOperationLock(dataDir, operation); try { return await fn(); } finally { await release(); } }
-export function normalizePersonalHomeLockOrder(dataDirs:string[]): string[] { return [...dataDirs].map((path: string): string => resolve(path)).sort((a,b)=>a.toLocaleLowerCase().localeCompare(b.toLocaleLowerCase())); }
+
+type LockRecord = Readonly<{
+  token: string;
+  pid: number;
+  host: string;
+  startedAt: string;
+  operation: PersonalHomeOperationKind;
+  role?: PersonalHomeOperationRole;
+}>;
+
+const lockPath = (dataDir: string): string => resolve(dataDir, '.operations', 'lock');
+
+type AsyncLockOwnership = {
+  active: boolean;
+  operation: PersonalHomeOperationKind;
+  token: string;
+};
+
+// Canonical lock paths owned by the current async operation. The active bit prevents a detached
+// descendant from retaining authority after the operation callback has completed and its file
+// lock has been released.
+const heldLockPaths = new AsyncLocalStorage<ReadonlyMap<string, AsyncLockOwnership>>();
+
+function parseLockRecord(value: string): LockRecord {
+  const parsed = JSON.parse(value) as Partial<LockRecord>;
+  if (
+    typeof parsed.token !== 'string'
+    || !parsed.token
+    || typeof parsed.pid !== 'number'
+    || typeof parsed.host !== 'string'
+    || typeof parsed.startedAt !== 'string'
+    || typeof parsed.operation !== 'string'
+    || (parsed.role !== undefined && parsed.role !== 'source' && parsed.role !== 'destination')
+  ) throw new Error('Invalid Personal Home operation lock record');
+  return parsed as LockRecord;
+}
+
+async function ownerAlive(record: LockRecord): Promise<boolean | null> {
+  if (record.host !== hostname()) return null;
+  try {
+    process.kill(record.pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH' ? false : null;
+  }
+}
+
+async function writeExclusiveTakeoverClaim(path: string, record: LockRecord): Promise<boolean> {
+  const temporaryPath = `${path}.${record.token}.tmp`;
+  const handle = await open(temporaryPath, 'wx', 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(record)}\n`);
+  } finally {
+    await handle.close();
+  }
+  try {
+    await link(temporaryPath, path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw error;
+  } finally {
+    await unlink(temporaryPath).catch(() => undefined);
+  }
+}
+
+async function releaseExactTakeoverClaim(path: string, pinnedPath: string, token: string): Promise<void> {
+  try {
+    const current = parseLockRecord(await readFile(path, 'utf8'));
+    if (current.token !== token) return;
+    await unlink(pinnedPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    await unlink(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+async function isPersonalHomeOperationLeaseAttested(
+  dataDir: string,
+  expectedOperation?: PersonalHomeOperationKind,
+): Promise<boolean> {
+  const path = lockPath(dataDir);
+  const ownership = heldLockPaths.getStore()?.get(path);
+  if (ownership?.active !== true || (expectedOperation !== undefined && ownership.operation !== expectedOperation)) return false;
+  try {
+    const record = parseLockRecord(await readFile(path, 'utf8'));
+    return record.token === ownership.token
+      && record.host === hostname()
+      && record.pid === process.pid
+      && record.operation === ownership.operation;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+export async function isPersonalHomeOperationLockHeld(dataDir: string, operation: PersonalHomeOperationKind): Promise<boolean> {
+  return isPersonalHomeOperationLeaseAttested(dataDir, operation);
+}
+
+type PersonalHomeOperationLease = Readonly<{
+  record: LockRecord;
+  release: (movedToDataDirs?: readonly string[]) => Promise<void>;
+}>;
+
+async function acquirePersonalHomeOperationLease(
+  dataDir: string,
+  operation: PersonalHomeOperationKind,
+  options: Readonly<{ role?: PersonalHomeOperationRole }> = {},
+): Promise<PersonalHomeOperationLease> {
+  const path = lockPath(dataDir);
+  const takeoverPath = `${path}.takeover`;
+  const pinnedTakeoverPath = `${takeoverPath}.inode`;
+  await mkdir(dirname(path), { recursive: true });
+  const record: LockRecord = {
+    token: randomUUID(),
+    pid: process.pid,
+    host: hostname(),
+    startedAt: new Date().toISOString(),
+    operation,
+    ...(options.role ? { role: options.role } : {}),
+  };
+
+  for (;;) {
+    let takeover: LockRecord | null = null;
+    try {
+      takeover = parseLockRecord(await readFile(takeoverPath, 'utf8'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new PersonalHomeOperationError('ambiguous_stale_lock', 'Unable to inspect Personal Home lock takeover owner');
+      }
+    }
+    if (takeover) {
+      const takeoverAlive = await ownerAlive(takeover);
+      if (takeoverAlive !== false) {
+        throw new PersonalHomeOperationError(
+          takeoverAlive === null ? 'ambiguous_stale_lock' : 'operation_in_progress',
+          'Personal Home lock takeover is in progress',
+        );
+      }
+      await releaseExactTakeoverClaim(takeoverPath, pinnedTakeoverPath, takeover.token);
+      continue;
+    }
+    try {
+      const handle = await open(path, 'wx', 0o600);
+      try {
+        await handle.writeFile(`${JSON.stringify(record)}\n`);
+      } finally {
+        await handle.close();
+      }
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      let existing: LockRecord;
+      try {
+        existing = parseLockRecord(await readFile(path, 'utf8'));
+      } catch (readError) {
+        if ((readError as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw new PersonalHomeOperationError('ambiguous_stale_lock', 'Unable to inspect operation lock');
+      }
+      const alive = await ownerAlive(existing);
+      if (alive !== false) {
+        throw new PersonalHomeOperationError(
+          alive === null ? 'ambiguous_stale_lock' : 'operation_in_progress',
+          'Personal Home operation is already in progress',
+        );
+      }
+
+      if (!(await writeExclusiveTakeoverClaim(takeoverPath, record))) continue;
+      try {
+        // The claimant record identifies the takeover process so an interrupted takeover is
+        // recoverable. This separate hard link pins the exact stale inode being replaced.
+        await link(path, pinnedTakeoverPath);
+        const [current, pinned] = await Promise.all([lstat(path), lstat(pinnedTakeoverPath)]);
+        const pinnedRecord = parseLockRecord(await readFile(pinnedTakeoverPath, 'utf8'));
+        if (current.dev !== pinned.dev || current.ino !== pinned.ino || pinnedRecord.token !== existing.token) {
+          throw new PersonalHomeOperationError('operation_in_progress', 'Personal Home lock changed during stale takeover');
+        }
+        await unlink(path);
+        const handle = await open(path, 'wx', 0o600);
+        try { await handle.writeFile(`${JSON.stringify(record)}\n`); } finally { await handle.close(); }
+        break;
+      } catch (claimError) {
+        const code = (claimError as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'EEXIST') continue;
+        if (claimError instanceof PersonalHomeOperationError) throw claimError;
+        throw new PersonalHomeOperationError('ambiguous_stale_lock', 'Filesystem cannot safely claim the stale Personal Home lock');
+      } finally {
+        await releaseExactTakeoverClaim(takeoverPath, pinnedTakeoverPath, record.token);
+      }
+    }
+  }
+
+  return {
+    record,
+    release: async (movedToDataDirs = []) => {
+      const releasePaths = new Set([
+        path,
+        ...movedToDataDirs.map((dataDir) => lockPath(dataDir)),
+      ]);
+      for (const releasePath of releasePaths) {
+        try {
+          const current = parseLockRecord(await readFile(releasePath, 'utf8'));
+          if (current.token === record.token) await unlink(releasePath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      }
+    },
+  };
+}
+
+export async function acquirePersonalHomeOperationLock(
+  dataDir: string,
+  operation: PersonalHomeOperationKind,
+  options: Readonly<{ role?: PersonalHomeOperationRole }> = {},
+): Promise<() => Promise<void>> {
+  return (await acquirePersonalHomeOperationLease(dataDir, operation, options)).release;
+}
+
+export async function withPersonalHomeOperationLock<T>(
+  dataDir: string,
+  operation: PersonalHomeOperationKind,
+  fn: () => Promise<T>,
+  options: Readonly<{ movedToDataDir?: string }> = {},
+): Promise<T> {
+  const path = lockPath(dataDir);
+  const held = heldLockPaths.getStore();
+  if (operation === 'lifecycle' && await isPersonalHomeOperationLeaseAttested(dataDir)) {
+    // Genuine nesting: the enclosing Personal Home operation owns this Home's lease and its
+    // production lifecycle adapter (start/stop/restart) proceeds under the same lease instead
+    // of deadlocking against it. Independent flows in the same process never inherit this
+    // context and still contend on the exclusive lock file; nested mutations stay exclusive.
+    return await fn();
+  }
+  const lease = await acquirePersonalHomeOperationLease(dataDir, operation);
+  const ownership: AsyncLockOwnership = { active: true, operation, token: lease.record.token };
+  try {
+    return await heldLockPaths.run(new Map([...(held ?? []), [path, ownership]]), fn);
+  } finally {
+    ownership.active = false;
+    await lease.release(options.movedToDataDir ? [options.movedToDataDir] : []);
+  }
+}
+
+export async function withPersonalHomeOperationLocks<T>(
+  locks: readonly Readonly<{ dataDir: string; role?: PersonalHomeOperationRole }>[],
+  operation: PersonalHomeOperationKind,
+  fn: () => Promise<T>,
+  platform: NodeJS.Platform = process.platform,
+): Promise<T> {
+  const roleByPath = new Map(locks.map(({ dataDir, role }) => [resolve(dataDir), role]));
+  const orderedDataDirs = normalizePersonalHomeLockOrder(locks.map(({ dataDir }) => dataDir), platform);
+  const acquired: Array<Readonly<{
+    path: string;
+    ownership: AsyncLockOwnership;
+    release: () => Promise<void>;
+  }>> = [];
+
+  try {
+    for (const dataDir of orderedDataDirs) {
+      const lease = await acquirePersonalHomeOperationLease(dataDir, operation, { role: roleByPath.get(dataDir) });
+      acquired.push({
+        path: lockPath(dataDir),
+        ownership: { active: true, operation, token: lease.record.token },
+        release: lease.release,
+      });
+    }
+    const held = heldLockPaths.getStore();
+    const ownedPaths = new Map(held);
+    for (const lock of acquired) ownedPaths.set(lock.path, lock.ownership);
+    return await heldLockPaths.run(ownedPaths, fn);
+  } finally {
+    for (const lock of acquired) lock.ownership.active = false;
+    for (const lock of acquired.reverse()) await lock.release();
+  }
+}
+
+export function normalizePersonalHomeLockOrder(dataDirs: readonly string[], platform: NodeJS.Platform = process.platform): string[] {
+  const byIdentity = new Map<string, string>();
+  for (const path of dataDirs.map((value) => resolve(value))) { const identity = platform === 'win32' || platform === 'darwin' ? path.toLocaleLowerCase('en-US') : path; if (!byIdentity.has(identity)) byIdentity.set(identity, path); }
+  return [...byIdentity.values()].sort((left, right) => {
+    const folded = left.toLocaleLowerCase('en-US').localeCompare(right.toLocaleLowerCase('en-US'));
+    return folded === 0 ? left.localeCompare(right) : folded;
+  });
+}

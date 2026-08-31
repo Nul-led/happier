@@ -1,4 +1,9 @@
-import type { RelayRuntimeTaskParams, SystemTaskSshConnectionConfig } from '@happier-dev/cli-common/systemTasks';
+import {
+  createOpenSshHappierJsonExecutor,
+  parseStrictPersonalHomeTaskFinalResult,
+  type RelayRuntimeTaskParams,
+  type SystemTaskSshConnectionConfig,
+} from '@happier-dev/cli-common/systemTasks';
 import type { SystemTaskJsonObject } from '@happier-dev/protocol';
 import type { OpenSshAuth } from '@happier-dev/cli-common/ssh';
 import { runRemoteTextSync } from '@happier-dev/cli-common/ssh';
@@ -167,4 +172,50 @@ export async function runRemoteRelayRuntimeCommandDefault(params: Readonly<{
     action: params.action,
   });
   return null;
+}
+
+export async function runRemotePersonalHomeCommandDefault(params: Readonly<{
+  ssh: SystemTaskSshConnectionConfig;
+  auth: RemoteSshAuth;
+  knownHostsMode: 'app' | 'system';
+  channel: 'stable' | 'preview' | 'dev';
+  mode: 'user' | 'system';
+  args: readonly string[];
+}>): Promise<SystemTaskJsonObject> {
+  const ssh = buildRemoteSshConnection(params.ssh, params.auth);
+  const knownHosts = resolveKnownHostsConfig(ssh, params.knownHostsMode);
+  const auth: OpenSshAuth = ssh.auth === 'keyfile'
+    ? { mode: 'keyFile', privateKeyPath: String(ssh.identityFile ?? '') }
+    : ssh.auth === 'password'
+      ? { mode: 'password', password: String(ssh.password ?? '') }
+      : { mode: 'agent' };
+  const executor = createOpenSshHappierJsonExecutor({
+    ssh,
+    auth,
+    knownHostsMode: params.knownHostsMode,
+    channel: params.channel === 'dev' ? 'publicdev' : params.channel,
+    runRemoteText: async ({ remoteCommand }) => {
+      const result = runRemoteTextSync({
+        target: ssh.target,
+        port: ssh.port,
+        sshConfigFile: ssh.sshConfigFile,
+        knownHostsMode: knownHosts.mode,
+        knownHostsPath: knownHosts.mode === 'app' ? knownHosts.path : undefined,
+        auth,
+        remoteCommand,
+        connectTimeoutSec: 10,
+        errorPrefix: `Remote Personal Home command failed for ${ssh.target}`,
+      });
+      return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+    },
+  });
+  const output = await executor.runHappierText(params.args);
+  if (output.status !== 0) {
+    throw new Error(redactSshText(output.stderr || output.stdout || `Remote Personal Home command failed for ${ssh.target}.`));
+  }
+  const data = parseStrictPersonalHomeTaskFinalResult(output.stdout).data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('Remote Personal Home command did not return an object result.');
+  }
+  return data;
 }

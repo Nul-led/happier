@@ -41,16 +41,20 @@ export class FirstPartyPayloadMutationLockError extends Error {
 }
 
 export async function withFirstPartyPayloadMutationLock<T>(params: Readonly<{
-  layout: FirstPartyInstallLayout;
   operation: () => Promise<T>;
-}>): Promise<T> {
+}> & (
+  | Readonly<{ layout: FirstPartyInstallLayout }>
+  | Readonly<{ installRoot: string; lockParentDir: string }>
+)): Promise<T> {
   // `proper-lockfile` is CommonJS and ships no declarations. Load it only for the
   // mutation path so unrelated consumers of the first-party-runtime barrel stay side-effect-free.
   const properLockfile = createRequire(import.meta.url)('proper-lockfile') as ProperLockfileApi;
-  await mkdir(params.layout.happyHomeDir, { recursive: true });
-  const lockfilePath = `${params.layout.installRoot}.mutation.lock`;
+  const installRoot = 'layout' in params ? params.layout.installRoot : params.installRoot;
+  const lockParentDir = 'layout' in params ? params.layout.happyHomeDir : params.lockParentDir;
+  await mkdir(lockParentDir, { recursive: true });
+  const lockfilePath = `${installRoot}.mutation.lock`;
   let compromisedError: Error | null = null;
-  const release = await properLockfile.lock(params.layout.installRoot, {
+  const release = await properLockfile.lock(installRoot, {
     lockfilePath,
     realpath: false,
     stale: PAYLOAD_MUTATION_LOCK_STALE_MS,
@@ -75,7 +79,7 @@ export async function withFirstPartyPayloadMutationLock<T>(params: Readonly<{
     if (compromisedError) {
       throw new FirstPartyPayloadMutationLockError({
         code: 'FIRST_PARTY_PAYLOAD_MUTATION_LOCK_COMPROMISED',
-        message: `First-party payload mutation lock was compromised for '${params.layout.installRoot}'.`,
+        message: `First-party payload mutation lock was compromised for '${installRoot}'.`,
         cause: compromisedError,
       });
     }
@@ -89,7 +93,7 @@ export async function withFirstPartyPayloadMutationLock<T>(params: Readonly<{
   } catch (releaseError) {
     const wrappedReleaseError = new FirstPartyPayloadMutationLockError({
       code: 'FIRST_PARTY_PAYLOAD_MUTATION_LOCK_RELEASE_FAILED',
-      message: `First-party payload mutation lock could not be released for '${params.layout.installRoot}'.`,
+      message: `First-party payload mutation lock could not be released for '${installRoot}'.`,
       cause: releaseError,
     });
     if (outcome && !outcome.ok) {

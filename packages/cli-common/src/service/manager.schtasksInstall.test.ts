@@ -32,4 +32,20 @@ describe('planServiceAction (schtasks install)', () => {
     expect(create?.args).toContain('/TR');
     expect(create?.args[create.args.indexOf('/TR') + 1]).toBe('powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\\Users\\test\\.happier\\services\\happier-daemon.default.ps1"');
   });
+
+  it('plans restart as an ordered task end followed by task run', () => {
+    const plan = planServiceAction({
+      backend: 'schtasks-user',
+      action: 'restart',
+      label: 'happier-server',
+      taskName: 'Happier\\happier-server',
+      definitionPath: 'C:\\Users\\test\\.happier\\services\\happier-server.ps1',
+      persistent: true,
+    });
+
+    expect(plan.commands).toMatchObject([
+      { cmd: 'schtasks', args: ['/End', '/TN', 'Happier\\happier-server'] },
+      { cmd: 'schtasks', args: ['/Run', '/TN', 'Happier\\happier-server'] },
+    ]);
+  });
 });

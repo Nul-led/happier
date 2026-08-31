@@ -28,6 +28,10 @@ function createHarness() {
     const eventBus = new DesktopEventBus();
     const shown: number[] = [];
     let autostartEnabled = false;
+    const secureValues = new Map<string, string>();
+    const irohStarts: unknown[] = [];
+    const irohStops: string[] = [];
+    const irohStatusReads: string[] = [];
     const registry = createCommandRegistry({
         eventBus,
         showMainWindow: () => {
@@ -42,6 +46,28 @@ function createHarness() {
                 return autostartEnabled;
             },
         },
+        secureStorage: {
+            read: async (key) => secureValues.get(key) ?? null,
+            write: async (key, value) => {
+                secureValues.set(key, value);
+            },
+            remove: async (key) => {
+                secureValues.delete(key);
+            },
+        },
+        irohTunnel: {
+            startHomeTunnel: async (request) => {
+                irohStarts.push(request);
+                return { leaseId: 'iroh-lease-1' };
+            },
+            stopHomeTunnel: async (leaseId) => {
+                irohStops.push(leaseId);
+            },
+            getTunnelStatus: async (leaseId) => {
+                irohStatusReads.push(leaseId);
+                return { active: false, connectionActive: false, observedPath: 'relay' };
+            },
+        },
         platform: 'darwin',
     });
     const sender = createFakeSender();
@@ -53,8 +79,31 @@ function createHarness() {
             sender.send('happier-desktop:callback', { callbackId, payload, once: false });
         },
     } satisfies CommandContext;
-    return { eventBus, registry, sender, context, shown };
+    return { eventBus, registry, sender, context, shown, secureValues, irohStarts, irohStops, irohStatusReads };
 }
+
+test('secure storage commands share the Tauri schema and roundtrip through the injected OS boundary', async () => {
+    const { registry, context, secureValues } = createHarness();
+    const key = 'home:token';
+
+    assert.deepEqual(await runCommand(registry, 'desktop_secure_storage_read', { key }, context), {
+        kind: 'implemented',
+        value: null,
+    });
+    assert.deepEqual(await runCommand(registry, 'desktop_secure_storage_write', { key, value: 'secret' }, context), {
+        kind: 'implemented',
+        value: null,
+    });
+    assert.equal(secureValues.get(key), 'secret');
+    assert.deepEqual(await runCommand(registry, 'desktop_secure_storage_read', { key }, context), {
+        kind: 'implemented',
+        value: 'secret',
+    });
+    assert.deepEqual(await runCommand(registry, 'desktop_secure_storage_remove', { key }, context), {
+        kind: 'implemented',
+        value: null,
+    });
+});
 
 test('an unimplemented product command is reported as not-implemented, never as a value', async () => {
     const { registry, context } = createHarness();
@@ -148,4 +197,42 @@ test('autostart reads back the value it was asked to set', async () => {
         kind: 'implemented',
         value: true,
     });
+});
+
+test('iroh commands share the exact Tauri names and route through the shared lifecycle service', async () => {
+    const { registry, context, irohStarts, irohStops, irohStatusReads } = createHarness();
+
+    const start = await runCommand(
+        registry,
+        'iroh_start_home_tunnel',
+        { request: { homeServerIdentityId: 'srv_home_a', endpointId: 'endpoint-a', policy: 'automatic' } },
+        context,
+    );
+    assert.deepEqual(start, { kind: 'implemented', value: { leaseId: 'iroh-lease-1' } });
+    assert.deepEqual(irohStarts, [{ homeServerIdentityId: 'srv_home_a', endpointId: 'endpoint-a', policy: 'automatic' }]);
+
+    assert.deepEqual(await runCommand(registry, 'iroh_stop_home_tunnel', { leaseId: 'iroh-lease-1' }, context), {
+        kind: 'implemented',
+        value: null,
+    });
+    assert.deepEqual(irohStops, ['iroh-lease-1']);
+
+    assert.deepEqual(await runCommand(registry, 'iroh_get_home_tunnel_status', { leaseId: 'iroh-lease-1' }, context), {
+        kind: 'implemented',
+        value: { active: false, connectionActive: false, observedPath: 'relay' },
+    });
+    assert.deepEqual(irohStatusReads, ['iroh-lease-1']);
+
+    await assert.rejects(
+        runCommand(registry, 'iroh_start_home_tunnel', {}, context),
+        /requires a request/u,
+    );
+    await assert.rejects(
+        runCommand(registry, 'iroh_stop_home_tunnel', {}, context),
+        /requires a leaseId/u,
+    );
+    await assert.rejects(
+        runCommand(registry, 'iroh_get_home_tunnel_status', {}, context),
+        /requires a leaseId/u,
+    );
 });

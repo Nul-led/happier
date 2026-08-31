@@ -1,7 +1,15 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
+import {
+  readSqliteMigrationCatalog,
+  resolveInstalledPersonalHomeSqliteMigrationPaths,
+  resolvePersonalHomeRuntimeLayout,
+  resolveRelayRuntimeDefaults,
+} from '@happier-dev/cli-common/firstPartyRuntime';
 import { executeSystemTask, type BackgroundServiceSetupGuidance } from '@happier-dev/cli-common/systemTasks';
 import { createFakeTailscaleCli } from '@happier-dev/tests/testkit/tailscale/fakeTailscaleCli';
 import { describe, expect, it, vi } from 'vitest';
@@ -336,6 +344,73 @@ async function executeSetupRepairThisComputerTask(): Promise<Awaited<ReturnType<
   });
 }
 
+async function prepareBootstrapPersonalHomeFixture(homeDir: string): Promise<Readonly<{
+  archivePath: string;
+  canonicalServerUrl: string;
+  identity: string;
+  layout: ReturnType<typeof resolvePersonalHomeRuntimeLayout>;
+}>> {
+  const canonicalServerUrl = 'http://127.0.0.1:52123';
+  const identity = 'bootstrap-default-registry-home';
+  const defaults = resolveRelayRuntimeDefaults({
+    platform: process.platform,
+    mode: 'user',
+    channel: 'stable',
+    homeDir,
+  });
+  mkdirSync(defaults.configDir, { recursive: true });
+  writeFileSync(join(defaults.configDir, 'server.env'), [
+    `HAPPIER_SERVER_LIGHT_DATA_DIR=${defaults.dataDir}`,
+    `HAPPIER_PUBLIC_SERVER_URL=${canonicalServerUrl}`,
+    'HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY=plaintext_only',
+    'HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE=plain',
+    'AUTH_ANONYMOUS_SIGNUP_ENABLED=0',
+    '',
+  ].join('\n'));
+  const layout = resolvePersonalHomeRuntimeLayout({ homeDir, platform: process.platform, mode: 'user' });
+  const migrationPaths = resolveInstalledPersonalHomeSqliteMigrationPaths({
+    installRoot: layout.installRoot,
+    platform: layout.platform,
+  });
+  const migration = {
+    name: '20260830000000_bootstrap_default_registry',
+    sql: 'CREATE TABLE bootstrap_default_registry_fixture (id TEXT);',
+  } as const;
+  const migrationDir = join(migrationPaths.migrationsDir, migration.name);
+  mkdirSync(migrationDir, { recursive: true });
+  writeFileSync(join(migrationDir, 'migration.sql'), migration.sql);
+  const [installedMigration] = await readSqliteMigrationCatalog(migrationPaths.migrationsDir);
+  if (!installedMigration) throw new Error('Bootstrap Personal Home migration fixture was not installed.');
+  const serverBinaryPath = join(layout.installRoot, 'bin', 'happier-server');
+  mkdirSync(join(layout.installRoot, 'bin'), { recursive: true });
+  writeFileSync(serverBinaryPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  chmodSync(serverBinaryPath, 0o755);
+  mkdirSync(layout.publicFilesDir, { recursive: true });
+  mkdirSync(layout.privateFilesDir, { recursive: true });
+  writeFileSync(layout.masterSecretPath, 'bootstrap-master-secret');
+  writeFileSync(join(layout.publicFilesDir, 'public.txt'), 'bootstrap-public-bytes');
+  writeFileSync(join(layout.privateFilesDir, 'private.txt'), 'bootstrap-private-bytes');
+  const database = new DatabaseSync(layout.databasePath);
+  database.exec('PRAGMA journal_mode=WAL');
+  database.exec('CREATE TABLE SimpleCache (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+  database.exec('CREATE TABLE bootstrap_transcript (id TEXT PRIMARY KEY, body TEXT NOT NULL)');
+  database.exec('CREATE TABLE _prisma_migrations (migration_name TEXT NOT NULL, checksum TEXT NOT NULL, finished_at TEXT, rolled_back_at TEXT)');
+  database.prepare('INSERT INTO SimpleCache (key, value) VALUES (?, ?)').run('server.identity.v1', identity);
+  database.prepare('INSERT INTO bootstrap_transcript (id, body) VALUES (?, ?)').run('message-1', 'bootstrap transcript bytes');
+  database.prepare('INSERT INTO _prisma_migrations (migration_name, checksum, finished_at, rolled_back_at) VALUES (?, ?, ?, NULL)').run(
+    migration.name,
+    createHash('sha256').update(migration.sql).digest('hex'),
+    new Date().toISOString(),
+  );
+  database.close();
+  return {
+    archivePath: join(homeDir, 'bootstrap-default-registry.tar'),
+    canonicalServerUrl,
+    identity,
+    layout,
+  };
+}
+
 describe('createHsetupSystemTaskRegistry', () => {
   it('uses the publicdev release ring when setup.thisComputer.v1 specifies channel publicdev', async () => {
     const fakeCli = createFakeHappierCli({});
@@ -420,7 +495,6 @@ describe('createHsetupSystemTaskRegistry', () => {
       });
       expect(fakeCli.readInvocations()).toEqual([
         ['server', 'current', '--json'],
-        ['auth', 'status', '--json'],
         ['service', 'status', '--json'],
       ]);
     } finally {
@@ -468,8 +542,8 @@ describe('createHsetupSystemTaskRegistry', () => {
       expect(summarizeSetupLifecycleEvents(events)).toEqual([
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.ensureCli' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.resolveRelay' }),
-        expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.checkAuth' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.configureRelay' }),
+        expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.checkAuth' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.installService' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.startService' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.verifyService' }),
@@ -484,9 +558,9 @@ describe('createHsetupSystemTaskRegistry', () => {
       });
       expect(fakeCli.readInvocations()).toEqual([
         ['server', 'current', '--json'],
-        ['auth', 'status', '--json'],
         ['service', 'status', '--json'],
         ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
+        ['auth', 'status', '--json'],
         ['service', 'install', '--json'],
         ['service', 'start', '--json'],
         ['daemon', 'status', '--json'],
@@ -533,8 +607,8 @@ describe('createHsetupSystemTaskRegistry', () => {
       expect(summarizeSetupLifecycleEvents(events)).toEqual([
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.ensureCli' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.resolveRelay' }),
-        expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.checkAuth' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.configureRelay' }),
+        expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.checkAuth' }),
       ]);
       expect(result).toEqual({
         protocolVersion: 1,
@@ -546,8 +620,8 @@ describe('createHsetupSystemTaskRegistry', () => {
       });
       expect(fakeCli.readInvocations()).toEqual([
         ['server', 'current', '--json'],
-        ['auth', 'status', '--json'],
         ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
+        ['auth', 'status', '--json'],
       ]);
     } finally {
       restoreEnvVar('HAPPIER_BOOTSTRAP_CLI_PATH', previousCliPath);
@@ -635,10 +709,6 @@ describe('createHsetupSystemTaskRegistry', () => {
       expect.objectContaining({
         type: 'progress',
         stepId: 'setup.thisComputer.resolveRelay',
-      }),
-      expect.objectContaining({
-        type: 'progress',
-        stepId: 'setup.thisComputer.checkAuth',
       }),
       expect.objectContaining({
         type: 'prompt',
@@ -898,8 +968,8 @@ describe('createHsetupSystemTaskRegistry', () => {
       expect(summarizeSetupLifecycleEvents(events)).toEqual([
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.ensureCli' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.resolveRelay' }),
-        expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.checkAuth' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.configureRelay' }),
+        expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.checkAuth' }),
         expect.objectContaining({ type: 'prompt', stepId: 'setup.thisComputer.auth.request' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.auth.wait' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.installService' }),
@@ -916,9 +986,9 @@ describe('createHsetupSystemTaskRegistry', () => {
       });
       expect(fakeCli.readInvocations()).toEqual([
         ['server', 'current', '--json'],
-        ['auth', 'status', '--json'],
         ['service', 'status', '--json'],
         ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
+        ['auth', 'status', '--json'],
         ['auth', 'request', '--json'],
         ['auth', 'wait', '--public-key', 'public-key-local-1', '--json'],
         ['service', 'install', '--json'],
@@ -968,9 +1038,9 @@ describe('createHsetupSystemTaskRegistry', () => {
       });
       expect(fakeCli.readInvocations()).toEqual([
         ['server', 'current', '--json'],
-        ['auth', 'status', '--json'],
         ['service', 'status', '--json'],
         ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
+        ['auth', 'status', '--json'],
         ['auth', 'request', '--json'],
       ]);
     } finally {
@@ -1048,9 +1118,9 @@ describe('createHsetupSystemTaskRegistry', () => {
       });
       expect(fakeCli.readInvocations()).toEqual([
         ['server', 'current', '--json'],
-        ['auth', 'status', '--json'],
         ['service', 'status', '--json'],
         ['server', 'set', '--server-url', 'https://relay.example.test', '--webapp-url', 'https://app.example.test', '--json'],
+        ['auth', 'status', '--json'],
         ['auth', 'request', '--json'],
         ['auth', 'approve', '--public-key', 'public-key-local-2', '--json'],
         ['auth', 'wait', '--public-key', 'public-key-local-2', '--json'],
@@ -1608,6 +1678,43 @@ describe('createHsetupSystemTaskRegistry', () => {
 
     expect(controlled).toEqual(['start']);
     expect(result.ok).toBe(true);
+  });
+
+  it('runs relay.runtime.uninstall.v1 through the canonical safe lifecycle controller', async () => {
+    const controlled: string[] = [];
+    const events: unknown[] = [];
+    const result = await executeSystemTask({
+      spec: {
+        protocolVersion: 1,
+        kind: 'relay.runtime.uninstall.v1',
+        params: {
+          target: { kind: 'local' },
+          channel: 'stable',
+          mode: 'user',
+        },
+      },
+      taskId: 'task_uninstall_1',
+      registry: createHsetupSystemTaskRegistry({
+        relayRuntime: {
+          async control(params) {
+            controlled.push(params.action);
+          },
+        },
+      }),
+      emitEvent(event) {
+        events.push(event);
+      },
+    });
+
+    expect(controlled).toEqual(['uninstall']);
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: 'progress',
+        stepId: 'relay.uninstall',
+        message: 'Uninstalling relay runtime',
+      }),
+    ]);
+    expect(result).toMatchObject({ ok: true, data: { uninstalled: true } });
   });
 
   it('runs relay.connectBackgroundService.v1 through the drift repair handler', async () => {
@@ -2755,6 +2862,265 @@ describe('createHsetupSystemTaskRegistry', () => {
       });
     } finally {
       process.env.HOME = previousHome;
+      rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes a Personal Home operation task through the registry owner', async () => {
+    const invoked: unknown[] = [];
+    const registry = createHsetupSystemTaskRegistry({
+      personalHomeOperations: {
+        inspect: async () => {
+          invoked.push('inspect');
+          return { operation: 'inspect', status: 'ok' };
+        },
+        backup: async () => ({}),
+        verifyBackup: async () => ({}),
+        restore: async () => ({}),
+        recoverRestore: async () => ({}),
+        finalizeRestore: async () => ({}),
+        erase: async () => ({}),
+        relocate: async () => ({}),
+      },
+    });
+
+    const result = await executeSystemTask({
+      spec: {
+        protocolVersion: 1,
+        kind: 'relay.runtime.personal_home.inspect.v1',
+        params: {
+          target: { kind: 'local' },
+          purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+        },
+      },
+      taskId: 'task_personal_home_inspect_1',
+      registry,
+      now: () => 1700000000000,
+      emitEvent: () => undefined,
+    });
+
+    expect(result).toMatchObject({ ok: true, data: { operation: 'inspect', status: 'ok' } });
+    expect(invoked).toEqual(['inspect']);
+  });
+
+  it('registers all six exact Personal Home task kinds against one operations instance', async () => {
+    const calls: string[] = [];
+    const registry = createHsetupSystemTaskRegistry({
+      personalHomeOperations: {
+        inspect: async () => (calls.push('inspect'), {}),
+        backup: async () => (calls.push('backup'), {}),
+        verifyBackup: async () => (calls.push('verify_backup'), {}),
+        restore: async () => (calls.push('restore'), {}),
+        recoverRestore: async () => ({}),
+        finalizeRestore: async () => ({}),
+        erase: async () => (calls.push('erase'), {}),
+        relocate: async () => (calls.push('relocate'), {}),
+      },
+    });
+    const base = {
+      target: { kind: 'local' as const },
+      purpose: { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:43123' },
+    };
+    const specs = [
+      ['relay.runtime.personal_home.inspect.v1', base],
+      ['relay.runtime.personal_home.backup.v1', { ...base, outputPath: '/tmp/home.tar' }],
+      ['relay.runtime.personal_home.verify_backup.v1', { ...base, archivePath: '/tmp/home.tar' }],
+      ['relay.runtime.personal_home.restore.v1', { ...base, archivePath: '/tmp/home.tar', confirmOverwrite: true }],
+      ['relay.runtime.personal_home.erase.v1', base],
+      ['relay.runtime.personal_home.relocate.v1', {
+        ...base,
+        destination: {
+          targetId: 'computer_2',
+          descriptor: {
+            v: 1,
+            homeServerIdentityId: 'srv_home_1',
+            canonicalServerUrl: 'https://home.example.test',
+            revision: 1,
+            endpoints: [{ kind: 'https', url: 'https://home.example.test' }],
+          },
+        },
+      }],
+    ] as const;
+
+    for (const [kind, params] of specs) {
+      const result = await executeSystemTask({
+        spec: { protocolVersion: 1, kind, params },
+        taskId: `task_${kind}`,
+        registry,
+        now: () => 1700000000000,
+        emitEvent: () => undefined,
+      });
+      expect(result.ok).toBe(true);
+    }
+
+    expect(calls).toEqual(['inspect', 'backup', 'verify_backup', 'restore', 'erase', 'relocate']);
+  });
+
+  it('archives and restores real Home bytes through the default bootstrap registry composition', { timeout: 120_000 }, async () => {
+    const homeDir = mkdtempSync(join(realpathSync(tmpdir()), 'hsetup-personal-home-default-registry-'));
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    let running = true;
+    const engine = {
+      readStatus: vi.fn(async () => ({
+        installed: true,
+        version: 'happier-server-bootstrap-test',
+        service: { active: running, enabled: true },
+        baseUrl: 'http://127.0.0.1:52123',
+        healthy: true,
+        purpose: { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:52123' },
+        canonicalServerUrl: 'http://127.0.0.1:52123',
+        anonymousSignupEnabled: false,
+      })),
+      installOrUpdate: vi.fn(async () => ({ relayUrl: 'http://127.0.0.1:52123', mode: 'user' as const })),
+      control: vi.fn(async (input: { action?: string }) => {
+        if (input.action === 'stop') running = false;
+        if (input.action === 'start') running = true;
+      }),
+    };
+    try {
+      process.env.HOME = homeDir;
+      process.env.USERPROFILE = homeDir;
+      const fixture = await prepareBootstrapPersonalHomeFixture(homeDir);
+      vi.resetModules();
+      vi.doMock('@happier-dev/cli-common/systemTasks', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('@happier-dev/cli-common/systemTasks')>();
+        return {
+          ...actual,
+          createRelayHostEngine: (() => engine) as unknown as typeof actual.createRelayHostEngine,
+          ensureLocalFirstPartyComponentCommand: vi.fn(async () => join(fixture.layout.installRoot, 'bin', 'happier-server')),
+        };
+      });
+      const registryModule = await import('./registry.js');
+      const registry = registryModule.createHsetupSystemTaskRegistry();
+      const baseParams = {
+        target: { kind: 'local' as const },
+        purpose: { kind: 'personal-home' as const, canonicalServerUrl: fixture.canonicalServerUrl },
+      };
+      const backup = await executeSystemTask({
+        spec: {
+          protocolVersion: 1,
+          kind: 'relay.runtime.personal_home.backup.v1',
+          params: { ...baseParams, outputPath: fixture.archivePath },
+        },
+        taskId: 'task_bootstrap_default_backup',
+        registry,
+        now: () => 1700000000000,
+        emitEvent: () => undefined,
+      });
+      expect(backup).toMatchObject({
+        ok: true,
+        data: {
+          path: fixture.archivePath,
+          manifest: {
+            homeServerIdentityId: fixture.identity,
+            entries: expect.arrayContaining([
+              expect.objectContaining({ path: 'database/home.sqlite' }),
+              expect.objectContaining({ path: 'files/public/public.txt' }),
+              expect.objectContaining({ path: 'files/private/private.txt' }),
+              expect.objectContaining({ path: 'secrets/handy-master-secret.txt' }),
+              expect.objectContaining({ path: 'configuration/home.env.json' }),
+            ]),
+          },
+        },
+      });
+      expect(readFileSync(fixture.archivePath).byteLength).toBeGreaterThan(0);
+
+      rmSync(fixture.layout.databasePath, { force: true });
+      rmSync(`${fixture.layout.databasePath}-wal`, { force: true });
+      rmSync(`${fixture.layout.databasePath}-shm`, { force: true });
+      rmSync(fixture.layout.publicFilesDir, { recursive: true, force: true });
+      rmSync(fixture.layout.privateFilesDir, { recursive: true, force: true });
+      rmSync(fixture.layout.masterSecretPath, { force: true });
+      running = false;
+      const inspection = await executeSystemTask({
+        spec: {
+          protocolVersion: 1,
+          kind: 'relay.runtime.personal_home.inspect.v1',
+          params: baseParams,
+        },
+        taskId: 'task_bootstrap_default_empty_inspection',
+        registry,
+        now: () => 1700000000000,
+        emitEvent: () => undefined,
+      });
+      expect(inspection).toMatchObject({ ok: true, data: { storage: { destinationEmpty: true } } });
+
+      const restored = await executeSystemTask({
+        spec: {
+          protocolVersion: 1,
+          kind: 'relay.runtime.personal_home.restore.v1',
+          params: {
+            ...baseParams,
+            archivePath: fixture.archivePath,
+            expectedHomeServerIdentityId: fixture.identity,
+          },
+        },
+        taskId: 'task_bootstrap_default_restore',
+        registry,
+        now: () => 1700000000000,
+        emitEvent: () => undefined,
+      });
+      expect(restored).toMatchObject({ ok: true, data: { outcome: 'restored' } });
+      const restoredDatabase = new DatabaseSync(fixture.layout.databasePath, { readOnly: true });
+      try {
+        expect(restoredDatabase.prepare('SELECT body FROM bootstrap_transcript WHERE id = ?').get('message-1'))
+          .toEqual({ body: 'bootstrap transcript bytes' });
+        expect(restoredDatabase.prepare('SELECT value FROM SimpleCache WHERE key = ?').get('server.identity.v1'))
+          .toEqual({ value: fixture.identity });
+      } finally {
+        restoredDatabase.close();
+      }
+      expect(readFileSync(join(fixture.layout.publicFilesDir, 'public.txt'), 'utf8')).toBe('bootstrap-public-bytes');
+      expect(readFileSync(join(fixture.layout.privateFilesDir, 'private.txt'), 'utf8')).toBe('bootstrap-private-bytes');
+      expect(readFileSync(fixture.layout.masterSecretPath, 'utf8')).toBe('bootstrap-master-secret');
+      expect(readFileSync(join(fixture.layout.configDir, 'server.env'), 'utf8')).toContain('AUTH_ANONYMOUS_SIGNUP_ENABLED=0');
+      expect(running).toBe(true);
+      expect(engine.control).toHaveBeenCalledWith(expect.objectContaining({ action: 'stop' }));
+      expect(engine.control).toHaveBeenCalledWith(expect.objectContaining({ action: 'start' }));
+      expect(readFileSync(join(fixture.layout.installRoot, 'bin', 'happier-server'), 'utf8')).toContain('exit 0');
+
+      const recoveryId = '69d4c47f-d023-4d5f-8097-867b050eebac';
+      const rollbackDatabase = `${fixture.layout.databasePath}.restore-rollback-${recoveryId}`;
+      const recoveryStage = `${fixture.layout.dataDir}.restore-stage-${process.pid}-${recoveryId}`;
+      const recoveryJournal = join(fixture.layout.dataDir, '.operations', 'restore-journal.json');
+      renameSync(fixture.layout.databasePath, rollbackDatabase);
+      writeFileSync(fixture.layout.databasePath, 'interrupted-new-database');
+      mkdirSync(join(fixture.layout.dataDir, '.operations'), { recursive: true });
+      mkdirSync(recoveryStage, { recursive: true });
+      writeFileSync(recoveryJournal, JSON.stringify({
+        version: 2,
+        phase: 'promoting',
+        stage: recoveryStage,
+        wasRunning: true,
+        entries: [
+          { target: fixture.layout.databasePath, source: join(recoveryStage, 'database/home.sqlite'), rollback: rollbackDatabase, hadTarget: true, state: 'preserved' },
+          { target: fixture.layout.publicFilesDir, source: join(recoveryStage, 'files/public'), rollback: `${fixture.layout.publicFilesDir}.restore-rollback-${recoveryId}`, hadTarget: false, state: 'untouched' },
+          { target: fixture.layout.privateFilesDir, source: join(recoveryStage, 'files/private'), rollback: `${fixture.layout.privateFilesDir}.restore-rollback-${recoveryId}`, hadTarget: false, state: 'untouched' },
+          { target: fixture.layout.masterSecretPath, source: join(recoveryStage, 'secrets/handy-master-secret.txt'), rollback: `${fixture.layout.masterSecretPath}.restore-rollback-${recoveryId}`, hadTarget: false, state: 'untouched' },
+          { target: fixture.layout.derivedDataDir, source: join(recoveryStage, 'derived'), rollback: `${fixture.layout.derivedDataDir}.restore-rollback-${recoveryId}`, hadTarget: false, state: 'untouched' },
+        ],
+      }));
+      running = true;
+      const recovered = await executeSystemTask({
+        spec: { protocolVersion: 1, kind: 'relay.runtime.personal_home.restore.v1', params: { ...baseParams, action: 'recover' } },
+        taskId: 'task_bootstrap_default_recover_restore', registry, now: () => 1700000000000, emitEvent: () => undefined,
+      });
+      expect(recovered, JSON.stringify(recovered)).toMatchObject({ ok: true, data: { outcome: 'rolled_back', restartedHome: true } });
+      const recoveredDatabase = new DatabaseSync(fixture.layout.databasePath, { readOnly: true });
+      try {
+        expect(recoveredDatabase.prepare('SELECT body FROM bootstrap_transcript WHERE id = ?').get('message-1'))
+          .toEqual({ body: 'bootstrap transcript bytes' });
+      } finally { recoveredDatabase.close(); }
+      expect(() => readFileSync(recoveryJournal)).toThrow();
+      expect(running).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
+      vi.doUnmock('@happier-dev/cli-common/systemTasks');
+      vi.resetModules();
       rmSync(homeDir, { recursive: true, force: true });
     }
   });

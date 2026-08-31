@@ -656,6 +656,84 @@ describe('createRemoteSshBootstrapMachineTaskKind', () => {
     ]);
   });
 
+  it('forwards the remote request pairing context and token-only capability to approveLocalAuthRequest', async () => {
+    let remoteCliInstalled = false;
+    const forwarded: Array<Record<string, unknown>> = [];
+    const pairing = { secretB64Url: 'pairing-secret-b64url', createdAtMs: 123, expiresAtMs: 456 };
+    const kind = createRemoteSshBootstrapMachineTaskKind({
+      resolveHostTrust: async () => ({ status: 'trusted' }),
+      installRemoteCli: async () => {
+        remoteCliInstalled = true;
+      },
+      approveLocalAuthRequest: async ({ publicKey, pairing: forwardedPairing, supportsTokenOnly }) => {
+        forwarded.push({ publicKey, pairing: forwardedPairing, supportsTokenOnly });
+      },
+      runRemoteCommand: async ({ label, data }) => {
+        if (label === 'server.configure') {
+          if (!remoteCliInstalled) {
+            throw new Error('remote happier cli not installed');
+          }
+          return { ok: true, data: { configured: true } };
+        }
+        if (label === 'auth.status') {
+          return { ok: true, data: { authenticated: false } };
+        }
+        if (label === 'auth.request') {
+          return {
+            ok: true,
+            data: {
+              publicKey: 'pub-key',
+              claimSecret: 'secret-value',
+              stateFile: '/tmp/claim-state.json',
+              pairing,
+              supportsTokenOnly: true,
+            },
+          };
+        }
+        if (label === 'auth.wait') {
+          expect(data).toEqual({ publicKey: 'pub-key' });
+          return { ok: true, data: { paired: true, machineId: 'machine-remote-pairing' } };
+        }
+        throw new Error(`Unexpected remote command: ${label}`);
+      },
+    });
+
+    const runner = createSystemTasksRunner({
+      kinds: {
+        'remote.ssh.bootstrapMachine.v1': kind,
+      },
+    });
+
+    await runner.start({
+      taskId: 'ssh-pairing-context-task',
+      kind: 'remote.ssh.bootstrapMachine.v1',
+      params: {
+        ssh: {
+          target: 'dev@example.test',
+          auth: 'agent',
+        },
+        relay: {
+          relayUrl: 'https://relay.example.test',
+        },
+        channel: 'preview',
+        serviceMode: 'none',
+        promptResolution: {
+          authApproval: {
+            publicKey: 'pub-key',
+          },
+        },
+      },
+    });
+
+    const finalPoll = await waitForResult(runner, { taskId: 'ssh-pairing-context-task', cursor: 0 });
+    expect(finalPoll.result?.ok).toBe(true);
+    // The remote request's pairing context must reach the local approval verbatim
+    // so the approval seals a pairing-bound v3 response instead of failing closed.
+    expect(forwarded).toEqual([
+      { publicKey: 'pub-key', pairing, supportsTokenOnly: true },
+    ]);
+  });
+
   it('prompts for SSH passwords without leaking the password into emitted prompt events', async () => {
     let remoteCliInstalled = false;
     const kind = createRemoteSshBootstrapMachineTaskKind({

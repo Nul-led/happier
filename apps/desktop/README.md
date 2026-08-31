@@ -71,6 +71,9 @@ Implemented for real:
 - `desktop_get_autostart_enabled`, `desktop_set_autostart_enabled`
 - `desktop_read_stack_boot_credentials` — a port of the Tauri implementation, same env vars and
   same candidate key paths
+- `iroh_start_home_tunnel`, `iroh_stop_home_tunnel` — the shared Iroh desktop Home-tunnel
+  lifecycle through `@happier-dev/iroh-native/node`, loaded only in the main process; the
+  endpoint identity key lives at `<userData>/iroh/endpoint.key` and never crosses the bridge
 - `plugin:event|listen`, `|unlisten`, `|emit`, `|emit_to`
 - `plugin:http|fetch`, `|fetch_send`, `|fetch_read_body`, `|fetch_cancel` — every `http(s)` request
   the app makes on desktop is routed through this plugin, so it is part of the boot path

@@ -198,6 +198,12 @@ export type RemoteSshBootstrapMachineDeps = Readonly<{
   approveLocalAuthRequest: (params: Readonly<{
     publicKey: string;
     parsed: RemoteBootstrapMachineParams;
+    // Verbatim remote `auth request` pairing context plus the requester's
+    // token-only capability, forwarded so the local approval seals a
+    // pairing-bound v3 response. The approval owner validates them; this seam
+    // never fabricates pairing material.
+    pairing?: unknown;
+    supportsTokenOnly?: boolean;
   }>) => Promise<void>;
   createHappierJsonExecutor?: (params: Readonly<{
     parsed: RemoteBootstrapMachineParams;
@@ -485,6 +491,10 @@ export function createRemoteSshBootstrapMachineTaskKind(
             await deps.approveLocalAuthRequest({
               publicKey,
               parsed: parsedLocalForApproval,
+              ...(requestPayload.pairing !== undefined && requestPayload.pairing !== null
+                ? { pairing: requestPayload.pairing }
+                : {}),
+              ...(requestPayload.supportsTokenOnly === true ? { supportsTokenOnly: true } : {}),
             });
           } catch (error) {
             if (parsedRemote.requireLocalApproval === true && shouldIgnoreLocalApprovalError(error)) {

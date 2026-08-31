@@ -38,6 +38,10 @@ function readString(args: CommandArgs, key: string): string | null {
     return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+function readStorageKey(args: CommandArgs): string | null {
+    return typeof args.key === 'string' ? args.key : null;
+}
+
 export type RegistryDependencies = Readonly<{
     eventBus: DesktopEventBus;
     /** Presents the main window, mirroring `desktop_show_main_window`. Returns whether it existed. */
@@ -48,6 +52,17 @@ export type RegistryDependencies = Readonly<{
     autostart: Readonly<{
         isEnabled: () => boolean;
         setEnabled: (enabled: boolean) => boolean;
+    }>;
+    secureStorage: Readonly<{
+        read: (key: string) => Promise<string | null>;
+        write: (key: string, value: string) => Promise<void>;
+        remove: (key: string) => Promise<void>;
+    }>;
+    /** Shared Iroh desktop Home-tunnel lifecycle; the endpoint identity stays host-owned. */
+    irohTunnel: Readonly<{
+        startHomeTunnel: (request: unknown) => Promise<unknown>;
+        stopHomeTunnel: (leaseId: string) => Promise<void>;
+        getTunnelStatus: (tunnelId: string) => Promise<Record<string, unknown> | null>;
     }>;
     platform?: NodeJS.Platform;
 }>;
@@ -96,6 +111,52 @@ export function createCommandRegistry(dependencies: RegistryDependencies): Comma
     });
 
     registry.set('desktop_read_stack_boot_credentials', () => readStackBootCredentials());
+
+    registry.set('desktop_secure_storage_read', (args) => {
+        const key = readStorageKey(args);
+        if (key === null) throw new Error('desktop_secure_storage_read requires a key');
+        return dependencies.secureStorage.read(key);
+    });
+
+    registry.set('desktop_secure_storage_write', async (args) => {
+        const key = readStorageKey(args);
+        if (key === null || typeof args.value !== 'string') {
+            throw new Error('desktop_secure_storage_write requires a key and value');
+        }
+        await dependencies.secureStorage.write(key, args.value);
+        return null;
+    });
+
+    registry.set('desktop_secure_storage_remove', async (args) => {
+        const key = readStorageKey(args);
+        if (key === null) throw new Error('desktop_secure_storage_remove requires a key');
+        await dependencies.secureStorage.remove(key);
+        return null;
+    });
+
+    // Same command names and request/response shapes as the Tauri host: the
+    // renderer's desktop lifecycle module targets one shared contract.
+    registry.set('iroh_start_home_tunnel', async (args) => {
+        if (!args.request || typeof args.request !== 'object') {
+            throw new Error('iroh_start_home_tunnel requires a request');
+        }
+        return dependencies.irohTunnel.startHomeTunnel(args.request);
+    });
+
+    registry.set('iroh_stop_home_tunnel', async (args) => {
+        const leaseId = readString(args, 'leaseId');
+        if (leaseId === null) throw new Error('iroh_stop_home_tunnel requires a leaseId');
+        await dependencies.irohTunnel.stopHomeTunnel(leaseId);
+        return null;
+    });
+
+    registry.set('iroh_get_home_tunnel_status', async (args) => {
+        const leaseId = readString(args, 'leaseId');
+        if (leaseId === null) {
+            throw new Error('iroh_get_home_tunnel_status requires a leaseId');
+        }
+        return dependencies.irohTunnel.getTunnelStatus(leaseId);
+    });
 
     registry.set('desktop_get_window_chrome_policy', () => ({
         strategy: resolveWindowChromeStrategy(platform),

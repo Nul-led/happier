@@ -38,19 +38,52 @@ import {
     renderPersonalHomeRuntimeEnv,
     type ManagedRelayPurpose,
 } from './personalHome/personalHomeRuntimeSpec.js';
+import { withPersonalHomeOperationLock } from './personalHome/lock.js';
+import { resolvePersonalHomeRuntimeLayout } from './personalHome/layout.js';
+import { assertPersonalHomeRelocationAllowsActivation } from './personalHome/relocation.js';
+import type { PersonalHomeRestorePoint } from './personalHome/restorePoint.js';
+import type { PersonalHomeRestoreHooks } from './personalHome/restore.js';
+import { readEffectivePersonalHomeSignupPolicy } from './personalHomeSignupPolicy.js';
+import { withFirstPartyPayloadMutationLock } from './withFirstPartyPayloadMutationLock.js';
 
-const RELAY_RUNTIME_PERSISTENT_ROOT_ENTRIES = new Set([
-    'config',
-    'data',
-    'logs',
-    'self-host-state.json',
-]);
+const RELAY_RUNTIME_MANAGED_ROOT_ENTRIES = Object.freeze([
+    'bin',
+    'ui-web',
+] as const);
 const DEFAULT_RELAY_RUNTIME_INSTALL_HEALTHCHECK_TIMEOUT_MS = 120_000;
 const MAX_RELAY_RUNTIME_INSTALL_HEALTHCHECK_TIMEOUT_MS = 600_000;
 const RELAY_RUNTIME_STARTUP_RECEIPT_WAIT_MS = 10_000;
 const RELAY_RUNTIME_STARTUP_RECEIPT_POLL_MS = 100;
 const SERVER_STARTUP_RECEIPT_PATH_ENV = 'HAPPIER_SERVER_STARTUP_RECEIPT_PATH';
 const SERVER_STARTUP_RECEIPT_NONCE_ENV = 'HAPPIER_SERVER_STARTUP_RECEIPT_NONCE';
+const MANAGED_RELAY_PURPOSE_ENV = 'HAPPIER_MANAGED_RELAY_PURPOSE';
+
+export type RelayRuntimeInstallRollbackFailure = Readonly<{
+    phase: 'candidate_stop' | 'runtime_restore' | 'personal_home_restore' | 'service_restore' | 'install_root_restore' | 'artifact_disposal';
+    error: unknown;
+}>;
+
+export class RelayRuntimeInstallRollbackIncompleteError extends Error {
+    readonly code = 'RELAY_RUNTIME_INSTALL_ROLLBACK_INCOMPLETE' as const;
+
+    constructor(
+        readonly originalError: unknown,
+        readonly rollbackFailures: readonly RelayRuntimeInstallRollbackFailure[],
+        readonly recoveryArtifacts: Readonly<{
+            runtimeBackupRoot?: string;
+            personalHomeRestorePointPath?: string;
+            personalHomeRestoreRollbackPaths?: readonly string[];
+        }>,
+    ) {
+        super('[relay-runtime] candidate activation failed and rollback could not be completed; recovery artifacts were preserved', {
+            cause: new AggregateError(
+                [originalError, ...rollbackFailures.map((failure) => failure.error)],
+                'Relay runtime install and rollback failures',
+            ),
+        });
+        this.name = 'RelayRuntimeInstallRollbackIncompleteError';
+    }
+}
 
 type RelayRuntimeInstallRootMigration = Readonly<{
     platform: NodeJS.Platform;
@@ -64,6 +97,11 @@ type RelayRuntimeInstallRootMigration = Readonly<{
     shimPath: string;
     stdoutPath?: string;
     stderrPath?: string;
+}>;
+
+type RelayRuntimeInstallRootMigrationSource = Readonly<{
+    kind: 'owned-current-lane' | 'legacy-unsuffixed';
+    sourceInstallRoot: string;
 }>;
 
 function tryParseJsonObject(text: string): Record<string, unknown> | null {
@@ -173,22 +211,15 @@ export async function shouldMigrateLegacyUnsuffixedRelayRuntimeInstallRoot(param
     }));
 }
 
-async function migrateOwnedCurrentLaneRelayRuntimeInstallRootIfNeeded(params: Readonly<{
+async function resolveOwnedCurrentLaneRelayRuntimeInstallRootMigrationSource(params: Readonly<{
     platform: NodeJS.Platform;
     mode: 'user' | 'system';
     channel: 'stable' | 'preview' | 'publicdev';
     homeDir: string;
-    runServiceCommands: boolean;
-}>): Promise<RelayRuntimeInstallRootMigration | null> {
-    if (params.mode !== 'user') return null;
-    if (params.channel === 'stable') return null;
+}>): Promise<string | null> {
+    if (params.mode !== 'user' || params.channel === 'stable') return null;
 
-    const defaults = resolveRelayRuntimeDefaults({
-        platform: params.platform,
-        mode: params.mode,
-        channel: params.channel,
-        homeDir: params.homeDir,
-    });
+    const defaults = resolveRelayRuntimeDefaults(params);
     if (existsSync(defaults.installRoot)) return null;
 
     const backend: ServiceBackend = resolveServiceBackend({
@@ -212,17 +243,110 @@ async function migrateOwnedCurrentLaneRelayRuntimeInstallRootIfNeeded(params: Re
     });
     if (!existsSync(serviceDefinition.path)) return null;
 
-    const serviceDefinitionText = await readFile(serviceDefinition.path, 'utf8').catch(() => '');
-    if (!serviceDefinitionText.trim()) return null;
+    const definitionText = await readFile(serviceDefinition.path, 'utf8').catch(() => '');
+    const ownedInstallRoot = definitionText.trim()
+        ? normalizeComparablePathKey(parseServiceDefinitionWorkingDirectory({ backend, definitionText }))
+        : null;
+    const canonicalInstallRoot = normalizeComparablePathKey(defaults.installRoot);
+    if (!ownedInstallRoot || !canonicalInstallRoot || ownedInstallRoot === canonicalInstallRoot) return null;
+    return existsSync(ownedInstallRoot) ? ownedInstallRoot : null;
+}
 
-    const ownedInstallRoot = parseServiceDefinitionWorkingDirectory({
-        backend,
-        definitionText: serviceDefinitionText,
+async function resolveRelayRuntimeInstallRootMigrationSource(params: Readonly<{
+    platform: NodeJS.Platform;
+    mode: 'user' | 'system';
+    channel: 'stable' | 'preview' | 'publicdev';
+    homeDir: string;
+}>): Promise<RelayRuntimeInstallRootMigrationSource | null> {
+    const ownedInstallRoot = await resolveOwnedCurrentLaneRelayRuntimeInstallRootMigrationSource(params);
+    if (ownedInstallRoot) {
+        return { kind: 'owned-current-lane', sourceInstallRoot: ownedInstallRoot };
+    }
+    if (!(await shouldMigrateLegacyUnsuffixedRelayRuntimeInstallRoot(params))) return null;
+    return {
+        kind: 'legacy-unsuffixed',
+        sourceInstallRoot: resolveRelayRuntimeDefaults({ ...params, channel: 'stable' }).installRoot,
+    };
+}
+
+async function resolvePersonalHomeRuntimeDataDirForInstallRoot(params: Readonly<{
+    platform: NodeJS.Platform;
+    mode: 'user' | 'system';
+    channel: 'stable' | 'preview' | 'publicdev';
+    homeDir: string;
+    installRoot: string;
+}>): Promise<string> {
+    const defaults = resolveRelayRuntimeDefaults(params);
+    const configDir = params.mode === 'user' ? join(params.installRoot, 'config') : defaults.configDir;
+    const logsDir = params.mode === 'user' ? join(params.installRoot, 'logs') : defaults.logDir;
+    const envPath = join(configDir, 'server.env');
+    const envText = existsSync(envPath) ? await readFile(envPath, 'utf8').catch(() => '') : '';
+    const persistedEnv = parseEnvText(envText);
+    return resolvePersonalHomeRuntimeLayout({
+        env: {
+            ...persistedEnv,
+            HAPPIER_SELF_HOST_INSTALL_ROOT: params.installRoot,
+            HAPPIER_SELF_HOST_CONFIG_DIR: configDir,
+            HAPPIER_SELF_HOST_LOG_DIR: logsDir,
+            ...(
+                persistedEnv.HAPPIER_SERVER_LIGHT_DATA_DIR || persistedEnv.HAPPY_SERVER_LIGHT_DATA_DIR
+                    ? {}
+                    : { HAPPIER_SERVER_LIGHT_DATA_DIR: params.mode === 'user' ? join(params.installRoot, 'data') : defaults.dataDir }
+            ),
+        },
+        homeDir: params.homeDir,
+        platform: params.platform,
+        mode: params.mode,
+        channel: params.channel,
+    }).dataDir;
+}
+
+async function migrateOwnedCurrentLaneRelayRuntimeInstallRootIfNeeded(params: Readonly<{
+    platform: NodeJS.Platform;
+    mode: 'user' | 'system';
+    channel: 'stable' | 'preview' | 'publicdev';
+    homeDir: string;
+    runServiceCommands: boolean;
+    sourceInstallRoot?: string;
+    assertPersonalHomeStopped?: () => Promise<void>;
+}>): Promise<RelayRuntimeInstallRootMigration | null> {
+    const defaults = resolveRelayRuntimeDefaults({
+        platform: params.platform,
+        mode: params.mode,
+        channel: params.channel,
+        homeDir: params.homeDir,
     });
-    const ownedInstallRootKey = normalizeComparablePathKey(ownedInstallRoot);
-    const canonicalInstallRootKey = normalizeComparablePathKey(defaults.installRoot);
-    if (!ownedInstallRootKey || !canonicalInstallRootKey || ownedInstallRootKey === canonicalInstallRootKey) return null;
-    if (!existsSync(ownedInstallRootKey)) return null;
+    if (existsSync(defaults.installRoot)) return null;
+    const ownedInstallRootKey = normalizeComparablePathKey(
+        params.sourceInstallRoot
+        ?? await resolveOwnedCurrentLaneRelayRuntimeInstallRootMigrationSource(params),
+    );
+    if (!ownedInstallRootKey || !existsSync(ownedInstallRootKey)) return null;
+    const backend = resolveServiceBackend({ platform: params.platform, mode: params.mode });
+    if (backend !== 'systemd-user' && backend !== 'launchd-user') return null;
+    const serverBinaryName = params.platform === 'win32' ? 'happier-server.exe' : 'happier-server';
+    if (params.assertPersonalHomeStopped) {
+        if (params.runServiceCommands) {
+            const stopSpec = buildRelayRuntimeServiceSpec({
+                serviceName: defaults.serviceName,
+                installRoot: ownedInstallRootKey,
+                serverBinaryPath: join(ownedInstallRootKey, 'bin', serverBinaryName),
+                env: {},
+                stdoutPath: join(ownedInstallRootKey, 'logs', 'server.out.log'),
+                stderrPath: join(ownedInstallRootKey, 'logs', 'server.err.log'),
+            });
+            const stopDefinition = buildServiceDefinition({ backend, homeDir: params.homeDir, spec: stopSpec });
+            const stopPlan = planServiceAction({
+                backend,
+                action: 'stop',
+                label: stopSpec.label,
+                definitionPath: stopDefinition.path,
+                persistent: true,
+            });
+            await applyServicePlan(stopPlan, { runCommands: true }).catch(() => undefined);
+        }
+        await params.assertPersonalHomeStopped();
+    }
 
     await mkdir(dirname(defaults.installRoot), { recursive: true });
     await rename(ownedInstallRootKey, defaults.installRoot);
@@ -242,10 +366,9 @@ async function migrateLegacyUnsuffixedRelayRuntimeInstallRootIfNeeded(params: Re
     channel: 'stable' | 'preview' | 'publicdev';
     homeDir: string;
     runServiceCommands: boolean;
+    sourceInstallRoot?: string;
+    assertPersonalHomeStopped?: () => Promise<void>;
 }>): Promise<RelayRuntimeInstallRootMigration | null> {
-    const shouldMigrate = await shouldMigrateLegacyUnsuffixedRelayRuntimeInstallRoot(params);
-    if (!shouldMigrate) return null;
-
     const defaults = resolveRelayRuntimeDefaults({
         platform: params.platform,
         mode: params.mode,
@@ -260,6 +383,8 @@ async function migrateLegacyUnsuffixedRelayRuntimeInstallRootIfNeeded(params: Re
         channel: 'stable',
         homeDir: params.homeDir,
     });
+    const sourceInstallRoot = normalizeComparablePathKey(params.sourceInstallRoot ?? legacyDefaults.installRoot);
+    if (!sourceInstallRoot || !existsSync(sourceInstallRoot)) return null;
 
     if (params.runServiceCommands) {
         const backend: ServiceBackend = resolveServiceBackend({
@@ -299,9 +424,10 @@ async function migrateLegacyUnsuffixedRelayRuntimeInstallRootIfNeeded(params: Re
             await applyServicePlan(stopPlan, { runCommands: true }).catch(() => undefined);
         }
     }
+    await params.assertPersonalHomeStopped?.();
 
     await mkdir(dirname(defaults.installRoot), { recursive: true });
-    await rename(legacyDefaults.installRoot, defaults.installRoot);
+    await rename(sourceInstallRoot, defaults.installRoot);
     if (params.runServiceCommands) {
         const backend: ServiceBackend = resolveServiceBackend({
             platform: params.platform,
@@ -344,7 +470,7 @@ async function migrateLegacyUnsuffixedRelayRuntimeInstallRootIfNeeded(params: Re
         }),
         homeDir: params.homeDir,
         migratedInstallRoot: defaults.installRoot,
-        originalInstallRoot: legacyDefaults.installRoot,
+        originalInstallRoot: sourceInstallRoot,
         runServiceCommands: params.runServiceCommands !== false,
         serverBinaryName,
         serviceName: legacyDefaults.serviceName,
@@ -439,7 +565,7 @@ async function writeJsonFile(path: string, value: unknown): Promise<void> {
 async function waitForRelayRuntimeStartupReceipt(params: Readonly<{
     path: string;
     nonce: string;
-}>): Promise<Readonly<{ nonce: string; pid: number }>> {
+}>): Promise<Readonly<{ nonce: string; pid: number; host: string; port: number }>> {
     const deadline = Date.now() + RELAY_RUNTIME_STARTUP_RECEIPT_WAIT_MS;
     while (Date.now() <= deadline) {
         const receipt = await readFile(params.path, 'utf8')
@@ -449,8 +575,13 @@ async function waitForRelayRuntimeStartupReceipt(params: Readonly<{
         const pid = typeof receipt?.pid === 'number' && Number.isSafeInteger(receipt.pid)
             ? receipt.pid
             : 0;
-        if (nonce === params.nonce && pid > 0 && isPidPresent(pid)) {
-            return { nonce, pid };
+        const rawHost = typeof receipt?.host === 'string' ? receipt.host.trim().toLowerCase() : '';
+        const host = rawHost.startsWith('::ffff:') ? rawHost.slice('::ffff:'.length) : rawHost;
+        const port = typeof receipt?.port === 'number' && Number.isInteger(receipt.port)
+            ? receipt.port
+            : 0;
+        if (nonce === params.nonce && pid > 0 && isPidPresent(pid) && host && port >= 1 && port <= 65535) {
+            return { nonce, pid, host, port };
         }
         await new Promise<void>((resolve) => setTimeout(resolve, RELAY_RUNTIME_STARTUP_RECEIPT_POLL_MS));
     }
@@ -532,12 +663,11 @@ async function installBinaryShim(params: Readonly<{
 }
 
 async function listRelayRuntimeManagedRootEntries(rootDir: string): Promise<string[]> {
-    const entries = await readdir(rootDir, { withFileTypes: true }).catch(() => []);
-    return entries
-        .map((entry) => entry.name)
-        .filter((name) => name && name !== '.' && name !== '..')
-        .filter((name) => !name.startsWith('.relay-runtime-backup-'))
-        .filter((name) => !RELAY_RUNTIME_PERSISTENT_ROOT_ENTRIES.has(name));
+    const result: string[] = [];
+    for (const entryName of RELAY_RUNTIME_MANAGED_ROOT_ENTRIES) {
+        if (await lstat(join(rootDir, entryName)).catch(() => null)) result.push(entryName);
+    }
+    return result;
 }
 
 async function copyNamedRootEntries(params: Readonly<{
@@ -599,6 +729,7 @@ export async function uninstallRelayRuntimePayloadLocal(params: Readonly<{
   shimPath: string;
   statePath: string;
   logDir: string;
+  retainedPurpose?: ManagedRelayPurpose;
 }>): Promise<void> {
   const entryNames = await listRelayRuntimeManagedRootEntries(params.installRoot);
   await clearNamedRootEntries({
@@ -606,7 +737,11 @@ export async function uninstallRelayRuntimePayloadLocal(params: Readonly<{
     entryNames,
   });
   await removeRuntimePayloadPath(params.shimPath);
-  await rm(params.statePath, { force: true });
+  if (params.retainedPurpose) {
+    await writeJsonFile(params.statePath, { purpose: params.retainedPurpose });
+  } else {
+    await rm(params.statePath, { force: true });
+  }
   await rm(params.logDir, { recursive: true, force: true });
 }
 
@@ -797,7 +932,7 @@ function buildRelayRuntimeServiceSpec(params: Readonly<{
     };
 }
 
-export async function installOrUpdateRelayRuntimeLocal(params: Readonly<{
+async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readonly<{
     serverBinaryPath: string;
     channel: 'stable' | 'preview' | 'publicdev';
     mode: 'user' | 'system';
@@ -816,9 +951,15 @@ export async function installOrUpdateRelayRuntimeLocal(params: Readonly<{
         cwd: string;
         env: Record<string, string>;
     }>) => Promise<void>;
-    /** Optional verified Personal Home data restore point before migrations. */
-    createPersonalHomeRestorePoint?: () => Promise<void>;
-}>): Promise<Readonly<{ baseUrl: string; version: string | null }>> {
+    /** Verified lease-held Personal Home restore point; an empty first install returns null. */
+    createPersonalHomeRestorePoint?: (context: Readonly<{
+        happierVersion: string | null;
+    }>) => Promise<PersonalHomeRestorePoint | null>;
+    /** Canonical owner hooks used to restore the verified snapshot under the held Home lease. */
+    personalHomeRestoreHooks?: PersonalHomeRestoreHooks;
+    /** RelayHostEngine-owned lifecycle assertion, required for Personal Home mutation. */
+    assertPersonalHomeStopped?: () => Promise<void>;
+}>, rootMigrationSource: RelayRuntimeInstallRootMigrationSource | null): Promise<Readonly<{ baseUrl: string; version: string | null }>> {
     const platform = (String(params.platform ?? '').trim() || process.platform) as NodeJS.Platform;
     const homeDir = String(params.homeDir ?? '').trim() || homedir();
     const arch = String(params.arch ?? '').trim() || process.arch;
@@ -835,6 +976,9 @@ export async function installOrUpdateRelayRuntimeLocal(params: Readonly<{
     });
     if (params.purpose?.kind === 'personal-home') {
         assertPersonalHomeEnvironmentKeys(params.env ?? {});
+        if (!params.assertPersonalHomeStopped) {
+            throw new Error('[relay-runtime] Personal Home upgrade requires the canonical stopped-Home assertion');
+        }
     }
     const serviceName = String(params.serviceNameOverride ?? '').trim() || defaults.serviceName;
     const installServerBinaryPath = join(defaults.installRoot, 'bin', serverBinaryName);
@@ -879,37 +1023,43 @@ export async function installOrUpdateRelayRuntimeLocal(params: Readonly<{
     let legacyRootMigration: RelayRuntimeInstallRootMigration | null = null;
     let restoreInstallRoot = defaults.installRoot;
     let candidateServiceActivationAttempted = false;
+    let personalHomeRestorePoint: PersonalHomeRestorePoint | null = null;
+    let personalHomeRestoreRollbackPaths: readonly string[] | undefined;
+    let preserveRecoveryArtifacts = false;
+    let candidateStateCommitted = false;
 
     try {
-        ownedRootMigration = await migrateOwnedCurrentLaneRelayRuntimeInstallRootIfNeeded({
-            platform,
-            mode,
-            channel: params.channel,
-            homeDir,
-            runServiceCommands: params.runServiceCommands !== false,
-        });
-
-        legacyRootMigration = ownedRootMigration
-            ? null
-            : await migrateLegacyUnsuffixedRelayRuntimeInstallRootIfNeeded({
+        ownedRootMigration = rootMigrationSource?.kind === 'owned-current-lane'
+            ? await migrateOwnedCurrentLaneRelayRuntimeInstallRootIfNeeded({
                 platform,
                 mode,
                 channel: params.channel,
                 homeDir,
                 runServiceCommands: params.runServiceCommands !== false,
-            });
+                sourceInstallRoot: rootMigrationSource.sourceInstallRoot,
+                assertPersonalHomeStopped: params.assertPersonalHomeStopped,
+            })
+            : null;
+
+        legacyRootMigration = ownedRootMigration
+            ? null
+            : rootMigrationSource?.kind === 'legacy-unsuffixed'
+                ? await migrateLegacyUnsuffixedRelayRuntimeInstallRootIfNeeded({
+                    platform,
+                    mode,
+                    channel: params.channel,
+                    homeDir,
+                    runServiceCommands: params.runServiceCommands !== false,
+                    sourceInstallRoot: rootMigrationSource.sourceInstallRoot,
+                    assertPersonalHomeStopped: params.assertPersonalHomeStopped,
+                })
+                : null;
 
         restoreInstallRoot = ownedRootMigration?.originalInstallRoot
             ?? legacyRootMigration?.originalInstallRoot
             ?? defaults.installRoot;
 
         await mkdir(defaults.installRoot, { recursive: true });
-        await mkdir(defaults.configDir, { recursive: true });
-        await mkdir(defaults.dataDir, { recursive: true });
-        await mkdir(filesDir, { recursive: true });
-        await mkdir(dbDir, { recursive: true });
-        await mkdir(defaults.logDir, { recursive: true });
-
         previousInstallState = await backupRelayRuntimeInstallState({
             installRoot: defaults.installRoot,
             payloadDir: defaults.installRoot,
@@ -918,6 +1068,23 @@ export async function installOrUpdateRelayRuntimeLocal(params: Readonly<{
             envPath: configEnvPath,
             statePath,
         });
+
+        if (params.purpose?.kind === 'personal-home') {
+            const previousState = tryParseJsonObject(previousInstallState.previousStateText ?? '');
+            // The existing state file is the runtime-classification owner. Publish the immutable
+            // requested purpose before payload, data, environment, or service mutation so a hard
+            // termination cannot turn the runtime Lane 03 created into an unclassified install.
+            await writeJsonFile(statePath, {
+                ...(previousState ?? {}),
+                purpose: params.purpose,
+            });
+        }
+
+        await mkdir(defaults.configDir, { recursive: true });
+        await mkdir(defaults.dataDir, { recursive: true });
+        await mkdir(filesDir, { recursive: true });
+        await mkdir(dbDir, { recursive: true });
+        await mkdir(defaults.logDir, { recursive: true });
 
         if (params.runServiceCommands !== false) {
             const stopServiceSpec = buildRelayRuntimeServiceSpec({
@@ -942,6 +1109,20 @@ export async function installOrUpdateRelayRuntimeLocal(params: Readonly<{
             });
             await applyServicePlan(stopPlan, {
                 runCommands: true,
+            });
+        }
+        await params.assertPersonalHomeStopped?.();
+
+        if (params.createPersonalHomeRestorePoint) {
+            const previousState = tryParseJsonObject(previousInstallState.previousStateText ?? '');
+            const previousVersion = typeof previousState?.version === 'string' && previousState.version.trim()
+                ? previousState.version.trim()
+                : null;
+            const candidateVersion = typeof params.version === 'string' && params.version.trim()
+                ? params.version.trim()
+                : null;
+            personalHomeRestorePoint = await params.createPersonalHomeRestorePoint({
+                happierVersion: previousVersion ?? candidateVersion,
             });
         }
 
@@ -1005,12 +1186,28 @@ export async function installOrUpdateRelayRuntimeLocal(params: Readonly<{
             arch,
             platform,
         });
+        const preservedClosedSignup = params.purpose?.kind === 'personal-home'
+            && readEffectivePersonalHomeSignupPolicy(existingEnvText) === 'disabled';
         const personalHomeEnv = params.purpose?.kind === 'personal-home'
             ? renderPersonalHomeRuntimeEnv({
                 spec: createPersonalHomeRuntimeSpec({ canonicalServerUrl: params.purpose.canonicalServerUrl }),
                 port: resolvedPort,
-                overrides: params.env,
+                overrides: {
+                    ...(params.env ?? {}),
+                    ...(preservedClosedSignup ? { AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' } : {}),
+                },
             })
+            : null;
+        // Home device approval is owned by the Home auth/enrollment path. It is
+        // intentionally not part of the Personal Home fixed renderer, but a
+        // process-level setting must survive the first managed env write when
+        // no prior server.env exists. Preserve an existing file value above;
+        // only carry the inherited setting when the file has no assignment.
+        const approvalKey = 'HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED';
+        const inheritedApproval = params.purpose?.kind === 'personal-home'
+            && !Object.prototype.hasOwnProperty.call(parseEnvText(existingEnvText), approvalKey)
+            && Object.prototype.hasOwnProperty.call(process.env, approvalKey)
+            ? String(process.env[approvalKey] ?? '')
             : null;
         const envText = mergeSelfHostServerEnvText({
             baseEnvText,
@@ -1018,6 +1215,8 @@ export async function installOrUpdateRelayRuntimeLocal(params: Readonly<{
             overrides: {
                 ...(params.env ?? {}),
                 ...(personalHomeEnv ?? {}),
+                ...(params.purpose ? { [MANAGED_RELAY_PURPOSE_ENV]: params.purpose.kind } : {}),
+                ...(inheritedApproval !== null ? { [approvalKey]: inheritedApproval } : {}),
                 PORT: String(resolvedPort),
             },
         });
@@ -1029,9 +1228,6 @@ export async function installOrUpdateRelayRuntimeLocal(params: Readonly<{
             platform,
         });
         if (migrationPlan) {
-            if (params.createPersonalHomeRestorePoint) {
-                await params.createPersonalHomeRestorePoint();
-            }
             if (params.runMigrationCommand) {
                 await params.runMigrationCommand({
                     ...migrationPlan,
@@ -1089,6 +1285,7 @@ export async function installOrUpdateRelayRuntimeLocal(params: Readonly<{
             mode,
             version: typeof params.version === 'string' && params.version.trim() ? params.version.trim() : null,
             updatedAt: new Date().toISOString(),
+            ...(params.purpose ? { purpose: params.purpose } : {}),
             ...(uiDeployment ? {
                 uiDeploymentDigest: uiDeployment.digest,
                 uiDeploymentId: uiDeployment.deploymentId,
@@ -1110,150 +1307,319 @@ export async function installOrUpdateRelayRuntimeLocal(params: Readonly<{
             if (!result.reachable) {
                 throw new Error(`[relay-runtime] relay runtime did not become healthy (${result.url})`);
             }
-            await waitForRelayRuntimeStartupReceipt({
+            const startupReceipt = await waitForRelayRuntimeStartupReceipt({
                 path: startupReceiptPath,
                 nonce: startupReceiptNonce,
             });
+            if (params.purpose?.kind === 'personal-home') {
+                if (
+                    startupReceipt.host !== baseUrlObject.hostname
+                    || startupReceipt.host !== '127.0.0.1'
+                    || startupReceipt.port !== Number.parseInt(baseUrlObject.port, 10)
+                ) {
+                    throw new Error('[relay-runtime] Personal Home startup listener does not match its stable loopback origin');
+                }
+            }
+        }
+
+        if (
+            personalHomeRestorePoint
+            && params.personalHomeRestoreHooks?.verifyIdentity
+            && !(await params.personalHomeRestoreHooks.verifyIdentity(personalHomeRestorePoint.backup.manifest))
+        ) {
+            throw new Error('[relay-runtime] Personal Home identity verification failed after activation');
         }
 
         await writeJsonFile(statePath, state);
+        candidateStateCommitted = true;
+        if (personalHomeRestorePoint) {
+            await personalHomeRestorePoint.dispose();
+            personalHomeRestorePoint = null;
+        }
 
         return {
             baseUrl,
             version: state.version,
         };
     } catch (error) {
+        if (candidateStateCommitted) throw error;
         await rm(startupReceiptPath, { force: true }).catch(() => undefined);
-        if (candidateServiceActivationAttempted) {
-            const candidateStopSpec = buildRelayRuntimeServiceSpec({
-                serviceName,
-                installRoot: defaults.installRoot,
-                serverBinaryPath: installServerBinaryPath,
-                env: {},
-                stdoutPath,
-                stderrPath,
-            });
-            const candidateStopDefinition = buildServiceDefinition({
-                backend,
-                homeDir,
-                spec: candidateStopSpec,
-            });
-            const candidateStopPlan = planServiceAction({
-                backend,
-                action: 'stop',
-                label: candidateStopSpec.label,
-                definitionPath: candidateStopDefinition.path,
-                persistent: true,
-            });
-            await applyServicePlan(candidateStopPlan, { runCommands: true });
-        }
-        if (previousInstallState) {
-            await restoreRelayRuntimeInstallState({
-                platform,
-                payloadDir: defaults.installRoot,
-                shimPath: join(defaults.binDir, serverBinaryName),
-                migrationsDir,
-                envPath: configEnvPath,
-                statePath,
-                payloadBackupDir: previousInstallState.payloadBackupDir,
-                migrationsBackupDir: previousInstallState.migrationsBackupDir,
-                previousEnvText: previousInstallState.previousEnvText,
-                previousStateText: previousInstallState.previousStateText,
-            });
+        const rollbackFailures: RelayRuntimeInstallRollbackFailure[] = [];
+        let rollbackCanProceed = true;
 
-            if (previousServiceDefinitionExisted && previousInstallState.hasRestorableServerBinary) {
-                const restoreEnv = parseEnvText(previousInstallState.previousEnvText ?? '');
-                const restoreSpec = buildRelayRuntimeServiceSpec({
+        if (candidateServiceActivationAttempted) {
+            try {
+                const candidateStopSpec = buildRelayRuntimeServiceSpec({
                     serviceName,
-                    installRoot: restoreInstallRoot,
-                    serverBinaryPath: join(restoreInstallRoot, 'bin', serverBinaryName),
-                    env: restoreEnv,
-                    stdoutPath,
-                    stderrPath,
-                });
-                const restoreDefinition = buildServiceDefinition({
-                    backend,
-                    homeDir,
-                    spec: restoreSpec,
-                });
-                const restorePlan = planServiceAction({
-                    backend,
-                    action: 'install',
-                    label: restoreSpec.label,
-                    definitionPath: restoreDefinition.path,
-                    definitionContents: restoreDefinition.contents,
-                    persistent: true,
-                });
-                await applyServicePlan(restorePlan, {
-                    runCommands: params.runServiceCommands !== false,
-                });
-                if (params.runServiceCommands !== false && params.skipHealthCheck !== true) {
-                    const rollbackBaseUrl = resolveConfiguredSelfHostBaseUrl({
-                        fallbackBaseUrl: `http://${defaults.serverHost}:${defaults.serverPort}`,
-                        envText: previousInstallState.previousEnvText ?? '',
-                    });
-                    const rollbackBaseUrlObject = new URL(rollbackBaseUrl);
-                    const rollbackHealth = await checkRelayRuntimeHealth({
-                        host: rollbackBaseUrlObject.hostname,
-                        port: Number.parseInt(rollbackBaseUrlObject.port, 10),
-                        timeoutMs: resolveRelayRuntimeInstallHealthcheckTimeoutMs(),
-                        probePortOpen: async ({ host, port, timeoutMs }) => await probePortOpen({ host, port, timeoutMs }),
-                        fetchJson: async ({ url, timeoutMs }) => await fetchJson({ url, timeoutMs }),
-                    });
-                    if (!rollbackHealth.reachable) {
-                        throw new Error(`[relay-runtime] previous relay runtime did not become healthy after rollback (${rollbackHealth.url})`, {
-                            cause: error,
-                        });
-                    }
-                }
-            } else if (params.runServiceCommands !== false) {
-                const rollbackSpec = buildRelayRuntimeServiceSpec({
-                    serviceName,
-                    installRoot: restoreInstallRoot,
-                    serverBinaryPath: join(restoreInstallRoot, 'bin', serverBinaryName),
+                    installRoot: defaults.installRoot,
+                    serverBinaryPath: installServerBinaryPath,
                     env: {},
                     stdoutPath,
                     stderrPath,
                 });
-                const rollbackDefinition = buildServiceDefinition({
+                const candidateStopDefinition = buildServiceDefinition({
                     backend,
                     homeDir,
-                    spec: rollbackSpec,
+                    spec: candidateStopSpec,
                 });
-                const rollbackPlan = planServiceAction({
+                const candidateStopPlan = planServiceAction({
                     backend,
-                    action: 'uninstall',
-                    label: rollbackSpec.label,
-                    definitionPath: rollbackDefinition.path,
+                    action: 'stop',
+                    label: candidateStopSpec.label,
+                    definitionPath: candidateStopDefinition.path,
                     persistent: true,
                 });
-                await applyServicePlan(rollbackPlan, {
-                    runCommands: true,
+                await applyServicePlan(candidateStopPlan, { runCommands: true });
+            } catch (rollbackError) {
+                rollbackFailures.push({ phase: 'candidate_stop', error: rollbackError });
+                rollbackCanProceed = false;
+            }
+        }
+
+        if (rollbackCanProceed && previousInstallState) {
+            try {
+                await restoreRelayRuntimeInstallState({
+                    platform,
+                    payloadDir: defaults.installRoot,
+                    shimPath: join(defaults.binDir, serverBinaryName),
+                    migrationsDir,
+                    envPath: configEnvPath,
+                    statePath,
+                    payloadBackupDir: previousInstallState.payloadBackupDir,
+                    migrationsBackupDir: previousInstallState.migrationsBackupDir,
+                    previousEnvText: previousInstallState.previousEnvText,
+                    previousStateText: previousInstallState.previousStateText,
                 });
-                if (!previousServiceDefinitionExisted) {
-                    await rm(rollbackDefinition.path, { force: true }).catch(() => undefined);
+            } catch (rollbackError) {
+                rollbackFailures.push({ phase: 'runtime_restore', error: rollbackError });
+                rollbackCanProceed = false;
+            }
+        }
+
+        if (rollbackCanProceed && personalHomeRestorePoint) {
+            try {
+                const restoreResult = await personalHomeRestorePoint.restore(params.personalHomeRestoreHooks ?? {});
+                personalHomeRestoreRollbackPaths = restoreResult.rollbackPaths;
+                if (restoreResult.outcome !== 'restored') {
+                    throw new Error(`[relay-runtime] Personal Home restore did not complete (${restoreResult.outcome})${restoreResult.error ? `: ${restoreResult.error}` : ''}`);
+                }
+            } catch (rollbackError) {
+                rollbackFailures.push({ phase: 'personal_home_restore', error: rollbackError });
+                rollbackCanProceed = false;
+            }
+        }
+
+        if (rollbackCanProceed && previousInstallState && (ownedRootMigration || legacyRootMigration) && params.runServiceCommands !== false) {
+            try {
+                const migratedRollbackSpec = buildRelayRuntimeServiceSpec({
+                    serviceName,
+                    installRoot: defaults.installRoot,
+                    serverBinaryPath: join(defaults.installRoot, 'bin', serverBinaryName),
+                    env: {},
+                    stdoutPath,
+                    stderrPath,
+                });
+                const migratedRollbackDefinition = buildServiceDefinition({
+                    backend,
+                    homeDir,
+                    spec: migratedRollbackSpec,
+                });
+                const migratedRollbackPlan = planServiceAction({
+                    backend,
+                    action: 'uninstall',
+                    label: migratedRollbackSpec.label,
+                    definitionPath: migratedRollbackDefinition.path,
+                    persistent: true,
+                });
+                await applyServicePlan(migratedRollbackPlan, { runCommands: true });
+                await rm(migratedRollbackDefinition.path, { force: true }).catch(() => undefined);
+            } catch (rollbackError) {
+                rollbackFailures.push({ phase: 'service_restore', error: rollbackError });
+                rollbackCanProceed = false;
+            }
+        }
+
+        if (rollbackCanProceed) {
+            for (const migration of [ownedRootMigration, legacyRootMigration]) {
+                if (!migration) continue;
+                try {
+                    await rollbackRelayRuntimeInstallRootMigration(migration);
+                } catch (rollbackError) {
+                    rollbackFailures.push({ phase: 'install_root_restore', error: rollbackError });
+                    rollbackCanProceed = false;
+                    break;
                 }
             }
         }
-        if (ownedRootMigration) {
-            if (previousInstallState) {
-                await rm(previousInstallState.backupRoot, { recursive: true, force: true }).catch(() => undefined);
+
+        if (rollbackCanProceed && previousInstallState && !ownedRootMigration && !legacyRootMigration) {
+            try {
+                if (previousServiceDefinitionExisted && previousInstallState.hasRestorableServerBinary) {
+                    const restoreEnv = parseEnvText(previousInstallState.previousEnvText ?? '');
+                    const restoreSpec = buildRelayRuntimeServiceSpec({
+                        serviceName,
+                        installRoot: restoreInstallRoot,
+                        serverBinaryPath: join(restoreInstallRoot, 'bin', serverBinaryName),
+                        env: restoreEnv,
+                        stdoutPath,
+                        stderrPath,
+                    });
+                    const restoreDefinition = buildServiceDefinition({
+                        backend,
+                        homeDir,
+                        spec: restoreSpec,
+                    });
+                    const restorePlan = planServiceAction({
+                        backend,
+                        action: 'install',
+                        label: restoreSpec.label,
+                        definitionPath: restoreDefinition.path,
+                        definitionContents: restoreDefinition.contents,
+                        persistent: true,
+                    });
+                    await applyServicePlan(restorePlan, {
+                        runCommands: params.runServiceCommands !== false,
+                    });
+                    if (params.runServiceCommands !== false && params.skipHealthCheck !== true) {
+                        const rollbackBaseUrl = resolveConfiguredSelfHostBaseUrl({
+                            fallbackBaseUrl: `http://${defaults.serverHost}:${defaults.serverPort}`,
+                            envText: previousInstallState.previousEnvText ?? '',
+                        });
+                        const rollbackBaseUrlObject = new URL(rollbackBaseUrl);
+                        const rollbackHealth = await checkRelayRuntimeHealth({
+                            host: rollbackBaseUrlObject.hostname,
+                            port: Number.parseInt(rollbackBaseUrlObject.port, 10),
+                            timeoutMs: resolveRelayRuntimeInstallHealthcheckTimeoutMs(),
+                            probePortOpen: async ({ host, port, timeoutMs }) => await probePortOpen({ host, port, timeoutMs }),
+                            fetchJson: async ({ url, timeoutMs }) => await fetchJson({ url, timeoutMs }),
+                        });
+                        if (!rollbackHealth.reachable) {
+                            throw new Error(`[relay-runtime] previous relay runtime did not become healthy after rollback (${rollbackHealth.url})`);
+                        }
+                    }
+                } else if (params.runServiceCommands !== false) {
+                    const rollbackSpec = buildRelayRuntimeServiceSpec({
+                        serviceName,
+                        installRoot: restoreInstallRoot,
+                        serverBinaryPath: join(restoreInstallRoot, 'bin', serverBinaryName),
+                        env: {},
+                        stdoutPath,
+                        stderrPath,
+                    });
+                    const rollbackDefinition = buildServiceDefinition({
+                        backend,
+                        homeDir,
+                        spec: rollbackSpec,
+                    });
+                    const rollbackPlan = planServiceAction({
+                        backend,
+                        action: 'uninstall',
+                        label: rollbackSpec.label,
+                        definitionPath: rollbackDefinition.path,
+                        persistent: true,
+                    });
+                    await applyServicePlan(rollbackPlan, { runCommands: true });
+                    if (!previousServiceDefinitionExisted) {
+                        await rm(rollbackDefinition.path, { force: true }).catch(() => undefined);
+                    }
+                }
+            } catch (rollbackError) {
+                rollbackFailures.push({ phase: 'service_restore', error: rollbackError });
+                rollbackCanProceed = false;
             }
-            await rollbackRelayRuntimeInstallRootMigration(ownedRootMigration);
         }
-        if (legacyRootMigration) {
-            if (previousInstallState) {
-                await rm(previousInstallState.backupRoot, { recursive: true, force: true }).catch(() => undefined);
+
+        if (rollbackCanProceed && personalHomeRestorePoint) {
+            try {
+                for (const rollbackPath of personalHomeRestoreRollbackPaths ?? []) {
+                    await rm(rollbackPath, { recursive: true, force: true });
+                }
+                personalHomeRestoreRollbackPaths = undefined;
+                await personalHomeRestorePoint.dispose();
+                personalHomeRestorePoint = null;
+            } catch (rollbackError) {
+                rollbackFailures.push({ phase: 'artifact_disposal', error: rollbackError });
+                rollbackCanProceed = false;
             }
-            await rollbackRelayRuntimeInstallRootMigration(legacyRootMigration);
+        }
+
+        if (!rollbackCanProceed || rollbackFailures.length > 0) {
+            preserveRecoveryArtifacts = true;
+            throw new RelayRuntimeInstallRollbackIncompleteError(error, rollbackFailures, {
+                ...(previousInstallState ? { runtimeBackupRoot: previousInstallState.backupRoot } : {}),
+                ...(personalHomeRestorePoint ? { personalHomeRestorePointPath: personalHomeRestorePoint.backup.path } : {}),
+                ...(personalHomeRestoreRollbackPaths ? { personalHomeRestoreRollbackPaths } : {}),
+            });
         }
         throw error;
     } finally {
         if (preparedPayload.cleanupPath) {
             await rm(preparedPayload.cleanupPath, { recursive: true, force: true }).catch(() => undefined);
         }
-        if (previousInstallState) {
+        if (previousInstallState && !preserveRecoveryArtifacts) {
             await rm(previousInstallState.backupRoot, { recursive: true, force: true }).catch(() => undefined);
         }
     }
+}
+
+export async function installOrUpdateRelayRuntimeLocal(
+    params: Parameters<typeof installOrUpdateRelayRuntimeLocalUnderMutationLocks>[0],
+): ReturnType<typeof installOrUpdateRelayRuntimeLocalUnderMutationLocks> {
+    const platform = (String(params.platform ?? '').trim() || process.platform) as NodeJS.Platform;
+    const homeDir = String(params.homeDir ?? '').trim() || homedir();
+    const mode = params.mode === 'system' ? 'system' : 'user';
+    assertRootIfRequired({ platform, mode });
+    const defaults = resolveRelayRuntimeDefaults({
+        platform,
+        mode,
+        channel: params.channel,
+        homeDir,
+    });
+
+    return withFirstPartyPayloadMutationLock({
+        installRoot: defaults.installRoot,
+        lockParentDir: dirname(defaults.installRoot),
+        operation: async () => {
+            const rootMigrationSource = await resolveRelayRuntimeInstallRootMigrationSource({
+                platform,
+                mode,
+                channel: params.channel,
+                homeDir,
+            });
+            if (params.purpose?.kind === 'personal-home') {
+                // A user-mode legacy migration renames the complete install root, including its
+                // persistent data directory. Lock that existing Home before the move; creating a
+                // second destination lock would itself create the destination and defeat the
+                // atomic rename. The lock owner releases the same token at its moved path.
+                const sourceDataDir = await resolvePersonalHomeRuntimeDataDirForInstallRoot({
+                    platform,
+                    mode,
+                    channel: params.channel,
+                    homeDir,
+                    installRoot: rootMigrationSource?.sourceInstallRoot ?? defaults.installRoot,
+                });
+                const destinationDataDir = rootMigrationSource
+                    ? await resolvePersonalHomeRuntimeDataDirForInstallRoot({
+                        platform,
+                        mode,
+                        channel: params.channel,
+                        homeDir,
+                        installRoot: defaults.installRoot,
+                    })
+                    : sourceDataDir;
+                return withPersonalHomeOperationLock(
+                    sourceDataDir,
+                    'upgrade',
+                    async () => {
+                        await assertPersonalHomeRelocationAllowsActivation(sourceDataDir);
+                        return installOrUpdateRelayRuntimeLocalUnderMutationLocks(params, rootMigrationSource);
+                    },
+                    rootMigrationSource && sourceDataDir !== destinationDataDir
+                        ? { movedToDataDir: destinationDataDir }
+                        : {},
+                );
+            }
+            return installOrUpdateRelayRuntimeLocalUnderMutationLocks(params, rootMigrationSource);
+        },
+    });
 }

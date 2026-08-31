@@ -1,7 +1,15 @@
 import { homedir } from 'node:os';
-import { isAbsolute, join, normalize, resolve } from 'node:path';
+import { normalize, posix, resolve, win32 } from 'node:path';
+
+import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
 import { resolveRelayRuntimeDefaults } from '../relayRuntime.js';
+import { expandHomeDirPath } from '../../path/expandHomeDirPath.js';
+import {
+  resolveManagedServerLightPathEnvValue,
+  resolvePersonalHomePrivateFilesDir,
+  resolvePersonalHomeSqliteDatabasePath,
+} from './pathResolvers.js';
 
 export type PersonalHomeRuntimeLayout = Readonly<{
   installRoot: string;
@@ -25,23 +33,35 @@ export function resolvePersonalHomeRuntimeLayout(params: Readonly<{
   homeDir?: string;
   platform?: NodeJS.Platform;
   mode?: 'user' | 'system';
+  channel?: PublicReleaseRingId;
 }> = {}): PersonalHomeRuntimeLayout {
   const env = params.env ?? process.env;
   const platform = params.platform ?? process.platform;
   const mode = params.mode ?? 'user';
   const fallbackHome = params.homeDir ?? homedir();
-  const defaults = resolveRelayRuntimeDefaults({ platform, mode, channel: 'stable', homeDir: fallbackHome });
-  const installRoot = resolve(String(env.HAPPIER_SELF_HOST_INSTALL_ROOT ?? defaults.installRoot));
-  const configDir = resolve(String(env.HAPPIER_SELF_HOST_CONFIG_DIR ?? defaults.configDir));
-  const dataDir = resolve(String(env.HAPPIER_SERVER_LIGHT_DATA_DIR ?? env.HAPPY_SERVER_LIGHT_DATA_DIR ?? defaults.dataDir));
-  const filesDir = resolve(String(env.HAPPIER_SERVER_LIGHT_FILES_DIR ?? env.HAPPY_SERVER_LIGHT_FILES_DIR ?? join(dataDir, 'files')));
-  const databasePath = resolve(String(env.HAPPIER_SERVER_LIGHT_DATABASE_PATH ?? join(dataDir, 'happier-server-light.sqlite')));
-  const logsDir = resolve(String(env.HAPPIER_SELF_HOST_LOG_DIR ?? defaults.logDir));
-  const privateFilesDir = resolve(join(filesDir, 'private'));
+  const pathEnv: NodeJS.ProcessEnv = platform === 'win32'
+    ? { ...env, USERPROFILE: fallbackHome }
+    : { ...env, HOME: fallbackHome };
+  const defaults = resolveRelayRuntimeDefaults({ platform, mode, channel: params.channel ?? 'stable', homeDir: fallbackHome });
+  const api = platform === 'win32' ? win32 : posix;
+  const absolute = (value: string): string => api.resolve(expandHomeDirPath(value, pathEnv, platform));
+  const installRoot = absolute(String(env.HAPPIER_SELF_HOST_INSTALL_ROOT ?? defaults.installRoot));
+  const configDir = absolute(String(env.HAPPIER_SELF_HOST_CONFIG_DIR ?? defaults.configDir));
+  const dataDir = absolute(
+    resolveManagedServerLightPathEnvValue(env, 'HAPPIER_SERVER_LIGHT_DATA_DIR', 'HAPPY_SERVER_LIGHT_DATA_DIR')
+      || defaults.dataDir,
+  );
+  const filesDir = absolute(
+    resolveManagedServerLightPathEnvValue(env, 'HAPPIER_SERVER_LIGHT_FILES_DIR', 'HAPPY_SERVER_LIGHT_FILES_DIR')
+      || api.join(dataDir, 'files'),
+  );
+  const databasePath = resolvePersonalHomeSqliteDatabasePath({ dataDir, env: pathEnv, platform });
+  const logsDir = absolute(String(env.HAPPIER_SELF_HOST_LOG_DIR ?? defaults.logDir));
+  const privateFilesDir = resolvePersonalHomePrivateFilesDir({ dataDir, env: pathEnv, platform });
   return Object.freeze({ installRoot, configDir, dataDir, databasePath, publicFilesDir: filesDir, privateFilesDir,
-    masterSecretPath: resolve(join(dataDir, 'handy-master-secret.txt')),
-    backupsDir: resolve(join(dataDir, 'backups')), derivedDataDir: resolve(join(dataDir, 'derived')), logsDir,
-    irohEndpointKeyPath: resolve(join(dataDir, 'runtime', 'iroh', 'endpoint.key')), mode, platform });
+    masterSecretPath: api.resolve(api.join(dataDir, 'handy-master-secret.txt')),
+    backupsDir: api.resolve(api.join(dataDir, 'backups')), derivedDataDir: api.resolve(api.join(dataDir, 'derived')), logsDir,
+    irohEndpointKeyPath: api.resolve(api.join(dataDir, 'runtime', 'iroh', 'endpoint.key')), mode, platform });
 }
 
 export function assertLayoutPath(layout: PersonalHomeRuntimeLayout, path: string): string {

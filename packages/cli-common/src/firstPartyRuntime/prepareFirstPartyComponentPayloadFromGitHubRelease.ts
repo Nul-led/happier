@@ -14,6 +14,8 @@ import {
   resolveFirstPartyComponentPublicReleaseVariant,
 } from './componentCatalog.js';
 import { extractReleasePayloadRootFromArchive } from './extractReleasePayloadRootFromArchive.js';
+import { prepareMutagenEnginePayloadFromGitHubRelease } from './prepareMutagenEnginePayloadFromGitHubRelease.js';
+import { MutagenEngineArtifactError } from './mutagenEngineArtifact.js';
 
 export interface PreparedFirstPartyComponentPayload {
   componentId: FirstPartyComponentId;
@@ -51,12 +53,26 @@ export async function prepareFirstPartyComponentPayloadFromGitHubRelease(params:
   channel: PublicReleaseRingId;
   os?: string;
   arch?: string;
+  engineVersion?: string;
   artifactSource?: FirstPartyReleaseArtifactSource;
   githubRepo?: string;
   githubToken?: string;
   userAgent?: string;
   minisignPubkeyFile?: string;
 }>): Promise<PreparedFirstPartyComponentPayload> {
+  if (params.componentId === 'mutagen-engine') {
+    const engineVersion = String(params.engineVersion ?? process.env.HAPPIER_MUTAGEN_ENGINE_VERSION ?? '').trim();
+    if (!engineVersion) {
+      throw new MutagenEngineArtifactError(
+        'mutagen_engine_artifact_untrusted',
+        '[first-party-release] mutagen-engine requires an explicit HAPPIER_MUTAGEN_ENGINE_VERSION or engineVersion; rolling release tags are not supported.',
+      );
+    }
+    return await prepareMutagenEnginePayloadFromGitHubRelease({
+      ...params,
+      engineVersion,
+    });
+  }
   const component = getFirstPartyComponentCatalogEntry(params.componentId);
   const variant = resolveFirstPartyComponentPublicReleaseVariant({
     componentId: params.componentId,

@@ -126,6 +126,52 @@ describe('RelayHostEngine (local health)', () => {
     });
   });
 
+  it('reports a non-colliding planned URL for an absent local runtime lane', async () => {
+    await withTemporaryHome(async (homeDir) => {
+      const stableDefaults = resolveRelayRuntimeDefaults({
+        platform: 'linux',
+        mode: 'user',
+        channel: 'stable',
+        homeDir,
+      });
+      await mkdir(stableDefaults.configDir, { recursive: true });
+      await mkdir(stableDefaults.installRoot, { recursive: true });
+      await writeFile(join(stableDefaults.configDir, 'server.env'), 'PORT=3005\nHAPPIER_SERVER_HOST=127.0.0.1\n', 'utf8');
+      await writeFile(join(stableDefaults.installRoot, 'self-host-state.json'), JSON.stringify({ version: '0.3.0-test' }), 'utf8');
+
+      Object.defineProperty(process, 'platform', { value: 'linux' });
+      vi.doMock('node:os', async () => {
+        const actual = await vi.importActual<typeof import('node:os')>('node:os');
+        return { ...actual, homedir: () => homeDir };
+      });
+      vi.doMock('node:child_process', async () => {
+        const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+        return {
+          ...actual,
+          spawnSync: () => ({ status: 0, stdout: 'LoadState=not-found\n', stderr: '' }),
+        };
+      });
+
+      const { createRelayHostEngine } = await import('./relayHostEngine.js');
+      const engine = createRelayHostEngine({
+        resolveRemoteReleaseTarget: async () => ({ os: 'linux', arch: 'x64' }),
+        runRemoteText: async () => ({ status: 0, stdout: '', stderr: '' }),
+        copyLocalDirectoryToRemote: async () => {},
+        installRemoteComponent: async () => ({ binaryPath: '$HOME/.happier/happier-server/current/happier-server', versionId: 'preview-1' }),
+      });
+
+      const status = await engine.readStatus({
+        target: { kind: 'local' },
+        channel: 'preview',
+        mode: 'user',
+      });
+
+      expect(status.installed).toBe(false);
+      expect(status.baseUrl).not.toBe('http://127.0.0.1:3005');
+      expect(new URL(status.baseUrl).hostname).toBe('127.0.0.1');
+    });
+  });
+
   it('resolves a non-colliding desired local relay URL before lane conflict checks', async () => {
     await withTemporaryHome(async (homeDir) => {
       const stableDefaults = resolveRelayRuntimeDefaults({

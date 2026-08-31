@@ -394,6 +394,7 @@ export function applyEnvOverridesToEnvText(
     }
     const lines = String(envText ?? '').split('\n');
     const next: string[] = [];
+    const replacedKeys = new Set<string>();
     for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#') || !trimmed.includes('=')) {
@@ -406,12 +407,17 @@ export function applyEnvOverridesToEnvText(
             next.push(line);
             continue;
         }
-        if (!pending.has(key)) {
+        if (!pending.has(key) && !replacedKeys.has(key)) {
             next.push(line);
             continue;
         }
+        // Environment parsing is last-assignment-wins. Remove every stale
+        // occurrence rather than replacing only the first one, otherwise a
+        // later duplicate can silently override the canonical value.
+        if (replacedKeys.has(key)) continue;
         next.push(`${key}=${pending.get(key) ?? ''}`);
         pending.delete(key);
+        replacedKeys.add(key);
     }
 
     for (const [key, value] of pending.entries()) {

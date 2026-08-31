@@ -1,10 +1,45 @@
 import { resolvePublicReleaseRingLabelForId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
+import {
+  SystemTaskJsonValueSchema,
+  type SystemTaskJsonObject,
+  type SystemTaskJsonValue,
+} from '@happier-dev/protocol';
 
 import type { SystemTaskSshConnectionConfig } from '../kinds/relayRuntimeKinds.js';
 import { resolveRemoteInstalledFirstPartyBinaryPath } from '../kinds/remoteFirstPartyPayloadInstaller.js';
 import { SystemTaskExecutionError } from '../runSystemTask.js';
 
 import type { HappierJsonExecutor, HappierTextResult, RunHappierOptions } from './happierJsonExecutor.js';
+
+function isSystemTaskJsonObject(value: SystemTaskJsonValue): value is SystemTaskJsonObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function parseStrictPersonalHomeTaskFinalResult(text: string): Readonly<{ ok: true; data: SystemTaskJsonObject }> {
+  const lines = String(text ?? '').split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  const finalLine = lines.at(-1);
+  let parsed: unknown;
+  try { parsed = finalLine ? JSON.parse(finalLine) : null; } catch { parsed = null; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home command did not end with a JSON result.');
+  }
+  const envelope = parsed as Record<string, unknown>;
+  if (Object.keys(envelope).some((key) => !['kind', 'protocolVersion', 'result'].includes(key))
+    || envelope.kind !== 'personal_home_task_result'
+    || envelope.protocolVersion !== 1
+    || !envelope.result || typeof envelope.result !== 'object' || Array.isArray(envelope.result)) {
+    throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home command returned the wrong result contract.');
+  }
+  const result = envelope.result as Record<string, unknown>;
+  if (result.protocolVersion !== 1 || result.ok !== true || typeof result.taskId !== 'string') {
+    throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home command did not confirm a successful task result.');
+  }
+  const parsedData = SystemTaskJsonValueSchema.safeParse(result.data);
+  if (!parsedData.success || !isSystemTaskJsonObject(parsedData.data)) {
+    throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home command did not confirm a successful task result.');
+  }
+  return { ok: true, data: parsedData.data };
+}
 
 export type OpenSshAuth =
   | Readonly<{ mode: 'agent' }>

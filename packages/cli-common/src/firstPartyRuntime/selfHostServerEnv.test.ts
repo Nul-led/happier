@@ -57,6 +57,19 @@ describe('applyEnvOverridesToEnvText', () => {
     it('rejects env override values with newlines', () => {
         expect(() => applyEnvOverridesToEnvText('PORT=3005\n', { PORT: '3005\nBAD=1' })).toThrow(/env override/i);
     });
+
+    it('replaces every existing assignment for an overridden key', () => {
+        const rendered = applyEnvOverridesToEnvText(
+            'PORT=3005\nCUSTOM=keep\nPORT=4010\n',
+            { PORT: '43123' },
+        );
+
+        expect(rendered).toContain('CUSTOM=keep');
+        expect(rendered.match(/^PORT=/gmu)).toEqual(['PORT=']);
+        expect(rendered).toContain('PORT=43123');
+        expect(rendered).not.toContain('PORT=3005');
+        expect(rendered).not.toContain('PORT=4010');
+    });
 });
 
 describe('resolveSelfHostServerMigrationPlan', () => {

@@ -38,8 +38,14 @@ import {
   waitForReadyDaemon,
 } from './localDaemonCli.js';
 import { approveLocalRemoteAuthRequestDefault, installRemoteCliDefault, resolveRemoteSshHostTrustDefault, runRemoteBootstrapCommandDefault } from './remoteSshBootstrapTasks.js';
-import { installRemoteCliForManageHostDefault, runRemoteDaemonServiceCommandDefault, runRemoteRelayRuntimeCommandDefault, testRemoteSshConnectionDefault } from './remoteSshManageHostTasks.js';
-import { checkRelayRuntimeHealthDefault, controlRelayRuntimeDefault, installOrUpdateRelayRuntimeDefault, readRelayRuntimeStatusDefault } from './relayRuntimeTasks.js';
+import { installRemoteCliForManageHostDefault, runRemoteDaemonServiceCommandDefault, runRemotePersonalHomeCommandDefault, runRemoteRelayRuntimeCommandDefault, testRemoteSshConnectionDefault } from './remoteSshManageHostTasks.js';
+import {
+  checkRelayRuntimeHealthDefault,
+  controlRelayRuntimeDefault,
+  createBootstrapPersonalHomeSystemTaskOperations,
+  installOrUpdateRelayRuntimeDefault,
+  readRelayRuntimeStatusDefault,
+} from './relayRuntimeTasks.js';
 import { createRelayAccessConfigStore } from './relayAccessConfigStore.js';
 import { normalizeBootstrapChannel, runCommandCapture } from './taskRuntime.js';
 
@@ -70,6 +76,7 @@ type SystemTaskRegistry = ReturnType<typeof systemTasks.createSystemTaskRegistry
 
 type HsetupRegistryDeps = Readonly<{
   relayRuntime?: Partial<RelayRuntimeDeps>;
+  personalHomeOperations?: systemTasks.PersonalHomeSystemTaskOperations;
   remoteSshBootstrap?: Partial<RemoteSshBootstrapDeps>;
   relayDriftRepair?: Partial<RelayDriftRepairDeps>;
   relayAccess?: Partial<RelayAccessDeps>;
@@ -80,7 +87,7 @@ type RelayRuntimeDeps = Readonly<{
   readStatus: (params: systemTasks.RelayRuntimeTaskParams) => Promise<systemTasks.RelayRuntimeStatusSnapshot>;
   checkHealth: (params: Readonly<{ baseUrl: string }>) => Promise<boolean>;
   installOrUpdate: (params: systemTasks.RelayRuntimeTaskParams) => Promise<Readonly<{ relayUrl: string; mode: 'user' | 'system' }>>;
-  control: (params: systemTasks.RelayRuntimeTaskParams & Readonly<{ action: 'start' | 'stop' | 'restart' }>) => Promise<void>;
+  control: (params: systemTasks.RelayRuntimeTaskParams & Readonly<{ action: 'start' | 'stop' | 'restart' | 'uninstall' }>) => Promise<void>;
 }>;
 
 type RemoteSshBootstrapDeps = systemTasks.RemoteSshBootstrapMachineDeps;
@@ -119,8 +126,35 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
   const relayRuntimeStartHandler = systemTasks.createExecutionRunnerFromKind(
     systemTasks.createRelayRuntimeStartTaskKind(relayRuntimeDeps),
   );
+  const relayRuntimeRestartHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createRelayRuntimeRestartTaskKind(relayRuntimeDeps),
+  );
   const relayRuntimeStopHandler = systemTasks.createExecutionRunnerFromKind(
     systemTasks.createRelayRuntimeStopTaskKind(relayRuntimeDeps),
+  );
+  const relayRuntimeUninstallHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createRelayRuntimeUninstallTaskKind(relayRuntimeDeps),
+  );
+  const personalHomeOperations = deps.personalHomeOperations
+    ?? systemTasks.createDeferredPersonalHomeSystemTaskOperations(createBootstrapPersonalHomeSystemTaskOperations);
+  const personalHomeTaskDeps = { operations: personalHomeOperations };
+  const personalHomeInspectHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createPersonalHomeInspectTaskKind(personalHomeTaskDeps),
+  );
+  const personalHomeBackupHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createPersonalHomeBackupTaskKind(personalHomeTaskDeps),
+  );
+  const personalHomeVerifyBackupHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createPersonalHomeVerifyBackupTaskKind(personalHomeTaskDeps),
+  );
+  const personalHomeRestoreHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createPersonalHomeRestoreTaskKind(personalHomeTaskDeps),
+  );
+  const personalHomeEraseHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createPersonalHomeEraseTaskKind(personalHomeTaskDeps),
+  );
+  const personalHomeRelocateHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createPersonalHomeRelocateTaskKind(personalHomeTaskDeps),
   );
   const relayAccessStatusHandler = systemTasks.createExecutionRunnerFromKind(
     systemTasks.createRelayAccessStatusTaskKind({
@@ -270,9 +304,23 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
       handler: relayRuntimeStartHandler,
     },
     {
+      kind: 'relay.runtime.restart.v1',
+      handler: relayRuntimeRestartHandler,
+    },
+    {
       kind: 'relay.runtime.stop.v1',
       handler: relayRuntimeStopHandler,
     },
+    {
+      kind: 'relay.runtime.uninstall.v1',
+      handler: relayRuntimeUninstallHandler,
+    },
+    { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, handler: personalHomeInspectHandler },
+    { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.backup, handler: personalHomeBackupHandler },
+    { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup, handler: personalHomeVerifyBackupHandler },
+    { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.restore, handler: personalHomeRestoreHandler },
+    { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.erase, handler: personalHomeEraseHandler },
+    { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.relocate, handler: personalHomeRelocateHandler },
     {
       kind: 'relay.access.status.v1',
       handler: relayAccessStatusHandler,
@@ -590,6 +638,7 @@ function createRemoteSshManageHostDeps(overrides: HsetupRegistryDeps['remoteSshB
     installRemoteCli: installRemoteCliForManageHostDefault,
     runDaemonServiceCommand: runRemoteDaemonServiceCommandDefault,
     runRelayRuntimeCommand: runRemoteRelayRuntimeCommandDefault,
+    runPersonalHomeCommand: runRemotePersonalHomeCommandDefault,
   };
 }
 

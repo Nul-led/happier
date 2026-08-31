@@ -41,12 +41,25 @@ import {
 } from '../firstPartyRuntime/selfHostServerEnv.js';
 import {
   createPersonalHomeRuntimeSpec,
+  parsePersonalHomeRuntimePurpose,
   type ManagedRelayPurpose,
 } from '../firstPartyRuntime/personalHome/personalHomeRuntimeSpec.js';
 import { resolvePersonalHomeRuntimeLayout } from '../firstPartyRuntime/personalHome/layout.js';
 import type { PersonalHomeRuntimeLayout } from '../firstPartyRuntime/personalHome/layout.js';
-import { erasePersonalHomeData } from '../firstPartyRuntime/personalHome/erase.js';
 import { withPersonalHomeOperationLock } from '../firstPartyRuntime/personalHome/lock.js';
+import { hasMeaningfulPersonalHomeData } from '../firstPartyRuntime/personalHome/restore.js';
+import { readEffectivePersonalHomeSignupPolicy } from '../firstPartyRuntime/personalHomeSignupPolicy.js';
+import { withFirstPartyPayloadMutationLock } from '../firstPartyRuntime/withFirstPartyPayloadMutationLock.js';
+import { createPersonalHomeRestorePointWithLease } from '../firstPartyRuntime/personalHome/restorePoint.js';
+import { assertPersonalHomeRelocationAllowsActivation } from '../firstPartyRuntime/personalHome/relocation.js';
+import {
+  createPersonalHomeSqliteMaintenance,
+  inspectPersonalHomeSanitizedConfigurationStorage,
+  preparePersonalHomeSanitizedConfiguration,
+  readCanonicalPersonalHomeIdentity,
+  readPersonalHomeIdentityValueFromSqlite,
+  readPersonalHomeSanitizedConfiguration,
+} from '../firstPartyRuntime/personalHome/productionAdapters.js';
 
 import { buildRelayRuntimeHealthProbeCommand, RELAY_RUNTIME_HEALTH_OK_TOKEN } from './buildRelayRuntimeHealthProbeCommand.js';
 
@@ -102,6 +115,98 @@ type RemoteInstaller = (params: Readonly<{
   remoteHomeDir?: string;
 }>) => Promise<Readonly<{ binaryPath: string; versionId: string }>>;
 
+function parsePersistedManagedRelayPurpose(value: unknown): ManagedRelayPurpose | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'generic') return { kind: 'generic' };
+  if (record.kind !== 'personal-home') return undefined;
+  try {
+    const spec = parsePersonalHomeRuntimePurpose(record);
+    return { kind: 'personal-home', canonicalServerUrl: spec.canonicalServerUrl };
+  } catch {
+    return undefined;
+  }
+}
+
+async function readPersistedManagedRelayPurpose(defaults: RelayRuntimeDefaults): Promise<ManagedRelayPurpose | undefined> {
+  const statePath = join(defaults.installRoot, 'self-host-state.json');
+  const stateText = existsSync(statePath) ? await readFile(statePath, 'utf8').catch(() => '') : '';
+  if (!stateText.trim()) return undefined;
+  return parsePersistedManagedRelayPurpose(tryParseJsonObject(stateText)?.purpose);
+}
+
+async function resolvePersistedLocalPersonalHomeLayout(params: Readonly<{
+  defaults: RelayRuntimeDefaults;
+  homeDir: string;
+  platform: NodeJS.Platform;
+}>): Promise<PersonalHomeRuntimeLayout> {
+  const envPath = join(params.defaults.configDir, 'server.env');
+  const envText = existsSync(envPath) ? await readFile(envPath, 'utf8').catch(() => '') : '';
+  return resolvePersonalHomeRuntimeLayout({
+    env: {
+      ...parseEnvText(envText),
+      HAPPIER_SELF_HOST_INSTALL_ROOT: params.defaults.installRoot,
+      HAPPIER_SELF_HOST_CONFIG_DIR: params.defaults.configDir,
+      HAPPIER_SELF_HOST_LOG_DIR: params.defaults.logDir,
+    },
+    homeDir: params.homeDir,
+    mode: params.defaults.mode,
+    platform: params.platform,
+    channel: params.defaults.channel,
+  });
+}
+
+export class PersonalHomeRuntimeClassificationRequiredError extends Error {
+  readonly code = 'PERSONAL_HOME_CLASSIFICATION_REQUIRED' as const;
+
+  constructor() {
+    super('Preserved Home data exists but the managed runtime purpose is missing or invalid. Retry through an explicit matching Personal Home install or recover the runtime state.');
+    this.name = 'PersonalHomeRuntimeClassificationRequiredError';
+  }
+}
+
+async function assertExplicitPersonalHomeMatchesPreservedConfiguration(params: Readonly<{
+  defaults: RelayRuntimeDefaults;
+  requested: ManagedRelayPurpose | undefined;
+}>): Promise<void> {
+  if (params.requested?.kind !== 'personal-home') {
+    throw new PersonalHomeRuntimeClassificationRequiredError();
+  }
+  const envPath = join(params.defaults.configDir, 'server.env');
+  const envText = existsSync(envPath) ? await readFile(envPath, 'utf8').catch(() => '') : '';
+  const configuredCanonicalServerUrl = String(parseEnvText(envText).HAPPIER_PUBLIC_SERVER_URL ?? '').trim();
+  if (!configuredCanonicalServerUrl || configuredCanonicalServerUrl !== params.requested.canonicalServerUrl) {
+    throw new PersonalHomeRuntimeClassificationRequiredError();
+  }
+}
+
+/**
+ * The persisted Personal Home purpose is authoritative at the local mutation seam: an omitted
+ * purpose inherits it, a compatible explicit purpose cannot override the persisted canonical
+ * origin, and an incompatible explicit purpose is rejected before any lock is taken or any
+ * runtime byte is written. A runtime without a persisted Personal Home purpose keeps the
+ * caller's requested purpose (fresh installs and generic relays are unaffected).
+ */
+function resolveEffectiveLocalMutationPurpose(params: Readonly<{
+  persisted: ManagedRelayPurpose | undefined;
+  requested: ManagedRelayPurpose | undefined;
+}>): ManagedRelayPurpose | undefined {
+  if (params.persisted?.kind !== 'personal-home') return params.requested;
+  if (!params.requested) return params.persisted;
+  if (params.requested.kind === 'generic') {
+    throw new Error(
+      'This managed relay runtime is an installed Personal Home; a generic purpose cannot declassify it. '
+      + 'Use the Personal Home operations (backup/restore/erase) instead.',
+    );
+  }
+  if (params.requested.canonicalServerUrl !== params.persisted.canonicalServerUrl) {
+    throw new Error(
+      `Personal Home canonicalServerUrl is immutable: the runtime persists ${params.persisted.canonicalServerUrl}, not ${params.requested.canonicalServerUrl}.`,
+    );
+  }
+  return params.persisted;
+}
+
 export type RelayHostEngineDeps = Readonly<{
   installRemoteComponent: RemoteInstaller;
   localInstallPolicy?: Readonly<{
@@ -125,12 +230,13 @@ export type RelayHostEngine = Readonly<{
     canonicalServerUrl?: string;
     layout?: PersonalHomeRuntimeLayout;
   }>>;
-  control: (params: RelayRuntimeTaskParams & Readonly<{ action: 'start' | 'stop' | 'restart' | 'uninstall' | 'erase'; confirmErase?: boolean }>) => Promise<void>;
+  control: (params: RelayRuntimeTaskParams & Readonly<{ action: 'start' | 'stop' | 'restart' | 'uninstall' }>) => Promise<void>;
 }>;
 
 const LOCAL_RELAY_STATUS_HEALTH_TIMEOUT_MS = 1_000;
 const LOCAL_RELAY_CONTROL_HEALTH_TIMEOUT_MS = 120_000;
 const RELAY_RUNTIME_CHANNELS: readonly PublicReleaseRingId[] = ['stable', 'preview', 'publicdev'];
+const REMOTE_BOOTSTRAP_CLOUD_SERVER_URL = 'https://api.happier.dev';
 
 function quoteRemoteShellArg(value: string): string {
   const raw = String(value ?? '');
@@ -453,6 +559,25 @@ function tryParseJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
+function isStrictRemoteRelayHostUninstallSuccessEnvelope(stdout: string): boolean {
+  const envelope = tryParseJsonObject(stdout);
+  if (!envelope) return false;
+  const envelopeKeys = Object.keys(envelope).sort();
+  if (envelopeKeys.join('\0') !== ['data', 'kind', 'ok', 'v'].join('\0')) return false;
+  if (
+    envelope.v !== 1
+    || envelope.ok !== true
+    || envelope.kind !== 'relay_host_uninstall'
+    || !envelope.data
+    || typeof envelope.data !== 'object'
+    || Array.isArray(envelope.data)
+  ) {
+    return false;
+  }
+  const data = envelope.data as Record<string, unknown>;
+  return Object.keys(data).length === 1 && data.ok === true;
+}
+
 function buildRemoteServiceStatusCommand(params: Readonly<{ backend: ServiceBackend; serviceName: string }>): string {
   const svc = `${params.serviceName}.service`;
   if (params.backend === 'systemd-user') {
@@ -526,19 +651,13 @@ function normalizeRemoteServiceSnapshot(params: Readonly<{
   return { enabled: null, active: null };
 }
 
-function buildRemoteControlCommand(params: Readonly<{ backend: ServiceBackend; serviceName: string; action: 'start' | 'stop' | 'restart' | 'uninstall' }>): string {
+function buildRemoteControlCommand(params: Readonly<{ backend: ServiceBackend; serviceName: string; action: 'start' | 'stop' | 'restart' }>): string {
   const svc = `${params.serviceName}.service`;
   if (params.backend === 'systemd-user') {
-    if (params.action === 'uninstall') {
-      return `${wrapRemoteSystemdUserCommand(`systemctl --user disable --now ${quoteRemoteShellArg(svc)}`)} 2>/dev/null || true; ${wrapRemoteSystemdUserCommand('systemctl --user daemon-reload')}`;
-    }
     return wrapRemoteSystemdUserCommand(`systemctl --user ${params.action} ${quoteRemoteShellArg(svc)}`);
   }
   if (params.backend === 'systemd-system') {
     const sudoSetup = "SUDO_PREFIX=''; if [ \"$(id -u)\" -ne 0 ]; then SUDO_PREFIX=\"sudo -n \"; fi; ";
-    if (params.action === 'uninstall') {
-      return `${sudoSetup}${'${SUDO_PREFIX}'}systemctl disable --now ${quoteRemoteShellArg(svc)} 2>/dev/null || true; ${'${SUDO_PREFIX}'}systemctl daemon-reload`;
-    }
     return `${sudoSetup}${'${SUDO_PREFIX}'}systemctl ${params.action} ${quoteRemoteShellArg(svc)}`;
   }
   if (params.backend === 'launchd-user' || params.backend === 'launchd-system') {
@@ -546,9 +665,6 @@ function buildRemoteControlCommand(params: Readonly<{ backend: ServiceBackend; s
       ? "SUDO_PREFIX=''; if [ \"$(id -u)\" -ne 0 ]; then SUDO_PREFIX=\"sudo -n \"; fi; "
       : '';
     const privilegedPrefix = params.backend === 'launchd-system' ? '${SUDO_PREFIX}' : '';
-    if (params.action === 'uninstall') {
-      return `${sudoSetup}${privilegedPrefix}launchctl unload -w ${quoteRemoteShellArg(resolveLaunchdPlistPath(params.serviceName, params.backend === 'launchd-system'))} 2>/dev/null || true; ${privilegedPrefix}launchctl remove ${quoteRemoteShellArg(params.serviceName)} 2>/dev/null || true`;
-    }
     if (params.action === 'stop') {
       return `${sudoSetup}${privilegedPrefix}launchctl unload -w ${quoteRemoteShellArg(resolveLaunchdPlistPath(params.serviceName, params.backend === 'launchd-system'))}`;
     }
@@ -796,58 +912,6 @@ function resolveRemoteServiceDefinitionPath(params: Readonly<{
     return `${params.remoteHomeDir}/Library/LaunchAgents/${params.label}.plist`;
   }
   throw new Error(`Unsupported backend: ${params.backend}`);
-}
-
-
-function buildRemoteRelayRuntimeCleanupCommand(params: Readonly<{
-  definitionPath: string;
-  installRoot: string;
-  binDir: string;
-  configDir: string;
-  dataDir: string;
-  logDir: string;
-  useSudo?: boolean;
-}>): string {
-  const privilegedPrefix = params.useSudo ? '${SUDO_PREFIX}' : '';
-  const installRoot = quoteRemoteShellArg(params.installRoot);
-  const configDir = quoteRemoteShellArg(params.configDir);
-  const dataDir = quoteRemoteShellArg(params.dataDir);
-  const logDir = quoteRemoteShellArg(params.logDir);
-  const statePath = quoteRemoteShellArg(posixPath.join(params.installRoot, 'self-host-state.json'));
-  return [
-    'set -eu',
-    ...(params.useSudo
-      ? [
-          "SUDO_PREFIX=''",
-          'if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo -n "; fi',
-    ]
-      : []),
-    `${privilegedPrefix}rm -f ${quoteRemoteShellArg(params.definitionPath)}`,
-    `${privilegedPrefix}rm -f ${quoteRemoteShellArg(posixPath.join(params.binDir, 'happier-server'))}`,
-    `for entry in ${installRoot}/* ${installRoot}/.[!.]* ${installRoot}/..?*; do [ -e "$entry" ] || [ -L "$entry" ] || continue; case "$entry" in ${configDir}|${dataDir}|${logDir}|${statePath}) continue ;; esac; ${privilegedPrefix}rm -rf -- "$entry"; done`,
-    `${privilegedPrefix}rm -f ${statePath}`,
-    `${privilegedPrefix}rm -rf ${logDir}`,
-  ].join('; ');
-}
-
-function buildRemotePersonalHomeEraseCommand(params: Readonly<{
-  dataDir: string;
-  useSudo?: boolean;
-}>): string {
-  const privilegedPrefix = params.useSudo ? '${SUDO_PREFIX}' : '';
-  const dataDir = quoteRemoteShellArg(params.dataDir);
-  return [
-    'set -eu',
-    ...(params.useSudo
-      ? [
-          "SUDO_PREFIX=''",
-          'if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo -n "; fi',
-        ]
-      : []),
-    `DATA_ROOT=${dataDir}`,
-    'case "$DATA_ROOT" in ""|/|.) echo "Refusing to erase an unsafe Personal Home data root." >&2; exit 1 ;; esac',
-    `${privilegedPrefix}rm -rf -- "$DATA_ROOT"`,
-  ].join('; ');
 }
 
 
@@ -1345,12 +1409,27 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       };
     })();
     const installed = Boolean(version) || existsSync(installBinaryPath);
+    // Installed runtime classification is owner metadata. A caller may request Personal Home
+    // facts for an absent runtime, but it must not relabel an already-installed generic Home.
+    const runtimePurpose = parsePersistedManagedRelayPurpose(state?.purpose)
+      ?? (!installed ? parsed.purpose : undefined);
     const envPath = join(defaults.configDir, 'server.env');
     const envText = existsSync(envPath) ? await readFile(envPath, 'utf8').catch(() => '') : '';
-    const baseUrl = resolveConfiguredSelfHostBaseUrl({
+    let baseUrl = resolveConfiguredSelfHostBaseUrl({
       fallbackBaseUrl: `http://${defaults.serverHost}:${defaults.serverPort}`,
       envText,
     });
+    if (!installed && !envText.trim()) {
+      const plannedPort = await resolveNonCollidingRelayPort({
+        platform: process.platform,
+        mode,
+        channel,
+        homeDir: homedir(),
+        defaultPort: defaults.serverPort,
+        configuredPort: null,
+      });
+      baseUrl = `http://${defaults.serverHost}:${plannedPort}`;
+    }
     const healthy = service.active === true
       ? await resolveLocalRelayHealth({
         baseUrl,
@@ -1367,22 +1446,14 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       currentBaseUrl: baseUrl,
     });
 
-    const personalHomeLayout = parsed.purpose?.kind === 'personal-home'
-      ? resolvePersonalHomeRuntimeLayout({
-        env: {
-          ...process.env,
-          HAPPIER_SELF_HOST_INSTALL_ROOT: defaults.installRoot,
-          HAPPIER_SELF_HOST_CONFIG_DIR: defaults.configDir,
-          HAPPIER_SELF_HOST_LOG_DIR: defaults.logDir,
-          HAPPIER_SERVER_LIGHT_DATA_DIR: defaults.dataDir,
-        },
-        homeDir: homedir(),
-        mode,
-        platform: process.platform,
-      })
-      : undefined;
-    const personalHomeDataPresent = personalHomeLayout
-      ? existsSync(personalHomeLayout.databasePath) || existsSync(personalHomeLayout.publicFilesDir)
+    const personalHomeLayout = await resolvePersistedLocalPersonalHomeLayout({
+      defaults,
+      homeDir: homedir(),
+      platform: process.platform,
+    });
+    const personalHomeDataPresent = await hasMeaningfulPersonalHomeData(personalHomeLayout);
+    const personalHomeSignupPolicy = runtimePurpose?.kind === 'personal-home'
+      ? readEffectivePersonalHomeSignupPolicy(envText)
       : undefined;
 
     return {
@@ -1398,11 +1469,16 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
           currentInstallRoot: strandedLegacyState.currentInstallRoot,
         })],
       } : {}),
-      ...(parsed.purpose ? { purpose: parsed.purpose } : {}),
-      ...(parsed.purpose?.kind === 'personal-home' ? {
-        canonicalServerUrl: parsed.purpose.canonicalServerUrl,
+      ...(runtimePurpose ? { purpose: runtimePurpose } : {}),
+      dataPresent: personalHomeDataPresent,
+      ...(runtimePurpose?.kind === 'personal-home' ? {
+        canonicalServerUrl: runtimePurpose.canonicalServerUrl,
         ...(personalHomeLayout ? { layout: personalHomeLayout } : {}),
-        ...(typeof personalHomeDataPresent === 'boolean' ? { dataPresent: personalHomeDataPresent } : {}),
+        anonymousSignupEnabled: personalHomeSignupPolicy === 'enabled'
+          ? true
+          : personalHomeSignupPolicy === 'disabled'
+            ? false
+            : null,
       } : {}),
     };
   }
@@ -1416,17 +1492,31 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
   }>> {
     const mode = normalizeMode(parsed.mode);
     const channel = normalizeChannel(parsed.channel);
-    const desiredRelayUrl = await resolveLocalDesiredRelayUrl({
-      mode,
-      channel,
-      envOverrides: parsed.env,
-      purpose: parsed.purpose,
-    });
     const defaults = resolveRelayRuntimeDefaults({
       platform: process.platform,
       mode,
       channel,
       homeDir: homedir(),
+    });
+    const persistedPurpose = await readPersistedManagedRelayPurpose(defaults);
+    const mutationLayout = await resolvePersistedLocalPersonalHomeLayout({
+      defaults,
+      homeDir: homedir(),
+      platform: process.platform,
+    });
+    const preservedHomeDataPresent = await hasMeaningfulPersonalHomeData(mutationLayout);
+    if (preservedHomeDataPresent && !persistedPurpose) {
+      await assertExplicitPersonalHomeMatchesPreservedConfiguration({ defaults, requested: parsed.purpose });
+    }
+    const purpose = resolveEffectiveLocalMutationPurpose({
+      persisted: persistedPurpose,
+      requested: parsed.purpose,
+    });
+    const desiredRelayUrl = await resolveLocalDesiredRelayUrl({
+      mode,
+      channel,
+      envOverrides: parsed.env,
+      purpose,
     });
     const backend = resolveServiceBackend({ platform: process.platform, mode }) as ServiceBackend;
     const shouldTreatStableLaneAsLegacyUnsuffixedInstall = await shouldMigrateLegacyUnsuffixedRelayRuntimeInstallRoot({
@@ -1594,35 +1684,83 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       ...(parsed.env ?? {}),
       ...(resolvedPortFromDesiredUrl && !(parsed.env ?? {}).PORT ? { PORT: resolvedPortFromDesiredUrl } : {}),
     };
+    const resolvePersonalHomeUpgradeLayout = purpose?.kind === 'personal-home'
+      ? async () => resolvePersistedLocalPersonalHomeLayout({
+        defaults,
+        homeDir: homedir(),
+        platform: process.platform,
+      })
+      : null;
 
     const local = await installOrUpdateRelayRuntimeLocal({
       serverBinaryPath,
       channel,
       mode,
       env: envForInstaller,
-      ...(parsed.purpose ? { purpose: parsed.purpose } : {}),
+      ...(purpose ? { purpose } : {}),
       version,
       runServiceCommands: policy.runServiceCommands !== false,
       skipHealthCheck: policy.skipHealthCheck === true,
+      ...(resolvePersonalHomeUpgradeLayout ? {
+        assertPersonalHomeStopped: async () => {
+          const status = await readLocalStatus({ ...parsed, purpose });
+          if (status.service.active === true) {
+            throw new Error('Personal Home is still running after the managed service stop');
+          }
+          const statusUrl = new URL(status.baseUrl);
+          const statusPort = Number.parseInt(statusUrl.port, 10);
+          const portOpen = await probeLocalPortOpen({
+            host: statusUrl.hostname,
+            port: Number.isInteger(statusPort) && statusPort > 0 ? statusPort : 80,
+            timeoutMs: LOCAL_RELAY_STATUS_HEALTH_TIMEOUT_MS,
+          }).catch(() => false);
+          if (portOpen) {
+            throw new Error('Personal Home is still running after the managed service stop');
+          }
+        },
+        createPersonalHomeRestorePoint: async ({ happierVersion }) => {
+          const layout = await resolvePersonalHomeUpgradeLayout();
+          if (!existsSync(layout.databasePath)) return null;
+          if (!happierVersion) {
+            throw new Error('Personal Home restore-point version is unavailable for an existing Home.');
+          }
+          const identity = await readCanonicalPersonalHomeIdentity(layout);
+          return createPersonalHomeRestorePointWithLease({
+            layout,
+            ...identity,
+            happierVersion,
+            configuration: await readPersonalHomeSanitizedConfiguration(layout),
+            sqlite: await createPersonalHomeSqliteMaintenance(layout.databasePath),
+            readIdentityFromDatabase: readPersonalHomeIdentityValueFromSqlite,
+            operationLeaseHeld: true,
+          });
+        },
+        personalHomeRestoreHooks: {
+          sqliteMaintenance: createPersonalHomeSqliteMaintenance,
+          verifyIdentity: async (manifest) => {
+            const identity = await readCanonicalPersonalHomeIdentity(await resolvePersonalHomeUpgradeLayout());
+            return identity.homeServerIdentityId === manifest.homeServerIdentityId;
+          },
+          prepareConfiguration: async (configuration) => preparePersonalHomeSanitizedConfiguration(
+            await resolvePersonalHomeUpgradeLayout(), configuration,
+          ),
+          inspectConfigurationStorage: async (configuration) => inspectPersonalHomeSanitizedConfigurationStorage(
+            await resolvePersonalHomeUpgradeLayout(), configuration,
+          ),
+        },
+      } : {}),
     });
 
     return {
       relayUrl: String(local.baseUrl ?? '').trim() || `http://127.0.0.1:${defaults.serverPort}`,
       mode,
-      ...(parsed.purpose ? {
-        purpose: parsed.purpose,
-        ...(parsed.purpose.kind === 'personal-home' ? {
-          canonicalServerUrl: parsed.purpose.canonicalServerUrl,
-          layout: resolvePersonalHomeRuntimeLayout({
-            env: {
-              ...process.env,
-              HAPPIER_SELF_HOST_INSTALL_ROOT: defaults.installRoot,
-              HAPPIER_SELF_HOST_CONFIG_DIR: defaults.configDir,
-              HAPPIER_SELF_HOST_LOG_DIR: defaults.logDir,
-              HAPPIER_SERVER_LIGHT_DATA_DIR: defaults.dataDir,
-            },
+      ...(purpose ? {
+        purpose,
+        ...(purpose.kind === 'personal-home' ? {
+          canonicalServerUrl: purpose.canonicalServerUrl,
+          layout: await resolvePersistedLocalPersonalHomeLayout({
+            defaults,
             homeDir: homedir(),
-            mode,
             platform: process.platform,
           }),
         } : {}),
@@ -1639,6 +1777,19 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       channel,
       homeDir: homedir(),
     });
+    const persistedPurpose = await readPersistedManagedRelayPurpose(defaults);
+    const purpose = resolveEffectiveLocalMutationPurpose({
+      persisted: persistedPurpose,
+      requested: parsed.purpose,
+    });
+    const mutationLayout = await resolvePersistedLocalPersonalHomeLayout({
+      defaults,
+      homeDir: homedir(),
+      platform: process.platform,
+    });
+    const personalHomeLayout = purpose?.kind === 'personal-home' || await hasMeaningfulPersonalHomeData(mutationLayout)
+      ? mutationLayout
+      : null;
     const serverBinaryName = process.platform === 'win32' ? 'happier-server.exe' : 'happier-server';
     const installServerBinaryPath = join(defaults.installRoot, 'bin', serverBinaryName);
     const statePath = join(defaults.installRoot, 'self-host-state.json');
@@ -1671,80 +1822,31 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       persistent: true,
     });
 
-    await applyServicePlan(plan, {
-      runCommands: true,
-    });
-
-    const removeRuntimePayload = async (): Promise<void> => {
+    const uninstallRuntime = async (): Promise<void> => {
+      await applyServicePlan(plan, {
+        runCommands: true,
+      });
       await uninstallRelayRuntimePayloadLocal({
         installRoot: defaults.installRoot,
         shimPath: join(defaults.binDir, serverBinaryName),
         statePath,
         logDir: defaults.logDir,
+        ...(persistedPurpose?.kind === 'personal-home' ? { retainedPurpose: persistedPurpose } : {}),
       });
+      if (persistedPurpose?.kind !== 'personal-home' && existsSync(statePath)) {
+        throw new Error('Failed to remove relay runtime state file.');
+      }
     };
-    if (parsed.purpose?.kind === 'personal-home') {
-      await withPersonalHomeOperationLock(defaults.dataDir, 'uninstall', removeRuntimePayload);
-    } else {
-      await removeRuntimePayload();
-    }
-
-    if (existsSync(statePath)) {
-      throw new Error('Failed to remove relay runtime state file.');
-    }
-  }
-
-  async function eraseLocal(parsed: RelayRuntimeTaskParams & Readonly<{ confirmErase?: boolean }>): Promise<void> {
-    if (parsed.purpose?.kind !== 'personal-home') {
-      throw new Error('Personal Home purpose is required to erase data.');
-    }
-    if (parsed.confirmErase !== true) {
-      throw new Error('Explicit confirmation is required to erase Personal Home data.');
-    }
-
-    const mode = normalizeMode(parsed.mode);
-    const channel = normalizeChannel(parsed.channel);
-    const defaults = resolveRelayRuntimeDefaults({
-      platform: process.platform,
-      mode,
-      channel,
-      homeDir: homedir(),
-    });
-    const layout = resolvePersonalHomeRuntimeLayout({
-      env: {
-        ...process.env,
-        HAPPIER_SELF_HOST_INSTALL_ROOT: defaults.installRoot,
-        HAPPIER_SELF_HOST_CONFIG_DIR: defaults.configDir,
-        HAPPIER_SELF_HOST_LOG_DIR: defaults.logDir,
-        HAPPIER_SERVER_LIGHT_DATA_DIR: defaults.dataDir,
-      },
-      homeDir: homedir(),
-      mode,
-      platform: process.platform,
-    });
-    const backend = resolveServiceBackend({ platform: process.platform, mode }) as ServiceBackend;
-    const serviceName = await resolveLocalEffectiveServiceName({ backend, channel, defaults });
-    const serverBinaryName = process.platform === 'win32' ? 'happier-server.exe' : 'happier-server';
-    const serviceSpec = buildRelayRuntimeServiceSpec({
-      label: serviceName,
+    await withFirstPartyPayloadMutationLock({
       installRoot: defaults.installRoot,
-      serverBinaryPath: join(defaults.installRoot, 'bin', serverBinaryName),
-      env: {},
-      stdoutPath: join(defaults.logDir, 'server.out.log'),
-      stderrPath: join(defaults.logDir, 'server.err.log'),
-    });
-    const definition = buildServiceDefinition({ backend, homeDir: homedir(), spec: serviceSpec });
-    const stopPlan = planServiceAction({
-      backend,
-      action: 'stop',
-      label: serviceSpec.label,
-      definitionPath: definition.path,
-      persistent: true,
-    });
-
-    await withPersonalHomeOperationLock(layout.dataDir, 'erase', async () => {
-      await applyServicePlan(stopPlan, { runCommands: true });
-      await erasePersonalHomeData({ layout, confirmed: true });
+      lockParentDir: dirname(defaults.installRoot),
+      operation: async () => {
+        if (personalHomeLayout) {
+          await withPersonalHomeOperationLock(personalHomeLayout.dataDir, 'uninstall', uninstallRuntime);
+          return;
+        }
+        await uninstallRuntime();
+      },
     });
   }
 
@@ -1868,7 +1970,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       knownHostsMode,
       remoteCommand: buildRemoteBootstrapCommand({
         label: 'relay.runtime.install',
-        serverUrl: 'https://api.happier.dev',
+        serverUrl: REMOTE_BOOTSTRAP_CLOUD_SERVER_URL,
         channel: formatRelayChannelLabel(channel),
         data: {
           relayRuntimeMode: mode,
@@ -1955,98 +2057,41 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
 
   async function uninstallRemote(params: Readonly<{ parsed: RelayRuntimeTaskParams; ssh: SystemTaskSshConnectionConfig }>): Promise<void> {
     const knownHostsMode: 'app' | 'system' = params.ssh.knownHostsPath ? 'app' : 'system';
-    const target = await resolveRemoteTarget(params.ssh, knownHostsMode);
-    const platform = resolveRemotePlatform({ target });
-    const mode = normalizeMode(params.parsed.mode);
     const channel = normalizeChannel(params.parsed.channel);
-    const defaults = resolveRelayDefaultsForRemote({ platform, channel, mode });
-    const remoteHomeDir = await resolveRemoteUserHomeDir(deps, { ssh: params.ssh, knownHostsMode }) ?? resolveRemoteHomeDirForRuntime();
-    const backend = resolveServiceBackend({ platform, mode });
-    const serviceSpec = buildRelayRuntimeServiceSpec({
-      label: defaults.serviceName,
-      installRoot: defaults.installRoot,
-      serverBinaryPath: `${defaults.installRoot}/bin/happier-server`,
-      env: {},
-      stdoutPath: `${defaults.logDir}/server.out.log`,
-      stderrPath: `${defaults.logDir}/server.err.log`,
-    });
-    const definitionPath = resolveRemoteServiceDefinitionPath({
-      backend,
-      label: serviceSpec.label,
-      remoteHomeDir,
-    });
-
-    const controlResult = await deps.runRemoteText({
-      ssh: params.ssh,
-      knownHostsMode,
-      remoteCommand: buildRemoteControlCommand({
-        backend,
-        serviceName: defaults.serviceName,
-        action: 'uninstall',
-      }),
-    });
-    if (controlResult.status !== 0) {
-      throw new Error(controlResult.stderr.trim() || 'Failed to uninstall relay runtime service');
-    }
-
-    const cleanupCommand = buildRemoteRelayRuntimeCleanupCommand({
-      definitionPath,
-      installRoot: defaults.installRoot,
-      binDir: defaults.binDir,
-      configDir: defaults.configDir,
-      dataDir: defaults.dataDir,
-      logDir: defaults.logDir,
-      useSudo: backend === 'systemd-system' || backend === 'launchd-system',
-    });
-    const cleanupResult = await deps.runRemoteText({
-      ssh: params.ssh,
-      knownHostsMode,
-      remoteCommand: cleanupCommand,
-    });
-    if (cleanupResult.status !== 0) {
-      throw new Error(cleanupResult.stderr.trim() || 'Failed to remove relay runtime files');
-    }
-  }
-
-  async function eraseRemote(params: Readonly<{
-    parsed: RelayRuntimeTaskParams & Readonly<{ confirmErase?: boolean }>;
-    ssh: SystemTaskSshConnectionConfig;
-  }>): Promise<void> {
-    if (params.parsed.purpose?.kind !== 'personal-home') {
-      throw new Error('Personal Home purpose is required to erase data.');
-    }
-    if (params.parsed.confirmErase !== true) {
-      throw new Error('Explicit confirmation is required to erase Personal Home data.');
-    }
-    const knownHostsMode: 'app' | 'system' = params.ssh.knownHostsPath ? 'app' : 'system';
-    const target = await resolveRemoteTarget(params.ssh, knownHostsMode);
-    const platform = resolveRemotePlatform({ target });
     const mode = normalizeMode(params.parsed.mode);
-    const channel = normalizeChannel(params.parsed.channel);
-    const defaults = resolveRelayDefaultsForRemote({ platform, channel, mode });
-    const backend = resolveServiceBackend({ platform, mode });
-    const stopResult = await deps.runRemoteText({
+    // Thin transport adapter: the installed remote Happier CLI (relay host uninstall) is the
+    // canonical uninstall decision owner. It takes the remote Personal Home operation lock,
+    // stops/unregisters the service, and removes only runtime-owned entries through the
+    // runtime-owned allowlist while preserving the Home database, files, master secret and
+    // configuration. The source side emits no service or deletion command of its own.
+    const result = await deps.runRemoteText({
       ssh: params.ssh,
       knownHostsMode,
-      remoteCommand: buildRemoteControlCommand({
-        backend,
-        serviceName: defaults.serviceName,
-        action: 'stop',
+      remoteCommand: buildRemoteBootstrapCommand({
+        label: 'relay.host.uninstall',
+        serverUrl: REMOTE_BOOTSTRAP_CLOUD_SERVER_URL,
+        channel: formatRelayChannelLabel(channel),
+        data: { relayRuntimeMode: mode },
       }),
     });
-    if (stopResult.status !== 0) {
-      throw new Error(stopResult.stderr.trim() || 'Personal Home must be stopped before erasing data.');
-    }
-    const eraseResult = await deps.runRemoteText({
-      ssh: params.ssh,
-      knownHostsMode,
-      remoteCommand: buildRemotePersonalHomeEraseCommand({
-        dataDir: defaults.dataDir,
-        useSudo: backend === 'systemd-system' || backend === 'launchd-system',
-      }),
-    });
-    if (eraseResult.status !== 0) {
-      throw new Error(eraseResult.stderr.trim() || 'Failed to erase Personal Home data');
+
+    const envelope = parseJsonLinesBestEffort<{
+      ok?: unknown;
+      kind?: unknown;
+      error?: { message?: unknown };
+    }>(result.stdout);
+    if (result.status !== 0 || !isStrictRemoteRelayHostUninstallSuccessEnvelope(result.stdout)) {
+      const remoteMessage = typeof envelope?.error?.message === 'string'
+        ? envelope.error.message.trim()
+        : '';
+      throw new Error(
+        remoteMessage
+        || [
+          result.stderr.trim(),
+          `Remote relay host uninstall did not report success (exit status ${result.status}). `
+            + 'Ensure the installed Happier CLI is present on the remote host (for example via "happier relay host install --ssh <host>") and retry.',
+        ].filter(Boolean).join(' '),
+      );
     }
   }
 
@@ -2067,11 +2112,10 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
     },
     async control(params) {
       const parsed = params;
+      if (!['start', 'stop', 'restart', 'uninstall'].includes(String(parsed.action))) {
+        throw new Error(`Action '${String(parsed.action)}' is not supported by relay runtime control.`);
+      }
       if (parsed.target.kind !== 'ssh') {
-        if (parsed.action === 'erase') {
-          await eraseLocal(parsed);
-          return;
-        }
         if (parsed.action === 'uninstall') {
           await uninstallLocal(parsed);
           return;
@@ -2084,120 +2128,160 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
           channel,
           homeDir: homedir(),
         });
-        const backend = resolveServiceBackend({ platform: process.platform, mode });
-        const serviceName = await resolveLocalEffectiveServiceName({
-          backend,
-          channel,
+        const persistedPurpose = await readPersistedManagedRelayPurpose(defaults);
+        const mutationLayout = await resolvePersistedLocalPersonalHomeLayout({
           defaults,
+          homeDir: homedir(),
+          platform: process.platform,
         });
-        const ensureLocalRelayHealthy = async (): Promise<void> => {
-          if (parsed.action !== 'start' && parsed.action !== 'restart') {
-            return;
-          }
-          const envPath = join(defaults.configDir, 'server.env');
-          const envText = existsSync(envPath) ? await readFile(envPath, 'utf8').catch(() => '') : '';
-          const baseUrl = resolveConfiguredSelfHostBaseUrl({
-            fallbackBaseUrl: `http://${defaults.serverHost}:${defaults.serverPort}`,
-            envText,
-          });
-          await assertLocalRelayRuntimeHealthy({
-            relayUrl: baseUrl,
-            healthPath: defaults.healthPath,
-            stderrPath: join(defaults.logDir, 'server.err.log'),
-          });
-        };
-
-        if (backend === 'systemd-user' || backend === 'systemd-system') {
-          const prefix = backend === 'systemd-user' ? ['--user'] : [];
-          const result = runLocalText('systemctl', [...prefix, parsed.action, `${serviceName}.service`]);
-          if (result.status !== 0) {
-            throw mapRelayRuntimeServiceControlError({
-              backend,
-              stderr: result.stderr,
-              fallbackMessage: `Failed to ${parsed.action} relay runtime.`,
-            });
-          }
-          await ensureLocalRelayHealthy();
-          return;
+        const preservedHomeDataPresent = await hasMeaningfulPersonalHomeData(mutationLayout);
+        if (preservedHomeDataPresent && !persistedPurpose && parsed.action !== 'stop') {
+          await assertExplicitPersonalHomeMatchesPreservedConfiguration({ defaults, requested: parsed.purpose });
         }
-
-        if (backend === 'launchd-user' || backend === 'launchd-system') {
-          const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
-          const domain = backend === 'launchd-system' ? `system/${serviceName}` : `gui/${uid}/${serviceName}`;
-          const plistPath = backend === 'launchd-system'
-            ? `/Library/LaunchDaemons/${serviceName}.plist`
-            : join(homedir(), 'Library', 'LaunchAgents', `${serviceName}.plist`);
-
-          const runLaunchctl = (args: readonly string[], options: Readonly<{ allowFail?: boolean }> = {}) => {
-            const result = runLocalText('launchctl', args);
-            if (result.status !== 0 && options.allowFail !== true) {
-              throw new Error(result.stderr.trim() || `Failed to ${parsed.action} relay runtime.`);
+        const purpose = resolveEffectiveLocalMutationPurpose({
+          persisted: persistedPurpose,
+          requested: parsed.purpose,
+        });
+        const personalHomeLayout = purpose?.kind === 'personal-home' || preservedHomeDataPresent
+          ? mutationLayout
+          : null;
+        const runLocalLifecycle = async (): Promise<void> => {
+          if (personalHomeLayout && (parsed.action === 'start' || parsed.action === 'restart')) {
+            await assertPersonalHomeRelocationAllowsActivation(personalHomeLayout.dataDir);
+          }
+          const backend = resolveServiceBackend({ platform: process.platform, mode });
+          const serviceName = await resolveLocalEffectiveServiceName({
+            backend,
+            channel,
+            defaults,
+          });
+          const ensureLocalRelayHealthy = async (): Promise<void> => {
+            if (parsed.action !== 'start' && parsed.action !== 'restart') {
+              return;
             }
-            return result;
+            const envPath = join(defaults.configDir, 'server.env');
+            const envText = existsSync(envPath) ? await readFile(envPath, 'utf8').catch(() => '') : '';
+            const baseUrl = resolveConfiguredSelfHostBaseUrl({
+              fallbackBaseUrl: `http://${defaults.serverHost}:${defaults.serverPort}`,
+              envText,
+            });
+            await assertLocalRelayRuntimeHealthy({
+              relayUrl: baseUrl,
+              healthPath: defaults.healthPath,
+              stderrPath: join(defaults.logDir, 'server.err.log'),
+            });
           };
 
-          if (parsed.action === 'stop') {
-            runLaunchctl(['bootout', domain], { allowFail: true });
+          if (backend === 'systemd-user' || backend === 'systemd-system') {
+            const prefix = backend === 'systemd-user' ? ['--user'] : [];
+            const result = runLocalText('systemctl', [...prefix, parsed.action, `${serviceName}.service`]);
+            if (result.status !== 0) {
+              throw mapRelayRuntimeServiceControlError({
+                backend,
+                stderr: result.stderr,
+                fallbackMessage: `Failed to ${parsed.action} relay runtime.`,
+              });
+            }
+            await ensureLocalRelayHealthy();
             return;
           }
 
-          if (parsed.action === 'restart') {
-            const kickstartResult = runLaunchctl(['kickstart', '-k', domain], { allowFail: true });
-            if (kickstartResult.status === 0) {
+          if (backend === 'launchd-user' || backend === 'launchd-system') {
+            const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
+            const domain = backend === 'launchd-system' ? `system/${serviceName}` : `gui/${uid}/${serviceName}`;
+            const plistPath = backend === 'launchd-system'
+              ? `/Library/LaunchDaemons/${serviceName}.plist`
+              : join(homedir(), 'Library', 'LaunchAgents', `${serviceName}.plist`);
+
+            const runLaunchctl = (args: readonly string[], options: Readonly<{ allowFail?: boolean }> = {}) => {
+              const result = runLocalText('launchctl', args);
+              if (result.status !== 0 && options.allowFail !== true) {
+                throw new Error(result.stderr.trim() || `Failed to ${parsed.action} relay runtime.`);
+              }
+              return result;
+            };
+
+            if (parsed.action === 'stop') {
+              runLaunchctl(['bootout', domain], { allowFail: true });
+              return;
+            }
+
+            if (parsed.action === 'restart') {
+              const kickstartResult = runLaunchctl(['kickstart', '-k', domain], { allowFail: true });
+              if (kickstartResult.status === 0) {
+                await ensureLocalRelayHealthy();
+                return;
+              }
+            }
+
+            if (backend === 'launchd-user' && uid > 0) {
+              runLaunchctl(['bootout', domain], { allowFail: true });
+              runLaunchctl(['bootstrap', `gui/${uid}`, plistPath]);
+              runLaunchctl(['enable', domain]);
+              runLaunchctl(['kickstart', '-k', domain]);
               await ensureLocalRelayHealthy();
               return;
             }
-          }
 
-          if (backend === 'launchd-user' && uid > 0) {
-            runLaunchctl(['bootout', domain], { allowFail: true });
-            runLaunchctl(['bootstrap', `gui/${uid}`, plistPath]);
-            runLaunchctl(['enable', domain]);
+            if (backend === 'launchd-system') {
+              runLaunchctl(['bootout', domain], { allowFail: true });
+              runLaunchctl(['bootstrap', 'system', plistPath]);
+              runLaunchctl(['enable', domain]);
+              runLaunchctl(['kickstart', '-k', domain]);
+              await ensureLocalRelayHealthy();
+              return;
+            }
+
             runLaunchctl(['kickstart', '-k', domain]);
             await ensureLocalRelayHealthy();
             return;
           }
 
-          if (backend === 'launchd-system') {
-            runLaunchctl(['bootout', domain], { allowFail: true });
-            runLaunchctl(['bootstrap', 'system', plistPath]);
-            runLaunchctl(['enable', domain]);
-            runLaunchctl(['kickstart', '-k', domain]);
-            await ensureLocalRelayHealthy();
-            return;
-          }
-
-          runLaunchctl(['kickstart', '-k', domain]);
+          const serverBinaryName = 'happier-server.exe';
+          const definition = buildServiceDefinition({
+            backend,
+            homeDir: homedir(),
+            spec: buildRelayRuntimeServiceSpec({
+              label: serviceName,
+              installRoot: defaults.installRoot,
+              serverBinaryPath: join(defaults.installRoot, 'bin', serverBinaryName),
+              env: {},
+              stdoutPath: join(defaults.logDir, 'server.out.log'),
+              stderrPath: join(defaults.logDir, 'server.err.log'),
+            }),
+          });
+          const plan = planServiceAction({
+            backend,
+            action: parsed.action,
+            label: serviceName,
+            definitionPath: definition.path,
+            taskName: `Happier\\${serviceName}`,
+            persistent: true,
+          });
+          await applyServicePlan(plan, { runCommands: true });
           await ensureLocalRelayHealthy();
+        };
+        // External Personal Home lifecycle mutations enter the incumbent Home operation lock;
+        // a caller that already holds it in this process proceeds under it (lock-owner
+        // reentrancy) instead of deadlocking against its own operation.
+        if (personalHomeLayout) {
+          await withPersonalHomeOperationLock(personalHomeLayout.dataDir, 'lifecycle', runLocalLifecycle);
           return;
         }
-
-        const taskName = `Happier\\${serviceName}`;
-        const args = parsed.action === 'stop'
-          ? ['/End', '/TN', taskName]
-          : ['/Run', '/TN', taskName];
-        const result = runLocalText('schtasks', args);
-        if (result.status !== 0) {
-          throw new Error(result.stderr.trim() || `Failed to ${parsed.action} relay runtime.`);
-        }
-        await ensureLocalRelayHealthy();
+        await runLocalLifecycle();
         return;
       }
       const knownHostsMode: 'app' | 'system' = parsed.target.ssh.knownHostsPath ? 'app' : 'system';
+      if (parsed.action === 'uninstall') {
+        await uninstallRemote({ parsed, ssh: parsed.target.ssh });
+        return;
+      }
       const target = await resolveRemoteTarget(parsed.target.ssh, knownHostsMode);
       const platform = resolveRemotePlatform({ target });
       const mode = normalizeMode(parsed.mode);
       const channel = normalizeChannel(parsed.channel);
       const defaults = resolveRelayDefaultsForRemote({ platform, channel, mode });
       const backend = resolveServiceBackend({ platform, mode });
-      if (parsed.action === 'erase') {
-        await eraseRemote({ parsed, ssh: parsed.target.ssh });
-        return;
-      }
-      if (parsed.action === 'uninstall') {
-        await uninstallRemote({ parsed, ssh: parsed.target.ssh });
-        return;
-      }
       const result = await deps.runRemoteText({
         ssh: parsed.target.ssh,
         knownHostsMode,

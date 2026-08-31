@@ -62,6 +62,40 @@ export type {
   FirstPartyReleaseArtifactSource,
   PreparedFirstPartyComponentPayload,
 } from './prepareFirstPartyComponentPayloadFromGitHubRelease.js';
+export { prepareMutagenEnginePayloadFromGitHubRelease } from './prepareMutagenEnginePayloadFromGitHubRelease.js';
+export {
+  MUTAGEN_ENGINE_ARTIFACT_FORMAT,
+  MUTAGEN_ENGINE_ARTIFACT_SCHEMA_VERSION,
+  MUTAGEN_ENGINE_FORK_BRANCH,
+  MUTAGEN_ENGINE_FORK_RELEASE_COMMIT,
+  MUTAGEN_ENGINE_FORK_REMOTE,
+  MUTAGEN_ENGINE_FORK_SOURCE_BASE_COMMIT,
+  MUTAGEN_ENGINE_GO_DISTRIBUTION_SHA256,
+  MUTAGEN_ENGINE_GO_VERSION,
+  MUTAGEN_ENGINE_PROTOCOL_EPOCH,
+  MUTAGEN_ENGINE_SUPPORTED_TARGETS,
+  MUTAGEN_ENGINE_TRANSPORT_SPIKE_COMMIT,
+  MUTAGEN_ENGINE_UPSTREAM_COMMIT,
+  MUTAGEN_ENGINE_UPSTREAM_TAG,
+  MutagenEngineArtifactError,
+  assertMutagenEngineArtifactManifest,
+  assertMutagenEngineArtifactPayload,
+  resolveMutagenEngineArtifactPaths,
+  resolveMutagenEngineArtifactTarget,
+  resolveMutagenEngineDataLayout,
+  resolveMutagenEngineReleaseAssetBundle,
+  resolveMutagenEngineReleaseTag,
+} from './mutagenEngineArtifact.js';
+export type {
+  MutagenEngineArtifactErrorCode,
+  MutagenEngineArtifactManifest,
+  MutagenEngineArtifactPaths,
+  MutagenEngineArtifactTarget,
+  MutagenEngineDataLayout,
+  MutagenEngineReleaseAsset,
+  MutagenEngineReleaseAssetBundle,
+  MutagenEngineWatcher,
+} from './mutagenEngineArtifact.js';
 export {
   resolveCliBinaryAssetBundleFromReleaseAssets,
 } from './releaseAssetBundle.js';
@@ -128,6 +162,20 @@ export {
   resolveServerRuntimeExecutableNames,
   resolveServerRuntimePayloadRootFromBinaryPath,
 } from './serverRuntimeArtifactLayout.js';
+export { readSqliteMigrationCatalog } from './sqliteMigrationCatalog.js';
+export type { SqliteMigrationCatalogEntry } from './sqliteMigrationCatalog.js';
+export {
+  inspectPersonalHomeSqliteMigrationFrontier,
+  migrateStagedPersonalHomeSqliteDatabase,
+  PersonalHomeSqliteMigrationFrontierError,
+  resolveInstalledPersonalHomeSqliteMigrationPaths,
+} from './personalHome/stagedMigrationFrontier.js';
+export type {
+  PersonalHomeMigrationProcessRunner,
+  PersonalHomeSqliteMigrationFrontierErrorCode,
+  PersonalHomeSqliteMigrationFrontierFacts,
+  PersonalHomeSqliteMigrationRecord,
+} from './personalHome/stagedMigrationFrontier.js';
 
 export { installOrUpdateRelayRuntimeLocal, uninstallRelayRuntimePayloadLocal } from './relayRuntimeInstall.js';
 
@@ -157,30 +205,33 @@ export type {
   PersonalHomeRuntimeLayoutFacts,
   PersonalHomeRuntimeSpec,
 } from './personalHome/personalHomeRuntimeSpec.js';
-export { acquirePersonalHomeOperationLock, withPersonalHomeOperationLock, normalizePersonalHomeLockOrder, PersonalHomeOperationError } from './personalHome/lock.js';
-export type { PersonalHomeOperationKind } from './personalHome/lock.js';
 export {
-  assertAllowedPersonalHomeBackupPath,
-  fingerprintMasterSecret,
-  isAllowedPersonalHomeBackupPath,
-  parsePersonalHomeBackupManifest,
-  serializePersonalHomeManifest,
-} from './personalHome/manifest.js';
-export type { PersonalHomeBackupManifestV1, PersonalHomeBackupEntry } from './personalHome/manifest.js';
-export { createPersonalHomeArchive, extractVerifiedPersonalHomeArchive, verifyPersonalHomeArchive } from './personalHome/archive.js';
-export { assertStablePersonalHomeSqliteSnapshot, PersonalHomeSqliteSnapshotError } from './personalHome/sqliteSnapshot.js';
-export { createPersonalHomeBackup, rotatePersonalHomeBackups } from './personalHome/backup.js';
-export type { PersonalHomeBackupResult, PersonalHomeBackupRotationResult, PersonalHomeSqliteMaintenance } from './personalHome/backup.js';
-export { erasePersonalHomeData, PersonalHomeEraseError } from './personalHome/erase.js';
-export type { PersonalHomeEraseResult } from './personalHome/erase.js';
-export { PersonalHomeRestoreError, restorePersonalHomeBackup } from './personalHome/restore.js';
-export type { PersonalHomeRestoreHooks, PersonalHomeRestoreResult } from './personalHome/restore.js';
-export { relocatePersonalHome, readPersonalHomeRelocationMarker } from './personalHome/relocation.js';
-export type {
-  PersonalHomeBundleTransfer,
-  PersonalHomeRelocationMarker,
-  PersonalHomeRelocationPhase,
-  PersonalHomeRelocationResult,
-} from './personalHome/relocation.js';
+  resolveManagedServerLightPathEnvValue,
+  resolvePersonalHomePrivateFilesDir,
+  resolvePersonalHomeSqliteDatabasePath,
+} from './personalHome/pathResolvers.js';
 export { runPersonalHomeBootstrap } from './personalHome/bootstrap.js';
 export type { PersonalHomeBootstrapDeps, PersonalHomeBootstrapResult } from './personalHome/bootstrap.js';
+export { PersonalHomeCredentialsUnverifiedError } from './personalHome/bootstrap.js';
+export { PersonalHomeOperationsError, createPersonalHomeEraseConfirmationToken } from './personalHome/operations.js';
+export { PersonalHomeArchiveError } from './personalHome/archive.js';
+export { PersonalHomeRestoreError } from './personalHome/restore.js';
+export { createCanonicalPersonalHomeOperations } from './personalHome/productionAdapters.js';
+export type {
+  PersonalHomeOperations,
+  PersonalHomeOperationContext,
+  PersonalHomeIdentityFacts,
+  PersonalHomeInspection,
+  PersonalHomeBackupOperationInput,
+  PersonalHomeBackupVerification,
+  PersonalHomeRestoreOperationInput,
+  PersonalHomeEraseOperationInput,
+  PersonalHomeEraseOperationResult,
+  PersonalHomeEraseConfirmationFacts,
+  PersonalHomeRelocateInput,
+  PersonalHomeRelocationCommit,
+  PersonalHomeBackupOperationResult,
+  PersonalHomeRestoreOperationResult,
+  PersonalHomeRelocateOperationResult,
+} from './personalHome/operations.js';
+export type { PersonalHomeRestoreRecoveryFacts, PersonalHomeRestoreRecoveryResult } from './personalHome/restore.js';

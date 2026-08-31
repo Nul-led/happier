@@ -1,3 +1,6 @@
+import { randomBytes } from 'node:crypto';
+
+import { sealTerminalProvisioningV3TokenOnlyPayload } from '@happier-dev/protocol';
 import {
   applyBackgroundServiceSetupGuidance,
   type BackgroundServiceSetupGuidanceCancellationReason,
@@ -226,6 +229,87 @@ function createInstrumentedRecipeExecutor(
   };
 }
 
+type TokenOnlyPairingContext = Readonly<{
+  terminalEphemeralPublicKey: Uint8Array;
+  pairingSecret: Uint8Array;
+  createdAtMs: number;
+  expiresAtMs: number;
+}>;
+
+/**
+ * Reads the v3 token-only pairing context that the terminal's `auth request` retained locally.
+ * Only the public key and the short-lived pairing context are consumed; the claim secret and
+ * state file path are never read here and never leave this task.
+ */
+function readTokenOnlyPairingContext(
+  requestPayload: Readonly<Record<string, unknown>>,
+): TokenOnlyPairingContext | null {
+  if (requestPayload.supportsTokenOnly !== true) {
+    return null;
+  }
+  const publicKeyRaw = typeof requestPayload.publicKey === 'string' ? requestPayload.publicKey.trim() : '';
+  const pairing = requestPayload.pairing;
+  if (!publicKeyRaw || !pairing || typeof pairing !== 'object' || Array.isArray(pairing)) {
+    return null;
+  }
+  const pairingRecord = pairing as Record<string, unknown>;
+  const secretRaw = typeof pairingRecord.secretB64Url === 'string' ? pairingRecord.secretB64Url.trim() : '';
+  const createdAtMs = pairingRecord.createdAtMs;
+  const expiresAtMs = pairingRecord.expiresAtMs;
+  if (!secretRaw || typeof createdAtMs !== 'number' || typeof expiresAtMs !== 'number') {
+    return null;
+  }
+  if (
+    !Number.isSafeInteger(createdAtMs)
+    || !Number.isSafeInteger(expiresAtMs)
+    || createdAtMs < 0
+    || expiresAtMs <= createdAtMs
+  ) {
+    return null;
+  }
+  const terminalEphemeralPublicKey = new Uint8Array(Buffer.from(publicKeyRaw, 'base64'));
+  const pairingSecret = new Uint8Array(Buffer.from(secretRaw, 'base64url'));
+  if (terminalEphemeralPublicKey.length !== 32 || pairingSecret.length !== 32) {
+    return null;
+  }
+  return { terminalEphemeralPublicKey, pairingSecret, createdAtMs, expiresAtMs };
+}
+
+/**
+ * Seals the existing protocol-owned token-only provisioning response for the requesting terminal
+ * and returns the blocking approval prompt data. The response carries no credential: the terminal
+ * claims its own bearer from the Home's claim endpoint. Prompt data exposes only the opaque
+ * response and the explicit target identity — never a secret, claim material, state file, or
+ * bearer.
+ */
+function buildTokenOnlyApprovalPromptData(
+  publicKey: string,
+  requestPayload: Readonly<Record<string, unknown>>,
+  relayProfile: SetupThisComputerRelayProfile,
+): Record<string, string> | null {
+  const context = readTokenOnlyPairingContext({ ...requestPayload, publicKey });
+  if (!context) {
+    return null;
+  }
+  let sealed: Uint8Array;
+  try {
+    sealed = sealTerminalProvisioningV3TokenOnlyPayload({
+      ...context,
+      randomBytes: (length) => new Uint8Array(randomBytes(length)),
+    });
+  } catch {
+    return null;
+  }
+  return {
+    kind: 'authRequest',
+    publicKey,
+    response: Buffer.from(sealed).toString('base64'),
+    responseKind: 'tokenOnly',
+    relayUrl: relayProfile.serverUrl,
+    webappUrl: relayProfile.webappUrl,
+  };
+}
+
 export type SetupThisComputerInteractiveParams = Readonly<{
   surface?: string;
   target?: string;
@@ -279,18 +363,6 @@ export function createSetupThisComputerInteractiveTaskKind(
         message: 'Resolving server configuration',
       });
       const relayProfile = resolveExplicitRelayProfile(parsed) ?? await deps.readActiveRelayProfile({ releaseRing });
-      ctx.emit({
-        type: 'progress',
-        stepId: 'setup.thisComputer.checkAuth',
-        message: 'Checking authentication',
-      });
-      const authStatusExecutor = createInstrumentedRecipeExecutor(
-        ctx,
-        { releaseRing, takeOverManualRelayRuntime: false },
-        deps.createRecipeExecutor({ releaseRing }),
-      );
-      const authStatus = await authStatusExecutor.readAuthStatus();
-
       let shouldTakeOverManualRelayRuntime = false;
       if (parsed.installService !== false) {
         const targetReleaseChannel = releaseRing ?? 'stable';
@@ -387,10 +459,11 @@ export function createSetupThisComputerInteractiveTaskKind(
         }),
       );
 
+      // The recipe configures the explicit relay before it reads auth status and pairs, so the
+      // terminal always targets the Home that is being approved.
       const recipeResult = await runSetupMachineRecipe({
         relayProfile,
         executor: recipeExecutor,
-        initialAuthStatus: authStatus,
         steps: {
           installService: parsed.installService,
           startService: parsed.startService,
@@ -412,6 +485,27 @@ export function createSetupThisComputerInteractiveTaskKind(
           });
         },
         approvePairingRequest: async (inner) => {
+          const tokenOnlyPrompt = buildTokenOnlyApprovalPromptData(
+            inner.publicKey,
+            inner.requestPayload,
+            relayProfile,
+          );
+          if (tokenOnlyPrompt) {
+            // One blocking approval: the answering UI posts the opaque token-only response to the
+            // explicit Home endpoint with its own Home-scoped bearer and answers without any
+            // credential material. The terminal claim independently mints its own token.
+            const answer = await ctx.prompt({
+              kind: 'authRequest',
+              stepId: 'setup.thisComputer.auth.request',
+              message: 'Approve this computer in Happier to continue',
+              data: tokenOnlyPrompt,
+            }) as Readonly<{ approved?: unknown }> | null;
+            if (answer?.approved === true) {
+              return;
+            }
+          }
+          // Legacy manual approval surface: a non-blocking prompt without response material; the
+          // task keeps waiting for the local pairing request to be approved out of band.
           ctx.emit({
             type: 'prompt',
             stepId: 'setup.thisComputer.auth.request',

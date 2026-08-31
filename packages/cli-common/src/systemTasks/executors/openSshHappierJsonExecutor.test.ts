@@ -1,6 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createOpenSshHappierJsonExecutor } from './openSshHappierJsonExecutor.js';
+import { createOpenSshHappierJsonExecutor, parseStrictPersonalHomeTaskFinalResult } from './openSshHappierJsonExecutor.js';
+
+describe('parseStrictPersonalHomeTaskFinalResult', () => {
+  const valid = { kind: 'personal_home_task_result', protocolVersion: 1, result: { protocolVersion: 1, taskId: 'task-1', ok: true, data: { running: false } } };
+  it('accepts JSONL events only when the last line is the exact successful result', () => {
+    expect(parseStrictPersonalHomeTaskFinalResult(`${JSON.stringify({ type: 'progress' })}\n${JSON.stringify(valid)}\n`).data).toEqual({ running: false });
+  });
+  it.each([
+    ['missing', ''], ['noise-after-result', `${JSON.stringify(valid)}\nnoise`],
+    ['wrong-kind', JSON.stringify({ ...valid, kind: 'other' })],
+    ['wrong-version', JSON.stringify({ ...valid, protocolVersion: 2 })],
+    ['failure', JSON.stringify({ ...valid, result: { protocolVersion: 1, taskId: 'task-1', ok: false, error: { code: 'x', message: 'x' } } })],
+    ['missing-data', JSON.stringify({ ...valid, result: { protocolVersion: 1, taskId: 'task-1', ok: true } })],
+  ])('rejects %s', (_name, text) => {
+    expect(() => parseStrictPersonalHomeTaskFinalResult(text)).toThrow();
+  });
+});
 
 describe('createOpenSshHappierJsonExecutor', () => {
   it('prefixes remote commands with release-ring env scoping for dev lane', async () => {

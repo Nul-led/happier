@@ -81,6 +81,8 @@ describe('installOrUpdateRelayRuntimeLocal sequencing', () => {
         await writeFile(receiptPath, JSON.stringify({
           nonce: activationSpec.env.HAPPIER_SERVER_STARTUP_RECEIPT_NONCE,
           pid: process.pid,
+          host: '127.0.0.1',
+          port: 4010,
         }), 'utf8');
       }
       return {
@@ -131,6 +133,8 @@ describe('installOrUpdateRelayRuntimeLocal sequencing', () => {
             JSON.stringify({
               nonce: activationSpec.env.HAPPIER_SERVER_STARTUP_RECEIPT_NONCE,
               pid: process.pid,
+              host: '127.0.0.1',
+              port: 4010,
             }),
             'utf8',
           );
@@ -335,6 +339,61 @@ describe('installOrUpdateRelayRuntimeLocal sequencing', () => {
     }
   });
 
+  it('rejects a Personal Home activation whose attested listener differs from its stable loopback origin', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-personal-home-listener-attestation-'));
+    try {
+      const payloadRoot = join(homeDir, 'payload');
+      const migrationsSourceDir = join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init');
+      await mkdir(migrationsSourceDir, { recursive: true });
+      await writeFile(join(migrationsSourceDir, 'migration.sql'), '-- init\n', 'utf8');
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\necho new-runtime\n', 'utf8');
+
+      checkRelayRuntimeHealthMock.mockImplementationOnce(async () => {
+        const activationSpec = [...serviceSpecs].reverse().find((spec) => (
+          spec.env.HAPPIER_SERVER_STARTUP_RECEIPT_PATH
+          && spec.env.HAPPIER_SERVER_STARTUP_RECEIPT_NONCE
+        ));
+        expect(activationSpec).toBeDefined();
+        if (activationSpec) {
+          await mkdir(dirname(activationSpec.env.HAPPIER_SERVER_STARTUP_RECEIPT_PATH), { recursive: true });
+          await writeFile(
+            activationSpec.env.HAPPIER_SERVER_STARTUP_RECEIPT_PATH,
+            JSON.stringify({
+              nonce: activationSpec.env.HAPPIER_SERVER_STARTUP_RECEIPT_NONCE,
+              pid: process.pid,
+              host: '127.0.0.1',
+              port: 43124,
+            }),
+            'utf8',
+          );
+        }
+        return { reachable: true, url: 'http://127.0.0.1:43123' };
+      });
+
+      await expect(installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        homeDir,
+        purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+        assertPersonalHomeStopped: async () => undefined,
+        env: {
+          HAPPIER_SERVER_HOST: '127.0.0.1',
+          PORT: '43123',
+          HAPPIER_PUBLIC_SERVER_URL: 'http://127.0.0.1:43123',
+          HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
+          HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
+          AUTH_ANONYMOUS_SIGNUP_ENABLED: '0',
+        },
+        runServiceCommands: true,
+      })).rejects.toThrow(/listener does not match its stable loopback origin/u);
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it('uninstalls the service definition when an existing definition exists but no previous runtime can be restored', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-relay-runtime-health-no-restore-'));
     try {
@@ -468,7 +527,12 @@ describe('installOrUpdateRelayRuntimeLocal sequencing', () => {
         homeDir,
         runServiceCommands: true,
         skipHealthCheck: true,
-      })).rejects.toThrow(/install failed/);
+      })).rejects.toMatchObject({
+        code: 'RELAY_RUNTIME_INSTALL_ROLLBACK_INCOMPLETE',
+        rollbackFailures: expect.arrayContaining([
+          expect.objectContaining({ phase: 'service_restore' }),
+        ]),
+      });
 
       await expect(readFile(installServerBinaryPath, 'utf8')).resolves.toContain('old-runtime');
       await expect(readFile(configEnvPath, 'utf8')).resolves.toContain('CUSTOM_FLAG=old');

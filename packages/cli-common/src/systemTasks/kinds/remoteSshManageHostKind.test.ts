@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFile, stat } from 'node:fs/promises';
 
 import { createSystemTasksRunner } from '../interactiveTaskKinds.js';
+import type { SystemTaskJsonObject } from '@happier-dev/protocol';
 import { createRemoteSshManageHostTaskKind } from './remoteSshManageHostKind.js';
 
 async function waitForPendingPrompt(
@@ -35,6 +36,92 @@ async function waitForResult(
 }
 
 describe('createRemoteSshManageHostTaskKind', () => {
+  it('inspects, prompts with exact facts, then invokes installed-CLI erase with a bound token', async () => {
+    const runPersonalHomeCommand = vi.fn(async ({ args }: { args: readonly string[] }): Promise<SystemTaskJsonObject> => {
+      if (args[1] === 'status') return { purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' }, identity: { homeServerIdentityId: 'home-1' }, storage: { ownedErasePaths: ['/data/db', '/data/files'], estimatedOwnedBytes: 99 } };
+      return { removedPaths: ['/data/db', '/data/files'], remainingUnknownPaths: [], stoppedRunningHome: true };
+    });
+    const kind = createRemoteSshManageHostTaskKind({
+      resolveHostTrust: async () => ({ status: 'trusted' }), testConnection: async () => {}, installRemoteCli: async () => {},
+      runDaemonServiceCommand: async () => {}, runRelayRuntimeCommand: async () => {}, runPersonalHomeCommand,
+    });
+    const runner = createSystemTasksRunner({ kinds: { 'remote.ssh.manageHost.v1': kind } });
+    await runner.start({ taskId: 'remote-erase', kind: 'remote.ssh.manageHost.v1', params: { action: 'personalHome.erase', channel: 'preview', relayRuntime: { channel: 'preview', mode: 'system' }, ssh: { target: 'dev@example.test', auth: 'agent' } } });
+    const prompt = await waitForPendingPrompt(runner, { taskId: 'remote-erase', cursor: 0 });
+    expect(prompt.pendingPrompt).toMatchObject({ kind: 'personal_home.confirm_remote_erase.v1', data: { paths: ['/data/db', '/data/files'], estimatedBytes: 99 } });
+    await runner.respond({ taskId: 'remote-erase', answer: { confirmed: true } });
+    const result = await waitForResult(runner, { taskId: 'remote-erase', cursor: prompt.nextCursor });
+    expect(result.result).toMatchObject({ ok: true, data: { action: 'personalHome.erase', personalHome: { stoppedRunningHome: true } } });
+    expect(runPersonalHomeCommand.mock.calls[0]?.[0]).toMatchObject({ channel: 'preview', mode: 'system' });
+    expect(runPersonalHomeCommand.mock.calls[0]?.[0].args).toEqual(['home', 'status', '--json', '--channel', 'preview', '--mode', 'system']);
+    expect(runPersonalHomeCommand.mock.calls[1]?.[0].args).toEqual(['home', 'erase', '--json', '--channel', 'preview', '--mode', 'system', '--confirmation-token', expect.stringMatching(/^[a-f0-9]{64}$/)]);
+  });
+
+  it('does not invoke remote erase when exact-facts confirmation is declined', async () => {
+    const runPersonalHomeCommand = vi.fn(async () => ({ purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' }, identity: null, storage: { ownedErasePaths: ['/data/db'], estimatedOwnedBytes: 1 } }));
+    const kind = createRemoteSshManageHostTaskKind({ resolveHostTrust: async () => ({ status: 'trusted' }), testConnection: async () => {}, installRemoteCli: async () => {}, runDaemonServiceCommand: async () => {}, runRelayRuntimeCommand: async () => {}, runPersonalHomeCommand });
+    const runner = createSystemTasksRunner({ kinds: { 'remote.ssh.manageHost.v1': kind } });
+    await runner.start({ taskId: 'remote-decline', kind: 'remote.ssh.manageHost.v1', params: { action: 'personalHome.erase', relayRuntime: { channel: 'stable', mode: 'user' }, ssh: { target: 'dev@example.test', auth: 'agent' } } });
+    const prompt = await waitForPendingPrompt(runner, { taskId: 'remote-decline', cursor: 0 });
+    await runner.respond({ taskId: 'remote-decline', answer: { confirmed: false } });
+    const result = await waitForResult(runner, { taskId: 'remote-decline', cursor: prompt.nextCursor });
+    expect(result.result).toMatchObject({ ok: false, error: { code: 'confirmation_required' } });
+    expect(runPersonalHomeCommand).toHaveBeenCalledOnce();
+  });
+
+  it('does not invoke remote erase for a malformed affirmative prompt answer', async () => {
+    const runPersonalHomeCommand = vi.fn(async () => ({ purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' }, identity: null, storage: { ownedErasePaths: ['/data/db'], estimatedOwnedBytes: 1 } }));
+    const kind = createRemoteSshManageHostTaskKind({ resolveHostTrust: async () => ({ status: 'trusted' }), testConnection: async () => {}, installRemoteCli: async () => {}, runDaemonServiceCommand: async () => {}, runRelayRuntimeCommand: async () => {}, runPersonalHomeCommand });
+
+    await expect(kind.run({
+      params: { action: 'personalHome.erase', relayRuntime: { channel: 'stable', mode: 'user' }, ssh: { target: 'dev@example.test', auth: 'agent' } },
+      emit: () => undefined,
+      prompt: async () => ({ confirmed: true, extra: true }),
+    })).rejects.toMatchObject({ code: 'confirmation_required' });
+    expect(runPersonalHomeCommand).toHaveBeenCalledOnce();
+  });
+
+  it('rejects malformed inspection ownership facts before prompting or erasing', async () => {
+    const runPersonalHomeCommand = vi.fn(async () => ({
+      purpose: { kind: 'generic', canonicalServerUrl: 'http://127.0.0.1:43123' },
+      identity: 'home-1',
+      storage: { ownedErasePaths: ['/data/db'], estimatedOwnedBytes: 1 },
+    }));
+    const prompt = vi.fn(async () => ({ confirmed: true }));
+    const kind = createRemoteSshManageHostTaskKind({ resolveHostTrust: async () => ({ status: 'trusted' }), testConnection: async () => {}, installRemoteCli: async () => {}, runDaemonServiceCommand: async () => {}, runRelayRuntimeCommand: async () => {}, runPersonalHomeCommand });
+
+    await expect(kind.run({
+      params: { action: 'personalHome.erase', relayRuntime: { channel: 'stable', mode: 'user' }, ssh: { target: 'dev@example.test', auth: 'agent' } },
+      emit: () => undefined,
+      prompt,
+    })).rejects.toMatchObject({ code: 'invalid_cli_response' });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(runPersonalHomeCommand).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed before inspection when remote erase has no explicit runtime target', async () => {
+    const runPersonalHomeCommand = vi.fn(async () => ({}));
+    const kind = createRemoteSshManageHostTaskKind({ resolveHostTrust: async () => ({ status: 'trusted' }), testConnection: async () => {}, installRemoteCli: async () => {}, runDaemonServiceCommand: async () => {}, runRelayRuntimeCommand: async () => {}, runPersonalHomeCommand });
+
+    await expect(kind.run({
+      params: { action: 'personalHome.erase', ssh: { target: 'dev@example.test', auth: 'agent' } },
+      emit: () => undefined,
+      prompt: async () => ({ confirmed: true }),
+    })).rejects.toMatchObject({ code: 'invalid_params' });
+    expect(runPersonalHomeCommand).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before inspection when remote erase runtime targeting is incomplete', async () => {
+    const runPersonalHomeCommand = vi.fn(async () => ({}));
+    const kind = createRemoteSshManageHostTaskKind({ resolveHostTrust: async () => ({ status: 'trusted' }), testConnection: async () => {}, installRemoteCli: async () => {}, runDaemonServiceCommand: async () => {}, runRelayRuntimeCommand: async () => {}, runPersonalHomeCommand });
+
+    await expect(kind.run({
+      params: { action: 'personalHome.erase', relayRuntime: {}, ssh: { target: 'dev@example.test', auth: 'agent' } },
+      emit: () => undefined,
+      prompt: async () => ({ confirmed: true }),
+    })).rejects.toMatchObject({ code: 'invalid_params' });
+    expect(runPersonalHomeCommand).not.toHaveBeenCalled();
+  });
   it('fails closed when SSH host trust is declined', async () => {
     const trustAccept = vi.fn(async () => {});
     const kind = createRemoteSshManageHostTaskKind({

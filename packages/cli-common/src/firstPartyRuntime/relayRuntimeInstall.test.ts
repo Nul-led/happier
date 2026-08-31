@@ -1,5 +1,5 @@
 import { access, chmod, lstat, mkdir, mkdtemp, readlink, rm, symlink, writeFile } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -27,6 +27,7 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
         platform: 'linux',
         arch: 'arm64',
         homeDir,
+        purpose: { kind: 'generic' },
         env: {
           PORT: '4010',
         },
@@ -35,6 +36,196 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
       })).resolves.toMatchObject({
         baseUrl: 'http://127.0.0.1:4010',
       });
+
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      const envText = await readFileText(join(defaults.configDir, 'server.env'));
+      expect(envText).toContain('HAPPIER_MANAGED_RELAY_PURPOSE=generic');
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the frozen Home device-approval setting on a first Personal Home install', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-personal-home-approval-'));
+    const previousApproval = process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED;
+    try {
+      process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED = '1';
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init'), { recursive: true });
+      await writeFile(join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init', 'migration.sql'), '-- init\n', 'utf8');
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\necho ok\n', 'utf8');
+
+      await installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        arch: 'arm64',
+        homeDir,
+        purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+        assertPersonalHomeStopped: async () => undefined,
+        env: { PORT: '43123' },
+        runServiceCommands: false,
+        skipHealthCheck: true,
+      });
+
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      const envText = await readFileText(join(defaults.configDir, 'server.env'));
+      expect(envText).toContain('HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=1');
+    } finally {
+      if (previousApproval === undefined) delete process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED;
+      else process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED = previousApproval;
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a Personal Home payload mutation without the canonical stopped-Home assertion', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-personal-home-missing-stop-assertion-'));
+    try {
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(payloadRoot, { recursive: true });
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\necho ok\n', 'utf8');
+
+      await expect(installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        homeDir,
+        purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+        env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
+        runServiceCommands: false,
+        skipHealthCheck: true,
+      })).rejects.toThrow('requires the canonical stopped-Home assertion');
+
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      await expect(lstat(join(defaults.installRoot, 'bin', 'happier-server'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves signup closure and the existing Home approval policy across a managed update', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-personal-home-update-policy-'));
+    const previousApproval = process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED;
+    try {
+      const canonicalServerUrl = 'http://127.0.0.1:43123';
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init'), { recursive: true });
+      await writeFile(join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init', 'migration.sql'), '-- init\n', 'utf8');
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\necho ok\n', 'utf8');
+      const personalHomeEnv = {
+        HAPPIER_SERVER_HOST: '127.0.0.1',
+        PORT: '43123',
+        HAPPIER_PUBLIC_SERVER_URL: canonicalServerUrl,
+        HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
+        HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
+        AUTH_ANONYMOUS_SIGNUP_ENABLED: '0',
+      };
+      const install = async () => await installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        arch: 'arm64',
+        homeDir,
+        purpose: { kind: 'personal-home' as const, canonicalServerUrl },
+        assertPersonalHomeStopped: async () => undefined,
+        env: personalHomeEnv,
+        runServiceCommands: false,
+        skipHealthCheck: true,
+      });
+
+      process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED = '1';
+      await install();
+      process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED = '0';
+      await install();
+
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      const envText = await readFileText(join(defaults.configDir, 'server.env'));
+      expect(envText.match(/^AUTH_ANONYMOUS_SIGNUP_ENABLED=0$/gmu)).toHaveLength(1);
+      expect(envText.match(/^HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=1$/gmu)).toHaveLength(1);
+      expect(envText).not.toContain('AUTH_ANONYMOUS_SIGNUP_ENABLED=1');
+      expect(envText).not.toContain('HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=0');
+    } finally {
+      if (previousApproval === undefined) delete process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED;
+      else process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED = previousApproval;
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not reopen a previously closed Personal Home when an update omits the signup field', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-personal-home-omitted-signup-'));
+    try {
+      const canonicalServerUrl = 'http://127.0.0.1:43123';
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(payloadRoot, { recursive: true });
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\n', 'utf8');
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      await mkdir(defaults.configDir, { recursive: true });
+      await writeFile(join(defaults.configDir, 'server.env'), [
+        'PORT=43123',
+        'AUTH_ANONYMOUS_SIGNUP_ENABLED=0',
+        '',
+      ].join('\n'), 'utf8');
+
+      await installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        homeDir,
+        purpose: { kind: 'personal-home', canonicalServerUrl },
+        assertPersonalHomeStopped: async () => undefined,
+        env: { PORT: '43123' },
+        runServiceCommands: false,
+        skipHealthCheck: true,
+      });
+
+      const envText = await readFileText(join(defaults.configDir, 'server.env'));
+      expect(envText).toContain('AUTH_ANONYMOUS_SIGNUP_ENABLED=0');
+      expect(envText.match(/^AUTH_ANONYMOUS_SIGNUP_ENABLED=0$/gmu)).toHaveLength(1);
+      expect(envText).not.toContain('AUTH_ANONYMOUS_SIGNUP_ENABLED=1');
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists the Personal Home purpose as runtime-owner metadata for interrupted-bootstrap recovery', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-personal-home-purpose-'));
+    try {
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init'), { recursive: true });
+      await writeFile(join(payloadRoot, 'prisma', 'sqlite', 'migrations', '20200101000000_init', 'migration.sql'), '-- init\n', 'utf8');
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\necho ok\n', 'utf8');
+
+      await installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        arch: 'arm64',
+        homeDir,
+        purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+        assertPersonalHomeStopped: async () => undefined,
+        env: { PORT: '43123' },
+        runServiceCommands: false,
+        skipHealthCheck: true,
+      });
+
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      const state = JSON.parse(await readFileText(join(defaults.installRoot, 'self-host-state.json'))) as Record<string, unknown>;
+      const envText = await readFileText(join(defaults.configDir, 'server.env'));
+      expect(state.purpose).toEqual({
+        kind: 'personal-home',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+      });
+      expect(envText).toContain('HAPPIER_MANAGED_RELAY_PURPOSE=personal-home');
     } finally {
       await rm(homeDir, { recursive: true, force: true });
     }
@@ -509,6 +700,64 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
       await expect(lstat(ownedInstallRoot)).rejects.toMatchObject({
         code: 'ENOENT',
       });
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('locks and stops an owned Personal Home root before migrating it to the canonical preview root', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-personal-home-owned-root-'));
+    try {
+      const payloadRoot = join(homeDir, 'payload');
+      await mkdir(payloadRoot, { recursive: true });
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\necho ok\n', 'utf8');
+
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      const ownedInstallRoot = join(homeDir, '.happier', 'custom-personal-home-preview-root');
+      const externalDataDir = join(homeDir, 'personal-home-data');
+      const unitDir = join(homeDir, '.config', 'systemd', 'user');
+      await mkdir(join(ownedInstallRoot, 'config'), { recursive: true });
+      await writeFile(
+        join(ownedInstallRoot, 'config', 'server.env'),
+        `HAPPIER_SERVER_LIGHT_DATA_DIR=${externalDataDir}\nPORT=43123\n`,
+        'utf8',
+      );
+      await mkdir(externalDataDir, { recursive: true });
+      await writeFile(join(externalDataDir, 'home-marker.txt'), 'keep-home\n', 'utf8');
+      await mkdir(unitDir, { recursive: true });
+      await writeFile(join(unitDir, 'happier-server-preview.service'), [
+        '[Service]',
+        `WorkingDirectory=${ownedInstallRoot}`,
+        `ExecStart=${join(ownedInstallRoot, 'bin', 'happier-server')}`,
+        '',
+      ].join('\n'), 'utf8');
+      let stoppedChecks = 0;
+
+      await installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        arch: 'arm64',
+        homeDir,
+        purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+        assertPersonalHomeStopped: async () => {
+          stoppedChecks += 1;
+          if (stoppedChecks === 1) {
+            expect(existsSync(ownedInstallRoot)).toBe(true);
+            expect(existsSync(defaults.installRoot)).toBe(false);
+          }
+        },
+        env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
+        runServiceCommands: false,
+        skipHealthCheck: true,
+      });
+
+      expect(stoppedChecks).toBe(2);
+      await expect(readFileText(join(externalDataDir, 'home-marker.txt'))).resolves.toContain('keep-home');
+      expect(existsSync(join(externalDataDir, '.operations', 'lock'))).toBe(false);
+      await expect(lstat(ownedInstallRoot)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await rm(homeDir, { recursive: true, force: true });
     }

@@ -43,8 +43,18 @@ function requireCanonicalServerUrl(value: unknown): string {
   } catch {
     throw new Error('Personal Home canonicalServerUrl must be a valid URL');
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('Personal Home canonicalServerUrl must use http or https');
+  if (parsed.protocol !== 'http:') {
+    throw new Error('Personal Home canonicalServerUrl must use the loopback http origin');
+  }
+  const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/gu, '');
+  if (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '::1') {
+    throw new Error('Personal Home canonicalServerUrl must use a loopback host');
+  }
+  if (!parsed.port) {
+    throw new Error('Personal Home canonicalServerUrl must include an explicit port');
+  }
+  if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+    throw new Error('Personal Home canonicalServerUrl must be an origin without credentials, path, query, or hash');
   }
   return canonicalServerUrl;
 }

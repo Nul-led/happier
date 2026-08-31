@@ -49,6 +49,7 @@ export {
 
 export {
   createOpenSshHappierJsonExecutor,
+  parseStrictPersonalHomeTaskFinalResult,
   type OpenSshAuth,
   type OpenSshRunRemoteText,
 } from './executors/openSshHappierJsonExecutor.js';

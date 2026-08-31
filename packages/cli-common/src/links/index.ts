@@ -78,6 +78,7 @@ export function buildTerminalConnectLinks(params: Readonly<{
   webappUrl: string;
   serverUrl: string;
   publicKeyB64Url: string;
+  serverIdentityId?: string;
   pairing?: TerminalConnectPairingContext | null;
   supportsTokenOnly?: boolean;
 }>): TerminalConnectLinks {
@@ -85,18 +86,27 @@ export function buildTerminalConnectLinks(params: Readonly<{
   const webServerUrl = sanitizeServerUrlForWebLink(params.serverUrl, webappUrl);
   const mobileServerUrl = sanitizeServerUrlForMobileLink(params.serverUrl);
   const publicKeyB64Url = String(params.publicKeyB64Url ?? '').trim();
-  const encodedWebServerUrl = webServerUrl ? encodeURIComponent(webServerUrl) : '';
-  const encodedMobileServerUrl = mobileServerUrl ? encodeURIComponent(mobileServerUrl) : '';
-  const pairingSuffix =
-    params.pairing
+  const serverIdentityId = String(params.serverIdentityId ?? '').trim();
+  if (params.pairing && !serverIdentityId) {
+    throw new Error('Authenticated terminal pairing requires a stable Home identity');
+  }
+  const validPairing = params.pairing
     && String(params.pairing.secretB64Url ?? '').trim()
     && Number.isSafeInteger(params.pairing.createdAtMs)
     && Number.isSafeInteger(params.pairing.expiresAtMs)
     && params.pairing.createdAtMs >= 0
-    && params.pairing.expiresAtMs > params.pairing.createdAtMs
+    && params.pairing.expiresAtMs > params.pairing.createdAtMs;
+  if (params.pairing && !validPairing) {
+    throw new Error('Authenticated terminal pairing context is malformed');
+  }
+  const encodedWebServerUrl = webServerUrl ? encodeURIComponent(webServerUrl) : '';
+  const encodedMobileServerUrl = mobileServerUrl ? encodeURIComponent(mobileServerUrl) : '';
+  const pairingSuffix =
+    params.pairing && validPairing
       ? `&pairingSecret=${encodeURIComponent(params.pairing.secretB64Url.trim())}`
         + `&createdAt=${params.pairing.createdAtMs}`
         + `&expiresAt=${params.pairing.expiresAtMs}`
+        + `&serverIdentityId=${encodeURIComponent(serverIdentityId)}`
       : '';
   const tokenOnlyCapabilitySuffix =
     pairingSuffix && params.supportsTokenOnly === true

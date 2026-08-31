@@ -1,27 +1,84 @@
 import { createConnection } from 'node:net';
+import { homedir } from 'node:os';
 import {
   createRelayHostEngine,
+  createPersonalHomeSystemTaskOperations,
   installRemoteFirstPartyComponent as installRemoteFirstPartyComponentShared,
   normalizeRemoteReleaseArch,
   normalizeRemoteReleaseOs,
   type RelayHostEngineDeps,
+  type RelayHostEngine,
   type RelayRuntimeStatusSnapshot,
   type RelayRuntimeTaskParams,
+  type PersonalHomeSystemTaskOperations,
   type SystemTaskSshConnectionConfig,
 } from '@happier-dev/cli-common/systemTasks';
 import {
   checkRelayRuntimeHealth as checkRelayRuntimeHealthShared,
+  createCanonicalPersonalHomeOperations,
   listInstalledVersionIdsNewestFirst,
+  PersonalHomeOperationsError,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 
 import { buildScpCommand, buildSshCommand, redactSshText } from '../ssh/index.js';
 import {
   ensureLocalFirstPartyComponentCommand,
 } from '@happier-dev/cli-common/systemTasks';
+import { runCommandStreaming } from '@happier-dev/cli-common/process';
 import { normalizeBootstrapChannel, parseFirstJsonObject, runCommandCapture, type CommandExecutionResult } from './taskRuntime.js';
 
 export type SshConnectionConfig = SystemTaskSshConnectionConfig;
 type SshConnectionWithPasswordConfig = SshConnectionConfig & Readonly<{ password?: string }>;
+
+export function createBootstrapRelayHostEngine(): ReturnType<typeof createRelayHostEngine> {
+  return createRelayHostEngine(buildRelayHostEngineDeps());
+}
+
+export async function createBootstrapPersonalHomeSystemTaskOperations(params: Readonly<{
+  engine?: RelayHostEngine;
+  homeDir?: string;
+}> = {}): Promise<PersonalHomeSystemTaskOperations> {
+  const engine = params.engine ?? createBootstrapRelayHostEngine();
+  const runtimeParams = {
+    target: { kind: 'local' as const },
+    channel: 'stable' as const,
+    mode: 'user' as const,
+  };
+  const operations = await createCanonicalPersonalHomeOperations({
+    homeDir: params.homeDir ?? homedir(),
+    mode: 'user',
+    channel: 'stable',
+    readPurpose: async () => {
+      const purpose = (await engine.readStatus(runtimeParams)).purpose;
+      if (purpose?.kind !== 'personal-home' || !purpose.canonicalServerUrl.trim()) {
+        throw new PersonalHomeOperationsError(
+          'purpose_not_personal_home',
+          'Personal Home operations require a fresh personal-home runtime purpose.',
+        );
+      }
+      return purpose;
+    },
+    runMigrationProcess: async ({ command, args, env }) => await runCommandStreaming({
+      cmd: command,
+      args: [...args],
+      env,
+      context: 'personal-home staged migration',
+    }),
+    lifecycle: {
+      isRunning: async () => (await engine.readStatus(runtimeParams)).service.active === true,
+      stop: async () => await engine.control({ ...runtimeParams, action: 'stop' }),
+      start: async () => await engine.control({ ...runtimeParams, action: 'start' }),
+      healthCheck: async () => {
+        const snapshot = await engine.readStatus(runtimeParams);
+        return typeof snapshot.healthy === 'boolean'
+          ? snapshot.healthy
+          : await checkRelayRuntimeHealthDefault({ baseUrl: snapshot.baseUrl });
+      },
+    },
+    readHappierVersion: async () => (await engine.readStatus(runtimeParams)).version ?? 'unknown',
+  });
+  return createPersonalHomeSystemTaskOperations({ operations });
+}
 
 function shellQuote(value: string): string {
   const raw = String(value ?? '');
@@ -116,7 +173,7 @@ export async function installOrUpdateRelayRuntimeDefault(
 }
 
 export async function controlRelayRuntimeDefault(
-  params: RelayRuntimeTaskParams & Readonly<{ action: 'start' | 'stop' | 'restart' }>,
+  params: RelayRuntimeTaskParams & Readonly<{ action: 'start' | 'stop' | 'restart' | 'uninstall' }>,
 ): Promise<void> {
   const engine = createRelayHostEngine(buildRelayHostEngineDeps());
   await engine.control(params);

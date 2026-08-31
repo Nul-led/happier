@@ -6,6 +6,7 @@ import { redactSensitiveSystemTaskJsonValue, type InteractiveSystemTaskKind } fr
 import { parseSystemTaskSshConfig, type SystemTaskSshConnectionConfig } from './relayRuntimeKinds.js';
 import type { RemoteHostTrustResolution } from './remoteSshBootstrapMachineKind.js';
 import { materializeSshIdentityPrivateKeyToTempFile } from '../ssh/materializeSshIdentityPrivateKeyToTempFile.js';
+import { createPersonalHomeEraseConfirmationToken } from '../../firstPartyRuntime/personalHome/operations.js';
 
 export type RemoteSshManageHostAction =
   | 'testConnection'
@@ -18,7 +19,8 @@ export type RemoteSshManageHostAction =
   | 'relayRuntime.installOrUpdate'
   | 'relayRuntime.start'
   | 'relayRuntime.stop'
-  | 'relayRuntime.restart';
+  | 'relayRuntime.restart'
+  | 'personalHome.erase';
 
 type RemoteSshAuth =
   | Readonly<{ mode: 'agent' }>
@@ -57,6 +59,14 @@ export type RemoteSshManageHostDeps = Readonly<{
     channel: 'stable' | 'preview' | 'dev';
     mode: 'user' | 'system';
   }>) => Promise<SystemTaskJsonObject | null | void>;
+  runPersonalHomeCommand?: (params: Readonly<{
+    ssh: SystemTaskSshConnectionConfig;
+    auth: RemoteSshAuth;
+    knownHostsMode: 'app' | 'system';
+    channel: 'stable' | 'preview' | 'dev';
+    mode: 'user' | 'system';
+    args: readonly string[];
+  }>) => Promise<SystemTaskJsonObject>;
 }>;
 
 export function redactRemoteSshManageHostPayload(value: SystemTaskJsonValue): SystemTaskJsonValue {
@@ -67,7 +77,7 @@ export function createRemoteSshManageHostTaskKind(
   deps: RemoteSshManageHostDeps,
 ): InteractiveSystemTaskKind<SystemTaskJsonObject> {
   return {
-    async run(ctx) {
+    async run(ctx): Promise<SystemTaskJsonObject> {
       const parsed = parseRemoteSshManageHostParams(ctx.params);
       const knownHostsMode = parsed.knownHostsMode;
       let cleanupTempIdentityFile: (() => Promise<void>) | null = null;
@@ -120,7 +130,7 @@ export function createRemoteSshManageHostTaskKind(
             auth,
             knownHostsMode,
           });
-          return { action: parsed.action };
+          return { action: parsed.action } satisfies SystemTaskJsonObject;
         }
 
         if (parsed.action === 'installOrUpdateCli') {
@@ -135,7 +145,52 @@ export function createRemoteSshManageHostTaskKind(
             knownHostsMode,
             channel: parsed.channel,
           });
-          return { action: parsed.action };
+          return { action: parsed.action } satisfies SystemTaskJsonObject;
+        }
+
+        if (parsed.action === 'personalHome.erase') {
+          if (!deps.runPersonalHomeCommand) throw new SystemTaskExecutionError('unsupported', 'Remote Personal Home operations are unavailable.');
+          if (!parsed.relayRuntime) {
+            throw new SystemTaskExecutionError('invalid_params', 'Remote Personal Home erase requires an explicit relay runtime channel and mode.');
+          }
+          const runPersonalHomeCommand = deps.runPersonalHomeCommand;
+          const runtimeChannel = parsed.relayRuntime.channel ?? 'stable';
+          const runtimeMode = parsed.relayRuntime.mode ?? 'user';
+          ctx.emit({ type: 'progress', stepId: 'remote.cli.install', message: 'Ensuring Happier CLI is installed' });
+          await deps.installRemoteCli({ ssh: parsed.ssh, auth, knownHostsMode, channel: parsed.channel });
+          ctx.emit({ type: 'progress', stepId: 'personal_home.inspect', message: 'Inspecting remote Personal Home' });
+          const inspection = await runPersonalHomeCommand({
+            ssh: parsed.ssh,
+            auth,
+            knownHostsMode,
+            channel: parsed.channel,
+            mode: runtimeMode,
+            args: ['home', 'status', '--json', '--channel', runtimeChannel, '--mode', runtimeMode],
+          });
+          const facts = parseRemotePersonalHomeEraseFacts(inspection);
+          const answer = await ctx.prompt({
+            kind: 'personal_home.confirm_remote_erase.v1',
+            stepId: 'personal_home.confirm_remote_erase',
+            message: 'Confirm permanent deletion of the inspected remote Personal Home paths.',
+            data: { paths: [...facts.paths], estimatedBytes: facts.estimatedBytes, canonicalServerUrl: facts.canonicalServerUrl, homeServerIdentityId: facts.homeServerIdentityId },
+          });
+          if (!isExactRemoteEraseConfirmation(answer)) {
+            throw new SystemTaskExecutionError('confirmation_required', 'Remote Personal Home erase was not explicitly confirmed.');
+          }
+          const confirmationToken = createPersonalHomeEraseConfirmationToken(facts);
+          ctx.emit({ type: 'progress', stepId: 'personal_home.erase', message: 'Erasing remote Personal Home data' });
+          const erased = await runPersonalHomeCommand({
+            ssh: parsed.ssh,
+            auth,
+            knownHostsMode,
+            channel: parsed.channel,
+            mode: runtimeMode,
+            args: ['home', 'erase', '--json', '--channel', runtimeChannel, '--mode', runtimeMode, '--confirmation-token', confirmationToken],
+          });
+          if (!Array.isArray(erased.removedPaths) || erased.stoppedRunningHome !== true && erased.stoppedRunningHome !== false) {
+            throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home erase did not return confirmed final facts.');
+          }
+          return { action: parsed.action, personalHome: erased } satisfies SystemTaskJsonObject;
         }
 
         const relayRuntimeAction = resolveRelayRuntimeAction(parsed.action);
@@ -158,7 +213,7 @@ export function createRemoteSshManageHostTaskKind(
           return {
             action: parsed.action,
             ...(result ? { relayRuntime: result } : {}),
-          };
+          } satisfies SystemTaskJsonObject;
         }
 
         const daemonAction = resolveDaemonServiceAction(parsed.action);
@@ -192,7 +247,7 @@ export function createRemoteSshManageHostTaskKind(
           channel: parsed.channel,
         });
 
-        return { action: parsed.action };
+        return { action: parsed.action } satisfies SystemTaskJsonObject;
       } finally {
         await cleanupTempIdentityFile?.().catch(() => {});
       }
@@ -348,8 +403,21 @@ function parseRemoteSshManageHostParams(params: unknown): RemoteSshManageHostPar
   const channel = normalizePublicReleaseRingLabel(record.channel) || 'stable';
   const knownHostsMode = record.knownHostsMode === 'system' ? 'system' : 'app';
   const serviceMode = record.serviceMode === 'none' ? 'none' : 'user';
-  const relayRuntime = record.relayRuntime && typeof record.relayRuntime === 'object' && !Array.isArray(record.relayRuntime)
-    ? parseRelayRuntimeOptions(record.relayRuntime as Record<string, unknown>)
+  const relayRuntimeRecord = record.relayRuntime && typeof record.relayRuntime === 'object' && !Array.isArray(record.relayRuntime)
+    ? record.relayRuntime as Record<string, unknown>
+    : null;
+  if (action === 'personalHome.erase' && (
+    !relayRuntimeRecord
+    || !normalizePublicReleaseRingLabel(relayRuntimeRecord.channel)
+    || (relayRuntimeRecord.mode !== 'user' && relayRuntimeRecord.mode !== 'system')
+  )) {
+    throw new SystemTaskExecutionError(
+      'invalid_params',
+      'Remote Personal Home erase requires an explicit runtime channel and mode.',
+    );
+  }
+  const relayRuntime = relayRuntimeRecord
+    ? parseRelayRuntimeOptions(relayRuntimeRecord)
     : undefined;
 
   return {
@@ -374,7 +442,45 @@ function isRemoteSshManageHostAction(value: string): value is RemoteSshManageHos
     || value === 'relayRuntime.installOrUpdate'
     || value === 'relayRuntime.start'
     || value === 'relayRuntime.stop'
-    || value === 'relayRuntime.restart';
+    || value === 'relayRuntime.restart'
+    || value === 'personalHome.erase';
+}
+
+function isJsonObject(value: SystemTaskJsonValue | undefined): value is SystemTaskJsonObject {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isExactRemoteEraseConfirmation(value: unknown): boolean {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Object.keys(value).length === 1
+    && (value as { confirmed?: unknown }).confirmed === true;
+}
+
+function parseRemotePersonalHomeEraseFacts(value: SystemTaskJsonObject) {
+  const purpose = value.purpose;
+  const identity = value.identity;
+  const storage = value.storage;
+  if (!isJsonObject(purpose) || purpose.kind !== 'personal-home' || !isJsonObject(storage)) {
+    throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home inspection is incomplete.');
+  }
+  const canonicalServerUrl = typeof purpose.canonicalServerUrl === 'string' ? purpose.canonicalServerUrl.trim() : '';
+  const identityId = isJsonObject(identity) && typeof identity.homeServerIdentityId === 'string'
+    ? identity.homeServerIdentityId.trim()
+    : '';
+  if (identity !== null && (!isJsonObject(identity) || !identityId)) {
+    throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home inspection returned an invalid identity.');
+  }
+  const homeServerIdentityId = identity === null ? null : identityId;
+  const pathsRaw = storage.ownedErasePaths;
+  const paths = Array.isArray(pathsRaw) ? pathsRaw.filter((path): path is string => typeof path === 'string' && path.trim().length > 0) : [];
+  const estimatedBytes = storage.estimatedOwnedBytes;
+  if (!canonicalServerUrl || !Array.isArray(pathsRaw) || paths.length === 0 || paths.length !== pathsRaw.length
+    || (estimatedBytes !== null && (typeof estimatedBytes !== 'number' || !Number.isFinite(estimatedBytes) || estimatedBytes < 0))) {
+    throw new SystemTaskExecutionError('invalid_cli_response', 'Remote Personal Home inspection did not return exact erase facts.');
+  }
+  return { canonicalServerUrl, homeServerIdentityId, paths, estimatedBytes: estimatedBytes as number | null };
 }
 
 function parseRelayRuntimeOptions(value: Record<string, unknown>): NonNullable<RemoteSshManageHostParams['relayRuntime']> {
