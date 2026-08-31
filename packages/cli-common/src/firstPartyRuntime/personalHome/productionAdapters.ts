@@ -240,7 +240,7 @@ export async function recoverPersonalHomeSanitizedConfiguration(layout: Personal
   const previous = await readFile(rollbackArtifact);
   const temporary = `${envPath}.${randomUUID()}.rollback.tmp`;
   const protect = createPersonalHomePathProtection({ platform: layout.platform });
-  await writeFile(temporary, previous, { mode: 0o600 }); await protect(temporary, 'file'); await rename(temporary, envPath); await protect(envPath, 'file'); await rm(rollbackArtifact, { force: true });
+  await writeFile(temporary, previous, { mode: 0o600 }); await protect(temporary, 'file'); await rename(temporary, envPath); await protect(envPath, 'file');
 }
 
 function assertPersonalHomeConfigurationRollbackArtifact(envPath: string, rollbackArtifact: string): void {

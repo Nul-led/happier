@@ -34,7 +34,8 @@ export type PersonalHomeRestoreHooks = Readonly<{
 
 type RestoreEntryState = 'untouched' | 'preserving' | 'preserved' | 'promoting' | 'promoted' | 'rollback_started' | 'rollback_applied';
 type RestoreJournalEntry = { target: string; source: string; rollback: string; hadTarget: boolean; state: RestoreEntryState };
-type RestoreJournal = { version: 2; phase: 'prepared' | 'preserving' | 'promoting' | 'applying_configuration' | 'activating' | 'completed' | 'rolling_back'; stage: string; wasRunning: boolean; configurationRollbackArtifact?: string; entries: RestoreJournalEntry[] };
+type ConfigurationRollbackState = 'pending' | 'applied';
+type RestoreJournal = { version: 2; phase: 'prepared' | 'preserving' | 'promoting' | 'applying_configuration' | 'activating' | 'completed' | 'rolling_back'; stage: string; wasRunning: boolean; configurationRollbackArtifact?: string; configurationRollbackState?: ConfigurationRollbackState; entries: RestoreJournalEntry[] };
 export type PersonalHomeRestoreRecoveryFacts = Readonly<{ status: 'none' | 'rollback_available' | 'finalization_available' | 'ambiguous'; phase?: RestoreJournal['phase']; affectedTargets: readonly string[] }>;
 export type PersonalHomeRestoreRecoveryResult = Readonly<{ outcome: 'rolled_back' | 'recovery_required'; restartedHome: boolean; error?: string }>;
 export type PersonalHomeRestoreFinalizationResult = Readonly<{ outcome: 'none' | 'finalized' | 'recovery_required'; removedPaths: readonly string[]; error?: string }>;
@@ -87,14 +88,18 @@ function parseJournal(layout: PersonalHomeRuntimeLayout, value: string): Restore
   const record = parsed as Record<string, unknown>;
   const allowedTopLevelFields = record.configurationRollbackArtifact === undefined
     ? ['entries', 'phase', 'stage', 'version', 'wasRunning']
-    : ['configurationRollbackArtifact', 'entries', 'phase', 'stage', 'version', 'wasRunning'];
+    : record.configurationRollbackState === undefined
+      ? ['configurationRollbackArtifact', 'entries', 'phase', 'stage', 'version', 'wasRunning']
+      : ['configurationRollbackArtifact', 'configurationRollbackState', 'entries', 'phase', 'stage', 'version', 'wasRunning'];
   if (Object.keys(record).sort().join(',') !== allowedTopLevelFields.sort().join(',')
     || record.version !== 2
     || typeof record.phase !== 'string' || !RESTORE_PHASES.includes(record.phase as RestoreJournal['phase'])
     || typeof record.stage !== 'string'
     || typeof record.wasRunning !== 'boolean'
     || !Array.isArray(record.entries)
-    || (record.configurationRollbackArtifact !== undefined && (typeof record.configurationRollbackArtifact !== 'string' || record.configurationRollbackArtifact.length === 0))) {
+    || (record.configurationRollbackArtifact !== undefined && (typeof record.configurationRollbackArtifact !== 'string' || record.configurationRollbackArtifact.length === 0))
+    || (record.configurationRollbackState !== undefined && record.configurationRollbackState !== 'pending' && record.configurationRollbackState !== 'applied')
+    || (record.configurationRollbackState !== undefined && record.configurationRollbackArtifact === undefined)) {
     throw new PersonalHomeRestoreError('recovery_required', 'Personal Home restore journal is invalid.');
   }
   const stage = resolve(record.stage);
@@ -140,6 +145,7 @@ function parseJournal(layout: PersonalHomeRuntimeLayout, value: string): Restore
     stage,
     wasRunning: record.wasRunning,
     ...(typeof record.configurationRollbackArtifact === 'string' ? { configurationRollbackArtifact: record.configurationRollbackArtifact } : {}),
+    ...(record.configurationRollbackState === 'pending' || record.configurationRollbackState === 'applied' ? { configurationRollbackState: record.configurationRollbackState } : {}),
     entries,
   };
 }
@@ -198,6 +204,26 @@ async function stopHomeBeforeRollback(params: Pick<PersonalHomeRestoreHooks, 'is
   }
   if (stopError) throw stopError;
 }
+
+async function rollbackConfigurationFromJournal(
+  layout: PersonalHomeRuntimeLayout,
+  journal: RestoreJournal,
+  recoverConfiguration: (rollbackArtifact: string) => Promise<void>,
+): Promise<void> {
+  const artifact = journal.configurationRollbackArtifact;
+  if (!artifact) return;
+  if (journal.configurationRollbackState !== 'applied') {
+    await recoverConfiguration(artifact);
+    journal.configurationRollbackState = 'applied';
+    journal.phase = 'rolling_back';
+    await writeJournal(journalPathFor(layout), journal);
+  }
+  await rm(artifact, { force: true });
+  delete journal.configurationRollbackArtifact;
+  delete journal.configurationRollbackState;
+  journal.phase = 'rolling_back';
+  await writeJournal(journalPathFor(layout), journal);
+}
 export async function recoverPersonalHomeRestoreWithLease(params: Readonly<{ layout: PersonalHomeRuntimeLayout; operationLeaseHeld: true; isHomeRunning(): Promise<boolean>; stopHome(): Promise<void>; startHome(): Promise<void>; healthCheck(): Promise<boolean>; recoverConfiguration(rollbackArtifact: string): Promise<void> }>): Promise<PersonalHomeRestoreRecoveryResult> {
   const path = journalPathFor(params.layout);
   let journal: RestoreJournal | null;
@@ -212,7 +238,7 @@ export async function recoverPersonalHomeRestoreWithLease(params: Readonly<{ lay
   try {
     if (await params.isHomeRunning()) await params.stopHome();
     if (await params.isHomeRunning()) throw new Error('Personal Home did not stop for restore recovery');
-    if (journal.configurationRollbackArtifact) { await params.recoverConfiguration(journal.configurationRollbackArtifact); delete journal.configurationRollbackArtifact; journal.phase = 'rolling_back'; await writeJournal(path, journal); }
+    await rollbackConfigurationFromJournal(params.layout, journal, params.recoverConfiguration);
     await rollbackFromJournal(params.layout, journal);
     if (journal.wasRunning) { await params.startHome(); restartedHome = true; if (!(await params.healthCheck())) throw new Error('Recovered Personal Home failed health verification'); }
     await unlink(path); await rm(journal.stage, { recursive: true, force: true }).catch(() => undefined);
@@ -312,7 +338,7 @@ async function restorePersonalHomeBackupFromSnapshot(params: Readonly<{ layout: 
       journal.phase = 'promoting'; await writeJournal(journalPath, journal);
       for (const entry of journal.entries) if (await exists(entry.source)) { entry.state = 'promoting'; await writeJournal(journalPath, journal); await moveIfPresent(entry.source, entry.target); entry.state = 'promoted'; await writeJournal(journalPath, journal); }
       if (!params.prepareConfiguration) throw new Error('Canonical Personal Home configuration owner is required');
-      const preparedConfiguration = await params.prepareConfiguration(configuration); configurationRollback = preparedConfiguration.rollback; journal.configurationRollbackArtifact = preparedConfiguration.rollbackArtifact; await writeJournal(journalPath, journal);
+      const preparedConfiguration = await params.prepareConfiguration(configuration); configurationRollback = preparedConfiguration.rollback; journal.configurationRollbackArtifact = preparedConfiguration.rollbackArtifact; journal.configurationRollbackState = 'pending'; await writeJournal(journalPath, journal);
       journal.phase = 'applying_configuration'; await writeJournal(journalPath, journal); await preparedConfiguration.apply();
       journal.phase = 'activating'; await writeJournal(journalPath, journal); if (params.startHome) await params.startHome(); if (params.healthCheck && !(await params.healthCheck())) throw new Error('Personal Home health check failed'); if (params.verifyIdentity && !(await params.verifyIdentity(manifest))) throw new Error('Personal Home identity verification failed');
       await assertRestoredAllowlistedFilesReadable(params.layout, manifest);
@@ -329,7 +355,7 @@ async function restorePersonalHomeBackupFromSnapshot(params: Readonly<{ layout: 
       const persistedJournal = journal;
       let failed = false;
       await stopHomeBeforeRollback(params).catch(() => { failed = true; });
-      if (!failed && configurationRollback) await configurationRollback().then(async () => { delete persistedJournal.configurationRollbackArtifact; persistedJournal.phase = 'rolling_back'; await writeJournal(journalPath, persistedJournal); }).catch(() => { failed = true; });
+      if (!failed && configurationRollback) await rollbackConfigurationFromJournal(params.layout, persistedJournal, async () => configurationRollback!()).catch(() => { failed = true; });
       if (!failed) { persistedJournal.phase = 'rolling_back'; await writeJournal(journalPath, persistedJournal).catch(() => { failed = true; }); }
       if (!failed) await rollbackFromJournal(params.layout, persistedJournal).catch(() => { failed = true; });
       if (!failed && wasRunning && params.startHome) { await params.startHome().catch(() => { failed = true; }); if (!failed && params.healthCheck && !(await params.healthCheck())) failed = true; }

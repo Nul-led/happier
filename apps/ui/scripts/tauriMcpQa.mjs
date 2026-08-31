@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
+import { userInfo } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -365,6 +366,7 @@ export function alignTauriMcpQaPlanToExpoPort({
     repoRootDir: rootDir,
     uiDir: resolveUiDirFromTauriMcpQaPlan(plan),
     env: plan?.tauriDev?.env ?? process.env,
+    resolveUserHomeDir: resolvePersonalHomeQaUserHomeResolver(plan?.tauriDev?.env),
     configPath: plan?.configPath,
     configOverride: nextTauriConfig,
   });
@@ -502,6 +504,23 @@ export function assertPersonalHomeQaLaunchIsolation({ plan, env = process.env } 
     );
   }
 
+  const disposableHome = String(env.HAPPIER_TAURI_PERSONAL_HOME_QA_HOME ?? '').trim();
+  if (!disposableHome || !isAbsolute(disposableHome) || !existsSync(disposableHome)) {
+    throw new Error(
+      '[tauri-qa] Personal Home loaded QA requires HAPPIER_TAURI_PERSONAL_HOME_QA_HOME to name an existing absolute disposable OS home.',
+    );
+  }
+  const hostHome = String(userInfo().homedir ?? '').trim();
+  if (hostHome && disposableHome === hostHome) {
+    throw new Error('[tauri-qa] Personal Home loaded QA refuses to use the current OS user home.');
+  }
+  if (
+    String(plan?.tauriDev?.env?.HOME ?? '').trim() !== disposableHome
+    || String(plan?.tauriDev?.env?.USERPROFILE ?? '').trim() !== disposableHome
+  ) {
+    throw new Error('[tauri-qa] Personal Home loaded QA did not propagate the disposable OS home to the Tauri process.');
+  }
+
   const stackName = String(env.HAPPIER_STACK_STACK ?? '').trim();
   if (!stackName || (!stackName.includes('lane03') && !stackName.includes('personal-home'))) {
     throw new Error('[tauri-qa] Personal Home loaded QA requires an explicit Lane 03 / personal-home stack name.');
@@ -510,6 +529,28 @@ export function assertPersonalHomeQaLaunchIsolation({ plan, env = process.env } 
   if (identifier !== `com.happier.stack.${stackName}`) {
     throw new Error('[tauri-qa] Personal Home loaded QA requires the exact stack-owned Tauri identifier.');
   }
+}
+
+function resolvePersonalHomeQaUserHomeResolver(env = process.env) {
+  const disposableHome = String(env?.HAPPIER_TAURI_PERSONAL_HOME_QA_HOME ?? '').trim();
+  return disposableHome ? () => disposableHome : undefined;
+}
+
+function preserveHostRustToolchainForPersonalHomeQa(env, requestedScenario) {
+  const resolvedEnv = { ...env };
+  if (requestedScenario !== 'personal-home' || !resolvePersonalHomeQaUserHomeResolver(resolvedEnv)) {
+    return resolvedEnv;
+  }
+  const hostHome = String(userInfo().homedir ?? '').trim();
+  const defaultCargoHome = hostHome ? join(hostHome, '.cargo') : '';
+  const defaultRustupHome = hostHome ? join(hostHome, '.rustup') : '';
+  if (!String(resolvedEnv.CARGO_HOME ?? '').trim() && defaultCargoHome && existsSync(defaultCargoHome)) {
+    resolvedEnv.CARGO_HOME = defaultCargoHome;
+  }
+  if (!String(resolvedEnv.RUSTUP_HOME ?? '').trim() && defaultRustupHome && existsSync(defaultRustupHome)) {
+    resolvedEnv.RUSTUP_HOME = defaultRustupHome;
+  }
+  return resolvedEnv;
 }
 
 export function createTauriMcpQaExitTracker() {
@@ -579,12 +620,12 @@ export async function resolveTauriMcpQaPlan({
     resolvedStackEnvPath
       ? await readEnvObjectFromFile(resolvedStackEnvPath)
       : {};
-  const resolvedEnv = {
+  const resolvedEnv = preserveHostRustToolchainForPersonalHomeQa({
     ...baseEnv,
     ...stackEnvFromFile,
     ...baseQaScenarioEnvOverrides,
     ...(resolvedStackEnvPath ? { HAPPIER_STACK_ENV_FILE: resolvedStackEnvPath } : {}),
-  };
+  }, runMode.requestedScenario);
   const runtimeState = runtimeStateOverride ?? (stackName ? await readStackRuntimeStateFile(getStackRuntimeStatePath(stackName)) : null);
   const defaultPort = Number(resolvedEnv.HAPPIER_STACK_TAURI_DEV_PORT ?? 8081);
   // A fresh Personal Home scenario must exercise the Desktop bootstrap owner. Injecting the
@@ -618,6 +659,7 @@ export async function resolveTauriMcpQaPlan({
   const tauriDev = buildStackTauriDevProcessInvocation({
     rootDir: repoRoot,
     env: resolvedEnv,
+    resolveUserHomeDir: resolvePersonalHomeQaUserHomeResolver(resolvedEnv),
     stackEnv: stackTauriWebRuntimeServerUrl
       ? {
           HAPPIER_TAURI_WEB_RUNTIME_SERVER_URL: stackTauriWebRuntimeServerUrl,

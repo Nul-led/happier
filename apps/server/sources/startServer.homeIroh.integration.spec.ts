@@ -66,11 +66,15 @@ describe("startServer managed Home Iroh composition", () => {
         startServerDbMocks.reset();
         ensureHomeIrohEndpoint.mockClear();
         stopHomeIrohEndpoint.mockClear();
+        vi.stubGlobal("fetch", vi.fn(() => {
+            throw new Error("Personal Home exposure proof must not issue a signup request");
+        }));
         ping.mockClear();
         startServerHarness.reset();
     });
 
     afterEach(() => {
+        vi.unstubAllGlobals();
         startServerHarness.restore();
     });
 
@@ -98,7 +102,8 @@ describe("startServer managed Home Iroh composition", () => {
             AUTH_ANONYMOUS_SIGNUP_ENABLED: "1",
         });
 
-        expect(startServerHarness.startApi).toHaveBeenCalledTimes(1);
+        const { startApi } = await import("@/app/api/api");
+        expect(startApi).toHaveBeenCalledTimes(1);
         expect(ensureHomeIrohEndpoint).not.toHaveBeenCalled();
     });
 
