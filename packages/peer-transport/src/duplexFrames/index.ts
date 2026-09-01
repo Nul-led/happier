@@ -12,3 +12,4 @@ export * from './applicationSubstreamSession.js';
 export * from './substreamMux.js';
 export * from './flowAccounting.js';
 export * from './streamSession.js';
+export * from './legacyJsonAdapter.js';

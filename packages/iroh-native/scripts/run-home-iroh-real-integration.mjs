@@ -10,6 +10,7 @@ import { resolveArtifactName } from './build-node-addon.mjs';
 const packageDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const serverDir = resolve(packageDir, '../../apps/server');
 const cliDir = resolve(packageDir, '../../apps/cli');
+const uiDir = resolve(packageDir, '../../apps/ui');
 
 export function createHomeIrohRealIntegrationPlan({
   platform = process.platform,
@@ -17,6 +18,7 @@ export function createHomeIrohRealIntegrationPlan({
   packageDir: selectedPackageDir = packageDir,
   serverDir: selectedServerDir = serverDir,
   cliDir: selectedCliDir = cliDir,
+  uiDir: selectedUiDir = uiDir,
 } = {}) {
   const platformPath = platform === 'win32' ? win32 : posix;
   const addonPath = platformPath.join(
@@ -25,10 +27,10 @@ export function createHomeIrohRealIntegrationPlan({
     resolveArtifactName(platform, arch, { testRelayFixture: true }),
   );
   return {
-    build: {
-      args: ['-s', 'build:native:test-relay'],
-      cwd: selectedPackageDir,
-    },
+    builds: [
+      { args: ['-s', 'build'], cwd: selectedPackageDir },
+      { args: ['-s', 'build:native:test-relay'], cwd: selectedPackageDir },
+    ],
     tests: {
       server: {
         args: [
@@ -62,6 +64,40 @@ export function createHomeIrohRealIntegrationPlan({
           HAPPIER_TEST_IROH_NODE_ADDON_PATH: addonPath,
         },
       },
+      clientMachineDirect: {
+        args: [
+          '-s',
+          'vitest:local',
+          'run',
+          '--isolate',
+          '-c',
+          'vitest.integration.config.ts',
+          'sources/sync/domains/transfers/runtime/transferRuntime/plumbing/machineCarrierHttp.real.integration.test.ts',
+        ],
+        cwd: selectedUiDir,
+        env: {
+          HAPPIER_RUN_MACHINE_TRANSFER_REAL_INTEGRATION: '1',
+          HAPPIER_MACHINE_TRANSFER_TEST_TOPOLOGY: 'direct',
+          HAPPIER_TEST_IROH_NODE_ADDON_PATH: addonPath,
+        },
+      },
+      clientMachineRelay: {
+        args: [
+          '-s',
+          'vitest:local',
+          'run',
+          '--isolate',
+          '-c',
+          'vitest.integration.config.ts',
+          'sources/sync/domains/transfers/runtime/transferRuntime/plumbing/machineCarrierHttp.real.integration.test.ts',
+        ],
+        cwd: selectedUiDir,
+        env: {
+          HAPPIER_RUN_MACHINE_TRANSFER_REAL_INTEGRATION: '1',
+          HAPPIER_MACHINE_TRANSFER_TEST_TOPOLOGY: 'relay',
+          HAPPIER_TEST_IROH_NODE_ADDON_PATH: addonPath,
+        },
+      },
     },
   };
 }
@@ -74,11 +110,13 @@ export function runHomeIrohRealIntegration({
   removeDirImpl = rmSync,
 } = {}) {
   const plan = createHomeIrohRealIntegrationPlan();
-  execYarnImpl(plan.build.args, {
-    cwd: plan.build.cwd,
-    env,
-    stdio: 'inherit',
-  });
+  for (const build of plan.builds) {
+    execYarnImpl(build.args, {
+      cwd: build.cwd,
+      env,
+      stdio: 'inherit',
+    });
+  }
   // Remote workspace synchronization deliberately excludes ignored native
   // build output. Preserve the just-built addon outside that mirror before a
   // later child invocations can trigger another synchronization cycle.

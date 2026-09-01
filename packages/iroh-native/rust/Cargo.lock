@@ -1156,6 +1156,7 @@ version = "0.0.0"
 dependencies = [
  "getrandom 0.3.3",
  "iroh",
+ "libc",
  "serde_json",
  "tokio",
  "windows-sys 0.61.2",

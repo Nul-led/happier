@@ -4,11 +4,18 @@ plugins {
 }
 group = 'dev.happier.iroh'
 version = '0.0.0'
+
+def happierIrohNativeAndroidApiLevel = 24
+
 android {
   namespace "dev.happier.iroh"
   defaultConfig {
+    minSdk happierIrohNativeAndroidApiLevel
     versionCode 1
     versionName version
+    ndk {
+      abiFilters 'arm64-v8a', 'x86_64'
+    }
   }
   sourceSets {
     main { jniLibs.srcDirs += ["${buildDir}/generated/rustJniLibs"] }
@@ -17,6 +24,7 @@ android {
 
 tasks.register("buildHappierIrohRustAndroid", Exec) {
   workingDir projectDir.parentFile
+  environment "HAPPIER_ANDROID_NATIVE_API_LEVEL", (System.getenv("HAPPIER_ANDROID_NATIVE_API_LEVEL") ?: happierIrohNativeAndroidApiLevel.toString())
   commandLine "bash", "scripts/build-rust-android.sh"
 }
 

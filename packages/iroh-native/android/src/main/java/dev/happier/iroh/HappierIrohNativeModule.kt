@@ -21,14 +21,27 @@ class HappierIrohNativeModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("HappierIrohNative")
     Function("getAvailability") { HappierIrohNativeBridge.availability() }
-    AsyncFunction("startHomeTunnel") { request: Map<String, Any?> ->
+    AsyncFunction("getTunnelStatus") { tunnelId: String -> HappierIrohNativeBridge.tunnelStatus(tunnelId) }
+    AsyncFunction("createEndpoint") { request: Map<String, Any?> ->
       val context = appContext.reactContext?.applicationContext
         ?: throw CodedException("endpoint_key_unavailable", "Android application storage is unavailable.", null)
-      HappierIrohNativeBridge.start(request, context)
+      HappierIrohNativeBridge.createEndpoint(request, context)
     }
-    AsyncFunction("stopHomeTunnel") { leaseId: String -> HappierIrohNativeBridge.stop(leaseId) }
-    AsyncFunction("getHomeTunnelStatus") { identity: String -> HappierIrohNativeBridge.status(identity) }
-    AsyncFunction("getTunnelStatus") { tunnelId: String -> HappierIrohNativeBridge.tunnelStatus(tunnelId) }
+    AsyncFunction("ensureHomeTunnel") { request: Map<String, Any?> ->
+      HappierIrohNativeBridge.ensureHomeTunnel(request)
+    }
+    AsyncFunction("releaseHomeTunnel") { tunnelId: String ->
+      HappierIrohNativeBridge.releaseHomeTunnel(tunnelId)
+    }
+    AsyncFunction("shutdownEndpoint") { request: Map<String, Any?> ->
+      HappierIrohNativeBridge.shutdownEndpoint(request)
+    }
+    AsyncFunction("startMachineHttpTunnel") { request: Map<String, Any?> ->
+      HappierIrohNativeBridge.startMachineHttpTunnel(request)
+    }
+    AsyncFunction("stopMachineTunnel") { machineTunnelId: String ->
+      HappierIrohNativeBridge.stopMachineTunnel(machineTunnelId)
+    }
   }
 }
 
@@ -42,32 +55,41 @@ private object HappierIrohNativeBridge {
     "available" to false, "platform" to "android", "engine" to "iroh", "supportsHomeTunnel" to false, "reason" to "engine-unavailable"
   )
 
-  fun start(request: Map<String, Any?>, context: Context): Map<String, Any?> {
+  fun createEndpoint(request: Map<String, Any?>, context: Context): Map<String, Any?> {
     ensureLoaded()
     val seed = IrohEndpointIdentityStore.loadOrCreate(context)
     return try {
       val nativeRequest = request.toMutableMap()
-      // The native store always overwrites dynamically supplied input; JS is
-      // never an identity-seed authority.
       nativeRequest["endpointSeedBase64"] = Base64.encodeToString(seed, Base64.NO_WRAP)
-      unwrap(HappierIrohNativeRust.startHomeTunnelJson(JSONObject(nativeRequest).toString()))
+      unwrap(HappierIrohNativeRust.createEndpointJson(JSONObject(nativeRequest).toString()))
     } finally {
       seed.fill(0)
     }
   }
 
-  fun stop(leaseId: String) {
-    if (!loaded) return
-    unwrap(HappierIrohNativeRust.stopHomeTunnelJson(leaseId))
+  fun startMachineHttpTunnel(request: Map<String, Any?>): Map<String, Any?> {
+    ensureLoaded()
+    return unwrap(HappierIrohNativeRust.startMachineHttpTunnelJson(JSONObject(request).toString()))
   }
 
-  fun status(identity: String): Map<String, Any?>? {
-    if (!loaded) return null
-    val raw = HappierIrohNativeRust.getHomeTunnelStatusJson(identity)
-    if (raw == "null") return null
-    val response = JSONObject(raw)
-    if (response.isNull("result")) return null
-    return response.optJSONObject("result")?.toMap()
+  fun ensureHomeTunnel(request: Map<String, Any?>): Map<String, Any?> {
+    ensureLoaded()
+    return unwrap(HappierIrohNativeRust.ensureHomeTunnelJson(JSONObject(request).toString()))
+  }
+
+  fun releaseHomeTunnel(tunnelId: String) {
+    if (!loaded) return
+    unwrap(HappierIrohNativeRust.releaseHomeTunnelJson(JSONObject(mapOf("tunnelId" to tunnelId)).toString()))
+  }
+
+  fun shutdownEndpoint(request: Map<String, Any?>) {
+    if (!loaded) return
+    unwrap(HappierIrohNativeRust.shutdownEndpointJson(JSONObject(request).toString()))
+  }
+
+  fun stopMachineTunnel(machineTunnelId: String) {
+    if (!loaded) return
+    unwrap(HappierIrohNativeRust.stopMachineTunnelJson(JSONObject(mapOf("machineTunnelId" to machineTunnelId)).toString()))
   }
 
   fun tunnelStatus(tunnelId: String): Map<String, Any?>? {
@@ -198,8 +220,11 @@ private class EndpointIdentityException(message: String) :
   CodedException("endpoint_key_unavailable", message, null)
 
 private object HappierIrohNativeRust {
-  external fun startHomeTunnelJson(requestJson: String): String
-  external fun stopHomeTunnelJson(leaseId: String): String
-  external fun getHomeTunnelStatusJson(homeServerIdentityId: String): String
   external fun getTunnelStatusJson(requestJson: String): String
+  external fun createEndpointJson(requestJson: String): String
+  external fun ensureHomeTunnelJson(requestJson: String): String
+  external fun releaseHomeTunnelJson(requestJson: String): String
+  external fun shutdownEndpointJson(requestJson: String): String
+  external fun startMachineHttpTunnelJson(requestJson: String): String
+  external fun stopMachineTunnelJson(requestJson: String): String
 }

@@ -28,10 +28,6 @@ function createFakeAddon(handler: (operation: string, request: string) => string
       engine: 'happier-iroh-native',
       surface: [...IROH_NODE_NATIVE_EXPORTS],
     }),
-    startHomeTunnel: async (request: string) => handler('startHomeTunnel', request),
-    stopHomeTunnel: async (leaseId: string) => handler('stopHomeTunnel', leaseId),
-    getHomeTunnelStatus: async (homeServerIdentityId: string) =>
-      handler('getHomeTunnelStatus', homeServerIdentityId),
     createEndpoint: async (request: string) => handler('createEndpoint', request),
     startHomeAcceptor: async (request: string) => handler('startHomeAcceptor', request),
     stopHomeAcceptor: async (request: string) => handler('stopHomeAcceptor', request),
@@ -143,6 +139,7 @@ describe('typed operations over the C ABI JSON envelope', () => {
         result: {
           endpointHandle: 'ep-1',
           endpointId: 'endpoint-id',
+          relayPolicy: 'disabled',
           relayMode: 'disabled',
           capProfile: 'homeInteractive',
           relayUrls: [],
@@ -154,20 +151,17 @@ describe('typed operations over the C ABI JSON envelope', () => {
     expect(created).toEqual({
       endpointHandle: 'ep-1',
       endpointId: 'endpoint-id',
+      relayPolicy: 'disabled',
       relayMode: 'disabled',
       capProfile: 'homeInteractive',
       relayUrls: [],
     });
     expect(seen).toEqual([['createEndpoint', '{"relayPolicy":"disabled"}']]);
 
-    await module.stopHomeTunnel('lease-1');
-    await module.getHomeTunnelStatus('srv_home');
     await module.getEndpointStatus('ep-1');
     await module.releaseHomeTunnel('t-1');
     await module.shutdownEndpoint({ endpointHandle: 'ep-1' });
     expect(seen.slice(1)).toEqual([
-      ['stopHomeTunnel', 'lease-1'],
-      ['getHomeTunnelStatus', 'srv_home'],
       ['getEndpointStatus', '{"endpointHandle":"ep-1"}'],
       ['releaseHomeTunnel', '{"tunnelId":"t-1"}'],
       ['shutdownEndpoint', '{"endpointHandle":"ep-1"}'],
@@ -327,6 +321,7 @@ describe('typed operations over the C ABI JSON envelope', () => {
           machineTunnelId: 'mt-1',
           endpointHandle: 'e-1',
           localPort: 45123,
+          localCapability: 'a'.repeat(64),
           connectionActive: true,
           remoteEndpointId: 'normalized-peer-id',
           observedPath: 'direct',
@@ -354,6 +349,7 @@ describe('typed operations over the C ABI JSON envelope', () => {
               machineTunnelId: 'mt-2',
               endpointHandle: 'e-1',
               localPort: 45124,
+              localCapability: 'b'.repeat(64),
               connectionActive: true,
               observedPath: 'direct',
               startedAtMs: 100,
@@ -366,6 +362,32 @@ describe('typed operations over the C ABI JSON envelope', () => {
     await expect(
       driftedModule.startMachineTunnel({ endpointHandle: 'e-1', endpointId: 'peer', handshakeJson: '{}' }),
     ).rejects.toThrowError(/remoteEndpointId/);
+
+    const invalidCapability = createFakeAddon((operation) =>
+      operation === 'startMachineTunnel'
+        ? JSON.stringify({
+            ok: true,
+            result: {
+              machineTunnelId: 'mt-3',
+              endpointHandle: 'e-1',
+              localPort: 45125,
+              localCapability: 'not-a-capability',
+              connectionActive: true,
+              remoteEndpointId: 'normalized-peer-id',
+              observedPath: 'direct',
+              startedAtMs: 101,
+              lastErrorCode: null,
+            },
+          })
+        : okNull,
+    );
+    await expect(
+      createIrohNodeNativeModule(invalidCapability).startMachineTunnel({
+        endpointHandle: 'e-1',
+        endpointId: 'peer',
+        handshakeJson: '{}',
+      }),
+    ).rejects.toThrowError(/localCapability/);
   });
 
   it('validates the acceptor start result including optional path telemetry', async () => {
@@ -379,7 +401,6 @@ describe('typed operations over the C ABI JSON envelope', () => {
           status: {
             running: true,
             connectionsAccepted: 0,
-            connectionsRefused: 0,
             connectionsActive: 0,
             streamsAccepted: 0,
             streamsRejected: 0,
@@ -397,6 +418,7 @@ describe('typed operations over the C ABI JSON envelope', () => {
     const started = await module.startHomeAcceptor({ endpointHandle: 's-1', targetPort: 41000 });
     expect(started.reused).toBe(false);
     expect(started.status.running).toBe(true);
+    expect(started.status).not.toHaveProperty('connectionsRefused');
     expect(started.status.lastPath).toEqual({
       observedPath: 'direct',
       isRelay: false,

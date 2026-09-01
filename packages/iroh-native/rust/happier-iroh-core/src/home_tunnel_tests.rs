@@ -545,7 +545,6 @@ async fn three_remote_endpoints_can_share_one_home_acceptor() {
         client.shutdown().await;
     }
     assert_eq!(acceptor.status().connections_accepted, 3);
-    assert_eq!(acceptor.status().connections_refused, 0);
 
     // All three streams reached the fixed target.
     assert!(target_accepted.recv().await.is_some());
@@ -1033,8 +1032,9 @@ async fn duplicate_registration_fails_typed_and_stop_releases_for_restart() {
 mod relay_fixture {
     use super::*;
     use crate::{
-        IrohCapProfile, MachineAcceptor, MachineAcceptorConfig, MachineTunnel, MachineTunnelConfig,
-        RelaySelection, IROH_MACHINE_APPLICATION_PORT_HEADER,
+        IrohCapProfile, MachineAcceptor, MachineAcceptorConfig, MachineHttpTunnel,
+        MachineTunnelConfig, RelaySelection, IROH_MACHINE_APPLICATION_PORT_HEADER,
+        IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
     };
     use iroh::Watcher;
 
@@ -1051,16 +1051,18 @@ mod relay_fixture {
     /// asserted to be exactly the fixture relay.
     async fn wait_relay_online(role: &str, endpoint: &IrohEndpoint, relay_url: &iroh::RelayUrl) {
         tokio::time::timeout(RELAY_ONLINE_TIMEOUT, async {
-            endpoint.endpoint().online().await;
-            assert!(
-                endpoint
+            loop {
+                if endpoint
                     .endpoint()
                     .home_relay_status()
                     .get()
                     .iter()
-                    .any(|relay| relay.url() == relay_url && relay.is_connected()),
-                "{role} endpoint must be connected to the fixture relay"
-            );
+                    .any(|relay| relay.url() == relay_url && relay.is_connected())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
         })
         .await
         .unwrap_or_else(|_| {
@@ -1225,7 +1227,7 @@ mod relay_fixture {
             MachineAcceptor::start(&server, MachineAcceptorConfig { admission_target }).unwrap();
         let tunnel = tokio::time::timeout(
             TUNNEL_CONNECT_TIMEOUT,
-            MachineTunnel::start(
+            MachineHttpTunnel::start(
                 &client,
                 MachineTunnelConfig {
                     endpoint_id: server.id().to_string(),
@@ -1243,13 +1245,18 @@ mod relay_fixture {
         let mut socket = TcpStream::connect(tunnel.local_addr().unwrap())
             .await
             .unwrap();
-        socket.write_all(b"machine-over-relay").await.unwrap();
-        let mut echo = vec![0u8; b"machine-over-relay".len()];
+        let request = format!(
+            "POST /machine-relay HTTP/1.1\r\nHost: 127.0.0.1\r\n{IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER}: {}\r\nContent-Length: 18\r\n\r\nmachine-over-relay",
+            tunnel.local_capability(),
+        );
+        let forwarded_request = "POST /machine-relay HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 18\r\n\r\nmachine-over-relay";
+        socket.write_all(request.as_bytes()).await.unwrap();
+        let mut echo = vec![0u8; forwarded_request.len()];
         tokio::time::timeout(ECHO_EXCHANGE_TIMEOUT, socket.read_exact(&mut echo))
             .await
             .expect("bounded machine relay echo")
             .unwrap();
-        assert_eq!(echo, b"machine-over-relay");
+        assert_eq!(echo, forwarded_request.as_bytes());
         assert!(app_accepted.try_recv().is_ok());
         assert_eq!(
             acceptor.status().last_path.unwrap().observed_path,
@@ -1270,5 +1277,114 @@ mod relay_fixture {
             .await
             .unwrap();
         app_task.abort();
+    }
+
+    #[tokio::test]
+    async fn one_client_endpoint_serves_two_homes_on_distinct_relays_concurrently() {
+        let (_relay_map_a, relay_a, _relay_server_a) =
+            iroh::test_utils::run_relay_server_with(false)
+                .await
+                .unwrap();
+        let (_relay_map_b, relay_b, _relay_server_b) =
+            iroh::test_utils::run_relay_server_with(false)
+                .await
+                .unwrap();
+
+        let server_config = |relay: &iroh::RelayUrl| crate::EndpointConfig {
+            relay_policy: RelayPolicy::Automatic,
+            relay_urls: vec![relay.to_string()],
+            caps: IrohCapProfile::HomeInteractive,
+            disable_ip_transports: true,
+            insecure_relay_tls: true,
+            ..crate::EndpointConfig::default()
+        };
+        let home_a = IrohEndpoint::bind(&server_config(&relay_a)).await.unwrap();
+        let home_b = IrohEndpoint::bind(&server_config(&relay_b)).await.unwrap();
+        wait_relay_online("home-a", &home_a, &relay_a).await;
+        wait_relay_online("home-b", &home_b, &relay_b).await;
+
+        let manager = crate::EndpointManager::new();
+        let identity = crate::EndpointIdentity::Seeded(
+            crate::EndpointSeed::from_bytes([91; 32]).endpoint_id(),
+        );
+        let client_config = |relay: &iroh::RelayUrl| crate::EndpointConfig {
+            key_seed: Some(crate::EndpointSeed::from_bytes([91; 32])),
+            relay_policy: RelayPolicy::Automatic,
+            relay_urls: vec![relay.to_string()],
+            caps: IrohCapProfile::HomeInteractive,
+            disable_ip_transports: true,
+            insecure_relay_tls: true,
+            ..crate::EndpointConfig::default()
+        };
+        let client = manager
+            .acquire_identified(identity.clone(), &client_config(&relay_a))
+            .await
+            .unwrap();
+        let client_id = client.id();
+        let same_client = manager
+            .acquire_identified(identity.clone(), &client_config(&relay_b))
+            .await
+            .expect("second Home relay extends the shared endpoint");
+        assert_eq!(same_client.id(), client_id);
+
+        let (target_a_addr, target_a, _target_a_accepted) = spawn_echo_target().await;
+        let (target_b_addr, target_b, _target_b_accepted) = spawn_echo_target().await;
+        let acceptor_a = HomeAcceptor::start(
+            &home_a,
+            HomeAcceptorConfig {
+                target: target_a_addr,
+            },
+        )
+        .unwrap();
+        let acceptor_b = HomeAcceptor::start(
+            &home_b,
+            HomeAcceptorConfig {
+                target: target_b_addr,
+            },
+        )
+        .unwrap();
+        let tunnel_a = HomeTunnel::start(
+            &client,
+            HomeTunnelConfig {
+                endpoint_id: home_a.id().to_string(),
+                relay_urls: vec![relay_a.clone()],
+                ..HomeTunnelConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+        let tunnel_b = HomeTunnel::start(
+            &client,
+            HomeTunnelConfig {
+                endpoint_id: home_b.id().to_string(),
+                relay_urls: vec![relay_b.clone()],
+                ..HomeTunnelConfig::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        echo_over_tunnel(&tunnel_a.local_origin().unwrap(), b"home-a").await;
+        echo_over_tunnel(&tunnel_b.local_origin().unwrap(), b"home-b").await;
+        assert_eq!(
+            tunnel_a.status().observed_path.unwrap().observed_path,
+            IrohObservedPath::Relay
+        );
+        assert_eq!(
+            tunnel_b.status().observed_path.unwrap().observed_path,
+            IrohObservedPath::Relay
+        );
+        let (applied, _) = manager.get(&identity).unwrap();
+        assert_eq!(applied.relay.relay_urls().len(), 2);
+
+        tunnel_a.stop();
+        tunnel_b.stop();
+        acceptor_a.stop();
+        acceptor_b.stop();
+        target_a.abort();
+        target_b.abort();
+        manager.shutdown(&identity).await;
+        home_a.shutdown().await;
+        home_b.shutdown().await;
     }
 }

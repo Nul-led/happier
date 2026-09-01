@@ -45,6 +45,7 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
     nowMs?: () => number;
     connection: PeerTcpTunnelStreamConnection;
     sendFrame: (frame: PeerTcpTunnelFrame) => Promise<void> | void;
+    onClosed?: () => void;
 }>) {
     const outboundDirection = input.outboundDirection ?? 'daemon_to_client';
     const inboundDirection: PeerTcpTunnelDirectionV1 = outboundDirection === 'client_to_daemon'
@@ -83,6 +84,7 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
     const ackTimers: Partial<Record<PeerTcpTunnelDirectionV1, ReturnType<typeof setTimeout>>> = {};
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let durationTimer: ReturnType<typeof setTimeout> | undefined;
+    let localClosePromise: Promise<void> | null = null;
 
     function clearAckTimer(direction: PeerTcpTunnelDirectionV1): void {
         const timer = ackTimers[direction];
@@ -102,21 +104,85 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
         durationTimer = undefined;
     }
 
-    async function sendAbort(reasonCode: string): Promise<void> {
-        await input.sendFrame(abortFrame(input.tunnelId, reasonCode));
+    function settlePendingOutboundChunks(reasonCode: PeerTcpTunnelStreamSessionFailure['reasonCode']): void {
+        for (const pending of pendingOutboundChunks.splice(0)) {
+            pending.resolve?.({ ok: false, reasonCode });
+        }
     }
 
-    async function abortAndClose(reasonCode: string): Promise<void> {
-        if (!closed) {
-            closed = true;
-            clearAckTimers();
-            clearLifecycleTimers();
-            for (const pending of pendingOutboundChunks.splice(0)) {
-                pending.resolve?.({ ok: false, reasonCode: 'tunnel_closed' });
+    function closeLocally(
+        pendingReasonCode: PeerTcpTunnelStreamSessionFailure['reasonCode'] = 'tunnel_closed',
+    ): Promise<void> {
+        if (localClosePromise) return localClosePromise;
+        closed = true;
+        clearAckTimers();
+        clearLifecycleTimers();
+        settlePendingOutboundChunks(pendingReasonCode);
+        localClosePromise = (async () => {
+            let detachFailure: unknown;
+            try {
+                detachConnectionData?.();
+                input.onClosed?.();
+            } catch (error) {
+                detachFailure = error;
             }
-            await sendAbort(reasonCode);
-            detachConnectionData?.();
-            await input.connection.close();
+            let closeFailure: unknown;
+            try {
+                await input.connection.close();
+            } catch (error) {
+                closeFailure = error;
+            }
+            if (detachFailure !== undefined) throw detachFailure;
+            if (closeFailure !== undefined) throw closeFailure;
+        })();
+        return localClosePromise;
+    }
+
+    async function notifyPeerAndClose(
+        frame: PeerTcpTunnelFrame,
+        pendingReasonCode: PeerTcpTunnelStreamSessionFailure['reasonCode'] = 'tunnel_closed',
+    ): Promise<void> {
+        const localClose = closeLocally(pendingReasonCode);
+        let notification: Promise<void>;
+        try {
+            notification = Promise.resolve(input.sendFrame(frame));
+        } catch (error) {
+            notification = Promise.reject(error);
+        }
+        const [notificationResult, closeResult] = await Promise.allSettled([notification, localClose]);
+        if (notificationResult.status === 'rejected') throw notificationResult.reason;
+        if (closeResult.status === 'rejected') throw closeResult.reason;
+    }
+
+    async function abortAndClose(
+        reasonCode: string,
+        propagateNotificationFailure = false,
+        pendingReasonCode: PeerTcpTunnelStreamSessionFailure['reasonCode'] = 'tunnel_closed',
+    ): Promise<void> {
+        try {
+            await notifyPeerAndClose(abortFrame(input.tunnelId, reasonCode), pendingReasonCode);
+        } catch (error) {
+            if (propagateNotificationFailure) throw error;
+        }
+    }
+
+    async function failConnectionWrite(): Promise<PeerTcpTunnelStreamSessionFailure> {
+        const failure = { ok: false as const, reasonCode: 'connection_write_failed' as const };
+        await abortAndClose(failure.reasonCode, false, failure.reasonCode);
+        return failure;
+    }
+
+    async function sendSessionFrame(frame: PeerTcpTunnelFrame): Promise<PeerTcpTunnelStreamSessionResult> {
+        try {
+            await input.sendFrame(frame);
+            return { ok: true };
+        } catch {
+            try {
+                await closeLocally('frame_send_failed');
+            } catch {
+                // The typed send failure remains authoritative after local cleanup was attempted.
+            }
+            return { ok: false, reasonCode: 'frame_send_failed' };
         }
     }
 
@@ -145,7 +211,7 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
         if (!isSchedulableTimeoutMs(input.maxIdleMs) || closed) return;
         if (idleTimer) clearTimeout(idleTimer);
         idleTimer = setTimeout(() => {
-            void abortAndClose('max_idle_exceeded');
+            void abortAndClose('max_idle_exceeded').catch(() => undefined);
         }, input.maxIdleMs);
         idleTimer.unref?.();
     }
@@ -153,7 +219,7 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
     function scheduleDurationTimer(): void {
         if (!isSchedulableTimeoutMs(input.maxDurationMs) || closed) return;
         durationTimer = setTimeout(() => {
-            void abortAndClose('max_duration_exceeded');
+            void abortAndClose('max_duration_exceeded').catch(() => undefined);
         }, input.maxDurationMs);
         durationTimer.unref?.();
     }
@@ -168,6 +234,9 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
         if (frame.nextSequence < state.acknowledgedSequence || frame.nextSequence > state.nextSequence) {
             return { ok: false, reasonCode: 'ack_sequence_invalid' };
         }
+        if (frame.windowBytes > input.initialWindowBytes) {
+            return { ok: false, reasonCode: 'ack_window_invalid' };
+        }
         state.acknowledgedSequence = frame.nextSequence;
         state.windowBytes = frame.windowBytes;
         lastActivityMs = nowMs();
@@ -175,11 +244,11 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
         return { ok: true };
     }
 
-    async function sendPendingAck(direction: PeerTcpTunnelDirectionV1): Promise<void> {
-        if (closed) return;
+    async function sendPendingAck(direction: PeerTcpTunnelDirectionV1): Promise<PeerTcpTunnelStreamSessionResult> {
+        if (closed) return { ok: false, reasonCode: 'tunnel_closed' };
         clearAckTimer(direction);
         const ack = accounting.flushPendingAck({ direction });
-        await input.sendFrame({
+        return sendSessionFrame({
             v: 1,
             kind: 'ack',
             tunnelId: input.tunnelId,
@@ -193,7 +262,7 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
         if (closed || ackTimers[direction]) return;
         const delayMs = Math.max(0, ackAfterMs - Math.max(0, elapsedMs));
         ackTimers[direction] = setTimeout(() => {
-            void sendPendingAck(direction);
+            void sendPendingAck(direction).catch(() => undefined);
         }, delayMs);
     }
 
@@ -219,23 +288,28 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
             chunks.push(bytes.subarray(offset, offset + chunkBytes));
         }
         let remaining = chunks.length;
+        let settled = false;
         for (const chunk of chunks) {
             pendingOutboundChunks.push({
                 bytes: chunk,
                 ...(resolve ? {
                     resolve: (result) => {
-                        if (!result.ok || --remaining === 0) resolve(result);
+                        if (settled) return;
+                        if (!result.ok || --remaining === 0) {
+                            settled = true;
+                            resolve(result);
+                        }
                     },
                 } : {}),
             });
         }
     }
 
-    async function sendOutboundDataFrame(bytes: Uint8Array): Promise<void> {
+    async function sendOutboundDataFrame(bytes: Uint8Array): Promise<PeerTcpTunnelStreamSessionResult> {
         const lifecycleDeny = lifecycleDenyReason(bytes.byteLength);
         if (lifecycleDeny) {
             await abortAndClose(lifecycleDeny.reasonCode);
-            return;
+            return lifecycleDeny;
         }
         const frame: Extract<PeerTcpTunnelFrame, { kind: 'data' }> = {
             v: 1,
@@ -247,12 +321,12 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
         };
         if (bytes.byteLength > maxDecodedPayloadBytes) {
             await abortAndClose('decoded_payload_too_large');
-            return;
+            return { ok: false, reasonCode: 'decoded_payload_too_large' };
         }
         outboundSequence += bytes.byteLength;
         sendCredit[outboundDirection].nextSequence += bytes.byteLength;
         recordActivity(bytes.byteLength);
-        await input.sendFrame(frame);
+        return sendSessionFrame(frame);
     }
 
     async function drainOutboundQueue(): Promise<void> {
@@ -265,9 +339,10 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
                     await pauseOutboundReads();
                     return;
                 }
-                pendingOutboundChunks.shift();
-                await sendOutboundDataFrame(next.bytes);
-                next.resolve?.({ ok: true });
+                const sent = await sendOutboundDataFrame(next.bytes);
+                if (pendingOutboundChunks[0] === next) pendingOutboundChunks.shift();
+                next.resolve?.(sent);
+                if (!sent.ok) return;
             }
             await resumeOutboundReads();
         } finally {
@@ -286,41 +361,32 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
         return enqueueOutboundData(bytes);
     });
 
-    async function closeConnection(): Promise<void> {
-        if (closed) return;
-        closed = true;
-        clearAckTimers();
-        clearLifecycleTimers();
-        for (const pending of pendingOutboundChunks.splice(0)) {
-            pending.resolve?.({ ok: false, reasonCode: 'tunnel_closed' });
-        }
-        detachConnectionData?.();
-        await input.connection.close();
-    }
+    const closeConnection = (): Promise<void> => closeLocally();
 
     scheduleIdleTimer();
     scheduleDurationTimer();
 
     return {
         async acceptFrame(raw: unknown): Promise<PeerTcpTunnelStreamSessionResult> {
+            if (closed) return { ok: false, reasonCode: 'tunnel_closed' };
             const frame = parsePeerTcpTunnelFrame(raw);
             if (!frame) {
-                await sendAbort('frame_invalid');
+                await abortAndClose('frame_invalid');
                 return { ok: false, reasonCode: 'frame_invalid' };
             }
             if (frame.tunnelId !== input.tunnelId) {
-                await sendAbort('tunnel_id_mismatch');
+                await abortAndClose('tunnel_id_mismatch');
                 return { ok: false, reasonCode: 'tunnel_id_mismatch' };
             }
 
             if (frame.kind === 'data') {
                 if (frame.direction !== inboundDirection) {
-                    await sendAbort('direction_not_allowed');
+                    await abortAndClose('direction_not_allowed');
                     return { ok: false, reasonCode: 'direction_not_allowed' };
                 }
 
                 if (frame.payload.byteLength > maxDecodedPayloadBytes) {
-                    await sendAbort('decoded_payload_too_large');
+                    await abortAndClose('decoded_payload_too_large');
                     return { ok: false, reasonCode: 'decoded_payload_too_large' };
                 }
 
@@ -336,18 +402,23 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
                     decodedBytes: frame.payload.byteLength,
                 });
                 if (!accepted.ok) {
-                    await sendAbort(accepted.reasonCode);
+                    await abortAndClose(accepted.reasonCode);
                     return accepted;
                 }
 
-                await input.connection.write?.(frame.payload);
+                try {
+                    await input.connection.write?.(frame.payload);
+                } catch {
+                    return failConnectionWrite();
+                }
                 recordActivity(frame.payload.byteLength);
                 const pendingAck = accounting.recordPendingAck({
                     direction: frame.direction,
                     decodedBytes: frame.payload.byteLength,
                 });
                 if (pendingAck.pendingAckBytes >= ackAfterBytes || pendingAck.elapsedMs >= ackAfterMs) {
-                    await sendPendingAck(frame.direction);
+                    const sent = await sendPendingAck(frame.direction);
+                    if (!sent.ok) return sent;
                 } else {
                     schedulePendingAck(frame.direction, pendingAck.elapsedMs);
                 }
@@ -370,7 +441,11 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
                 if (frame.halfClose && frame.direction) {
                     accounting.markHalfClosed({ direction: frame.direction });
                     if (frame.direction === inboundDirection) {
-                        await input.connection.endWrite?.();
+                        try {
+                            await input.connection.endWrite?.();
+                        } catch {
+                            return failConnectionWrite();
+                        }
                     } else {
                         outboundHalfClosed = true;
                         for (const pending of pendingOutboundChunks.splice(0)) {
@@ -405,7 +480,7 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
             if (outboundHalfClosed) return { ok: false, reasonCode: 'direction_half_closed' };
             outboundHalfClosed = true;
             accounting.markHalfClosed({ direction: outboundDirection });
-            await input.sendFrame({
+            return sendSessionFrame({
                 v: 1,
                 kind: 'close',
                 tunnelId: input.tunnelId,
@@ -413,21 +488,19 @@ export function createPeerTcpTunnelStreamSession(input: Readonly<{
                 halfClose: true,
                 reasonCode,
             });
-            return { ok: true };
         },
         async abort(reasonCode: string): Promise<void> {
-            await abortAndClose(reasonCode);
+            await abortAndClose(reasonCode, true);
         },
         async terminate(reasonCode: string): Promise<void> {
             if (closed) return;
-            await input.sendFrame({
+            await notifyPeerAndClose({
                 v: 1,
                 kind: 'close',
                 tunnelId: input.tunnelId,
                 halfClose: false,
                 reasonCode,
             });
-            await closeConnection();
         },
         close: closeConnection,
     };

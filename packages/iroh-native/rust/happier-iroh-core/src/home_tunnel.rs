@@ -42,7 +42,6 @@ impl Default for HomeAcceptorConfig {
 pub struct HomeAcceptorStatus {
     pub running: bool,
     pub connections_accepted: u64,
-    pub connections_refused: u64,
     pub connections_active: u64,
     pub streams_accepted: u64,
     pub streams_rejected: u64,
@@ -64,9 +63,8 @@ struct AcceptorState {
 /// Home-dispatched authenticated connections, and forwards every accepted
 /// stream to the configured loopback Home origin after a bounded one-byte
 /// preamble check; no peer-selected destination is ever interpreted. The
-/// endpoint's cap profile (64 bidi streams / 16 MiB + 4 MiB windows / no
-/// transport idle timeout for home_interactive) is enforced per connection at
-/// the QUIC transport boundary.
+/// endpoint's incoming-service profile is enforced per connection at the QUIC
+/// transport boundary.
 pub struct HomeAcceptor {
     task: JoinHandle<()>,
     state: Arc<AcceptorState>,
@@ -122,7 +120,6 @@ impl HomeAcceptor {
         HomeAcceptorStatus {
             running,
             connections_accepted: counters.connections_accepted.load(Ordering::Relaxed),
-            connections_refused: counters.connections_refused.load(Ordering::Relaxed),
             connections_active: counters.connections_active.load(Ordering::Relaxed),
             streams_accepted: self.state.streams_accepted.load(Ordering::Relaxed),
             streams_rejected: self.state.streams_rejected.load(Ordering::Relaxed),
@@ -276,6 +273,7 @@ pub struct HomeTunnel {
 impl HomeTunnel {
     pub async fn start(endpoint: &crate::IrohEndpoint, config: HomeTunnelConfig) -> Result<Self> {
         validate_loopback_bind_addr(config.bind_addr)?;
+        endpoint.ensure_relay_urls(&config.relay_urls).await?;
         let endpoint_id = iroh::EndpointId::from_str(&config.endpoint_id)
             .map_err(|_| IrohError::InvalidDescriptor)?;
         let mut remote = iroh::EndpointAddr::new(endpoint_id);
@@ -287,11 +285,18 @@ impl HomeTunnel {
         }
         // One connection per healthy lease: established before the loopback
         // origin is ever published.
-        let connection = endpoint
+        let connecting = endpoint
             .endpoint()
-            .connect(remote, HOME_TUNNEL_ALPN)
+            .connect_with_opts(
+                remote,
+                HOME_TUNNEL_ALPN,
+                iroh::endpoint::ConnectOptions::new().with_transport_config(
+                    crate::IrohCapProfile::HomeInteractive.transport_config()?,
+                ),
+            )
             .await
             .map_err(|_| IrohError::TransportClosed)?;
+        let connection = connecting.await.map_err(|_| IrohError::TransportClosed)?;
         let listener = TcpListener::bind(config.bind_addr)
             .await
             .map_err(|_| IrohError::LoopbackBindFailed)?;

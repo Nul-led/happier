@@ -66,7 +66,7 @@ function main() {
   const arch = process.arch;
   const target = resolveRustTarget(platform, arch, { musl });
 
-  const cargoArgs = ["build", "--manifest-path", join(crateDir, "Cargo.toml"), "--target", target];
+  const cargoArgs = ["build", "--locked", "--manifest-path", join(crateDir, "Cargo.toml"), "--target", target];
   if (profile === "release") {
     cargoArgs.push("--release");
   }
@@ -81,6 +81,9 @@ function main() {
     env: { ...process.env, CARGO_TARGET_DIR: cargoTargetDir },
     stdio: "inherit",
   });
+  if (build.error) {
+    process.stderr.write(`Unable to start Cargo for the Iroh native addon build: ${build.error.message}\n`);
+  }
   if (build.status !== 0) {
     process.exit(build.status ?? 1);
   }

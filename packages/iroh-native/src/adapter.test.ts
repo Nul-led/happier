@@ -6,9 +6,11 @@ import { IrohError } from './errors';
 // The Expo native module lookup is a genuine system boundary (native module
 // availability); the adapter mapping logic under test below stays real.
 const optionalNativeModule = vi.hoisted(() => ({
-  startHomeTunnel: vi.fn(),
-  stopHomeTunnel: vi.fn(),
-  getHomeTunnelStatus: vi.fn(),
+  getAvailability: vi.fn(() => ({ available: true })),
+  createEndpoint: vi.fn(),
+  ensureHomeTunnel: vi.fn(),
+  releaseHomeTunnel: vi.fn(),
+  shutdownEndpoint: vi.fn(),
   getTunnelStatus: vi.fn(),
 }));
 
@@ -64,8 +66,14 @@ describe('Iroh native lifecycle adapter', () => {
     }));
   });
 
-  it('maps policy to relayPolicy at the native startHomeTunnel boundary while carrying descriptor fields', async () => {
-    optionalNativeModule.startHomeTunnel.mockResolvedValueOnce({ ...LEASE_BASE });
+  it('creates one persistent application endpoint and ensures every Home by exact handle', async () => {
+    optionalNativeModule.createEndpoint.mockResolvedValue({
+      endpointHandle: 'application-endpoint', endpointId: 'client-endpoint',
+      relayPolicy: 'disabled', relayMode: 'disabled', capProfile: 'homeInteractive', relayUrls: [],
+    });
+    optionalNativeModule.ensureHomeTunnel
+      .mockResolvedValueOnce({ ...LEASE_BASE, tunnelId: 'l1' })
+      .mockResolvedValueOnce({ ...LEASE_BASE, leaseId: 'l2', tunnelId: 'l2', homeServerIdentityId: 'srv_home_b' });
     const adapter = createOptionalIrohNativeAdapter();
     await adapter.ensureHomeTunnel({
       homeServerIdentityId: 'srv_home_a',
@@ -76,19 +84,30 @@ describe('Iroh native lifecycle adapter', () => {
       descriptorRevision: 7,
       endpointKeyPath: '/data/runtime/iroh/endpoint.key',
     });
-    expect(optionalNativeModule.startHomeTunnel).toHaveBeenCalledWith({
+    await adapter.ensureHomeTunnel({
+      homeServerIdentityId: 'srv_home_b', endpointId: 'endpoint-a', policy: 'disabled',
+    });
+    expect(optionalNativeModule.createEndpoint).toHaveBeenCalledTimes(2);
+    expect(optionalNativeModule.createEndpoint).toHaveBeenNthCalledWith(1, {
+      keyPath: '/data/runtime/iroh/endpoint.key',
+      relayPolicy: 'disabled',
+      relayUrls: ['https://relay.example.test'],
+    });
+    expect(optionalNativeModule.createEndpoint).toHaveBeenNthCalledWith(2, {
+      relayPolicy: 'disabled',
+    });
+    expect(optionalNativeModule.ensureHomeTunnel).toHaveBeenNthCalledWith(1, {
+      endpointHandle: 'application-endpoint',
       homeServerIdentityId: 'srv_home_a',
       endpointId: 'endpoint-a',
-      relayPolicy: 'disabled',
       directAddresses: ['127.0.0.1:4242'],
       relayUrls: ['https://relay.example.test'],
       descriptorRevision: 7,
-      endpointKeyPath: '/data/runtime/iroh/endpoint.key',
     });
   });
 
   it('normalizes Expo coded native failures into the canonical Iroh error', async () => {
-    optionalNativeModule.startHomeTunnel.mockRejectedValueOnce(
+    optionalNativeModule.createEndpoint.mockRejectedValueOnce(
       Object.assign(new Error('Iroh endpoint identity is unavailable.'), {
         code: 'endpoint_key_unavailable',
       }),

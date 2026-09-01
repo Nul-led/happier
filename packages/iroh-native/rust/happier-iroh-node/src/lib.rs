@@ -25,13 +25,12 @@ use std::os::raw::c_char;
 use happier_iroh_native::{
     happier_iroh_native_create_endpoint_json, happier_iroh_native_ensure_home_tunnel_json,
     happier_iroh_native_free_string, happier_iroh_native_get_endpoint_status_json,
-    happier_iroh_native_get_home_tunnel_status_json,
     happier_iroh_native_get_machine_acceptor_status_json,
     happier_iroh_native_get_machine_tunnel_status_json, happier_iroh_native_get_tunnel_status_json,
     happier_iroh_native_release_home_tunnel_json, happier_iroh_native_shutdown_endpoint_json,
-    happier_iroh_native_start_home_acceptor_json, happier_iroh_native_start_home_tunnel_json,
-    happier_iroh_native_start_machine_acceptor_json, happier_iroh_native_start_machine_tunnel_json,
-    happier_iroh_native_stop_home_acceptor_json, happier_iroh_native_stop_home_tunnel_json,
+    happier_iroh_native_start_home_acceptor_json, happier_iroh_native_start_machine_acceptor_json,
+    happier_iroh_native_start_machine_http_tunnel_json,
+    happier_iroh_native_start_machine_tunnel_json, happier_iroh_native_stop_home_acceptor_json,
     happier_iroh_native_stop_machine_acceptor_json, happier_iroh_native_stop_machine_tunnel_json,
 };
 #[cfg(feature = "test-relay-fixture")]
@@ -111,9 +110,6 @@ pub fn get_availability() -> IrohNodeAvailability {
         engine: "happier-iroh-native".to_owned(),
         surface: [
             "getAvailability",
-            "startHomeTunnel",
-            "stopHomeTunnel",
-            "getHomeTunnelStatus",
             "createEndpoint",
             "startHomeAcceptor",
             "stopHomeAcceptor",
@@ -126,6 +122,7 @@ pub fn get_availability() -> IrohNodeAvailability {
             "stopMachineAcceptor",
             "getMachineAcceptorStatus",
             "startMachineTunnel",
+            "startMachineHttpTunnel",
             "stopMachineTunnel",
             "getMachineTunnelStatus",
         ]
@@ -257,36 +254,14 @@ pub fn start_machine_tunnel(request: String) -> Result<AsyncTask<JsonOpTask>> {
     json_op(happier_iroh_native_start_machine_tunnel_json, request)
 }
 #[napi]
+pub fn start_machine_http_tunnel(request: String) -> Result<AsyncTask<JsonOpTask>> {
+    json_op(happier_iroh_native_start_machine_http_tunnel_json, request)
+}
+#[napi]
 pub fn stop_machine_tunnel(request: String) -> Result<AsyncTask<JsonOpTask>> {
     json_op(happier_iroh_native_stop_machine_tunnel_json, request)
 }
 #[napi]
 pub fn get_machine_tunnel_status(request: String) -> Result<AsyncTask<JsonOpTask>> {
     json_op(happier_iroh_native_get_machine_tunnel_status_json, request)
-}
-
-// Legacy mobile trio: thin exact wrappers over the same C ABI owner, exposed
-// so the Node module satisfies the shared `NativeIrohModule` surface. No
-// competing owner: start/stop/status run the identical C ABI operations.
-
-/// Wraps `happier_iroh_native_start_home_tunnel_json`.
-#[napi]
-pub fn start_home_tunnel(request: String) -> Result<AsyncTask<JsonOpTask>> {
-    json_op(happier_iroh_native_start_home_tunnel_json, request)
-}
-
-/// Wraps `happier_iroh_native_stop_home_tunnel_json` (takes the raw lease id).
-#[napi]
-pub fn stop_home_tunnel(lease_id: String) -> Result<AsyncTask<JsonOpTask>> {
-    json_op(happier_iroh_native_stop_home_tunnel_json, lease_id)
-}
-
-/// Wraps `happier_iroh_native_get_home_tunnel_status_json` (takes the raw
-/// Home server identity).
-#[napi]
-pub fn get_home_tunnel_status(home_server_identity_id: String) -> Result<AsyncTask<JsonOpTask>> {
-    json_op(
-        happier_iroh_native_get_home_tunnel_status_json,
-        home_server_identity_id,
-    )
 }

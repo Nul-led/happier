@@ -120,3 +120,97 @@ export function normalizeIrohNativeError(
     { cause: error },
   );
 }
+
+export const IROH_HOME_TUNNEL_SUSPENDED_ERROR = 'iroh_home_tunnel_suspended';
+export const IROH_HOME_TUNNEL_PROBE_FAILED_ERROR = 'iroh_home_tunnel_probe_failed';
+export const IROH_HOME_TUNNEL_STALE_GENERATION_ERROR = 'iroh_home_tunnel_stale_generation';
+export const IROH_HOME_TUNNEL_STALE_FOCUS_ERROR = 'iroh_home_tunnel_stale_focus';
+export const IROH_HOME_TUNNEL_INVALID_ENDPOINT_ERROR = 'iroh_home_tunnel_invalid_endpoint';
+
+export type IrohHomeCarrierFailureClass =
+  | 'carrier-unavailable'
+  | 'identity-auth'
+  | 'descriptor-integrity'
+  | 'protocol'
+  | 'endpoint-config'
+  | 'stale-target'
+  | 'verification-incomplete'
+  | 'unclassified';
+
+export type IrohHomeCarrierFailureClassification = Readonly<{
+  fallbackAllowed: boolean;
+  failureClass: IrohHomeCarrierFailureClass;
+}>;
+
+const FALLBACK_ALLOWED: IrohHomeCarrierFailureClassification = {
+  fallbackAllowed: true,
+  failureClass: 'carrier-unavailable',
+};
+
+function failClosed(failureClass: IrohHomeCarrierFailureClass): IrohHomeCarrierFailureClassification {
+  return { fallbackAllowed: false, failureClass };
+}
+
+const IROH_ERROR_CLASSIFICATIONS: Readonly<Record<IrohErrorCode, IrohHomeCarrierFailureClassification>> = {
+  unavailable: FALLBACK_ALLOWED,
+  transport: FALLBACK_ALLOWED,
+  home_unreachable: FALLBACK_ALLOWED,
+  transport_timeout: FALLBACK_ALLOWED,
+  transport_closed: FALLBACK_ALLOWED,
+  invalid_descriptor: failClosed('descriptor-integrity'),
+  endpoint_identity_invalid: failClosed('descriptor-integrity'),
+  identity_mismatch: failClosed('identity-auth'),
+  endpoint_key_unavailable: failClosed('endpoint-config'),
+  relay_auth_failed: failClosed('identity-auth'),
+  invalid_preamble: failClosed('protocol'),
+  unsupported_alpn: failClosed('protocol'),
+  endpoint_config_conflict: failClosed('endpoint-config'),
+  loopback_bind_failed: failClosed('endpoint-config'),
+  resource_limit: failClosed('endpoint-config'),
+  cancelled: failClosed('unclassified'),
+  unknown: failClosed('unclassified'),
+};
+
+const PROBE_REASON_CLASSIFICATIONS: Readonly<Record<string, IrohHomeCarrierFailureClassification>> = {
+  'health-unavailable': FALLBACK_ALLOWED,
+  'probe-timeout': FALLBACK_ALLOWED,
+  'auth-failed': failClosed('identity-auth'),
+  'identity-mismatch': failClosed('identity-auth'),
+  'features-unavailable': failClosed('verification-incomplete'),
+};
+
+function readIrohErrorCode(error: unknown): IrohErrorCode | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const candidate = error as Readonly<{ name?: unknown; code?: unknown }>;
+  if (
+    (candidate.name !== 'IrohError' && candidate.name !== 'IrohNativeOperationError')
+    || typeof candidate.code !== 'string'
+  ) return null;
+  return Object.prototype.hasOwnProperty.call(IROH_ERROR_CLASSIFICATIONS, candidate.code)
+    ? candidate.code as IrohErrorCode
+    : null;
+}
+
+/**
+ * Classifies one Home Iroh acquisition failure. An independently trusted HTTPS
+ * origin may remain usable only after native unavailability or bounded network
+ * reachability/connection loss. Identity, authorization, descriptor integrity,
+ * protocol, endpoint configuration, cancellation, and unknown failures fail
+ * closed. Callers remain responsible for independently validating HTTPS trust.
+ */
+export function classifyIrohHomeCarrierFailure(error: unknown): IrohHomeCarrierFailureClassification {
+  const code = readIrohErrorCode(error);
+  if (code !== null) return IROH_ERROR_CLASSIFICATIONS[code];
+
+  const message = error instanceof Error ? error.message : '';
+  if (message === IROH_HOME_TUNNEL_SUSPENDED_ERROR) return FALLBACK_ALLOWED;
+  if (message.startsWith(`${IROH_HOME_TUNNEL_PROBE_FAILED_ERROR}:`)) {
+    const reason = message.slice(IROH_HOME_TUNNEL_PROBE_FAILED_ERROR.length + 1);
+    return PROBE_REASON_CLASSIFICATIONS[reason] ?? failClosed('unclassified');
+  }
+  if (message === IROH_HOME_TUNNEL_STALE_GENERATION_ERROR || message === IROH_HOME_TUNNEL_STALE_FOCUS_ERROR) {
+    return failClosed('stale-target');
+  }
+  if (message === IROH_HOME_TUNNEL_INVALID_ENDPOINT_ERROR) return failClosed('descriptor-integrity');
+  return failClosed('unclassified');
+}

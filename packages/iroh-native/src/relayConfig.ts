@@ -19,7 +19,7 @@ function parseRelayUrls(raw: string): readonly string[] {
   const result = IrohEndpointDescriptorV1Schema.shape.relayUrls.safeParse(candidates);
   if (!result.success || result.data === undefined) {
     throw new Error(
-      `${IROH_RELAY_URLS_ENV_KEY} entries must be unique absolute HTTP(S) URLs without credentials or fragments (at most ${IROH_DESCRIPTOR_MAX_RELAY_URLS})`,
+      `${IROH_RELAY_URLS_ENV_KEY} entries must be unique absolute HTTP(S) URLs without credentials, query material, or fragments (at most ${IROH_DESCRIPTOR_MAX_RELAY_URLS})`,
     );
   }
   return [...result.data].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
@@ -37,7 +37,7 @@ export function readIrohRelayConfigFromEnv(
     throw new Error(`${IROH_RELAY_POLICY_ENV_KEY} must be "automatic" or "disabled"`);
   }
   const relayUrls = rawRelayUrls.length > 0 ? parseRelayUrls(rawRelayUrls) : [];
-  const relayPolicy: IrohRelayPolicy = rawPolicy === 'automatic' ? 'automatic' : 'disabled';
+  const relayPolicy: IrohRelayPolicy = rawPolicy === 'disabled' ? 'disabled' : 'automatic';
   if (relayPolicy === 'disabled' && relayUrls.length > 0) {
     throw new Error(`${IROH_RELAY_POLICY_ENV_KEY}=disabled cannot be combined with ${IROH_RELAY_URLS_ENV_KEY}`);
   }

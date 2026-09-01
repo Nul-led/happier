@@ -16,6 +16,7 @@ export const IROH_MACHINE_REMOTE_ENDPOINT_HEADER = 'X-Happier-Iroh-Remote-Endpoi
  * admission owner may select a destination; the peer can never supply one.
  */
 export const IROH_MACHINE_APPLICATION_PORT_HEADER = 'X-Happier-Iroh-Application-Port' as const;
+export const IROH_MACHINE_APPLICATION_CAPABILITY_HEADER = 'X-Happier-Iroh-Application-Capability' as const;
 export const IROH_MACHINE_STREAM_ACCEPT_BYTE = 0x01 as const;
 export const IROH_MACHINE_STREAM_REJECT_BYTE = 0x00 as const;
 
@@ -25,9 +26,6 @@ export type IrohNodeCapProfile = 'homeInteractive' | 'machineBulk' | 'workspaceS
 /** Every export the Node/Bun addon must expose (the exact no-payload allowlist). */
 export const IROH_NODE_NATIVE_EXPORTS = [
   'getAvailability',
-  'startHomeTunnel',
-  'stopHomeTunnel',
-  'getHomeTunnelStatus',
   'createEndpoint',
   'startHomeAcceptor',
   'stopHomeAcceptor',
@@ -40,6 +38,7 @@ export const IROH_NODE_NATIVE_EXPORTS = [
   'stopMachineAcceptor',
   'getMachineAcceptorStatus',
   'startMachineTunnel',
+  'startMachineHttpTunnel',
   'stopMachineTunnel',
   'getMachineTunnelStatus',
 ] as const;
@@ -113,22 +112,10 @@ export type IrohNodeEnsureHomeTunnelRequest = Readonly<{
  * request shape exactly (including `capProfile?: string`) so the Node module
  * stays structurally assignable to that shared surface.
  */
-export type IrohNodeStartHomeTunnelRequest = Readonly<{
-  homeServerIdentityId: string;
-  endpointId: string;
-  relayPolicy: IrohRelayPolicy;
-  directAddresses?: readonly string[];
-  relayUrls?: readonly string[];
-  descriptorRevision?: number;
-  endpointKeyPath?: string;
-  capProfile?: string;
-}>;
-
 /** Status object of a running Home acceptor (`HomeAcceptorStatus`). */
 export type IrohNodeAcceptorStatus = Readonly<{
   running: boolean;
   connectionsAccepted: number;
-  connectionsRefused: number;
   connectionsActive: number;
   streamsAccepted: number;
   streamsRejected: number;
@@ -159,6 +146,8 @@ export type IrohNodeMachineTunnelStarted = Readonly<{
   machineTunnelId: string;
   endpointHandle: string;
   localPort: number;
+  /** Per-listener local capability consumed natively before application bytes. */
+  localCapability: string;
   connectionActive: boolean;
   /** Normalized authenticated remote endpoint identity this tunnel dials. */
   remoteEndpointId: string;
@@ -167,14 +156,26 @@ export type IrohNodeMachineTunnelStarted = Readonly<{
   lastErrorCode: IrohNodeMachineFailureCode | null;
 }>;
 
-export type IrohNodeMachineTunnelStatus = IrohNodeMachineTunnelStarted & Readonly<{
+export type IrohNodeMachineHttpTunnelStarted = IrohNodeMachineTunnelStarted;
+
+export type IrohNodeMachineTunnelStatus = Readonly<{
+  machineTunnelId: string;
+  endpointHandle: string;
+  localPort: number;
+  connectionActive: boolean;
+  remoteEndpointId: string;
+  observedPath: IrohObservedPath;
+  startedAtMs: number;
+  lastErrorCode: IrohNodeMachineFailureCode | null;
   streamsOpened: number;
 }>;
 
 export type IrohNodeEndpointCreated = Readonly<{
   endpointHandle: string;
   endpointId: string;
+  relayPolicy: 'automatic' | 'disabled';
   relayMode: 'disabled' | 'custom';
+  /** Incoming-service default; outgoing connections apply their own profile. */
   capProfile: string;
   relayUrls: readonly string[];
 }>;
@@ -182,8 +183,10 @@ export type IrohNodeEndpointCreated = Readonly<{
 export type IrohNodeEndpointStatus = Readonly<{
   endpointHandle: string;
   endpointId: string;
+  relayPolicy: 'automatic' | 'disabled';
   relayMode: string;
   relayUrls: readonly string[];
+  /** Incoming-service default; outgoing connections apply their own profile. */
   capProfile: string;
   directAddresses: readonly string[];
   active: boolean;
@@ -214,30 +217,6 @@ export type IrohNodeTunnelStatus = Readonly<{
   endpointHandle: string;
 }>;
 
-export type IrohNodeLegacyTunnelStarted = Readonly<{
-  leaseId: string;
-  homeServerIdentityId: string;
-  homeEndpointId: string;
-  runtimeOrigin: string;
-  carrier: 'iroh';
-  observedPath: IrohObservedPath;
-  startedAtMs: number;
-  descriptorRevision: number | null;
-  endpointHandle: string;
-}>;
-
-export type IrohNodeHomeTunnelStatus = Readonly<{
-  homeServerIdentityId: string;
-  runtimeOrigin: string;
-  carrier: 'iroh';
-  observedPath: IrohObservedPath;
-  connectionActive: boolean;
-  active: boolean;
-  startedAtMs: number;
-  descriptorRevision: number | null;
-  endpointHandle: string;
-}>;
-
 /**
  * Typed async lifecycle surface exposed to Node/Bun callers. Structurally
  * assignable to the shared `NativeIrohModule` (see
@@ -246,9 +225,6 @@ export type IrohNodeHomeTunnelStatus = Readonly<{
  */
 export type NodeIrohNativeModule = Readonly<{
   getAvailability: () => IrohNodeAvailability;
-  startHomeTunnel: (request: IrohNodeStartHomeTunnelRequest) => Promise<IrohNodeLegacyTunnelStarted>;
-  stopHomeTunnel: (leaseId: string) => Promise<void>;
-  getHomeTunnelStatus: (homeServerIdentityId: string) => Promise<IrohNodeHomeTunnelStatus | null>;
   createEndpoint: (request: IrohNodeCreateEndpointRequest) => Promise<IrohNodeEndpointCreated>;
   startHomeAcceptor: (request: IrohNodeStartHomeAcceptorRequest) => Promise<IrohNodeAcceptorStarted>;
   stopHomeAcceptor: (request: IrohNodeEndpointHandleRequest) => Promise<void>;
@@ -261,6 +237,7 @@ export type NodeIrohNativeModule = Readonly<{
   stopMachineAcceptor: (request: IrohNodeEndpointHandleRequest) => Promise<void>;
   getMachineAcceptorStatus: (endpointHandle: string) => Promise<IrohNodeAcceptorStatus | null>;
   startMachineTunnel: (request: IrohNodeStartMachineTunnelRequest) => Promise<IrohNodeMachineTunnelStarted>;
+  startMachineHttpTunnel: (request: IrohNodeStartMachineTunnelRequest) => Promise<IrohNodeMachineHttpTunnelStarted>;
   stopMachineTunnel: (machineTunnelId: string) => Promise<void>;
   getMachineTunnelStatus: (machineTunnelId: string) => Promise<IrohNodeMachineTunnelStatus | null>;
 }>;

@@ -26,6 +26,7 @@
     "test:home-iroh:real": "../../apps/stack/bin/hstack-exec --script=test:home-iroh:real:local",
     "test:home-iroh:real:local": "node scripts/run-home-iroh-real-integration.mjs",
     "verify:native": "node scripts/verify-node-addon-load.mjs",
+    "verify:iroh-lock-parity": "node scripts/verify-iroh-lock-parity.mjs",
     "verify:native:bun": "bun scripts/verify-node-addon-load.mjs",
     "test": "../../apps/stack/bin/hstack-exec --script=test:local",
     "test:local": "node ../../node_modules/vitest/vitest.mjs run --config ../../vitest.config.ts src && node --test scripts/run-home-iroh-real-integration.test.mjs",

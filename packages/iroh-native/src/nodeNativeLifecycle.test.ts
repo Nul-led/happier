@@ -83,8 +83,8 @@ function startAdmissionServer(
   });
 }
 
-function echoOverPort(port: number, payload: string): Promise<void> {
-  return echoOverRuntimeOrigin(`http://127.0.0.1:${port}`, payload);
+function echoOverPort(port: number, payload: string, localCapability?: string): Promise<void> {
+  return echoOverRuntimeOrigin(`http://127.0.0.1:${port}`, payload, localCapability);
 }
 
 function loopbackPortOf(origin: string): number {
@@ -95,18 +95,25 @@ function loopbackPortOf(origin: string): number {
   return Number(url.port);
 }
 
-function echoOverRuntimeOrigin(origin: string, payload: string): Promise<void> {
+function echoOverRuntimeOrigin(origin: string, payload: string, localCapability?: string): Promise<void> {
   const port = loopbackPortOf(origin);
+  const wirePayload = localCapability
+    ? `POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Happier-Machine-Local-Capability: ${localCapability}\r\nContent-Length: ${Buffer.byteLength(payload)}\r\nConnection: close\r\n\r\n${payload}`
+    : payload;
+  const expectedEcho = localCapability
+    ? `POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: ${Buffer.byteLength(payload)}\r\nConnection: close\r\n\r\n${payload}`
+    : payload;
   return new Promise((resolve, reject) => {
     const socket = connect(port, '127.0.0.1');
     let received = '';
     socket.setTimeout(20_000);
-    socket.on('connect', () => socket.write(payload));
+    socket.on('connect', () => socket.write(wirePayload));
     socket.on('data', (chunk) => {
       received += chunk.toString('utf8');
-      if (received.length >= payload.length) {
+      if (received.length >= expectedEcho.length) {
         socket.destroy();
-        resolve();
+        if (received === expectedEcho && (!localCapability || !received.includes(localCapability))) resolve();
+        else reject(new Error(`echo response did not preserve only the authorized application bytes on ${origin}`));
       }
     });
     socket.on('timeout', () => {
@@ -232,7 +239,7 @@ describeWhenNative('Iroh Node lifecycle binding over the shared native runtime',
     await expect(addon.getEndpointStatus(clientEndpoint.endpointHandle)).resolves.toBeNull();
   });
 
-  it('moves real bytes through the lifecycle-only machine tunnel to the admission-selected application port', { timeout: 90_000 }, async () => {
+  it('moves ordinary fetch-facing bytes through the lifecycle-only machine HTTP tunnel', { timeout: 90_000 }, async () => {
     const addon = requireNative();
     echo = await startEchoServer();
     keyDir = await mkdtemp(join(tmpdir(), 'happier-iroh-machine-binding-'));
@@ -249,16 +256,17 @@ describeWhenNative('Iroh Node lifecycle binding over the shared native runtime',
     const directAddress = serverStatus?.directAddresses[0];
     if (!directAddress) throw new Error('machine endpoint direct address missing');
     const handshakeJson = JSON.stringify({ v: 1, operationId: 'node-machine-operation' });
-    const tunnel = await addon.startMachineTunnel({
+    const tunnel = await addon.startMachineHttpTunnel({
       endpointHandle: clientEndpoint.endpointHandle,
       endpointId: serverEndpoint.endpointId,
       directAddresses: [directAddress],
       handshakeJson,
     });
     expect(tunnel.localPort).toBeGreaterThan(0);
+    expect(tunnel.localCapability).toMatch(/^[0-9a-f]{64}$/);
     // The tunnel surfaces the normalized authenticated remote identity.
     expect(tunnel.remoteEndpointId).toBe(serverEndpoint.endpointId);
-    await echoOverPort(tunnel.localPort, 'node-machine-native-nonzero-bytes');
+    await echoOverPort(tunnel.localPort, 'node-machine-http-nonzero-bytes', tunnel.localCapability);
     expect(admission.requests).toHaveLength(1);
     expect(admission.requests[0]).toContain(`X-Happier-Iroh-Remote-Endpoint-Id: ${clientEndpoint.endpointId}\r\n`);
     expect(admission.requests[0]?.endsWith(handshakeJson)).toBe(true);
@@ -302,7 +310,10 @@ describeWhenNative('Iroh Node lifecycle binding over the shared native runtime',
     await new Promise<void>((resolve, reject) => {
       const socket = connect(tunnel.localPort, '127.0.0.1');
       socket.setTimeout(20_000);
-      socket.on('connect', () => socket.write('must-not-reach-app'));
+      socket.on('connect', () => {
+        socket.write(tunnel.localCapability);
+        socket.write('must-not-reach-app');
+      });
       socket.on('data', () => reject(new Error('stream admitted without an application-port selection')));
       socket.on('close', resolve);
       socket.on('timeout', () => {

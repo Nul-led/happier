@@ -8,13 +8,12 @@ The Rust core owns one shared process endpoint per endpoint identity (persistent
 key path), explicit relay ownership (`automatic` with explicit descriptor relay
 URLs → custom relay map; `disabled` → `RelayMode::Disabled`; never ambient n0
 infrastructure), and the frozen cap profiles enforced at the QUIC transport
-boundary. Two JSON operation families exist on the native owner: the
-handle-based lifecycle (`createEndpoint`, `startHomeAcceptor`,
+boundary. One handle-based JSON lifecycle exists on the native owner:
+`createEndpoint`, `startHomeAcceptor`,
 `ensureHomeTunnel`, `releaseHomeTunnel`, `stopHomeAcceptor`, `shutdownEndpoint`,
-`getEndpointStatus`, `getTunnelStatus`) and the legacy mobile trio
-(`startHomeTunnel`/`stopHomeTunnel`/`getHomeTunnelStatus`), which is a thin
-adapter over the same owner — stopping one lease never shuts the shared
-endpoint or sibling leases down.
+`getEndpointStatus`, and `getTunnelStatus`. Releasing one lease never shuts the
+shared endpoint or sibling leases down; the application endpoint remains alive
+until process/native lifecycle shutdown.
 
 The Expo module links the shared `rust/happier-iroh-native` crate. Android builds
 produce `arm64-v8a` and `x86_64` JNI libraries through `scripts/build-rust-android.sh`;
@@ -74,9 +73,8 @@ node packages/iroh-native/scripts/verify-node-addon-load.mjs  # Node load + life
 bun  packages/iroh-native/scripts/verify-node-addon-load.mjs  # same smoke under Bun
 ```
 
-The addon exposes exactly the 12 lifecycle operations listed in
-`IROH_NODE_NATIVE_EXPORTS` (the legacy mobile start/stop/status trio included
-as thin C-ABI wrappers so the module satisfies `NativeIrohModule`);
+The addon exposes exactly the lifecycle operations listed in
+`IROH_NODE_NATIVE_EXPORTS`;
 `src/nodeNoPayloadCrossing.test.ts` enforces that surface against
 typed-array/byte/payload/generic-dispatch APIs, and
 `src/nodeNativeLifecycle.test.ts` proves shared-endpoint behavior through the

@@ -3,6 +3,8 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::fs;
+#[cfg(unix)]
+use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -56,17 +58,17 @@ impl RelaySelection {
             if scheme != "http" && scheme != "https" {
                 return Err(IrohError::InvalidDescriptor);
             }
-            if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+            if !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
                 return Err(IrohError::InvalidDescriptor);
             }
             urls.push(url);
         }
         match policy {
             RelayPolicy::Disabled => Ok(Self::Disabled),
-            RelayPolicy::Automatic if urls.is_empty() => {
-                // Explicit/direct-only rather than ambient infrastructure.
-                Ok(Self::Disabled)
-            }
             RelayPolicy::Automatic => {
                 urls.sort();
                 urls.dedup();
@@ -95,7 +97,6 @@ impl RelaySelection {
 #[derive(Default)]
 pub(crate) struct SlotCounters {
     pub(crate) connections_accepted: AtomicU64,
-    pub(crate) connections_refused: AtomicU64,
     pub(crate) connections_active: AtomicU64,
     pub(crate) last_path: Mutex<Option<IrohPathSnapshot>>,
 }
@@ -252,7 +253,8 @@ pub struct EndpointConfig {
     pub relay_policy: RelayPolicy,
     /// Descriptor relay URLs (validated with `RelaySelection::resolve`).
     pub relay_urls: Vec<String>,
-    /// Frozen cap profile enforced at the QUIC transport boundary.
+    /// Incoming-service default enforced at the QUIC transport boundary.
+    /// Outgoing operations select their own profile with `connect_with_opts`.
     pub caps: IrohCapProfile,
     /// Test-fixture only: removes all direct IP transports so connections must
     /// traverse the configured relay. Never set by production runtime config;
@@ -272,6 +274,14 @@ pub struct EndpointConfig {
 pub enum RelayPolicy {
     Automatic,
     Disabled,
+}
+impl RelayPolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Disabled => "disabled",
+        }
+    }
 }
 impl Default for RelayPolicy {
     fn default() -> Self {
@@ -326,8 +336,14 @@ impl EndpointSeed {
 /// relay/address-discovery workers during `bind`.
 pub struct IrohEndpoint {
     inner: iroh::Endpoint,
-    relay_selection: RelaySelection,
+    relay_policy: RelayPolicy,
+    relay_urls: Mutex<Vec<iroh::RelayUrl>>,
+    /// Incoming-service default. Outgoing connections select their own flow
+    /// profile with `Endpoint::connect_with_opts`.
     caps: IrohCapProfile,
+    disable_ip_transports: bool,
+    #[cfg(feature = "test-relay-fixture")]
+    insecure_relay_tls: bool,
     dispatcher: Arc<DispatcherState>,
 }
 
@@ -390,8 +406,12 @@ impl IrohEndpoint {
         spawn_incoming_dispatcher(inner.clone(), Arc::clone(&dispatcher));
         Ok(Self {
             inner,
-            relay_selection,
+            relay_policy: config.relay_policy,
+            relay_urls: Mutex::new(relay_selection.relay_urls().to_vec()),
             caps: config.caps,
+            disable_ip_transports: config.disable_ip_transports,
+            #[cfg(feature = "test-relay-fixture")]
+            insecure_relay_tls: config.insecure_relay_tls,
             dispatcher,
         })
     }
@@ -404,12 +424,94 @@ impl IrohEndpoint {
         self.inner.clone()
     }
 
-    pub fn relay_selection(&self) -> &RelaySelection {
-        &self.relay_selection
+    pub fn relay_policy(&self) -> RelayPolicy {
+        self.relay_policy
+    }
+
+    pub fn relay_selection(&self) -> RelaySelection {
+        match self.relay_policy {
+            RelayPolicy::Disabled => RelaySelection::Disabled,
+            RelayPolicy::Automatic => RelaySelection::Custom(
+                self.relay_urls
+                    .lock()
+                    .map(|urls| urls.clone())
+                    .unwrap_or_default(),
+            ),
+        }
     }
 
     pub fn caps(&self) -> IrohCapProfile {
         self.caps
+    }
+
+    pub fn resolved_config(&self) -> ResolvedEndpointConfig {
+        ResolvedEndpointConfig {
+            relay_policy: self.relay_policy,
+            relay: self.relay_selection(),
+            caps: self.caps,
+        }
+    }
+
+    /// Extends the relay set of an automatic endpoint. Relay policy is stable
+    /// for the application endpoint lifetime: a disabled endpoint rejects
+    /// relay hints, while automatic uses only the validated explicit union and
+    /// never selects ambient infrastructure.
+    pub async fn ensure_relay_urls(&self, relay_urls: &[iroh::RelayUrl]) -> Result<()> {
+        if relay_urls.is_empty() {
+            return Ok(());
+        }
+        if self.relay_policy == RelayPolicy::Disabled {
+            return Err(IrohError::EndpointConfigConflict);
+        }
+        let missing = {
+            let current = self
+                .relay_urls
+                .lock()
+                .map_err(|_| IrohError::TransportClosed)?;
+            relay_urls
+                .iter()
+                .filter(|url| !current.contains(url))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for url in &missing {
+            self.inner
+                .insert_relay(
+                    url.clone(),
+                    std::sync::Arc::new(iroh::RelayConfig::from(url.clone())),
+                )
+                .await;
+        }
+        if !missing.is_empty() {
+            let mut current = self
+                .relay_urls
+                .lock()
+                .map_err(|_| IrohError::TransportClosed)?;
+            current.extend(missing);
+            current.sort();
+            current.dedup();
+        }
+        Ok(())
+    }
+
+    async fn apply_compatible_config(&self, config: &EndpointConfig) -> Result<()> {
+        if self.relay_policy != config.relay_policy
+            || self.disable_ip_transports != config.disable_ip_transports
+            || {
+                #[cfg(feature = "test-relay-fixture")]
+                {
+                    self.insecure_relay_tls != config.insecure_relay_tls
+                }
+                #[cfg(not(feature = "test-relay-fixture"))]
+                {
+                    false
+                }
+            }
+        {
+            return Err(IrohError::EndpointConfigConflict);
+        }
+        let requested = RelaySelection::resolve(&config.relay_policy, &config.relay_urls)?;
+        self.ensure_relay_urls(requested.relay_urls()).await
     }
 
     /// Registers the single consumer for one ALPN. Registration is exclusive:
@@ -547,17 +649,21 @@ pub enum EndpointIdentity {
     Ephemeral(u64),
 }
 
-/// Resolved configuration a shared endpoint is bound to. Two acquires for the
-/// same [`EndpointIdentity`] with different resolved configurations conflict
-/// instead of silently creating a second endpoint owner.
+/// Snapshot of the configuration currently applied to a shared endpoint.
+/// Relay policy and fixture transport mode are lifetime-stable; the explicit
+/// relay set may grow as additional Homes contribute validated relay hints.
+/// Flow profiles are selected per outgoing connection instead of making this
+/// endpoint snapshot a false operation-wide authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedEndpointConfig {
+    pub relay_policy: RelayPolicy,
     pub relay: RelaySelection,
+    /// Incoming-service default only. Outgoing Home/Machine connections use
+    /// their operation profile through `connect_with_opts`.
     pub caps: IrohCapProfile,
 }
 
 struct ManagedEndpoint {
-    config: ResolvedEndpointConfig,
     endpoint: std::sync::Arc<IrohEndpoint>,
 }
 
@@ -600,8 +706,10 @@ impl EndpointManager {
     /// Creates or returns the shared process endpoint for an explicit
     /// identity, letting host runtimes own handle-to-identity mapping.
     ///
-    /// - same identity + compatible relay/cap configuration → reuse;
-    /// - same identity + incompatible relay/cap configuration → typed
+    /// - same identity + stable relay policy → reuse, dynamically extending
+    ///   the explicit relay set;
+    /// - same identity + incompatible application relay policy/test transport
+    ///   mode → typed
     ///   [`IrohError::EndpointConfigConflict`] (never a second owner);
     /// - ephemeral identities never share (tests and first-provisioning
     ///   callers only; production passes key paths).
@@ -610,52 +718,33 @@ impl EndpointManager {
         identity: EndpointIdentity,
         config: &EndpointConfig,
     ) -> Result<std::sync::Arc<IrohEndpoint>> {
-        let resolved = ResolvedEndpointConfig {
-            relay: RelaySelection::resolve(&config.relay_policy, &config.relay_urls)?,
-            caps: config.caps,
-        };
-        if let Some((existing_config, existing_endpoint)) = self.get(&identity) {
-            if existing_config == resolved {
-                return Ok(existing_endpoint);
-            }
-            return Err(IrohError::EndpointConfigConflict);
+        RelaySelection::resolve(&config.relay_policy, &config.relay_urls)?;
+        if let Some((_, existing_endpoint)) = self.get(&identity) {
+            existing_endpoint.apply_compatible_config(config).await?;
+            return Ok(existing_endpoint);
         }
         let bound = std::sync::Arc::new(IrohEndpoint::bind(config).await?);
-        let outcome = {
+        let endpoint = {
             let mut endpoints = self.lock_endpoints()?;
             match endpoints.entry(identity.clone()) {
                 std::collections::hash_map::Entry::Occupied(existing) => {
-                    let existing = existing.get();
-                    if existing.config == resolved {
-                        Ok(existing.endpoint.clone())
-                    } else {
-                        Err(IrohError::EndpointConfigConflict)
-                    }
+                    existing.get().endpoint.clone()
                 }
                 std::collections::hash_map::Entry::Vacant(slot) => {
                     slot.insert(ManagedEndpoint {
-                        config: resolved,
                         endpoint: bound.clone(),
                     });
-                    Ok(bound.clone())
+                    bound.clone()
                 }
             }
         };
-        match outcome {
-            Ok(endpoint) => {
-                // Lost a benign race against an identical acquire: close our
-                // duplicate bind and reuse the winner.
-                if !std::sync::Arc::ptr_eq(&endpoint, &bound) {
-                    bound.shutdown().await;
-                }
-                Ok(endpoint)
-            }
-            Err(conflict) => {
-                // Never leave a duplicate owner behind on a conflict.
-                bound.shutdown().await;
-                Err(conflict)
-            }
+        // Lost a race for the identity: close the duplicate and apply this
+        // acquire's compatible relay contribution to the winner.
+        if !std::sync::Arc::ptr_eq(&endpoint, &bound) {
+            bound.shutdown().await;
+            endpoint.apply_compatible_config(config).await?;
         }
+        Ok(endpoint)
     }
 
     /// Status of the shared endpoint for an identity, if one is bound.
@@ -665,7 +754,7 @@ impl EndpointManager {
     ) -> Option<(ResolvedEndpointConfig, std::sync::Arc<IrohEndpoint>)> {
         let endpoints = self.lock_endpoints().ok()?;
         let managed = endpoints.get(identity)?;
-        Some((managed.config.clone(), managed.endpoint.clone()))
+        Some((managed.endpoint.resolved_config(), managed.endpoint.clone()))
     }
 
     /// Explicit process shutdown of one shared endpoint. Active acceptors and
@@ -975,6 +1064,108 @@ fn protect_windows_key_file_acl(path: &Path) -> Result<()> {
     outcome
 }
 
+#[cfg(unix)]
+fn ensure_posix_key_parent(path: &Path) -> std::io::Result<&Path> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "endpoint key path has no parent",
+        )
+    })?;
+    let created = match fs::symlink_metadata(parent) {
+        Ok(_) => false,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true).mode(0o700).create(parent)?;
+            true
+        }
+        Err(error) => return Err(error),
+    };
+    let metadata = fs::symlink_metadata(parent)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "endpoint key parent is not a real directory",
+        ));
+    }
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "endpoint key parent is not owned by the current user",
+        ));
+    }
+    if created {
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    } else if metadata.permissions().mode() & 0o777 != 0o700 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "endpoint key parent permissions are not private",
+        ));
+    }
+    let metadata = fs::symlink_metadata(parent)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.file_type().is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "endpoint key parent could not be secured",
+        ));
+    }
+    Ok(parent)
+}
+
+#[cfg(unix)]
+fn load_posix_key(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    ensure_posix_key_parent(path)?;
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.file_type().is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o777 != 0o600
+        || metadata.nlink() != 1
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "endpoint key file is not a private regular file",
+        ));
+    }
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)?;
+    let opened = file.metadata()?;
+    if !opened.file_type().is_file()
+        || opened.uid() != unsafe { libc::geteuid() }
+        || opened.mode() & 0o777 != 0o600
+        || opened.nlink() != 1
+        || opened.dev() != metadata.dev()
+        || opened.ino() != metadata.ino()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "endpoint key changed during secure open",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(32);
+    std::io::Read::by_ref(&mut file)
+        .take(33)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() != 32 {
+        bytes.zeroize();
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "endpoint key has invalid length",
+        ));
+    }
+    Ok(bytes)
+}
+
 /// File-backed key seam. `ensure` loads the stored key or creates one when
 /// missing; `load` and `write_atomic` move caller-provided bytes. POSIX stores
 /// atomic 0600 seed files; Windows stores only a strict DPAPI CurrentUser
@@ -990,7 +1181,7 @@ impl EndpointKeyStore {
         let _guard = ENDPOINT_KEY_STORE_LOCK
             .lock()
             .map_err(|_| IrohError::TransportClosed)?;
-        match fs::metadata(path) {
+        match fs::symlink_metadata(path) {
             Ok(_) => return Self::load(path),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(IrohError::from(error)),
@@ -1002,7 +1193,13 @@ impl EndpointKeyStore {
         }
         let write_result = Self::write_atomic(path, &key);
         key.zeroize();
-        write_result?;
+        if let Err(error) = write_result {
+            if matches!(&error, IrohError::Io(inner) if inner.kind() == std::io::ErrorKind::AlreadyExists)
+            {
+                return Self::load(path);
+            }
+            return Err(error);
+        }
         // Return the authoritative on-disk bytes, never merely the generated
         // candidate, so a future cross-process owner cannot be hidden here.
         Self::load(path)
@@ -1018,13 +1215,7 @@ impl EndpointKeyStore {
         }
 
         #[cfg(not(windows))]
-        let bytes = fs::read(path).map_err(IrohError::from)?;
-        #[cfg(not(windows))]
-        if bytes.len() != 32 {
-            return Err(IrohError::TransportClosed);
-        }
-        #[cfg(not(windows))]
-        Ok(bytes)
+        load_posix_key(path).map_err(IrohError::from)
     }
     pub fn write_atomic(path: &Path, key: &[u8]) -> Result<()> {
         if key.len() != 32 {
@@ -1039,7 +1230,11 @@ impl EndpointKeyStore {
         #[cfg(not(windows))]
         let payload = key;
 
+        #[cfg(unix)]
+        let parent = ensure_posix_key_parent(path)?;
+        #[cfg(windows)]
         let parent = path.parent().ok_or(IrohError::TransportClosed)?;
+        #[cfg(windows)]
         fs::create_dir_all(parent)?;
         let file_name = path
             .file_name()
@@ -1056,19 +1251,27 @@ impl EndpointKeyStore {
                 options.mode(0o600);
             }
             let mut file = options.open(&tmp)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            }
             file.write_all(&payload)?;
             file.sync_all()?;
             drop(file);
             #[cfg(windows)]
             protect_windows_key_file_acl(&tmp).map_err(std::io::Error::other)?;
-            fs::rename(&tmp, path)?;
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+                fs::hard_link(&tmp, path)?;
+                fs::remove_file(&tmp)?;
+                fs::File::open(parent)?.sync_all()?;
             }
             #[cfg(windows)]
-            protect_windows_key_file_acl(path).map_err(std::io::Error::other)?;
+            {
+                fs::rename(&tmp, path)?;
+                protect_windows_key_file_acl(path).map_err(std::io::Error::other)?;
+            }
             Ok(())
         })();
         if let Err(error) = write_result {
@@ -1082,6 +1285,26 @@ impl EndpointKeyStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn unix_key_test_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "happier-iroh-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ))
+    }
+
+    #[cfg(unix)]
+    fn create_private_directory(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::create_dir_all(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
 
     #[test]
     fn native_endpoint_seed_derives_stable_public_identity_without_exposing_seed_bytes() {
@@ -1129,6 +1352,11 @@ mod tests {
 
     #[test]
     fn key_store_rejects_wrong_length_and_round_trips_exact_bytes() {
+        #[cfg(unix)]
+        let root = unix_key_test_root("key-round-trip");
+        #[cfg(unix)]
+        let path = root.join("identity").join("endpoint.key");
+        #[cfg(not(unix))]
         let path = std::env::temp_dir().join(format!("happier-iroh-key-{}", std::process::id()));
         assert_eq!(
             EndpointKeyStore::write_atomic(&path, &[1, 2]),
@@ -1142,8 +1370,154 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "key files stay restrictive on POSIX");
+            let parent_mode = fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(
+                parent_mode & 0o777,
+                0o700,
+                "key parent stays private on POSIX"
+            );
         }
+        #[cfg(unix)]
+        fs::remove_dir_all(root).unwrap();
+        #[cfg(not(unix))]
         let _ = fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn posix_key_store_rejects_permissive_file_without_changing_or_rotating_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = unix_key_test_root("permissive-file");
+        let parent = root.join("identity");
+        create_private_directory(&parent);
+        let path = parent.join("endpoint.key");
+        let bytes = [0x31; 32];
+        fs::write(&path, bytes).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(EndpointKeyStore::load(&path).is_err());
+        assert!(EndpointKeyStore::ensure(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn posix_key_store_rejects_corrupt_regular_file_without_rotation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = unix_key_test_root("corrupt-file");
+        let parent = root.join("identity");
+        create_private_directory(&parent);
+        let path = parent.join("endpoint.key");
+        let corrupt = [0x3d; 31];
+        fs::write(&path, corrupt).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert!(EndpointKeyStore::load(&path).is_err());
+        assert!(EndpointKeyStore::ensure(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), corrupt);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn posix_key_store_rejects_a_permissive_existing_parent_without_mutating_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = unix_key_test_root("permissive-parent");
+        let parent = root.join("identity");
+        fs::create_dir_all(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = parent.join("endpoint.key");
+
+        assert!(EndpointKeyStore::ensure(&path).is_err());
+        assert!(!path.exists());
+        assert_eq!(
+            fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn posix_key_store_rejects_key_and_parent_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = unix_key_test_root("symlink");
+        let identity = root.join("identity");
+        let target_parent = root.join("target");
+        create_private_directory(&identity);
+        create_private_directory(&target_parent);
+        let target = target_parent.join("endpoint.key");
+        let bytes = [0x47; 32];
+        fs::write(&target, bytes).unwrap();
+        fs::set_permissions(&target, {
+            use std::os::unix::fs::PermissionsExt;
+            fs::Permissions::from_mode(0o600)
+        })
+        .unwrap();
+
+        let key_link = identity.join("endpoint.key");
+        symlink(&target, &key_link).unwrap();
+        assert!(EndpointKeyStore::load(&key_link).is_err());
+        assert!(EndpointKeyStore::ensure(&key_link).is_err());
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+
+        let parent_link = root.join("linked-identity");
+        symlink(&identity, &parent_link).unwrap();
+        let linked_key = parent_link.join("other.key");
+        assert!(EndpointKeyStore::ensure(&linked_key).is_err());
+        assert!(!identity.join("other.key").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn posix_key_store_rejects_multiply_linked_key_material() {
+        let root = unix_key_test_root("hard-link");
+        let identity = root.join("identity");
+        let other = root.join("other");
+        create_private_directory(&identity);
+        create_private_directory(&other);
+        let path = identity.join("endpoint.key");
+        EndpointKeyStore::write_atomic(&path, &[0x49; 32]).unwrap();
+        fs::hard_link(&path, other.join("disclosed.key")).unwrap();
+
+        assert!(EndpointKeyStore::load(&path).is_err());
+        assert!(EndpointKeyStore::ensure(&path).is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn posix_key_store_never_replaces_an_existing_identity() {
+        let root = unix_key_test_root("no-replace");
+        let parent = root.join("identity");
+        create_private_directory(&parent);
+        let path = parent.join("endpoint.key");
+        let original = [0x51; 32];
+        let replacement = [0x52; 32];
+
+        EndpointKeyStore::write_atomic(&path, &original).unwrap();
+        assert!(EndpointKeyStore::write_atomic(&path, &replacement).is_err());
+        assert_eq!(EndpointKeyStore::load(&path).unwrap(), original);
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1156,6 +1530,9 @@ mod tests {
                 .unwrap()
                 .as_nanos(),
         ));
+        #[cfg(unix)]
+        create_private_directory(&root);
+        #[cfg(not(unix))]
         fs::create_dir_all(&root).unwrap();
         let key_path = root.join("endpoint.key");
         // A directory at the key path produces a real non-NotFound read/write
@@ -1428,10 +1805,11 @@ mod tests {
         assert_eq!(urls.len(), 2);
         assert_eq!(selection.mode(), "custom");
 
-        // Ambient n0 is never selected: automatic without URLs is direct-only.
+        // Ambient n0 is never selected: automatic without URLs binds an empty
+        // custom map that can be extended when another Home is adopted.
         assert_eq!(
             RelaySelection::resolve(&RelayPolicy::Automatic, &[]).unwrap(),
-            RelaySelection::Disabled
+            RelaySelection::Custom(vec![])
         );
         assert_eq!(
             RelaySelection::resolve(&RelayPolicy::Disabled, &[]).unwrap(),
@@ -1453,6 +1831,7 @@ mod tests {
         for invalid in [
             "ftp://relay.example.test",
             "https://user:pass@relay.example.test",
+            "https://relay.example.test/?token=secret",
             "https://relay.example.test/#fragment",
             "not-a-url",
             "",
@@ -1490,16 +1869,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn endpoint_manager_shares_one_endpoint_and_fails_incompatible_configs() {
+    async fn endpoint_manager_shares_one_endpoint_across_flows_and_unions_relays() {
         let manager = EndpointManager::new();
-        let key_path = std::env::temp_dir().join(format!(
-            "happier-iroh-manager-{}-{}.key",
+        let key_root = std::env::temp_dir().join(format!(
+            "happier-iroh-manager-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
+        let key_path = key_root.join("identity").join("endpoint.key");
         let identity = EndpointIdentity::Keyed(key_path.clone());
 
         let base = EndpointConfig {
@@ -1514,22 +1894,43 @@ mod tests {
             "compatible acquires must reuse one shared process endpoint"
         );
 
-        // Same key, different relay configuration: typed conflict, no second owner.
-        let conflicting = EndpointConfig {
+        // A second Home may contribute another explicit relay, and an outgoing
+        // machine flow may require a different per-connection cap. Neither is
+        // endpoint identity, so both must reuse the same persistent endpoint.
+        let expanded = EndpointConfig {
             key_path: Some(key_path.clone()),
             relay_policy: RelayPolicy::Automatic,
             relay_urls: vec!["https://relay.example.test".to_owned()],
+            caps: IrohCapProfile::MachineBulk,
+            ..EndpointConfig::default()
+        };
+        let expanded_endpoint = manager.acquire(&expanded).await.unwrap();
+        assert_eq!(expanded_endpoint.id(), first.id());
+        let (config, shared) = manager
+            .get(&identity)
+            .expect("shared endpoint remains registered");
+        assert_eq!(
+            config.relay.relay_urls(),
+            RelaySelection::resolve(
+                &RelayPolicy::Automatic,
+                &["https://relay.example.test".to_owned()]
+            )
+            .unwrap()
+            .relay_urls()
+        );
+        assert_eq!(shared.id(), first.id());
+
+        // Direct-only is application-wide and cannot be silently changed by
+        // an individual Home descriptor.
+        let conflicting_policy = EndpointConfig {
+            key_path: Some(key_path.clone()),
+            relay_policy: RelayPolicy::Disabled,
             ..EndpointConfig::default()
         };
         assert!(matches!(
-            manager.acquire(&conflicting).await,
+            manager.acquire(&conflicting_policy).await,
             Err(IrohError::EndpointConfigConflict)
         ));
-        let (config, shared) = manager
-            .get(&identity)
-            .expect("original endpoint survives conflict");
-        assert_eq!(config.relay, RelaySelection::Disabled);
-        assert_eq!(shared.id(), first.id());
 
         // Keyless acquires get distinct ephemeral endpoints (test fixtures).
         let ephemeral_a = manager.acquire(&EndpointConfig::default()).await.unwrap();
@@ -1543,6 +1944,6 @@ mod tests {
         first.shutdown().await;
         ephemeral_a.shutdown().await;
         ephemeral_b.shutdown().await;
-        let _ = fs::remove_file(&key_path);
+        let _ = fs::remove_dir_all(&key_root);
     }
 }

@@ -27,9 +27,16 @@ export function readOptionalHappierIrohNativeModuleFromExpoCore(
     const module = lookup(HAPPIER_IROH_NATIVE_MODULE_NAME);
     if (!module || typeof module !== 'object') return null;
     const candidate = module as Record<string, unknown>;
-    return typeof candidate.startHomeTunnel === 'function'
-      && typeof candidate.stopHomeTunnel === 'function'
+    if (typeof candidate.getAvailability !== 'function') return null;
+    const availability = candidate.getAvailability();
+    if (typeof availability !== 'object' || availability === null || (availability as Record<string, unknown>).available !== true) {
+      return null;
+    }
+    return typeof candidate.createEndpoint === 'function'
+      && typeof candidate.ensureHomeTunnel === 'function'
+      && typeof candidate.releaseHomeTunnel === 'function'
       && typeof candidate.getTunnelStatus === 'function'
+      && typeof candidate.shutdownEndpoint === 'function'
       ? (module as NativeIrohModule)
       : null;
   } catch {

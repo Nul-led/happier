@@ -51,7 +51,7 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
         if (closed || !isSchedulableTimeoutMs(input.caps.maxSessionIdleMs)) return;
         clearSessionIdleTimer();
         sessionIdleTimer = setTimeout(() => {
-            void closeAll('max_idle_exceeded');
+            void closeAll('max_idle_exceeded').catch(() => undefined);
         }, input.caps.maxSessionIdleMs);
         sessionIdleTimer.unref?.();
     }
@@ -60,7 +60,7 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
         if (!isSchedulableTimeoutMs(input.caps.maxSubstreamIdleMs)) return;
         if (active.idleTimer) clearTimeout(active.idleTimer);
         active.idleTimer = setTimeout(() => {
-            void abortAndCloseSubstream(substreamId, 'max_idle_exceeded');
+            void abortAndCloseSubstream(substreamId, 'max_idle_exceeded').catch(() => undefined);
         }, input.caps.maxSubstreamIdleMs);
         active.idleTimer.unref?.();
     }
@@ -92,8 +92,16 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
     }
 
     async function abortAndCloseSubstream(substreamId: string, reasonCode: string): Promise<void> {
-        await sendSubstreamAbort(substreamId, reasonCode);
-        await closeSubstream(substreamId);
+        const localClose = closeSubstream(substreamId);
+        let notification: Promise<void>;
+        try {
+            notification = sendSubstreamAbort(substreamId, reasonCode);
+        } catch (error) {
+            notification = Promise.reject(error);
+        }
+        const [notificationResult, closeResult] = await Promise.allSettled([notification, localClose]);
+        if (notificationResult.status === 'rejected') throw notificationResult.reason;
+        if (closeResult.status === 'rejected') throw closeResult.reason;
     }
 
     async function closeAll(reasonCode?: string): Promise<void> {
@@ -102,7 +110,10 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
         clearSessionIdleTimer();
         const substreamIds = [...activeSubstreams.keys()];
         await Promise.all(substreamIds.map(async (substreamId) => {
-            if (reasonCode) await sendSubstreamAbort(substreamId, reasonCode);
+            if (reasonCode) {
+                await abortAndCloseSubstream(substreamId, reasonCode);
+                return;
+            }
             await closeSubstream(substreamId);
         }));
     }
@@ -132,7 +143,7 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
     async function openSubstream(substreamId: string): Promise<PeerTcpTunnelSubstreamMuxSessionResult> {
         if (closed) return { ok: false, reasonCode: 'tunnel_closed', substreamId };
         if (activeSubstreams.has(substreamId)) {
-            await sendSubstreamAbort(substreamId, 'substream_id_already_open');
+            await abortAndCloseSubstream(substreamId, 'substream_id_already_open');
             return { ok: false, reasonCode: 'substream_id_already_open', substreamId };
         }
         if (
@@ -163,6 +174,11 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
             maxTotalBytes: input.caps.maxBytesPerSubstream,
             nowMs,
             connection,
+            onClosed: () => {
+                if (activeSubstreams.get(substreamId) !== active) return;
+                activeSubstreams.delete(substreamId);
+                clearSubstreamTimer(active);
+            },
             sendFrame: async (frame) => {
                 if (frame.kind === 'data') {
                     const bytes = frame.payload.byteLength;
@@ -249,7 +265,7 @@ export function createPeerTcpTunnelSubstreamMuxSession(input: Readonly<{
                 payload: decoded.payload,
             });
             if (!frame) {
-                await sendSubstreamAbort(substreamId, 'frame_invalid');
+                await abortAndCloseSubstream(substreamId, 'frame_invalid');
                 return { ok: false, reasonCode: 'frame_invalid', substreamId };
             }
             if (frame.kind === 'data') {

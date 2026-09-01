@@ -7,6 +7,7 @@ import type {
   IrohNativeTunnelEvent,
   IrohObservedPath,
 } from './types.js';
+import type { NativeIrohModule } from './HappierIrohNative.types.js';
 
 type NativeLifecycleModule = {
   ensureHomeTunnel(input: IrohHomeTunnelRequest): Promise<Omit<IrohHomeTunnelLease, 'release'>>;
@@ -20,6 +21,54 @@ type NativeStatus = Readonly<{
   active: boolean;
   observedPath: IrohObservedPath;
 }>;
+
+export type IrohApplicationEndpointConfiguration = Readonly<{
+  policy?: 'automatic' | 'disabled';
+  relayUrls?: readonly string[];
+  keyPath?: string;
+}>;
+
+type ApplicationEndpoint = Awaited<ReturnType<NativeIrohModule['createEndpoint']>>;
+type ApplicationEndpointOwner = {
+  endpoint: ApplicationEndpoint | null;
+  tail: Promise<void>;
+};
+
+const applicationEndpointOwners = new WeakMap<NativeIrohModule, ApplicationEndpointOwner>();
+
+/**
+ * One native-module/application endpoint owner shared by Home and machine
+ * consumers. Every acquire is presented to the native core so compatible
+ * relay sets can accumulate; the persistent platform identity must always
+ * resolve back to the same endpoint handle and EndpointId.
+ */
+export async function ensureIrohApplicationEndpoint(
+  native: NativeIrohModule,
+  configuration: IrohApplicationEndpointConfiguration,
+): Promise<ApplicationEndpoint> {
+  let owner = applicationEndpointOwners.get(native);
+  if (!owner) {
+    owner = { endpoint: null, tail: Promise.resolve() };
+    applicationEndpointOwners.set(native, owner);
+  }
+  const operation = owner.tail.then(async () => {
+    const endpoint = await native.createEndpoint({
+      ...(configuration.keyPath ? { keyPath: configuration.keyPath } : {}),
+      relayPolicy: configuration.policy ?? owner.endpoint?.relayPolicy ?? 'automatic',
+      ...(configuration.relayUrls ? { relayUrls: configuration.relayUrls } : {}),
+    });
+    if (owner.endpoint && (
+      owner.endpoint.endpointHandle !== endpoint.endpointHandle
+      || owner.endpoint.endpointId !== endpoint.endpointId
+    )) {
+      throw new IrohError('unknown', 'Native Iroh application endpoint identity changed within one process.');
+    }
+    owner.endpoint = endpoint;
+    return endpoint;
+  });
+  owner.tail = operation.then(() => undefined, () => undefined);
+  return await operation;
+}
 
 function readObservedPath(value: unknown): IrohObservedPath {
   return value === 'direct' || value === 'relay' || value === 'unknown' ? value : 'unknown';
@@ -169,18 +218,36 @@ export function createIrohNativeAdapter(native?: NativeLifecycleModule, options:
 /** Creates the optional mobile/desktop adapter without making native presence mandatory. */
 export function createOptionalIrohNativeAdapter(): IrohNativeAdapter {
   const native = getOptionalHappierIrohNativeModule();
+
+  async function applicationEndpoint(input: IrohHomeTunnelRequest): Promise<{ endpointHandle: string }> {
+    return await ensureIrohApplicationEndpoint(native!, {
+      ...(input.endpointKeyPath ? { keyPath: input.endpointKeyPath } : {}),
+      policy: input.policy,
+      ...(input.relayUrls ? { relayUrls: input.relayUrls } : {}),
+    });
+  }
+
   return createIrohNativeAdapter(native ? {
-    ensureHomeTunnel: async ({ homeServerIdentityId, endpointId, policy, directAddresses, relayUrls, descriptorRevision, endpointKeyPath }) =>
-      native.startHomeTunnel({
+    ensureHomeTunnel: async ({ homeServerIdentityId, endpointId, directAddresses, relayUrls, descriptorRevision, ...input }) => {
+      const { endpointHandle } = await applicationEndpoint({
         homeServerIdentityId,
         endpointId,
-        relayPolicy: policy,
+        directAddresses,
+        relayUrls,
+        descriptorRevision,
+        ...input,
+      });
+      const started = await native.ensureHomeTunnel({
+        endpointHandle,
+        homeServerIdentityId,
+        endpointId,
         ...(directAddresses ? { directAddresses } : {}),
         ...(relayUrls ? { relayUrls } : {}),
         ...(descriptorRevision !== undefined ? { descriptorRevision } : {}),
-        ...(endpointKeyPath ? { endpointKeyPath } : {}),
-    }),
-    releaseHomeTunnel: (leaseId) => native.stopHomeTunnel(leaseId),
+      });
+      return { ...started, leaseId: started.tunnelId };
+    },
+    releaseHomeTunnel: (leaseId) => native.releaseHomeTunnel(leaseId),
     getTunnelStatus: (tunnelId) => native.getTunnelStatus(tunnelId),
   } : undefined);
 }

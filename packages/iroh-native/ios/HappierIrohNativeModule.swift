@@ -3,10 +3,13 @@ import Foundation
 import Darwin
 import Security
 
-@_silgen_name("happier_iroh_native_start_home_tunnel_json") private func irohStart(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("happier_iroh_native_stop_home_tunnel_json") private func irohStop(_ lease: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("happier_iroh_native_get_home_tunnel_status_json") private func irohStatus(_ home: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("happier_iroh_native_get_tunnel_status_json") private func irohTunnelStatus(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("happier_iroh_native_create_endpoint_json") private func irohCreateEndpoint(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("happier_iroh_native_ensure_home_tunnel_json") private func irohEnsureHomeTunnel(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("happier_iroh_native_release_home_tunnel_json") private func irohReleaseHomeTunnel(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("happier_iroh_native_shutdown_endpoint_json") private func irohShutdownEndpoint(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("happier_iroh_native_start_machine_http_tunnel_json") private func irohStartMachineHttpTunnel(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
+@_silgen_name("happier_iroh_native_stop_machine_tunnel_json") private func irohStopMachineTunnel(_ request: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("happier_iroh_native_free_string") private func irohFree(_ value: UnsafeMutablePointer<CChar>?)
 
 /// Lifecycle/status only; tunnel bytes never cross this boundary.
@@ -14,21 +17,34 @@ public final class HappierIrohNativeModule: Module {
   public func definition() -> ModuleDefinition {
     Name("HappierIrohNative")
     Function("getAvailability") { () -> [String: Any] in
-      let available = dlsym(dlopen(nil, RTLD_LAZY), "happier_iroh_native_start_home_tunnel_json") != nil
+      let available = dlsym(dlopen(nil, RTLD_LAZY), "happier_iroh_native_create_endpoint_json") != nil
       return ["available": available, "platform": "ios", "engine": "iroh", "supportsHomeTunnel": available]
     }
-    AsyncFunction("startHomeTunnel") { (_ request: [String: Any]) async throws -> [String: Any] in
+    AsyncFunction("getTunnelStatus") { (_ tunnelId: String) async throws -> [String: Any]? in
+      try callTunnelStatus(tunnelId)
+    }
+    AsyncFunction("createEndpoint") { (_ request: [String: Any]) async throws -> [String: Any] in
       try await withCheckedThrowingContinuation { continuation in
         DispatchQueue.global(qos: .userInitiated).async {
-          do { continuation.resume(returning: try callWithEndpointIdentity(request, irohStart)) }
+          do { continuation.resume(returning: try callWithEndpointIdentity(request, irohCreateEndpoint)) }
           catch { continuation.resume(throwing: error) }
         }
       }
     }
-    AsyncFunction("stopHomeTunnel") { (_ leaseId: String) async throws -> Void in try callVoid(leaseId, irohStop) }
-    AsyncFunction("getHomeTunnelStatus") { (_ homeServerIdentityId: String) async -> [String: Any]? in callStatus(homeServerIdentityId) }
-    AsyncFunction("getTunnelStatus") { (_ tunnelId: String) async throws -> [String: Any]? in
-      try callTunnelStatus(tunnelId)
+    AsyncFunction("ensureHomeTunnel") { (_ request: [String: Any]) async throws -> [String: Any] in
+      try call(request, irohEnsureHomeTunnel)
+    }
+    AsyncFunction("releaseHomeTunnel") { (_ tunnelId: String) async throws -> Void in
+      try callVoidJson(["tunnelId": tunnelId], irohReleaseHomeTunnel)
+    }
+    AsyncFunction("shutdownEndpoint") { (_ request: [String: Any]) async throws -> Void in
+      _ = try call(request, irohShutdownEndpoint)
+    }
+    AsyncFunction("startMachineHttpTunnel") { (_ request: [String: Any]) async throws -> [String: Any] in
+      try call(request, irohStartMachineHttpTunnel)
+    }
+    AsyncFunction("stopMachineTunnel") { (_ machineTunnelId: String) async throws -> Void in
+      try callVoidJson(["machineTunnelId": machineTunnelId], irohStopMachineTunnel)
     }
   }
 }
@@ -150,6 +166,11 @@ private func callVoid(_ input: String, _ fn: (UnsafePointer<CChar>) -> UnsafeMut
   guard object["ok"] as? Bool == true else { throw nativeOperationError(object) }
 }
 
+private func callVoidJson(_ input: [String: Any], _ fn: (UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?) throws {
+  let data = try JSONSerialization.data(withJSONObject: input)
+  try callVoid(String(decoding: data, as: UTF8.self), fn)
+}
+
 /// Preserves the Rust JSON envelope's bounded code/message through NSError.
 /// The prefixed description survives Expo's platform error normalization even
 /// when `userInfo` is not projected into JavaScript; neither field contains
@@ -166,15 +187,6 @@ private func nativeOperationError(_ object: [String: Any]) -> NSError {
       NSLocalizedDescriptionKey: "iroh_native_error:\(code):\(message)",
     ]
   )
-}
-
-private func callStatus(_ input: String) -> [String: Any]? {
-  let out = input.withCString { irohStatus($0) }
-  guard let out else { return nil }
-  defer { irohFree(out) }
-  let data = Data(bytes: out, count: strlen(out))
-  guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
-  return object["ok"] as? Bool == true ? object["result"] as? [String: Any] : nil
 }
 
 private func callTunnelStatus(_ tunnelId: String) throws -> [String: Any]? {

@@ -9,9 +9,6 @@ HEADERS_DIR="${OUT_DIR}/include"
 mkdir -p "${HEADERS_DIR}"
 cat > "${HEADERS_DIR}/happier_iroh_native.h" <<'HEADER'
 #pragma once
-char *happier_iroh_native_start_home_tunnel_json(const char *request_json);
-char *happier_iroh_native_stop_home_tunnel_json(const char *lease_id);
-char *happier_iroh_native_get_home_tunnel_status_json(const char *home_server_identity_id);
 char *happier_iroh_native_create_endpoint_json(const char *request_json);
 char *happier_iroh_native_start_home_acceptor_json(const char *request_json);
 char *happier_iroh_native_stop_home_acceptor_json(const char *request_json);
@@ -28,9 +25,9 @@ char *happier_iroh_native_stop_machine_tunnel_json(const char *request_json);
 char *happier_iroh_native_get_machine_tunnel_status_json(const char *request_json);
 void happier_iroh_native_free_string(char *value);
 HEADER
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" cargo build --manifest-path "${CRATE_DIR}/Cargo.toml" --release --target aarch64-apple-ios
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" cargo build --manifest-path "${CRATE_DIR}/Cargo.toml" --release --target aarch64-apple-ios-sim
-CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" cargo build --manifest-path "${CRATE_DIR}/Cargo.toml" --release --target x86_64-apple-ios
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" cargo build --locked --manifest-path "${CRATE_DIR}/Cargo.toml" --release --target aarch64-apple-ios
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" cargo build --locked --manifest-path "${CRATE_DIR}/Cargo.toml" --release --target aarch64-apple-ios-sim
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR}" cargo build --locked --manifest-path "${CRATE_DIR}/Cargo.toml" --release --target x86_64-apple-ios
 SIM_DIR="${OUT_DIR}/sim-universal"
 SIM_UNIVERSAL="${SIM_DIR}/libhappier_iroh_native.a"
 mkdir -p "${SIM_DIR}"

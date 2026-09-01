@@ -31,13 +31,11 @@ import {
   type IrohNodeEndpointHandleRequest,
   type IrohNodeEndpointStatus,
   type IrohNodeEnsureHomeTunnelRequest,
-  type IrohNodeHomeTunnelStatus,
-  type IrohNodeLegacyTunnelStarted,
   type IrohNodeMachineTunnelStarted,
+  type IrohNodeMachineHttpTunnelStarted,
   type IrohNodeMachineTunnelStatus,
   type IrohNodeNativeAddon,
   type IrohNodeStartHomeAcceptorRequest,
-  type IrohNodeStartHomeTunnelRequest,
   type IrohNodeStartMachineAcceptorRequest,
   type IrohNodeStartMachineTunnelRequest,
   type IrohNodeTunnelStarted,
@@ -49,6 +47,7 @@ import type { IrohObservedPath } from './types.js';
 
 export {
   IROH_MACHINE_ADMISSION_PATH,
+  IROH_MACHINE_APPLICATION_CAPABILITY_HEADER,
   IROH_MACHINE_APPLICATION_PORT_HEADER,
   IROH_MACHINE_REMOTE_ENDPOINT_HEADER,
   IROH_MACHINE_STREAM_ACCEPT_BYTE,
@@ -324,16 +323,6 @@ function validateTunnelStarted(result: unknown): IrohNodeTunnelStarted {
   };
 }
 
-function validateLegacyTunnelStarted(result: unknown): IrohNodeLegacyTunnelStarted {
-  const record = requireRecord(result, 'startHomeTunnel result');
-  return {
-    leaseId: requireString(record.leaseId, 'leaseId'),
-    homeEndpointId: requireString(record.homeEndpointId, 'homeEndpointId'),
-    ...validateTunnelIdentityFields(record),
-    endpointHandle: requireString(record.endpointHandle, 'endpointHandle'),
-  };
-}
-
 function validateAcceptorStatus(result: unknown): IrohNodeAcceptorStatus {
   const record = requireRecord(result, 'acceptor status');
   let lastPath: IrohNodeAcceptorStatus['lastPath'] = null;
@@ -349,7 +338,6 @@ function validateAcceptorStatus(result: unknown): IrohNodeAcceptorStatus {
   return {
     running: requireBoolean(record.running, 'running'),
     connectionsAccepted: requireNumber(record.connectionsAccepted, 'connectionsAccepted'),
-    connectionsRefused: requireNumber(record.connectionsRefused, 'connectionsRefused'),
     connectionsActive: requireNumber(record.connectionsActive, 'connectionsActive'),
     streamsAccepted: requireNumber(record.streamsAccepted, 'streamsAccepted'),
     streamsRejected: requireNumber(record.streamsRejected, 'streamsRejected'),
@@ -371,10 +359,15 @@ function validateAcceptorStarted(result: unknown): IrohNodeAcceptorStarted {
 
 function validateMachineTunnelStarted(result: unknown): IrohNodeMachineTunnelStarted {
   const record = requireRecord(result, 'startMachineTunnel result');
+  const localCapability = requireString(record.localCapability, 'localCapability');
+  if (!/^[0-9a-f]{64}$/.test(localCapability)) {
+    throw new IrohError('unknown', 'Iroh native response field localCapability must be 64 lowercase hexadecimal characters');
+  }
   return {
     machineTunnelId: requireString(record.machineTunnelId, 'machineTunnelId'),
     endpointHandle: requireString(record.endpointHandle, 'endpointHandle'),
     localPort: requireNumber(record.localPort, 'localPort'),
+    localCapability,
     connectionActive: requireBoolean(record.connectionActive, 'connectionActive'),
     remoteEndpointId: requireString(record.remoteEndpointId, 'remoteEndpointId'),
     observedPath: requireObservedPath(record.observedPath),
@@ -383,11 +376,37 @@ function validateMachineTunnelStarted(result: unknown): IrohNodeMachineTunnelSta
   };
 }
 
+function validateMachineHttpTunnelStarted(result: unknown): IrohNodeMachineHttpTunnelStarted {
+  const record = requireRecord(result, 'startMachineHttpTunnel result');
+  const localCapability = requireString(record.localCapability, 'localCapability');
+  if (!/^[0-9a-f]{64}$/.test(localCapability)) {
+    throw new IrohError('unknown', 'Iroh native response field localCapability must be 64 lowercase hexadecimal characters');
+  }
+  return {
+    machineTunnelId: requireString(record.machineTunnelId, 'machineTunnelId'),
+    endpointHandle: requireString(record.endpointHandle, 'endpointHandle'),
+    localPort: requireNumber(record.localPort, 'localPort'),
+    localCapability,
+    connectionActive: requireBoolean(record.connectionActive, 'connectionActive'),
+    remoteEndpointId: requireString(record.remoteEndpointId, 'remoteEndpointId'),
+    observedPath: requireObservedPath(record.observedPath),
+    startedAtMs: requireNumber(record.startedAtMs, 'startedAtMs'),
+    lastErrorCode: record.lastErrorCode === null ? null : requireString(record.lastErrorCode, 'lastErrorCode') as IrohNodeMachineHttpTunnelStarted['lastErrorCode'],
+  };
+}
+
 function validateMachineTunnelStatus(result: unknown): IrohNodeMachineTunnelStatus | null {
   if (result === null) return null;
   const record = requireRecord(result, 'getMachineTunnelStatus result');
   return {
-    ...validateMachineTunnelStarted(record),
+    machineTunnelId: requireString(record.machineTunnelId, 'machineTunnelId'),
+    endpointHandle: requireString(record.endpointHandle, 'endpointHandle'),
+    localPort: requireNumber(record.localPort, 'localPort'),
+    connectionActive: requireBoolean(record.connectionActive, 'connectionActive'),
+    remoteEndpointId: requireString(record.remoteEndpointId, 'remoteEndpointId'),
+    observedPath: requireObservedPath(record.observedPath),
+    startedAtMs: requireNumber(record.startedAtMs, 'startedAtMs'),
+    lastErrorCode: record.lastErrorCode === null ? null : requireString(record.lastErrorCode, 'lastErrorCode') as IrohNodeMachineTunnelStatus['lastErrorCode'],
     streamsOpened: requireNumber(record.streamsOpened, 'streamsOpened'),
   };
 }
@@ -398,13 +417,22 @@ function validateEndpointCreated(result: unknown): IrohNodeEndpointCreated {
   if (relayMode !== 'disabled' && relayMode !== 'custom') {
     throw new IrohError('unknown', 'Iroh native response field relayMode must be disabled or custom');
   }
+  const relayPolicy = requireRelayPolicy(record.relayPolicy);
   return {
     endpointHandle: requireString(record.endpointHandle, 'endpointHandle'),
     endpointId: requireString(record.endpointId, 'endpointId'),
+    relayPolicy,
     relayMode,
     capProfile: requireString(record.capProfile, 'capProfile'),
     relayUrls: requireStringArray(record.relayUrls, 'relayUrls'),
   };
+}
+
+function requireRelayPolicy(value: unknown): 'automatic' | 'disabled' {
+  if (value !== 'automatic' && value !== 'disabled') {
+    throw new IrohError('unknown', 'Iroh native response field relayPolicy must be automatic or disabled');
+  }
+  return value;
 }
 
 function validateEndpointStatus(result: unknown): IrohNodeEndpointStatus | null {
@@ -413,6 +441,7 @@ function validateEndpointStatus(result: unknown): IrohNodeEndpointStatus | null 
   return {
     endpointHandle: requireString(record.endpointHandle, 'endpointHandle'),
     endpointId: requireString(record.endpointId, 'endpointId'),
+    relayPolicy: requireRelayPolicy(record.relayPolicy),
     relayMode: requireString(record.relayMode, 'relayMode'),
     relayUrls: requireStringArray(record.relayUrls, 'relayUrls'),
     capProfile: requireString(record.capProfile, 'capProfile'),
@@ -429,17 +458,6 @@ function validateTunnelStatus(result: unknown): IrohNodeTunnelStatus | null {
     ...validateTunnelIdentityFields(record),
     connectionActive: requireBoolean(record.connectionActive, 'connectionActive'),
     streamsOpened: requireNumber(record.streamsOpened, 'streamsOpened'),
-    endpointHandle: requireString(record.endpointHandle, 'endpointHandle'),
-  };
-}
-
-function validateLegacyHomeTunnelStatus(result: unknown): IrohNodeHomeTunnelStatus | null {
-  if (result === null) return null;
-  const record = requireRecord(result, 'getHomeTunnelStatus result');
-  return {
-    ...validateTunnelIdentityFields(record),
-    connectionActive: requireBoolean(record.connectionActive, 'connectionActive'),
-    active: requireBoolean(record.active, 'active'),
     endpointHandle: requireString(record.endpointHandle, 'endpointHandle'),
   };
 }
@@ -501,17 +519,12 @@ export function createIrohNodeNativeModule(addon: IrohNodeNativeAddon): NodeIroh
     },
     startMachineTunnel: async (request: IrohNodeStartMachineTunnelRequest) =>
       validateMachineTunnelStarted(await callOperation(addon.startMachineTunnel(serializeRequest({ ...request })))),
+    startMachineHttpTunnel: async (request: IrohNodeStartMachineTunnelRequest) =>
+      validateMachineHttpTunnelStarted(await callOperation(addon.startMachineHttpTunnel(serializeRequest({ ...request })))),
     stopMachineTunnel: async (machineTunnelId: string) => {
       await requireNullResult(callOperation(addon.stopMachineTunnel(serializeRequest({ machineTunnelId }))), 'stopMachineTunnel');
     },
     getMachineTunnelStatus: async (machineTunnelId: string) =>
       validateMachineTunnelStatus(await callOperation(addon.getMachineTunnelStatus(serializeRequest({ machineTunnelId })))),
-    startHomeTunnel: async (request: IrohNodeStartHomeTunnelRequest) =>
-      validateLegacyTunnelStarted(await callOperation(addon.startHomeTunnel(serializeRequest({ ...request })))),
-    stopHomeTunnel: async (leaseId: string) => {
-      await requireNullResult(callOperation(addon.stopHomeTunnel(leaseId)), 'stopHomeTunnel');
-    },
-    getHomeTunnelStatus: async (homeServerIdentityId: string) =>
-      validateLegacyHomeTunnelStatus(await callOperation(addon.getHomeTunnelStatus(homeServerIdentityId))),
   };
 }

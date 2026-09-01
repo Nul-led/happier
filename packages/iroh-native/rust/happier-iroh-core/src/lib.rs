@@ -36,7 +36,9 @@ pub use home_tunnel::{
 pub use limits::IrohCapProfile;
 pub use machine::{
     MachineAcceptor, MachineAcceptorConfig, MachineAcceptorStatus, MachineFailureCode,
-    MachineTunnel, MachineTunnelConfig, MachineTunnelStatus, IROH_MACHINE_APPLICATION_PORT_HEADER,
+    MachineHttpTunnel, MachineTunnel, MachineTunnelConfig, MachineTunnelStatus,
+    IROH_MACHINE_APPLICATION_CAPABILITY_HEADER, IROH_MACHINE_APPLICATION_PORT_HEADER,
+    IROH_MACHINE_HTTP_LOCAL_CAPABILITY_HEADER,
     MACHINE_ADMISSION_PATH, MACHINE_CONTROL_TIMEOUT, MACHINE_REMOTE_ENDPOINT_HEADER,
     MACHINE_STREAM_ACCEPT_BYTE, MACHINE_STREAM_REJECT_BYTE, MAX_MACHINE_HANDSHAKE_BYTES,
 };

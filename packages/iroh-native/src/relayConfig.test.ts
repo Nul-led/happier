@@ -14,9 +14,15 @@ describe('readIrohRelayConfigFromEnv', () => {
     });
 
     expect(readIrohRelayConfigFromEnv({})).toEqual({
-      relayPolicy: 'disabled',
+      relayPolicy: 'automatic',
       relayUrls: [],
       explicitlyConfigured: false,
+    });
+
+    expect(readIrohRelayConfigFromEnv({ HAPPIER_IROH_RELAY_POLICY: 'disabled' })).toEqual({
+      relayPolicy: 'disabled',
+      relayUrls: [],
+      explicitlyConfigured: true,
     });
   });
 

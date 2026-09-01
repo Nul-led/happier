@@ -12,7 +12,8 @@ use happier_iroh_core::{
     validate_endpoint_id, validate_loopback_target, EndpointConfig, EndpointIdentity,
     EndpointKeyStore, EndpointManager, EndpointSeed, HomeAcceptor, HomeAcceptorConfig, HomeTunnel,
     HomeTunnelConfig, IrohCapProfile, IrohEndpoint, MachineAcceptor, MachineAcceptorConfig,
-    MachineTunnel, MachineTunnelConfig, RelayPolicy, RelaySelection,
+    MachineHttpTunnel, MachineTunnel, MachineTunnelConfig, MachineTunnelStatus, RelayPolicy,
+    RelaySelection,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -46,42 +47,13 @@ fn default_machine_cap_profile() -> String {
     IrohCapProfile::MachineBulk.id().to_owned()
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StartRequest {
-    home_server_identity_id: String,
-    endpoint_id: String,
-    #[serde(default = "default_relay_policy")]
-    relay_policy: String,
-    #[serde(default)]
-    direct_addresses: Vec<SocketAddr>,
-    /// Relay hints from the endpoint descriptor. Validated with the Iroh-owned
-    /// RelayUrl parser; the descriptor is transport metadata only and never
-    /// carries credentials.
-    #[serde(default)]
-    relay_urls: Vec<String>,
-    /// Monotonic descriptor composition revision (protocol: positive integer).
-    #[serde(default)]
-    descriptor_revision: Option<u64>,
-    /// Persistent endpoint identity key path (runtime credential layout).
-    /// Missing keys are created on first use; corrupt keys fail closed and
-    /// are never silently rotated.
-    #[serde(default)]
-    endpoint_key_path: Option<String>,
-    /// Native-only mobile secure-store seed. This field is injected by the
-    /// Swift/Kotlin host immediately before C/JNI and is intentionally absent
-    /// from the public TypeScript request type.
-    #[serde(default)]
-    endpoint_seed_base64: Option<String>,
-    #[serde(default = "default_cap_profile")]
-    cap_profile: String,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateEndpointRequest {
     #[serde(default)]
     key_path: Option<String>,
+    #[serde(default)]
+    endpoint_seed_base64: Option<String>,
     #[serde(default = "default_relay_policy")]
     relay_policy: String,
     #[serde(default)]
@@ -175,8 +147,29 @@ struct MachineAcceptorEntry {
 
 struct MachineTunnelLease {
     endpoint_handle: String,
-    tunnel: MachineTunnel,
+    tunnel: MachineTunnelKind,
     started_at_ms: u64,
+}
+
+enum MachineTunnelKind {
+    Raw(MachineTunnel),
+    Http(MachineHttpTunnel),
+}
+
+impl MachineTunnelKind {
+    fn status(&self) -> MachineTunnelStatus {
+        match self {
+            Self::Raw(tunnel) => tunnel.status(),
+            Self::Http(tunnel) => tunnel.status(),
+        }
+    }
+
+    fn stop(self) {
+        match self {
+            Self::Raw(tunnel) => tunnel.stop(),
+            Self::Http(tunnel) => tunnel.stop(),
+        }
+    }
 }
 
 #[cfg(feature = "test-relay-fixture")]
@@ -276,6 +269,14 @@ fn parse_json<T: for<'de> Deserialize<'de>>(value: *const c_char) -> Result<T, O
 
 fn error_response(code: &str, message: impl Into<String>) -> Value {
     json!({"ok": false, "error": {"code": code, "message": message.into()}})
+}
+
+fn invoke_json_request(request: &str, operation: fn(*const c_char) -> Value) -> Value {
+    let request = match CString::new(request) {
+        Ok(request) => request,
+        Err(_) => return error_response("invalid-request", "request contains a NUL byte"),
+    };
+    operation(request.as_ptr())
 }
 
 /// Interprets a C UTF-8 request pointer for the safe JSON entry points below.
@@ -533,8 +534,9 @@ fn test_relay_url() -> Option<String> {
     }
 }
 
-/// Creates or returns the shared process endpoint for a handle. Incompatible
-/// relay/cap configuration on an existing identity fails typed and closed.
+/// Creates or returns the shared process endpoint for a handle. The
+/// application relay policy is stable; explicit automatic-policy relays are
+/// unioned by the core and outgoing flow caps are connection-local.
 async fn acquire_shared_endpoint(
     handle: String,
     identity: EndpointIdentity,
@@ -545,7 +547,7 @@ async fn acquire_shared_endpoint(
         Ok(endpoint) => Ok(endpoint),
         Err(happier_iroh_core::IrohError::EndpointConfigConflict) => Err(error_response(
             "endpoint_config_conflict",
-            "endpoint identity already bound with an incompatible relay or cap configuration",
+            "endpoint identity already bound with an incompatible relay policy or transport mode",
         )),
         Err(_) => Err(error_response(
             "transport-unavailable",
@@ -653,175 +655,6 @@ fn insert_lease(
 }
 
 // ---------------------------------------------------------------------------
-// Legacy mobile JSON ops (thin adapters over the shared runtime)
-// ---------------------------------------------------------------------------
-
-fn start(value: *const c_char) -> Value {
-    match c_request_str(value) {
-        Ok(request) => start_home_tunnel_json(request),
-        Err((code, message)) => error_response(&code, message),
-    }
-}
-
-/// Safe JSON lifecycle entry point (legacy Home tunnel lease: the shared
-/// process endpoint plus one tunnel lease in a single op). Consumed by the
-/// C/JNI wrappers and the desktop (Tauri/Electron) hosts; responses are the
-/// strict `{ok,result}|{ok,error}` envelopes and never contain key material.
-pub fn start_home_tunnel_json(request: &str) -> Value {
-    #[cfg(feature = "test-relay-fixture")]
-    let _test_operation = state()
-        .test_operation
-        .lock()
-        .expect("test operation lock poisoned");
-    let mut input = match serde_json::from_str::<StartRequest>(request) {
-        Ok(v) => v,
-        Err(error) => return error_response("invalid-request", error.to_string()),
-    };
-    if input.home_server_identity_id.trim().is_empty() {
-        return error_response("invalid-request", "homeServerIdentityId is required");
-    }
-    if validate_endpoint_id(&input.endpoint_id).is_err() {
-        return error_response("endpoint-identity-invalid", "endpointId is invalid");
-    }
-    let relay_policy = match parse_relay_policy(&input.relay_policy) {
-        Ok(v) => v,
-        Err(message) => return error_response("invalid-request", message),
-    };
-    let caps = match parse_cap_profile(&input.cap_profile) {
-        Ok(v) => v,
-        Err(message) => return error_response("invalid-request", message),
-    };
-    // The Iroh RelayUrl parser owns the grammar; the descriptor policy owns
-    // scheme/credentials/bounds. Invalid relay URLs are typed invalid-request.
-    let relay_selection = match RelaySelection::resolve(&relay_policy, &input.relay_urls) {
-        Ok(v) => v,
-        Err(_) => return error_response("invalid-request", "relayUrls entry is invalid"),
-    };
-    if input.descriptor_revision == Some(0) {
-        return error_response(
-            "invalid-request",
-            "descriptorRevision must be a positive integer",
-        );
-    }
-    let key_path = match key_path_option(&input.endpoint_key_path) {
-        Ok(v) => v,
-        Err(message) => return error_response("invalid-request", message),
-    };
-    let key_seed = match endpoint_seed_option(&mut input.endpoint_seed_base64) {
-        Ok(value) => value,
-        Err(message) => return error_response("invalid-request", message),
-    };
-    if key_path.is_some() && key_seed.is_some() {
-        return error_response(
-            "invalid-request",
-            "endpointKeyPath and native endpoint seed are mutually exclusive",
-        );
-    }
-    if let Err((code, message)) = ensure_endpoint_key(key_path.as_deref()) {
-        return error_response(code, message);
-    }
-
-    let handle = match &key_seed {
-        Some(seed) => format!("mobile:{}", seed.endpoint_id()),
-        None => endpoint_handle_for(key_path.as_deref()),
-    };
-    let identity = match (&key_path, &key_seed) {
-        (_, Some(seed)) => EndpointIdentity::Seeded(seed.endpoint_id()),
-        (Some(path), None) => EndpointIdentity::Keyed(path.clone()),
-        (None, None) => ephemeral_identity(),
-    };
-    let endpoint = match runtime().block_on(acquire_shared_endpoint(
-        handle.clone(),
-        identity,
-        endpoint_config(
-            key_path,
-            key_seed,
-            relay_policy,
-            input.relay_urls.clone(),
-            caps,
-        ),
-    )) {
-        Ok(endpoint) => endpoint,
-        Err(error) => return error,
-    };
-    let tunnel = match runtime().block_on(HomeTunnel::start(
-        &endpoint,
-        HomeTunnelConfig {
-            endpoint_id: input.endpoint_id.clone(),
-            direct_addresses: input.direct_addresses.clone(),
-            relay_urls: relay_selection.relay_urls().to_vec(),
-            ..HomeTunnelConfig::default()
-        },
-    )) {
-        Ok(tunnel) => tunnel,
-        Err(error) => return tunnel_start_error(error),
-    };
-    let (lease_id, runtime_origin, started_at_ms, observed_path) = insert_lease(
-        next_id(),
-        input.home_server_identity_id.clone(),
-        handle.clone(),
-        tunnel,
-        input.descriptor_revision,
-    );
-    json!({"ok": true, "result": {
-        "leaseId": lease_id, "homeServerIdentityId": input.home_server_identity_id,
-        "homeEndpointId": input.endpoint_id, "runtimeOrigin": runtime_origin,
-        "carrier": "iroh", "observedPath": observed_path, "startedAtMs": started_at_ms,
-        "descriptorRevision": input.descriptor_revision, "endpointHandle": handle
-    }})
-}
-
-/// Legacy `stopHomeTunnel` is a lease release only: it never shuts down the
-/// shared process endpoint or sibling leases.
-fn stop(value: *const c_char) -> Value {
-    if value.is_null() {
-        return error_response("invalid-request", "leaseId is required");
-    }
-    match c_request_str(value) {
-        Ok(lease_id) => stop_home_tunnel_json(lease_id),
-        Err((code, message)) => error_response(&code, message),
-    }
-}
-
-/// Safe JSON lifecycle entry point for the legacy lease release (idempotent,
-/// lease-scoped; the endpoint handle and persistent identity are untouched).
-pub fn stop_home_tunnel_json(lease_id: &str) -> Value {
-    let lease = state()
-        .tunnels
-        .lock()
-        .expect("lease lock poisoned")
-        .remove(lease_id);
-    if let Some(lease) = lease {
-        lease.tunnel.stop();
-    }
-    json!({"ok": true})
-}
-
-/// Payload-free status polling surface shared by mobile and desktop hosts.
-/// The native runtime remains the sole transport-state owner; callers do not
-/// provide prior state or receive queued events.
-pub fn get_home_tunnel_status_json(home_server_identity_id: &str) -> Value {
-    let tunnels = state().tunnels.lock().expect("lease lock poisoned");
-    let result = tunnels
-        .values()
-        .find(|lease| lease.home_server_identity_id == home_server_identity_id)
-        .map(|lease| {
-            let tunnel_status = lease.tunnel.status();
-            json!({
-                "observedPath": tunnel_status
-                    .observed_path
-                    .map(|snapshot| snapshot.observed_path.as_str())
-                    .unwrap_or("unknown"),
-                "connectionActive": tunnel_status.connection_active,
-                "active": tunnel_status.connection_active,
-                "endpointHandle": lease.endpoint_handle,
-            })
-        })
-        .unwrap_or(Value::Null);
-    json!({"ok": true, "result": result})
-}
-
-// ---------------------------------------------------------------------------
 // Handle-based lifecycle ops (plan §7.4)
 // ---------------------------------------------------------------------------
 
@@ -831,7 +664,7 @@ fn create_endpoint(value: *const c_char) -> Value {
         .test_operation
         .lock()
         .expect("test operation lock poisoned");
-    let input = match parse_json::<CreateEndpointRequest>(value) {
+    let mut input = match parse_json::<CreateEndpointRequest>(value) {
         Ok(v) => v,
         Err((code, message)) => return error_response(&code, message),
     };
@@ -851,29 +684,61 @@ fn create_endpoint(value: *const c_char) -> Value {
         Ok(v) => v,
         Err(message) => return error_response("invalid-request", message),
     };
+    let key_seed = match endpoint_seed_option(&mut input.endpoint_seed_base64) {
+        Ok(value) => value,
+        Err(message) => return error_response("invalid-request", message),
+    };
+    if key_path.is_some() && key_seed.is_some() {
+        return error_response(
+            "invalid-request",
+            "keyPath and native endpoint seed are mutually exclusive",
+        );
+    }
     if let Err((code, message)) = ensure_endpoint_key(key_path.as_deref()) {
         return error_response(code, message);
     }
-    let handle = endpoint_handle_for(key_path.as_deref());
-    let identity = match &key_path {
-        Some(path) => EndpointIdentity::Keyed(path.clone()),
-        None => ephemeral_identity(),
+    let handle = match &key_seed {
+        Some(seed) => format!("mobile:{}", seed.endpoint_id()),
+        None => endpoint_handle_for(key_path.as_deref()),
+    };
+    let identity = match (&key_path, &key_seed) {
+        (Some(path), _) => EndpointIdentity::Keyed(path.clone()),
+        (None, Some(seed)) => EndpointIdentity::Seeded(seed.endpoint_id()),
+        (None, None) => ephemeral_identity(),
     };
     let endpoint = match runtime().block_on(acquire_shared_endpoint(
         handle.clone(),
         identity,
-        endpoint_config(key_path, None, relay_policy, input.relay_urls.clone(), caps),
+        endpoint_config(
+            key_path,
+            key_seed,
+            relay_policy,
+            input.relay_urls.clone(),
+            caps,
+        ),
     )) {
         Ok(endpoint) => endpoint,
         Err(error) => return error,
     };
+    // Report one coherent snapshot of the configuration that the native
+    // endpoint actually applied. A later Home may add another explicit relay,
+    // so reading relay mode and URLs through separate locks could otherwise
+    // expose a combination that never existed.
+    let applied = endpoint.resolved_config();
     json!({"ok": true, "result": {
         "endpointHandle": handle,
         "endpointId": endpoint.id().to_string(),
-        "relayMode": endpoint.relay_selection().mode(),
-        "capProfile": endpoint.caps().id(),
-        "relayUrls": endpoint.relay_selection().relay_urls().iter().map(|url| url.to_string()).collect::<Vec<_>>(),
+        "relayPolicy": applied.relay_policy.as_str(),
+        "relayMode": applied.relay.mode(),
+        "capProfile": applied.caps.id(),
+        "relayUrls": applied.relay.relay_urls().iter().map(|url| url.to_string()).collect::<Vec<_>>(),
     }})
+}
+
+/// Safe JSON entry point used by Rust-native desktop hosts. The C ABI wrapper
+/// delegates to the same operation so endpoint creation has one owner.
+pub fn create_endpoint_json(request: &str) -> Value {
+    invoke_json_request(request, create_endpoint)
 }
 
 fn start_home_acceptor(value: *const c_char) -> Value {
@@ -1027,6 +892,11 @@ fn ensure_home_tunnel(value: *const c_char) -> Value {
     }})
 }
 
+/// Safe JSON entry point used by Rust-native desktop hosts.
+pub fn ensure_home_tunnel_json(request: &str) -> Value {
+    invoke_json_request(request, ensure_home_tunnel)
+}
+
 fn release_home_tunnel(value: *const c_char) -> Value {
     let input = match parse_json::<TunnelHandleRequest>(value) {
         Ok(v) => v,
@@ -1041,6 +911,11 @@ fn release_home_tunnel(value: *const c_char) -> Value {
         lease.tunnel.stop();
     }
     json!({"ok": true})
+}
+
+/// Safe JSON entry point used by Rust-native desktop hosts.
+pub fn release_home_tunnel_json(request: &str) -> Value {
+    invoke_json_request(request, release_home_tunnel)
 }
 
 fn loopback_target(host: &str, port: u16) -> Result<SocketAddr, Value> {
@@ -1134,12 +1009,6 @@ fn start_machine_tunnel(value: *const c_char) -> Value {
     let Some((config, endpoint)) = state().manager.get(&identity) else {
         return error_response("not-found", "endpoint is shut down");
     };
-    if config.caps != IrohCapProfile::MachineBulk {
-        return error_response(
-            "endpoint_config_conflict",
-            "machine tunnels require the shared endpoint's machineBulk profile",
-        );
-    }
     let cap_profile = match parse_cap_profile(&input.cap_profile) {
         Ok(profile @ (IrohCapProfile::MachineBulk | IrohCapProfile::WorkspaceSync)) => profile,
         _ => {
@@ -1177,6 +1046,7 @@ fn start_machine_tunnel(value: *const c_char) -> Value {
     };
     let id = next_id();
     let status = tunnel.status();
+    let tunnel_local_capability = tunnel.local_capability().to_owned();
     let started_at_ms = now_ms();
     state()
         .machine_tunnels
@@ -1186,11 +1056,85 @@ fn start_machine_tunnel(value: *const c_char) -> Value {
             id.clone(),
             MachineTunnelLease {
                 endpoint_handle: input.endpoint_handle.clone(),
-                tunnel,
+                tunnel: MachineTunnelKind::Raw(tunnel),
                 started_at_ms,
             },
         );
-    json!({"ok": true, "result": {"machineTunnelId": id, "endpointHandle": input.endpoint_handle, "localPort": status.local_port, "connectionActive": status.connection_active, "remoteEndpointId": status.remote_endpoint_id, "observedPath": status.observed_path.observed_path.as_str(), "lastErrorCode": status.last_failure.map(|failure| failure.as_str()), "startedAtMs": started_at_ms}})
+    json!({"ok": true, "result": {"machineTunnelId": id, "endpointHandle": input.endpoint_handle, "localPort": status.local_port, "localCapability": tunnel_local_capability, "connectionActive": status.connection_active, "remoteEndpointId": status.remote_endpoint_id, "observedPath": status.observed_path.observed_path.as_str(), "lastErrorCode": status.last_failure.map(|failure| failure.as_str()), "startedAtMs": started_at_ms}})
+}
+
+fn start_machine_http_tunnel(value: *const c_char) -> Value {
+    let input = match parse_json::<StartMachineTunnelRequest>(value) {
+        Ok(value) => value,
+        Err((code, message)) => return error_response(code, message),
+    };
+    if validate_endpoint_id(&input.endpoint_id).is_err() {
+        return error_response("invalid-request", "endpointId is invalid");
+    }
+    let Some(identity) = endpoint_identity_for(&input.endpoint_handle) else {
+        return error_response("not-found", "endpointHandle is unknown");
+    };
+    let Some((config, endpoint)) = state().manager.get(&identity) else {
+        return error_response("not-found", "endpoint is shut down");
+    };
+    let cap_profile = match parse_cap_profile(&input.cap_profile) {
+        Ok(IrohCapProfile::MachineBulk) => IrohCapProfile::MachineBulk,
+        _ => {
+            return error_response(
+                "invalid-request",
+                "machine HTTP capProfile must be machineBulk",
+            )
+        }
+    };
+    let relay_urls = match &config.relay {
+        RelaySelection::Disabled => Vec::new(),
+        RelaySelection::Custom(_) => {
+            match RelaySelection::resolve(&RelayPolicy::Automatic, &input.relay_urls) {
+                Ok(selection) if selection.relay_urls().is_empty() => {
+                    config.relay.relay_urls().to_vec()
+                }
+                Ok(selection) => selection.relay_urls().to_vec(),
+                Err(_) => return error_response("invalid-request", "relayUrls entry is invalid"),
+            }
+        }
+    };
+    let tunnel = match runtime().block_on(MachineHttpTunnel::start(
+        &endpoint,
+        MachineTunnelConfig {
+            endpoint_id: input.endpoint_id,
+            bind_addr: "127.0.0.1:0".parse().expect("fixed loopback"),
+            direct_addresses: input.direct_addresses,
+            relay_urls,
+            handshake_json: input.handshake_json,
+            cap_profile,
+        },
+    )) {
+        Ok(tunnel) => tunnel,
+        Err(error) => return machine_start_error(error),
+    };
+    let id = next_id();
+    let status = tunnel.status();
+    let local_port = tunnel.local_port();
+    let local_capability = tunnel.local_capability().to_owned();
+    let started_at_ms = now_ms();
+    state()
+        .machine_tunnels
+        .lock()
+        .expect("machine tunnel lock poisoned")
+        .insert(
+            id.clone(),
+            MachineTunnelLease {
+                endpoint_handle: input.endpoint_handle.clone(),
+                tunnel: MachineTunnelKind::Http(tunnel),
+                started_at_ms,
+            },
+        );
+    json!({"ok": true, "result": {"machineTunnelId": id, "endpointHandle": input.endpoint_handle, "localPort": local_port, "localCapability": local_capability, "connectionActive": status.connection_active, "remoteEndpointId": status.remote_endpoint_id, "observedPath": status.observed_path.observed_path.as_str(), "lastErrorCode": status.last_failure.map(|failure| failure.as_str()), "startedAtMs": started_at_ms}})
+}
+
+/// Safe JSON entry point used by Rust-native desktop hosts.
+pub fn start_machine_http_tunnel_json(request: &str) -> Value {
+    invoke_json_request(request, start_machine_http_tunnel)
 }
 
 fn stop_machine_tunnel(value: *const c_char) -> Value {
@@ -1207,6 +1151,11 @@ fn stop_machine_tunnel(value: *const c_char) -> Value {
         lease.tunnel.stop();
     }
     json!({"ok": true})
+}
+
+/// Safe JSON entry point used by Rust-native desktop hosts.
+pub fn stop_machine_tunnel_json(request: &str) -> Value {
+    invoke_json_request(request, stop_machine_tunnel)
 }
 
 fn get_machine_tunnel_status(value: *const c_char) -> Value {
@@ -1327,7 +1276,6 @@ fn acceptor_status_json(status: happier_iroh_core::HomeAcceptorStatus) -> Value 
     json!({
         "running": status.running,
         "connectionsAccepted": status.connections_accepted,
-        "connectionsRefused": status.connections_refused,
         "connectionsActive": status.connections_active,
         "streamsAccepted": status.streams_accepted,
         "streamsRejected": status.streams_rejected,
@@ -1344,7 +1292,6 @@ fn machine_acceptor_status_json(status: happier_iroh_core::MachineAcceptorStatus
     json!({
         "running": status.running,
         "connectionsAccepted": status.connections_accepted,
-        "connectionsRefused": status.connections_refused,
         "connectionsActive": status.connections_active,
         "streamsAccepted": status.streams_accepted,
         "streamsRejected": status.streams_rejected,
@@ -1371,6 +1318,7 @@ fn get_endpoint_status(value: *const c_char) -> Value {
     json!({"ok": true, "result": {
         "endpointHandle": input.endpoint_handle,
         "endpointId": endpoint.id().to_string(),
+        "relayPolicy": config.relay_policy.as_str(),
         "relayMode": config.relay.mode(),
         "relayUrls": config.relay.relay_urls().iter().map(|url| url.to_string()).collect::<Vec<_>>(),
         "capProfile": config.caps.id(),
@@ -1422,28 +1370,6 @@ fn get_tunnel_status(value: *const c_char) -> Value {
 // ---------------------------------------------------------------------------
 // C ABI
 // ---------------------------------------------------------------------------
-
-#[no_mangle]
-pub extern "C" fn happier_iroh_native_start_home_tunnel_json(value: *const c_char) -> *mut c_char {
-    response(start(value))
-}
-#[no_mangle]
-pub extern "C" fn happier_iroh_native_stop_home_tunnel_json(value: *const c_char) -> *mut c_char {
-    response(stop(value))
-}
-#[no_mangle]
-pub extern "C" fn happier_iroh_native_get_home_tunnel_status_json(
-    value: *const c_char,
-) -> *mut c_char {
-    if value.is_null() {
-        return response(json!({"ok": true, "result": Value::Null}));
-    }
-    let identity = match unsafe { CStr::from_ptr(value) }.to_str() {
-        Ok(value) => value,
-        Err(_) => return response(json!({"ok": true, "result": Value::Null})),
-    };
-    response(get_home_tunnel_status_json(identity))
-}
 
 #[no_mangle]
 pub extern "C" fn happier_iroh_native_create_endpoint_json(value: *const c_char) -> *mut c_char {
@@ -1547,6 +1473,12 @@ pub extern "C" fn happier_iroh_native_start_machine_tunnel_json(
     response(start_machine_tunnel(value))
 }
 #[no_mangle]
+pub extern "C" fn happier_iroh_native_start_machine_http_tunnel_json(
+    value: *const c_char,
+) -> *mut c_char {
+    response(start_machine_http_tunnel(value))
+}
+#[no_mangle]
 pub extern "C" fn happier_iroh_native_stop_machine_tunnel_json(
     value: *const c_char,
 ) -> *mut c_char {
@@ -1599,23 +1531,15 @@ mod android {
             .into_raw()
     }
     #[no_mangle]
-    pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_startHomeTunnelJson(
+    pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_ensureHomeTunnelJson(
         mut env: JNIEnv<'_>,
         _: JClass<'_>,
         input: JString<'_>,
     ) -> jstring {
-        call(&mut env, input, happier_iroh_native_start_home_tunnel_json)
+        call(&mut env, input, happier_iroh_native_ensure_home_tunnel_json)
     }
     #[no_mangle]
-    pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_stopHomeTunnelJson(
-        mut env: JNIEnv<'_>,
-        _: JClass<'_>,
-        input: JString<'_>,
-    ) -> jstring {
-        call(&mut env, input, happier_iroh_native_stop_home_tunnel_json)
-    }
-    #[no_mangle]
-    pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_getHomeTunnelStatusJson(
+    pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_releaseHomeTunnelJson(
         mut env: JNIEnv<'_>,
         _: JClass<'_>,
         input: JString<'_>,
@@ -1623,8 +1547,16 @@ mod android {
         call(
             &mut env,
             input,
-            happier_iroh_native_get_home_tunnel_status_json,
+            happier_iroh_native_release_home_tunnel_json,
         )
+    }
+    #[no_mangle]
+    pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_shutdownEndpointJson(
+        mut env: JNIEnv<'_>,
+        _: JClass<'_>,
+        input: JString<'_>,
+    ) -> jstring {
+        call(&mut env, input, happier_iroh_native_shutdown_endpoint_json)
     }
     #[no_mangle]
     pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_getTunnelStatusJson(
@@ -1633,6 +1565,38 @@ mod android {
         input: JString<'_>,
     ) -> jstring {
         call(&mut env, input, happier_iroh_native_get_tunnel_status_json)
+    }
+    #[no_mangle]
+    pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_createEndpointJson(
+        mut env: JNIEnv<'_>,
+        _: JClass<'_>,
+        input: JString<'_>,
+    ) -> jstring {
+        call(&mut env, input, happier_iroh_native_create_endpoint_json)
+    }
+    #[no_mangle]
+    pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_startMachineHttpTunnelJson(
+        mut env: JNIEnv<'_>,
+        _: JClass<'_>,
+        input: JString<'_>,
+    ) -> jstring {
+        call(
+            &mut env,
+            input,
+            happier_iroh_native_start_machine_http_tunnel_json,
+        )
+    }
+    #[no_mangle]
+    pub extern "system" fn Java_dev_happier_iroh_HappierIrohNativeRust_stopMachineTunnelJson(
+        mut env: JNIEnv<'_>,
+        _: JClass<'_>,
+        input: JString<'_>,
+    ) -> jstring {
+        call(
+            &mut env,
+            input,
+            happier_iroh_native_stop_machine_tunnel_json,
+        )
     }
 }
 
@@ -1700,7 +1664,7 @@ mod tests {
     fn temp_key_path(label: &str) -> String {
         std::env::temp_dir()
             .join(format!(
-                "happier-iroh-native-{}-{}-{}.key",
+                "happier-iroh-native-{}-{}-{}",
                 label,
                 std::process::id(),
                 std::time::SystemTime::now()
@@ -1708,8 +1672,17 @@ mod tests {
                     .unwrap()
                     .as_nanos()
             ))
+            .join("endpoint.key")
             .to_string_lossy()
             .replace('\\', "/")
+    }
+
+    fn remove_temp_key(path: &str) {
+        let path = Path::new(path);
+        let _ = std::fs::remove_file(path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
 
     /// Spawns a TCP echo server on the shared tokio runtime and returns its
@@ -1816,26 +1789,6 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_exports_keep_strict_json_error_and_empty_status_contracts() {
-        let request = CString::new(r#"{"homeServerIdentityId":"","endpointId":""}"#).unwrap();
-        assert_eq!(
-            read(happier_iroh_native_start_home_tunnel_json(request.as_ptr()))["ok"],
-            false
-        );
-
-        let lease = CString::new("missing").unwrap();
-        assert_eq!(
-            read(happier_iroh_native_stop_home_tunnel_json(lease.as_ptr()))["ok"],
-            true
-        );
-        let status = read(happier_iroh_native_get_home_tunnel_status_json(
-            lease.as_ptr(),
-        ));
-        assert_eq!(status["ok"], true);
-        assert!(status["result"].is_null());
-    }
-
-    #[test]
     fn corrupt_endpoint_key_fails_closed_without_silent_rotation() {
         let path = std::env::temp_dir().join(format!(
             "happier-iroh-native-corrupt-key-{}.key",
@@ -1847,11 +1800,10 @@ mod tests {
         let portable_path = path.to_string_lossy().replace('\\', "/");
         let response = call_op(
             format!(
-                r#"{{"homeServerIdentityId":"srv_home_a","endpointId":"{}","relayPolicy":"automatic","endpointKeyPath":"{}"}}"#,
-                "a".repeat(64),
+                r#"{{"relayPolicy":"automatic","keyPath":"{}"}}"#,
                 portable_path,
             ),
-            happier_iroh_native_start_home_tunnel_json,
+            happier_iroh_native_create_endpoint_json,
         );
         assert_eq!(response["ok"], false);
         assert_eq!(
@@ -1864,42 +1816,9 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_metadata_is_validated_fail_closed_before_any_transport_start() {
-        let base = |extra: String| {
-            format!(
-                r#"{{"homeServerIdentityId":"srv_home_a","endpointId":"{}","relayPolicy":"automatic"{}"#,
-                "a".repeat(64),
-                extra,
-            )
-        };
-        let invalid_relay = call_op(
-            base(r#","relayUrls":["https://user:pass@relay.example.test"]}"#.to_owned()),
-            happier_iroh_native_start_home_tunnel_json,
-        );
-        assert_eq!(invalid_relay["ok"], false);
-        assert_eq!(
-            invalid_relay["error"]["code"],
-            Value::String("invalid-request".to_owned())
-        );
-
-        let zero_revision = call_op(
-            base(r#","descriptorRevision":0}"#.to_owned()),
-            happier_iroh_native_start_home_tunnel_json,
-        );
-        assert_eq!(zero_revision["ok"], false);
-        assert_eq!(
-            zero_revision["error"]["code"],
-            Value::String("invalid-request".to_owned())
-        );
-    }
-
-    #[test]
     fn native_only_endpoint_seed_is_strict_and_mutually_exclusive_with_key_path() {
         let base = |seed: &str, extra: &str| {
-            format!(
-                r#"{{"homeServerIdentityId":"srv_home_a","endpointId":"{}","relayPolicy":"automatic","endpointSeedBase64":"{seed}"{extra}}}"#,
-                "a".repeat(64),
-            )
+            format!(r#"{{"relayPolicy":"automatic","endpointSeedBase64":"{seed}"{extra}}}"#,)
         };
         for seed in [
             "",
@@ -1907,7 +1826,7 @@ mod tests {
             "AQ==",
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
         ] {
-            let response = call_op(base(seed, ""), happier_iroh_native_start_home_tunnel_json);
+            let response = call_op(base(seed, ""), happier_iroh_native_create_endpoint_json);
             assert_eq!(response["ok"], false, "seed {seed:?}: {response}");
             assert_eq!(response["error"]["code"], "invalid-request");
             if !seed.is_empty() {
@@ -1920,164 +1839,12 @@ mod tests {
 
         let valid_seed = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
         let response = call_op(
-            base(valid_seed, r#", "endpointKeyPath":"/tmp/iroh.key""#),
-            happier_iroh_native_start_home_tunnel_json,
+            base(valid_seed, r#", "keyPath":"/tmp/iroh.key""#),
+            happier_iroh_native_create_endpoint_json,
         );
         assert_eq!(response["ok"], false, "conflict: {response}");
         assert_eq!(response["error"]["code"], "invalid-request");
         assert!(!response.to_string().contains(valid_seed));
-    }
-
-    #[test]
-    fn mobile_seed_start_release_start_reuses_one_process_endpoint() {
-        let server_key = temp_key_path("mobile-seed-server");
-        let target = spawn_echo_target();
-        let (server_handle, server_endpoint_id, direct_address) =
-            create_disabled_endpoint(&server_key);
-        let acceptor = call_op(
-            format!(
-                r#"{{"endpointHandle":"{server_handle}","targetPort":{}}}"#,
-                target.port()
-            ),
-            happier_iroh_native_start_home_acceptor_json,
-        );
-        assert_eq!(acceptor["ok"], true, "acceptor: {acceptor}");
-
-        let seed = "DQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0=";
-        let start_mobile = |home: &str| {
-            call_op(
-                format!(
-                    r#"{{"homeServerIdentityId":"{home}","endpointId":"{server_endpoint_id}","relayPolicy":"disabled","directAddresses":["{direct_address}"],"endpointSeedBase64":"{seed}"}}"#
-                ),
-                happier_iroh_native_start_home_tunnel_json,
-            )
-        };
-        let first = start_mobile("srv_mobile_a");
-        assert_eq!(first["ok"], true, "first: {first}");
-        assert!(!first.to_string().contains(seed));
-        echo_over(
-            first["result"]["runtimeOrigin"].as_str().unwrap(),
-            b"mobile-first",
-        );
-        let first_handle = first["result"]["endpointHandle"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let stopped = read(happier_iroh_native_stop_home_tunnel_json(
-            CString::new(first["result"]["leaseId"].as_str().unwrap())
-                .unwrap()
-                .as_ptr(),
-        ));
-        assert_eq!(stopped["ok"], true);
-
-        let second = start_mobile("srv_mobile_b");
-        assert_eq!(second["ok"], true, "second: {second}");
-        assert_eq!(second["result"]["endpointHandle"], first_handle);
-        echo_over(
-            second["result"]["runtimeOrigin"].as_str().unwrap(),
-            b"mobile-second",
-        );
-
-        let different_seed = call_op(
-            format!(
-                r#"{{"homeServerIdentityId":"srv_mobile_c","endpointId":"{server_endpoint_id}","relayPolicy":"disabled","directAddresses":["{direct_address}"],"endpointSeedBase64":"Dg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4="}}"#
-            ),
-            happier_iroh_native_start_home_tunnel_json,
-        );
-        assert_eq!(different_seed["ok"], true, "different: {different_seed}");
-        assert_ne!(different_seed["result"]["endpointHandle"], first_handle);
-
-        for response in [&second, &different_seed] {
-            read(happier_iroh_native_stop_home_tunnel_json(
-                CString::new(response["result"]["leaseId"].as_str().unwrap())
-                    .unwrap()
-                    .as_ptr(),
-            ));
-            call_op(
-                format!(
-                    r#"{{"endpointHandle":"{}"}}"#,
-                    response["result"]["endpointHandle"].as_str().unwrap()
-                ),
-                happier_iroh_native_shutdown_endpoint_json,
-            );
-        }
-        call_op(
-            format!(r#"{{"endpointHandle":"{server_handle}"}}"#),
-            happier_iroh_native_shutdown_endpoint_json,
-        );
-        let _ = std::fs::remove_file(server_key);
-    }
-
-    /// The exact desktop-host seam: keyed legacy start → lease release →
-    /// keyed start must reuse the one process endpoint identity (handle is
-    /// the canonical key path) without rotating or recreating it.
-    #[test]
-    fn keyed_start_release_start_reuses_one_process_endpoint() {
-        let server_key = temp_key_path("keyed-server");
-        let client_key = temp_key_path("keyed-client");
-        let target = spawn_echo_target();
-        let (server_handle, server_endpoint_id, direct_address) =
-            create_disabled_endpoint(&server_key);
-        let acceptor = call_op(
-            format!(
-                r#"{{"endpointHandle":"{server_handle}","targetPort":{}}}"#,
-                target.port()
-            ),
-            happier_iroh_native_start_home_acceptor_json,
-        );
-        assert_eq!(acceptor["ok"], true, "acceptor: {acceptor}");
-
-        let start_client = |home: &str| {
-            call_op(
-                format!(
-                    r#"{{"homeServerIdentityId":"{home}","endpointId":"{server_endpoint_id}","relayPolicy":"disabled","directAddresses":["{direct_address}"],"endpointKeyPath":"{client_key}"}}"#
-                ),
-                happier_iroh_native_start_home_tunnel_json,
-            )
-        };
-        let first = start_client("srv_home_a");
-        assert_eq!(first["ok"], true, "first: {first}");
-        assert_eq!(
-            first["result"]["endpointHandle"].as_str().unwrap(),
-            client_key,
-            "the keyed endpoint handle is its canonical key path"
-        );
-        echo_over(
-            first["result"]["runtimeOrigin"].as_str().unwrap(),
-            b"keyed-first",
-        );
-
-        let stopped = read(happier_iroh_native_stop_home_tunnel_json(
-            CString::new(first["result"]["leaseId"].as_str().unwrap())
-                .unwrap()
-                .as_ptr(),
-        ));
-        assert_eq!(stopped["ok"], true);
-
-        let second = start_client("srv_home_b");
-        assert_eq!(second["ok"], true, "second: {second}");
-        assert_eq!(
-            second["result"]["endpointHandle"], first["result"]["endpointHandle"],
-            "release/start must reuse the persistent keyed endpoint identity"
-        );
-        echo_over(
-            second["result"]["runtimeOrigin"].as_str().unwrap(),
-            b"keyed-second",
-        );
-
-        call_op(
-            format!(
-                r#"{{"endpointHandle":"{}"}}"#,
-                second["result"]["endpointHandle"].as_str().unwrap()
-            ),
-            happier_iroh_native_shutdown_endpoint_json,
-        );
-        call_op(
-            format!(r#"{{"endpointHandle":"{server_handle}"}}"#),
-            happier_iroh_native_shutdown_endpoint_json,
-        );
-        let _ = std::fs::remove_file(&server_key);
-        let _ = std::fs::remove_file(&client_key);
     }
 
     /// Full JSON-lifecycle vertical: real endpoints, real acceptor, real
@@ -2158,13 +1925,6 @@ mod tests {
         assert_eq!(tunnel_status["result"]["observedPath"], "direct");
         assert_eq!(tunnel_status["result"]["connectionActive"], true);
 
-        // Legacy status lookup by Home identity still works and is honest.
-        let legacy = read(happier_iroh_native_get_home_tunnel_status_json(
-            CString::new("srv_home_a").unwrap().as_ptr(),
-        ));
-        assert_eq!(legacy["result"]["observedPath"], "direct");
-        assert_eq!(legacy["result"]["endpointHandle"], client_handle);
-
         // First-use key provisioning with restrictive POSIX permissions.
         #[cfg(unix)]
         {
@@ -2181,8 +1941,8 @@ mod tests {
             format!(r#"{{"endpointHandle":"{server_handle}"}}"#),
             happier_iroh_native_shutdown_endpoint_json,
         );
-        let _ = std::fs::remove_file(&server_key);
-        let _ = std::fs::remove_file(&client_key);
+        remove_temp_key(&server_key);
+        remove_temp_key(&client_key);
     }
 
     #[test]
@@ -2222,18 +1982,12 @@ mod tests {
             .to_owned();
         let first_tunnel_id = first["result"]["tunnelId"].as_str().unwrap().to_owned();
 
-        // Release the first lease only (both the handle-based op and the
-        // legacy raw-leaseId op stay lease-scoped and idempotent).
+        // Release the first lease only; release is lease-scoped and idempotent.
         let release = call_op(
             format!(r#"{{"tunnelId":"{first_tunnel_id}"}}"#),
             happier_iroh_native_release_home_tunnel_json,
         );
         assert_eq!(release["ok"], true);
-        let legacy_stop = read(happier_iroh_native_stop_home_tunnel_json(
-            CString::new(first_tunnel_id.clone()).unwrap().as_ptr(),
-        ));
-        assert_eq!(legacy_stop["ok"], true);
-
         // The released lease stops serving its origin.
         let released_down = runtime().block_on(async {
             tokio::time::timeout(
@@ -2269,8 +2023,8 @@ mod tests {
             format!(r#"{{"endpointHandle":"{server_handle}"}}"#),
             happier_iroh_native_shutdown_endpoint_json,
         );
-        let _ = std::fs::remove_file(&server_key);
-        let _ = std::fs::remove_file(&client_key);
+        remove_temp_key(&server_key);
+        remove_temp_key(&client_key);
     }
 
     #[test]
@@ -2288,7 +2042,21 @@ mod tests {
             .unwrap()
             .to_owned();
 
-        // Same key path, different relay configuration: typed conflict.
+        // Same automatic policy, another Home relay, and another outgoing
+        // flow profile reuse the endpoint and extend its applied relay set.
+        let expanded = call_op(
+            format!(
+                r#"{{"keyPath":"{key}","relayPolicy":"automatic","relayUrls":["https://relay-b.example.test"],"capProfile":"machineBulk"}}"#
+            ),
+            happier_iroh_native_create_endpoint_json,
+        );
+        assert_eq!(expanded["ok"], true, "{expanded}");
+        assert_eq!(expanded["result"]["endpointHandle"], handle);
+        assert_eq!(expanded["result"]["relayPolicy"], "automatic");
+        assert_eq!(expanded["result"]["relayUrls"].as_array().unwrap().len(), 2);
+
+        // Same key path, different application-wide relay policy: typed
+        // conflict rather than silently changing transport policy.
         let conflicting = call_op(
             format!(r#"{{"keyPath":"{key}","relayPolicy":"disabled"}}"#),
             happier_iroh_native_create_endpoint_json,
@@ -2304,13 +2072,15 @@ mod tests {
             format!(r#"{{"endpointHandle":"{handle}"}}"#),
             happier_iroh_native_get_endpoint_status_json,
         );
+        assert_eq!(status["result"]["relayPolicy"], "automatic");
         assert_eq!(status["result"]["relayMode"], "custom");
+        assert_eq!(status["result"]["relayUrls"].as_array().unwrap().len(), 2);
         assert_eq!(status["result"]["active"], true);
 
         call_op(
             format!(r#"{{"endpointHandle":"{handle}"}}"#),
             happier_iroh_native_shutdown_endpoint_json,
         );
-        let _ = std::fs::remove_file(&key);
+        remove_temp_key(&key);
     }
 }

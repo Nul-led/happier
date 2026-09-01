@@ -75,10 +75,13 @@ export type PeerTcpTunnelStreamSessionResult =
             | 'tunnel_id_mismatch'
             | 'direction_not_allowed'
             | 'ack_sequence_invalid'
+            | 'ack_window_invalid'
             | 'send_window_exceeded'
             | 'total_bytes_exceeded'
             | 'max_idle_exceeded'
             | 'max_duration_exceeded'
+            | 'frame_send_failed'
+            | 'connection_write_failed'
             | 'tunnel_closed';
       }>;
 
