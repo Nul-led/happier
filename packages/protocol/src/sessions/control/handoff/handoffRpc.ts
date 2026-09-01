@@ -1,4 +1,9 @@
 export {
+  HandoffTargetReplacementApprovalV1Schema,
+  sameHandoffTargetReplacementApproval,
+  type HandoffTargetReplacementApprovalV1,
+} from './handoffTargetReplacementApprovalV1.js';
+export {
   SessionHandoffAbortRequestSchema,
   SessionHandoffAbortResponseSchema,
   SessionHandoffCommitRequestSchema,
@@ -74,6 +79,8 @@ export {
   areWorkspaceSyncRelationshipDefinitionsEqual,
   DeleteWorkspaceSyncConflictLoserV1Schema,
   HandoffWorkspaceActionV1Schema,
+  HandoffTargetReplacementPreflightResultV1Schema,
+  HandoffTargetReplacementPreflightV1Schema,
   ReadWorkspaceSyncFileResultV1Schema,
   ReadWorkspaceSyncFileV1Schema,
   WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES,
@@ -84,6 +91,7 @@ export {
   WorkspaceSyncCopyOnceV1Schema,
   WorkspaceSyncRelationshipV1Schema,
   WorkspaceSyncRelationshipIdV1Schema,
+  WorkspaceSyncLegacyStateInspectionV1Schema,
   WorkspaceSyncStatusV1Schema,
   WorkspaceSyncTargetBootstrapOwnerV1Schema,
   WorkspaceSyncTargetBootstrapPrepareResultV1Schema,
@@ -97,6 +105,8 @@ export {
   computeWorkspaceSyncPolicyDigest,
   type DeleteWorkspaceSyncConflictLoserV1,
   type HandoffWorkspaceActionV1,
+  type HandoffTargetReplacementPreflightResultV1,
+  type HandoffTargetReplacementPreflightV1,
   type ReadWorkspaceSyncFileResultV1,
   type ReadWorkspaceSyncFileV1,
   type WorkspaceContentPolicyV1,
@@ -108,6 +118,7 @@ export {
   type WorkspaceSyncEndpointEntryKindV1,
   type WorkspaceSyncRelationshipV1,
   type WorkspaceSyncRelationshipIdV1,
+  type WorkspaceSyncLegacyStateInspectionV1,
   type WorkspaceSyncStatusV1,
   type WorkspaceSyncTargetBootstrapOwnerV1,
   type WorkspaceSyncTargetBootstrapPrepareResultV1,

@@ -1,11 +1,12 @@
 import { z } from 'zod';
 
 import {
-  IrohPeerRouteRoleV2Schema,
+  IrohPeerInitiatorV2Schema,
+  IrohPeerTargetV2Schema,
   SignedDirectRouteGrantV2Schema,
+  type IrohPeerInitiatorV2,
 } from '../../machines/peer/mediation/directRouteGrantV2.js';
 import { PeerRouteEphemeralProofV2Schema } from '../../machines/peer/mediation/ephemeralPeerRouteProofV2.js';
-import { IrohEndpointIdV1Schema } from './endpointDescriptorV1.js';
 
 /**
  * Canonical authenticated handshake for the Iroh `happier/machine/1` carrier (V1).
@@ -16,9 +17,8 @@ import { IrohEndpointIdV1Schema } from './endpointDescriptorV1.js';
  * a second bearer token, account token, signature scheme, or nonce codec.
  *
  * Wire contract: the object is strict/closed (identity, routing, and
- * authorization envelope). `source*`/`target*` and `role` are the exact
- * absolute relationship signed in `grant.payload.iroh`: `role` belongs to the
- * source machine and the target has the complementary role. Expiry is the signed grant's `exp` only — a
+ * authorization envelope). `initiator`/`target` are the exact relationship
+ * signed in `grant.payload.iroh`. Expiry is the signed grant's `exp` only — a
  * separate expiry field would be a second, competing decision-maker.
  */
 
@@ -33,17 +33,18 @@ export const IROH_MACHINE_CARRIER_FLOWS_V1 = [
 
 export const IrohMachineCarrierFlowV1Schema = z.enum(IROH_MACHINE_CARRIER_FLOWS_V1);
 
-export const IrohMachineHandshakeRoleV1Schema = IrohPeerRouteRoleV2Schema;
+function equalInitiator(left: IrohPeerInitiatorV2, right: IrohPeerInitiatorV2): boolean {
+  return left.kind === right.kind
+    && left.endpointId === right.endpointId
+    && (left.kind !== 'machine' || (right.kind === 'machine' && left.machineId === right.machineId));
+}
 
 export const IrohMachineHandshakeV1Schema = z
   .object({
     v: z.literal(IROH_MACHINE_HANDSHAKE_VERSION_V1),
-    role: IrohMachineHandshakeRoleV1Schema,
     accountId: z.string().min(1),
-    sourceMachineId: z.string().min(1),
-    targetMachineId: z.string().min(1),
-    sourceEndpointId: IrohEndpointIdV1Schema,
-    targetEndpointId: IrohEndpointIdV1Schema,
+    initiator: IrohPeerInitiatorV2Schema,
+    target: IrohPeerTargetV2Schema,
     flow: IrohMachineCarrierFlowV1Schema,
     operationId: z.string().min(1),
     grant: SignedDirectRouteGrantV2Schema,
@@ -63,11 +64,9 @@ export const IrohMachineHandshakeV1Schema = z
     }
     const equalBindings =
       handshake.accountId === payload.accountId
-      && handshake.sourceMachineId === binding.sourceMachineId
-      && handshake.targetMachineId === binding.targetMachineId
-      && handshake.sourceEndpointId === binding.sourceEndpointId
-      && handshake.targetEndpointId === binding.targetEndpointId
-      && handshake.role === binding.role
+      && equalInitiator(handshake.initiator, binding.initiator)
+      && handshake.target.machineId === binding.target.machineId
+      && handshake.target.endpointId === binding.target.endpointId
       && handshake.flow === binding.operationKind;
     if (!equalBindings) {
       ctx.addIssue({
@@ -89,7 +88,6 @@ export const IrohMachineHandshakeV1Schema = z
   });
 
 export type IrohMachineCarrierFlowV1 = z.infer<typeof IrohMachineCarrierFlowV1Schema>;
-export type IrohMachineHandshakeRoleV1 = z.infer<typeof IrohMachineHandshakeRoleV1Schema>;
 export type IrohMachineHandshakeV1 = z.infer<typeof IrohMachineHandshakeV1Schema>;
 
 /** Strict, bounded parser for remotely supplied machine/1 handshakes. */

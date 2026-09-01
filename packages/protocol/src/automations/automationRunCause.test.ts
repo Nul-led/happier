@@ -56,4 +56,33 @@ describe('AutomationRunCauseSchema', () => {
       occurredAt: 1_700_000_000_000,
     })).not.toHaveProperty('triggerId');
   });
+
+  it('freezes the actual lifecycle Event and occurrence policy without request content', () => {
+    const cause = AutomationRunCauseSchema.parse({
+      kind: 'trigger',
+      triggerId: 'trigger-lifecycle',
+      triggerRevision: 4,
+      triggerKind: 'sessionLifecycle',
+      occurrenceKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      occurredAt: 1_700_000_000_000,
+      evidence: {
+        event: 'userActionRequired',
+        sourceSessionId: 'source-session',
+        sourceTurnId: 'source-turn',
+        requestId: 'request-1',
+        requestKind: 'user_action',
+        policy: { kind: 'nextMatches', count: 3 },
+      },
+    });
+
+    expect(cause).toMatchObject({
+      triggerKind: 'sessionLifecycle',
+      evidence: {
+        event: 'userActionRequired',
+        requestId: 'request-1',
+        policy: { kind: 'nextMatches', count: 3 },
+      },
+    });
+    expect(cause.evidence).not.toHaveProperty('request');
+  });
 });

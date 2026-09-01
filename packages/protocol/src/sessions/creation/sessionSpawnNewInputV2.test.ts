@@ -71,16 +71,12 @@ describe('SessionSpawnNewInputV2Schema', () => {
     }).success).toBe(false);
   });
 
-  it('accepts bounded raw launch environment variables at the canonical V2 boundary', () => {
+  it('rejects raw launch environment variables at the canonical V2 boundary', () => {
     expect(SessionSpawnNewInputV2Schema.safeParse({
       ...input,
       environmentVariables: {
         TOKEN: 'secret-value',
       },
-    }).success).toBe(true);
-    expect(SessionSpawnNewInputV2Schema.safeParse({
-      ...input,
-      environmentVariables: { 'not-valid': 'x' },
     }).success).toBe(false);
   });
 

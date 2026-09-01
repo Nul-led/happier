@@ -28,6 +28,93 @@ const apiSpawnInput = {
 } as const;
 
 describe('session.spawn_new canonical execution', () => {
+  it('enforces the live Agent spawn policy before creating an approval artifact', async () => {
+    const approvalsCreate = vi.fn();
+    const sessionSpawnNew = vi.fn();
+    const sessionSpawnNewAgentPolicyPreflight = vi.fn(async () => ({
+      type: 'denied' as const,
+      field: 'executionTarget.machineId',
+    }));
+    const executor = createActionExecutor({
+      approvalsCreate,
+      sessionSpawnNew,
+      sessionSpawnNewAgentPolicyPreflight,
+      isActionApprovalRequired: () => true,
+    } as unknown as ActionExecutorDeps);
+
+    await expect(executor.execute('session.spawn_new', canonicalInput, {
+      surface: 'agent',
+      defaultSessionId: 'parent-session',
+      sessionAgentSpawnPolicyV1: {
+        v: 1,
+        allowCustomDirectory: true,
+        allowCrossMachine: false,
+        allowBackendTargetOverride: true,
+        allowModelOverride: true,
+        allowPermissionModeOverride: true,
+        allowAgentModeOverride: true,
+        allowConfigOptionOverrides: true,
+        allowProfileOverride: true,
+        allowConnectedServicesOverride: true,
+        allowMcpSelectionOverride: true,
+        allowTranscriptStorageOverride: true,
+        permissionCeiling: null,
+      },
+    })).resolves.toEqual({
+      ok: false,
+      errorCode: 'session_spawn_policy_denied',
+      error: 'session_spawn_policy_denied',
+      details: { field: 'executionTarget.machineId' },
+    });
+    expect(sessionSpawnNewAgentPolicyPreflight).toHaveBeenCalledOnce();
+    expect(approvalsCreate).not.toHaveBeenCalled();
+    expect(sessionSpawnNew).not.toHaveBeenCalled();
+  });
+
+  it('persists the Agent spawn permission ceiling in the approval input', async () => {
+    const approvalsCreate = vi.fn(async ({ request }: { request: Record<string, unknown> }) => ({
+      artifactId: 'approval-agent-spawn',
+      request,
+    }));
+    const executor = createActionExecutor({
+      approvalsCreate,
+      sessionSpawnNew: vi.fn(),
+      sessionSpawnNewAgentPolicyPreflight: vi.fn(async () => ({ type: 'allowed' as const })),
+      isActionApprovalRequired: () => true,
+    } as unknown as ActionExecutorDeps);
+
+    await executor.execute('session.spawn_new', canonicalInput, {
+      surface: 'agent',
+      defaultSessionId: 'parent-session',
+      callerPermissionMode: 'yolo',
+      causalPermissionAuthority: {
+        kind: 'admittedSessionInputV1',
+        admittedPermissionCeiling: 'yolo',
+      },
+      sessionAgentSpawnPolicyV1: {
+        v: 1,
+        allowCustomDirectory: true,
+        allowCrossMachine: true,
+        allowBackendTargetOverride: true,
+        allowModelOverride: true,
+        allowPermissionModeOverride: true,
+        allowAgentModeOverride: true,
+        allowConfigOptionOverrides: true,
+        allowProfileOverride: true,
+        allowConnectedServicesOverride: true,
+        allowMcpSelectionOverride: true,
+        allowTranscriptStorageOverride: true,
+        permissionCeiling: 'read-only',
+      },
+    });
+
+    expect(approvalsCreate).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({
+        actionArgs: expect.objectContaining({ permissionMode: 'read-only' }),
+      }),
+    }));
+  });
+
   it('binds API session spawn placement only from host-stamped daemon context', async () => {
     const sessionSpawnNew = vi.fn(async () => ({
       type: 'pending' as const,

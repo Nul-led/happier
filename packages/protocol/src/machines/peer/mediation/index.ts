@@ -11,10 +11,10 @@ export {
 } from './directRouteGrantV1.js';
 export {
   PEER_ROUTE_EPHEMERAL_ED25519_KIND_V2,
-  IROH_PEER_ROUTE_ROLES_V2,
   IROH_PEER_ROUTE_OPERATION_KINDS_V2,
-  IrohPeerRouteRoleV2Schema,
   IrohPeerRouteOperationKindV2Schema,
+  IrohPeerInitiatorV2Schema,
+  IrohPeerTargetV2Schema,
   IrohPeerRouteBindingV2Schema,
   DirectRouteGrantPayloadV2Schema,
   DirectRouteGrantRequestV2Schema,
@@ -23,8 +23,9 @@ export {
   createDirectRouteGrantSigningInputV2,
   createSignedDirectRouteGrantDigestInputV2,
   type DirectRouteGrantPayloadV2,
-  type IrohPeerRouteRoleV2,
   type IrohPeerRouteOperationKindV2,
+  type IrohPeerInitiatorV2,
+  type IrohPeerTargetV2,
   type IrohPeerRouteBindingV2,
   type DirectRouteGrantRequestV2,
   type DirectRouteGrantSignatureV2,

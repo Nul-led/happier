@@ -7767,14 +7767,104 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     result: z.ZodObject<{
                         run: z.ZodObject<{
                             runId: z.ZodString;
+                            callId: z.ZodString;
+                            sidechainId: z.ZodString;
+                            intent: z.ZodEnum<{
+                                delegate: "delegate";
+                                memory_hints: "memory_hints";
+                                plan: "plan";
+                                review: "review";
+                                scm_commit_message: "scm_commit_message";
+                                scm_diff_summary: "scm_diff_summary";
+                                task: "task";
+                                voice_agent: "voice_agent";
+                            }>;
+                            backendTarget: z.ZodUnion<readonly [
+                                z.ZodObject<{
+                                    kind: z.ZodLiteral<"builtInAgent">;
+                                    agentId: z.ZodString;
+                                }, z.core.$strip>,
+                                z.ZodObject<{
+                                    kind: z.ZodLiteral<"configuredAcpBackend">;
+                                    backendId: z.ZodString;
+                                }, z.core.$strip>
+                            ]>;
+                            display: z.ZodOptional<z.ZodObject<{
+                                title: z.ZodOptional<z.ZodString>;
+                                participantLabel: z.ZodOptional<z.ZodString>;
+                                groupId: z.ZodOptional<z.ZodString>;
+                            }, z.core.$loose>>;
+                            permissionMode: z.ZodString;
+                            retentionPolicy: z.ZodEnum<{
+                                ephemeral: "ephemeral";
+                                resumable: "resumable";
+                            }>;
+                            runClass: z.ZodEnum<{
+                                bounded: "bounded";
+                                long_lived: "long_lived";
+                            }>;
+                            ioMode: z.ZodEnum<{
+                                request_response: "request_response";
+                                streaming: "streaming";
+                            }>;
                             status: z.ZodEnum<{
                                 cancelled: "cancelled";
                                 failed: "failed";
+                                running: "running";
                                 succeeded: "succeeded";
                                 timeout: "timeout";
                             }>;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>;
+                            turnInFlight: z.ZodOptional<z.ZodBoolean>;
+                            availableActionIds: z.ZodOptional<z.ZodArray<z.ZodString>>;
+                            resumeHandle: z.ZodOptional<z.ZodPipe<z.ZodTransform<unknown, unknown>, z.ZodDiscriminatedUnion<[
+                                z.ZodObject<{
+                                    kind: z.ZodLiteral<"provider_session.v1">;
+                                    backendTarget: z.ZodPipe<z.ZodTransform<unknown, unknown>, z.ZodObject<{
+                                        kind: z.ZodLiteral<"backend">;
+                                        backendId: z.ZodString;
+                                        configuredBackendId: z.ZodOptional<z.ZodString>;
+                                        sourceKind: z.ZodOptional<z.ZodEnum<{
+                                            built_in: "built_in";
+                                            configured: "configured";
+                                        }>>;
+                                    }, z.core.$strip>>;
+                                    providerSessionId: z.ZodString;
+                                }, z.core.$loose>,
+                                z.ZodObject<{
+                                    kind: z.ZodLiteral<"voice_agent_sessions.v1">;
+                                    backendTarget: z.ZodPipe<z.ZodTransform<unknown, unknown>, z.ZodObject<{
+                                        kind: z.ZodLiteral<"backend">;
+                                        backendId: z.ZodString;
+                                        configuredBackendId: z.ZodOptional<z.ZodString>;
+                                        sourceKind: z.ZodOptional<z.ZodEnum<{
+                                            built_in: "built_in";
+                                            configured: "configured";
+                                        }>>;
+                                    }, z.core.$strip>>;
+                                    chatProviderSessionId: z.ZodString;
+                                    commitProviderSessionId: z.ZodString;
+                                }, z.core.$loose>
+                            ], "kind">>>;
+                            transcript: z.ZodOptional<z.ZodObject<{
+                                persistenceMode: z.ZodEnum<{
+                                    ephemeral: "ephemeral";
+                                    persistent: "persistent";
+                                }>;
+                                epoch: z.ZodNumber;
+                            }, z.core.$loose>>;
+                            startedAtMs: z.ZodNumber;
+                            finishedAtMs: z.ZodOptional<z.ZodNumber>;
+                            error: z.ZodOptional<z.ZodObject<{
+                                code: z.ZodString;
+                                message: z.ZodOptional<z.ZodString>;
+                            }, z.core.$loose>>;
+                        }, z.core.$loose>;
+                        latestToolResult: z.ZodOptional<z.ZodUnknown>;
+                        structuredMeta: z.ZodOptional<z.ZodObject<{
+                            kind: z.ZodString;
+                            payload: z.ZodUnknown;
+                        }, z.core.$loose>>;
+                    }, z.core.$loose>;
                 }, z.core.$strict>,
                 z.ZodObject<{
                     ok: z.ZodLiteral<false>;
@@ -7887,14 +7977,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 } | {
                     [x: string]: unknown;
                     source: "connected";
-                    selection: "group";
-                    groupId: string;
-                    profileId?: string | undefined;
+                    selection?: "profile" | undefined;
+                    profileId: string;
                 } | {
                     [x: string]: unknown;
                     source: "connected";
-                    selection?: "profile" | undefined;
-                    profileId: string;
+                    selection: "group";
+                    groupId: string;
+                    profileId?: string | undefined;
                 }> | undefined;
             } | undefined;
         }>, z.ZodObject<{
@@ -8430,9 +8520,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
             structuredMeta: z.ZodOptional<z.ZodObject<{
                 kind: z.ZodString;
                 payload: z.ZodUnknown;
-            }, z.core.$loose>>;
-            structuredMetaArtifactRef: z.ZodOptional<z.ZodObject<{
-                artifactId: z.ZodString;
             }, z.core.$loose>>;
         }, z.core.$loose>;
         readonly inputSchema: z.ZodObject<{
@@ -9213,14 +9300,104 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 result: z.ZodObject<{
                     run: z.ZodObject<{
                         runId: z.ZodString;
+                        callId: z.ZodString;
+                        sidechainId: z.ZodString;
+                        intent: z.ZodEnum<{
+                            delegate: "delegate";
+                            memory_hints: "memory_hints";
+                            plan: "plan";
+                            review: "review";
+                            scm_commit_message: "scm_commit_message";
+                            scm_diff_summary: "scm_diff_summary";
+                            task: "task";
+                            voice_agent: "voice_agent";
+                        }>;
+                        backendTarget: z.ZodUnion<readonly [
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"builtInAgent">;
+                                agentId: z.ZodString;
+                            }, z.core.$strip>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"configuredAcpBackend">;
+                                backendId: z.ZodString;
+                            }, z.core.$strip>
+                        ]>;
+                        display: z.ZodOptional<z.ZodObject<{
+                            title: z.ZodOptional<z.ZodString>;
+                            participantLabel: z.ZodOptional<z.ZodString>;
+                            groupId: z.ZodOptional<z.ZodString>;
+                        }, z.core.$loose>>;
+                        permissionMode: z.ZodString;
+                        retentionPolicy: z.ZodEnum<{
+                            ephemeral: "ephemeral";
+                            resumable: "resumable";
+                        }>;
+                        runClass: z.ZodEnum<{
+                            bounded: "bounded";
+                            long_lived: "long_lived";
+                        }>;
+                        ioMode: z.ZodEnum<{
+                            request_response: "request_response";
+                            streaming: "streaming";
+                        }>;
                         status: z.ZodEnum<{
                             cancelled: "cancelled";
                             failed: "failed";
+                            running: "running";
                             succeeded: "succeeded";
                             timeout: "timeout";
                         }>;
-                    }, z.core.$strict>;
-                }, z.core.$strict>;
+                        turnInFlight: z.ZodOptional<z.ZodBoolean>;
+                        availableActionIds: z.ZodOptional<z.ZodArray<z.ZodString>>;
+                        resumeHandle: z.ZodOptional<z.ZodPipe<z.ZodTransform<unknown, unknown>, z.ZodDiscriminatedUnion<[
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"provider_session.v1">;
+                                backendTarget: z.ZodPipe<z.ZodTransform<unknown, unknown>, z.ZodObject<{
+                                    kind: z.ZodLiteral<"backend">;
+                                    backendId: z.ZodString;
+                                    configuredBackendId: z.ZodOptional<z.ZodString>;
+                                    sourceKind: z.ZodOptional<z.ZodEnum<{
+                                        built_in: "built_in";
+                                        configured: "configured";
+                                    }>>;
+                                }, z.core.$strip>>;
+                                providerSessionId: z.ZodString;
+                            }, z.core.$loose>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"voice_agent_sessions.v1">;
+                                backendTarget: z.ZodPipe<z.ZodTransform<unknown, unknown>, z.ZodObject<{
+                                    kind: z.ZodLiteral<"backend">;
+                                    backendId: z.ZodString;
+                                    configuredBackendId: z.ZodOptional<z.ZodString>;
+                                    sourceKind: z.ZodOptional<z.ZodEnum<{
+                                        built_in: "built_in";
+                                        configured: "configured";
+                                    }>>;
+                                }, z.core.$strip>>;
+                                chatProviderSessionId: z.ZodString;
+                                commitProviderSessionId: z.ZodString;
+                            }, z.core.$loose>
+                        ], "kind">>>;
+                        transcript: z.ZodOptional<z.ZodObject<{
+                            persistenceMode: z.ZodEnum<{
+                                ephemeral: "ephemeral";
+                                persistent: "persistent";
+                            }>;
+                            epoch: z.ZodNumber;
+                        }, z.core.$loose>>;
+                        startedAtMs: z.ZodNumber;
+                        finishedAtMs: z.ZodOptional<z.ZodNumber>;
+                        error: z.ZodOptional<z.ZodObject<{
+                            code: z.ZodString;
+                            message: z.ZodOptional<z.ZodString>;
+                        }, z.core.$loose>>;
+                    }, z.core.$loose>;
+                    latestToolResult: z.ZodOptional<z.ZodUnknown>;
+                    structuredMeta: z.ZodOptional<z.ZodObject<{
+                        kind: z.ZodString;
+                        payload: z.ZodUnknown;
+                    }, z.core.$loose>>;
+                }, z.core.$loose>;
             }, z.core.$strict>,
             z.ZodObject<{
                 ok: z.ZodLiteral<false>;
@@ -10658,22 +10835,53 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 direct: "direct";
                 persisted: "persisted";
             }>>;
-            workspaceTransfer: z.ZodOptional<z.ZodObject<{
-                enabled: z.ZodBoolean;
-                strategy: z.ZodDefault<z.ZodEnum<{
-                    sync_changes: "sync_changes";
-                    transfer_snapshot: "transfer_snapshot";
-                }>>;
-                conflictPolicy: z.ZodEnum<{
-                    create_sibling_copy: "create_sibling_copy";
-                    replace_existing: "replace_existing";
-                }>;
-                includeIgnoredMode: z.ZodDefault<z.ZodEnum<{
-                    exclude: "exclude";
-                    include_selected: "include_selected";
-                }>>;
-                ignoredIncludeGlobs: z.ZodDefault<z.ZodReadonly<z.ZodArray<z.ZodString>>>;
-            }, z.core.$loose>>;
+            workspaceAction: z.ZodOptional<z.ZodDiscriminatedUnion<[
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"none">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"copy_once">;
+                    contentPolicy: z.ZodObject<{
+                        v: z.ZodLiteral<1>;
+                        selection: z.ZodEnum<{
+                            all_files: "all_files";
+                            git_worktree: "git_worktree";
+                        }>;
+                        extraIgnorePatterns: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                        extraIncludePatterns: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                        includeGitDirectory: z.ZodBoolean;
+                        policyDigest: z.ZodString;
+                    }, z.core.$strict>;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"create_relationship">;
+                    mode: z.ZodEnum<{
+                        keep_both_in_sync: "keep_both_in_sync";
+                        keep_synced: "keep_synced";
+                        mirror_exactly: "mirror_exactly";
+                    }>;
+                    contentPolicy: z.ZodObject<{
+                        v: z.ZodLiteral<1>;
+                        selection: z.ZodEnum<{
+                            all_files: "all_files";
+                            git_worktree: "git_worktree";
+                        }>;
+                        extraIgnorePatterns: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                        extraIncludePatterns: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                        includeGitDirectory: z.ZodBoolean;
+                        policyDigest: z.ZodString;
+                    }, z.core.$strict>;
+                    flushBeforeCommit: z.ZodLiteral<true>;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"relationship">;
+                    relationshipId: z.ZodString;
+                    flushBeforeCommit: z.ZodBoolean;
+                }, z.core.$strict>
+            ], "kind">>;
+            workspaceSyncSourceWorkspaceRefId: z.ZodOptional<z.ZodString>;
+            workspaceSyncTargetWorkspaceRefId: z.ZodOptional<z.ZodString>;
+            workspaceSyncSettingsVersion: z.ZodOptional<z.ZodNumber>;
         }, z.core.$loose>;
     },
     {
@@ -10789,39 +10997,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                         }, z.core.$loose>
                     ], "kind">>>>;
                 }, z.core.$loose>>;
-                workspaceReplicationSourceRootPath: z.ZodOptional<z.ZodString>;
-                workspaceReplicationHandoffBackTargetRootPath: z.ZodOptional<z.ZodString>;
-                workspaceReplicationManifestTransferPublication: z.ZodOptional<z.ZodObject<{
-                    transferId: z.ZodString;
-                    endpointCandidates: z.ZodOptional<z.ZodReadonly<z.ZodArray<z.ZodDiscriminatedUnion<[
-                        z.ZodObject<{
-                            kind: z.ZodEnum<{
-                                http: "http";
-                                https: "https";
-                                tcp: "tcp";
-                            }>;
-                            url: z.ZodString;
-                            authorizationToken: z.ZodOptional<z.ZodString>;
-                            expiresAt: z.ZodNumber;
-                        }, z.core.$loose>
-                    ], "kind">>>>;
-                }, z.core.$loose>>;
-                workspaceReplicationSourceControllerMetadata: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
             }, z.core.$loose>, z.ZodTransform<{
-                workspaceReplicationSourceRootPath?: string | undefined;
-                workspaceReplicationHandoffBackTargetRootPath?: string | undefined;
-                workspaceReplicationManifestTransferPublication?: {
-                    [x: string]: unknown;
-                    transferId: string;
-                    endpointCandidates?: readonly {
-                        [x: string]: unknown;
-                        kind: "http" | "https" | "tcp";
-                        url: string;
-                        authorizationToken?: string | undefined;
-                        expiresAt: number;
-                    }[] | undefined;
-                } | undefined;
-                workspaceReplicationSourceControllerMetadata?: Record<string, unknown> | undefined;
                 agentBundleTransferPublication?: {
                     [x: string]: unknown;
                     transferId: string;
@@ -10863,37 +11039,51 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                         expiresAt: number;
                     }[] | undefined;
                 } | undefined;
-                workspaceReplicationSourceRootPath?: string | undefined;
-                workspaceReplicationHandoffBackTargetRootPath?: string | undefined;
-                workspaceReplicationManifestTransferPublication?: {
-                    [x: string]: unknown;
-                    transferId: string;
-                    endpointCandidates?: readonly {
-                        [x: string]: unknown;
-                        kind: "http" | "https" | "tcp";
-                        url: string;
-                        authorizationToken?: string | undefined;
-                        expiresAt: number;
-                    }[] | undefined;
-                } | undefined;
-                workspaceReplicationSourceControllerMetadata?: Record<string, unknown> | undefined;
             }>>>;
-            workspaceTransfer: z.ZodOptional<z.ZodObject<{
-                enabled: z.ZodBoolean;
-                strategy: z.ZodDefault<z.ZodEnum<{
-                    sync_changes: "sync_changes";
-                    transfer_snapshot: "transfer_snapshot";
-                }>>;
-                conflictPolicy: z.ZodEnum<{
-                    create_sibling_copy: "create_sibling_copy";
-                    replace_existing: "replace_existing";
-                }>;
-                includeIgnoredMode: z.ZodDefault<z.ZodEnum<{
-                    exclude: "exclude";
-                    include_selected: "include_selected";
-                }>>;
-                ignoredIncludeGlobs: z.ZodDefault<z.ZodReadonly<z.ZodArray<z.ZodString>>>;
-            }, z.core.$loose>>;
+            workspaceAction: z.ZodOptional<z.ZodDiscriminatedUnion<[
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"none">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"copy_once">;
+                    contentPolicy: z.ZodObject<{
+                        v: z.ZodLiteral<1>;
+                        selection: z.ZodEnum<{
+                            all_files: "all_files";
+                            git_worktree: "git_worktree";
+                        }>;
+                        extraIgnorePatterns: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                        extraIncludePatterns: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                        includeGitDirectory: z.ZodBoolean;
+                        policyDigest: z.ZodString;
+                    }, z.core.$strict>;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"create_relationship">;
+                    mode: z.ZodEnum<{
+                        keep_both_in_sync: "keep_both_in_sync";
+                        keep_synced: "keep_synced";
+                        mirror_exactly: "mirror_exactly";
+                    }>;
+                    contentPolicy: z.ZodObject<{
+                        v: z.ZodLiteral<1>;
+                        selection: z.ZodEnum<{
+                            all_files: "all_files";
+                            git_worktree: "git_worktree";
+                        }>;
+                        extraIgnorePatterns: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                        extraIncludePatterns: z.ZodReadonly<z.ZodArray<z.ZodString>>;
+                        includeGitDirectory: z.ZodBoolean;
+                        policyDigest: z.ZodString;
+                    }, z.core.$strict>;
+                    flushBeforeCommit: z.ZodLiteral<true>;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"relationship">;
+                    relationshipId: z.ZodString;
+                    flushBeforeCommit: z.ZodBoolean;
+                }, z.core.$strict>
+            ], "kind">>;
         }, z.core.$loose>;
     },
     {
@@ -10955,7 +11145,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                         transferring: "transferring";
                     }>;
                     jobId: z.ZodOptional<z.ZodString>;
-                    workspaceReplicationJobId: z.ZodOptional<z.ZodString>;
                     progress: z.ZodOptional<z.ZodObject<{
                         updatedAtMs: z.ZodNumber;
                         checkpoint: z.ZodEnum<{
@@ -11005,16 +11194,10 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                         removedPathsCount: z.ZodNumber;
                         totalBytes: z.ZodOptional<z.ZodNumber>;
                     }, z.core.$loose>>;
-                    transportStrategy: z.ZodOptional<z.ZodNullable<z.ZodUnion<readonly [
-                        z.ZodEnum<{
-                            direct_peer: "direct_peer";
-                            server_routed_stream: "server_routed_stream";
-                        }>,
-                        z.ZodEnum<{
-                            sync_changes: "sync_changes";
-                            transfer_snapshot: "transfer_snapshot";
-                        }>
-                    ]>>>;
+                    transportStrategy: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
+                        direct_peer: "direct_peer";
+                        server_routed_stream: "server_routed_stream";
+                    }>>>;
                     recoveryActions: z.ZodDefault<z.ZodReadonly<z.ZodArray<z.ZodEnum<{
                         keep_stopped: "keep_stopped";
                         restart_on_source: "restart_on_source";
@@ -11067,7 +11250,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     }>;
                     approvedNewDirectoryCreation: z.ZodLiteral<true>;
                 }, z.core.$loose>;
-                workspaceReplicationJobId: z.ZodOptional<z.ZodString>;
             }, z.core.$loose>,
             z.ZodDiscriminatedUnion<[
                 z.ZodObject<{
@@ -11085,6 +11267,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                         awaiting_user_resume: "awaiting_user_resume";
                         failed: "failed";
                         reconciliation_required: "reconciliation_required";
+                        workspace_sync_update_required: "workspace_sync_update_required";
                     }>;
                     error: z.ZodString;
                 }, z.core.$strict>,
@@ -11179,7 +11362,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                         transferring: "transferring";
                     }>;
                     jobId: z.ZodOptional<z.ZodString>;
-                    workspaceReplicationJobId: z.ZodOptional<z.ZodString>;
                     progress: z.ZodOptional<z.ZodObject<{
                         updatedAtMs: z.ZodNumber;
                         checkpoint: z.ZodEnum<{
@@ -11229,16 +11411,10 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                         removedPathsCount: z.ZodNumber;
                         totalBytes: z.ZodOptional<z.ZodNumber>;
                     }, z.core.$loose>>;
-                    transportStrategy: z.ZodOptional<z.ZodNullable<z.ZodUnion<readonly [
-                        z.ZodEnum<{
-                            direct_peer: "direct_peer";
-                            server_routed_stream: "server_routed_stream";
-                        }>,
-                        z.ZodEnum<{
-                            sync_changes: "sync_changes";
-                            transfer_snapshot: "transfer_snapshot";
-                        }>
-                    ]>>>;
+                    transportStrategy: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
+                        direct_peer: "direct_peer";
+                        server_routed_stream: "server_routed_stream";
+                    }>>>;
                     recoveryActions: z.ZodDefault<z.ZodReadonly<z.ZodArray<z.ZodEnum<{
                         keep_stopped: "keep_stopped";
                         restart_on_source: "restart_on_source";
@@ -11317,8 +11493,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                 source_cleanup: "source_cleanup";
                 target: "target";
             }>>;
-            workspaceReplicationReverseSourceRootPath: z.ZodOptional<z.ZodString>;
-            workspaceReplicationReverseTargetRootPath: z.ZodOptional<z.ZodString>;
         }, z.core.$strict>;
     },
     {
@@ -11626,7 +11800,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                             }, z.core.$strict>;
                         }, z.core.$strict>>>;
                     }, z.core.$strict>>;
-                    environmentVariables: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
                     agentSessionStartupInstructionsV1: z.ZodOptional<z.ZodReadonly<z.ZodObject<{
                         v: z.ZodLiteral<1>;
                         id: z.ZodString;
@@ -11892,7 +12065,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                             }, z.core.$strict>;
                         }, z.core.$strict>>>;
                     }, z.core.$strict>>;
-                    environmentVariables: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
                     agentSessionStartupInstructionsV1: z.ZodOptional<z.ZodReadonly<z.ZodObject<{
                         v: z.ZodLiteral<1>;
                         id: z.ZodString;
@@ -12328,7 +12500,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     }, z.core.$strict>;
                 }, z.core.$strict>>>;
             }, z.core.$strict>>;
-            environmentVariables: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
             agentSessionStartupInstructionsV1: z.ZodOptional<z.ZodReadonly<z.ZodObject<{
                 v: z.ZodLiteral<1>;
                 id: z.ZodString;
@@ -19463,6 +19634,16 @@ const ACTION_SPECS_WITHOUT_APPROVAL: readonly [
                     }, z.core.$loose>>;
                     nextCursor: z.ZodOptional<z.ZodNullable<z.ZodString>>;
                     truncated: z.ZodBoolean;
+                    hasMore: z.ZodOptional<z.ZodBoolean>;
+                    diagnostics: z.ZodOptional<z.ZodArray<z.ZodObject<{
+                        code: z.ZodString;
+                        severity: z.ZodEnum<{
+                            benign: "benign";
+                            required: "required";
+                        }>;
+                        count: z.ZodNumber;
+                        positions: z.ZodArray<z.ZodNumber>;
+                    }, z.core.$strict>>>;
                 }, z.core.$loose>,
                 z.ZodObject<{
                     ok: z.ZodLiteral<false>;
@@ -72077,6 +72258,7 @@ const RUNTIME_ACTION_OUTPUT_SCHEMAS: Readonly<{
                         voice_media: "voice_media";
                     }>;
                     routeKind: z.ZodOptional<z.ZodEnum<{
+                        iroh_peer: "iroh_peer";
                         lan_direct: "lan_direct";
                         loopback_direct: "loopback_direct";
                         server_relay: "server_relay";
@@ -72188,6 +72370,7 @@ const RUNTIME_ACTION_OUTPUT_SCHEMAS: Readonly<{
                         voice_media: "voice_media";
                     }>;
                     routeKind: z.ZodOptional<z.ZodEnum<{
+                        iroh_peer: "iroh_peer";
                         lan_direct: "lan_direct";
                         loopback_direct: "loopback_direct";
                         server_relay: "server_relay";
@@ -74950,8 +75133,8 @@ const AutomationEventActionInputSchemasV1: Readonly<{
         knownRevision: z.ZodOptional<z.ZodString>;
         checkpointRetirementCandidates: z.ZodOptional<z.ZodArray<z.ZodObject<{
             automationId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-            triggerId: z.core.$ZodBranded<z.ZodString, "AutomationTriggerId", "out">;
-            triggerRevision: z.ZodNumber;
+            triggerId: z.core.$ZodBranded<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>, "AutomationTriggerId", "out">;
+            triggerRevision: z.ZodType<number, number, z.core.$ZodTypeInternals<number, number>>;
             eventRef: z.ZodType<{
                 pluginId: string;
                 localId: string;
@@ -74989,8 +75172,8 @@ const AutomationEventActionInputSchemasV1: Readonly<{
         payload: z.ZodType<import("../index.js").PluginJsonValueV2, import("../index.js").PluginJsonValueV2, z.core.$ZodTypeInternals<import("../index.js").PluginJsonValueV2, import("../index.js").PluginJsonValueV2>>;
         definitions: z.ZodArray<z.ZodObject<{
             automationId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-            triggerId: z.core.$ZodBranded<z.ZodString, "AutomationTriggerId", "out">;
-            triggerRevision: z.ZodNumber;
+            triggerId: z.core.$ZodBranded<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>, "AutomationTriggerId", "out">;
+            triggerRevision: z.ZodType<number, number, z.core.$ZodTypeInternals<number, number>>;
             sourceSelectorId: z.core.$ZodBranded<z.ZodString, "AutomationSourceSelectorIdV1", "out">;
         }, z.core.$strict>>;
     }, z.core.$strict>;
@@ -74998,8 +75181,8 @@ const AutomationEventActionInputSchemasV1: Readonly<{
         z.ZodObject<{
             kind: z.ZodLiteral<"source">;
             automationId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-            triggerId: z.core.$ZodBranded<z.ZodString, "AutomationTriggerId", "out">;
-            triggerRevision: z.ZodNumber;
+            triggerId: z.core.$ZodBranded<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>, "AutomationTriggerId", "out">;
+            triggerRevision: z.ZodType<number, number, z.core.$ZodTypeInternals<number, number>>;
             eventRef: z.ZodType<{
                 pluginId: string;
                 localId: string;
@@ -75080,8 +75263,8 @@ const AutomationEventActionOutputSchemasV1: Readonly<{
             revision: z.ZodString;
             definitions: z.ZodArray<z.ZodObject<{
                 automationId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                triggerId: z.core.$ZodBranded<z.ZodString, "AutomationTriggerId", "out">;
-                triggerRevision: z.ZodNumber;
+                triggerId: z.core.$ZodBranded<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>, "AutomationTriggerId", "out">;
+                triggerRevision: z.ZodType<number, number, z.core.$ZodTypeInternals<number, number>>;
                 eventRef: z.ZodType<{
                     pluginId: string;
                     localId: string;
@@ -75161,8 +75344,8 @@ const AutomationEventActionOutputSchemasV1: Readonly<{
             revision: z.ZodString;
             checkpointRetirements: z.ZodOptional<z.ZodArray<z.ZodObject<{
                 automationId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                triggerId: z.core.$ZodBranded<z.ZodString, "AutomationTriggerId", "out">;
-                triggerRevision: z.ZodNumber;
+                triggerId: z.core.$ZodBranded<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>, "AutomationTriggerId", "out">;
+                triggerRevision: z.ZodType<number, number, z.core.$ZodTypeInternals<number, number>>;
                 eventRef: z.ZodType<{
                     pluginId: string;
                     localId: string;
@@ -75233,79 +75416,142 @@ const AutomationEventActionOutputSchemasV1: Readonly<{
 ```
 
 
+### `node_modules/@happier-dev/protocol/dist/automations/automationEventJsonBoundsV1.d.ts` — `AutomationSourceSelectorIdV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type AutomationSourceSelectorIdV1 = z.infer<typeof AutomationSourceSelectorIdV1Schema>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationEventJsonBoundsV1.d.ts` — `AutomationSourceSelectorIdV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const AutomationSourceSelectorIdV1Schema: z.core.$ZodBranded<z.ZodString, "AutomationSourceSelectorIdV1", "out">;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationOccurredAtV1.d.ts` — `AutomationOccurredAtV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type AutomationOccurredAtV1 = z.infer<typeof AutomationOccurredAtV1Schema>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationOccurredAtV1.d.ts` — `AutomationOccurredAtV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const AutomationOccurredAtV1Schema: z.ZodNumber;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationOccurrenceV1.d.ts` — `AutomationOccurrenceKeyV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type AutomationOccurrenceKeyV1 = z.infer<typeof AutomationOccurrenceKeyV1Schema>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationOccurrenceV1.d.ts` — `AutomationOccurrenceKeyV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const AutomationOccurrenceKeyV1Schema: z.core.$ZodBranded<z.ZodString, "AutomationOccurrenceKeyV1", "out">;
+```
+
+
 ### `node_modules/@happier-dev/protocol/dist/automations/automationRunCause.d.ts` — `AutomationRunCause`
 
 Reached from a published signature; not itself a published export.
 
 ```ts
-type AutomationRunCause = z.infer<typeof AutomationRunCauseSchema>;
+type AutomationRunCause = Readonly<{
+    kind: 'trigger';
+    triggerId: AutomationTriggerId;
+    triggerRevision: AutomationTriggerRevision;
+    triggerKind: 'schedule';
+    occurrenceKey: AutomationOccurrenceKeyV1;
+    occurredAt: AutomationOccurredAtV1;
+    evidence: Readonly<{
+        scheduledFor: AutomationOccurredAtV1;
+    }>;
+} | {
+    kind: 'trigger';
+    triggerId: AutomationTriggerId;
+    triggerRevision: AutomationTriggerRevision;
+    triggerKind: 'pluginEvent';
+    occurrenceKey: AutomationOccurrenceKeyV1;
+    occurredAt: AutomationOccurredAtV1;
+    evidence: Readonly<{
+        eventRef: PluginContributionIdentityV1;
+        sourceSelectorId: AutomationSourceSelectorIdV1;
+    }>;
+} | {
+    kind: 'trigger';
+    triggerId: AutomationTriggerId;
+    triggerRevision: AutomationTriggerRevision;
+    triggerKind: 'sessionLifecycle';
+    occurrenceKey: AutomationOccurrenceKeyV1;
+    occurredAt: AutomationOccurredAtV1;
+    evidence: Readonly<{
+        event: 'parentTurnCompleted';
+        sourceSessionId: string;
+        sourceTurnId: string;
+    }>;
+} | {
+    kind: 'manual';
+    invokedAt: AutomationOccurredAtV1;
+} | {
+    kind: 'conversation';
+    occurrenceKey: AutomationOccurrenceKeyV1;
+    occurredAt: AutomationOccurredAtV1;
+}>;
 ```
 
 
-### `node_modules/@happier-dev/protocol/dist/automations/automationRunCause.d.ts` — `AutomationRunCauseSchema`
+### `node_modules/@happier-dev/protocol/dist/automations/automationTriggerIdentity.d.ts` — `AutomationTriggerId`
 
 Reached from a published signature; not itself a published export.
 
 ```ts
-const AutomationRunCauseSchema: z.ZodUnion<readonly [
-    z.ZodObject<{
-        kind: z.ZodLiteral<"trigger">;
-        triggerId: z.core.$ZodBranded<z.ZodString, "AutomationTriggerId", "out">;
-        triggerRevision: z.ZodNumber;
-        triggerKind: z.ZodLiteral<"schedule">;
-        occurrenceKey: z.core.$ZodBranded<z.ZodString, "AutomationOccurrenceKeyV1", "out">;
-        occurredAt: z.ZodNumber;
-        evidence: z.ZodObject<{
-            scheduledFor: z.ZodNumber;
-        }, z.core.$strict>;
-    }, z.core.$strict>,
-    z.ZodObject<{
-        kind: z.ZodLiteral<"trigger">;
-        triggerId: z.core.$ZodBranded<z.ZodString, "AutomationTriggerId", "out">;
-        triggerRevision: z.ZodNumber;
-        triggerKind: z.ZodLiteral<"pluginEvent">;
-        occurrenceKey: z.core.$ZodBranded<z.ZodString, "AutomationOccurrenceKeyV1", "out">;
-        occurredAt: z.ZodNumber;
-        evidence: z.ZodObject<{
-            eventRef: z.ZodType<{
-                pluginId: string;
-                localId: string;
-            }, {
-                pluginId: string;
-                localId: string;
-            }, z.core.$ZodTypeInternals<{
-                pluginId: string;
-                localId: string;
-            }, {
-                pluginId: string;
-                localId: string;
-            }>>;
-            sourceSelectorId: z.core.$ZodBranded<z.ZodString, "AutomationSourceSelectorIdV1", "out">;
-        }, z.core.$strict>;
-    }, z.core.$strict>,
-    z.ZodObject<{
-        kind: z.ZodLiteral<"trigger">;
-        triggerId: z.core.$ZodBranded<z.ZodString, "AutomationTriggerId", "out">;
-        triggerRevision: z.ZodNumber;
-        triggerKind: z.ZodLiteral<"sessionLifecycle">;
-        occurrenceKey: z.core.$ZodBranded<z.ZodString, "AutomationOccurrenceKeyV1", "out">;
-        occurredAt: z.ZodNumber;
-        evidence: z.ZodObject<{
-            event: z.ZodLiteral<"parentTurnCompleted">;
-            sourceSessionId: z.ZodString;
-            sourceTurnId: z.ZodString;
-        }, z.core.$strict>;
-    }, z.core.$strict>,
-    z.ZodObject<{
-        kind: z.ZodLiteral<"manual">;
-        invokedAt: z.ZodNumber;
-    }, z.core.$strict>,
-    z.ZodObject<{
-        kind: z.ZodLiteral<"conversation">;
-        occurrenceKey: z.core.$ZodBranded<z.ZodString, "AutomationOccurrenceKeyV1", "out">;
-        occurredAt: z.ZodNumber;
-    }, z.core.$strict>
-]>;
+type AutomationTriggerId = z.infer<typeof AutomationTriggerIdSchema>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationTriggerIdentity.d.ts` — `AutomationTriggerIdSchema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const AutomationTriggerIdSchema: z.core.$ZodBranded<z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>, "AutomationTriggerId", "out">;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationTriggerIdentity.d.ts` — `AutomationTriggerRevision`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type AutomationTriggerRevision = z.infer<typeof AutomationTriggerRevisionSchema>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/automations/automationTriggerIdentity.d.ts` — `AutomationTriggerRevisionSchema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const AutomationTriggerRevisionSchema: z.ZodType<number, number, z.core.$ZodTypeInternals<number, number>>;
 ```
 
 
@@ -75317,6 +75563,24 @@ Reached from a published signature; not itself a published export.
 type JsonValue = null | boolean | number | string | readonly JsonValue[] | {
     readonly [key: string]: JsonValue;
 };
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/actions/protocolComposableSchema.d.ts` — `parse`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+parse(value: unknown): TOutput;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/actions/protocolComposableSchema.d.ts` — `parse`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+parse(value: TInput): TOutput;
 ```
 
 
@@ -75339,6 +75603,15 @@ const PluginMachineMaterializationRefV1Schema: z.ZodObject<{
     materializationId: z.ZodString;
     pluginId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
 }, z.core.$strict>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/contributionIdentity.d.ts` — `PluginContributionIdentityV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type PluginContributionIdentityV1 = ReturnType<typeof PluginContributionIdentityV1Schema.parse>;
 ```
 
 
@@ -77796,6 +78069,60 @@ const ReviewCommentActionInputSchemasV1: Readonly<{
                 requestChanges: "requestChanges";
             }>;
             body: z.ZodString;
+        }, z.core.$strict>>;
+        settlement: z.ZodOptional<z.ZodObject<{
+            dispatchToken: z.ZodNullable<z.ZodString>;
+            result: z.ZodObject<{
+                publicationPlanId: z.ZodString;
+                entries: z.ZodArray<z.ZodObject<{
+                    happierCommentId: z.ZodString;
+                    publicationCorrelationId: z.ZodString;
+                    outcome: z.ZodUnion<readonly [
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"published">;
+                            externalRef: z.ZodString;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"failed">;
+                            code: z.ZodString;
+                            message: z.ZodOptional<z.ZodString>;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"uncertain">;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"skippedPriorFailure">;
+                        }, z.core.$strict>
+                    ]>;
+                }, z.core.$strict>>;
+                verdict: z.ZodUnion<readonly [
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"notRequested">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        publicationCorrelationId: z.ZodString;
+                        outcome: z.ZodUnion<readonly [
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"published">;
+                                externalRef: z.ZodOptional<z.ZodString>;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"failed">;
+                                code: z.ZodString;
+                                message: z.ZodOptional<z.ZodString>;
+                                externalRef: z.ZodOptional<z.ZodString>;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"uncertain">;
+                                externalRef: z.ZodOptional<z.ZodString>;
+                            }, z.core.$strict>,
+                            z.ZodObject<{
+                                kind: z.ZodLiteral<"skippedPriorFailure">;
+                            }, z.core.$strict>
+                        ]>;
+                    }, z.core.$strict>
+                ]>;
+            }, z.core.$strict>;
         }, z.core.$strict>>;
     }, z.core.$strict>;
 }>;
@@ -82749,6 +83076,7 @@ const ReviewCommentActionOutputSchemasV1: Readonly<{
             dispatch: "dispatch";
             reconcile: "reconcile";
         }>;
+        dispatchToken: z.ZodNullable<z.ZodString>;
         publicationPlanId: z.ZodString;
         entries: z.ZodArray<z.ZodObject<{
             happierCommentId: z.ZodString;
@@ -82756,6 +83084,71 @@ const ReviewCommentActionOutputSchemasV1: Readonly<{
         }, z.core.$strict>>;
         verdict: z.ZodNullable<z.ZodObject<{
             publicationCorrelationId: z.ZodString;
+        }, z.core.$strict>>;
+        instructions: z.ZodObject<{
+            entries: z.ZodArray<z.ZodEnum<{
+                confirmed: "confirmed";
+                dispatch: "dispatch";
+                held: "held";
+                reconcile: "reconcile";
+            }>>;
+            verdict: z.ZodNullable<z.ZodEnum<{
+                confirmed: "confirmed";
+                dispatch: "dispatch";
+                held: "held";
+                reconcile: "reconcile";
+            }>>;
+        }, z.core.$strict>;
+        priorResult: z.ZodNullable<z.ZodObject<{
+            publicationPlanId: z.ZodString;
+            entries: z.ZodArray<z.ZodObject<{
+                happierCommentId: z.ZodString;
+                publicationCorrelationId: z.ZodString;
+                outcome: z.ZodUnion<readonly [
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"published">;
+                        externalRef: z.ZodString;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"failed">;
+                        code: z.ZodString;
+                        message: z.ZodOptional<z.ZodString>;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"uncertain">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"skippedPriorFailure">;
+                    }, z.core.$strict>
+                ]>;
+            }, z.core.$strict>>;
+            verdict: z.ZodUnion<readonly [
+                z.ZodObject<{
+                    kind: z.ZodLiteral<"notRequested">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    publicationCorrelationId: z.ZodString;
+                    outcome: z.ZodUnion<readonly [
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"published">;
+                            externalRef: z.ZodOptional<z.ZodString>;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"failed">;
+                            code: z.ZodString;
+                            message: z.ZodOptional<z.ZodString>;
+                            externalRef: z.ZodOptional<z.ZodString>;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"uncertain">;
+                            externalRef: z.ZodOptional<z.ZodString>;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"skippedPriorFailure">;
+                        }, z.core.$strict>
+                    ]>;
+                }, z.core.$strict>
+            ]>;
         }, z.core.$strict>>;
     }, z.core.$strict>;
 }>;

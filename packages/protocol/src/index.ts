@@ -76,6 +76,7 @@ export {
   ACCOUNT_DIRECTORY_ASSERTION_MIN_LIFETIME_MS,
   ACCOUNT_DIRECTORY_ASSERTION_SIGNING_DOMAIN_V1,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1,
+  ACCOUNT_DIRECTORY_HOME_HTTP_PATH_V1,
   ACCOUNT_DIRECTORY_HOME_LOGIN_ASSERTION_HTTP_PATH_V1,
   ACCOUNT_DIRECTORY_HOMES_HTTP_PATH_V1,
   ACCOUNT_DIRECTORY_LINKS_HTTP_PATH_V1,
@@ -90,6 +91,8 @@ export {
   ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES,
   ACCOUNT_DIRECTORY_MAX_URL_UTF8_BYTES,
   HOME_LOGIN_HTTP_PATH_V1,
+  HOME_LOGIN_APPROVALS_HTTP_PATH_V1,
+  HOME_LOGIN_APPROVAL_DECISION_HTTP_PATH_V1,
   AccountDirectoryErrorCodeV1Schema,
   AccountDirectoryHomeDeleteParamsV1Schema,
   AccountDirectoryHomeDeleteRequestV1Schema,
@@ -97,6 +100,8 @@ export {
   AccountDirectoryHomeEntryV1Schema,
   AccountDirectoryHomePutRequestV1Schema,
   AccountDirectoryHomePutResponseV1Schema,
+  AccountDirectoryHomePublishRequestV2Schema,
+  AccountDirectoryHomeWriteRequestSchema,
   AccountDirectoryHomesResponseV1Schema,
   AccountDirectoryLinkDeleteParamsV1Schema,
   AccountDirectoryLinkDeleteRequestV1Schema,
@@ -111,9 +116,12 @@ export {
   AccountDirectoryRouteErrorResponseV1Schema,
   HomeConnectionEndpointV1Schema,
   HomeConnectionDescriptorV1Schema,
+  HomeLoginCredentialPayloadV1Schema,
   HomeApplicationOriginV1Schema,
   HomeDeviceApprovalRequestV1Schema,
   HomeDeviceApprovalListV1Schema,
+  HomeDeviceApprovalDecisionRequestV1Schema,
+  HomeDeviceApprovalDecisionResponseV1Schema,
   HomeLoginAssertionRequestV1Schema,
   HomeLoginAssertionResponseV1Schema,
   HomeLoginAssertionV1Schema,
@@ -121,17 +129,23 @@ export {
   HomeLoginRedemptionRequestV1Schema,
   HomeLoginRedemptionResponseV1Schema,
   createHomeLoginRequesterFingerprintV1,
+  buildAccountDirectoryHomeHttpPathV1,
+  buildAccountDirectoryHomeLoginAssertionHttpPathV1,
+  buildAccountDirectoryLinkHttpPathV1,
+  buildHomeLoginApprovalDecisionHttpPathV1,
   HomeLoginRedemptionResultV1Schema,
   createHomeLoginAssertionSigningBytesV1,
-  createHomeLoginAssertionSigningInputV1,
   redactHomeLoginAssertionV1,
   type AccountDirectoryErrorCodeV1,
+  type HomeLoginCredentialPayloadV1,
   type AccountDirectoryHomeDeleteParamsV1,
   type AccountDirectoryHomeDeleteRequestV1,
   type AccountDirectoryHomeDeleteResponseV1,
   type AccountDirectoryHomeEntryV1,
   type AccountDirectoryHomePutRequestV1,
   type AccountDirectoryHomePutResponseV1,
+  type AccountDirectoryHomePublishRequestV2,
+  type AccountDirectoryHomeWriteRequest,
   type AccountDirectoryHomesResponseV1,
   type AccountDirectoryLinkDeleteParamsV1,
   type AccountDirectoryLinkDeleteRequestV1,
@@ -149,6 +163,8 @@ export {
   type HomeApplicationOriginV1,
   type HomeDeviceApprovalRequestV1,
   type HomeDeviceApprovalListV1,
+  type HomeDeviceApprovalDecisionRequestV1,
+  type HomeDeviceApprovalDecisionResponseV1,
   type HomeLoginAssertionRequestV1,
   type HomeLoginAssertionResponseV1,
   type HomeLoginAssertionV1,
@@ -164,6 +180,7 @@ export {
   IROH_ENDPOINT_DESCRIPTOR_VERSION_V1,
   IrohEndpointDescriptorV1Schema,
   IrohEndpointIdV1Schema,
+  mergePublicIrohEndpointObservation,
   parseIrohEndpointDescriptorV1,
   type IrohEndpointDescriptorV1,
 } from './connectivity/iroh/endpointDescriptorV1.js';
@@ -172,11 +189,9 @@ export {
   IROH_MACHINE_CARRIER_FLOWS_V1,
   IROH_MACHINE_HANDSHAKE_VERSION_V1,
   IrohMachineCarrierFlowV1Schema,
-  IrohMachineHandshakeRoleV1Schema,
   IrohMachineHandshakeV1Schema,
   parseIrohMachineHandshakeV1,
   type IrohMachineCarrierFlowV1,
-  type IrohMachineHandshakeRoleV1,
   type IrohMachineHandshakeV1,
 } from './connectivity/iroh/machineHandshakeV1.js';
 
@@ -2397,6 +2412,12 @@ export {
   type TranscriptBodySessionMessageProtocol,
 } from './sessions/messages/sessionMessageRole.js';
 export {
+  projectTranscriptBodySearchableText,
+  projectTranscriptBodySemanticContent,
+  type TranscriptBodySemanticProjection,
+  type TranscriptBodySemanticRole,
+} from './sessions/messages/transcriptBodySemanticProjection.js';
+export {
   AgentExternalSessionTranscriptRawRecordSchema,
   ExternalSessionUserProjectionSchema,
   type AgentExternalSessionTranscriptRawRecord,
@@ -2728,13 +2749,14 @@ export {
   HOME_QR_INVITE_V2_MAX_FUTURE_ISSUANCE_SKEW_MS,
   HOME_QR_INVITE_V2_MAX_PAYLOAD_UTF8_BYTES,
   HOME_QR_INVITE_V2_MAX_TTL_MS,
+  HOME_QR_INVITE_DIRECTIONS_V2,
   HOME_QR_RENDEZVOUS_DOMAIN_V2,
   HOME_QR_REQUESTER_PUBLIC_KEY_V2_BYTES,
   HOME_QR_SECRET_V2_BYTES,
   HomeQrInviteV2Schema,
   computeHomeQrBindingProofV2,
-  computeHomeQrConfirmationCodeV2,
   createHomeQrBindingInputV2,
+  createHomeQrReverseInviteV2,
   deriveHomeQrBindingKeyV2,
   deriveHomeQrRendezvousSecretV2,
   deriveHomeQrRendezvousVerifierV2,
@@ -2745,7 +2767,9 @@ export {
   verifyHomeQrRendezvousVerifierV2,
   type HomeQrBindingContextV2,
   type HomeQrBindingParamsV2,
+  type HomeQrInviteDirectionV2,
   type HomeQrInviteV2,
+  type HomeQrReverseInviteV2Material,
 } from './crypto/qrProvisioningV2.js';
 
 export {
@@ -3977,6 +4001,7 @@ export {
   SessionInputAdmissionResultV1Schema,
   SessionInputAuthorityV1Schema,
   SessionInputCausalPermissionAuthorityV1Schema,
+  SessionInputSourceSessionV1Schema,
   SessionInputRequestEnvelopeDigestV1Schema,
   SessionInputRequestEqualityEvidenceV1Schema,
   SessionInputRequestV1Schema,
@@ -4012,6 +4037,7 @@ export {
   type SessionInputAdmissionResultV1,
   type SessionInputAuthorityV1,
   type SessionInputCausalPermissionAuthorityV1,
+  type SessionInputSourceSessionV1,
   type SessionInputRequestEnvelopeDigestV1,
   type SessionInputRequestEqualityEvidenceV1,
   type SessionInputRequestV1,
@@ -5659,6 +5685,10 @@ export {
   areWorkspaceSyncRelationshipDefinitionsEqual,
   DeleteWorkspaceSyncConflictLoserV1Schema,
   HandoffWorkspaceActionV1Schema,
+  HandoffTargetReplacementPreflightResultV1Schema,
+  HandoffTargetReplacementPreflightV1Schema,
+  HandoffTargetReplacementApprovalV1Schema,
+  sameHandoffTargetReplacementApproval,
   ReadWorkspaceSyncFileResultV1Schema,
   ReadWorkspaceSyncFileV1Schema,
   WORKSPACE_SYNC_FILE_PREVIEW_MAX_BYTES,
@@ -5669,6 +5699,7 @@ export {
   WorkspaceSyncCopyOnceV1Schema,
   WorkspaceSyncRelationshipV1Schema,
   WorkspaceSyncRelationshipIdV1Schema,
+  WorkspaceSyncLegacyStateInspectionV1Schema,
   WorkspaceSyncStatusV1Schema,
   WorkspaceSyncTargetBootstrapOwnerV1Schema,
   WorkspaceSyncTargetBootstrapPrepareResultV1Schema,
@@ -5682,6 +5713,9 @@ export {
   computeWorkspaceSyncPolicyDigest,
   type DeleteWorkspaceSyncConflictLoserV1,
   type HandoffWorkspaceActionV1,
+  type HandoffTargetReplacementPreflightResultV1,
+  type HandoffTargetReplacementPreflightV1,
+  type HandoffTargetReplacementApprovalV1,
   type ReadWorkspaceSyncFileResultV1,
   type ReadWorkspaceSyncFileV1,
   type WorkspaceContentPolicyV1,
@@ -5693,6 +5727,7 @@ export {
   type WorkspaceSyncEndpointEntryKindV1,
   type WorkspaceSyncRelationshipV1,
   type WorkspaceSyncRelationshipIdV1,
+  type WorkspaceSyncLegacyStateInspectionV1,
   type WorkspaceSyncStatusV1,
   type WorkspaceSyncTargetBootstrapOwnerV1,
   type WorkspaceSyncTargetBootstrapPrepareResultV1,
@@ -7177,7 +7212,12 @@ export {
 
 // Auth provider registry + shared auth error codes
 export { AuthProviderIdSchema, type AuthProviderId } from './auth/providers.js';
-export { AUTH_ERROR_CODES, AuthErrorCodeSchema, type AuthErrorCode } from './auth/errors.js';
+export {
+  AUTH_ERROR_CODES,
+  AUTH_KEY_CHALLENGE_V2_ERROR_CODES,
+  AuthErrorCodeSchema,
+  type AuthErrorCode,
+} from './auth/errors.js';
 export { ACCOUNT_ERASURE_CONFIRMATION_V1, ACCOUNT_ERASURE_HTTP_PATH_V1, AccountErasureErrorV1Schema, AccountErasureRequestV1Schema, AccountErasureResponseV1Schema, type AccountErasureErrorV1, type AccountErasureRequestV1, type AccountErasureResponseV1 } from './auth/accountErasure.js';
 export {
   ACCOUNT_SESSIONS_SIGN_OUT_EVERYWHERE_HTTP_PATH_V1,
@@ -7298,10 +7338,14 @@ export {
 
 export {
   DoctorSnapshotSchema,
+  DoctorSnapshotHomeTransportDiagnosticsSchema,
   DoctorSnapshotServerProfileSchema,
   parseDoctorSnapshotSafe,
+  sanitizeDoctorDiagnosticErrorCode,
+  sanitizeDoctorDiagnosticErrorMessage,
   sanitizeDoctorSnapshotUrls,
   type DoctorSnapshot,
+  type DoctorSnapshotHomeTransportDiagnostics,
   type DoctorSnapshotServerProfile,
 } from './diagnostics/doctorSnapshot.js';
 
@@ -7379,6 +7423,7 @@ export {
   type AutomationTemplateEnvelope,
 } from './automations/automationTemplateEnvelope.js';
 export * from './automations/automationOccurrenceV1.js';
+export * from './automations/automationSessionLifecycle.js';
 export * from './automations/automationEventV1.js';
 export * from './automations/automationReplyHandoffStateV1.js';
 export * from './automations/automationRunExecutionRecipeV1.js';
@@ -7779,7 +7824,7 @@ export {
   assertPluginAccountKvExpectedVersionV1,
   assertPluginAccountStorageEnvelopeForModeV1,
   clonePluginAccountKvRowV1,
-  commitPluginAccountKvMutationWithRebaseV1,
+  commitPluginAccountKvMutationV1,
   createEmptyPluginAccountKvRowV1,
   deletePluginAccountKvEntryV1,
   listPluginAccountKvEntriesV1,
@@ -7789,7 +7834,6 @@ export {
   projectPluginAccountKvEntryV1,
   projectPluginAccountKvListItemV1,
   readPluginAccountKvEntryV1,
-  rebasePluginAccountKvMutationRowV1,
   sealPluginAccountStoragePrivatePayloadV1,
   setPluginAccountKvEntryV1,
   type PluginAccountStorageEnvelopeV1,

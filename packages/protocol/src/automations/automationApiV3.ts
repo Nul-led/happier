@@ -41,6 +41,7 @@ import {
   AutomationTriggerDefinitionSchema,
   AutomationTriggerDefinitionInputSchema,
 } from './automationTriggerDefinition.js';
+import { AutomationSessionLifecycleConfigurationSchema } from './automationSessionLifecycle.js';
 
 export {
   AutomationEncryptedTriggerDefinitionEnvelopeV1Schema,
@@ -476,13 +477,8 @@ export type AutomationSessionLifecycleTriggerStatus = z.infer<
 
 export const AutomationSessionLifecycleTriggerProjectionSchema = AutomationTriggerProjectionBaseSchema.extend({
   kind: z.literal('sessionLifecycle'),
-  event: z.literal('parentTurnCompleted'),
-  scope: z.object({
-    kind: z.literal('exactTurn'),
-    sourceSessionId: IDENTIFIER_SCHEMA,
-    sourceTurnId: IDENTIFIER_SCHEMA,
-  }).strict(),
-  consumption: z.literal('once'),
+  ...AutomationSessionLifecycleConfigurationSchema.shape,
+  remainingOccurrences: z.number().int().nonnegative().max(2_147_483_647).nullable(),
   status: AutomationSessionLifecycleTriggerStatusSchema,
 }).strict();
 

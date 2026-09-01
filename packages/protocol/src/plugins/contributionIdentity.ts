@@ -89,6 +89,24 @@ export function createPluginContributionIdentity(
   return PluginContributionIdentityV1Schema.parse(input);
 }
 
+/**
+ * Binds one declaration-local contribution reference to its declaring plugin.
+ *
+ * This is qualification only: declaration ingress remains responsible for
+ * validating the local/qualified reference before calling it, and the
+ * contribution catalog remains responsible for resolving the returned
+ * identity. Keeping this structural step beside the qualified-identity owner
+ * prevents SDK transports and UI consumers from growing local variants.
+ */
+export function qualifyPluginContributionReferenceV1(
+  reference: string | PluginContributionIdentityV1,
+  declaringPluginId: string,
+): PluginContributionIdentityV1 {
+  return typeof reference === 'string'
+    ? { pluginId: declaringPluginId, localId: reference }
+    : { pluginId: reference.pluginId, localId: reference.localId };
+}
+
 export function buildQualifiedPluginContributionKey(identity: PluginContributionIdentityV1): string {
   return `${identity.pluginId}/${identity.localId}`;
 }

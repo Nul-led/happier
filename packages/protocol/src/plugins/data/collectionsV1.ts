@@ -201,14 +201,21 @@ export function measurePluginCollectionMutationRequestDecompositionV1(
  * planner reading this plans against the value that will be enforced rather
  * than a compatibility ceiling.
  *
- * Batch dimensions are deployment-owned: a collection quota bounds stored rows
- * and Account aggregates, never how much one atomic request may carry.
+ * Batch and Account-aggregate dimensions are deployment-owned. A collection
+ * quota narrows only that collection's stored rows, encoded bytes, and row
+ * size; it never changes aggregate Account ceilings or one atomic batch.
  */
 export type PluginCollectionEffectiveLimitsV1 = Readonly<{
   maxRowEncodedBytes: number;
+  /** Effective live-row ceiling for this collection. */
+  maxRows: number;
+  /** Effective encoded-byte ceiling for this collection. */
+  maxCollectionEncodedBytes: number;
   maxBatchBytes: number;
   maxBatchRows: number;
+  /** Deployment-wide aggregate ceiling retained independently of `maxRows`. */
   maxAccountRows: number;
+  /** Deployment-wide aggregate ceiling retained independently of `maxCollectionEncodedBytes`. */
   maxAccountBytes: number;
   /**
    * `deployment` when the connected deployment published its effective policy.
@@ -235,10 +242,15 @@ export function resolveEffectivePluginCollectionLimitsV1(input: Readonly<{
   );
   return Object.freeze({
     maxRowEncodedBytes: narrowed(deployment.maxRowEncodedBytes, input.quota?.maxRowEncodedBytes),
+    maxRows: narrowed(deployment.maxAccountRows, input.quota?.maxRows),
+    maxCollectionEncodedBytes: narrowed(
+      deployment.maxAccountBytes,
+      input.quota?.maxCollectionEncodedBytes,
+    ),
     maxBatchBytes: deployment.maxBatchBytes,
     maxBatchRows: deployment.maxBatchRows,
-    maxAccountRows: narrowed(deployment.maxAccountRows, input.quota?.maxRows),
-    maxAccountBytes: narrowed(deployment.maxAccountBytes, input.quota?.maxCollectionEncodedBytes),
+    maxAccountRows: deployment.maxAccountRows,
+    maxAccountBytes: deployment.maxAccountBytes,
     basis: input.deployment ? 'deployment' : 'default',
   });
 }
@@ -504,7 +516,11 @@ export const PluginCollectionMutationRequestV1Schema = z.object({
 });
 export type PluginCollectionMutationRequestV1 = z.infer<typeof PluginCollectionMutationRequestV1Schema>;
 
-/** Host-private physical reclamation; public Collection deletion remains logical CAS. */
+/**
+ * Retention-only exact physical reclamation. An exact live revision first
+ * receives the canonical logical-delete effects in the same transaction;
+ * an exact tombstone is forgotten directly.
+ */
 export const PluginCollectionForgetRequestV1Schema = z.object({
   pluginId: asProtocolZod(PluginIdSchema),
   collectionId: asProtocolZod(PluginContributionLocalIdSchema),

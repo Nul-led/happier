@@ -984,6 +984,8 @@ describe('Action Spec Registry', () => {
     expect(getActionSpec('memory.search').surfaces.plugin).toBe(true);
     expect(getActionSpec('memory.get_window').surfaces.plugin).toBe(true);
     expect(getActionSpec('memory.ensure_up_to_date').surfaces.plugin).toBe(true);
+    expect(getActionSpec('session.permission_mode.set').surfaces.plugin).toBe(false);
+    expect(PluginInvocableActionIdSchema.safeParse('session.permission_mode.set').success).toBe(false);
     expect(getActionSpec('daemon.promptAssets.discover').surfaces.plugin).toBe(true);
     expect(getActionSpec('daemon.promptAssets.delete').surfaces.plugin).toBe(true);
     expect(getActionSpec('daemon.promptRegistry.scanSource').surfaces.plugin).toBe(true);
@@ -1365,7 +1367,6 @@ describe('Action Spec Registry', () => {
     }).success).toBe(false);
 
     for (const actionId of [
-      'session.permission_mode.set',
       'session.history.get',
       'session.events.get',
       'session.messages.recent.get',
@@ -1373,6 +1374,8 @@ describe('Action Spec Registry', () => {
       expect(getActionSpec(actionId as ActionId).surfaces.plugin).toBe(true);
       expect(PluginInvocableActionIdSchema.safeParse(actionId).success).toBe(true);
     }
+    expect(getActionSpec('session.permission_mode.set').surfaces.plugin).toBe(false);
+    expect(PluginInvocableActionIdSchema.safeParse('session.permission_mode.set').success).toBe(false);
   });
 
   it('keeps plugin External Session action inputs and results public-safe and strict', async () => {

@@ -13,11 +13,15 @@ const sourceEndpointId = 'a'.repeat(64);
 const targetEndpointId = 'b'.repeat(64);
 
 const irohBinding: IrohPeerRouteBindingV2 = {
-  sourceMachineId: 'machine-source',
-  targetMachineId: 'machine-target',
-  sourceEndpointId,
-  targetEndpointId,
-  role: 'initiator',
+  initiator: {
+    kind: 'machine',
+    machineId: 'machine-source',
+    endpointId: sourceEndpointId,
+  },
+  target: {
+    machineId: 'machine-target',
+    endpointId: targetEndpointId,
+  },
   operationKind: 'file_transfer',
 };
 
@@ -58,7 +62,7 @@ describe('DirectRouteGrantV2', () => {
       v: 2 as const,
       kind: 'ephemeral_ed25519' as const,
       ephemeralPublicKeyBase64Url: publicKeyBase64Url,
-      machineId: irohBinding.targetMachineId,
+      machineId: irohBinding.target.machineId,
       flowKind: 'bounded_transfer' as const,
       routeKind: 'iroh_peer' as const,
       endpointFingerprint: targetEndpointId,
@@ -85,7 +89,9 @@ describe('DirectRouteGrantV2', () => {
     expect(DirectRouteGrantPayloadV2Schema.safeParse({ ...payloadFields, iroh: undefined }).success).toBe(false);
     expect(DirectRouteGrantPayloadV2Schema.safeParse({
       ...payloadFields,
-      machineId: irohBinding.sourceMachineId,
+      machineId: irohBinding.initiator.kind === 'machine'
+        ? irohBinding.initiator.machineId
+        : 'unexpected-account-client',
     }).success).toBe(false);
   });
 
@@ -94,7 +100,7 @@ describe('DirectRouteGrantV2', () => {
       v: 2 as const,
       kind: 'ephemeral_ed25519' as const,
       ephemeralPublicKeyBase64Url: publicKeyBase64Url,
-      machineId: irohBinding.targetMachineId,
+      machineId: irohBinding.target.machineId,
       flowKind: 'bounded_transfer' as const,
       routeKind: 'iroh_peer' as const,
       endpointFingerprint: targetEndpointId,
@@ -110,7 +116,7 @@ describe('DirectRouteGrantV2', () => {
 
     expect(DirectRouteGrantRequestV2Schema.safeParse({
       ...request,
-      iroh: { ...irohBinding, role: 'observer' },
+      iroh: { ...irohBinding, initiator: { ...irohBinding.initiator, kind: 'browser' } },
     }).success).toBe(false);
     expect(DirectRouteGrantRequestV2Schema.safeParse({
       ...request,
@@ -118,7 +124,68 @@ describe('DirectRouteGrantV2', () => {
     }).success).toBe(false);
     expect(DirectRouteGrantRequestV2Schema.safeParse({
       ...request,
-      iroh: { ...irohBinding, targetEndpointId: sourceEndpointId },
+      iroh: { ...irohBinding, target: { ...irohBinding.target, endpointId: sourceEndpointId } },
+    }).success).toBe(false);
+  });
+
+  it('admits an authenticated Account client without inventing a source Machine', () => {
+    const accountClientBinding: IrohPeerRouteBindingV2 = {
+      initiator: { kind: 'account_client', endpointId: sourceEndpointId },
+      target: { machineId: 'machine-target', endpointId: targetEndpointId },
+      operationKind: 'attachment_transfer',
+    };
+    const request = {
+      v: 2 as const,
+      kind: 'ephemeral_ed25519' as const,
+      ephemeralPublicKeyBase64Url: publicKeyBase64Url,
+      machineId: accountClientBinding.target.machineId,
+      flowKind: 'bounded_transfer' as const,
+      routeKind: 'iroh_peer' as const,
+      endpointFingerprint: accountClientBinding.target.endpointId,
+      ttlMs: 1_000,
+      scope: {
+        kind: 'bounded_transfer' as const,
+        mode: 'single' as const,
+        transferId: 'transfer-1',
+        maxBytes: 1_024,
+      },
+      iroh: accountClientBinding,
+    };
+
+    expect(DirectRouteGrantRequestV2Schema.parse(request).iroh).toEqual(accountClientBinding);
+    expect(DirectRouteGrantRequestV2Schema.safeParse({
+      ...request,
+      iroh: {
+        ...accountClientBinding,
+        initiator: { ...accountClientBinding.initiator, machineId: 'pseudo-machine' },
+      },
+    }).success).toBe(false);
+  });
+
+  it('rejects Account-client workspace sync because that operation requires a Machine initiator', () => {
+    const accountClientWorkspaceBinding: IrohPeerRouteBindingV2 = {
+      initiator: { kind: 'account_client', endpointId: sourceEndpointId },
+      target: { machineId: 'machine-target', endpointId: targetEndpointId },
+      operationKind: 'workspace_sync',
+    };
+
+    expect(DirectRouteGrantRequestV2Schema.safeParse({
+      v: 2,
+      kind: 'ephemeral_ed25519',
+      ephemeralPublicKeyBase64Url: publicKeyBase64Url,
+      machineId: accountClientWorkspaceBinding.target.machineId,
+      flowKind: 'machine_rpc',
+      routeKind: 'iroh_peer',
+      endpointFingerprint: accountClientWorkspaceBinding.target.endpointId,
+      ttlMs: 1_000,
+      scope: {
+        kind: 'machine_rpc',
+        rpcScopeId: 'workspace-sync-1',
+        allowedMethods: ['daemon.memory.status'],
+        maxCalls: 1,
+        maxIdleMs: 1_000,
+      },
+      iroh: accountClientWorkspaceBinding,
     }).success).toBe(false);
   });
 

@@ -4,6 +4,9 @@ import { build } from 'vite';
 import { describe, expect, it } from 'vitest';
 
 import {
+  AgentExecutionRunEventSchema as canonicalExecutionRunEventSchema,
+} from './agentExecutionRunV1.js';
+import {
   AgentProviderBindingMaterializationV1Schema as canonicalMaterializationSchema,
 } from '../providers/materialization/v1.js';
 import {
@@ -26,6 +29,7 @@ import {
   UsageObservationTokensSchema as canonicalUsageTokensSchema,
 } from '../usage/usageAnalyticsContracts.js';
 import {
+  AgentExecutionRunEventSchema,
   AgentProviderBindingMaterializationV1Schema,
   AgentSessionProviderBindingV1Schema,
   AgentSessionRealtimeStartRequestV1Schema,
@@ -38,6 +42,7 @@ import {
 } from './index.js';
 
 const RUNTIME_SCHEMA_EXPORTS = [
+  'AgentExecutionRunEventSchema',
   'AgentProviderBindingMaterializationV1Schema',
   'AgentRuntimeJsonValueSchema',
   'AgentSessionProviderBindingV1Schema',
@@ -54,6 +59,7 @@ const RUNTIME_SCHEMA_EXPORTS = [
 
 describe('portable Protocol runtime projection', () => {
   it('re-exports the canonical runtime schema objects without reinstantiating them', () => {
+    expect(AgentExecutionRunEventSchema).toBe(canonicalExecutionRunEventSchema);
     expect(AgentProviderBindingMaterializationV1Schema).toBe(canonicalMaterializationSchema);
     expect(AgentSessionProviderBindingV1Schema).toBe(canonicalProviderBindingSchema);
     expect(metadataCompatibilityProviderBindingSchema).toBe(canonicalProviderBindingSchema);

@@ -13,7 +13,6 @@ export const AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1 = Object.freeze({
   usageSourceMaxCodeUnits: 128,
   filePathMaxCodeUnits: 10_000,
   descriptionMaxCodeUnits: 8_000,
-  deltaTextMaxCodeUnits: 64 * 1_024,
   compactInstructionsMaxCodeUnits: 32 * 1_024,
   json: Object.freeze({
     maxDepth: 24,

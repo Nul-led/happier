@@ -102,6 +102,10 @@
       "types": "./dist/automations/automationEventHistoryGapResetActionV1.d.ts",
       "default": "./dist/automations/automationEventHistoryGapResetActionV1.js"
     },
+    "./automations/run-cause": {
+      "types": "./dist/automations/automationRunCause.d.ts",
+      "default": "./dist/automations/automationRunCause.js"
+    },
     "./rpcErrors": {
       "types": "./dist/rpc/errors.d.ts",
       "default": "./dist/rpc/errors.js"

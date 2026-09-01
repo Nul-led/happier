@@ -27,9 +27,62 @@ const DoctorSnapshotAutomaticStartupTargetModeSchema = z.enum(['pinned', 'defaul
 const HappierWarningSeveritySchema = z.enum(['info', 'warning', 'error']);
 const NonNegativeInteger = z.number().int().nonnegative();
 
+const DoctorSnapshotTransportObservationSchema = z.object({
+  carrier: z.enum(['https', 'iroh']).optional(),
+  /** Omitted when native reports `unknown`; diagnostics never infer a path. */
+  observedPath: z.enum(['direct', 'relay']).optional(),
+});
+
+export const DoctorSnapshotHomeTransportDiagnosticsSchema = z.object({
+  homeServerIdentityId: NonEmptyString,
+  state: z.enum(['connecting', 'connected', 'reconnecting', 'unavailable', 'disconnected', 'unknown']),
+  /** Exact configuration applied by the native owner, when that owner has supplied it. */
+  effectiveConfiguration: z.object({
+    policy: z.enum(['automatic', 'disabled']),
+    relayUrls: z.array(z.string().trim().min(1).max(2_048)).max(16),
+    directAddressCount: z.number().int().nonnegative().max(256),
+  }).optional(),
+  /** Current proven carrier/path facts. Unknown facts are omitted. */
+  current: DoctorSnapshotTransportObservationSchema.optional(),
+  /** Most recent proven carrier/path facts, retained across degradation or closure. */
+  lastKnown: DoctorSnapshotTransportObservationSchema.optional(),
+  lastTransitionAtMs: z.number().int().nonnegative().optional(),
+  diagnosticError: z.object({
+    code: NonEmptyString.max(256),
+    message: NonEmptyString.max(1_024).optional(),
+    atMs: z.number().int().nonnegative(),
+  }).optional(),
+});
+
+export type DoctorSnapshotHomeTransportDiagnostics = z.infer<typeof DoctorSnapshotHomeTransportDiagnosticsSchema>;
+
 function sanitizeUrl(raw: string): string {
   const sanitized = sanitizeBugReportUrl(raw) ?? raw;
   return sanitized.replace(/\/+$/, '');
+}
+
+function redactDoctorDiagnosticSecrets(value: string): string {
+  return value.replace(
+    /\b(token|authorization|password|secret|private[-_ ]?key|proof)\b\s*[:=]\s*[^\s,;]+/giu,
+    '$1=[redacted]',
+  );
+}
+
+export function sanitizeDoctorDiagnosticErrorCode(code: string): string {
+  const withoutControls = redactDoctorDiagnosticSecrets(String(code ?? ''))
+    .replace(/[\u0000-\u001f\u007f]/gu, '')
+    .trim();
+  return withoutControls.slice(0, 256) || 'unknown';
+}
+
+export function sanitizeDoctorDiagnosticErrorMessage(message: string): string {
+  const withoutSecrets = redactDoctorDiagnosticSecrets(String(message ?? ''));
+  const withoutUrlSecrets = withoutSecrets.replace(
+    /https?:\/\/[^\s]+/giu,
+    (url) => sanitizeBugReportUrl(url) ?? '[invalid-url]',
+  );
+  return withoutUrlSecrets.replace(/[\u0000-\u001f\u007f]/gu, ' ').trim().slice(0, 1_024)
+    || 'Unknown transport error';
 }
 
 export const DoctorSnapshotServerProfileSchema = z.object({
@@ -83,7 +136,11 @@ export const DoctorSnapshotDaemonStatusSchema = z.object({
   }),
   auth: z.object({
     authenticated: z.boolean(),
+    /** Current server validation fact. Stored bytes alone are never `valid`. */
+    credentialState: z.enum(['missing', 'valid', 'invalid', 'unknown']).optional(),
     machineRegistered: z.boolean(),
+    /** Distinguishes a locally allocated identity from one accepted by the server. */
+    machineRegistrationState: z.enum(['no-local-id', 'local-only', 'server-confirmed']).optional(),
     machineId: NonEmptyString.nullable(),
     needsAuth: z.boolean(),
     accountId: NonEmptyString.nullable(),
@@ -245,6 +302,7 @@ export const DoctorSnapshotSchema = z.object({
   automaticStartup: DoctorSnapshotAutomaticStartupSummarySchema.optional(),
   activeStack: DoctorSnapshotActiveStackSummarySchema.optional(),
   serviceHealth: DoctorSnapshotServiceHealthSchema.optional(),
+  homeTransports: z.array(DoctorSnapshotHomeTransportDiagnosticsSchema).max(64).optional(),
   warnings: z.array(HappierDoctorWarningSchema).optional(),
 });
 
@@ -340,6 +398,24 @@ export function sanitizeDoctorSnapshotUrls(snapshot: DoctorSnapshot): DoctorSnap
             : undefined,
         }
       : undefined,
+    homeTransports: snapshot.homeTransports?.map((transport) => ({
+      ...transport,
+      effectiveConfiguration: transport.effectiveConfiguration
+        ? {
+            ...transport.effectiveConfiguration,
+            relayUrls: transport.effectiveConfiguration.relayUrls.map((url) => sanitizeUrl(url)),
+          }
+        : undefined,
+      diagnosticError: transport.diagnosticError
+        ? {
+            ...transport.diagnosticError,
+            code: sanitizeDoctorDiagnosticErrorCode(transport.diagnosticError.code),
+            message: transport.diagnosticError.message
+              ? sanitizeDoctorDiagnosticErrorMessage(transport.diagnosticError.message)
+              : undefined,
+          }
+        : undefined,
+    })),
   };
 }
 

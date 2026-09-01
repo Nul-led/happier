@@ -17,6 +17,7 @@ import {
   type ActionsSettingsV1,
 } from '../../actions/actionSettings.js';
 import type { ActionId } from '../../actions/actionIds.js';
+import { computeWorkspaceSyncPolicyDigest } from '../../sessions/control/handoff/workspaceSyncSchemas.js';
 
 type ActionSurface = NonNullable<ActionEnablementContext['surface']>;
 
@@ -176,6 +177,28 @@ describe('accountSettings', () => {
       },
     });
     expect(invalidSecret.sessionHandoffDefaultsV1.ignoredIncludeGlobs).toEqual([]);
+  });
+
+  it('reads but does not rewrite retired UI-owned workspace relationship identity', () => {
+    expect(SessionHandoffDefaultsV1Schema.parse({
+      v: 1,
+      workspaceSyncMode: 'keep_synced',
+      workspaceSyncRelationshipId: 'legacy-relationship-id',
+    })).toEqual({
+      v: 1,
+      workspaceSyncMode: 'keep_synced',
+      includeIgnoredMode: 'exclude',
+      ignoredIncludeGlobs: [],
+      directTargetMode: 'keep_direct',
+    });
+    expect(DEFAULT_SESSION_HANDOFF_DEFAULTS_V1).not.toHaveProperty('workspaceSyncRelationshipId');
+  });
+
+  it('defaults a new handoff workspace choice to Keep updated without overriding persisted choices', () => {
+    expect(DEFAULT_SESSION_HANDOFF_DEFAULTS_V1.workspaceSyncMode).toBe('keep_synced');
+    expect(SessionHandoffDefaultsV1Schema.parse({}).workspaceSyncMode).toBe('keep_synced');
+    expect(SessionHandoffDefaultsV1Schema.parse({ workspaceSyncMode: 'none' }).workspaceSyncMode).toBe('none');
+    expect(SessionHandoffDefaultsV1Schema.parse({ workspaceSyncMode: 'copy_once' }).workspaceSyncMode).toBe('copy_once');
   });
 
   it('ratifies the session-handoff glob count, per-item, and aggregate ceilings independently', () => {
@@ -942,7 +965,6 @@ describe('accountSettings', () => {
       allowAgentModeOverride: true,
       allowConfigOptionOverrides: true,
       allowProfileOverride: true,
-      allowEnvironmentVariables: true,
       allowConnectedServicesOverride: true,
       allowMcpSelectionOverride: true,
       allowTranscriptStorageOverride: true,
@@ -955,7 +977,6 @@ describe('accountSettings', () => {
       sessionAgentSpawnPolicyV1: {
         v: 1,
         allowCustomDirectory: false,
-        allowEnvironmentVariables: false,
         permissionCeiling: 'not-a-real-mode',
       },
     });
@@ -963,7 +984,6 @@ describe('accountSettings', () => {
     expect(parsed.sessionAgentSpawnPolicyV1).toMatchObject({
       v: 1,
       allowCustomDirectory: false,
-      allowEnvironmentVariables: false,
       permissionCeiling: null,
     });
   });
@@ -1145,6 +1165,38 @@ describe('accountSettings', () => {
     });
 
     expect(parsed.workspaceRefsV1).toEqual([]);
+  });
+
+  it('preserves more than 32 valid relationships and rejects malformed relationship authority', () => {
+    const policyFields = {
+      v: 1 as const,
+      selection: 'git_worktree' as const,
+      extraIgnorePatterns: [],
+      extraIncludePatterns: [],
+      includeGitDirectory: false,
+    };
+    const contentPolicy = {
+      ...policyFields,
+      policyDigest: computeWorkspaceSyncPolicyDigest(policyFields),
+    };
+    const relationships = Array.from({ length: 33 }, (_, index) => ({
+      v: 1 as const,
+      relationshipId: `relationship-${index}`,
+      controllerMachineId: 'machine-controller',
+      alphaWorkspaceRefId: `alpha-${index}`,
+      betaWorkspaceRefId: `beta-${index}`,
+      mode: 'keep_synced' as const,
+      contentPolicy,
+      enabled: true,
+      createdAtMs: index,
+      updatedAtMs: index,
+    }));
+
+    expect(accountSettingsParse({ workspaceSyncRelationshipsV1: relationships }).workspaceSyncRelationshipsV1)
+      .toHaveLength(33);
+    expect(() => accountSettingsParse({
+      workspaceSyncRelationshipsV1: [{ relationshipId: 'malformed' }],
+    })).toThrow();
   });
 
   it('fills sparse prompt-library Account roots through their shared Protocol schemas', () => {

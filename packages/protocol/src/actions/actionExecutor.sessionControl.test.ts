@@ -68,6 +68,11 @@ describe('createActionExecutor (session control)', () => {
         kind: 'admittedSessionInputV1' as const,
         admittedPermissionCeiling: 'read-only' as const,
       },
+      sessionInputSource: {
+        sourceSessionId: 'caller',
+        sourceTurnId: 'turn-1',
+        via: 'action' as const,
+      },
     };
 
     await expect(executor.execute(
@@ -78,6 +83,15 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionSendMessage).toHaveBeenCalledWith(expect.objectContaining({
       permissionModeOverride: 'read-only',
       callerSurface: 'agent',
+      sessionInputSource: {
+        sourceSessionId: 'caller',
+        sourceTurnId: 'turn-1',
+        via: 'action',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'read-only',
+        },
+      },
     }));
 
     await expect(executor.execute(
@@ -99,6 +113,30 @@ describe('createActionExecutor (session control)', () => {
       errorCode: 'permission_escalation_denied',
     });
     expect(sessionSpawnNew).not.toHaveBeenCalled();
+  });
+
+  it('fails Agent cross-Session send closed without a host-stamped active-turn source witness', async () => {
+    const sessionSendMessage = vi.fn(async () => ({ ok: true }));
+    const executor = createExecutor({ sessionSendMessage });
+
+    await expect(executor.execute(
+      'session.message.send' as any,
+      { sessionId: 'target', message: 'Continue' },
+      {
+        surface: 'agent',
+        defaultSessionId: 'caller',
+        callerPermissionMode: 'yolo',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'read-only',
+        },
+      },
+    )).resolves.toEqual({
+      ok: false,
+      errorCode: 'causal_permission_authority_invalid',
+      error: 'causal_permission_authority_invalid',
+    });
+    expect(sessionSendMessage).not.toHaveBeenCalled();
   });
 
   it('fails every agent Session mutation closed when causal permission authority is malformed', async () => {
@@ -532,7 +570,20 @@ describe('createActionExecutor (session control)', () => {
         sessionId: 'higher-privilege-session',
         message: 'Continue',
       },
-      { surface: 'agent', defaultSessionId: 'caller', callerPermissionMode: 'read-only' } as any,
+      {
+        surface: 'agent',
+        defaultSessionId: 'caller',
+        callerPermissionMode: 'read-only',
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'read-only',
+        },
+        sessionInputSource: {
+          sourceSessionId: 'caller',
+          sourceTurnId: 'turn-1',
+          via: 'action',
+        },
+      },
     );
 
     expect(res).toEqual({ ok: true, result: { ok: true } });
@@ -926,7 +977,7 @@ describe('createActionExecutor (session control)', () => {
     expect(sessionTranscriptGet).not.toHaveBeenCalled();
   });
 
-  it('routes other public Session reads and permission-mode control for plugin callers', async () => {
+  it('routes public Session reads but denies permission-mode control for plugin callers', async () => {
     const sessionTranscriptGet = vi.fn(async () => ({ ok: true }));
     const sessionEventsGet = vi.fn(async () => ({ ok: true }));
     const sessionPermissionModeSet = vi.fn(async () => ({ ok: true }));
@@ -944,7 +995,6 @@ describe('createActionExecutor (session control)', () => {
       ['session.history.get', { sessionId: 's1', format: 'raw' }],
       ['session.events.get', { sessionId: 's1', includeRaw: true }],
       ['session.messages.recent.get', { sessionId: 's1', limit: 1 }],
-      ['session.permission_mode.set', { sessionId: 's1', permissionMode: 'yolo' }],
     ] as const) {
       await expect(executor.execute(actionId, input, pluginContext)).resolves.toEqual({
         ok: true,
@@ -954,7 +1004,12 @@ describe('createActionExecutor (session control)', () => {
 
     expect(sessionTranscriptGet).toHaveBeenCalledTimes(1);
     expect(sessionEventsGet).toHaveBeenCalledTimes(2);
-    expect(sessionPermissionModeSet).toHaveBeenCalledTimes(1);
+    await expect(executor.execute(
+      'session.permission_mode.set',
+      { sessionId: 's1', permissionMode: 'yolo' },
+      pluginContext,
+    )).resolves.toMatchObject({ ok: false, errorCode: 'action_disabled' });
+    expect(sessionPermissionModeSet).not.toHaveBeenCalled();
   });
 
   it('executes session.events.get via deps.sessionEventsGet', async () => {

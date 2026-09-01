@@ -74,6 +74,12 @@ export {
   type SessionMessageRole,
 } from './messages/sessionMessageRole.js';
 export {
+  projectTranscriptBodySearchableText,
+  projectTranscriptBodySemanticContent,
+  type TranscriptBodySemanticProjection,
+  type TranscriptBodySemanticRole,
+} from './messages/transcriptBodySemanticProjection.js';
+export {
   AgentExternalSessionTranscriptRawRecordSchema,
   ExternalSessionUserProjectionSchema,
   type AgentExternalSessionTranscriptRawRecord,

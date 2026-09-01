@@ -109,6 +109,12 @@ const PluginHostedWebAccountDataCollectionOperationV1Schema = z.discriminatedUni
   }).strict(),
   z.object({
     kind: z.literal('data'),
+    operation: z.literal('collection.forget'),
+    definition: PluginHostedWebAccountDataDefinitionV1Schema,
+    arguments: z.tuple([PluginCollectionRowIdV1Schema, z.object({ expectedRevision: z.number().int().positive() }).strict()]),
+  }).strict(),
+  z.object({
+    kind: z.literal('data'),
     operation: z.literal('collection.query'),
     definition: PluginHostedWebAccountDataDefinitionV1Schema,
     arguments: z.tuple([AccountDataCollectionQueryV1Schema]),

@@ -8,6 +8,7 @@ import { PluginIdSchema } from '../plugins/pluginId.js';
 import {
   SessionCreationDirectoryApprovalV1Schema,
 } from '../sessions/creation/sessionCreationTargetPreparationV1.js';
+import { HandoffTargetReplacementApprovalV1Schema } from '../sessions/control/handoff/handoffTargetReplacementApprovalV1.js';
 
 export const ApprovalRequestStatusSchema = z.enum(['open', 'approved', 'rejected', 'executed', 'failed', 'canceled']);
 export type ApprovalRequestStatus = z.infer<typeof ApprovalRequestStatusSchema>;
@@ -78,6 +79,8 @@ export const ApprovalRequestV1Schema = z.object({
    * Action family.
    */
   sessionCreationDirectoryApproval: SessionCreationDirectoryApprovalV1Schema.optional(),
+  /** Host-stamped non-empty handoff target evidence; never Action input. */
+  handoffTargetReplacementApproval: HandoffTargetReplacementApprovalV1Schema.optional(),
   decision: ApprovalDecisionV1Schema.optional(),
   execution: ApprovalExecutionV1Schema.optional(),
 }).passthrough().superRefine((value, ctx) => {
@@ -174,6 +177,13 @@ export const ApprovalRequestV1Schema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['sessionCreationDirectoryApproval'],
       message: 'Directory creation approval evidence belongs only to session.spawn_new.',
+    });
+  }
+  if (value.handoffTargetReplacementApproval !== undefined && value.actionId !== 'session.handoff') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['handoffTargetReplacementApproval'],
+      message: 'Handoff target-replacement approval evidence belongs only to session.handoff.',
     });
   }
 });

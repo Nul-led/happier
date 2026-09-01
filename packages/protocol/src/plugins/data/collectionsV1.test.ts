@@ -52,6 +52,7 @@ import {
   measurePluginCollectionMutationRequestEncodedBytesV1,
   normalizePluginAccountCollectionContractV1,
   normalizePluginAccountCollectionContractsV1,
+  resolveEffectivePluginCollectionLimitsV1,
   splitPluginCollectionCandidatePreparationStageRequestsForKnownLimitsV1,
   validatePluginCollectionUiQueryParametersV1,
   validatePluginCollectionUiQueryResultV1,
@@ -100,6 +101,31 @@ const baseCollection = {
 } as const;
 
 describe('Plugin Account Collection contracts', () => {
+  it('keeps collection-declared ceilings distinct from Account aggregate ceilings', () => {
+    expect(resolveEffectivePluginCollectionLimitsV1({
+      deployment: {
+        maxRowEncodedBytes: 256 * 1024,
+        maxBatchBytes: 4 * 1024 * 1024,
+        maxBatchRows: 40,
+        maxAccountRows: 5_000,
+        maxAccountBytes: 64 * 1024 * 1024,
+      },
+      quota: {
+        maxRows: 250,
+        maxCollectionEncodedBytes: 8 * 1024 * 1024,
+      },
+    })).toEqual({
+      maxRowEncodedBytes: 256 * 1024,
+      maxRows: 250,
+      maxCollectionEncodedBytes: 8 * 1024 * 1024,
+      maxBatchBytes: 4 * 1024 * 1024,
+      maxBatchRows: 40,
+      maxAccountRows: 5_000,
+      maxAccountBytes: 64 * 1024 * 1024,
+      basis: 'deployment',
+    });
+  });
+
   it('publishes the measured hard ceiling family without retaining the obsolete 256 KiB row limit', () => {
     expect(PLUGIN_COLLECTION_LIMITS_V1).toMatchObject({
       maximumStoredRowEncodedBytes: 2 * 1024 * 1024,

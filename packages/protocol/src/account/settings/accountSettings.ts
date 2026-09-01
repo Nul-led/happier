@@ -193,7 +193,6 @@ export const SessionAgentSpawnPolicyV1Schema = z
     allowAgentModeOverride: z.boolean().default(true),
     allowConfigOptionOverrides: z.boolean().default(true),
     allowProfileOverride: z.boolean().default(true),
-    allowEnvironmentVariables: z.boolean().default(true),
     allowConnectedServicesOverride: z.boolean().default(true),
     allowMcpSelectionOverride: z.boolean().default(true),
     allowTranscriptStorageOverride: z.boolean().default(true),
@@ -210,7 +209,6 @@ export const SessionAgentSpawnPolicyV1Schema = z
     allowAgentModeOverride: true,
     allowConfigOptionOverrides: true,
     allowProfileOverride: true,
-    allowEnvironmentVariables: true,
     allowConnectedServicesOverride: true,
     allowMcpSelectionOverride: true,
     allowTranscriptStorageOverride: true,
@@ -554,6 +552,8 @@ type AccountCatalogDefinitionOptions = Readonly<{
    */
   structuralBoundsOwner?: AccountSettingStructuralBoundsOwner;
   compatibility?: Readonly<{ provenance: string; removalCondition: string }>;
+  /** Present malformed authority-bearing values must fail instead of recovering to a default. */
+  recoverMalformed?: boolean;
 }>;
 
 /**
@@ -611,7 +611,9 @@ export function accountCatalogDefinition<TSchema extends z.ZodTypeAny>(
     structuralBoundsOwner,
   );
   const parsedDefault = boundedSchema.parse(defaultValue);
-  const recoverySchema = boundedSchema.catch(parsedDefault);
+  const presentValueSchema = (options.recoverMalformed === false
+    ? boundedSchema
+    : boundedSchema.catch(parsedDefault)) as typeof boundedSchema;
   const missingValueDefaultSchema = z.undefined().transform(() => parsedDefault);
   const parseMutationValue = (value: unknown): AccountSettingValueParseResult => {
     const boundIssue = inspectAccountSettingValueBounds(
@@ -625,8 +627,9 @@ export function accountCatalogDefinition<TSchema extends z.ZodTypeAny>(
   };
   return {
     // Preserve Zod `.default(...)` semantics: a parsed transform result is returned as-is for
-    // missing input, while present invalid values still fall through to the bounded catch schema.
-    schema: missingValueDefaultSchema.or(recoverySchema),
+    // missing input. Definitions may opt out of malformed-value recovery when their value is
+    // authoritative state that must never be reinterpreted as the default.
+    schema: missingValueDefaultSchema.or(presentValueSchema),
     parseMutationValue,
     default: parsedDefault,
     description: `Account ${options.semanticDomain} setting`,
@@ -675,12 +678,14 @@ function accountLegacy<TSchema extends z.ZodTypeAny>(
   defaultValue: z.input<TSchema>,
   semanticDomain: string,
   maximumSerializedValueBytes = 64 * 1024,
+  recoverMalformed = true,
 ) {
   return accountCatalogDefinition(schema, defaultValue, {
     semanticDomain,
     classification: 'legacy',
     maximumSerializedValueBytes,
     compatibility: LEGACY_COMPATIBILITY,
+    recoverMalformed,
   });
 }
 
@@ -793,12 +798,14 @@ const SessionHandoffIgnoredIncludeGlobSchema = z
 export const SessionHandoffDefaultsV1Schema = z
   .object({
     v: z.literal(1).default(1),
-    // `none` is the safe handoff default. Persistent modes are selected only
-    // when a stored relationship id is available; copy_once remains ephemeral.
+    // Keep updated is the recommended first-use outcome. Explicit persisted
+    // choices remain authoritative, and relationship identity stays daemon-owned.
     workspaceSyncMode: z
       .enum(['none', 'copy_once', 'keep_synced', 'mirror_exactly', 'keep_both_in_sync'])
-      .default('none'),
-    workspaceSyncRelationshipId: accountBoundedString(256).nullable().optional().default(null),
+      .default('keep_synced'),
+    // Reader-only tolerance for pre-A4 UI defaults. The transform deliberately
+    // drops this retired UI-owned identity from all canonical writes.
+    workspaceSyncRelationshipId: accountBoundedString(256).nullable().optional(),
     includeIgnoredMode: z.enum(['exclude', 'include_selected']).default('exclude'),
     ignoredIncludeGlobs: z.array(SessionHandoffIgnoredIncludeGlobSchema).max(64).superRefine((value, ctx) => {
       if (value.reduce((total, glob) => total + utf8ByteLength(glob), 0) > 16 * 1024) {
@@ -823,7 +830,6 @@ export const SessionHandoffDefaultsV1Schema = z
   .transform((value) => ({
     v: 1 as const,
     workspaceSyncMode: value.workspaceSyncMode,
-    workspaceSyncRelationshipId: value.workspaceSyncRelationshipId ?? null,
     includeIgnoredMode: value.includeIgnoredMode,
     ignoredIncludeGlobs: value.ignoredIncludeGlobs,
     directTargetMode: value.directTargetMode,
@@ -833,8 +839,7 @@ export type SessionHandoffDefaultsV1 = z.infer<typeof SessionHandoffDefaultsV1Sc
 
 export const DEFAULT_SESSION_HANDOFF_DEFAULTS_V1: SessionHandoffDefaultsV1 = Object.freeze({
   v: 1,
-  workspaceSyncMode: 'none',
-  workspaceSyncRelationshipId: null,
+  workspaceSyncMode: 'keep_synced',
   includeIgnoredMode: 'exclude',
   ignoredIncludeGlobs: [],
   directTargetMode: 'keep_direct',
@@ -1079,10 +1084,11 @@ const ACCOUNT_LEGACY_ROOT_CATALOG_DEFINITIONS = {
     64 * 1024,
   ),
   workspaceSyncRelationshipsV1: accountLegacy(
-    z.array(WorkspaceSyncRelationshipV1Schema).max(32).catch([]).default([]),
+    z.array(WorkspaceSyncRelationshipV1Schema).default([]),
     [],
     'workspace sync relationships',
     128 * 1024,
+    false,
   ),
   pinnedWorkspaceRefIdsV1: accountLegacy(z.array(z.string().max(1024)).max(256), [], 'workspace pins', 32 * 1024),
   pinnedSessionKeysV1: accountLegacy(z.array(z.string().max(1024)).max(256), [], 'session organization pins', 32 * 1024),

@@ -1,6 +1,11 @@
 export * from './catalog/index.js';
 export * from './input/index.js';
 export {
+  AgentExecutionRunEventSchema,
+  AgentExecutionRunEventV1Schema,
+  type AgentExecutionRunEventV1,
+} from './agentExecutionRunV1.js';
+export {
   EncryptedStringV1Schema,
   SecretStringV1Schema,
   type EncryptedStringV1,

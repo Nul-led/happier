@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import { hmac } from '@noble/hashes/hmac';
 import { sha256 } from '@noble/hashes/sha2';
+import tweetnacl from 'tweetnacl';
 
 import {
   ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES,
   HomeConnectionDescriptorV1Schema,
+  type HomeConnectionDescriptorV1,
 } from '../auth/accountDirectory.js';
 import { decodeBase64, encodeBase64 } from './base64.js';
 import { encodeCanonicalLengthDelimited } from './canonicalDigest.js';
@@ -12,7 +14,7 @@ import { createCanonicalJsonSigningInput } from './canonicalJson.js';
 
 /**
  * Single canonical owner of the Home QR V2 invite payload, rendezvous/binding
- * derivations, binding proof, and confirmation code (lane-05 §6.2).
+ * derivations, and binding proof (lane-05 §6.2, A6 known-target amendment).
  *
  * One random 32-byte QR-only secret is domain separated into:
  *   rendezvousSecret = HMAC-SHA256(qrSecret, "happier/qr/rendezvous/v2")
@@ -20,8 +22,17 @@ import { createCanonicalJsonSigningInput } from './canonicalJson.js';
  *
  * The relay sees only the SHA-256 verifier of the rendezvous secret; it never
  * receives the raw secret or the binding key, so it cannot derive the binding
- * proof or the client confirmation code. The JSON/base64url invite encoding is
- * implemented exactly once here; consumers must not hand-roll it.
+ * proof. The JSON/base64url invite encoding is implemented exactly once here;
+ * consumers must not hand-roll it.
+ *
+ * A6: every invite carries a strict display direction,
+ * `trusted_home_displays | requester_displays`, and the direction is
+ * part of the canonical HMAC binding input. For requester-displayed invites the
+ * requester is a credentialless but known-target client: it generates the
+ * CSPRNG pair-ID candidate, QR secret, ephemeral box keypair, and bounded exact
+ * expiry, and the enrolled scanner authenticates the existing pairing-start
+ * route with that proposed tuple. The direction itself is never a server-side
+ * decision; it is enforced by verifying the direction-bound proof.
  */
 
 export const HOME_QR_RENDEZVOUS_DOMAIN_V2 = 'happier/qr/rendezvous/v2' as const;
@@ -40,10 +51,14 @@ export const HOME_QR_INVITE_V2_MAX_PAYLOAD_UTF8_BYTES = 16 * 1024;
 const HOME_QR_BINDING_PROTOCOL_VERSION_V2 = 'v2';
 const HOME_QR_BINDING_INTENT_V2 = 'home_device';
 
+/** Strict display direction; the value is required and bound into the HMAC input. */
+export const HOME_QR_INVITE_DIRECTIONS_V2 = ['trusted_home_displays', 'requester_displays'] as const;
+export type HomeQrInviteDirectionV2 = (typeof HOME_QR_INVITE_DIRECTIONS_V2)[number];
+
 const UTF8_ENCODER = new TextEncoder();
 const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 
-export const HomeQrInviteV2Schema = z.object({
+const HomeQrInviteV2CommonShape = {
   v: z.literal(2),
   intent: z.literal('home_device'),
   pairId: z.string().min(1).max(128).superRefine((value, context) => {
@@ -60,7 +75,35 @@ export const HomeQrInviteV2Schema = z.object({
       context.addIssue({ code: z.ZodIssueCode.custom, message: 'Requested device label exceeds its UTF-8 byte limit' });
     }
   }).optional(),
-}).strict().superRefine((value, context) => {
+} as const;
+
+const HomeQrRequesterPublicKeyBase64UrlV2Schema = z.string()
+  .regex(/^[A-Za-z0-9_-]+$/u)
+  .max(64)
+  .superRefine((value, context) => {
+    try {
+      const publicKeyBytes = decodeBase64(value, 'base64url');
+      if (publicKeyBytes.length !== HOME_QR_REQUESTER_PUBLIC_KEY_V2_BYTES) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: 'Requester public key must be 32 bytes' });
+      } else if (encodeBase64(publicKeyBytes, 'base64url') !== value) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: 'Requester public key must be canonical base64url' });
+      }
+    } catch {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid requester public key' });
+    }
+  });
+
+export const HomeQrInviteV2Schema = z.discriminatedUnion('direction', [
+  z.object({
+    ...HomeQrInviteV2CommonShape,
+    direction: z.literal('trusted_home_displays'),
+  }).strict(),
+  z.object({
+    ...HomeQrInviteV2CommonShape,
+    direction: z.literal('requester_displays'),
+    requesterPublicKeyBase64Url: HomeQrRequesterPublicKeyBase64UrlV2Schema,
+  }).strict(),
+]).superRefine((value, context) => {
   try {
     const secretBytes = decodeBase64(value.qrSecretBase64Url, 'base64url');
     if (secretBytes.length !== HOME_QR_SECRET_V2_BYTES) {
@@ -80,6 +123,7 @@ export const HomeQrInviteV2Schema = z.object({
 export type HomeQrInviteV2 = z.infer<typeof HomeQrInviteV2Schema>;
 
 export type HomeQrBindingContextV2 = Readonly<{
+  direction: HomeQrInviteDirectionV2;
   pairId: string;
   homeServerIdentityId: string;
   requesterPublicKey: Uint8Array;
@@ -95,6 +139,9 @@ function assertQrSecretV2(qrSecret: Uint8Array): void {
 }
 
 function assertHomeQrBindingContextV2(context: HomeQrBindingContextV2): void {
+  if (!HOME_QR_INVITE_DIRECTIONS_V2.includes(context.direction)) {
+    throw new Error('Invalid Home QR invite direction');
+  }
   if (context.requesterPublicKey.length !== HOME_QR_REQUESTER_PUBLIC_KEY_V2_BYTES) {
     throw new Error('Requester X25519 box public key must be 32 bytes');
   }
@@ -105,14 +152,16 @@ function assertHomeQrBindingContextV2(context: HomeQrBindingContextV2): void {
 
 /**
  * Canonical binding input, length-delimited in this exact conceptual order:
- * protocol version, intent, pairId, target homeServerIdentityId, requester
- * X25519 box public key (exactly 32 bytes), expiresAtMs.
+ * protocol version, intent, display direction, pairId, target
+ * homeServerIdentityId, requester X25519 box public key (exactly 32 bytes),
+ * expiresAtMs.
  */
 export function createHomeQrBindingInputV2(context: HomeQrBindingContextV2): Uint8Array {
   assertHomeQrBindingContextV2(context);
   return encodeCanonicalLengthDelimited([
     HOME_QR_BINDING_PROTOCOL_VERSION_V2,
     HOME_QR_BINDING_INTENT_V2,
+    context.direction,
     context.pairId,
     context.homeServerIdentityId,
     context.requesterPublicKey,
@@ -192,17 +241,6 @@ export function verifyHomeQrRendezvousVerifierV2(qrSecret: Uint8Array, verifier:
 }
 
 /**
- * Fixed six-digit zero-padded confirmation code from the same canonical
- * binding input and binding key. Both clients compute it locally; it is
- * informational human verification, never the authorization primitive.
- */
-export function computeHomeQrConfirmationCodeV2(params: HomeQrBindingParamsV2): string {
-  const digest = computeHomeQrBindingProofBytesV2(params);
-  const value = new DataView(digest.buffer, digest.byteOffset).getUint32(0, false) % 1_000_000;
-  return String(value).padStart(6, '0');
-}
-
-/**
  * Canonical deterministic invite encoding: strict schema validation, canonical
  * JSON key order, bounded payload, unpadded base64url. Throws on invalid
  * producers (caller-owned invite construction) and oversized payloads.
@@ -248,4 +286,54 @@ export function parseHomeQrInviteV2Payload(
   if (parsed.data.issuedAtMs > nowMs + HOME_QR_INVITE_V2_MAX_FUTURE_ISSUANCE_SKEW_MS) return null;
   if (nowMs > parsed.data.expiresAtMs) return null;
   return parsed.data;
+}
+
+export type HomeQrReverseInviteV2Material = Readonly<{
+  invite: HomeQrInviteV2;
+  qrSecret: Uint8Array;
+  requesterPublicKey: Uint8Array;
+  requesterSecretKey: Uint8Array;
+}>;
+
+/**
+ * A6 requester-displayed invite material: the credentialless but known-target
+ * requester owns one CSPRNG pair-ID candidate, one 32-byte QR secret, one
+ * ephemeral X25519 box keypair, and the bounded exact invite window. The
+ * descriptor must already be verified by the caller; the returned invite is
+ * encoded canonically through `encodeHomeQrInviteV2Payload` and the pairing is
+ * started by the enrolled scanner with the proposed (pairId, verifier, exact
+ * expiry) tuple — the server never rewrites the expiry.
+ */
+export function createHomeQrReverseInviteV2(input: Readonly<{
+  home: HomeConnectionDescriptorV1;
+  nowMs: number;
+  ttlMs?: number;
+  requestedDeviceLabel?: string;
+}>): HomeQrReverseInviteV2Material {
+  const { nowMs } = input;
+  const ttlMs = input.ttlMs ?? HOME_QR_INVITE_V2_MAX_TTL_MS;
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new Error('Invalid issuance timestamp');
+  if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || ttlMs > HOME_QR_INVITE_V2_MAX_TTL_MS) {
+    throw new Error('Invite TTL exceeds the pairing maximum');
+  }
+  const qrSecret = new Uint8Array(tweetnacl.randomBytes(HOME_QR_SECRET_V2_BYTES));
+  const keyPair = tweetnacl.box.keyPair();
+  const invite: HomeQrInviteV2 = {
+    v: 2,
+    intent: 'home_device',
+    direction: 'requester_displays',
+    requesterPublicKeyBase64Url: encodeBase64(keyPair.publicKey, 'base64url'),
+    pairId: encodeBase64(tweetnacl.randomBytes(HOME_QR_SECRET_V2_BYTES), 'base64url'),
+    home: input.home,
+    qrSecretBase64Url: encodeBase64(qrSecret, 'base64url'),
+    issuedAtMs: nowMs,
+    expiresAtMs: nowMs + ttlMs,
+    ...(input.requestedDeviceLabel === undefined ? {} : { requestedDeviceLabel: input.requestedDeviceLabel }),
+  };
+  return {
+    invite,
+    qrSecret,
+    requesterPublicKey: new Uint8Array(keyPair.publicKey),
+    requesterSecretKey: new Uint8Array(keyPair.secretKey),
+  };
 }

@@ -10,6 +10,28 @@ async function loadHandoffModule() {
 }
 
 describe('session handoff schemas', () => {
+  it('binds a workspace handoff repository root to its session-relative cwd', async () => {
+    const mod = await loadHandoffModule();
+    expect(mod).not.toHaveProperty('error');
+    if ('error' in mod) return;
+    const request = {
+      handoffId: 'handoff_nested_git',
+      sourceMachineId: 'source',
+      targetMachineId: 'target',
+      negotiatedTransportStrategy: 'direct_peer' as const,
+      sourceSessionStorageMode: 'persisted' as const,
+      targetPath: '/target/repo/packages/app',
+      workspaceRootPath: '/target/repo',
+      workspaceSessionRelativeCwd: 'packages/app',
+      endpointCandidates: [],
+    };
+    expect(mod.SessionHandoffPrepareTargetRequestSchema.parse(request)).toEqual(request);
+    expect(mod.SessionHandoffPrepareTargetRequestSchema.safeParse({
+      ...request,
+      workspaceSessionRelativeCwd: undefined,
+    }).success).toBe(false);
+  });
+
   it('accepts a bounded installed Agent identity in a target resume plan', async () => {
     const mod = await loadHandoffModule();
     expect(mod).not.toHaveProperty('error');

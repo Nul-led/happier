@@ -21,12 +21,19 @@ describe('MachineOperationProtocolCapabilitiesV1', () => {
       sessionInputAdmission: { protocolVersions: [1] },
       sessionSpawn: { protocolVersions: [1] },
       pluginWebhookClaim: { protocolVersions: [1] },
+      irohMachineEndpoint: { protocolVersions: [1], endpointId: 'a'.repeat(64) },
     }).success).toBe(true);
     expect(schema.safeParse({ sessionSpawn: { protocolVersions: [1] } }).success).toBe(true);
     expect(schema.safeParse({ sessionSpawn: { protocolVersions: [2] } }).success).toBe(false);
     expect(schema.safeParse({ sessionSpawn: { protocolVersions: [1, 2] } }).success).toBe(false);
     expect(schema.safeParse({ sessionSpawn: { protocolVersions: [1], stale: true } }).success).toBe(false);
     expect(schema.safeParse({ sessionSpawn: { protocolVersions: [1] }, unknown: true }).success).toBe(false);
+    expect(schema.safeParse({
+      irohMachineEndpoint: { protocolVersions: [1], endpointId: 'not-an-iroh-endpoint' },
+    }).success).toBe(false);
+    expect(schema.safeParse({
+      irohMachineEndpoint: { protocolVersions: [1], endpointId: 'a'.repeat(64), stale: true },
+    }).success).toBe(false);
   });
 
   it('accepts only a complete strict replacement projection on the authenticated Machine socket', () => {
@@ -52,5 +59,24 @@ describe('MachineOperationProtocolCapabilitiesV1', () => {
     expect(requestSchema?.safeParse({
       capabilities: { sessionSpawn: { protocolVersions: [2] } },
     }).success).toBe(false);
+  });
+
+  it('reads endpoint authority only with a current accepted projection revision', () => {
+    const readAuthority = (protocol as Record<string, unknown>)
+      .readMachineIrohEndpointAuthorityV1 as ((input: Readonly<{
+        capabilities: unknown;
+        revision: unknown;
+      }>) => unknown) | undefined;
+    expect(readAuthority).toBeDefined();
+    const capabilities = {
+      irohMachineEndpoint: { protocolVersions: [1], endpointId: 'a'.repeat(64) },
+    };
+
+    expect(readAuthority?.({ capabilities, revision: 4 })).toEqual({
+      endpointId: 'a'.repeat(64),
+      revision: 4,
+    });
+    expect(readAuthority?.({ capabilities, revision: null })).toBeNull();
+    expect(readAuthority?.({ capabilities: {}, revision: 4 })).toBeNull();
   });
 });

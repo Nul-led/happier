@@ -115,7 +115,7 @@ function isValidIpSocketAddress(value: string): boolean {
   return !host.includes(':') && isValidIpv4Address(host);
 }
 
-/** Absolute HTTP(S) URL without credentials or a fragment. */
+/** Absolute HTTP(S) URL without credentials, query material, or a fragment. */
 const IrohDescriptorUrlSchema = z.string()
   .trim()
   .min(1)
@@ -129,8 +129,8 @@ const IrohDescriptorUrlSchema = z.string()
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
         context.addIssue({ code: z.ZodIssueCode.custom, message: 'URL must use HTTP or HTTPS' });
       }
-      if (parsed.username || parsed.password || parsed.hash) {
-        context.addIssue({ code: z.ZodIssueCode.custom, message: 'URL must not contain credentials or a fragment' });
+      if (parsed.username || parsed.password || value.includes('?') || parsed.hash) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: 'URL must not contain credentials, query material, or a fragment' });
       }
     } catch {
       context.addIssue({ code: z.ZodIssueCode.custom, message: 'URL must be absolute' });
@@ -194,4 +194,24 @@ export function parseIrohEndpointDescriptorV1(value: unknown): IrohEndpointDescr
   const result = IrohEndpointDescriptorV1Schema.safeParse(value);
   if (!result.success) throw new TypeError('Invalid Iroh endpoint descriptor');
   return result.data;
+}
+
+/**
+ * Reconciles the privacy-reduced endpoint facts published by an unauthenticated
+ * feature response with a previously trusted endpoint snapshot. Public
+ * observations may add/change relay reachability, but absence cannot erase
+ * private direct-address hints or withdraw the endpoint itself.
+ */
+export function mergePublicIrohEndpointObservation(
+  current: IrohEndpointDescriptorV1 | null,
+  observed: IrohEndpointDescriptorV1 | null,
+): IrohEndpointDescriptorV1 | null {
+  if (!observed) return current;
+  if (!current || current.endpointId !== observed.endpointId || observed.directAddresses !== undefined) {
+    return observed;
+  }
+  return parseIrohEndpointDescriptorV1({
+    ...observed,
+    ...(current.directAddresses ? { directAddresses: current.directAddresses } : {}),
+  });
 }

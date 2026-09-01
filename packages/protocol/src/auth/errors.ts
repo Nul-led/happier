@@ -1,5 +1,10 @@
 import { z } from 'zod';
 
+export const AUTH_KEY_CHALLENGE_V2_ERROR_CODES = {
+  required: 'key_challenge_v2_required',
+  unavailable: 'key_challenge_v2_unavailable',
+} as const;
+
 export const AUTH_ERROR_CODES = [
   // Provider / policy
   'unsupported-provider',
@@ -7,6 +12,8 @@ export const AUTH_ERROR_CODES = [
   'signup-disabled',
   'provider-required',
   'not-eligible',
+  AUTH_KEY_CHALLENGE_V2_ERROR_CODES.required,
+  AUTH_KEY_CHALLENGE_V2_ERROR_CODES.unavailable,
 
   // OAuth
   'oauth_not_configured',

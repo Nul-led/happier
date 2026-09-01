@@ -79,30 +79,6 @@ export const AgentUiConditionV1Schema: z.ZodType<AgentUiConditionV1, AgentUiCond
 
 const AgentUiTranscriptStorageModeSchema = z.enum(['persisted', 'direct']);
 
-/**
- * The schema identity of an Agent's `runtimeDescriptorV1.agentExtra` block.
- *
- * `payload.backendTransport` declares the runtime-handle fields once, on the
- * transport itself, and the interpreter reuses them for the extra — so there
- * the extra is the identity alone. The environment-variable and link-extras
- * descriptors have no such sibling and read the fields off the extra, so they
- * extend this with the required list below.
- */
-const AgentUiRuntimeDescriptorAgentExtraIdentityShape = {
-  owner: AgentUiIdSchema,
-  schemaId: AgentUiIdSchema,
-  v: z.number().int(),
-} as const;
-
-const AgentUiRuntimeDescriptorAgentExtraIdentitySchema = z.object(
-  AgentUiRuntimeDescriptorAgentExtraIdentityShape,
-).strict();
-
-const AgentUiRuntimeDescriptorAgentExtraSchema = z.object({
-  ...AgentUiRuntimeDescriptorAgentExtraIdentityShape,
-  runtimeHandleFields: AgentUiIdArraySchema,
-}).strict();
-
 const AgentUiExternalSessionsSourceSchema = z.object({ kind: AgentUiIdSchema })
   .catchall(z.unknown());
 
@@ -130,8 +106,6 @@ const AgentUiPermissionPromptProtocolSchema = z.enum(['claude', 'codexDecision']
 
 const AgentUiEditableGoalsSchema = z.object({
   capabilityDriven: z.boolean().optional(),
-  modeValues: AgentUiIdArraySchema.optional(),
-  activeModeValues: AgentUiIdArraySchema.optional(),
   activeWhenNoPersistedMode: z.boolean().optional(),
   persistedGoalSnapshot: z.object({
     path: AgentUiIdArraySchema.optional(),
@@ -182,8 +156,6 @@ const AgentUiEnvironmentVariablesSchema = z.object({
   backendMode: z.object({
     envKey: AgentUiIdSchema,
     settingKey: AgentUiSettingReferenceSchema,
-    legacyMetadataKey: AgentUiIdSchema,
-    runtimeDescriptorField: AgentUiIdSchema,
     defaultValue: AgentUiIdSchema,
     values: AgentUiIdArraySchema.min(1),
   }).strict(),
@@ -192,25 +164,10 @@ const AgentUiEnvironmentVariablesSchema = z.object({
     explicitEnvKey: AgentUiIdSchema,
     settingKey: AgentUiSettingReferenceSchema,
     byServerIdSettingKey: AgentUiSettingReferenceSchema,
-    legacyMetadataKey: AgentUiIdSchema,
-    legacyExplicitMetadataKey: AgentUiIdSchema,
-    runtimeDescriptorField: AgentUiIdSchema,
-    runtimeDescriptorExplicitField: AgentUiIdSchema,
     allowedProtocols: AgentUiIdArraySchema.optional(),
     rejectCredentials: z.boolean().optional(),
     originOnly: z.boolean().optional(),
   }).strict().optional(),
-  agentExtra: AgentUiRuntimeDescriptorAgentExtraSchema.optional(),
-}).strict();
-
-const AgentUiBackendTransportSchema = z.object({
-  backendMode: z.object({
-    values: AgentUiIdArraySchema.min(1),
-    aliases: AgentUiStringRecordSchema.optional(),
-    legacyExperimentalValue: AgentUiIdSchema.optional(),
-  }).strict(),
-  runtimeHandleFields: AgentUiIdArraySchema.min(1),
-  agentExtra: AgentUiRuntimeDescriptorAgentExtraIdentitySchema.optional(),
 }).strict();
 
 const AgentUiPayloadSchema = z.object({
@@ -222,14 +179,7 @@ const AgentUiPayloadSchema = z.object({
     kind: z.literal('static'),
     value: z.record(z.string(), SpawnConfigOptionValueSchema),
   }).strict().optional(),
-  /**
-   * A backend-mode fact this Agent contributes to the spawn/resume envelope.
-   *
-   * The mode is read from the account setting named here and, for an existing
-   * Session, from the canonical `runtimeDescriptorV1` envelope carrying this
-   * Agent's id — both facts an installed Agent can occupy, so the block is not
-   * a bundled-only capability.
-   */
+  /** A setting-backed session configuration option contributed on create. */
   sessionExtras: z.object({
     outputKey: AgentUiIdSchema,
     values: AgentUiIdArraySchema.min(1),
@@ -238,13 +188,6 @@ const AgentUiPayloadSchema = z.object({
     defaultValue: AgentUiIdSchema.optional(),
   }).strict().optional(),
   environmentVariables: AgentUiEnvironmentVariablesSchema.optional(),
-  backendTransport: AgentUiBackendTransportSchema.optional(),
-}).strict();
-
-const AgentUiRuntimeDescriptorLinkExtrasSchema = z.object({
-  backendMode: z.object({ values: AgentUiIdArraySchema.min(1) }).strict(),
-  sourceFields: AgentUiIdArraySchema,
-  agentExtra: AgentUiRuntimeDescriptorAgentExtraSchema.optional(),
 }).strict();
 
 const AgentUiExternalSessionsBrowseSchema = z.object({
@@ -283,7 +226,6 @@ const AgentUiExternalSessionsBrowseSchema = z.object({
       sourceKind: AgentUiIdSchema,
       optionalFields: AgentUiIdArraySchema,
     }).strict().optional(),
-    runtimeDescriptorFromCandidate: AgentUiRuntimeDescriptorLinkExtrasSchema.optional(),
   }).strict().optional(),
 }).strict();
 

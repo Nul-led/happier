@@ -36,11 +36,15 @@ function grantPayload() {
     aud: 'happier-daemon-route-grant' as const,
     endpointFingerprint: TARGET_ENDPOINT_ID,
     iroh: {
-      sourceMachineId: 'machine-1',
-      targetMachineId: 'machine-2',
-      sourceEndpointId: SOURCE_ENDPOINT_ID,
-      targetEndpointId: TARGET_ENDPOINT_ID,
-      role: 'initiator' as const,
+      initiator: {
+        kind: 'machine' as const,
+        machineId: 'machine-1',
+        endpointId: SOURCE_ENDPOINT_ID,
+      },
+      target: {
+        machineId: 'machine-2',
+        endpointId: TARGET_ENDPOINT_ID,
+      },
       operationKind: 'file_transfer' as const,
     },
     proofKind: 'ephemeral_ed25519' as const,
@@ -72,12 +76,16 @@ function proof() {
 function handshake(overrides: Partial<IrohMachineHandshakeV1> = {}): IrohMachineHandshakeV1 {
   return {
     v: 1,
-    role: 'initiator',
     accountId: 'account-1',
-    sourceMachineId: 'machine-1',
-    targetMachineId: 'machine-2',
-    sourceEndpointId: SOURCE_ENDPOINT_ID,
-    targetEndpointId: TARGET_ENDPOINT_ID,
+    initiator: {
+      kind: 'machine',
+      machineId: 'machine-1',
+      endpointId: SOURCE_ENDPOINT_ID,
+    },
+    target: {
+      machineId: 'machine-2',
+      endpointId: TARGET_ENDPOINT_ID,
+    },
     flow: 'file_transfer',
     operationId: 'operation-1',
     grant: grant(),
@@ -103,11 +111,11 @@ describe('IrohMachineHandshakeV1 (canonical happier/machine/1 handshake)', () =>
   it('rejects any handshake identity, orientation, operation, or scope binding that differs from its signed grant', () => {
     expect(IrohMachineHandshakeV1Schema.safeParse({
       ...handshake(),
-      sourceMachineId: 'machine-inverted',
+      initiator: { kind: 'machine', machineId: 'machine-inverted', endpointId: SOURCE_ENDPOINT_ID },
     }).success).toBe(false);
     expect(IrohMachineHandshakeV1Schema.safeParse({
       ...handshake(),
-      role: 'acceptor',
+      initiator: { kind: 'account_client', endpointId: SOURCE_ENDPOINT_ID },
     }).success).toBe(false);
     expect(IrohMachineHandshakeV1Schema.safeParse({
       ...handshake(),
@@ -140,14 +148,39 @@ describe('IrohMachineHandshakeV1 (canonical happier/machine/1 handshake)', () =>
   it('rejects malformed endpoint identities, roles, and flows', () => {
     expect(IrohMachineHandshakeV1Schema.safeParse({
       ...handshake(),
-      sourceEndpointId: 'endpoint-1',
+      initiator: { kind: 'machine', machineId: 'machine-1', endpointId: 'endpoint-1' },
     }).success).toBe(false);
     expect(IrohMachineHandshakeV1Schema.safeParse({
       ...handshake(),
-      targetEndpointId: 'A'.repeat(64),
+      target: { machineId: 'machine-2', endpointId: 'A'.repeat(64) },
     }).success).toBe(false);
-    expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), role: 'observer' }).success).toBe(false);
     expect(IrohMachineHandshakeV1Schema.safeParse({ ...handshake(), flow: 'tcp_tunnel' }).success).toBe(false);
+  });
+
+  it('supports an authenticated Account client initiator without source Machine fields', () => {
+    const accountClient = handshake({
+      initiator: { kind: 'account_client', endpointId: SOURCE_ENDPOINT_ID },
+      grant: {
+        ...grant(),
+        payload: {
+          ...grantPayload(),
+          iroh: {
+            initiator: { kind: 'account_client', endpointId: SOURCE_ENDPOINT_ID },
+            target: { machineId: 'machine-2', endpointId: TARGET_ENDPOINT_ID },
+            operationKind: 'file_transfer',
+          },
+        },
+      },
+    });
+
+    expect(IrohMachineHandshakeV1Schema.parse(accountClient).initiator).toEqual({
+      kind: 'account_client',
+      endpointId: SOURCE_ENDPOINT_ID,
+    });
+    expect(IrohMachineHandshakeV1Schema.safeParse({
+      ...accountClient,
+      sourceMachineId: 'pseudo-machine',
+    }).success).toBe(false);
   });
 
   it('rejects an empty or missing operation binding', () => {

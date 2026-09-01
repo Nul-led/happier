@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1 } from './agentSessionLimitsV1.js';
 import {
   AGENT_SESSION_RUNTIME_EVENT_KINDS_V1,
   AgentLaunchEnvironmentV1Schema,
@@ -490,6 +491,12 @@ describe('AgentSessionRuntimeEventV1Schema', () => {
     expect(AgentSessionRuntimeEventV1Schema.safeParse({
       ...base,
       text: 'x'.repeat(65_537),
+    }).success).toBe(true);
+    expect(AgentSessionRuntimeEventV1Schema.safeParse({
+      ...base,
+      text: 'x'.repeat(
+        AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1.p0MeasuredCandidates.eventMaxJsonBytes,
+      ),
     }).success).toBe(false);
     expect(AgentSessionRuntimeEventV1Schema.safeParse({
       ...base,

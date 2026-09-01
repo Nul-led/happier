@@ -12,17 +12,25 @@ export const CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION =
 /**
  * Plugin-domain AccountChange rows were added in V3. V2 peers retain the
  * incumbent stored-content contract while the change-feed owner filters this
- * new kind from their pages; V3 is the canonical current declaration.
+ * new kind from their pages; V3 remains the canonical base protocol version.
  */
 export const ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION =
   ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V3;
 
 /**
- * V4 adds the additive Session-access witness to `/v2/changes`. V3 clients
- * parse that response strictly, so a V3 declaration must retain the exact
- * incumbent page shape.
+ * V4 adds the additive Session-access witness to `/v2/changes` and identifies
+ * Account Settings writers that preserve the complete raw Profile row while
+ * editing the shared document. V3 clients parse the changes response strictly
+ * and older Settings writers normalize away Profile V2 fields, so neither
+ * behavior may be inferred from a V3 declaration.
+ *
+ * V4 has not shipped in a supported release. These cumulative semantics are
+ * therefore refined together before the first supported V4 writer exists.
  */
 export const ACCOUNT_STORED_CONTENT_SESSION_ACCESS_WITNESS_PROTOCOL_VERSION =
+  ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V4;
+
+export const ACCOUNT_STORED_CONTENT_PROFILE_PRESERVING_SETTINGS_WRITER_PROTOCOL_VERSION =
   ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V4;
 
 /**
@@ -33,10 +41,10 @@ export const ACCOUNT_STORED_CONTENT_ACCOUNT_ENCRYPTION_TRANSITION_PROTOCOL_VERSI
   ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V5;
 
 /**
- * The caller advertises its optional response-field support independently of
- * the protocol version it requires from a server. An older V3 server remains
- * usable; it simply omits the V4 witness and Session-scoped Resources fail
- * closed at their owner.
+ * The caller advertises its cumulative V4 behavior independently of the base
+ * protocol version it requires from a server. An older V3 server remains
+ * usable; it simply omits the V4 witness and still receives an opaque Settings
+ * value produced by a profile-preserving current writer.
  */
 export const CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION_PROTOCOL_VERSION =
   ACCOUNT_STORED_CONTENT_SESSION_ACCESS_WITNESS_PROTOCOL_VERSION;

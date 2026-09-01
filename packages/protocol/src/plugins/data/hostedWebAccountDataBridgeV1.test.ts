@@ -103,6 +103,24 @@ describe('hosted-web Collection UI-query bridge contract', () => {
       kind: 'request',
       operation: {
         kind: 'data',
+        operation: 'collection.forget',
+        definition: tasksDeclaration,
+        arguments: ['task-1', { expectedRevision: 7 }],
+      },
+    }).success).toBe(true);
+    expect(request.safeParse({
+      kind: 'request',
+      operation: {
+        kind: 'data',
+        operation: 'collection.forget',
+        definition: tasksDeclaration,
+        arguments: ['task-1', { expectedRevision: '7' }],
+      },
+    }).success).toBe(false);
+    expect(request.safeParse({
+      kind: 'request',
+      operation: {
+        kind: 'data',
         operation: 'accountSettings.set',
         arguments: ['view', 'mine', { expectedRevision: '7' }],
       },

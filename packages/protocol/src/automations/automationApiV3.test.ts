@@ -59,13 +59,9 @@ const eventInput = {
 const lifecycleInput = {
   kind: 'sessionLifecycle' as const,
   enabled: false,
-  event: 'parentTurnCompleted' as const,
-  scope: {
-    kind: 'exactTurn' as const,
-    sourceSessionId: 'session-source',
-    sourceTurnId: 'turn-42',
-  },
-  consumption: 'once' as const,
+  sourceSessionId: 'session-source',
+  events: ['parentTurnCompleted'] as const,
+  policy: { kind: 'currentTurn' as const, sourceTurnId: 'turn-42' },
 };
 
 const schedule = {
@@ -107,6 +103,7 @@ const lifecycle = {
   createdAt: timestamp,
   updatedAt: timestamp,
   ...lifecycleInput,
+  remainingOccurrences: 1,
   status: { state: 'waiting' as const, runId: null },
 };
 

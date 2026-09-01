@@ -10,44 +10,61 @@ import { IrohEndpointIdV1Schema } from '../../../connectivity/iroh/endpointDescr
 
 export const PEER_ROUTE_EPHEMERAL_ED25519_KIND_V2 = 'ephemeral_ed25519' as const;
 
-/**
- * Transport roles for the `happier/machine/1` relationship authorized by a V2 proof grant. The
- * role belongs to `sourceMachineId`; the target machine has the complementary role.
- */
-export const IROH_PEER_ROUTE_ROLES_V2 = ['initiator', 'acceptor'] as const;
-export const IrohPeerRouteRoleV2Schema = z.enum(IROH_PEER_ROUTE_ROLES_V2);
-
 /** Machine/1 operation kinds bound to the existing grant flow and scope below. */
 export const IROH_PEER_ROUTE_OPERATION_KINDS_V2 = ['file_transfer', 'attachment_transfer', 'workspace_sync'] as const;
 export const IrohPeerRouteOperationKindV2Schema = z.enum(IROH_PEER_ROUTE_OPERATION_KINDS_V2);
 
-/** Signed machine/1 endpoint-role relationship carried only by V2 `iroh_peer` grants. */
+/** Closed application/transport identity of the party that opens `happier/machine/1`. */
+export const IrohPeerInitiatorV2Schema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('machine'),
+    machineId: z.string().min(1),
+    endpointId: IrohEndpointIdV1Schema,
+  }).strict(),
+  z.object({
+    kind: z.literal('account_client'),
+    endpointId: IrohEndpointIdV1Schema,
+  }).strict(),
+]);
+
+/** Closed target Machine identity and its currently published daemon transport identity. */
+export const IrohPeerTargetV2Schema = z.object({
+  machineId: z.string().min(1),
+  endpointId: IrohEndpointIdV1Schema,
+}).strict();
+
+/** Signed machine/1 initiator/target relationship carried only by V2 `iroh_peer` grants. */
 export const IrohPeerRouteBindingV2Schema = z.object({
-  sourceMachineId: z.string().min(1),
-  targetMachineId: z.string().min(1),
-  sourceEndpointId: IrohEndpointIdV1Schema,
-  targetEndpointId: IrohEndpointIdV1Schema,
-  role: IrohPeerRouteRoleV2Schema,
+  initiator: IrohPeerInitiatorV2Schema,
+  target: IrohPeerTargetV2Schema,
   operationKind: IrohPeerRouteOperationKindV2Schema,
 }).strict().superRefine((binding, ctx) => {
-  if (binding.sourceMachineId === binding.targetMachineId) {
+  if (binding.initiator.kind === 'machine' && binding.initiator.machineId === binding.target.machineId) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['targetMachineId'],
-      message: 'Iroh source and target machines must be distinct',
+      path: ['target', 'machineId'],
+      message: 'Iroh initiator and target machines must be distinct',
     });
   }
-  if (binding.sourceEndpointId === binding.targetEndpointId) {
+  if (binding.initiator.endpointId === binding.target.endpointId) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['targetEndpointId'],
-      message: 'Iroh source and target endpoints must be distinct',
+      path: ['target', 'endpointId'],
+      message: 'Iroh initiator and target endpoints must be distinct',
+    });
+  }
+  if (binding.operationKind === 'workspace_sync' && binding.initiator.kind !== 'machine') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['initiator', 'kind'],
+      message: 'Workspace sync requires a Machine initiator',
     });
   }
 });
 
-export type IrohPeerRouteRoleV2 = z.infer<typeof IrohPeerRouteRoleV2Schema>;
 export type IrohPeerRouteOperationKindV2 = z.infer<typeof IrohPeerRouteOperationKindV2Schema>;
+export type IrohPeerInitiatorV2 = z.infer<typeof IrohPeerInitiatorV2Schema>;
+export type IrohPeerTargetV2 = z.infer<typeof IrohPeerTargetV2Schema>;
 export type IrohPeerRouteBindingV2 = z.infer<typeof IrohPeerRouteBindingV2Schema>;
 
 type IrohPeerRouteGrantBindingFieldsV2 = Readonly<{
@@ -69,18 +86,18 @@ function addIrohPeerRouteGrantBindingIssuesV2(
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['iroh'],
-        message: 'Iroh peer grants require the machine/1 endpoint-role binding',
+        message: 'Iroh peer grants require the machine/1 initiator/target binding',
       });
       return;
     }
-    if (payload.machineId !== iroh.targetMachineId) {
+    if (payload.machineId !== iroh.target.machineId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['machineId'],
         message: 'Grant machineId must alias the Iroh binding target machine',
       });
     }
-    if (payload.endpointFingerprint !== iroh.targetEndpointId) {
+    if (payload.endpointFingerprint !== iroh.target.endpointId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['endpointFingerprint'],

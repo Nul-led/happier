@@ -1758,8 +1758,8 @@ export const PluginProjectedSettingsFieldV2Schema = z.object({
   secretCustody: PluginSecretCustodyV1Schema.nullable(),
   /** Origin relation metadata; it is not a secret value or a second owner. */
   managedServiceOrigin: PluginSettingManagedServiceOriginV1Schema.optional(),
-  displayKey: z.string().trim().min(1),
-  descriptionKey: PluginOptionalStringSchema,
+  displayKey: PluginLocalizedStringV2Schema,
+  descriptionKey: PluginLocalizedStringV2Schema.optional(),
   presentation: PluginSettingFieldPresentationV2Schema.optional(),
   availability: PluginAvailabilityDescriptorV2Schema.optional(),
   analytics: PluginSettingAnalyticsV2Schema.optional(),
@@ -1805,8 +1805,8 @@ export const PluginProjectedSettingsV2Schema = z.object({
   id: z.string().trim().min(1),
   pluginId: z.string().trim().min(1),
   version: z.literal(1),
-  title: z.string().trim().min(1),
-  description: PluginOptionalStringSchema,
+  title: PluginLocalizedStringV2Schema,
+  description: PluginLocalizedStringV2Schema.optional(),
   /** Present only while the existing generation support state retains exactly one prior artifact. */
   rollback: PluginSettingsRollbackDeclarationV1Schema.optional(),
   scope: PluginProjectedSettingsScopeV2Schema,
@@ -1871,16 +1871,11 @@ function invalidSettingsProjection(params: Readonly<{
   );
 }
 
-function readProjectedSettingsText(value: unknown): string | undefined {
-  if (typeof value === 'string') {
-    const normalized = value.trim();
-    return normalized.length > 0 ? normalized : undefined;
-  }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const fallback = (value as Readonly<{ fallback?: unknown }>).fallback;
-  if (typeof fallback !== 'string') return undefined;
-  const normalized = fallback.trim();
-  return normalized.length > 0 ? normalized : undefined;
+function readProjectedSettingsText(
+  value: unknown,
+): z.infer<typeof PluginLocalizedStringV2Schema> | undefined {
+  const parsed = PluginLocalizedStringV2Schema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function intersectSettingsValueTypes(

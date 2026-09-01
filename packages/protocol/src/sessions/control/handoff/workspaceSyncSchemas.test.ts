@@ -9,6 +9,7 @@ import {
   ReadWorkspaceSyncFileResultV1Schema,
   WorkspaceContentPolicyV1Schema,
   WorkspaceSyncConflictListV1Schema,
+  WorkspaceSyncLegacyStateInspectionV1Schema,
   WorkspaceSyncRelationshipV1Schema,
   WorkspaceSyncTargetBootstrapPrepareResultV1Schema,
   WorkspaceSyncTargetBootstrapPrepareV1Schema,
@@ -33,6 +34,22 @@ const contentPolicyInput = {
 const contentPolicy = { ...contentPolicyInput, policyDigest: computeWorkspaceSyncPolicyDigest(contentPolicyInput) };
 
 describe('workspace sync protocol schemas', () => {
+  it('publishes only strict read-only legacy-state inspection results', () => {
+    expect(WorkspaceSyncLegacyStateInspectionV1Schema.parse({ status: 'absent' })).toEqual({ status: 'absent' });
+    expect(WorkspaceSyncLegacyStateInspectionV1Schema.parse({
+      status: 'legacy_workspace_sync_state_unsupported',
+      classification: 'retired_v1',
+      quarantinePath: '/private/state/workspace-replication.retired-123',
+      schemaVersion: 1,
+    })).toMatchObject({ classification: 'retired_v1', schemaVersion: 1 });
+    expect(WorkspaceSyncLegacyStateInspectionV1Schema.parse({
+      status: 'legacy_workspace_sync_state_unknown',
+      path: '/private/state/workspace-replication',
+      reason: 'unrecognized_entries',
+    })).toMatchObject({ status: 'legacy_workspace_sync_state_unknown' });
+    expect(WorkspaceSyncLegacyStateInspectionV1Schema.safeParse({ status: 'absent', cleanup: true }).success).toBe(false);
+  });
+
   it('defines relationship runtime identity without mutable settings metadata', () => {
     const relationship = {
       v: 1 as const,
@@ -87,8 +104,56 @@ describe('workspace sync protocol schemas', () => {
 
   it('accepts the four product modes and rejects copy_once relationships', () => {
     expect(HandoffWorkspaceActionV1Schema.parse({ kind: 'none' })).toEqual({ kind: 'none' });
-    expect(HandoffWorkspaceActionV1Schema.parse({ kind: 'copy_once', contentPolicy })).toMatchObject({ kind: 'copy_once' });
+    expect(HandoffWorkspaceActionV1Schema.parse({
+      kind: 'copy_once',
+      contentPolicy,
+    })).toMatchObject({ kind: 'copy_once' });
+    expect(HandoffWorkspaceActionV1Schema.parse({
+      kind: 'create_relationship',
+      mode: 'keep_synced',
+      contentPolicy,
+      flushBeforeCommit: true,
+    })).toMatchObject({ kind: 'create_relationship', mode: 'keep_synced' });
+    expect(HandoffWorkspaceActionV1Schema.safeParse({
+      kind: 'create_relationship',
+      mode: 'copy_once',
+      contentPolicy,
+      flushBeforeCommit: true,
+    }).success).toBe(false);
+    expect(HandoffWorkspaceActionV1Schema.safeParse({
+      kind: 'create_relationship',
+      mode: 'keep_synced',
+      contentPolicy,
+      targetBootstrap: 'use_existing',
+      flushBeforeCommit: false,
+    }).success).toBe(false);
     expect(HandoffWorkspaceActionV1Schema.parse({ kind: 'relationship', relationshipId: 'rel-1', flushBeforeCommit: true })).toMatchObject({ kind: 'relationship' });
+    expect(HandoffWorkspaceActionV1Schema.safeParse({ kind: 'copy_once', contentPolicy }).success).toBe(true);
+    expect(HandoffWorkspaceActionV1Schema.safeParse({
+      kind: 'copy_once', contentPolicy, targetBootstrap: 'materialize_from_source_workspace',
+    }).success).toBe(false);
+    expect(HandoffWorkspaceActionV1Schema.safeParse({
+      kind: 'copy_once', contentPolicy, destructiveTargetReuseApproved: true,
+    }).success).toBe(false);
+    expect(HandoffWorkspaceActionV1Schema.safeParse({
+      kind: 'copy_once',
+      contentPolicy,
+      targetReplacementApproval: {
+        v: 1,
+        consequence: 'replace_nonempty_workspace_target',
+        serverId: 'server-1',
+        machineId: 'machine-beta',
+        canonicalRoot: '/workspace/beta',
+        rootFingerprint: 'a'.repeat(64),
+        operationId: 'handoff-action-1',
+      },
+    }).success).toBe(false);
+    expect(HandoffWorkspaceActionV1Schema.safeParse({
+      kind: 'relationship',
+      relationshipId: 'rel-1',
+      flushBeforeCommit: true,
+      targetBootstrap: 'use_existing',
+    }).success).toBe(false);
 
     expect(WorkspaceSyncRelationshipV1Schema.safeParse({
       v: 1,
@@ -298,7 +363,21 @@ describe('workspace sync protocol schemas', () => {
       ...relationshipPrepare,
       bootstrapOperationId: 'bootstrap-op-2',
       owner: { kind: 'copy_once' as const, operation: copyOnceOperation },
+      targetBootstrap: 'materialize_from_source_workspace',
     }).owner).toEqual({ kind: 'copy_once', operation: copyOnceOperation });
+    expect(WorkspaceSyncTargetBootstrapPrepareV1Schema.safeParse({
+      ...relationshipPrepare,
+      bootstrapOperationId: 'bootstrap-op-3',
+      owner: { kind: 'copy_once' as const, operation: copyOnceOperation },
+      targetBootstrap: 'use_existing',
+      destructiveTargetReuseApproved: true,
+    }).success).toBe(false);
+    expect(WorkspaceSyncTargetBootstrapPrepareV1Schema.parse({
+      ...relationshipPrepare,
+      bootstrapOperationId: 'copy-op-1',
+      owner: { kind: 'copy_once' as const, operation: copyOnceOperation },
+      createIfMissing: false,
+    }).targetBootstrap).toBeUndefined();
   });
 
   it('rejects caller-supplied paths, credentials, routes and every unknown prepare field', () => {
@@ -363,13 +442,64 @@ describe('workspace sync protocol schemas', () => {
       created: true,
       rootFingerprint: 'b'.repeat(64),
       policyDigest: 'a'.repeat(64),
-      manifestDigest: 'c'.repeat(64),
     };
     expect(WorkspaceSyncTargetBootstrapPrepareResultV1Schema.parse(result)).toEqual(result);
     expect(WorkspaceSyncTargetBootstrapPrepareResultV1Schema.safeParse({ ...result, rootPath: '/leaked/path' }).success).toBe(false);
     expect(WorkspaceSyncTargetBootstrapPrepareResultV1Schema.safeParse({ ...result, handle: { ownerId: 'leaked' } }).success).toBe(false);
-    expect(WorkspaceSyncTargetBootstrapPrepareResultV1Schema.safeParse({ ...result, manifestDigest: 'z'.repeat(64) }).success).toBe(false);
+    expect(WorkspaceSyncTargetBootstrapPrepareResultV1Schema.safeParse({ ...result, manifestDigest: 'c'.repeat(64) }).success).toBe(false);
     expect(WorkspaceSyncTargetBootstrapPrepareResultV1Schema.safeParse({ ...result, state: 'READY' }).success).toBe(false);
+  });
+
+  it('admits one exact transient relationship only on its matching relationship bootstrap owner', () => {
+    const transientRelationship = WorkspaceSyncRelationshipV1Schema.parse({
+      v: 1,
+      relationshipId: 'relationship-transient',
+      controllerMachineId: 'machine-alpha',
+      alphaWorkspaceRefId: 'workspace-alpha',
+      betaWorkspaceRefId: 'workspace-beta',
+      mode: 'keep_synced',
+      contentPolicy,
+      enabled: true,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    });
+    const request = {
+      v: 1 as const,
+      bootstrapOperationId: 'relationship-transient',
+      owner: { kind: 'relationship' as const, relationshipId: 'relationship-transient' },
+      transientRelationship,
+      targetWorkspaceRefId: 'workspace-beta',
+      endpointRole: 'beta' as const,
+      policyDigest: contentPolicy.policyDigest,
+      createIfMissing: true,
+      targetBootstrap: 'materialize_from_source_workspace' as const,
+      targetReplacementApproval: {
+        v: 1 as const,
+        consequence: 'replace_nonempty_workspace_target' as const,
+        serverId: 'server-1',
+        machineId: 'machine-beta',
+        canonicalRoot: '/workspace/beta',
+        rootFingerprint: 'a'.repeat(64),
+        operationId: 'relationship-transient',
+      },
+    };
+
+    expect(WorkspaceSyncTargetBootstrapPrepareV1Schema.parse(request)).toEqual(request);
+    expect(WorkspaceSyncTargetBootstrapPrepareV1Schema.safeParse({
+      ...request,
+      owner: { kind: 'relationship', relationshipId: 'another-relationship' },
+    }).success).toBe(false);
+    expect(WorkspaceSyncTargetBootstrapPrepareV1Schema.safeParse({
+      ...request,
+      owner: { kind: 'copy_once', operation: {
+        v: 1,
+        operationId: 'copy-op',
+        controllerMachineId: 'machine-alpha',
+        alphaWorkspaceRefId: 'workspace-alpha',
+        betaWorkspaceRefId: 'workspace-beta',
+        contentPolicy,
+      } },
+    }).success).toBe(false);
   });
 
   it('keeps target bootstrap release strict, bounded and idempotent-shaped', () => {

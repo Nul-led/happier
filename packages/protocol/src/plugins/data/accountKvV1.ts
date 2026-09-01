@@ -428,62 +428,21 @@ function pluginAccountKvEntryVersionV1(
 }
 
 /**
- * Rebase one already-evaluated logical-key mutation onto a newer physical row.
+ * Commit one already-evaluated logical transaction without replaying it.
  *
- * The transaction callback is never replayed. A physical-row conflict is safe
- * to retry only while every key the callback changed still has the version it
- * observed in the initial snapshot. Unrelated keys come from the newer row;
- * touched entries come from the callback's pending row with their already
- * computed author-visible versions.
+ * The physical Account row can conflict because another logical key changed.
+ * In that case this owner reads once, verifies every key the transaction
+ * depended on still has the version observed by the callback, overlays only
+ * the transaction's write set onto the fresh row, and attempts one final CAS.
+ * A changed dependency or second physical conflict is author-visible conflict.
  */
-export function rebasePluginAccountKvMutationRowV1(input: Readonly<{
-  initialRow: PluginAccountStorageRowV1;
-  pendingRow: PluginAccountStorageRowV1;
-  latestRow: PluginAccountStorageRowV1;
-  touchedKeys: readonly string[];
-}>): PluginAccountStorageRowV1 {
-  const rebased = clonePluginAccountKvRowV1(input.latestRow);
-  const touchedKeys = new Set(input.touchedKeys.map(normalizePluginAccountKvLogicalKeyV1));
-  for (const key of touchedKeys) {
-    const initial = readPluginAccountKvEntryV1(input.initialRow, key);
-    const latest = readPluginAccountKvEntryV1(input.latestRow, key);
-    if (pluginAccountKvEntryVersionV1(initial) !== pluginAccountKvEntryVersionV1(latest)) {
-      throw new PluginAccountKvRowError(
-        'plugin_account_kv_conflict',
-        'Account KV key changed before the conditional write completed',
-      );
-    }
-    const pending = readPluginAccountKvEntryV1(input.pendingRow, key);
-    if (!pending) {
-      throw new PluginAccountKvRowError(
-        'plugin_account_kv_invalid',
-        'Account KV pending mutation omitted a touched key',
-      );
-    }
-    Object.defineProperty(rebased.values, key, {
-      value: pending,
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
-  }
-  return PluginAccountStorageRowV1Schema.parse(rebased);
-}
-
-/**
- * The one aggregate-row commit/rebase loop shared by direct UI and daemon
- * Account KV. Realm adapters retain transport, encryption and currentness;
- * this owner decides whether a physical conflict is still the same per-key
- * mutation. There is deliberately no arbitrary retry count: caller lifetime
- * cancellation/currentness is the stopping boundary when unrelated writers
- * keep winning the physical CAS.
- */
-export async function commitPluginAccountKvMutationWithRebaseV1<
+export async function commitPluginAccountKvMutationV1<
   TSnapshot extends Readonly<{ row: PluginAccountStorageRowV1 }>,
 >(input: Readonly<{
   initialSnapshot: TSnapshot;
   pendingRow: PluginAccountStorageRowV1;
-  touchedKeys: readonly string[];
+  dependencyKeys: readonly string[];
+  writeKeys: readonly string[];
   assertCurrent(): void | Promise<void>;
   readLatest(): Promise<TSnapshot>;
   write(
@@ -491,22 +450,65 @@ export async function commitPluginAccountKvMutationWithRebaseV1<
     row: PluginAccountStorageRowV1,
   ): Promise<'updated' | 'conflict'>;
 }>): Promise<void> {
-  let snapshot = input.initialSnapshot;
-  let candidate = clonePluginAccountKvRowV1(input.pendingRow);
-  for (;;) {
-    await input.assertCurrent();
-    const outcome = await input.write(snapshot, candidate);
-    await input.assertCurrent();
-    if (outcome === 'updated') return;
-    const latest = await input.readLatest();
-    await input.assertCurrent();
-    candidate = rebasePluginAccountKvMutationRowV1({
-      initialRow: input.initialSnapshot.row,
-      pendingRow: input.pendingRow,
-      latestRow: latest.row,
-      touchedKeys: input.touchedKeys,
+  const dependencyKeys = new Set(
+    input.dependencyKeys.map(normalizePluginAccountKvLogicalKeyV1),
+  );
+  const writeKeys = new Set(
+    input.writeKeys.map(normalizePluginAccountKvLogicalKeyV1),
+  );
+  for (const key of writeKeys) {
+    if (!dependencyKeys.has(key)) {
+      throw new PluginAccountKvRowError(
+        'plugin_account_kv_invalid',
+        'Account KV write set omitted its expected-version dependency',
+      );
+    }
+  }
+
+  await input.assertCurrent();
+  const initialOutcome = await input.write(input.initialSnapshot, input.pendingRow);
+  await input.assertCurrent();
+  if (initialOutcome === 'updated') return;
+
+  const latestSnapshot = await input.readLatest();
+  await input.assertCurrent();
+  for (const key of dependencyKeys) {
+    const initialEntry = readPluginAccountKvEntryV1(input.initialSnapshot.row, key);
+    const latestEntry = readPluginAccountKvEntryV1(latestSnapshot.row, key);
+    if (pluginAccountKvEntryVersionV1(initialEntry) !== pluginAccountKvEntryVersionV1(latestEntry)) {
+      throw new PluginAccountKvRowError(
+        'plugin_account_kv_conflict',
+        'Account KV dependency changed before the transaction committed',
+      );
+    }
+  }
+
+  const rebased = clonePluginAccountKvRowV1(latestSnapshot.row);
+  for (const key of writeKeys) {
+    const pendingEntry = readPluginAccountKvEntryV1(input.pendingRow, key);
+    if (!pendingEntry) {
+      throw new PluginAccountKvRowError(
+        'plugin_account_kv_invalid',
+        'Account KV pending transaction omitted a written key',
+      );
+    }
+    Object.defineProperty(rebased.values, key, {
+      value: pendingEntry,
+      enumerable: true,
+      writable: true,
+      configurable: true,
     });
-    snapshot = latest;
+  }
+  const retryOutcome = await input.write(
+    latestSnapshot,
+    PluginAccountStorageRowV1Schema.parse(rebased),
+  );
+  await input.assertCurrent();
+  if (retryOutcome === 'conflict') {
+    throw new PluginAccountKvRowError(
+      'plugin_account_kv_conflict',
+      'Account KV row changed again before the transaction committed',
+    );
   }
 }
 

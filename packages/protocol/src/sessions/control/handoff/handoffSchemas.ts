@@ -193,6 +193,8 @@ export const SessionHandoffStartRequestSchema = z
     sessionId: z.string().min(1).max(MAX_HANDOFF_ID_LENGTH),
     sourceMachineId: z.string().min(1).max(MAX_MACHINE_ID_LENGTH),
     targetMachineId: z.string().min(1).max(MAX_MACHINE_ID_LENGTH),
+    /** Host-derived Account Home scope for daemon-owned relationship creation. */
+    accountServerId: z.string().trim().min(1).max(MAX_HANDOFF_ID_LENGTH).optional(),
     sessionStorageMode: SessionHandoffStorageModeSchema,
     preferredTransportStrategies: z
       .array(SessionHandoffTransportStrategySchema)
@@ -217,6 +219,10 @@ export const SessionHandoffPrepareTargetRequestSchema = z
     sourceSessionStorageMode: SessionHandoffStorageModeSchema,
     targetSessionStorageMode: SessionHandoffStorageModeSchema.optional(),
     targetPath: z.string().min(1).max(MAX_PATH_LENGTH),
+    /** Repository materialization root for a git_worktree handoff. */
+    workspaceRootPath: z.string().min(1).max(MAX_PATH_LENGTH).optional(),
+    /** Safe repository-relative cwd; empty means the repository root. */
+    workspaceSessionRelativeCwd: z.string().max(MAX_PATH_LENGTH).optional(),
     endpointCandidates: z
       .array(TransferEndpointCandidateSchema)
       .max(MAX_ENDPOINT_CANDIDATES)
@@ -226,6 +232,15 @@ export const SessionHandoffPrepareTargetRequestSchema = z
     workspaceAction: HandoffWorkspaceActionV1Schema.optional(),
   })
   .passthrough()
+  .superRefine((value, context) => {
+    if ((value.workspaceRootPath === undefined) !== (value.workspaceSessionRelativeCwd === undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['workspaceSessionRelativeCwd'],
+        message: 'workspace root and session-relative cwd must be provided together',
+      });
+    }
+  })
   .superRefine(rejectLegacyInlineTransferFields)
   .superRefine(rejectRetiredWorkspaceActionFields);
 export type SessionHandoffPrepareTargetRequest = z.infer<typeof SessionHandoffPrepareTargetRequestSchema>;

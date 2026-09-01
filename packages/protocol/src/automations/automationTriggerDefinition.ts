@@ -6,7 +6,6 @@ import {
   PluginWebhookEndpointIdV1Schema,
   PluginWebhookEndpointSetupV1Schema,
 } from '../plugins/webhooks/endpointV1.js';
-import { SessionIdSchema, TurnIdSchema } from '../sessions/idsV1.js';
 import {
   AutomationQualifiedPluginContributionRefV1Schema,
   AutomationSourceSelectorIdV1Schema,
@@ -22,6 +21,7 @@ import {
   ENCRYPTED_STORED_CONTENT_SCHEMA,
   addAutomationStoredEnvelopeUtf8LimitIssue,
 } from './automationStoredContentEnvelopeV1.js';
+import { AutomationSessionLifecycleConfigurationSchema } from './automationSessionLifecycle.js';
 
 const AutomationScheduleSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -49,16 +49,10 @@ export const AutomationScheduleTriggerInputSchema = AutomationScheduleTriggerSch
 }).strict();
 export type AutomationScheduleTriggerInput = z.infer<typeof AutomationScheduleTriggerInputSchema>;
 
-export const AutomationSessionLifecycleTriggerSchema = z.object({
-  kind: z.literal('sessionLifecycle'),
-  event: z.literal('parentTurnCompleted'),
-  scope: z.object({
-    kind: z.literal('exactTurn'),
-    sourceSessionId: asProtocolZod(SessionIdSchema),
-    sourceTurnId: TurnIdSchema,
-  }).strict(),
-  consumption: z.literal('once'),
-}).strict();
+export const AutomationSessionLifecycleTriggerSchema =
+  AutomationSessionLifecycleConfigurationSchema.extend({
+    kind: z.literal('sessionLifecycle'),
+  }).strict();
 export type AutomationSessionLifecycleTrigger = z.infer<
   typeof AutomationSessionLifecycleTriggerSchema
 >;

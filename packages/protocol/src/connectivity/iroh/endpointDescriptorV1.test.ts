@@ -126,6 +126,19 @@ describe('IrohEndpointDescriptorV1 (canonical Iroh endpoint sub-descriptor)', ()
     expect(IrohEndpointDescriptorV1Schema.safeParse({ ...VALID_DESCRIPTOR, extra: true }).success).toBe(false);
   });
 
+  it('rejects relay URL query material so deployment credentials cannot enter descriptors', () => {
+    for (const relayUrl of [
+      'https://relay.example.test?token=shared-secret',
+      'https://relay.example.test/path?admission=enabled',
+      'https://relay.example.test?',
+    ]) {
+      expect(IrohEndpointDescriptorV1Schema.safeParse({
+        ...VALID_DESCRIPTOR,
+        relayUrls: [relayUrl],
+      }).success).toBe(false);
+    }
+  });
+
   it('enforces the shared protocol bounds for lists', () => {
     expect(IrohEndpointDescriptorV1Schema.safeParse({
       ...VALID_DESCRIPTOR,

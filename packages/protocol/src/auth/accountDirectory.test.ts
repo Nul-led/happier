@@ -2,13 +2,20 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES,
+  ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES,
   ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES,
   ACCOUNT_DIRECTORY_ASSERTION_SIGNING_DOMAIN_V1,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1,
+  ACCOUNT_DIRECTORY_HOME_HTTP_PATH_V1,
+  ACCOUNT_DIRECTORY_HOME_LOGIN_ASSERTION_HTTP_PATH_V1,
+  ACCOUNT_DIRECTORY_LINKS_HTTP_PATH_V1,
+  HOME_LOGIN_APPROVALS_HTTP_PATH_V1,
+  HOME_LOGIN_APPROVAL_DECISION_HTTP_PATH_V1,
   AccountDirectoryCapabilitiesSchema,
   AccountDirectoryHomeDeleteRequestV1Schema,
   AccountDirectoryHomeEntryV1Schema,
   AccountDirectoryHomePutRequestV1Schema,
+  AccountDirectoryHomePublishRequestV2Schema,
   AccountDirectoryHomesResponseV1Schema,
   AccountDirectoryLinkDeleteRequestV1Schema,
   AccountDirectoryLinkPutRequestV1Schema,
@@ -21,14 +28,21 @@ import {
   HomeApplicationOriginV1Schema,
   HomeDeviceApprovalRequestV1Schema,
   HomeDeviceApprovalListV1Schema,
+  HomeDeviceApprovalDecisionRequestV1Schema,
+  HomeDeviceApprovalDecisionResponseV1Schema,
   HomeLoginAssertionRequestV1Schema,
   HomeLoginAssertionResponseV1Schema,
   HomeLoginAssertionV1Schema,
+  HomeLoginCredentialPayloadV1Schema,
   HomeLoginRedemptionRequestV1Schema,
   HomeLoginRedemptionResultV1Schema,
   HomeLoginRedemptionResponseV1Schema,
   createHomeLoginAssertionSigningBytesV1,
   createHomeLoginRequesterFingerprintV1,
+  buildAccountDirectoryHomeHttpPathV1,
+  buildAccountDirectoryHomeLoginAssertionHttpPathV1,
+  buildAccountDirectoryLinkHttpPathV1,
+  buildHomeLoginApprovalDecisionHttpPathV1,
 } from './accountDirectory.js';
 import { BOX_BUNDLE_MIN_BYTES } from '../crypto/boxBundle.js';
 import { encodeBase64 } from '../crypto/base64.js';
@@ -79,8 +93,57 @@ const ASSERTION = {
 };
 
 describe('Account Directory protocol DTOs', () => {
-  it('owns the token-only credential envelope bound and requester fingerprint', () => {
-    expect(ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES).toBe(4_096 + 12);
+  it('owns strict Home approval decision DTOs and canonical parameterized paths', () => {
+    expect(HomeDeviceApprovalDecisionRequestV1Schema.parse({ decision: 'approve' }))
+      .toEqual({ decision: 'approve' });
+    expect(HomeDeviceApprovalDecisionRequestV1Schema.safeParse({ decision: 'reject', extra: true }).success)
+      .toBe(false);
+    expect(HomeDeviceApprovalDecisionResponseV1Schema.parse({ status: 'already_decided' }))
+      .toEqual({ status: 'already_decided' });
+    expect(HomeDeviceApprovalDecisionResponseV1Schema.safeParse({ status: 'expired' }).success)
+      .toBe(false);
+
+    expect(ACCOUNT_DIRECTORY_HOME_HTTP_PATH_V1)
+      .toBe('/v1/account-directory/homes/:homeServerIdentityId');
+    expect(buildAccountDirectoryHomeHttpPathV1('srv_home/a'))
+      .toBe('/v1/account-directory/homes/srv_home%2Fa');
+    expect(ACCOUNT_DIRECTORY_HOME_LOGIN_ASSERTION_HTTP_PATH_V1)
+      .toBe('/v1/account-directory/homes/:homeServerIdentityId/login-assertion');
+    expect(buildAccountDirectoryHomeLoginAssertionHttpPathV1('srv_home/a'))
+      .toBe('/v1/account-directory/homes/srv_home%2Fa/login-assertion');
+    expect(ACCOUNT_DIRECTORY_LINKS_HTTP_PATH_V1)
+      .toBe('/v1/account/directory-links/:issuerServerIdentityId');
+    expect(buildAccountDirectoryLinkHttpPathV1('srv_issuer/a'))
+      .toBe('/v1/account/directory-links/srv_issuer%2Fa');
+    expect(HOME_LOGIN_APPROVALS_HTTP_PATH_V1).toBe('/v1/auth/home-login/approvals');
+    expect(HOME_LOGIN_APPROVAL_DECISION_HTTP_PATH_V1)
+      .toBe('/v1/auth/home-login/approvals/:approvalId/decision');
+    expect(buildHomeLoginApprovalDecisionHttpPathV1('approval/a'))
+      .toBe('/v1/auth/home-login/approvals/approval%2Fa/decision');
+  });
+
+  it('owns the strict bounded Home credential payload and requester fingerprint', () => {
+    const maximumToken = 't'.repeat(ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES);
+    const maximalPayload = {
+      v: 1 as const,
+      credentials: { token: maximumToken },
+      connectionDescriptor: HTTPS_DESCRIPTOR,
+    };
+    expect(HomeLoginCredentialPayloadV1Schema.safeParse(maximalPayload).success).toBe(true);
+    expect(
+      new TextEncoder().encode(JSON.stringify(maximalPayload)).byteLength,
+    ).toBeLessThanOrEqual(ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES);
+    // Escape stress: 4096 quote characters serialize to 8192 bytes and must
+    // still sit inside the derived bound.
+    const escapeStressPayload = {
+      v: 1 as const,
+      credentials: { token: '"'.repeat(ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES) },
+      connectionDescriptor: HTTPS_DESCRIPTOR,
+    };
+    expect(HomeLoginCredentialPayloadV1Schema.safeParse(escapeStressPayload).success).toBe(true);
+    expect(
+      new TextEncoder().encode(JSON.stringify(escapeStressPayload)).byteLength,
+    ).toBeLessThanOrEqual(ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES);
     expect(ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES).toBe(
       ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES + BOX_BUNDLE_MIN_BYTES,
     );
@@ -105,6 +168,22 @@ describe('Account Directory protocol DTOs', () => {
       ...response,
       sealedHomeTokenBase64Url: oversizedSealedEnvelope,
     }).success).toBe(false);
+
+    const ordinaryPayload = {
+      v: 1 as const,
+      credentials: { token: 'ordinary-token' },
+      connectionDescriptor: HTTPS_DESCRIPTOR,
+    };
+    expect(HomeLoginCredentialPayloadV1Schema.parse(ordinaryPayload)).toEqual(ordinaryPayload);
+    expect(HomeLoginCredentialPayloadV1Schema.safeParse({ token: 'ordinary-token' }).success).toBe(false);
+    expect(HomeLoginCredentialPayloadV1Schema.safeParse({ ...ordinaryPayload, credentials: { token: '' } }).success).toBe(false);
+    expect(HomeLoginCredentialPayloadV1Schema.safeParse({
+      ...ordinaryPayload,
+      credentials: { token: `${maximumToken}t` },
+    }).success).toBe(false);
+    expect(HomeLoginCredentialPayloadV1Schema.safeParse({ ...ordinaryPayload, extra: true }).success)
+      .toBe(false);
+    expect(HomeLoginCredentialPayloadV1Schema.safeParse({ ...maximalPayload, extra: true }).success).toBe(false);
 
     expect(createHomeLoginRequesterFingerprintV1(
       encodeBase64(new Uint8Array(32).fill(1), 'base64'),
@@ -277,6 +356,20 @@ describe('Account Directory protocol DTOs', () => {
       label: 'Personal Home',
       connectionDescriptor: HTTPS_DESCRIPTOR,
     }).success).toBe(false);
+    const publication = {
+      v: 2 as const,
+      label: 'Personal Home',
+      minimumOuterRevisionExclusive: 7,
+      canonicalServerUrl: 'https://moved-home.example.test',
+      endpoints: [{ kind: 'https' as const, url: 'https://moved-home.example.test' }],
+    };
+    expect(AccountDirectoryHomePublishRequestV2Schema.parse(publication)).toEqual(publication);
+    expect(AccountDirectoryHomePutRequestV1Schema.safeParse(publication).success).toBe(false);
+    expect(AccountDirectoryHomePublishRequestV2Schema.safeParse({ ...publication, revision: 8 }).success).toBe(false);
+    expect(AccountDirectoryHomePublishRequestV2Schema.safeParse({
+      ...publication,
+      minimumOuterRevisionExclusive: Number.MAX_SAFE_INTEGER,
+    }).success).toBe(false);
 
     const me = AccountDirectoryMeResponseV1Schema.parse({
       v: 1,
@@ -422,12 +515,27 @@ describe('Account Directory protocol DTOs', () => {
   });
 
   it('exposes typed route errors without leaking credentials', () => {
-    expect(ACCOUNT_DIRECTORY_ERROR_CODES_V1).toMatchObject({ invalidAssertionSignature: 'invalid_assertion_signature' });
+    expect(ACCOUNT_DIRECTORY_ERROR_CODES_V1).toMatchObject({
+      invalidAssertionSignature: 'invalid_assertion_signature',
+      descriptorRevisionConflict: 'descriptor_revision_conflict',
+      approvalRejected: 'approval_rejected',
+      approvalExpired: 'approval_expired',
+      approvalInvalid: 'approval_invalid',
+    });
     expect(AccountDirectoryRouteErrorResponseV1Schema.parse({ error: 'invalid_assertion_signature' })).toEqual({
       error: 'invalid_assertion_signature',
     });
     expect(AccountDirectoryRouteErrorResponseV1Schema.parse({ error: 'rate_limited' })).toEqual({
       error: 'rate_limited',
+    });
+    expect(AccountDirectoryRouteErrorResponseV1Schema.parse({ error: 'approval_rejected' })).toEqual({
+      error: 'approval_rejected',
+    });
+    expect(AccountDirectoryRouteErrorResponseV1Schema.parse({ error: 'approval_expired' })).toEqual({
+      error: 'approval_expired',
+    });
+    expect(AccountDirectoryRouteErrorResponseV1Schema.parse({ error: 'approval_invalid' })).toEqual({
+      error: 'approval_invalid',
     });
     expect(AccountDirectoryRouteErrorResponseV1Schema.safeParse({ error: 'invalid_token', token: 'secret' }).success).toBe(false);
   });

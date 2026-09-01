@@ -122,6 +122,7 @@ import {
   PluginSessionInputAttachmentsV1Schema,
   PluginSessionInputSourceV1Schema,
   SessionInputCausalPermissionAuthorityV1Schema,
+  SessionInputSourceSessionV1Schema,
   derivePluginSessionInputLocalIdV1,
   type SessionInputCausalPermissionAuthorityV1,
 } from '../sessions/messages/sessionInputAdmission.js';
@@ -147,6 +148,11 @@ import {
   type SessionHandoffStatusGetRequest,
 } from '../sessions/control/handoff/handoffSchemas.js';
 import type { HandoffWorkspaceActionV1 } from '../sessions/control/handoff/workspaceSyncSchemas.js';
+import {
+  HandoffTargetReplacementApprovalV1Schema,
+  sameHandoffTargetReplacementApproval,
+  type HandoffTargetReplacementApprovalV1,
+} from '../sessions/control/handoff/handoffTargetReplacementApprovalV1.js';
 import type { SessionContinueWithReplayRpcParams } from '../sessions/continueWithReplay.js';
 import { SessionForkRpcParamsSchema } from '../sessions/fork.js';
 import { SpawnSessionErrorCodeSchema } from '../sessions/spawnSession.js';
@@ -159,7 +165,14 @@ import {
   type SessionCreationKeyV1,
 } from '../sessions/creation/sessionCreationIdentityV1.js';
 import { AgentExecutionTargetV1Schema } from '../agents/executionTargetV1.js';
-import { SessionSpawnNewInputV2Schema } from '../sessions/creation/sessionSpawnNewInputV2.js';
+import {
+  SessionSpawnNewInputV2Schema,
+  type SessionSpawnNewInputV2,
+} from '../sessions/creation/sessionSpawnNewInputV2.js';
+import {
+  SessionAgentSpawnPolicyV1Schema,
+  type SessionAgentSpawnPolicyV1,
+} from '../account/settings/accountSettings.js';
 import {
   SessionCreationDirectoryApprovalV1Schema,
   type SessionCreationDirectoryApprovalV1,
@@ -566,6 +579,83 @@ function causalPermissionAuthorityFailure(): ActionExecuteFailure {
     errorCode: 'causal_permission_authority_invalid',
     error: 'causal_permission_authority_invalid',
   };
+}
+
+function resolveAgentSessionInputSource(
+  ctx: ActionExecutorContext,
+  authority: SessionInputCausalPermissionAuthorityV1 | undefined,
+): Readonly<{
+  sourceSessionId: string;
+  sourceTurnId: string;
+  via: 'action' | 'mcp';
+  causalPermissionAuthority: SessionInputCausalPermissionAuthorityV1;
+}> | null {
+  if (!isAgentCaller(ctx) || !authority) return null;
+  const parsed = SessionInputSourceSessionV1Schema.safeParse(ctx.sessionInputSource);
+  if (!parsed.success) return null;
+  const contextualSessionId = normalizeId(ctx.defaultSessionId);
+  if (!contextualSessionId || parsed.data.sourceSessionId !== contextualSessionId) return null;
+  return Object.freeze({
+    ...parsed.data,
+    causalPermissionAuthority: authority,
+  });
+}
+
+function applyAgentSpawnPermissionPolicy(
+  ctx: ActionExecutorContext,
+  input: SessionSpawnNewInputV2,
+  policy: SessionAgentSpawnPolicyV1,
+): Readonly<
+  | { ok: true; input: SessionSpawnNewInputV2 }
+  | { ok: false; error: ActionExecuteFailure }
+> {
+  if (!isAgentCaller(ctx) || policy.permissionCeiling === null) {
+    return { ok: true, input };
+  }
+  const caller = resolveAgentEffectivePermission(ctx);
+  if (!caller.ok) return caller;
+  if (caller.effectiveCallerMode === null) {
+    return { ok: false, error: causalPermissionAuthorityFailure() };
+  }
+  const effective = resolveEffectivePermissionMode({
+    currentMode: caller.effectiveCallerMode,
+    admittedPermissionCeiling: policy.permissionCeiling,
+  });
+  if (!effective.ok) {
+    return { ok: false, error: causalPermissionAuthorityFailure() };
+  }
+  const requestedMode = input.permissionMode
+    ?? input.configuration?.permissionIntent.value
+    ?? effective.effectiveMode;
+  const decision = assertNonEscalatingPermissionMode({
+    requestedMode,
+    callerMode: effective.effectiveMode,
+  });
+  if (!decision.ok) {
+    return { ok: false, error: createPermissionPolicyResult(ctx, decision) };
+  }
+  return {
+    ok: true,
+    input: SessionSpawnNewInputV2Schema.parse({
+      ...input,
+      permissionMode: decision.normalizedMode,
+    }),
+  };
+}
+
+function readAgentSpawnPolicyDeniedExplicitField(
+  input: SessionSpawnNewInputV2,
+  policy: SessionAgentSpawnPolicyV1,
+): string | null {
+  if (!policy.allowModelOverride && (input.modelSelection !== undefined || input.configuration?.model.value)) return 'modelSelection';
+  if (!policy.allowPermissionModeOverride && (input.permissionMode !== undefined || input.configuration?.permissionIntent.value)) return 'permissionMode';
+  if (!policy.allowAgentModeOverride && (input.agentModeId !== undefined || input.configuration?.mode.value)) return 'agentModeId';
+  if (!policy.allowConfigOptionOverrides && input.configuration && Object.keys(input.configuration.options).length > 0) return 'configuration.options';
+  if (!policy.allowProfileOverride && input.profileId !== undefined) return 'profileId';
+  if (!policy.allowConnectedServicesOverride && input.connectedServices !== undefined) return 'connectedServices';
+  if (!policy.allowMcpSelectionOverride && input.mcpSelection !== undefined) return 'mcpSelection';
+  if (!policy.allowTranscriptStorageOverride && input.transcriptStorage !== undefined) return 'transcriptStorage';
+  return null;
 }
 
 type AgentEffectivePermissionResolution =
@@ -1923,6 +2013,11 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
         args.request.sessionCreationDirectoryApproval,
       )
       : null;
+    const persistedHandoffTargetApproval = args.request.actionId === 'session.handoff'
+      ? HandoffTargetReplacementApprovalV1Schema.safeParse(
+        args.request.handoffTargetReplacementApproval,
+      )
+      : null;
     const executionContext: ActionExecutorContext = {
       ...args.ctx,
       ...(args.effectiveServerId ? { serverId: args.effectiveServerId } : {}),
@@ -1933,6 +2028,12 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
       bypassApprovals: true,
       ...(persistedDirectoryApproval?.success
         ? { sessionCreationDirectoryApproval: persistedDirectoryApproval.data }
+        : {}),
+      ...(persistedHandoffTargetApproval?.success
+        ? {
+            handoffTargetReplacementApproval: persistedHandoffTargetApproval.data,
+            actionRequestId: persistedHandoffTargetApproval.data.operationId,
+          }
         : {}),
     };
     const canonicalSessionSpawnApproval = args.request.actionId === 'session.spawn_new'
@@ -2146,18 +2247,69 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
         ? classifyExecutionRunStartFailure(invalid, 'noRunCreated')
         : invalid;
     }
+    let admittedInput = parsed.data;
+    if (!existingAdmission && actionId === 'session.spawn_new' && isAgentCaller(ctx)) {
+      const spawnInput = SessionSpawnNewInputV2Schema.safeParse(admittedInput);
+      const spawnPolicy = SessionAgentSpawnPolicyV1Schema.safeParse(
+        ctx.sessionAgentSpawnPolicyV1 ?? {},
+      );
+      if (!spawnInput.success || !spawnPolicy.success) {
+        return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+      }
+      const permissionPolicy = applyAgentSpawnPermissionPolicy(ctx, spawnInput.data, spawnPolicy.data);
+      if (!permissionPolicy.ok) return permissionPolicy.error;
+      admittedInput = permissionPolicy.input;
+      const explicitlyDeniedField = readAgentSpawnPolicyDeniedExplicitField(
+        permissionPolicy.input,
+        spawnPolicy.data,
+      );
+      if (explicitlyDeniedField) {
+        return {
+          ok: false,
+          errorCode: 'session_spawn_policy_denied',
+          error: 'session_spawn_policy_denied',
+          details: { field: explicitlyDeniedField },
+        };
+      }
+      const needsParentComparison = !spawnPolicy.data.allowCustomDirectory
+        || !spawnPolicy.data.allowCrossMachine
+        || !spawnPolicy.data.allowBackendTargetOverride;
+      if (needsParentComparison && !deps.sessionSpawnNewAgentPolicyPreflight) {
+        return {
+          ok: false,
+          errorCode: 'session_spawn_policy_unavailable',
+          error: 'session_spawn_policy_unavailable',
+        };
+      }
+      if (deps.sessionSpawnNewAgentPolicyPreflight) {
+        const policyAdmission = await deps.sessionSpawnNewAgentPolicyPreflight({
+          input: permissionPolicy.input,
+          policy: spawnPolicy.data,
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
+        });
+        if (policyAdmission.type === 'denied') {
+          return {
+            ok: false,
+            errorCode: 'session_spawn_policy_denied',
+            error: 'session_spawn_policy_denied',
+            details: { field: policyAdmission.field },
+          };
+        }
+      }
+    }
     const callerPolicyFailure = existingAdmission
       ? null
-      : pluginActionCallerPolicyFailure(spec, parsed.data, ctx);
+      : pluginActionCallerPolicyFailure(spec, admittedInput, ctx);
     if (callerPolicyFailure) {
       return actionId === 'execution.run.start'
         ? classifyExecutionRunStartFailure(callerPolicyFailure, 'noRunCreated')
         : callerPolicyFailure;
     }
-    const data = readRecord(parsed.data);
+    const data = readRecord(admittedInput);
     let requiredDirectoryApproval: SessionCreationDirectoryApprovalV1 | null = null;
+    let requiredHandoffTargetApproval: HandoffTargetReplacementApprovalV1 | null = null;
     if (!existingAdmission && actionId === 'session.spawn_new' && deps.sessionSpawnNewDirectoryApprovalPreflight) {
-      const spawnInput = SessionSpawnNewInputV2Schema.safeParse(parsed.data);
+      const spawnInput = SessionSpawnNewInputV2Schema.safeParse(admittedInput);
       if (!spawnInput.success) {
         return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
       }
@@ -2198,6 +2350,56 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
         }
       }
     }
+    const handoffWorkspaceAction = actionId === 'session.handoff'
+      ? data.workspaceAction as HandoffWorkspaceActionV1 | undefined
+      : undefined;
+    const handoffMayReplaceTarget = handoffWorkspaceAction?.kind === 'copy_once'
+      || handoffWorkspaceAction?.kind === 'create_relationship';
+    if (!existingAdmission && actionId === 'session.handoff' && handoffMayReplaceTarget
+      && !deps.sessionHandoffTargetReplacementApprovalPreflight) {
+      return { ok: false, errorCode: 'workspace_sync_unavailable', error: 'workspace_sync_unavailable' };
+    }
+    if (!existingAdmission && actionId === 'session.handoff' && handoffMayReplaceTarget && deps.sessionHandoffTargetReplacementApprovalPreflight) {
+      const sessionId = resolveSessionIdFromInput(admittedInput, ctx);
+      const targetMachineId = normalizeId(data.targetMachineId);
+      const targetServerId = sessionId ? resolveServerIdForSession(deps, ctx, sessionId) : null;
+      const operationId = normalizeId(ctx.handoffTargetReplacementApproval?.operationId)
+        || normalizeId(ctx.actionRequestId);
+      if (!sessionId || !targetMachineId || !operationId) {
+        return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+      }
+      let targetPreflight: Awaited<ReturnType<NonNullable<
+        ActionExecutorDeps['sessionHandoffTargetReplacementApprovalPreflight']
+      >>>;
+      try {
+        targetPreflight = await deps.sessionHandoffTargetReplacementApprovalPreflight({
+          sessionId,
+          targetMachineId,
+          ...(normalizeId(data.targetPath) ? { targetPath: normalizeId(data.targetPath)! } : {}),
+          ...(data.workspaceAction ? { workspaceAction: data.workspaceAction as HandoffWorkspaceActionV1 } : {}),
+          ...(targetServerId ? { serverId: targetServerId } : {}),
+          operationId,
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
+        });
+      } catch {
+        return { ok: false, errorCode: ctx.signal?.aborted ? 'cancelled' : 'machine_offline', error: ctx.signal?.aborted ? 'cancelled' : 'machine_offline' };
+      }
+      if (targetPreflight.type === 'error') return targetPreflight.result;
+      if (targetPreflight.type === 'approval_required') {
+        const replayedApproval = HandoffTargetReplacementApprovalV1Schema.safeParse(
+          ctx.handoffTargetReplacementApproval,
+        );
+        if (!replayedApproval.success || !sameHandoffTargetReplacementApproval(
+          replayedApproval.data,
+          targetPreflight.approval,
+        )) {
+          if (ctx.bypassApprovals) {
+            return { ok: false, errorCode: 'approval_stale', error: 'approval_stale' };
+          }
+          requiredHandoffTargetApproval = targetPreflight.approval;
+        }
+      }
+    }
     const baseApprovalRouting = existingAdmission
       ? { required: false, flow: 'deferred' as const, result: 'none' as const }
       : resolveActionApprovalRouting({
@@ -2209,7 +2411,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           // default instead of coercing an unwired dependency to "no approval" here. (F7)
           requiredByPolicy: ctx.bypassApprovals ? false : deps.isActionApprovalRequired?.(actionId, ctx),
         });
-    const approvalRouting = requiredDirectoryApproval
+    const approvalRouting = requiredDirectoryApproval || requiredHandoffTargetApproval
       ? {
           required: true,
           flow: 'deferred' as const,
@@ -2237,7 +2439,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
         }
 
         const now = Date.now();
-        const targetSessionId = resolveSessionIdFromInput(parsed.data, ctx);
+        const targetSessionId = resolveSessionIdFromInput(admittedInput, ctx);
         const requestedSurface = parseActionSurfaceKey(ctx.surface);
         const requestingSessionId = resolvePolicyApprovalRequestingSessionId(ctx.approvalOrigin, ctx, targetSessionId);
         const approvalOrigin = resolveApprovalOriginForRequest(ctx.approvalOrigin, requestingSessionId);
@@ -2260,17 +2462,20 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           },
           actionId,
           actionArgs: actionId === 'session.spawn_new'
-            ? materializeSessionSpawnApprovalInput(parsed.data, ctx)
-            : parsed.data,
+            ? materializeSessionSpawnApprovalInput(admittedInput, ctx)
+            : admittedInput,
           summary: buildApprovalSummary(spec, targetSessionId),
           preview: await buildApprovalPreview({
             deps,
             actionId,
-            input: parsed.data,
+            input: admittedInput,
             context: ctx,
           }),
           ...(requiredDirectoryApproval
             ? { sessionCreationDirectoryApproval: requiredDirectoryApproval }
+            : {}),
+          ...(requiredHandoffTargetApproval
+            ? { handoffTargetReplacementApproval: requiredHandoffTargetApproval }
             : {}),
           ...(normalizeId(ctx.serverId) ? { serverId: normalizeId(ctx.serverId) } : {}),
         };
@@ -2343,7 +2548,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             }
             const approvedAdmission: PreparedCoreAdmission = {
               actionId,
-              input: parsed.data,
+              input: admittedInput,
               context: {
                 ...ctx,
                 ...(effectiveServerId ? { serverId: effectiveServerId } : {}),
@@ -3924,6 +4129,10 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             ...(workspaceSyncTargetWorkspaceRefId ? { workspaceSyncTargetWorkspaceRefId } : {}),
             ...(workspaceSyncSettingsVersion === undefined ? {} : { workspaceSyncSettingsVersion }),
             ...(serverId ? { serverId } : {}),
+            ...(ctx.actionRequestId ? { actionRequestId: ctx.actionRequestId } : {}),
+            ...(ctx.handoffTargetReplacementApproval
+              ? { handoffTargetReplacementApproval: ctx.handoffTargetReplacementApproval }
+              : {}),
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           });
           return completeActionResult(res);
@@ -4245,6 +4454,13 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             : typeof permissionOverrideRaw === 'string' && permissionOverrideRaw.trim().length > 0
               ? permissionOverrideRaw
               : undefined;
+          const sessionInputSource = resolveAgentSessionInputSource(
+            ctx,
+            permissionResolution.causalPermissionAuthority,
+          );
+          if (isAgentCaller(ctx) && ctx.actionCaller?.kind !== 'plugin' && !sessionInputSource) {
+            return causalPermissionAuthorityFailure();
+          }
           const structuredSubagentLaunch = data.kind === 'sessionSubagentLaunch'
             ? resolveSubagentLaunchStructuredSend(data.launch)
             : null;
@@ -4287,6 +4503,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             ...(typeof data.timeoutSeconds === 'number' ? { timeoutSeconds: data.timeoutSeconds } : {}),
             ...(serverId ? { serverId } : {}),
             ...(ctx.surface ? { callerSurface: ctx.surface } : {}),
+            ...(sessionInputSource ? { sessionInputSource } : {}),
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           };
           if (actionCaller.kind === 'plugin') {

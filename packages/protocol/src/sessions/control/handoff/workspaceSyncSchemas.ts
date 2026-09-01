@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { sha256 } from '@noble/hashes/sha2';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import { HandoffTargetReplacementApprovalV1Schema } from './handoffTargetReplacementApprovalV1.js';
 
 const MAX_RELATIONSHIP_ID_LENGTH = 256;
 const MAX_MACHINE_ID_LENGTH = 256;
@@ -263,6 +264,24 @@ export const WorkspaceSyncTargetBootstrapOwnerV1Schema = z.discriminatedUnion('k
 ]);
 export type WorkspaceSyncTargetBootstrapOwnerV1 = z.infer<typeof WorkspaceSyncTargetBootstrapOwnerV1Schema>;
 
+export const HandoffTargetReplacementPreflightV1Schema = z.object({
+  v: z.literal(1),
+  serverId: z.string().trim().min(1).max(MAX_MACHINE_ID_LENGTH),
+  machineId: z.string().trim().min(1).max(MAX_MACHINE_ID_LENGTH),
+  operationId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
+  targetPath: z.string().trim().min(1).max(MAX_PATH_LENGTH),
+}).strict();
+export type HandoffTargetReplacementPreflightV1 = z.infer<typeof HandoffTargetReplacementPreflightV1Schema>;
+
+export const HandoffTargetReplacementPreflightResultV1Schema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('not_required') }).strict(),
+  z.object({
+    type: z.literal('approval_required'),
+    approval: HandoffTargetReplacementApprovalV1Schema,
+  }).strict(),
+]);
+export type HandoffTargetReplacementPreflightResultV1 = z.infer<typeof HandoffTargetReplacementPreflightResultV1Schema>;
+
 /**
  * Target-daemon bootstrap prepare request. The receiving daemon resolves the
  * target root and bootstrap source root from its current Account settings; a
@@ -272,14 +291,67 @@ export const WorkspaceSyncTargetBootstrapPrepareV1Schema = z.object({
   v: z.literal(1),
   bootstrapOperationId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
   owner: WorkspaceSyncTargetBootstrapOwnerV1Schema,
+  /**
+   * Operation-scoped definition used only while a newly-created relationship
+   * is being proven before its durable Account-settings commit.
+   */
+  transientRelationship: WorkspaceSyncRelationshipV1Schema.optional(),
   targetWorkspaceRefId: z.string().trim().min(1).max(MAX_WORKSPACE_REF_ID_LENGTH),
   endpointRole: z.enum(['alpha', 'beta']),
   policyDigest: WorkspaceSyncHexDigestV1Schema,
   createIfMissing: z.boolean(),
-}).strict();
+  /** Explicit only for a new copy/relationship target; existing relationships rehydrate READY custody. */
+  targetBootstrap: z.enum(['use_existing', 'materialize_from_source_workspace']).optional(),
+  targetReplacementApproval: HandoffTargetReplacementApprovalV1Schema.optional(),
+}).strict().superRefine((value, context) => {
+  const transient = value.transientRelationship;
+  const createsTarget = (value.owner.kind === 'copy_once' && value.createIfMissing) || transient !== undefined;
+  if (createsTarget !== (value.targetBootstrap !== undefined)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['targetBootstrap'],
+      message: createsTarget
+        ? 'new workspace sync targets require an explicit bootstrap choice'
+        : 'existing relationships cannot replace their established bootstrap choice',
+    });
+  }
+  if (value.targetBootstrap !== 'materialize_from_source_workspace'
+    && value.targetReplacementApproval !== undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['targetReplacementApproval'],
+      message: 'destructive target-reuse approval is valid only for source materialization',
+    });
+  }
+  if (!transient) return;
+  if (value.owner.kind !== 'relationship') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['transientRelationship'],
+      message: 'transient relationship authority requires a relationship owner',
+    });
+    return;
+  }
+  const expectedTargetRefId = value.endpointRole === 'alpha'
+    ? transient.alphaWorkspaceRefId
+    : transient.betaWorkspaceRefId;
+  if (
+    transient.relationshipId !== value.owner.relationshipId
+    || transient.relationshipId !== value.bootstrapOperationId
+    || transient.enabled !== true
+    || value.targetWorkspaceRefId !== expectedTargetRefId
+    || value.policyDigest !== transient.contentPolicy.policyDigest
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['transientRelationship'],
+      message: 'transient relationship does not match the exact bootstrap authority',
+    });
+  }
+});
 export type WorkspaceSyncTargetBootstrapPrepareV1 = z.infer<typeof WorkspaceSyncTargetBootstrapPrepareV1Schema>;
 
-/** Strict, root-free prepare result: digests only, never a local handle. */
+/** Strict, root-free prepare result: authority fingerprints, never a local handle. */
 export const WorkspaceSyncTargetBootstrapPrepareResultV1Schema = z.object({
   v: z.literal(1),
   bootstrapOperationId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
@@ -288,7 +360,6 @@ export const WorkspaceSyncTargetBootstrapPrepareResultV1Schema = z.object({
   created: z.boolean(),
   rootFingerprint: WorkspaceSyncHexDigestV1Schema,
   policyDigest: WorkspaceSyncHexDigestV1Schema,
-  manifestDigest: WorkspaceSyncHexDigestV1Schema,
 }).strict();
 export type WorkspaceSyncTargetBootstrapPrepareResultV1 = z.infer<typeof WorkspaceSyncTargetBootstrapPrepareResultV1Schema>;
 
@@ -296,7 +367,7 @@ export const WorkspaceSyncTargetBootstrapReleaseV1Schema = z.object({
   v: z.literal(1),
   bootstrapOperationId: z.string().trim().min(1).max(MAX_RELATIONSHIP_ID_LENGTH),
   targetWorkspaceRefId: z.string().trim().min(1).max(MAX_WORKSPACE_REF_ID_LENGTH),
-  reason: z.enum(['abort', 'copy_committed']),
+  reason: z.enum(['abort', 'copy_committed', 'relationship_committed']),
 }).strict();
 export type WorkspaceSyncTargetBootstrapReleaseV1 = z.infer<typeof WorkspaceSyncTargetBootstrapReleaseV1Schema>;
 
@@ -368,11 +439,33 @@ export const WorkspaceSyncStatusV1Schema = z.object({
 }).strict();
 export type WorkspaceSyncStatusV1 = z.infer<typeof WorkspaceSyncStatusV1Schema>;
 
+export const WorkspaceSyncLegacyStateInspectionV1Schema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('absent') }).strict(),
+  z.object({
+    status: z.literal('legacy_workspace_sync_state_unsupported'),
+    classification: z.literal('retired_v1'),
+    quarantinePath: z.string().trim().min(1).max(MAX_PATH_LENGTH),
+    schemaVersion: z.literal(1),
+  }).strict(),
+  z.object({
+    status: z.literal('legacy_workspace_sync_state_unknown'),
+    path: z.string().trim().min(1).max(MAX_PATH_LENGTH),
+    reason: z.string().trim().min(1).max(MAX_ERROR_CODE_LENGTH),
+  }).strict(),
+]);
+export type WorkspaceSyncLegacyStateInspectionV1 = z.infer<typeof WorkspaceSyncLegacyStateInspectionV1Schema>;
+
 export const HandoffWorkspaceActionV1Schema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('none') }).strict(),
   z.object({
     kind: z.literal('copy_once'),
     contentPolicy: WorkspaceContentPolicyV1Schema,
+  }).strict(),
+  z.object({
+    kind: z.literal('create_relationship'),
+    mode: WorkspaceSyncPersistentModeV1Schema,
+    contentPolicy: WorkspaceContentPolicyV1Schema,
+    flushBeforeCommit: z.literal(true),
   }).strict(),
   z.object({
     kind: z.literal('relationship'),

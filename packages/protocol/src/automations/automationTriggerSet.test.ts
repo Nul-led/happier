@@ -52,14 +52,69 @@ describe('Automation trigger-set API', () => {
           trigger: {
             kind: 'sessionLifecycle',
             enabled: true,
-            event: 'parentTurnCompleted',
-            scope: { kind: 'exactTurn', sourceSessionId: 'session-1', sourceTurnId: 'turn-1' },
-            consumption: 'once',
+            sourceSessionId: 'session-1',
+            events: ['parentTurnCompleted', 'userActionRequired'],
+            policy: { kind: 'nextMatches', count: 3 },
           },
         },
       ],
     });
     expect(parsed.triggers).toHaveLength(2);
+    expect(parsed.triggers[1]?.trigger).toMatchObject({
+      events: ['parentTurnCompleted', 'userActionRequired'],
+      policy: { kind: 'nextMatches', count: 3 },
+    });
+  });
+
+  it('keeps lifecycle Event sets strict and policies explicit', () => {
+    const base = {
+      triggerId: 'trigger-session-lifecycle',
+      trigger: {
+        kind: 'sessionLifecycle',
+        enabled: true,
+        sourceSessionId: 'session-1',
+        events: ['parentTurnFailed'],
+      },
+    } as const;
+
+    expect(AutomationTriggerCreateRequestSchema.parse({
+      ...base,
+      trigger: { ...base.trigger, policy: { kind: 'currentTurn', sourceTurnId: 'turn-1' } },
+    }).trigger).toMatchObject({ policy: { kind: 'currentTurn', sourceTurnId: 'turn-1' } });
+    expect(AutomationTriggerCreateRequestSchema.parse({
+      ...base,
+      trigger: { ...base.trigger, policy: { kind: 'firstMatch' } },
+    }).trigger).toMatchObject({ policy: { kind: 'firstMatch' } });
+    expect(AutomationTriggerCreateRequestSchema.parse({
+      ...base,
+      trigger: { ...base.trigger, policy: { kind: 'everyMatch' } },
+    }).trigger).toMatchObject({ policy: { kind: 'everyMatch' } });
+    expect(AutomationTriggerCreateRequestSchema.safeParse({
+      ...base,
+      trigger: { ...base.trigger, events: [], policy: { kind: 'firstMatch' } },
+    }).success).toBe(false);
+    expect(AutomationTriggerCreateRequestSchema.safeParse({
+      ...base,
+      trigger: {
+        ...base.trigger,
+        events: ['parentTurnFailed', 'parentTurnFailed'],
+        policy: { kind: 'firstMatch' },
+      },
+    }).success).toBe(false);
+    expect(AutomationTriggerCreateRequestSchema.safeParse({
+      ...base,
+      trigger: { ...base.trigger, policy: { kind: 'nextMatches', count: 0 } },
+    }).success).toBe(false);
+    expect(AutomationTriggerCreateRequestSchema.safeParse({
+      ...base,
+      trigger: {
+        kind: 'sessionLifecycle',
+        enabled: true,
+        event: 'parentTurnCompleted',
+        scope: { kind: 'exactTurn', sourceSessionId: 'session-1', sourceTurnId: 'turn-1' },
+        consumption: 'once',
+      },
+    }).success).toBe(false);
   });
 
   it('has no persisted manual trigger and patches triggers by stable identity and revision', () => {

@@ -136,7 +136,6 @@ export const ExecutionRunGetResponseSchema = z.object({
   run: ExecutionRunPublicStateSchema,
   latestToolResult: z.unknown().optional(),
   structuredMeta: z.object({ kind: z.string(), payload: z.unknown() }).passthrough().optional(),
-  structuredMetaArtifactRef: z.object({ artifactId: z.string().min(1) }).passthrough().optional(),
 }).passthrough();
 export type ExecutionRunGetResponse = z.infer<typeof ExecutionRunGetResponseSchema>;
 

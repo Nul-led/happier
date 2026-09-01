@@ -259,9 +259,10 @@ export const RPC_METHODS = {
   DAEMON_WORKSPACE_SYNC_FILE_READ: 'daemon.workspaceSync.file.read.v1',
   DAEMON_WORKSPACE_SYNC_TARGET_CONFLICT_DELETE: 'daemon.workspaceSync.target.conflict.delete.v1',
   DAEMON_WORKSPACE_SYNC_TARGET_FILE_READ: 'daemon.workspaceSync.target.file.read.v1',
+  DAEMON_WORKSPACE_SYNC_TARGET_REPLACEMENT_PREFLIGHT: 'daemon.workspaceSync.target.replacement.preflight.v1',
   DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_PREPARE: 'daemon.workspaceSync.target.bootstrap.prepare.v1',
   DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_RELEASE: 'daemon.workspaceSync.target.bootstrap.release.v1',
-  DAEMON_WORKSPACE_SYNC_LEGACY_CLEANUP: 'daemon.workspaceSync.legacy.cleanup.v1',
+  DAEMON_WORKSPACE_SYNC_LEGACY_INSPECT: 'daemon.workspaceSync.legacy.inspect.v1',
   DAEMON_SESSION_GOAL_GET: 'daemon.sessionGoal.get',
   DAEMON_SESSION_GOAL_SET: 'daemon.sessionGoal.set',
   DAEMON_SESSION_GOAL_CLEAR: 'daemon.sessionGoal.clear',
@@ -401,6 +402,8 @@ export const RPC_METHODS = {
 
 export const SESSION_RPC_METHODS = {
   SESSION_USER_MESSAGE_SEND: 'session.userMessage.send',
+  /** Host-private native Agent tool transport; the live Session stamps all authority. */
+  SESSION_AGENT_TOOL_CALL_V1: 'session.agentTool.call.v1',
   SESSION_PENDING_MESSAGE_COMPOSER_ADMISSION_PREPARE_V1: 'session.pendingMessage.composerAdmission.prepare.v1',
   SESSION_PENDING_MESSAGE_COMPOSER_ADMISSION_ACCEPTED_V1: 'session.pendingMessage.composerAdmission.accepted.v1',
   SESSION_PENDING_MESSAGE_COMPOSER_ADMISSION_ABANDONED_V1: 'session.pendingMessage.composerAdmission.abandoned.v1',

@@ -30,6 +30,8 @@ export const ACCOUNT_DIRECTORY_ASSERTION_SIGNING_DOMAIN_V1 =
 
 export const ACCOUNT_DIRECTORY_ME_HTTP_PATH_V1 = '/v1/account-directory/me' as const;
 export const ACCOUNT_DIRECTORY_HOMES_HTTP_PATH_V1 = '/v1/account-directory/homes' as const;
+export const ACCOUNT_DIRECTORY_HOME_HTTP_PATH_V1 =
+  '/v1/account-directory/homes/:homeServerIdentityId' as const;
 export const ACCOUNT_DIRECTORY_PREFERRED_HOME_HTTP_PATH_V1 =
   '/v1/account-directory/homes/preferred' as const;
 export const ACCOUNT_DIRECTORY_HOME_LOGIN_ASSERTION_HTTP_PATH_V1 =
@@ -37,6 +39,27 @@ export const ACCOUNT_DIRECTORY_HOME_LOGIN_ASSERTION_HTTP_PATH_V1 =
 export const ACCOUNT_DIRECTORY_LINKS_HTTP_PATH_V1 =
   '/v1/account/directory-links/:issuerServerIdentityId' as const;
 export const HOME_LOGIN_HTTP_PATH_V1 = '/v1/auth/home-login' as const;
+export const HOME_LOGIN_APPROVALS_HTTP_PATH_V1 = '/v1/auth/home-login/approvals' as const;
+export const HOME_LOGIN_APPROVAL_DECISION_HTTP_PATH_V1 =
+  '/v1/auth/home-login/approvals/:approvalId/decision' as const;
+
+export function buildAccountDirectoryHomeHttpPathV1(homeServerIdentityId: string): string {
+  return `${ACCOUNT_DIRECTORY_HOMES_HTTP_PATH_V1}/${encodeURIComponent(homeServerIdentityId)}`;
+}
+
+export function buildAccountDirectoryHomeLoginAssertionHttpPathV1(
+  homeServerIdentityId: string,
+): string {
+  return `${buildAccountDirectoryHomeHttpPathV1(homeServerIdentityId)}/login-assertion`;
+}
+
+export function buildAccountDirectoryLinkHttpPathV1(issuerServerIdentityId: string): string {
+  return `/v1/account/directory-links/${encodeURIComponent(issuerServerIdentityId)}`;
+}
+
+export function buildHomeLoginApprovalDecisionHttpPathV1(approvalId: string): string {
+  return `${HOME_LOGIN_APPROVALS_HTTP_PATH_V1}/${encodeURIComponent(approvalId)}/decision`;
+}
 
 export const ACCOUNT_DIRECTORY_ASSERTION_MIN_LIFETIME_MS = 2 * 60 * 1000;
 export const ACCOUNT_DIRECTORY_ASSERTION_MAX_LIFETIME_MS = 5 * 60 * 1000;
@@ -51,9 +74,59 @@ export const ACCOUNT_DIRECTORY_MAX_ID_UTF8_BYTES = 256;
 export const ACCOUNT_DIRECTORY_MAX_URL_UTF8_BYTES = 512;
 /** Existing ordinary Home-token boundary shared with direct enrollment. */
 export const ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES = 4_096;
-/** Exact token-only JSON wrapper (`{"token":""}`) around that Home token. */
+/**
+ * Grammar-reachable maxima inside the strict bounded endpoint schemas. The
+ * declared string bounds are looser than what the strict grammars can admit:
+ * an EndpointId is 64 lowercase hex or 52 base32 characters, and a direct
+ * address is a strict `IPv4:port` or bracketed `[IPv6]:port` socket address —
+ * a fully expanded 8-group IPv6 socket caps at 47 characters
+ * (`[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]:65535`).
+ */
+const IROH_ENDPOINT_ID_MAX_ENCODING_UTF8_BYTES = 64;
+const IROH_DIRECT_ADDRESS_MAX_UTF8_BYTES = 47;
+const UTF8_ENCODER = new TextEncoder();
+/**
+ * JSON.stringify escape worst case: a raw byte can expand to a six-byte
+ * `\uXXXX` escape. Token and URL strings are admitted as arbitrary bounded
+ * text, so it takes the full 6× allowance.
+ */
+const JSON_STRING_ESCAPE_MAX_BYTES_PER_UTF8_BYTE = 6;
+
+const HOME_LOGIN_CREDENTIAL_SERIALIZATION_OVERHEAD_BYTES = UTF8_ENCODER.encode(JSON.stringify({
+  v: 1,
+  credentials: { token: '' },
+  connectionDescriptor: {
+    v: 1,
+    homeServerIdentityId: '',
+    canonicalServerUrl: '',
+    revision: Number.MAX_SAFE_INTEGER,
+    endpoints: Array.from({ length: ACCOUNT_DIRECTORY_MAX_ENDPOINTS }, () => ({
+      kind: 'iroh',
+      endpointId: '',
+      relayUrls: Array.from({ length: ACCOUNT_DIRECTORY_MAX_RELAY_URLS }, () => ''),
+      directAddresses: Array.from({ length: ACCOUNT_DIRECTORY_MAX_DIRECT_ADDRESSES }, () => ''),
+    })),
+  },
+})).byteLength;
+
+const HOME_LOGIN_CREDENTIAL_MAX_STRING_BYTES =
+  ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES
+  + ACCOUNT_DIRECTORY_MAX_ID_UTF8_BYTES
+  + ACCOUNT_DIRECTORY_MAX_URL_UTF8_BYTES
+  + ACCOUNT_DIRECTORY_MAX_ENDPOINTS * (
+    IROH_ENDPOINT_ID_MAX_ENCODING_UTF8_BYTES
+    + ACCOUNT_DIRECTORY_MAX_RELAY_URLS * ACCOUNT_DIRECTORY_MAX_URL_UTF8_BYTES
+    + ACCOUNT_DIRECTORY_MAX_DIRECT_ADDRESSES * IROH_DIRECT_ADDRESS_MAX_UTF8_BYTES
+  );
+
+/**
+ * Conservative compositional bound for the strict redemption-coupled plaintext.
+ * It admits every independently valid token and descriptor, including the JSON
+ * string escape worst case, without inventing a second smaller client limit.
+ */
 export const ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES =
-  ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES + 12;
+  HOME_LOGIN_CREDENTIAL_SERIALIZATION_OVERHEAD_BYTES
+  + JSON_STRING_ESCAPE_MAX_BYTES_PER_UTF8_BYTE * HOME_LOGIN_CREDENTIAL_MAX_STRING_BYTES;
 /**
  * Maximum decoded box-bundle bytes. This protects response parsing/allocation;
  * encoded base64url length is derived by `strictEncodedBytes`, not a second limit.
@@ -61,7 +134,6 @@ export const ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES =
 export const ACCOUNT_DIRECTORY_MAX_SEALED_TOKEN_BYTES =
   ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES + BOX_BUNDLE_MIN_BYTES;
 
-const UTF8_ENCODER = new TextEncoder();
 const SERVER_IDENTITY_ID_PATTERN = /^srv_[A-Za-z0-9._-]{1,60}$/u;
 const HEX_SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 /**
@@ -176,6 +248,27 @@ export const HomeConnectionDescriptorV1Schema = z.object({
 }).strict();
 export type HomeConnectionDescriptorV1 = z.infer<typeof HomeConnectionDescriptorV1Schema>;
 
+const HomeLoginTokenV1Schema = z.string().trim().min(1).max(ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES)
+  .superRefine((value, context) => {
+    if (UTF8_ENCODER.encode(value).byteLength > ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: 'Home token exceeds its UTF-8 byte limit' });
+    }
+  });
+
+/** Exact strict redemption-coupled sealed plaintext. Legacy token-only forms fail closed. */
+export const HomeLoginCredentialPayloadV1Schema = z.object({
+  v: z.literal(1),
+  credentials: z.object({
+    token: HomeLoginTokenV1Schema,
+  }).strict(),
+  connectionDescriptor: HomeConnectionDescriptorV1Schema,
+}).strict().superRefine((value, context) => {
+  if (UTF8_ENCODER.encode(JSON.stringify(value)).byteLength > ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Home credential payload exceeds its plaintext byte limit' });
+  }
+});
+export type HomeLoginCredentialPayloadV1 = z.infer<typeof HomeLoginCredentialPayloadV1Schema>;
+
 const AccountDirectoryHomeIdentityFieldsSchema = z.object({
   homeServerIdentityId: ServerIdentityIdSchema,
   canonicalServerUrl: HomeApplicationOriginV1Schema,
@@ -212,6 +305,33 @@ export const AccountDirectoryHomePutRequestV1Schema = z.object({
   connectionDescriptor: HomeConnectionDescriptorV1Schema,
 }).strict();
 export type AccountDirectoryHomePutRequestV1 = z.infer<typeof AccountDirectoryHomePutRequestV1Schema>;
+
+/**
+ * Relocation publication request. The Account Service composes the outer
+ * descriptor and assigns `minimumOuterRevisionExclusive + 1`; callers supply
+ * only the fresh destination endpoint facts and revision floor owned by the
+ * connectivity layer.
+ *
+ * V2 is intentionally distinct from ordinary V1 directory upsert. A server
+ * that predates monotonic publication rejects this request instead of silently
+ * applying the old overwrite semantics.
+ */
+export const AccountDirectoryHomePublishRequestV2Schema = z.object({
+  v: z.literal(2),
+  label: LabelSchema,
+  minimumOuterRevisionExclusive: PositiveRevisionSchema.max(Number.MAX_SAFE_INTEGER - 1),
+  canonicalServerUrl: HomeApplicationOriginV1Schema,
+  endpoints: z.array(HomeConnectionEndpointV1Schema)
+    .min(1)
+    .max(ACCOUNT_DIRECTORY_MAX_ENDPOINTS),
+}).strict();
+export type AccountDirectoryHomePublishRequestV2 = z.infer<typeof AccountDirectoryHomePublishRequestV2Schema>;
+
+export const AccountDirectoryHomeWriteRequestSchema = z.union([
+  AccountDirectoryHomePutRequestV1Schema,
+  AccountDirectoryHomePublishRequestV2Schema,
+]);
+export type AccountDirectoryHomeWriteRequest = z.infer<typeof AccountDirectoryHomeWriteRequestSchema>;
 
 export const AccountDirectoryHomePutResponseV1Schema = AccountDirectoryHomeEntryV1Schema;
 export type AccountDirectoryHomePutResponseV1 = AccountDirectoryHomeEntryV1;
@@ -359,9 +479,6 @@ export function createHomeLoginAssertionSigningBytesV1(
   ]);
 }
 
-/** Alias used by signers that call the canonical bytes a signing input. */
-export const createHomeLoginAssertionSigningInputV1 = createHomeLoginAssertionSigningBytesV1;
-
 const HOME_LOGIN_REQUESTER_FINGERPRINT_DOMAIN_V1 =
   'happier.account-directory.requester-fingerprint.v1' as const;
 
@@ -390,6 +507,8 @@ export type HomeLoginRedemptionRequestV1 = z.infer<typeof HomeLoginRedemptionReq
 /**
  * Locked five-field V1 success shape. `expiresAtMs` bounds assertion redemption;
  * it is not the expiry of the durable ordinary Home token inside the sealed envelope.
+ * The sealed plaintext is exactly `HomeLoginCredentialPayloadV1`: the ordinary
+ * Home credential and the redeeming Home's connection descriptor are coupled.
  */
 export const HomeLoginRedemptionResponseV1Schema = z.object({
   v: z.literal(1),
@@ -436,6 +555,20 @@ export type HomeDeviceApprovalRequestV1 = z.infer<typeof HomeDeviceApprovalReque
 /** Lane 05 defines no approval-list cardinality cap; consumers must not invent one. */
 export const HomeDeviceApprovalListV1Schema = z.array(HomeDeviceApprovalRequestV1Schema);
 export type HomeDeviceApprovalListV1 = z.infer<typeof HomeDeviceApprovalListV1Schema>;
+
+export const HomeDeviceApprovalDecisionRequestV1Schema = z.object({
+  decision: z.enum(['approve', 'reject']),
+}).strict();
+export type HomeDeviceApprovalDecisionRequestV1 = z.infer<
+  typeof HomeDeviceApprovalDecisionRequestV1Schema
+>;
+
+export const HomeDeviceApprovalDecisionResponseV1Schema = z.object({
+  status: z.enum(['approved', 'rejected', 'already_decided']),
+}).strict();
+export type HomeDeviceApprovalDecisionResponseV1 = z.infer<
+  typeof HomeDeviceApprovalDecisionResponseV1Schema
+>;
 export type HomeLoginRedemptionResultV1 = z.infer<typeof HomeLoginRedemptionResultV1Schema>;
 
 export const ACCOUNT_DIRECTORY_ERROR_CODES_V1 = {
@@ -452,7 +585,11 @@ export const ACCOUNT_DIRECTORY_ERROR_CODES_V1 = {
   assertionExpired: 'assertion_expired',
   assertionClockSkew: 'assertion_clock_skew',
   directoryLinkNotFound: 'directory_link_not_found',
+  descriptorRevisionConflict: 'descriptor_revision_conflict',
   approvalRequired: 'approval_required',
+  approvalRejected: 'approval_rejected',
+  approvalExpired: 'approval_expired',
+  approvalInvalid: 'approval_invalid',
   rateLimited: 'rate_limited',
 } as const;
 
@@ -470,7 +607,11 @@ export const AccountDirectoryErrorCodeV1Schema = z.enum([
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.assertionExpired,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.assertionClockSkew,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.directoryLinkNotFound,
+  ACCOUNT_DIRECTORY_ERROR_CODES_V1.descriptorRevisionConflict,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalRequired,
+  ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalRejected,
+  ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalExpired,
+  ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalInvalid,
   ACCOUNT_DIRECTORY_ERROR_CODES_V1.rateLimited,
 ]);
 export type AccountDirectoryErrorCodeV1 = z.infer<typeof AccountDirectoryErrorCodeV1Schema>;

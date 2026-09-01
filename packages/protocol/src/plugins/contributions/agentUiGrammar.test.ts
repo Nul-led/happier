@@ -287,35 +287,11 @@ describe('public Agent UI authoring grammar', () => {
     }).success).toBe(true);
   });
 
-  /**
-   * Under `payload.backendTransport` the interpreter reads `agentExtra` as an
-   * identity only (`owner`/`schemaId`/`v`) and takes the runtime-handle fields
-   * from the sibling `backendTransport.runtimeHandleFields`. Requiring them
-   * inside `agentExtra` there refuses the exact shape the bundled Codex Agent
-   * declares, so an external author copying it would be rejected at their
-   * manifest for a field the interpreter never reads.
-   */
-  it('accepts a backend-transport agentExtra identity without repeating the runtime-handle fields', () => {
-    const result = parse({
-      behavior: {
-        payload: {
-          backendTransport: {
-            backendMode: { values: ['acp', 'appServer'], aliases: { mcp: 'appServer' } },
-            runtimeHandleFields: ['backendMode', 'providerSessionId'],
-            agentExtra: { owner: 'acme', schemaId: 'acme.agentRuntimeDescriptorExtra', v: 1 },
-          },
-        },
-      },
-    });
-    expect(result.success ? null : result.error.issues).toBeNull();
-  });
-
-  it('keeps current runtime transport output canonical instead of authoring legacy output keys', () => {
+  it('keeps Agent-owned runtime descriptors outside the generic UI declaration grammar', () => {
     expect(parse({
       behavior: {
         payload: {
           backendTransport: {
-            legacyModeOutputKey: 'acmeBackendMode',
             backendMode: { values: ['acp'] },
             runtimeHandleFields: ['backendMode'],
           },
@@ -328,7 +304,6 @@ describe('public Agent UI authoring grammar', () => {
           browse: {
             linkEnsureRequestExtras: {
               runtimeDescriptorFromCandidate: {
-                runtimeDescriptorOutputKey: 'customDescriptor',
                 backendMode: { values: ['acp'] },
                 sourceFields: [],
               },
@@ -339,12 +314,7 @@ describe('public Agent UI authoring grammar', () => {
     }).success).toBe(false);
   });
 
-  /**
-   * Where the interpreter DOES read the fields off `agentExtra` itself — the
-   * environment-variable and link-extras descriptors — omitting them makes the
-   * whole `agentExtra` silently vanish, so the grammar still requires them.
-   */
-  it('still requires the runtime-handle fields on an agentExtra the interpreter reads them from', () => {
+  it('accepts setting-backed environment variables without descriptor interpretation fields', () => {
     expect(parse({
       behavior: {
         payload: {
@@ -352,16 +322,13 @@ describe('public Agent UI authoring grammar', () => {
             backendMode: {
               envKey: 'ACME_MODE',
               settingKey: { scope: 'account', localId: 'acmeMode' },
-              legacyMetadataKey: 'acmeMode',
-              runtimeDescriptorField: 'backendMode',
               defaultValue: 'server',
               values: ['server'],
             },
-            agentExtra: { owner: 'acme', schemaId: 'acme.agentRuntimeDescriptorExtra', v: 1 },
           },
         },
       },
-    }).success).toBe(false);
+    }).success).toBe(true);
   });
 
   it('refuses an unknown top-level block rather than carrying it as an opaque bag', () => {

@@ -1,8 +1,41 @@
 import { describe, expect, it } from 'vitest';
 
-import { DoctorSnapshotSchema, parseDoctorSnapshotSafe } from './doctorSnapshot.js';
+import {
+  DoctorSnapshotHomeTransportDiagnosticsSchema,
+  DoctorSnapshotSchema,
+  parseDoctorSnapshotSafe,
+} from './doctorSnapshot.js';
 
 describe('DoctorSnapshotSchema', () => {
+  it('parses truthful Home transport diagnostics without requiring unobserved carrier or path facts', () => {
+    const parsed = DoctorSnapshotHomeTransportDiagnosticsSchema.parse({
+      homeServerIdentityId: 'home_1',
+      state: 'reconnecting',
+      effectiveConfiguration: {
+        policy: 'automatic',
+        relayUrls: ['https://relay.example.test/'],
+        directAddressCount: 2,
+      },
+      lastKnown: {
+        carrier: 'iroh',
+        observedPath: 'relay',
+      },
+      lastTransitionAtMs: 1_788_200_000_000,
+      diagnosticError: {
+        code: 'transport_closed',
+        atMs: 1_788_200_000_000,
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      state: 'reconnecting',
+      effectiveConfiguration: { policy: 'automatic', directAddressCount: 2 },
+      lastKnown: { carrier: 'iroh', observedPath: 'relay' },
+      diagnosticError: { code: 'transport_closed' },
+    });
+    expect(parsed.current).toBeUndefined();
+  });
+
   it('accepts a valid snapshot and parseDoctorSnapshotSafe redacts userinfo/query/hash', () => {
     const raw = JSON.stringify({
       capturedAt: '2026-02-23T00:00:00.000Z',
@@ -28,6 +61,21 @@ describe('DoctorSnapshotSchema', () => {
         ],
         knownAccountIds: ['acct_123'],
       },
+      homeTransports: [{
+        homeServerIdentityId: 'home_1',
+        state: 'connected',
+        effectiveConfiguration: {
+          policy: 'automatic',
+          relayUrls: ['https://relay-user:relay-secret@relay.example.test/path?token=abc#frag'],
+          directAddressCount: 1,
+        },
+        current: { carrier: 'iroh', observedPath: 'relay' },
+        diagnosticError: {
+          code: 'transport_closed token=top-secret\u0000',
+          message: 'Relay failed at https://relay-user:relay-secret@relay.example.test/path?token=abc token=top-secret',
+          atMs: 1_788_200_000_000,
+        },
+      }],
       daemonStatus: {
         server: {
           activeServerId: 'cloud',
@@ -53,7 +101,9 @@ describe('DoctorSnapshotSchema', () => {
         },
         auth: {
           authenticated: true,
+          credentialState: 'valid',
           machineRegistered: false,
+          machineRegistrationState: 'no-local-id',
           machineId: null,
           needsAuth: true,
           accountId: 'acct_123',
@@ -133,6 +183,15 @@ describe('DoctorSnapshotSchema', () => {
     expect(parsed.snapshot.daemonStatus?.daemon.startupSource).toBe('background-service');
     expect(parsed.snapshot.daemonStatus?.daemon.serviceManaged).toBe(true);
     expect(parsed.snapshot.daemonStatus?.daemon.serviceLabel).toBe('com.happier.cli.daemon.default');
+    expect(parsed.snapshot.daemonStatus?.auth.credentialState).toBe('valid');
+    expect(parsed.snapshot.daemonStatus?.auth.machineRegistrationState).toBe('no-local-id');
+    expect(parsed.snapshot.homeTransports?.[0]?.effectiveConfiguration?.relayUrls).toEqual([
+      'https://relay.example.test/path',
+    ]);
+    expect(parsed.snapshot.homeTransports?.[0]?.diagnosticError).toMatchObject({
+      code: 'transport_closed token=[redacted]',
+      message: 'Relay failed at https://relay.example.test/path token=[redacted]',
+    });
     expect(parsed.snapshot.installations?.happier.installations[0]?.ring).toBe('preview');
     expect(parsed.snapshot.services?.happier.services[0]?.label).toContain('com.happier.cli.daemon.preview.cloud');
     expect(parsed.snapshot.services?.happier.services[0]?.serverUrl).toBe('https://api.happier.dev/path');

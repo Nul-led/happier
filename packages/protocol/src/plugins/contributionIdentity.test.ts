@@ -11,6 +11,7 @@ const {
   PluginContributionLocalIdSchema,
   PluginContributionOperationRoleV1Schema,
   PluginContributionProtocolIdV1Schema,
+  qualifyPluginContributionReferenceV1,
 } = contributionIdentity;
 
 describe('PluginContributionLocalIdSchema', () => {
@@ -77,6 +78,31 @@ describe('PluginContributionLocalIdSchema', () => {
 
     expect(PluginContributionIdentityV1Schema.safeParse(whitespaceIdentity).success).toBe(false);
     expect(isValidPluginJsonSchemaValue(validates, whitespaceIdentity)).toBe(false);
+  });
+});
+
+describe('qualifyPluginContributionReferenceV1', () => {
+  it('binds caller-local references and preserves explicit cross-plugin identities', () => {
+    expect(qualifyPluginContributionReferenceV1('details', 'acme.plugin')).toEqual({
+      pluginId: 'acme.plugin',
+      localId: 'details',
+    });
+    expect(qualifyPluginContributionReferenceV1(
+      { pluginId: 'other.plugin', localId: 'details' },
+      'acme.plugin',
+    )).toEqual({
+      pluginId: 'other.plugin',
+      localId: 'details',
+    });
+    expect(qualifyPluginContributionReferenceV1(
+      { pluginId: 'other.plugin', localId: 'details', ignored: true } as Parameters<
+        typeof qualifyPluginContributionReferenceV1
+      >[0] & { ignored: boolean },
+      'acme.plugin',
+    )).toEqual({
+      pluginId: 'other.plugin',
+      localId: 'details',
+    });
   });
 });
 

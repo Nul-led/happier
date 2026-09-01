@@ -374,11 +374,12 @@ const SessionInputCallerV1Schema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('host') }).strict(),
 ]);
 
-const SessionInputSourceSessionV1Schema = z.object({
+export const SessionInputSourceSessionV1Schema = z.object({
   sourceSessionId: asProtocolZod(SessionIdSchema),
   sourceTurnId: TurnIdSchema,
   via: z.enum(['action', 'mcp']),
 }).strict();
+export type SessionInputSourceSessionV1 = z.infer<typeof SessionInputSourceSessionV1Schema>;
 
 export const SessionInputSourceAuthorityV1Schema = z.object({
   mediatorPluginId: asProtocolZod(PluginIdSchema),
@@ -428,7 +429,12 @@ function refineProtectedInputCommon(
       message: 'Plugin callers may create only plugin Session input',
     });
   }
-  if (value.sourceAuthority && value.caller?.kind !== 'plugin') {
+  const sourceAuthorityFromCausalSession = Boolean(
+    value.sourceAuthority
+    && value.sourceSession
+    && (value.producer === 'sessionAction' || value.producer === 'happierMcp'),
+  );
+  if (value.sourceAuthority && value.caller?.kind !== 'plugin' && !sourceAuthorityFromCausalSession) {
     context.addIssue({
       code: 'custom',
       path: ['sourceAuthority'],

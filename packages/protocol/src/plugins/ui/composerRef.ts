@@ -51,7 +51,13 @@ export const ComposerRefV1Schema = defineProtocolUnion([
     instanceId: ComposerOpaqueLiveInstanceIdV1Schema,
   }, { policy: 'closed' }),
 ]);
-export type ComposerRefV1 = ReturnType<typeof ComposerRefV1Schema.parse>;
+type DeepReadonly<T> = T extends readonly (infer TItem)[]
+  ? readonly DeepReadonly<TItem>[]
+  : T extends object
+    ? { readonly [TKey in keyof T]: DeepReadonly<T[TKey]> }
+    : T;
+
+export type ComposerRefV1 = DeepReadonly<ReturnType<typeof ComposerRefV1Schema.parse>>;
 
 /** Host-private transcript-admission metadata key for exact detached Composer source custody. */
 export const COMPOSER_SOURCE_REF_PRIVATE_META_FIELD_V1 = '__happierComposerSourceRefV1';

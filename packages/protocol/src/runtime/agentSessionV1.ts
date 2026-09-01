@@ -14,6 +14,7 @@ import { SESSION_RUNTIME_ACTIVITY_ACTIVE_COUNT_MAX } from '../sessions/runtime/a
 import { StrictJsonValueSchema, type JsonValue as StrictJsonValue } from '../json/strictJsonValue.js';
 import { AGENT_SESSION_RUNTIME_EVENT_KINDS_V1 } from './eventKindsV1.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
+import { AgentRuntimeDiagnosticDataV1Schema } from './agentRuntimeDiagnosticV1.js';
 
 export { AGENT_SESSION_RUNTIME_EVENT_KINDS_V1 } from './eventKindsV1.js';
 
@@ -25,7 +26,6 @@ const MODEL_ID_MAX = LIMITS.modelIdMaxCodeUnits;
 const SOURCE_MAX = LIMITS.usageSourceMaxCodeUnits;
 const PATH_MAX = LIMITS.filePathMaxCodeUnits;
 const DESCRIPTION_MAX = LIMITS.descriptionMaxCodeUnits;
-const DELTA_MAX = LIMITS.deltaTextMaxCodeUnits;
 const INPUT_TEXT_CANDIDATE_MAX = LIMITS.p0MeasuredCandidates.inputTextMaxCodeUnits;
 const TRANSCRIPT_TEXT_CANDIDATE_MAX = LIMITS.p0MeasuredCandidates.transcriptTextMaxCodeUnits;
 const COMPACT_INSTRUCTIONS_MAX = LIMITS.compactInstructionsMaxCodeUnits;
@@ -158,27 +158,6 @@ export const AgentSessionConfigurationUpdateV1Schema =
     }).strict(),
   ) as z.ZodType<AgentSessionConfigurationUpdateV1, AgentSessionConfigurationUpdateV1>;
 
-const PluginContributionRefSchema = z.object({
-  pluginId: exactString(PROVIDER_ID_MAX),
-  localId: exactString(PROVIDER_ID_MAX),
-}).strict();
-
-const PluginRemediationDataSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('retry') }).strict(),
-  z.object({ kind: z.literal('openSettings'), path: z.string().max(PATH_MAX) }).strict(),
-  z.object({ kind: z.literal('selectAccount'), service: PluginContributionRefSchema }).strict(),
-  z.object({ kind: z.literal('installDependency'), dependencyId: exactString(PROVIDER_ID_MAX) }).strict(),
-  z.object({ kind: z.literal('openUrl'), url: z.string().url() }).strict(),
-]);
-
-const PluginDiagnosticDataSchema = z.object({
-  code: exactString(SOURCE_MAX),
-  severity: z.enum(['info', 'warning', 'error']),
-  message: z.string().max(DESCRIPTION_MAX).optional(),
-  details: AgentRuntimeEventJsonValueV1Schema.optional(),
-  remediation: PluginRemediationDataSchema.optional(),
-}).strict();
-
 const EventBaseSchema = z.object({
   sequence: SafeIntegerSchema,
   sessionId: HostIdSchema,
@@ -294,13 +273,13 @@ const InputCustodySchemas = [
   EventBaseSchema.extend({
     kind: z.literal('input-rejected'),
     inputIds: InputIdsSchema,
-    diagnostic: PluginDiagnosticDataSchema,
+    diagnostic: AgentRuntimeDiagnosticDataV1Schema,
     retryable: z.boolean(),
   }).strict(),
   EventBaseSchema.extend({
     kind: z.literal('input-custody-unknown'),
     inputIds: InputIdsSchema,
-    issue: PluginDiagnosticDataSchema,
+    issue: AgentRuntimeDiagnosticDataV1Schema,
   }).strict(),
   EventBaseSchema.extend({
     kind: z.literal('input-delivery-failed'),
@@ -309,7 +288,7 @@ const InputCustodySchemas = [
       z.object({ kind: z.literal('newTurn'), turnId: HostIdSchema }).strict(),
       z.object({ kind: z.literal('followUp'), turnId: HostIdSchema }).strict(),
     ]),
-    issue: PluginDiagnosticDataSchema,
+    issue: AgentRuntimeDiagnosticDataV1Schema,
     duplicateRisk: z.enum(['possible', 'likely', 'unknown']),
   }).strict(),
 ] as const;
@@ -349,7 +328,7 @@ const LifecycleSchemas = [
   z.object({ ...TurnEventBaseShape, kind: z.literal('turn-progress') }).strict(),
   z.object({ ...TurnEventBaseShape, kind: z.literal('turn-agent-id-observed'), agentTurnId: ProviderIdSchema }).strict(),
   z.object({ ...TurnEventBaseShape, kind: z.literal('turn-complete') }).strict(),
-  z.object({ ...TurnEventBaseShape, kind: z.literal('turn-failed'), diagnostic: PluginDiagnosticDataSchema }).strict(),
+  z.object({ ...TurnEventBaseShape, kind: z.literal('turn-failed'), diagnostic: AgentRuntimeDiagnosticDataV1Schema }).strict(),
   z.object({
     ...TurnEventBaseShape,
     kind: z.literal('turn-cancelled'),
@@ -362,13 +341,13 @@ const LifecycleSchemas = [
       'providerInterrupted',
       'unknown',
     ]),
-    diagnostic: PluginDiagnosticDataSchema.optional(),
+    diagnostic: AgentRuntimeDiagnosticDataV1Schema.optional(),
   }).strict(),
   EventBaseSchema.extend({
     kind: z.literal('runtime-ended'),
     cause: z.enum(['providerEnded', 'connectionLost', 'processExited', 'protocolError', 'unknown']),
     retryable: z.boolean(),
-    diagnostic: PluginDiagnosticDataSchema.optional(),
+    diagnostic: AgentRuntimeDiagnosticDataV1Schema.optional(),
   }).strict(),
 ] as const;
 
@@ -377,7 +356,7 @@ const OutputSchemas = [
     ...TurnEventBaseShape,
     kind: z.literal('message-delta'),
     channel: z.enum(['assistant', 'reasoning']),
-    text: z.string().max(DELTA_MAX),
+    text: z.string(),
     sidechainId: HostIdSchema.optional(),
   }).strict(),
   z.object({
@@ -490,9 +469,9 @@ const CompactionSchemas = [
       context.addIssue({ code: 'custom', message: 'Pause reason requires paused continuation' });
     }
   }),
-  z.object({ ...CompactionCommonShape, phase: z.literal('failed'), diagnostic: PluginDiagnosticDataSchema }).strict(),
-  z.object({ ...CompactionCommonShape, phase: z.literal('cancelled'), diagnostic: PluginDiagnosticDataSchema.optional() }).strict(),
-  z.object({ ...CompactionCommonShape, phase: z.literal('outcomeUnknown'), diagnostic: PluginDiagnosticDataSchema }).strict(),
+  z.object({ ...CompactionCommonShape, phase: z.literal('failed'), diagnostic: AgentRuntimeDiagnosticDataV1Schema }).strict(),
+  z.object({ ...CompactionCommonShape, phase: z.literal('cancelled'), diagnostic: AgentRuntimeDiagnosticDataV1Schema.optional() }).strict(),
+  z.object({ ...CompactionCommonShape, phase: z.literal('outcomeUnknown'), diagnostic: AgentRuntimeDiagnosticDataV1Schema }).strict(),
 ] as const;
 
 const AgentSessionRuntimeNonCompactionEventV1Schema = z.discriminatedUnion('kind', [
@@ -575,24 +554,24 @@ export const AgentSessionConversationRollbackRequestV1Schema = z.object({
 const AgentSessionControlFailureV1Schema = z.union([
   z.object({
     status: z.enum(['rejected', 'unavailable']),
-    diagnostic: PluginDiagnosticDataSchema,
+    diagnostic: AgentRuntimeDiagnosticDataV1Schema,
     retryable: z.boolean(),
   }).strict(),
-  z.object({ status: z.literal('unsupported'), diagnostic: PluginDiagnosticDataSchema }).strict(),
+  z.object({ status: z.literal('unsupported'), diagnostic: AgentRuntimeDiagnosticDataV1Schema }).strict(),
 ]);
 
 export const AgentSessionConversationRollbackResultV1Schema = z.union([
   z.object({ status: z.literal('applied') }).strict(),
-  z.object({ status: z.literal('outcomeUnknown'), diagnostic: PluginDiagnosticDataSchema }).strict(),
+  z.object({ status: z.literal('outcomeUnknown'), diagnostic: AgentRuntimeDiagnosticDataV1Schema }).strict(),
   AgentSessionControlFailureV1Schema,
 ]);
 
 export const AgentSessionConversationRollbackReconciliationResultV1Schema = z.union([
   z.object({ status: z.enum(['applied', 'notApplied']) }).strict(),
-  z.object({ status: z.literal('outcomeUnknown'), diagnostic: PluginDiagnosticDataSchema }).strict(),
+  z.object({ status: z.literal('outcomeUnknown'), diagnostic: AgentRuntimeDiagnosticDataV1Schema }).strict(),
   z.object({
     status: z.literal('unavailable'),
-    diagnostic: PluginDiagnosticDataSchema,
+    diagnostic: AgentRuntimeDiagnosticDataV1Schema,
     retryable: z.boolean(),
   }).strict(),
 ]);

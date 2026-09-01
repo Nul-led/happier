@@ -41,6 +41,10 @@ import {
   AutomationTriggerIdSchema,
   type AutomationTriggerId,
 } from './automationTriggerIdentity.js';
+import {
+  AutomationSessionLifecycleEventSchema,
+  AutomationSessionLifecycleRequestKindSchema,
+} from './automationSessionLifecycle.js';
 
 export {
   AutomationSourceSelectorIdV1JsonSchema,
@@ -165,15 +169,26 @@ export type AutomationScheduleOccurrenceEvidenceV1 = z.infer<
   typeof AutomationScheduleOccurrenceEvidenceV1Schema
 >;
 
-/** Exact canonical source fact for the one approved Session lifecycle trigger. */
+/** Minimal immutable identity for one canonical Session lifecycle occurrence. */
 export const AutomationSessionLifecycleOccurrenceEvidenceV1Schema = z.object({
   v: z.literal(1),
   kind: z.literal('sessionLifecycle'),
-  event: z.literal('parentTurnCompleted'),
+  event: AutomationSessionLifecycleEventSchema,
   sourceSessionId: boundedNfcString(256, 'Source Session identifiers'),
   sourceTurnId: boundedNfcString(256, 'Source turn identifiers'),
+  requestId: boundedNfcString(256, 'User-action request identifiers').optional(),
+  requestKind: AutomationSessionLifecycleRequestKindSchema.optional(),
   occurredAt: AutomationOccurredAtV1Schema,
-}).strict();
+}).strict().superRefine((value, context) => {
+  const hasRequestIdentity = value.requestId !== undefined && value.requestKind !== undefined;
+  if (value.event === 'userActionRequired' && !hasRequestIdentity) {
+    context.addIssue({ code: 'custom', message: 'User-action occurrences require request identity' });
+  }
+  if (value.event !== 'userActionRequired'
+    && (value.requestId !== undefined || value.requestKind !== undefined)) {
+    context.addIssue({ code: 'custom', message: 'Terminal occurrences cannot carry request identity' });
+  }
+});
 export type AutomationSessionLifecycleOccurrenceEvidenceV1 = z.infer<
   typeof AutomationSessionLifecycleOccurrenceEvidenceV1Schema
 >;
@@ -324,6 +339,7 @@ function occurrenceKeyParts(input:
         input.evidence.event,
         input.evidence.sourceSessionId,
         input.evidence.sourceTurnId,
+        input.evidence.event === 'userActionRequired' ? input.evidence.requestId ?? '' : '',
       ];
     }
     return [

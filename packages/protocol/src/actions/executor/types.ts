@@ -42,6 +42,7 @@ import type {
   SessionHandoffStatusGetRequest,
 } from '../../sessions/control/handoff/handoffSchemas.js';
 import type { HandoffWorkspaceActionV1 } from '../../sessions/control/handoff/workspaceSyncSchemas.js';
+import type { HandoffTargetReplacementApprovalV1 } from '../../sessions/control/handoff/handoffTargetReplacementApprovalV1.js';
 import type { SessionContinueWithReplayRpcParams } from '../../sessions/continueWithReplay.js';
 import type { SessionForkRpcParams } from '../../sessions/fork.js';
 import type {
@@ -104,6 +105,7 @@ import type {
 import type {
   SessionSpawnNewInputV2,
 } from '../../sessions/creation/sessionSpawnNewInputV2.js';
+import type { SessionAgentSpawnPolicyV1 } from '../../account/settings/accountSettings.js';
 import type {
   SessionCreationDirectoryApprovalV1,
 } from '../../sessions/creation/sessionCreationTargetPreparationV1.js';
@@ -392,6 +394,12 @@ export type ActionExecutorContext = Readonly<{
   causalPermissionAuthority?: unknown;
 
   /**
+   * Host-stamped source Session/turn for an Agent-originated Session input.
+   * This is execution context only and is never accepted from Action input.
+   */
+  sessionInputSource?: unknown;
+
+  /**
    * UI placement hint (session header, command palette, etc). Used for fail-closed
    * placement gating when desired.
    */
@@ -423,6 +431,9 @@ export type ActionExecutorContext = Readonly<{
    * `session.spawn_new` artifact. Public Action input never carries it.
    */
   sessionCreationDirectoryApproval?: SessionCreationDirectoryApprovalV1 | null;
+
+  /** Exact host-only non-empty handoff target proof recovered from approval. */
+  handoffTargetReplacementApproval?: HandoffTargetReplacementApprovalV1 | null;
 
   /**
    * Current caller permission mode/intent. Used only for agent-surface
@@ -742,8 +753,24 @@ export type ActionExecutorDeps = Readonly<{
     workspaceSyncTargetWorkspaceRefId?: string;
     workspaceSyncSettingsVersion?: number;
     serverId?: string | null;
+    actionRequestId?: string | null;
+    handoffTargetReplacementApproval?: HandoffTargetReplacementApprovalV1 | null;
     signal?: AbortSignal;
   }>) => Promise<unknown>;
+  /** Target-daemon inspection before a handoff can replace non-empty contents. */
+  sessionHandoffTargetReplacementApprovalPreflight?: (args: Readonly<{
+    sessionId: string;
+    targetMachineId: string;
+    targetPath?: string;
+    workspaceAction?: HandoffWorkspaceActionV1;
+    serverId?: string | null;
+    operationId: string;
+    signal?: AbortSignal;
+  }>) => Promise<
+    | Readonly<{ type: 'not_required' }>
+    | Readonly<{ type: 'approval_required'; approval: HandoffTargetReplacementApprovalV1 }>
+    | Readonly<{ type: 'error'; result: ActionExecuteResult }>
+  >;
   sessionHandoffPrepareTarget?: (args: SessionHandoffPrepareTargetRequest) => Promise<unknown>;
   sessionHandoffPrepareTargetResume?: (args: SessionHandoffPrepareTargetResumeRequest) => Promise<unknown>;
   sessionHandoffPrepareTargetResultGet?: (args: SessionHandoffPrepareTargetResultGetRequest) => Promise<unknown>;
@@ -769,6 +796,19 @@ export type ActionExecutorDeps = Readonly<{
     sessionCreationDirectoryApproval?: SessionCreationDirectoryApprovalV1 | null;
     signal?: AbortSignal;
   }>) => Promise<unknown>;
+  /**
+   * Host-owned admission for an Agent-originated child Session request. It
+   * runs before approval creation and compares explicit V2 choices with the
+   * live parent Session; approval replay never becomes a policy bypass.
+   */
+  sessionSpawnNewAgentPolicyPreflight?: (args: Readonly<{
+    input: SessionSpawnNewInputV2;
+    policy: SessionAgentSpawnPolicyV1;
+    signal?: AbortSignal;
+  }>) => Promise<
+    | Readonly<{ type: 'allowed' }>
+    | Readonly<{ type: 'denied'; field: string }>
+  >;
   /**
    * Probes the exact target before `session.spawn_new` can materialize a raw
    * directory. A returned approval is retained by the existing Action
@@ -903,6 +943,13 @@ export type ActionExecutorDeps = Readonly<{
     timeoutSeconds?: number;
     serverId?: string | null;
     callerSurface?: keyof ActionSurfaces | null;
+    /** Validated host-only source turn and immutable causal authority. */
+    sessionInputSource?: Readonly<{
+      sourceSessionId: string;
+      sourceTurnId: string;
+      via: 'action' | 'mcp';
+      causalPermissionAuthority: SessionInputCausalPermissionAuthorityV1;
+    }>;
     signal?: AbortSignal;
   }>) => Promise<unknown>;
   sessionTitleSet?: (args: Readonly<{ sessionId: string; title: string; serverId?: string | null }>) => Promise<unknown>;

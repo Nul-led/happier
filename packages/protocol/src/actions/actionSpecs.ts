@@ -8733,6 +8733,7 @@ export const PLUGIN_SURFACE_EXCLUSION_REASONS = Object.freeze({
   'sessions.external.transcript.readAfter': 'Machine/source-scoped transcript seam; authors use SessionsService.external.readTranscript.',
   'sessions.external.takeover.start': 'Raw durable takeover Start; SessionsService.external.takeover privately delegates to it and is the documented author workflow.',
   'session.permission.respond': 'Present-user permission approval cannot be represented by trusted-plugin provenance; plugins use session.permission.remote.respond for mediated external-human approval.',
+  'session.permission_mode.set': 'Global Session permission policy is present-user or causal Agent authority, never generic trusted-plugin authority.',
 } as const satisfies Readonly<Partial<Record<ActionId, string>>>);
 
 export type PluginSurfaceExcludedActionId =
@@ -9105,6 +9106,20 @@ export type PluginInvocableActionSpecDefinition = {
     Readonly<{ id: TActionId }>
   >;
 }[PluginInvocableActionId];
+
+/**
+ * Public Action descriptor shape narrowed to the exact trusted-Plugin Action
+ * census. Build this from the explicit descriptor contract rather than the
+ * passthrough Zod inference: the latter carries a string index signature, and
+ * applying `Omit` to it erases the useful property types to `unknown`.
+ */
+export type PluginInvocableActionSpec = Omit<ActionSpecWithoutApproval, 'id'> & Readonly<{
+  id: PluginInvocableActionId;
+  approval: ParsedActionSpec['approval'];
+  placements: ActionUiPlacement[];
+  requiredAuthority: ActionRequiredAuthority;
+  executionPlacement: ActionExecutionPlacement;
+}>;
 
 type PluginActionSpecForId<TActionId extends PluginInvocableActionId> = Extract<
   PluginInvocableActionSpecDefinition,

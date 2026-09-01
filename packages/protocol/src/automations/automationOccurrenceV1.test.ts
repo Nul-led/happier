@@ -64,13 +64,15 @@ describe('Automation occurrence V1', () => {
     })).not.toBe(first);
   });
 
-  it('derives exact-turn occurrence identity from the stable trigger and source turn', () => {
+  it('derives lifecycle identity from the trigger, actual Event, source turn, and request identity', () => {
     const evidence = AutomationSessionLifecycleOccurrenceEvidenceV1Schema.parse({
       v: 1,
       kind: 'sessionLifecycle',
-      event: 'parentTurnCompleted',
+      event: 'userActionRequired',
       sourceSessionId: 'session-source-1',
       sourceTurnId: 'turn-7',
+      requestId: 'request-9',
+      requestKind: 'permission',
       occurredAt: 1_714_000_000_000,
     });
     const key = deriveAutomationOccurrenceKeyV1({ triggerId: 'trigger-1', evidence });
@@ -83,6 +85,21 @@ describe('Automation occurrence V1', () => {
     expect(deriveAutomationOccurrenceKeyV1({
       triggerId: 'trigger-1',
       evidence: { ...evidence, sourceTurnId: 'turn-8' },
+    })).not.toBe(key);
+    expect(deriveAutomationOccurrenceKeyV1({
+      triggerId: 'trigger-1',
+      evidence: { ...evidence, requestId: 'request-10' },
+    })).not.toBe(key);
+    expect(deriveAutomationOccurrenceKeyV1({
+      triggerId: 'trigger-1',
+      evidence: {
+        v: 1,
+        kind: 'sessionLifecycle',
+        event: 'parentTurnFailed',
+        sourceSessionId: evidence.sourceSessionId,
+        sourceTurnId: evidence.sourceTurnId,
+        occurredAt: evidence.occurredAt,
+      },
     })).not.toBe(key);
   });
   it('normalizes and bounds the shared manual idempotency contract by UTF-8 bytes', () => {
