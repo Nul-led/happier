@@ -730,7 +730,6 @@ describe("Account Directory service", () => {
 
             const result = await redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
-                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken: async () => "home-token",
