@@ -594,6 +594,48 @@ describe('workspace sync target bootstrap authority', () => {
     }
   });
 
+  it('adopts the exact retained transient relationship when settings publication re-enters with the same operation', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-persisted-reentry-'));
+    const alphaRoot = join(fixture, 'alpha');
+    const betaRoot = join(fixture, 'beta');
+    await mkdir(alphaRoot, { recursive: true });
+    let currentSnapshot = snapshot(alphaRoot, betaRoot, { includeRelationship: false });
+    const harness = createAuthorityHarness({
+      getSettingsSnapshot: () => currentSnapshot,
+    });
+    try {
+      const prepared = await harness.authority.prepareBootstrapHere(prepareRequest());
+      currentSnapshot = snapshot(alphaRoot, betaRoot);
+
+      await expect(harness.authority.prepareBootstrapHere(prepareRequest({
+        transientRelationship: undefined,
+        targetBootstrap: undefined,
+        targetReplacementApproval: undefined,
+      }))).resolves.toEqual(prepared);
+
+      currentSnapshot = {
+        ...currentSnapshot,
+        settings: AccountSettingsSchema.parse({
+          ...currentSnapshot.settings,
+          workspaceSyncRelationshipsV1: currentSnapshot.settings.workspaceSyncRelationshipsV1.map((relationship) => ({
+            ...relationship,
+            mode: 'keep_synced',
+          })),
+        }),
+      };
+      await expect(harness.authority.prepareBootstrapHere(prepareRequest({
+        transientRelationship: undefined,
+        targetBootstrap: undefined,
+        targetReplacementApproval: undefined,
+      }))).rejects.toMatchObject({ code: 'bootstrap_definition_conflict' });
+
+      await harness.authority.releaseAllRetainedBootstraps();
+    } finally {
+      await harness.cleanup();
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('rejects wrong machine, unknown ref, role/ref drift, wrong policy and stale relationships without touching the root', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-authority-reject-'));
     const alphaRoot = join(fixture, 'alpha');

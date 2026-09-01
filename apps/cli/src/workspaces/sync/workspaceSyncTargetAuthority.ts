@@ -410,10 +410,59 @@ type RetainedBootstrap = Readonly<{
   operationId: string;
   sourceWorkspaceRefId: string;
   sourceMachineId: string;
+  sourceRootPath: string;
   targetWorkspaceRefId: string;
   targetMachineId: string;
+  targetRootPath: string;
   endpointRole: 'alpha' | 'beta';
+  relationshipDefinition: WorkspaceSyncRelationshipV1 | null;
+  createIfMissing: boolean;
 }>;
+
+type ResolvedBootstrapOwner = ReturnType<typeof resolveBootstrapOwner>;
+
+function retainedBootstrapMatchesOwner(
+  entry: RetainedBootstrap,
+  owner: ResolvedBootstrapOwner,
+  request: WorkspaceSyncTargetBootstrapPrepareV1,
+): boolean {
+  return entry.relationshipId === owner.relationshipId
+    && entry.operationId === owner.operationId
+    && entry.sourceWorkspaceRefId === owner.sourceWorkspaceRefId
+    && entry.sourceMachineId === owner.sourceWorkspace.machineId.trim()
+    && entry.sourceRootPath === owner.sourceRootPath
+    && entry.targetWorkspaceRefId === owner.targetWorkspaceRefId
+    && entry.targetMachineId === owner.targetWorkspace.machineId.trim()
+    && entry.targetRootPath === owner.targetRootPath
+    && entry.endpointRole === owner.endpointRole
+    && entry.result.policyDigest === request.policyDigest
+    && (entry.relationshipDefinition === null
+      ? owner.relationship === null
+      : owner.relationship !== null
+        && areWorkspaceSyncRelationshipDefinitionsEqual(entry.relationshipDefinition, owner.relationship));
+}
+
+/**
+ * Relationship creation prepares the target from transient intent, then the
+ * same operation re-enters after that exact definition is published to
+ * Account Settings. Bootstrap mechanics are intentionally absent on the
+ * settings-owned replay; every stable relationship/endpoint fact must still
+ * match the retained authority.
+ */
+function isExactPersistedRelationshipReentry(
+  entry: RetainedBootstrap,
+  owner: ResolvedBootstrapOwner,
+  request: WorkspaceSyncTargetBootstrapPrepareV1,
+): boolean {
+  return request.owner.kind === 'relationship'
+    && request.transientRelationship === undefined
+    && request.targetBootstrap === undefined
+    && request.targetReplacementApproval === undefined
+    && entry.bootstrapOperationId === request.bootstrapOperationId
+    && entry.relationshipDefinition !== null
+    && entry.createIfMissing === request.createIfMissing
+    && retainedBootstrapMatchesOwner(entry, owner, request);
+}
 
 function retainedAuthorityKey(input: Readonly<{
   relationshipId: string | null;
@@ -544,9 +593,13 @@ export function createWorkspaceSyncTargetAuthority(
         operationId: input.relationship.relationshipId,
         sourceWorkspaceRefId: input.sourceWorkspace.id,
         sourceMachineId: input.sourceWorkspace.machineId.trim(),
+        sourceRootPath: input.sourceWorkspace.rootPath,
         targetWorkspaceRefId: input.targetWorkspace.id,
         targetMachineId: input.targetWorkspace.machineId.trim(),
+        targetRootPath: input.targetWorkspace.rootPath,
         endpointRole: input.endpointRole,
+        relationshipDefinition: input.relationship,
+        createIfMissing: false,
       };
       retained.set(authorityKey, entry);
       return entry;
@@ -597,9 +650,13 @@ export function createWorkspaceSyncTargetAuthority(
         operationId: operation.operationId,
         sourceWorkspaceRefId: input.sourceWorkspace.id,
         sourceMachineId: input.sourceWorkspace.machineId.trim(),
+        sourceRootPath: input.sourceWorkspace.rootPath,
         targetWorkspaceRefId: input.targetWorkspace.id,
         targetMachineId: input.targetWorkspace.machineId.trim(),
+        targetRootPath: input.targetWorkspace.rootPath,
         endpointRole: 'beta',
+        relationshipDefinition: null,
+        createIfMissing: input.request.createIfMissing,
       };
       retained.set(authorityKey, entry);
       return entry;
@@ -935,7 +992,9 @@ export function createWorkspaceSyncTargetAuthority(
         entry.bootstrapOperationId === request.bootstrapOperationId
       ));
       if (operationBinding
-        && (operationBinding[0] !== authorityKey || operationBinding[1].definition !== definition)) {
+        && (operationBinding[0] !== authorityKey
+          || (operationBinding[1].definition !== definition
+            && !isExactPersistedRelationshipReentry(operationBinding[1], owner, request)))) {
         throw authorityError('bootstrap_definition_conflict', 'Workspace sync bootstrap operation id already owns a different definition');
       }
       if (!request.targetBootstrap && !retained.has(authorityKey)) {
@@ -966,21 +1025,30 @@ export function createWorkspaceSyncTargetAuthority(
         signal?.throwIfAborted();
         const retainedEntry = retained.get(authorityKey);
         if (retainedEntry) {
+          const persistedRelationshipReentry = isExactPersistedRelationshipReentry(retainedEntry, owner, request);
           if (retainedEntry.bootstrapOperationId === request.bootstrapOperationId
-            && retainedEntry.definition !== definition) {
+            && retainedEntry.definition !== definition
+            && !persistedRelationshipReentry) {
             throw authorityError('bootstrap_definition_conflict', 'Workspace sync bootstrap operation id already owns a different definition');
           }
-          if (retainedEntry.relationshipId !== owner.relationshipId
-            || retainedEntry.operationId !== owner.operationId
-            || retainedEntry.sourceWorkspaceRefId !== owner.sourceWorkspaceRefId
-            || retainedEntry.sourceMachineId !== owner.sourceWorkspace.machineId.trim()
-            || retainedEntry.targetWorkspaceRefId !== owner.targetWorkspaceRefId
-            || retainedEntry.targetMachineId !== owner.targetWorkspace.machineId.trim()
-            || retainedEntry.endpointRole !== owner.endpointRole
-            || retainedEntry.result.policyDigest !== request.policyDigest) {
+          if (!retainedBootstrapMatchesOwner(retainedEntry, owner, request)) {
             throw authorityError('bootstrap_definition_conflict', 'Workspace sync target authority conflicts with the current settings owner');
           }
-          if (retainedEntry.bootstrapOperationId === request.bootstrapOperationId) return retainedEntry.result;
+          if (retainedEntry.bootstrapOperationId === request.bootstrapOperationId) {
+            if (persistedRelationshipReentry) {
+              const currentRoot = await realpath(owner.targetRootPath).catch(() => null);
+              const currentFingerprint = currentRoot
+                ? await computeWorkspaceSyncRootFingerprint(currentRoot).catch(() => null)
+                : null;
+              if (currentRoot !== retainedEntry.handle.owner.canonicalRoot
+                || currentFingerprint !== retainedEntry.result.rootFingerprint) {
+                await discardRetained(authorityKey);
+                throw authorityError('root_changed', 'Workspace sync target root identity changed before settings reconciliation');
+              }
+              retained.set(authorityKey, { ...retainedEntry, definition });
+            }
+            return retainedEntry.result;
+          }
           const currentRoot = await realpath(owner.targetRootPath).catch(() => null);
           const currentFingerprint = currentRoot
             ? await computeWorkspaceSyncRootFingerprint(currentRoot).catch(() => null)
@@ -1088,9 +1156,13 @@ export function createWorkspaceSyncTargetAuthority(
           operationId: owner.operationId,
           sourceWorkspaceRefId: owner.sourceWorkspaceRefId,
           sourceMachineId: owner.sourceWorkspace.machineId.trim(),
+          sourceRootPath: owner.sourceRootPath,
           targetWorkspaceRefId: request.targetWorkspaceRefId,
           targetMachineId: owner.targetWorkspace.machineId.trim(),
+          targetRootPath: owner.targetRootPath,
           endpointRole: owner.endpointRole,
+          relationshipDefinition: owner.relationship,
+          createIfMissing: request.createIfMissing,
         });
         return result;
       });
