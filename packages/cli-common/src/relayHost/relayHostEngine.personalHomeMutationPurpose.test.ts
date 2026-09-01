@@ -428,6 +428,14 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
         baseUrl: CANONICAL_SERVER_URL,
         canonicalServerUrl: CANONICAL_SERVER_URL,
       });
+
+      await writeFile(join(runtime.defaults.configDir, 'server.env'), 'PORT=not-a-port\n', 'utf8');
+      const malformedEnvironmentStatus = await engine.readStatus({
+        target: { kind: 'local' },
+        mode: 'user',
+        channel: 'preview',
+      });
+      expect(malformedEnvironmentStatus.baseUrl).toBe(CANONICAL_SERVER_URL);
     } finally {
       await runtime.dispose();
     }
