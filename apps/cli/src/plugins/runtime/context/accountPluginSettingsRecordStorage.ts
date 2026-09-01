@@ -238,7 +238,6 @@ export function createAccountPluginSettingsRecordStorage(params: Readonly<{
                 { expectedRevision: request.expectedRevision, content },
                 requestConfig(credentials, options?.signal),
             );
-            if (!isStillCurrent(credentials, options?.signal)) return unavailableWrite();
             const parsed = PluginAccountSettingsMutationResponseV1Schema.safeParse(response.data);
             if (parsed.success) return parsed.data;
             if (
@@ -249,11 +248,10 @@ export function createAccountPluginSettingsRecordStorage(params: Readonly<{
             }
             return outcomeUnknownWrite();
         } catch (error) {
-            options?.signal?.throwIfAborted();
             if (isPluginError(error)) throw error;
-            return issued && isStillCurrent(credentials, options?.signal)
-                ? outcomeUnknownWrite()
-                : unavailableWrite();
+            if (issued) return outcomeUnknownWrite();
+            options?.signal?.throwIfAborted();
+            return unavailableWrite();
         }
     }
 

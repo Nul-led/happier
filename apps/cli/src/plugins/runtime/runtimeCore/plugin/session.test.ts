@@ -17,7 +17,10 @@ import {
     createPluginSessionRuntimePlan,
 } from './session';
 import { buildPluginHostSessionRuntimeOptions, buildPluginSessionBindingInput } from './sessionLaunch';
-import { decorateRuntimeTurnOperationsWithMetadata } from './sessionMetadata';
+import {
+  decorateRuntimeTurnOperationsWithMetadata,
+  normalizePluginSessionLaunchResult,
+} from './sessionMetadata';
 import type {
   ResolvedAgentContribution,
   ResolvedAgentRuntimeContribution,
@@ -173,6 +176,38 @@ function createHostFactoryParams() {
 }
 
 describe('plugin session runtime adapters', () => {
+  it('does not synthesize an Agent runtime descriptor when the plugin omits one', () => {
+    const runtime = createRuntimeTurnOperations();
+
+    expect(normalizePluginSessionLaunchResult({
+      result: { runtime },
+    })).toMatchObject({
+      runtime,
+      runtimeDescriptor: null,
+    });
+  });
+
+  it('preserves an Agent-provided runtime descriptor without adding host routing data', () => {
+    const runtime = createRuntimeTurnOperations();
+    const runtimeDescriptor = {
+      v: 1,
+      agentId: 'acme.sample.provider',
+      agent: {
+        providerSessionId: 'acme-session-1',
+        agentExtra: {
+          owner: 'acme.sample.plugin',
+          schemaId: 'acme.sample.runtimeDescriptor',
+          v: 1,
+          opaqueResumeFact: 'agent-owned',
+        },
+      },
+    } as const;
+
+    expect(normalizePluginSessionLaunchResult({
+      result: { runtime, runtimeDescriptor },
+    }).runtimeDescriptor).toEqual(runtimeDescriptor);
+  });
+
   it('threads the exact selected Agent provider declaration into both host runtime plans', async () => {
     const providerRequirements = Object.freeze({
       acceptsProtocols: ['openai-responses'],

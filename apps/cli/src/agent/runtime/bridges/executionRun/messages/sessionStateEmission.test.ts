@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1 } from '@happier-dev/protocol';
 import type { ExecutionRunBackendController } from '@/agent/executionRuns/controllers/types';
 import { failureSignal } from '@/agent/executionRuns/controllers/failureSignal';
+import { EXECUTION_RUN_TASK_RESULT_MAX_CODE_UNITS } from '@/agent/executionRuns/profiles/ExecutionRunIntentProfile';
 import type { ExecutionRunState } from '../executionRunTypes';
 import { createExecutionRunControllerMessageHandler } from './sessionStateEmission';
 
@@ -80,32 +80,31 @@ function createRunningRun(): ExecutionRunState {
 }
 
 describe('createExecutionRunControllerMessageHandler', () => {
-  it('fails generic task output before retaining an oversized delta or cumulative transcript', () => {
-    const deltaLimit = AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1.deltaTextMaxCodeUnits;
-    const transcriptLimit = AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1.p0MeasuredCandidates.transcriptTextMaxCodeUnits;
-    const cancelOversizedDelta = vi.fn(async () => {});
-    const oversizedDeltaCtrl = createController({ backend: { cancel: cancelOversizedDelta }, withFailureSignal: true });
-    const oversizedDeltaRuns = new Map([['run_1', { ...createRunningRun(), intent: 'task' as const }]]);
-    const oversizedDeltaHandler = createExecutionRunControllerMessageHandler({
-      ctrl: oversizedDeltaCtrl,
+  it('accepts a large individual task delta and fails only when cumulative task output exceeds its bound', () => {
+    const transcriptLimit = EXECUTION_RUN_TASK_RESULT_MAX_CODE_UNITS;
+    const cancelLargeDelta = vi.fn(async () => {});
+    const largeDeltaCtrl = createController({ backend: { cancel: cancelLargeDelta }, withFailureSignal: true });
+    const largeDeltaRuns = new Map([['run_1', { ...createRunningRun(), intent: 'task' as const }]]);
+    const largeDeltaHandler = createExecutionRunControllerMessageHandler({
+      ctrl: largeDeltaCtrl,
       runId: 'run_1',
       sidechainId: 'sidechain_1',
       ioMode: 'request_response',
       computeSidechainStreamText: () => null,
       sendAcp: async () => {},
       parentProvider: 'codex',
-      runs: oversizedDeltaRuns,
+      runs: largeDeltaRuns,
       backendSupportsResume: true,
       writeActivityMarker: async () => {},
       getNowMs: () => 123,
     });
 
-    oversizedDeltaHandler({ type: 'model-output', textDelta: 'x'.repeat(deltaLimit + 1) });
+    const largeDelta = 'x'.repeat((64 * 1_024) + 1);
+    largeDeltaHandler({ type: 'model-output', textDelta: largeDelta });
 
-    expect(oversizedDeltaCtrl.buffer).toBe('');
-    expect(cancelOversizedDelta).toHaveBeenCalledWith('child_session_1');
-    expect((oversizedDeltaCtrl.failureSignal?.readError() as Error & { executionRunErrorCode?: unknown })?.executionRunErrorCode)
-      .toBe('execution_run_output_limit_exceeded');
+    expect(largeDeltaCtrl.buffer).toBe(largeDelta);
+    expect(cancelLargeDelta).not.toHaveBeenCalled();
+    expect(largeDeltaCtrl.failureSignal?.readError()).toBeNull();
 
     const cancelOversizedFullText = vi.fn(async () => {});
     const oversizedFullTextCtrl = createController({

@@ -22,8 +22,7 @@ export {
 } from './backend';
 export {
   createAcpRuntimeDefinition,
-  createAcpRuntimeCoreFromDefinition,
-} from './runtimeCore';
+} from './create';
 export {
   assertAcpRuntimeDefinitionSupported,
 } from './support';

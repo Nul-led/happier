@@ -118,45 +118,6 @@ function createStubRuntimeCoreBackend(opts?: Readonly<{
   };
 }
 
-function expectGenericPluginRuntimeDescriptor() {
-  return expect.objectContaining({
-    v: 1,
-    agentId: 'acme.sample.provider',
-    agent: {
-      agentExtra: expect.objectContaining({
-        owner: 'happier',
-        schemaId: 'happier.pluginRuntimeDescriptorExtra',
-        v: 1,
-        runtimeHandle: expect.objectContaining({
-          backendId: 'acme.sample.backend',
-          agentId: 'acme.sample.provider',
-          provenance: 'external',
-          source: { kind: 'path' },
-        }),
-      }),
-    },
-  });
-}
-
-function expectExecutionRunFallbackRuntimeDescriptor() {
-  return expect.objectContaining({
-    v: 1,
-    agentId: 'acme.sample.provider',
-    agent: {
-      agentExtra: expect.objectContaining({
-        owner: 'happier',
-        schemaId: 'happier.executionRunRuntimeIdentity',
-        v: 1,
-        runtimeHandle: expect.objectContaining({
-          backendId: 'acme.sample.backend',
-          agentId: 'acme.sample.provider',
-          provenance: 'external',
-        }),
-      }),
-    },
-  });
-}
-
 describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -265,7 +226,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
     expect(events).toEqual(['revalidate', 'create', 'cleanup']);
   }, 10_000);
 
-  it('exposes a host-owned execution-run runtime surface for runtimeCore-backed backends', async () => {
+  it('exposes a host-owned execution-run runtime surface without interpreting a malformed Agent descriptor', async () => {
     const runtimeCoreBackend = createStubRuntimeCoreBackend({
       runtimeDescriptor: {
         backendId: 'acme.sample.backend',
@@ -367,11 +328,6 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
     expect(messages).toEqual(expect.arrayContaining([
       expect.objectContaining({
         type: 'event',
-        name: 'runtime.descriptor',
-        payload: expectExecutionRunFallbackRuntimeDescriptor(),
-      }),
-      expect.objectContaining({
-        type: 'event',
         name: 'runtime.capabilities',
       }),
       expect.objectContaining({
@@ -383,6 +339,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
         fullText: 'plugin:hello',
       }),
     ]));
+    expect(messages.filter((message) => message.type === 'event' && message.name === 'runtime.descriptor')).toHaveLength(0);
   });
 
   it('creates an execution-run backend from plugin terminal-runtime launch when no built-in descriptor exists', async () => {
@@ -475,11 +432,6 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
     expect(messages).toEqual(expect.arrayContaining([
       expect.objectContaining({
         type: 'event',
-        name: 'runtime.descriptor',
-        payload: expectExecutionRunFallbackRuntimeDescriptor(),
-      }),
-      expect.objectContaining({
-        type: 'event',
         name: 'runtime.capabilities',
         payload: {
           executionRun: { supported: true },
@@ -500,6 +452,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
         fullText: 'plugin:hello',
       }),
     ]));
+    expect(messages.filter((message) => message.type === 'event' && message.name === 'runtime.descriptor')).toHaveLength(0);
   });
 
   it('passes generic isolation env to plugin runtimeCore-backed execution runs', async () => {
@@ -633,26 +586,23 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
   });
 
   it('preserves emitted runtime descriptors and fills missing runtime capabilities centrally', async () => {
+    const agentRuntimeDescriptor = {
+      v: 1,
+      agentId: 'acme.sample.provider',
+      agent: {
+        backendMode: 'native',
+        providerSessionId: 'acme-session-1',
+        agentExtra: {
+          owner: 'acme.sample.plugin',
+          schemaId: 'acme.sample.runtimeDescriptor',
+          v: 1,
+          opaqueResumeFact: 'agent-owned',
+        },
+      },
+    } as const;
     const runtimeCoreBackend = createStubRuntimeCoreBackend({
-	      runtimeDescriptor: {
-	        v: 1,
-	        agentId: 'acme.sample.provider',
-	        agent: {
-	          backendMode: 'native',
-	          agentExtra: {
-	            owner: 'happier',
-	            schemaId: 'happier.pluginRuntimeDescriptorExtra',
-	            v: 1,
-	            runtimeHandle: {
-	              backendId: 'acme.sample.backend',
-	              agentId: 'acme.sample.provider',
-	              provenance: 'external',
-	              source: { kind: 'path' },
-	            },
-	          },
-	        },
-	      },
-	    });
+      runtimeDescriptor: agentRuntimeDescriptor,
+    });
 	    const createExecutionRunBackendMock = vi.fn(() => runtimeCoreBackend);
 	    resolveBackendEngineAdapterResolutionMock.mockResolvedValue({
 	      backendId: 'acme.sample.backend',
@@ -717,7 +667,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
       expect.objectContaining({
         type: 'event',
         name: 'runtime.descriptor',
-        payload: expectGenericPluginRuntimeDescriptor(),
+        payload: agentRuntimeDescriptor,
       }),
     ]));
     expect(messages.filter((message) => message.type === 'event' && message.name === 'runtime.descriptor')).toHaveLength(1);
@@ -733,7 +683,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
     ]));
   });
 
-  it('fails closed to the generic plugin descriptor when plugin execution-run runtimeDescriptor is malformed', async () => {
+  it('drops a malformed plugin execution-run descriptor without synthesizing a host replacement', async () => {
 	    const runtimeCoreBackend = createStubRuntimeCoreBackend({
 	      runtimeDescriptor: {
 	        backendId: 'acme.sample.backend',
@@ -788,17 +738,10 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
     await expect(runtime.provisionSession({ initialPrompt: 'boot' })).resolves.toEqual({ sessionId: 'plugin-session-1' });
     unsubscribe();
 
-    expect(messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        type: 'event',
-        name: 'runtime.descriptor',
-        payload: expectExecutionRunFallbackRuntimeDescriptor(),
-      }),
-    ]));
-    expect(messages.filter((message) => message.type === 'event' && message.name === 'runtime.descriptor')).toHaveLength(1);
+    expect(messages.filter((message) => message.type === 'event' && message.name === 'runtime.descriptor')).toHaveLength(0);
   });
 
-  it('publishes runtime identity centrally when a runtimeCore-backed backend is silent', async () => {
+  it('publishes capabilities and facets but no Agent descriptor when a runtimeCore-backed backend is silent', async () => {
 	    const runtimeCoreBackend = createStubRuntimeCoreBackend();
 	    const createExecutionRunBackendMock = vi.fn(() => runtimeCoreBackend);
 	    resolveBackendEngineAdapterResolutionMock.mockResolvedValue({
@@ -867,11 +810,6 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
     expect(messages).toEqual(expect.arrayContaining([
       expect.objectContaining({
         type: 'event',
-        name: 'runtime.descriptor',
-        payload: expectExecutionRunFallbackRuntimeDescriptor(),
-      }),
-      expect.objectContaining({
-        type: 'event',
         name: 'runtime.capabilities',
         payload: {
           executionRun: { supported: true },
@@ -889,6 +827,7 @@ describe('createExecutionRunBackend (plugin runtimeCore adapter)', () => {
         },
       }),
     ]));
+    expect(messages.filter((message) => message.type === 'event' && message.name === 'runtime.descriptor')).toHaveLength(0);
   });
 
   it('fails closed when plugin execution surfaces do not provide terminal-runtime launch', async () => {

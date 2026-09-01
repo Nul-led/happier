@@ -36,7 +36,6 @@ export async function attemptAcpLatestFork(params: Readonly<{
     directory: string;
     effectiveCutoffSeqInclusive: number;
     requestId?: string | null;
-    forkIsConfiguredAcp: boolean;
     spawnNonce: string;
     forkBackendResolution: ForkBackendResolution;
     inheritedForkOverrides: ForkInheritedOverrides;
@@ -44,6 +43,10 @@ export async function attemptAcpLatestFork(params: Readonly<{
     spawnSession: ForkSpawnSession;
     stopSession: ForkStopSession;
 }>): Promise<ForkStrategyAttemptResult> {
+    // ACP latest-fork is a declared Agent surface. Account-configured ACP only
+    // proves load-session support and therefore has no native fork authority.
+    if (params.forkBackendResolution.catalogAgentId === null) return null;
+
     try {
         const spawnFinalForkResult = async (forked: ForkResultV1): Promise<ForkStrategyAttemptResult> => {
             const forkedProviderSessionId = normalizeForkProviderSessionId(forked.providerSessionId);

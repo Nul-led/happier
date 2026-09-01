@@ -465,7 +465,17 @@ export function createTargetComposerAttachmentRegistry(params: Readonly<{
             if (!isValidPluginJsonSchemaValue(validator, attachment.value)) {
                 throw invalidValueError(attachment.attachment);
             }
-            const normalized = parse(attachment);
+            // Presentation type identity is declaration-owned. The authored
+            // instance supplies only its item label; persisting an arbitrary
+            // per-instance typeLabel would let direct/headless sends diverge
+            // from the Composer and transcript declaration contract.
+            const normalized = parse({
+                ...attachment,
+                presentation: {
+                    ...attachment.presentation,
+                    typeLabel: declaration.typeLabel,
+                },
+            });
             if (!normalized) {
                 throw invalidDeclarationError(attachment.attachment);
             }

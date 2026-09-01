@@ -33,9 +33,9 @@ import {
 } from '@/plugins/runtime/hooks/session/service';
 import { readActivePluginAccountSettings } from '@/plugins/runtime/context/accountSettingsStorage';
 import type {
-    ResolvedAgentContribution,
-    ResolvedAgentRuntimeContribution,
-} from '@/plugins/projection/registry/types';
+    EngineResolutionAgent,
+    EngineResolutionBackend,
+} from '../engineRegistryTypes';
 
 import {
     createNativeAgentAccountUsageService,
@@ -90,7 +90,7 @@ export type NativeAgentSessionHostServiceOwners = Readonly<{
 
 type Disposable = Readonly<{ dispose(): void | Promise<void> }>;
 
-function declaresTerminalSurface(agent: ResolvedAgentContribution): boolean {
+function declaresTerminalSurface(agent: EngineResolutionAgent): boolean {
     return agent.richDefinition?.definition.capabilities.surfaces?.includes('terminal') === true;
 }
 
@@ -104,8 +104,8 @@ export function createNativeAgentSessionHostServiceOwners(params: Readonly<{
         generation?: string;
         isCurrent?(): boolean;
     }>;
-    backend: ResolvedAgentRuntimeContribution;
-    agent: ResolvedAgentContribution;
+    backend: EngineResolutionBackend;
+    agent: EngineResolutionAgent;
     hostSession: Readonly<{
         session: Pick<ApiSessionClient, 'getMetadataSnapshot'>;
         machineId: string;

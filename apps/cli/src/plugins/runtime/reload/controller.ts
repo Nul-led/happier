@@ -142,7 +142,7 @@ export type PluginReloadController = Readonly<{
     applyResourceSessionAccessWitness: (params: ResourceSessionAccessWitness) => void;
     shutdown: (params?: Readonly<{ timeoutMs?: number }>) => Promise<void>;
     getState: () => PluginReloadState;
-    /** Notified after cold initialization or prepared-registry adoption settles. */
+    /** Notified after daemon-owned initialization or prepared-registry adoption settles. */
     subscribe: (listener: PluginReloadListener) => () => void;
     /**
      * The controller-lifetime target-local contribution owner. Optional only
@@ -311,14 +311,6 @@ export function createPluginReloadController(params?: Readonly<{
         }
     }
 
-    async function resolveHappyHomeDir(): Promise<string> {
-        if (params?.happyHomeDir) {
-            return params.happyHomeDir;
-        }
-        const { configuration } = await import('../../../configuration');
-        return configuration.happyHomeDir;
-    }
-
     function retainRegistryLease(registry: ResolvedExecutablePluginRuntimeRegistry): void {
         outstandingLeaseCounts.set(registry, (outstandingLeaseCounts.get(registry) ?? 0) + 1);
     }
@@ -444,21 +436,16 @@ export function createPluginReloadController(params?: Readonly<{
     }
 
     async function resolveRuntimeRegistry(
-        attemptedGeneration: number,
+        _attemptedGeneration: number,
         resolveRuntimeRegistryOverride?: () => Promise<ResolvedExecutablePluginRuntimeRegistry>,
     ): Promise<ResolvedExecutablePluginRuntimeRegistry> {
         const resolver = resolveRuntimeRegistryOverride ?? params?.resolveRuntimeRegistry;
-        if (resolver) {
-            return await resolver();
+        if (!resolver) {
+            throw new Error(
+                'Plugin runtime registry is unavailable until the daemon lifecycle owner publishes it',
+            );
         }
-        const { resolveExecutablePluginRuntimeRegistry } = await import('../resolveExecutablePluginRuntimeRegistry');
-        return await resolveExecutablePluginRuntimeRegistry({
-            happyHomeDir: await resolveHappyHomeDir(),
-            generation: attemptedGeneration,
-            targetedContributions: getTargetedContributionsOwner(),
-            currentGlobalExternalSessionsRouter: currentGlobalExternalSessions,
-            onTerminalActivationFailure: () => controller.invalidateRuntimeProjection?.(),
-        });
+        return await resolver();
     }
 
     function getTargetedContributionsOwner(): StableTargetedContributionsOwner {

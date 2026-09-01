@@ -4,6 +4,7 @@ import { derivePluginSessionInputLocalIdV1 } from '@happier-dev/protocol';
 import {
   buildAutomationSessionInputAdmissionV1,
   buildAgentRuntimeFirstInputAdmissionV1,
+  buildCausalSessionInputAdmissionV1,
   buildPluginSessionInputAdmissionV1,
   buildSessionSpawnInitialInputAdmissionForLocalIdV1,
   deriveAutomationSessionInputLocalIdV1,
@@ -99,6 +100,36 @@ describe('derivePluginSessionInputLocalIdV1', () => {
           sourceRef: 'channel-7',
           sourceRevisionOrEpoch: 'message-42',
           remoteApprovalMaxScope: 'request',
+        },
+        permission: { requestedPermissionCeiling: 'read-only' },
+      },
+    });
+  });
+
+  it('builds causal cross-Session admission from the active host turn witness', () => {
+    expect(buildCausalSessionInputAdmissionV1({
+      sourceSessionId: 'source-session',
+      sourceTurnId: 'source-turn',
+      via: 'mcp',
+      causalPermissionAuthority: {
+        kind: 'admittedSessionInputV1',
+        admittedPermissionCeiling: 'read-only',
+      },
+    })).toEqual({
+      provenance: {
+        v: 1,
+        kind: 'happierSession',
+        sourceSessionId: 'source-session',
+        via: 'mcp',
+      },
+      request: {
+        v: 1,
+        producer: 'happierMcp',
+        caller: { kind: 'host' },
+        sourceSession: {
+          sourceSessionId: 'source-session',
+          sourceTurnId: 'source-turn',
+          via: 'mcp',
         },
         permission: { requestedPermissionCeiling: 'read-only' },
       },

@@ -73,6 +73,51 @@ it('requests copy-on-write cloning for immutable generation copies while preserv
 });
 
 describe('immutable plugin generation store', () => {
+  it('does not commit retained Agent factory facts after activation currentness is lost', async () => {
+    const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-generation-factory-fence-'));
+    const sourceRootPath = await mkdtemp(join(tmpdir(), 'happier-generation-factory-fence-source-'));
+    try {
+      const paths = resolvePluginStorePaths({ happyHomeDir });
+      await writeFile(join(sourceRootPath, 'package.json'), '{}', 'utf8');
+      const record = {
+        sourceProvenance: 'registryCustodied' as const,
+        t: 'happier_plugin_generation_v1' as const,
+        schemaVersion: 1 as const,
+        pluginId: 'acme.factory-fence',
+        immutableGenerationId: 'factory-fence-generation',
+        createdAtMs: 1,
+        manifestRelativePath: 'package.json',
+        files: [{ relativePath: 'package.json', byteLength: 2 }],
+      };
+      await prepareImmutablePluginGeneration({ paths, sourceRootPath, record });
+
+      await expect(persistValidatedAgentSessionRunnerFactories({
+        paths,
+        record,
+        manifestAuthority: 'external',
+        factories: [{
+          localAgentId: 'fixture',
+          locator: {
+            module: './agent-runtime.js',
+            export: 'createAgentRuntime',
+            runtimeApiVersion: 1,
+          },
+          normalizedModulePath: 'agent-runtime.js',
+          loadMode: 'immutable-js',
+        }],
+        assertCurrent: () => {
+          throw new Error('activation generation retired');
+        },
+      })).rejects.toThrow('activation generation retired');
+
+      await expect(readValidatedAgentSessionRunnerFactories({ paths, record }))
+        .rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(happyHomeDir, { recursive: true, force: true });
+      await rm(sourceRootPath, { recursive: true, force: true });
+    }
+  });
+
   it('rejects retired generation health state from the canonical schema', () => {
     const base = stateRevision('generation-current');
     const retiredState = {

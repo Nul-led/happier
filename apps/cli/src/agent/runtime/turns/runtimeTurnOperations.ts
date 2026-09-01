@@ -149,6 +149,7 @@ export type RuntimeTurnOperations = Readonly<{
    * no current admitted turn and must not authorize a fallback.
    */
   readActiveTurnCausalPermissionAuthority?: () => SessionInputCausalPermissionAuthorityV1 | null;
+  readActiveTurnId?: () => string | null;
   readSessionIdentity: () => RuntimeTurnSessionIdentity;
   updateSessionRuntimeConfig: (update: RuntimeTurnConfigUpdate) => Promise<RuntimeConfigUpdateOutcomeV1 | void>;
   resetOrDisposeRuntime: (

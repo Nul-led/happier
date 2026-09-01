@@ -2,7 +2,9 @@ import {
   PluginContributionLocalIdSchema,
   PluginIdSchema,
   PluginSessionInputSourceV1Schema,
+  SessionInputCausalPermissionAuthorityV1Schema,
   SessionInputRequestV1Schema,
+  SessionInputSourceSessionV1Schema,
   SessionMessageProvenanceV1Schema,
   readPendingLocalId,
   type ActionPluginCaller,
@@ -10,6 +12,7 @@ import {
   type ActionSurfaces,
   type PluginInvocationSurfaceV1,
   type PluginSessionInputSourceV1,
+  type SessionInputCausalPermissionAuthorityV1,
   type SessionInputRequestV1,
   type SessionMessageProvenanceV1,
 } from '@happier-dev/protocol';
@@ -168,6 +171,54 @@ export function buildHostSessionInputAdmissionV1(
       producer,
       caller: { kind: 'host' },
       permission: {},
+    }),
+  });
+}
+
+/** Builds protected cross-Session input from a host-stamped active turn. */
+export function buildCausalSessionInputAdmissionV1(params: Readonly<{
+  sourceSessionId: string;
+  sourceTurnId: string;
+  via: 'action' | 'mcp';
+  causalPermissionAuthority: SessionInputCausalPermissionAuthorityV1;
+}>): Readonly<{
+  provenance: SessionMessageProvenanceV1;
+  request: SessionInputRequestV1;
+}> {
+  const sourceSession = SessionInputSourceSessionV1Schema.parse({
+    sourceSessionId: params.sourceSessionId,
+    sourceTurnId: params.sourceTurnId,
+    via: params.via,
+  });
+  const causalPermissionAuthority = SessionInputCausalPermissionAuthorityV1Schema.parse(
+    params.causalPermissionAuthority,
+  );
+  const sourceAuthority = causalPermissionAuthority.sourceAuthority;
+  return Object.freeze({
+    provenance: SessionMessageProvenanceV1Schema.parse({
+      v: 1,
+      kind: 'happierSession',
+      sourceSessionId: sourceSession.sourceSessionId,
+      via: sourceSession.via,
+    }),
+    request: SessionInputRequestV1Schema.parse({
+      v: 1,
+      producer: sourceSession.via === 'mcp' ? 'happierMcp' : 'sessionAction',
+      caller: { kind: 'host' },
+      sourceSession,
+      ...(sourceAuthority
+        ? {
+            sourceAuthority: {
+              mediatorPluginId: sourceAuthority.mediatorPluginId,
+              sourceRef: sourceAuthority.sourceRef,
+              sourceRevisionOrEpoch: sourceAuthority.sourceRevisionOrEpoch,
+              remoteApprovalMaxScope: sourceAuthority.remoteApprovalMaxScope,
+            },
+          }
+        : {}),
+      permission: {
+        requestedPermissionCeiling: causalPermissionAuthority.admittedPermissionCeiling,
+      },
     }),
   });
 }

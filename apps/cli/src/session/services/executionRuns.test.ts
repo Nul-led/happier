@@ -1456,7 +1456,6 @@ describe('waitForExecutionRun', () => {
             run: succeededRun,
             latestToolResult: false,
             structuredMeta: { kind: 'execution_result', payload: { accepted: false, count: 0 } },
-            structuredMetaArtifactRef: { artifactId: 'artifact_1' },
         };
         callSessionRpc
             .mockResolvedValueOnce({

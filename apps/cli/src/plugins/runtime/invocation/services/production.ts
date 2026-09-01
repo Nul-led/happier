@@ -71,7 +71,9 @@ import type {
 import { join } from 'node:path';
 import { readOrCreateDeviceLocalSecretStorage } from '@/daemon/deviceLocalSecretStorage';
 import {
+    createPluginEphemeralStorageScope,
     createPluginStorageOwner,
+    type PluginStorageOwnerScope,
     type StablePluginAccountStorageHost,
 } from '../../context/storage';
 import type { StablePluginDaemonDatabaseHost } from '../../context/daemonDatabase';
@@ -471,6 +473,10 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         ...(settingsHost ? { settings: settingsHost } : {}),
         ...(secretsHost ? { secrets: secretsHost } : {}),
         ...(params?.storagePaths ? { storagePaths: params.storagePaths } : {}),
+        resolveEphemeralStorageScope: (seed) => retainInvocationGenerationScope(
+            seed.generation,
+            seed.plugin.id,
+        ).ephemeralStorage,
         ...(params?.daemonDatabase ? { daemonDatabase: params.daemonDatabase } : {}),
         ...(params?.accountStorage ? { accountStorage: params.accountStorage } : {}),
         ...(params?.now ? { now: params.now } : {}),
@@ -662,13 +668,31 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
                 ? { secrets: operationSecretsHost }
                 : {}),
             ...(params?.storagePaths ? { storagePaths: params.storagePaths } : {}),
+            resolveEphemeralStorageScope: (seed) => retainInvocationGenerationScope(
+                seed.generation,
+                seed.plugin.id,
+            ).ephemeralStorage,
             ...(params?.daemonDatabase ? { daemonDatabase: params.daemonDatabase } : {}),
             ...(params?.accountStorage ? { accountStorage: params.accountStorage } : {}),
             ...(params?.now ? { now: params.now } : {}),
         });
     };
-    const invocationGenerationScopes = new Map<string, Readonly<{ generation: string; pluginId: string }>>();
+    const invocationGenerationScopes = new Map<string, Readonly<{
+        generation: string;
+        pluginId: string;
+        ephemeralStorage: PluginStorageOwnerScope;
+    }>>();
     const managedGenerationKey = (generation: string, pluginId: string): string => `${generation}\u0000${pluginId}`;
+    const retainInvocationGenerationScope = (generation: string, pluginId: string) => {
+        const key = managedGenerationKey(generation, pluginId);
+        const retained = invocationGenerationScopes.get(key) ?? Object.freeze({
+            generation,
+            pluginId,
+            ephemeralStorage: createPluginEphemeralStorageScope(),
+        });
+        invocationGenerationScopes.set(key, retained);
+        return retained;
+    };
     const resourceOwnersByGenerationKey = new Map<string, Readonly<{
         generation: string;
         pluginId: string;
@@ -869,10 +893,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
             currentSeed.generation,
             currentSeed.plugin.id,
         );
-        invocationGenerationScopes.set(
-            managedGenerationKey(currentSeed.generation, currentSeed.plugin.id),
-            Object.freeze({ generation: currentSeed.generation, pluginId: currentSeed.plugin.id }),
-        );
+        retainInvocationGenerationScope(currentSeed.generation, currentSeed.plugin.id);
         const diagnosticScope = {
             pluginId: currentSeed.plugin.id,
             generation: currentSeed.generation,
@@ -1039,10 +1060,7 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
                 seed.generation,
                 seed.plugin.id,
             );
-            invocationGenerationScopes.set(
-                managedGenerationKey(seed.generation, seed.plugin.id),
-                Object.freeze({ generation: seed.generation, pluginId: seed.plugin.id }),
-            );
+            retainInvocationGenerationScope(seed.generation, seed.plugin.id);
             const diagnosticScope = {
                 pluginId: seed.plugin.id,
                 generation: seed.generation,
@@ -1061,6 +1079,9 @@ export function createProductionPluginInvocationServiceOwners(params?: Readonly<
         },
         retireConnectedAccountConsumers(): void {
             connectedAccountsHost?.retire();
+        },
+        retireEphemeralStorageGeneration(generation: string, pluginId: string): void {
+            invocationGenerationScopes.delete(managedGenerationKey(generation, pluginId));
         },
         async retireGeneration(generation: string, pluginId: string): Promise<void> {
             try {

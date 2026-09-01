@@ -91,5 +91,6 @@ describe('buildRuntimePublicationFromEngineResolution', () => {
         },
       },
     });
+    expect(publication.runtimeDescriptor).toBeNull();
   });
 });

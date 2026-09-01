@@ -28,6 +28,7 @@ import {
 } from '@/session/transport/http/sessionsHttp';
 import type { SemanticTranscriptItem } from './transcript/semanticTranscriptItem';
 import type { HostExternalSessionsAuthorService } from '@/session/external/privateContract';
+import type { PluginSubagentsHostService } from '@/session/subagents/pluginSubagentsService';
 import { getSessionTranscript } from './getSessionTranscript';
 import { fetchAccountEncryptionCurrentness } from '@/api/client/connectedServiceCredentialApi';
 import type { AccountEncryptionCurrentnessResponse } from '@happier-dev/protocol';
@@ -78,8 +79,8 @@ export type PluginSessionHandleCapabilities = Readonly<
     | 'permissions'
     | 'mcp'
     | 'media'
-    | 'subagents'
   >>
+  & Readonly<{ subagents?: PluginSubagentsHostService }>
   & Partial<Pick<CurrentSessionHandle, 'setDisplayTitle'>>
 >;
 
@@ -542,7 +543,7 @@ export function createPluginSessionsInventory(params: PluginSessionsInventoryPar
         });
       },
     });
-    const guardedSubagents: SessionHandle['subagents'] = Object.freeze({
+    const guardedSubagents: PluginSubagentsHostService = Object.freeze({
       capabilities() {
         assertSynchronouslyAccessibleSession(sessionId, 'control');
         return (subagents ?? unavailableSubagents).capabilities();
@@ -557,7 +558,7 @@ export function createPluginSessionsInventory(params: PluginSessionsInventoryPar
         await assertSessionAccess(sessionId, 'control', options?.signal);
         return await (subagents ?? unavailableSubagents).get(id, options);
       },
-      async observe(...args: Parameters<SessionHandle['subagents']['observe']>) {
+      async observe(...args: Parameters<PluginSubagentsHostService['observe']>) {
         const [input, options] = args;
         await assertSessionAccess(sessionId, 'control', options?.signal);
         return await (subagents ?? unavailableSubagents).observe(input, options);

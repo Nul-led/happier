@@ -25,8 +25,12 @@ import {
     resolveContributionCatalogAgentId,
 } from '@/plugins/projection/registry/resolveContributionCatalogAgentId';
 import type {
-    ResolvedAgentRuntimeContribution,
+    EngineResolutionAgent,
+    EngineResolutionBackend,
+} from '@/agent/runtime/registry/engineRegistryTypes';
+import type {
     ResolvedAgentContribution,
+    ResolvedAgentRuntimeContribution,
 } from '@/plugins/projection/registry/types';
 import { createProviderTerminalDisplay } from '@/ui/providers/providerTerminalDisplay';
 import {
@@ -610,7 +614,7 @@ function resolveInitialNativeAgentSessionOpenIntent(
     return Object.freeze({ kind: 'create' });
 }
 
-function buildPluginDisplayName(agent: ResolvedAgentContribution, backend: ResolvedAgentRuntimeContribution): string {
+function buildPluginDisplayName(agent: EngineResolutionAgent, backend: EngineResolutionBackend): string {
     const richDisplayName = agent.richDefinition
         ? normalizeNonEmptyString(
             typeof agent.richDefinition.definition.title === 'string'
@@ -633,8 +637,8 @@ function normalizeOptionalString(value: unknown): string | null {
 }
 
 function createNativeAgentDeferredStartupConfig(params: Readonly<{
-    backend: ResolvedAgentRuntimeContribution;
-    agent: ResolvedAgentContribution;
+    backend: EngineResolutionBackend;
+    agent: EngineResolutionAgent;
     displayName: string;
 }>): Pick<HostSessionRuntimePlan['config'], 'startupBootstrap'> | Record<string, never> {
     const shouldUseDeferredSessionStartup =
@@ -794,10 +798,15 @@ type RegisteredExternalAgentIdentity = Readonly<{
 }>;
 
 function resolvePluginPolicyAgentId(params: Readonly<{
-    backend: ResolvedAgentRuntimeContribution;
-    agent: ResolvedAgentContribution;
+    backend: EngineResolutionBackend;
+    agent: EngineResolutionAgent;
     registeredAgentIdentity?: RegisteredExternalAgentIdentity;
 }>): string {
+    if (params.backend.provenance === 'configured' || params.agent.provenance === 'configured') {
+        throw new Error(
+            `Host-configured Agent '${params.agent.id}' requires an explicit host policy identity`,
+        );
+    }
     const policyAgentId = resolveContributionCatalogAgentId({
         backend: params.backend,
         agent: params.agent,
@@ -889,7 +898,6 @@ export async function createPluginSessionRuntimePlan(params: Readonly<{
                     const launchResult = await params.launch(sessionLaunchParams);
                     const normalized = normalizePluginSessionLaunchResult({
                         result: launchResult,
-                        backend: params.backend,
                     });
                     return decorateRuntimeTurnOperationsWithMetadata(normalized);
                 },
@@ -899,18 +907,26 @@ export async function createPluginSessionRuntimePlan(params: Readonly<{
 }
 
 export async function createNativeAgentHostSessionRuntimePlan(params: Readonly<{
-    backend: ResolvedAgentRuntimeContribution;
-    agent: ResolvedAgentContribution;
+    backend: EngineResolutionBackend;
+    agent: EngineResolutionAgent;
     createSessionRuntime: NativeAgentSessionRuntimeCreate;
     sessionInput: PluginSessionBindingInput;
     registeredAgentIdentity?: RegisteredExternalAgentIdentity;
+    /** Exact host policy identity for a non-plugin host-configured Agent runtime. */
+    policyAgentId?: string;
+    /** Host-owned Session projection for a non-plugin configured Agent runtime. */
+    sessionProjection?: Readonly<{
+        flavor: string;
+        agentMessageType: HostSessionRuntimeConfig['agentMessageType'];
+        augmentSessionMetadata?: HostSessionRuntimeConfig['augmentSessionMetadata'];
+    }>;
     isMediatorPluginCurrent?: (pluginId: string) => boolean;
     isMediatorContributionCurrent?: HostSessionRuntimeConfig['isMediatorContributionCurrent'];
     agentSessionRealtimeVoiceAuthority?:
         HostSessionRuntimeConfig['agentSessionRealtimeVoiceAuthority'];
 }>): Promise<HostSessionRuntimePlan> {
     const displayName = buildPluginDisplayName(params.agent, params.backend);
-    const policyAgentId = resolvePluginPolicyAgentId({
+    const policyAgentId = params.policyAgentId ?? resolvePluginPolicyAgentId({
         backend: params.backend,
         agent: params.agent,
         ...(params.registeredAgentIdentity
@@ -931,7 +947,15 @@ export async function createNativeAgentHostSessionRuntimePlan(params: Readonly<{
             agentId: params.backend.id,
             config: {
                 displayName,
-                flavor: params.backend.id,
+                flavor: params.sessionProjection?.flavor ?? params.backend.id,
+                ...(params.sessionProjection
+                    ? {
+                        agentMessageType: params.sessionProjection.agentMessageType,
+                        ...(params.sessionProjection.augmentSessionMetadata
+                            ? { augmentSessionMetadata: params.sessionProjection.augmentSessionMetadata }
+                            : {}),
+                    }
+                    : {}),
                 policyAgentId,
                 providerRequirements:
                     params.agent.richDefinition?.definition

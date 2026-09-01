@@ -165,5 +165,3 @@ export function createRuntimeOverrideSynchronizers(params: Readonly<{
     },
   };
 }
-
-export const createAcpRuntimeOverrideSynchronizers = createRuntimeOverrideSynchronizers;

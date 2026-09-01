@@ -8,6 +8,7 @@ import type {
 export type RunnerMcpSessionContextAccessors = Readonly<{
   getPermissionMode?: (() => PermissionMode | null | undefined) | null;
   getActiveTurnCausalPermissionAuthority?: (() => SessionInputCausalPermissionAuthorityV1 | null | undefined) | null;
+  getActiveTurnId?: (() => string | null | undefined) | null;
   getBackendTarget?: (() => BackendTargetRefV2 | null | undefined) | null;
   getCurrentSessionLocation?: (() => Readonly<{
     path?: string | null;
@@ -21,6 +22,7 @@ export type RunnerMcpSessionWithContext<TSession> = TSession & {
   getMetadataSnapshot?: () => Metadata | null;
   getPermissionMode?: () => PermissionMode | null | undefined;
   getActiveTurnCausalPermissionAuthority?: () => SessionInputCausalPermissionAuthorityV1 | null | undefined;
+  getActiveTurnId?: () => string | null | undefined;
   getBackendTarget?: () => BackendTargetRefV2 | null | undefined;
   getCurrentSessionLocation?: () => Readonly<{
     path?: string | null;
@@ -40,6 +42,9 @@ export function applyRunnerMcpSessionContext<TSession extends object>(
   }
   if (accessors.getActiveTurnCausalPermissionAuthority) {
     target.getActiveTurnCausalPermissionAuthority = accessors.getActiveTurnCausalPermissionAuthority;
+  }
+  if (accessors.getActiveTurnId) {
+    target.getActiveTurnId = accessors.getActiveTurnId;
   }
   if (accessors.getBackendTarget) {
     target.getBackendTarget = accessors.getBackendTarget;

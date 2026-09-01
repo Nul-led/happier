@@ -4,7 +4,6 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RuntimeOutboundTranscriptDispatchFacetV1 } from '@happier-dev/agents';
 import { resolveLinkedExternalSessionAuthorityV1 } from '@happier-dev/protocol';
 import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
 
@@ -253,43 +252,6 @@ describe('SessionHostBridge execution surfaces', () => {
     expect(resolveBackendExecutionSurfacesMock).toHaveBeenCalledWith('acme.handoff.backend-v1');
   });
 
-  it('resolves outbound transcript dispatch facets through the requested backend engine adapter', async () => {
-    const facet: RuntimeOutboundTranscriptDispatchFacetV1 = {
-      prepareDispatch: vi.fn(),
-    };
-    resolveBackendEngineAdapterResolutionMock.mockResolvedValue({
-      engineAdapter: {
-        facets: {
-          transcriptDispatch: facet,
-        },
-      },
-    });
-
-    const bridge = new SessionHostBridge();
-
-    await expect(bridge.resolveOutboundTranscriptDispatchFacet(' acme.sample.backend ')).resolves.toEqual({
-      backendId: 'acme.sample.backend',
-      facet,
-    });
-    expect(resolveBackendEngineAdapterResolutionMock).toHaveBeenCalledWith('acme.sample.backend');
-  });
-
-  it('does not resolve an outbound transcript dispatch facet without a backend id or facet', async () => {
-    const bridge = new SessionHostBridge();
-
-    await expect(bridge.resolveOutboundTranscriptDispatchFacet('  ')).resolves.toBeNull();
-    expect(resolveBackendEngineAdapterResolutionMock).not.toHaveBeenCalled();
-
-    resolveBackendEngineAdapterResolutionMock.mockResolvedValue({
-      engineAdapter: {
-        facets: {},
-      },
-    });
-
-    await expect(bridge.resolveOutboundTranscriptDispatchFacet('acme.sample.backend')).resolves.toBeNull();
-    expect(resolveBackendEngineAdapterResolutionMock).toHaveBeenCalledWith('acme.sample.backend');
-  });
-
   it('evaluates attach eligibility with bridge-owned backend execution surface resolution', async () => {
     const attach = {
       evaluateAvailability: vi.fn(async () => ({ available: true as const })),
@@ -443,7 +405,7 @@ describe('SessionHostBridge execution surfaces', () => {
     expect(publishHostEvent).toHaveBeenCalledOnce();
   });
 
-  it('wraps host session runtime creation with shared runtime publication fallback from engine resolution', async () => {
+  it('publishes host capabilities and facets without synthesizing an Agent runtime descriptor', async () => {
     const runtimeOperations = createRuntimeTurnOperations();
     const createPlanRuntime = vi.fn(async () => ({
       operations: runtimeOperations,
@@ -527,28 +489,6 @@ describe('SessionHostBridge execution surfaces', () => {
     unsubscribe();
 
     expect(messages).toEqual([
-      {
-        type: 'event',
-        name: 'runtime.descriptor',
-        payload: {
-          v: 1,
-          agentId: 'acme.sample.provider',
-          agent: {
-            backendMode: 'native',
-            providerSessionId: 'session-1',
-            agentExtra: {
-              owner: 'happier',
-              schemaId: 'happier.hostSessionRuntimeIdentity',
-              v: 1,
-              runtimeHandle: {
-                backendId: 'acme.sample.backend',
-                agentId: 'acme.sample.provider',
-                provenance: 'external',
-              },
-            },
-          },
-        },
-      },
       {
         type: 'event',
         name: 'runtime.capabilities',

@@ -1,4 +1,5 @@
 import {
+    AgentExecutionRunEventSchema,
     AgentLaunchEnvironmentV1Schema,
     AgentRuntimeJsonValueV1Schema,
 } from '@happier-dev/protocol/runtime';
@@ -22,7 +23,6 @@ import { createExecutionRunHostBackendFromSessionRuntime } from '@happier-dev/pl
 
 import type { AgentMessage } from '@/agent/core/AgentMessage';
 import type { CreateCliExecutionRunBackendParams } from '@/agent/runtime/registry/engineRegistryTypes';
-import type { AgentRuntimeRegistrationLease } from '@/plugins/runtime/lifecycle/contributions/targetAgents';
 import { createUnavailablePluginServices } from '@/plugins/runtime/invocation/services/unavailable';
 import { createPluginInvocationPresentation } from '@/plugins/runtime/invocation/services/interactions';
 import { resolveAgentContributionQualifiedId } from '@/plugins/projection/registry/agentRoutingIdentity';
@@ -41,6 +41,14 @@ export type NativeAgentSessionContextLeaseFactory = (params: Readonly<{
 }>> | Readonly<{
     context: AgentSessionRuntimeContext;
     dispose(): Promise<void>;
+}>;
+
+export type NativeAgentRuntimeLeaseIdentity = Readonly<{
+    pluginId: string;
+    pluginVersion: string;
+    agentId: string;
+    localAgentId: string;
+    isCurrent(): boolean;
 }>;
 
 function diagnosticMessage(
@@ -182,7 +190,7 @@ function buildLaunchEnvironment(
 }
 
 function createNativeAgentInvocationContext(params: Readonly<{
-    lease: AgentRuntimeRegistrationLease;
+    lease: NativeAgentRuntimeLeaseIdentity;
     runId: string;
     signal: AbortSignal;
     services: PluginServices;
@@ -220,7 +228,7 @@ function createNativeAgentInvocationContext(params: Readonly<{
 
 export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
     runtime: AgentRuntime;
-    lease: AgentRuntimeRegistrationLease;
+    lease: NativeAgentRuntimeLeaseIdentity;
     options: CreateCliExecutionRunBackendParams;
     supportsResume: boolean;
     generationSignal?: AbortSignal;
@@ -249,6 +257,9 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
             : {}),
         ...(params.options.providerBinding
             ? { providerBinding: params.options.providerBinding }
+            : {}),
+        ...(params.options.causalPermissionAuthority
+            ? { causalPermissionAuthority: params.options.causalPermissionAuthority }
             : {}),
     });
     const sanitizeProviderDiagnosticText =
@@ -304,25 +315,31 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
     }
 
     function handleEvent(event: AgentExecutionRunEvent): void {
-        if (event.runId !== runId) {
-            failRuntime(`Native Agent execution run emitted an event for unexpected run '${event.runId}'`);
+        const parsed = AgentExecutionRunEventSchema.safeParse(event);
+        if (!parsed.success) {
+            failRuntime(`Native Agent execution run '${runId}' emitted an invalid runtime event`);
             return;
         }
-        if (!Number.isSafeInteger(event.sequence) || event.sequence <= lastSequence) {
+        const normalizedEvent = parsed.data;
+        if (normalizedEvent.runId !== runId) {
+            failRuntime(`Native Agent execution run emitted an event for unexpected run '${normalizedEvent.runId}'`);
+            return;
+        }
+        if (normalizedEvent.sequence <= lastSequence) {
             failRuntime(`Native Agent execution run '${runId}' emitted a non-monotonic event sequence`);
             return;
         }
         if (terminal) return;
-        lastSequence = event.sequence;
-        const message = toHostMessage(event, sanitizeProviderDiagnosticText);
+        lastSequence = normalizedEvent.sequence;
+        const message = toHostMessage(normalizedEvent, sanitizeProviderDiagnosticText);
         if (message) emit(message);
-        if (event.kind === 'run-complete' || event.kind === 'run-cancelled') {
+        if (normalizedEvent.kind === 'run-complete' || normalizedEvent.kind === 'run-cancelled') {
             terminal = true;
             resolveTerminal();
-        } else if (event.kind === 'run-failed') {
+        } else if (normalizedEvent.kind === 'run-failed') {
             terminal = true;
             rejectTerminal(new Error(diagnosticMessage(
-                event.diagnostic,
+                normalizedEvent.diagnostic,
                 sanitizeProviderDiagnosticText,
             )));
         }
@@ -508,7 +525,7 @@ export function createNativeAgentExecutionRunHostRuntime(params: Readonly<{
  */
 export function createNativeAgentSessionExecutionRunHostRuntime(params: Readonly<{
     runtime: AgentRuntime;
-    lease: AgentRuntimeRegistrationLease;
+    lease: NativeAgentRuntimeLeaseIdentity;
     options: CreateCliExecutionRunBackendParams;
     supportsResume: boolean;
     generationSignal?: AbortSignal;
@@ -531,20 +548,50 @@ export function createNativeAgentSessionExecutionRunHostRuntime(params: Readonly
                     services: executionContext.services,
                     signal: executionContext.signal,
                 });
-                if (!params.lease.isCurrent()) {
-                    await sessionContext.dispose();
-                    throw new Error(`Agent runtime '${params.lease.agentId}' belongs to a retired generation`);
+                const readBoundaryError = (): Error | null => {
+                    if (!params.lease.isCurrent()) {
+                        return new Error(
+                            `Agent runtime '${params.lease.agentId}' belongs to a retired generation`,
+                        );
+                    }
+                    if (!executionContext.signal.aborted) return null;
+                    return executionContext.signal.reason instanceof Error
+                        ? executionContext.signal.reason
+                        : Object.assign(
+                            new Error('Agent execution run was aborted'),
+                            { name: 'AbortError' },
+                        );
+                };
+                const contextBoundaryError = readBoundaryError();
+                if (contextBoundaryError) {
+                    try {
+                        await sessionContext.dispose();
+                    } catch {
+                        // Preserve the currentness/abort refusal after host-context cleanup was attempted.
+                    }
+                    throw contextBoundaryError;
                 }
-                executionContext.signal.throwIfAborted();
                 let execution: AgentExecutionRunRuntime;
                 try {
                     execution = await createExecutionRunHostBackendFromSessionRuntime({
                         request,
                         sessionId: sessionContext.context.session.id,
-                        openSession: async (sessionRequest) => await sessions.open(
-                            sessionRequest,
-                            sessionContext.context,
-                        ),
+                        openSession: async (sessionRequest) => {
+                            const opened = await sessions.open(
+                                sessionRequest,
+                                sessionContext.context,
+                            );
+                            const boundaryError = readBoundaryError();
+                            if (boundaryError) {
+                                void Promise.resolve()
+                                    .then(() => opened.dispose('runtime_recovery'))
+                                    .catch(() => {
+                                        // Preserve the refusal when provider cleanup fails or never settles.
+                                    });
+                                throw boundaryError;
+                            }
+                            return opened;
+                        },
                         readCheckpointId: (event) => event.kind === 'provider-session-id'
                             ? event.providerSessionId
                             : null,
@@ -596,7 +643,7 @@ export function createNativeAgentSessionExecutionRunHostRuntime(params: Readonly
  */
 export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<{
     runtime: AgentRuntime;
-    lease: AgentRuntimeRegistrationLease;
+    lease: NativeAgentRuntimeLeaseIdentity;
     options: CreateCliExecutionRunBackendParams;
     supportsResume: boolean;
     generationSignal?: AbortSignal;
@@ -717,6 +764,9 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
                     await operations!.sendTurnPrompt(options.initialPrompt, {
                         turnId,
                         localId: `${runId}-input-${turnOrdinal}`,
+                        ...(params.options.causalPermissionAuthority
+                            ? { causalPermissionAuthority: params.options.causalPermissionAuthority }
+                            : {}),
                     });
                 }
                 return Object.freeze({ sessionId: runId });
@@ -738,6 +788,9 @@ export function createNativeAgentSessionInteractionHostRuntime(params: Readonly<
                 ...(meta?.localInputIds ? { localIds: meta.localInputIds } : {}),
                 ...(meta?.userMessageSeq !== undefined ? { userMessageSeq: meta.userMessageSeq } : {}),
                 ...(meta?.userMessageSeqs ? { userMessageSeqs: meta.userMessageSeqs } : {}),
+                ...(params.options.causalPermissionAuthority
+                    ? { causalPermissionAuthority: params.options.causalPermissionAuthority }
+                    : {}),
             });
         },
         async cancel(sessionId) {

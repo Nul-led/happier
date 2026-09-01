@@ -705,14 +705,87 @@ describe('Account plugin Data storage host', () => {
         ]);
     });
 
-    it('refuses an exact live row before forgetting and revalidates Account currentness after forget transport', async () => {
-        let current = true;
-        const post = vi.fn(async () => {
-            current = false;
-            return { status: 200, data: { status: 'forgotten' } };
-        });
+    it('retries a retention forget only while the exact row revision survives an absence-epoch race', async () => {
+        let freshnessReads = 0;
+        const calls: HttpCall[] = [];
         const account = bindHost({
-            isCurrentAccount: () => current,
+            get: async (url) => {
+                if (!url.endsWith('/v1/plugins/data/get')) {
+                    return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
+                }
+                freshnessReads += 1;
+                return {
+                    status: 200,
+                    data: {
+                        row: {
+                            rowId: 'task-retained',
+                            revision: 4,
+                            content: { t: 'plain', v: { privateNote: 'retained value' } },
+                            projection: { status: 'open' },
+                        },
+                        absenceEpoch: freshnessReads === 1 ? 7 : 8,
+                    },
+                };
+            },
+            post: async (url, body) => {
+                calls.push({ url, body: JSON.parse(body) });
+                return {
+                    status: 200,
+                    data: { status: calls.length === 1 ? 'conflict' : 'forgotten' },
+                };
+            },
+        });
+
+        await expect(account.collection(collectionDefinition).forget('task-retained', {
+            expectedRevision: 4,
+        })).resolves.toEqual({ rowId: 'task-retained', forgotten: true });
+        expect(freshnessReads).toBe(2);
+        expect(calls.map(({ body }) => body)).toEqual([
+            expect.objectContaining({ expectedRevision: 4, expectedAbsenceEpoch: 7 }),
+            expect.objectContaining({ expectedRevision: 4, expectedAbsenceEpoch: 8 }),
+        ]);
+    });
+
+    it('rejects a retention forget after one freshness read when the row has a newer revision', async () => {
+        let freshnessReads = 0;
+        const post = vi.fn(async () => ({ status: 200, data: { status: 'conflict' } }));
+        const account = bindHost({
+            get: async (url) => {
+                if (!url.endsWith('/v1/plugins/data/get')) {
+                    return { status: 200, data: { mode: 'plain', updatedAt: 1 } };
+                }
+                freshnessReads += 1;
+                if (freshnessReads > 2) {
+                    throw new Error('Retention forget retried a persistent newer row');
+                }
+                return {
+                    status: 200,
+                    data: {
+                        row: {
+                            rowId: 'task-recreated',
+                            revision: 5,
+                            content: { t: 'plain', v: { privateNote: 'newer value' } },
+                            projection: { status: 'open' },
+                        },
+                        absenceEpoch: 8,
+                    },
+                };
+            },
+            post,
+        });
+
+        await expect(account.collection(collectionDefinition).forget('task-recreated', {
+            expectedRevision: 4,
+        })).rejects.toMatchObject({
+            code: 'plugin_collection_conflict',
+        } satisfies Partial<PluginError>);
+        expect(freshnessReads).toBe(1);
+        expect(post).not.toHaveBeenCalled();
+    });
+
+    it('atomically retires an exact live row through the Collection owner', async () => {
+        const post = vi.fn(async () => ({ status: 200, data: { status: 'forgotten' } }));
+        const account = bindHost({
             get: async (url) => url.endsWith('/v1/plugins/data/get')
                 ? {
                     status: 200,
@@ -732,14 +805,10 @@ describe('Account plugin Data storage host', () => {
 
         await expect(account.collection(collectionDefinition).forget('task-live', {
             expectedRevision: 4,
-        })).rejects.toMatchObject({
-            code: 'plugin_collection_conflict',
-        } satisfies Partial<PluginError>);
-        expect(post).not.toHaveBeenCalled();
+        })).resolves.toEqual({ rowId: 'task-live', forgotten: true });
+        expect(post).toHaveBeenCalledTimes(1);
 
-        current = true;
         const absentAccount = bindHost({
-            isCurrentAccount: () => current,
             get: async (url) => url.endsWith('/v1/plugins/data/get')
                 ? { status: 200, data: { row: null, absenceEpoch: 7 } }
                 : { status: 200, data: { mode: 'plain', updatedAt: 1 } },
@@ -747,9 +816,7 @@ describe('Account plugin Data storage host', () => {
         });
         await expect(absentAccount.collection(collectionDefinition).forget('task-deleted', {
             expectedRevision: 4,
-        })).rejects.toMatchObject({
-            code: 'plugin_account_storage_unavailable',
-        } satisfies Partial<PluginError>);
+        })).resolves.toEqual({ rowId: 'task-deleted', forgotten: true });
     });
 
     it('propagates cancellation before a Collection forget can read or mutate', async () => {
@@ -1047,6 +1114,8 @@ describe('Account plugin Data storage host', () => {
 
         await expect(account.collection(collectionDefinition).limits()).resolves.toEqual({
             maxRowEncodedBytes: 256 * 1024,
+            maxRows: 5_000,
+            maxCollectionEncodedBytes: 64 * 1024 * 1024,
             maxBatchBytes: 4 * 1024 * 1024,
             maxBatchRows: 40,
             maxAccountRows: 5_000,
@@ -1090,7 +1159,8 @@ describe('Account plugin Data storage host', () => {
             quota: { maxRows: 250, maxRowEncodedBytes: 32 * 1024 },
         }).limits()).resolves.toMatchObject({
             maxRowEncodedBytes: 32 * 1024,
-            maxAccountRows: 250,
+            maxRows: 250,
+            maxAccountRows: 5_000,
             maxBatchRows: 40,
             basis: 'deployment',
         });
@@ -1106,6 +1176,8 @@ describe('Account plugin Data storage host', () => {
 
         await expect(account.collection(collectionDefinition).limits()).resolves.toEqual({
             ...PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1,
+            maxRows: PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1.maxAccountRows,
+            maxCollectionEncodedBytes: PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1.maxAccountBytes,
             basis: 'default',
         });
     });
@@ -1344,6 +1416,55 @@ describe('Account plugin Data storage host', () => {
                 },
             },
         ]);
+        expect(reads).toBe(2);
+    });
+
+    it('conflicts when a daemon transaction read dependency changes before its derived write commits', async () => {
+        let reads = 0;
+        const post = vi.fn(async () => ({
+            status: 200,
+            data: { status: 'conflict' as const, revision: 2 },
+        }));
+        const account = bindHost({
+            get: async () => {
+                reads += 1;
+                return {
+                    status: 200,
+                    data: {
+                        status: 'present' as const,
+                        revision: reads,
+                        content: {
+                            t: 'plain' as const,
+                            v: {
+                                v: 1 as const,
+                                values: {
+                                    source: {
+                                        version: reads - 1,
+                                        value: reads + 1,
+                                    },
+                                },
+                            },
+                        },
+                    },
+                };
+            },
+            post,
+        });
+        const callback = vi.fn(async (transaction: AccountKvTransaction) => {
+            const source = await transaction.get<number>('source');
+            await transaction.set(
+                'derived',
+                (source && 'value' in source ? source.value : 0) * 2,
+                { expectedVersion: 'absent' },
+            );
+        });
+
+        await expect(account.kv.transaction(callback)).rejects.toMatchObject({
+            code: 'plugin_account_kv_conflict',
+        } satisfies Partial<PluginError>);
+        expect(callback).toHaveBeenCalledOnce();
+        expect(post).toHaveBeenCalledOnce();
+        expect(reads).toBe(2);
     });
 
     it('treats a service write from an Account KV callback as a separate mutation while rejecting a nested transaction', async () => {
@@ -1395,7 +1516,28 @@ describe('Account plugin Data storage host', () => {
         expect(post).not.toHaveBeenCalled();
     });
 
-    it('stops a daemon physical-conflict retry when the bound caller is cancelled', async () => {
+    it('keeps an inner daemon transaction signal active through the physical commit', async () => {
+        const post = vi.fn(async () => ({
+            status: 200,
+            data: { status: 'updated' as const, revision: 0 },
+        }));
+        const account = bindHost({
+            get: async () => ({ status: 200, data: { status: 'absent' as const } }),
+            post,
+        });
+        const cancellation = new AbortController();
+
+        await expect(account.kv.transaction(async (transaction) => {
+            await transaction.set('cancelled', true, {
+                expectedVersion: 'absent',
+                signal: cancellation.signal,
+            });
+            cancellation.abort();
+        })).rejects.toMatchObject({ code: 'plugin_collection_cancelled' });
+        expect(post).not.toHaveBeenCalled();
+    });
+
+    it('reports cancellation after the single daemon CAS settles', async () => {
         const cancellation = new AbortController();
         const get = vi.fn(async () => ({
             status: 200,

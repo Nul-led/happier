@@ -22,6 +22,7 @@ import type { CreateCliExecutionRunBackendParams } from '@/agent/runtime/registr
 
 import {
     createNativeAgentExecutionRunHostRuntime,
+    createNativeAgentSessionExecutionRunHostRuntime,
     createNativeAgentSessionInteractionHostRuntime,
 } from './nativeAgentExecutionRun';
 import {
@@ -188,6 +189,10 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
                 cwd: '/repo',
                 runId: 'run-voice',
                 backendId: 'acme.voice/agents/default',
+                causalPermissionAuthority: Object.freeze({
+                    kind: 'admittedSessionInputV1' as const,
+                    admittedPermissionCeiling: 'read-only' as const,
+                }),
                 permissionMode: 'read_only',
                 start: Object.freeze({ intent: 'voice_agent' as const }),
             }),
@@ -209,6 +214,10 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
         await host.waitForTurnCompletion?.();
 
         expect(send).toHaveBeenCalledTimes(2);
+        expect(send.mock.calls.slice(0, 2).map(([request]) => request.causalPermissionAuthority)).toEqual([
+            { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'read-only' },
+            { kind: 'admittedSessionInputV1', admittedPermissionCeiling: 'read-only' },
+        ]);
         expect(messages.filter((message) => message.type === 'model-output')).toEqual([
             { type: 'model-output', textDelta: 'answer-1' },
             { type: 'model-output', textDelta: 'answer-2' },
@@ -325,6 +334,68 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
         await expect(provisioning).rejects.toThrow(/retired generation|disposed/);
         expect(open).not.toHaveBeenCalled();
         expect(disposeContext).toHaveBeenCalledOnce();
+    });
+
+    it('does not send the first derived Run input when Session open settles retired and cleanup never settles', async () => {
+        let resolveSession!: (session: AgentSessionRuntime) => void;
+        const openedSession = new Promise<AgentSessionRuntime>((resolve) => {
+            resolveSession = resolve;
+        });
+        let current = true;
+        const send = vi.fn(async () => ({ status: 'admitted' as const }));
+        const disposeSession = vi.fn(async () => await new Promise<void>(() => {}));
+        const disposeContext = vi.fn(async () => undefined);
+        const open = vi.fn(async () => await openedSession);
+        const runtime: AgentRuntime = Object.freeze({
+            sessions: Object.freeze({ open }),
+        });
+        const lease = Object.freeze({
+            pluginId: 'acme.session-run',
+            pluginVersion: '1.0.0',
+            agentId: 'acme.session-run/default',
+            localAgentId: 'default',
+            generation: 'generation-1',
+            hasPrimaryRuntime: true,
+            isCurrent: () => current,
+            retirementSignal: new AbortController().signal,
+            createAgentRuntimeSurfaceInvocationContext:
+                createUnexpectedAgentRuntimeSurfaceInvocationContext,
+            async createRuntime() { return runtime; },
+        });
+        const host = createNativeAgentSessionExecutionRunHostRuntime({
+            runtime,
+            lease,
+            options: Object.freeze({
+                cwd: '/repo',
+                runId: 'run-retired-open',
+                backendId: 'acme.session-run/default',
+                permissionMode: 'read_only',
+                start: Object.freeze({ profileId: 'default' }),
+            }),
+            supportsResume: true,
+            createSessionContext: ({ services, signal }) =>
+                createVoiceSessionContextLease({
+                    services,
+                    signal,
+                    dispose: disposeContext,
+                }),
+        });
+
+        await host.provisionSession();
+        const sending = host.sendPrompt('run-retired-open', 'must not be delivered');
+        await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
+        current = false;
+        resolveSession(Object.freeze({
+            send,
+            watch() { return Object.freeze({ dispose() {} }); },
+            dispose: disposeSession,
+        }));
+
+        await expect(sending).rejects.toThrow('retired generation');
+        expect(send).not.toHaveBeenCalled();
+        expect(disposeSession).toHaveBeenCalledOnce();
+        expect(disposeContext).toHaveBeenCalledOnce();
+        await host.dispose();
     });
 
     it('preserves the owning plugin and local id of a qualified execution profile', async () => {
@@ -703,6 +774,49 @@ describe('createNativeAgentExecutionRunHostRuntime', () => {
             detail: 'event echoed [REDACTED]',
         });
         await activeHost.dispose();
+    });
+
+    it('fails a finite plugin Run when it emits an event outside the strict runtime contract', async () => {
+        const watchState: { publish?: (event: AgentExecutionRunEvent) => void } = {};
+        const opened: AgentExecutionRunRuntime = Object.freeze({
+            async send() { return { status: 'admitted' as const }; },
+            async stop() { return { status: 'requested' as const }; },
+            watch(listener: Parameters<AgentExecutionRunRuntime['watch']>[0]) {
+                watchState.publish = listener;
+                return { dispose() {} };
+            },
+            async dispose() {},
+        });
+        const runtime: AgentRuntime = Object.freeze({
+            executionRuns: Object.freeze({ async open() { return opened; } }),
+        });
+        const host = createNativeAgentExecutionRunHostRuntime({
+            runtime,
+            lease: Object.freeze({
+                pluginId: 'acme.finite', pluginVersion: '1.0.0', agentId: 'acme.finite/default',
+                localAgentId: 'default', generation: 'generation-1', hasPrimaryRuntime: true,
+                isCurrent: () => true, retirementSignal: new AbortController().signal,
+                createAgentRuntimeSurfaceInvocationContext: createUnexpectedAgentRuntimeSurfaceInvocationContext,
+                async createRuntime() { return runtime; },
+            }),
+            options: Object.freeze({
+                cwd: '/repo', runId: 'run-invalid-event', backendId: 'acme.finite/default',
+                permissionMode: 'read_only', start: Object.freeze({ profileId: 'default' }),
+            }),
+            supportsResume: false,
+        });
+
+        await host.provisionSession({ initialPrompt: 'start' });
+        watchState.publish?.({
+            sequence: 1,
+            runId: 'run-invalid-event',
+            emittedAtMs: 1,
+            kind: 'run-complete',
+            unexpected: true,
+        } as unknown as AgentExecutionRunEvent);
+
+        await expect(host.waitForTurnCompletion?.()).rejects.toThrow('invalid runtime event');
+        await host.dispose();
     });
 
     it('isolates a throwing host listener and detaches never-settling finite cleanup after terminal truth', async () => {

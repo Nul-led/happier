@@ -1,6 +1,5 @@
 import { PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
 import {
-  type SubagentObservation,
   type SubagentsService,
   type SubagentSummary,
 } from '@happier-dev/plugin-sdk/sessions/subagents';
@@ -25,6 +24,20 @@ type StoreState = {
 };
 
 type ListSnapshot = Readonly<{ queryKey: string; items: readonly SubagentSummary[]; offset: number }>;
+
+type SubagentObservation = Readonly<{
+  observationId: string;
+  groupId?: string;
+  status: SubagentSummary['status'];
+  detail?: JsonValue;
+}>;
+
+export type PluginSubagentsHostService = Omit<SubagentsService, 'capabilities'> & Readonly<{
+  capabilities(): ReturnType<SubagentsService['capabilities']> & Readonly<{
+    observe: ReturnType<SubagentsService['capabilities']>['list'];
+  }>;
+  observe(input: SubagentObservation, options?: Readonly<{ signal?: AbortSignal }>): Promise<SubagentSummary>;
+}>;
 
 const stateByStore = new WeakMap<object, StoreState>();
 const CURSOR_PREFIX = 'plugin_subagents_v1_';
@@ -185,7 +198,7 @@ export function createPluginSubagentsService(params: Readonly<{
   identity: PluginSubagentHostIdentity;
   isCurrent: () => boolean;
   durableCustody?: PluginSubagentDurableCustody;
-}>): SubagentsService {
+}>): PluginSubagentsHostService {
   const state = stateFor(params.store);
   const snapshots = new Map<string, ListSnapshot>();
 
@@ -246,7 +259,7 @@ export function createPluginSubagentsService(params: Readonly<{
       ? params.durableCustody.availability()
       : Object.freeze({ status: 'unavailable' as const, code: 'plugin_subagent_durable_custody_unavailable' })
     : Object.freeze({ status: 'unavailable' as const, code: 'plugin_generation_retired' });
-  const service: SubagentsService = {
+  const service: PluginSubagentsHostService = {
     capabilities: () => Object.freeze({ list: availability(), observe: observeAvailability(), watch: availability() }),
     async list(query: NonNullable<Parameters<SubagentsService['list']>[0]> = {}) {
       assertCurrent();
@@ -295,7 +308,7 @@ export function createPluginSubagentsService(params: Readonly<{
       assertCurrent();
       return ref ? projectOwnedSummary(ref, params.identity) : null;
     },
-    async observe(input: SubagentObservation, options: NonNullable<Parameters<SubagentsService['observe']>[1]> = {}) {
+    async observe(input: SubagentObservation, options: Readonly<{ signal?: AbortSignal }> = {}) {
       assertCurrent();
       if (options.signal?.aborted) fail('plugin_operation_aborted');
       if (!params.durableCustody) fail('plugin_subagent_durable_custody_unavailable');

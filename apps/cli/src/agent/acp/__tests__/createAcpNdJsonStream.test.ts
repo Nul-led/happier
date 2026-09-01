@@ -76,6 +76,26 @@ describe('createAcpNdJsonStream', () => {
     await expect(reader.read()).rejects.toBe(failure);
   });
 
+  it('preserves an upstream stdout transport failure instead of converting it to clean EOF', async () => {
+    const transportFailure = new Error('provider stdout failed');
+    const rawInput = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(transportFailure);
+      },
+    });
+    const transport: TransportHandler = {
+      agentName: 'test',
+      getInitTimeout: () => 0,
+      getToolPatterns: () => [],
+      filterStdoutLine: (line) => line,
+    };
+    const input = createAcpFilteredStdoutReadable({ readable: rawInput, transport });
+    const reader = input.getReader();
+
+    await expect(reader.read()).rejects.toBe(transportFailure);
+    await expect(reader.read()).rejects.toBe(transportFailure);
+  });
+
   it('reuses a single output writer across multiple message writes', async () => {
     const writes: string[] = [];
     let writerCount = 0;

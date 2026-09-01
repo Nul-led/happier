@@ -72,6 +72,15 @@ export type StablePluginSettingsScope = PluginSettingsContributionV2['scope'];
 const validatorsByModel = new WeakMap<object, ReadonlyMap<string, PluginJsonSchemaValidator>>();
 const perActiveServerMapFieldIdsByModel = new WeakMap<object, ReadonlySet<string>>();
 
+function isValidStablePluginSettingValue(
+    validator: PluginJsonSchemaValidator,
+    isPerActiveServerMap: boolean,
+    value: unknown,
+): boolean {
+    return isValidPluginJsonSchemaValue(validator, value)
+        && (!isPerActiveServerMap || isBoundedPluginPerActiveServerValueV1(value));
+}
+
 export type StablePluginSettingsRecordStore = Readonly<{
     supports?(model: StablePluginSettingsModel): boolean;
     read(model: StablePluginSettingsModel, options?: Readonly<{ signal?: AbortSignal }>): Promise<unknown | null>;
@@ -225,9 +234,11 @@ export function createStablePluginSettingsModel(params: Readonly<{
             );
         }
         if (!isSecretSettingField(field) && field.default !== undefined
-            && (!isValidPluginJsonSchemaValue(validate, field.default)
-                || (perActiveServerMapFieldIds.has(field.id)
-                    && !isBoundedPluginPerActiveServerValueV1(field.default)))) {
+            && !isValidStablePluginSettingValue(
+                validate,
+                perActiveServerMapFieldIds.has(field.id),
+                field.default,
+            )) {
             throw settingsError(
                 'plugin_settings_invalid_default',
                 `Plugin setting '${qualifiedId}' has an invalid default`,
@@ -310,9 +321,11 @@ export function validateStablePluginSettingValue(
         );
     }
     const plainValue = clonePlainData(value, 'settingValue');
-    return validator(plainValue) === true
-        && (perActiveServerMapFieldIdsByModel.get(model)?.has(settingId) !== true
-            || isBoundedPluginPerActiveServerValueV1(plainValue));
+    return isValidStablePluginSettingValue(
+        validator,
+        perActiveServerMapFieldIdsByModel.get(model)?.has(settingId) === true,
+        plainValue,
+    );
 }
 
 export function createPluginStorageBackedSettingsRecordStore(params: Readonly<{
@@ -707,19 +720,6 @@ function fieldOrThrow(model: StablePluginSettingsModel, id: string): StablePlugi
     return field;
 }
 
-function validateFieldValue(model: StablePluginSettingsModel, id: string, value: JsonValue): boolean {
-    const validate = validatorsByModel.get(model)?.get(id);
-    if (!validate) {
-        throw settingsError(
-            'plugin_settings_model_invalid',
-            `Plugin settings model '${model.identity.qualifiedId}' has no validator for '${id}'`,
-        );
-    }
-    return isValidPluginJsonSchemaValue(validate, value)
-        && (perActiveServerMapFieldIdsByModel.get(model)?.has(id) !== true
-            || isBoundedPluginPerActiveServerValueV1(value));
-}
-
 function assertExpectedRevision(record: CanonicalPluginSettingsRecord, expectedRevision?: string): void {
     if (expectedRevision !== undefined && expectedRevision !== String(record.revision)) {
         throw settingsError(
@@ -788,7 +788,8 @@ function validateRecordForModel(
     for (const field of model.fields) {
         if (!Object.hasOwn(record.values, field.id)) continue;
         const value = record.values[field.id]!;
-        if (field.descriptor.secret === true || !validateFieldValue(model, field.id, value)) {
+        if (field.descriptor.secret === true
+            || !validateStablePluginSettingValue(model, field.id, value)) {
             throw settingsError(
                 'plugin_settings_record_invalid',
                 `Plugin settings record '${model.identity.qualifiedId}' contains an invalid field value`,
@@ -907,7 +908,7 @@ export function createStablePluginSettingsOwner(params: Readonly<{
                         `Plugin settings action cannot patch '${field.qualifiedId}'`,
                     );
                 }
-                if (!validateFieldValue(model, id, patch[id]!)) {
+                if (!validateStablePluginSettingValue(model, id, patch[id]!)) {
                     throw settingsError(
                         'plugin_settings_validation_failed',
                         `Plugin setting '${field.qualifiedId}' failed schema validation`,
@@ -1018,7 +1019,8 @@ export function createStablePluginSettingsOwner(params: Readonly<{
                     );
                 }
                 const normalizedValue = input.reset ? undefined : clonePlainData(input.value, 'settingValue');
-                if (!input.reset && !validateFieldValue(model, input.id, normalizedValue!)) {
+                if (!input.reset
+                    && !validateStablePluginSettingValue(model, input.id, normalizedValue!)) {
                     throw settingsError(
                         'plugin_settings_validation_failed',
                         `Plugin setting '${field.qualifiedId}' failed schema validation`,

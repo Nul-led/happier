@@ -1,15 +1,20 @@
 import type { AgentRuntime } from '@happier-dev/plugin-sdk/agents/runtime';
 import type {
-    ResolvedAgentContribution,
     ResolvedAgentRuntimeContribution,
 } from '@/plugins/projection/registry/types';
-import { readAgentExecutionRunCapabilities, readAgentSessionCapabilities } from '@/plugins/projection/registry/agentContributionDefinition';
+import {
+    readAgentExecutionRunCapabilities,
+    readAgentSessionCapabilities,
+    type AgentSessionCapabilities,
+} from '@/plugins/projection/registry/agentContributionDefinition';
 import type { ResolvedExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
 import { buildPluginSessionBindingInput } from '@/plugins/runtime/runtimeCore/plugin/sessionLaunch';
 import {
     type BackendExecutionSurfaces,
     type CliEngineAdapter,
     type CliRuntimeCore,
+    type EngineResolutionAgent,
+    type EngineResolutionBackend,
 } from '../engineRegistryTypes';
 import type {
     BackendRuntimeOwnerResolution,
@@ -29,6 +34,7 @@ import {
     createNativeAgentExecutionRunHostRuntime,
     createNativeAgentSessionExecutionRunHostRuntime,
     createNativeAgentSessionInteractionHostRuntime,
+    type NativeAgentRuntimeLeaseIdentity,
     type NativeAgentSessionContextLeaseFactory,
 } from '@/agent/runtime/bridges/executionRun/nativeAgentExecutionRun';
 import { resolveAgentSessionRealtimeVoiceAuthority } from '@/agent/runtime/session/realtime/resolveAgentSessionRealtimeVoiceAuthority';
@@ -52,29 +58,15 @@ import { transformAgentRequestThroughPluginHooks } from '@/plugins/runtime/hooks
 import { createPluginInvocationPresentation } from '@/plugins/runtime/invocation/services/interactions';
 import { createPublicAcpRuntimeProtocols } from '@/agent/acp/runtime/publicSession/createPublicAcpRuntimeProtocols';
 import { resolveAgentToolsDelivery } from '@/agent/tools/happierTools/runtime/resolveAgentToolsDelivery';
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-    return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+import type { PublicAcpHostLaunchResolver } from '@/agent/acp/runtime/publicSession/createPublicAcpSession';
 
 export function shouldNormalizeManifestOnlyAcpBackend(backend: ResolvedAgentRuntimeContribution): boolean {
-    if (backend.runtimeKind === 'acp') {
-        return true;
-    }
-    const richDefinition = backend.richDefinition;
-    if (richDefinition?.provenance !== 'external' || !isRecord(richDefinition.definition)) {
-        return false;
-    }
-    if (richDefinition.definition.runtimeKind === 'acp' || Object.prototype.hasOwnProperty.call(richDefinition.definition, 'acp')) {
-        return true;
-    }
-    const engine = richDefinition.definition.engine;
-    return isRecord(engine) && engine.kind === 'acp';
+    return backend.runtimeKind === 'acp';
 }
 
 export async function resolveBackendRuntimeCore(params: Readonly<{
-    backend: ResolvedAgentRuntimeContribution;
-    agent: ResolvedAgentContribution;
+    backend: EngineResolutionBackend;
+    agent: EngineResolutionAgent;
     executionSurfaces: BackendExecutionSurfaces;
     runtimeOwner: BackendRuntimeOwnerResolution;
     engineEntry?: RuntimeRegistryBackendEngineEntry;
@@ -132,12 +124,19 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
         pluginId: string;
         pluginVersion: string;
         agentId: string;
+        localAgentId?: string;
         generation: string;
         immutableGenerationId?: string | null;
         runtimeAuthority?: PluginRuntimeAuthoritySnapshotV1;
         retirementSignal?: AbortSignal;
         isCurrent(): boolean;
     }>;
+    nativeAgentSessionCapabilities?: AgentSessionCapabilities;
+    nativeAgentPolicyAgentId?: string;
+    nativeAgentSessionProjection?: NonNullable<
+        Parameters<typeof createNativeAgentRuntimeSessionPlan>[0]['sessionProjection']
+    >;
+    resolveNativeAgentAcpHostLaunch?: PublicAcpHostLaunchResolver;
 }>): Promise<CliEngineAdapter | null> {
     const selectedOwnerKind = params.runtimeOwner.selected?.kind ?? null;
     if (!selectedOwnerKind) {
@@ -150,7 +149,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
         params.resolveCurrentMediatorContributionMaterializationRef
         ?? params.runtimeRegistry?.resolveCurrentMediatorContributionMaterializationRef;
 
-    if (selectedOwnerKind === 'plugin_engine') {
+    if (selectedOwnerKind === 'plugin_engine' || selectedOwnerKind === 'host_configured') {
         const runtimeRegistry = params.runtimeRegistry;
         const engineEntry = params.engineEntry;
         if ((runtimeRegistry && engineEntry)
@@ -164,6 +163,15 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                 if (!nativeIdentity) {
                     throw new Error('Native Agent runtime identity is unavailable');
                 }
+                const runtimeLease: NativeAgentRuntimeLeaseIdentity = engineEntry ?? Object.freeze({
+                    pluginId: nativeIdentity.pluginId,
+                    pluginVersion: nativeIdentity.pluginVersion,
+                    agentId: nativeIdentity.agentId,
+                    localAgentId: params.nativeAgentRuntimeIdentity?.localAgentId
+                        ?? params.agent.identity?.localId
+                        ?? nativeIdentity.agentId,
+                    isCurrent: nativeIdentity.isCurrent,
+                });
                 const agentRetirementSignal =
                     nativeIdentity.retirementSignal
                     ?? engineEntry?.retirementSignal;
@@ -222,6 +230,18 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                 : {}),
                             backend: params.backend,
                             agent: params.agent,
+                            ...(params.nativeAgentSessionCapabilities
+                                ? { sessionCapabilities: params.nativeAgentSessionCapabilities }
+                                : {}),
+                            ...(params.nativeAgentPolicyAgentId
+                                ? { policyAgentId: params.nativeAgentPolicyAgentId }
+                                : {}),
+                            ...(params.nativeAgentSessionProjection
+                                ? { sessionProjection: params.nativeAgentSessionProjection }
+                                : {}),
+                            ...(params.resolveNativeAgentAcpHostLaunch
+                                ? { resolveAcpHostLaunch: params.resolveNativeAgentAcpHostLaunch }
+                                : {}),
                             executionSurfaces: params.executionSurfaces,
                             externalSessionHostOperations:
                                 params.externalSessionHostOperations,
@@ -392,9 +412,6 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                         };
                     },
                     createExecutionRunBackend(options) {
-                        if (!engineEntry || !runtimeRegistry) {
-                            throw new Error('Runner Agent session runtime does not own execution runs');
-                        }
                         if (!nativeAgentRuntime) {
                             throw new Error(
                                 'Daemon execution-run runtime is unavailable',
@@ -404,7 +421,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                             params.agent.richDefinition?.definition,
                         )?.open;
                         const runId = options.runId?.trim();
-                        const services = runId && runtimeRegistry.createAgentInvocationServices
+                        const services = runId && runtimeRegistry?.createAgentInvocationServices && engineEntry
                             ? runtimeRegistry.createAgentInvocationServices({
                                 pluginId: engineEntry.pluginId,
                                 pluginVersion: engineEntry.pluginVersion,
@@ -418,9 +435,9 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                             })
                             : undefined;
                         const isVoiceInteraction = options.start?.intent === 'voice_agent';
-                        const sessionOpenCapabilities = readAgentSessionCapabilities(
-                            params.agent.richDefinition?.definition,
-                        )?.open;
+                        const effectiveSessionCapabilities = params.nativeAgentSessionCapabilities
+                            ?? readAgentSessionCapabilities(params.agent.richDefinition?.definition);
+                        const sessionOpenCapabilities = effectiveSessionCapabilities?.open;
                         const host = options.sessionInteractionHost;
                         // Voice and Session-derived finite Runs are non-durable projections over
                         // the parent Session's custody. They share this complete context lease;
@@ -429,7 +446,7 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                         const createSessionContext: NativeAgentSessionContextLeaseFactory | null = host
                             ? async ({ services: invocationServices, signal }) => {
                                     const sessionId = host.session.sessionId;
-                                    const contributionId = engineEntry.localAgentId;
+                                    const contributionId = runtimeLease.localAgentId;
                                     const sessionOwners = createNativeAgentSessionHostServiceOwners({
                                         runtimeRegistry,
                                         identity: nativeIdentity,
@@ -462,7 +479,8 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                             isCurrent: nativeIdentity.isCurrent,
                                             supportsInFlightSteer: readAgentSessionCapabilities(
                                                 params.agent.richDefinition?.definition,
-                                            )?.delivery.includes('steer') === true,
+                                            )?.delivery.includes('steer') === true
+                                                || effectiveSessionCapabilities?.delivery.includes('steer') === true,
                                         });
                                         const currentSession = createNativeAgentCurrentSessionUiServices({
                                             permissionHandler: host.permissionHandler,
@@ -524,6 +542,9 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                                                         options.signal ? { signal: options.signal } : undefined,
                                                     )
                                             ),
+                                            ...(params.resolveNativeAgentAcpHostLaunch
+                                                ? { resolveHostLaunch: params.resolveNativeAgentAcpHostLaunch }
+                                                : {}),
                                         });
                                         const context = composeNativeAgentSessionRuntimeContext({
                                             identity: nativeIdentity,
@@ -569,10 +590,10 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                             }
                             return createNativeAgentSessionInteractionHostRuntime({
                                 runtime: nativeAgentRuntime,
-                                lease: engineEntry,
+                                lease: runtimeLease,
                                 options,
                                 supportsResume: sessionOpenCapabilities?.includes('resume') === true,
-                                generationSignal: engineEntry.retirementSignal,
+                                ...(agentRetirementSignal ? { generationSignal: agentRetirementSignal } : {}),
                                 ...(services ? { services } : {}),
                                 createSessionContext,
                             });
@@ -585,20 +606,20 @@ export async function resolveBackendRuntimeCore(params: Readonly<{
                             }
                             return createNativeAgentSessionExecutionRunHostRuntime({
                                 runtime: nativeAgentRuntime,
-                                lease: engineEntry,
+                                lease: runtimeLease,
                                 options,
                                 supportsResume: sessionOpenCapabilities?.includes('resume') === true,
-                                generationSignal: engineEntry.retirementSignal,
+                                ...(agentRetirementSignal ? { generationSignal: agentRetirementSignal } : {}),
                                 ...(services ? { services } : {}),
                                 createSessionContext,
                             });
                         }
                         return createNativeAgentExecutionRunHostRuntime({
                             runtime: nativeAgentRuntime,
-                            lease: engineEntry,
+                            lease: runtimeLease,
                             options,
                             supportsResume: openCapabilities?.includes('resume') === true,
-                            generationSignal: engineEntry.retirementSignal,
+                            ...(agentRetirementSignal ? { generationSignal: agentRetirementSignal } : {}),
                             ...(services ? { services } : {}),
                         });
                     },

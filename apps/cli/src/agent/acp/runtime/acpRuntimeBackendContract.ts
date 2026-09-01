@@ -13,12 +13,19 @@ export type AcpRuntimeTurnOutcome =
     | { kind: 'failed'; error: Error }
     | { kind: 'timed_out'; capMs: number };
 
-export type AcpPromptSubmissionResult =
-    | { kind: 'accepted_by_transport_write' }
+export type AcpPromptSubmissionSettledResult =
     | { kind: 'accepted_by_prompt_response' }
     | { kind: 'accepted_by_correlated_provider_effect' }
+    | { kind: 'effect_observed_without_prompt_response' }
     | { kind: 'rejected_before_effect'; error: Error }
     | { kind: 'effect_may_have_occurred'; error: Error };
+
+export type AcpPromptSubmissionResult =
+    | AcpPromptSubmissionSettledResult
+    | {
+        kind: 'submitted_to_transport';
+        settlement: Promise<AcpPromptSubmissionSettledResult>;
+    };
 
 export interface CatalogAcpBackend {
     startSession(): Promise<StartSessionResult>;

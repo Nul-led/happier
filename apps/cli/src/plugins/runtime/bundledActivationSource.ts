@@ -40,6 +40,7 @@ type BundledActivationSource = Readonly<{
     ) => Promise<PluginRelativeModuleResolution<Record<string, unknown>>>;
     persistValidatedAgentSessionRunnerFactories?: (
         facts: readonly ValidatedAgentSessionRunnerFactoryFactV1[],
+        options: Readonly<{ assertCurrent: () => void }>,
     ) => Promise<readonly ValidatedAgentSessionRunnerFactoryFactV1[] | void>;
 }>;
 
@@ -736,7 +737,7 @@ export function createBundledActivationSourceResolver(params: Readonly<{
             resolveRelativeModule,
             ...(params.pluginStorePaths && runnerImmutableRecord
                 ? {
-                    persistValidatedAgentSessionRunnerFactories: async (facts) => {
+                    persistValidatedAgentSessionRunnerFactories: async (facts, options) => {
                         const selected = resolveSelectedRunnerEntry();
                         if (!selected || !runnerImmutableRootPath) {
                             throw new Error(
@@ -776,6 +777,7 @@ export function createBundledActivationSourceResolver(params: Readonly<{
                             record: runnerImmutableRecord,
                             manifestAuthority: 'bundled_first_party',
                             factories: retainedFacts,
+                            assertCurrent: options.assertCurrent,
                         });
                         return Object.freeze(retainedFacts);
                     },

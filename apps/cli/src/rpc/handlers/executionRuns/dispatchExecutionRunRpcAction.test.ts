@@ -642,10 +642,7 @@ describe('createExecutionRunRpcActionExecutor', () => {
           ok: true,
           status: 'succeeded',
           result: {
-            run: {
-              runId: publicRun.runId,
-              status: publicRun.status,
-            },
+            run: publicRun,
           },
         },
       },
@@ -1321,5 +1318,74 @@ describe('createExecutionRunRpcActionExecutor', () => {
       error: 'runtime_action_disabled:browser:browser_diagnostics_route_unavailable',
     });
     expect(diagnostics.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('returns the same lossless terminal projection from execution-run get and wait', async () => {
+    const run = {
+      runId: 'run_1',
+      callId: 'call_1',
+      sidechainId: 'sidechain_1',
+      intent: 'delegate',
+      backendTarget: { kind: 'builtInAgent', agentId: 'codex' },
+      permissionMode: 'default',
+      retentionPolicy: 'ephemeral',
+      runClass: 'bounded',
+      ioMode: 'request_response',
+      status: 'succeeded',
+      startedAtMs: 1,
+      finishedAtMs: 2,
+    } satisfies ExecutionRunPublicState;
+    const runState = {
+      ...run,
+      sessionId: 'sess_1',
+      depth: 0,
+      backendId: 'codex',
+      instructions: 'Inspect the change.',
+      latestToolResult: false,
+    } satisfies ExecutionRunState;
+    const manager: ExecutionRunHostBridgeContract = {
+      ...createUnusedExecutionRunBridge(),
+      get: (runId) => runId === run.runId ? runState : null,
+      getPublic: (runId) => runId === run.runId ? run : null,
+      getLatestToolResult: () => false,
+      getStructuredMeta: () => ({
+        kind: 'execution_result',
+        payload: { accepted: false, count: 0 },
+      }),
+    };
+    const deps = createExecutionRunRpcActionDeps({
+      manager,
+      context: { sessionId: 'sess_1', cwd: '/workspace' },
+      policy: resolveExecutionRunPolicy({
+        defaults: {
+          maxConcurrentRuns: null,
+          boundedTimeoutMs: null,
+          reviewBoundedTimeoutMs: null,
+          maxTurns: null,
+          maxDepth: 3,
+        },
+      }),
+      isExecutionRunsEnabled: () => true,
+    });
+    const expectedResult = {
+      run,
+      latestToolResult: false,
+      structuredMeta: {
+        kind: 'execution_result',
+        payload: { accepted: false, count: 0 },
+      },
+    };
+
+    await expect(deps.executionRunGet('sess_1', {
+      runId: 'run_1',
+      includeStructured: true,
+    })).resolves.toEqual(expectedResult);
+    await expect(deps.executionRunWait('sess_1', {
+      runId: 'run_1',
+    })).resolves.toEqual({
+      ok: true,
+      status: 'succeeded',
+      result: expectedResult,
+    });
   });
 });

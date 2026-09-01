@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { isPluginError, PluginError } from '@happier-dev/plugin-sdk';
 import type { PluginServices } from '@happier-dev/plugin-sdk';
+import type { PluginSubagentsHostService } from '@/session/subagents/pluginSubagentsService';
 import {
     createUnavailablePluginServices,
 } from '@/plugins/runtime/invocation/services/unavailable';
@@ -1563,7 +1564,7 @@ describe('runner daemon PluginServices proxy', () => {
             )),
             observe: vi.fn(async () => subagent),
             watch: vi.fn(() => ({ dispose() {} })),
-        }) satisfies PluginServices['sessions']['subagents'];
+        }) satisfies PluginSubagentsHostService;
         const canonicalSessions = Object.freeze({
             ...unavailable.sessions,
             subagents: canonicalSubagents,

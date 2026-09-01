@@ -302,6 +302,74 @@ describe('createHappierMcpServer', () => {
     );
   });
 
+  it('executes native Agent tool calls through the live Session authority and policy owner', async () => {
+    const executorExecute = vi.fn(async (actionId: string, input: unknown, ctx: unknown) => ({
+      ok: true,
+      result: { actionId, input, ctx },
+    }));
+
+    vi.doMock('@/session/actions/createCliActionExecutorHarness', () => ({
+      createCliActionExecutorHarness: () => ({
+        executor: {
+          execute: executorExecute,
+        },
+      }),
+    }));
+
+    const { createHappierMcpServer } = await import('@/mcp/createHappierMcpServer');
+    const causalPermissionAuthority = {
+      kind: 'admittedSessionInputV1',
+      admittedPermissionCeiling: 'read_only',
+    } as const;
+    const spawnPolicy = { allowedBackendTargetKeys: ['agent:codex'] };
+    const runtime = createHappierMcpServer({
+      sessionId: 'sess_native_agent_tool_1',
+      rpcHandlerManager: { invokeLocal: async () => ({}) },
+      updateMetadata: () => {},
+      getPermissionMode: () => 'yolo',
+      getActiveTurnCausalPermissionAuthority: () => causalPermissionAuthority,
+      getActiveTurnId: () => 'turn_native_agent_tool_1',
+    } as any, {
+      accountSettings: {
+        sessionAgentSpawnPolicyV1: spawnPolicy,
+      },
+      sessionInputVia: 'action',
+    } as any);
+
+    await runtime.executeTool({
+      toolName: 'action_execute',
+      args: {
+        actionId: 'session.spawn_new',
+        input: { prompt: 'Spawn a helper' },
+      },
+      toolCallId: 'native_tool_call_1',
+    });
+
+    expect(executorExecute).toHaveBeenCalledWith(
+      'session.spawn_new',
+      { prompt: 'Spawn a helper' },
+      expect.objectContaining({
+        defaultSessionId: 'sess_native_agent_tool_1',
+        surface: 'agent',
+        callerPermissionMode: 'yolo',
+        causalPermissionAuthority,
+        sessionInputSource: {
+          sourceSessionId: 'sess_native_agent_tool_1',
+          sourceTurnId: 'turn_native_agent_tool_1',
+          via: 'action',
+        },
+        sessionAgentSpawnPolicyV1: spawnPolicy,
+        actionRequestId: 'native_tool_call_1',
+        approvalOrigin: {
+          kind: 'transcript_tool_call',
+          sessionId: 'sess_native_agent_tool_1',
+          toolCallId: 'native_tool_call_1',
+          toolName: 'action_execute',
+        },
+      }),
+    );
+  });
+
   it('uses the live session permission mode for session-agent action execution instead of stale metadata', async () => {
     const executorExecute = vi.fn(async (actionId: string, input: unknown, ctx: unknown) => ({
       ok: true,

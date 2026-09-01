@@ -1,25 +1,21 @@
 import { randomUUID } from 'node:crypto';
 
 import { recordToolTraceEvent } from '@/agent/tools/trace/toolTrace';
-import { getSessionHostBridge } from '@/agent/runtime/bridges/session/SessionHostBridge';
 import { writeSessionStateFieldWithMetadataPortBestEffort } from '@/agent/runtime/state/writeSessionStateFieldWithMetadataPort';
 import { serializeAxiosErrorForLog } from '@/api/client/serializeAxiosErrorForLog';
 import { logger } from '@/ui/logger';
 import type {
   SessionStateApplyReason,
   SessionStateFieldWriteValue,
-  RuntimeOutboundTranscriptDispatchFacetV1,
   RuntimeOutboundTranscriptDispatchPlanV1,
   RuntimeOutboundTranscriptPostSendEffectV1,
   RuntimeOutboundTranscriptToolTraceEventV1,
 } from '@happier-dev/agents';
 import {
-  readRuntimeDescriptorV1FromMetadata,
   SessionStateFieldIdSchema,
   type SessionStateFieldId,
 } from '@happier-dev/protocol';
 
-import type { Metadata } from '../../types';
 import { normalizeUsageObservation } from '../../../usage/usageObservation';
 import { buildLegacyUsageReportFromUsageObservation } from '../../../usage/legacy/legacyUsageTransport';
 import { buildAcpAgentMessageEnvelope } from '../acpMessageEnvelope';
@@ -33,19 +29,6 @@ import type { PostSendReactionPort } from '../client/reactions/providers/postSen
 import { publishTokenCountUsageObservation } from '../client/reactions/usagePublishing';
 import { readSidechainId } from './shared';
 
-export class RuntimeOutboundTranscriptDispatchUnavailableError extends Error {
-  readonly code = 'runtime_outbound_transcript_dispatch_unavailable';
-  readonly backendId: string | null;
-
-  constructor(params: Readonly<{ backendId: string | null }>) {
-    super(params.backendId
-      ? `Runtime backend "${params.backendId}" does not expose an outbound transcript dispatch facet.`
-      : 'Session runtime metadata does not expose a selected runtime backend for outbound transcript dispatch.');
-    this.name = 'RuntimeOutboundTranscriptDispatchUnavailableError';
-    this.backendId = params.backendId;
-  }
-}
-
 export type TranscriptDispatchToolMaps = Readonly<{
   toolCallCanonicalNameByProviderAndId: Map<string, { rawToolName: string; canonicalToolName: string }>;
   permissionToolCallRawInputByProviderAndId: Map<string, unknown>;
@@ -53,35 +36,10 @@ export type TranscriptDispatchToolMaps = Readonly<{
   maxToolCallCacheEntries?: number | undefined;
 }>;
 
-export type RuntimeOutboundTranscriptDispatchFacetResolution = Readonly<{
-  backendId: string;
-  facet: RuntimeOutboundTranscriptDispatchFacetV1;
-}>;
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
-}
-
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
-}
-
-export function readRuntimeOutboundTranscriptDispatchBackendId(metadata: unknown): string | null {
-  const descriptor = readRuntimeDescriptorV1FromMetadata(metadata);
-  const agentExtra = asRecord(descriptor?.agent.agentExtra);
-  const runtimeHandle = asRecord(agentExtra?.runtimeHandle);
-  return readNonEmptyString(runtimeHandle?.backendId);
-}
-
-export async function resolveRuntimeOutboundTranscriptDispatchFacet(params: Readonly<{
-  metadata: Metadata | null;
-}>): Promise<RuntimeOutboundTranscriptDispatchFacetResolution | null> {
-  const backendId = readRuntimeOutboundTranscriptDispatchBackendId(params.metadata);
-  if (!backendId) return null;
-
-  return await getSessionHostBridge().resolveOutboundTranscriptDispatchFacet(backendId);
 }
 
 export function prepareAcpTranscriptDispatch(params: Readonly<{

@@ -15,8 +15,13 @@ import { createTestExecutionRunHostRuntime } from '@/agent/runtime/bridges/execu
 import { reloadConfiguration } from '@/configuration';
 import { registerExecutionRunHandlers as registerExecutionRunHandlersBase } from '@/rpc/handlers/executionRuns';
 import { HAPPIER_MCP_ACTION_SPECS_RESOURCE_URI } from '@/mcp/resources/registerHappierMcpResources';
-import { startHappyServer, type HappyMcpSessionClient } from '@/mcp/startHappyServer';
+import {
+  registerHappierSessionAgentToolRpc,
+  startHappyServer,
+  type HappyMcpSessionClient,
+} from '@/mcp/startHappyServer';
 import { runGit } from '@/scm/rpc/__tests__/testRpcHarness';
+import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 const env = process.env;
 
@@ -233,6 +238,50 @@ describe('startHappyServer (MCP integration)', () => {
     } finally {
       server.stop();
     }
+  });
+
+  it('owns native Agent tool dispatch on the live Session and rejects caller-supplied authority fields', async () => {
+    const rpcHandlerManager = new RpcHandlerManager({
+      scopePrefix: 'sess_native_agent_tool_rpc_1',
+      encryptionMode: 'plain',
+    });
+    const fakeClient: HappyMcpSessionClient = {
+      sessionId: 'sess_native_agent_tool_rpc_1',
+      rpcHandlerManager,
+      updateMetadata: () => {},
+      getPermissionMode: () => 'default',
+      getActiveTurnCausalPermissionAuthority: () => ({
+        kind: 'admittedSessionInputV1',
+        admittedPermissionCeiling: 'default',
+      }),
+      getActiveTurnId: () => 'turn_native_agent_tool_rpc_1',
+    };
+
+    registerHappierSessionAgentToolRpc(fakeClient);
+    await expect(rpcHandlerManager.invokeLocal(
+      SESSION_RPC_METHODS.SESSION_AGENT_TOOL_CALL_V1,
+      {
+        toolName: 'action_spec_get',
+        args: { id: 'session.list' },
+        causalPermissionAuthority: {
+          kind: 'admittedSessionInputV1',
+          admittedPermissionCeiling: 'yolo',
+        },
+      },
+    )).resolves.toEqual({
+      ok: false,
+      errorCode: 'invalid_action_input',
+      error: 'invalid_action_input',
+    });
+
+    await expect(rpcHandlerManager.invokeLocal(
+      SESSION_RPC_METHODS.SESSION_AGENT_TOOL_CALL_V1,
+      {
+        toolName: 'action_spec_get',
+        args: { id: 'session.list' },
+        toolCallId: 'native_tool_call_rpc_1',
+      },
+    )).resolves.toMatchObject({ ok: true });
   });
 
   it('executes discoverable-only execution-run actions through action_execute over HTTP transport', async () => {

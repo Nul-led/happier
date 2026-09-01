@@ -50,6 +50,7 @@ import {
     resolveCliEngineRegistry,
 } from './engineRegistry';
 import { resolveEngineAdapterResolutionFromRegistry } from './engineRegistry/resolution';
+import { shouldNormalizeManifestOnlyAcpBackend } from './engineRegistry/runtimeCore';
 import type {
     ResolveEngineRegistryParams,
     RunnerAgentSessionRuntimeSource,
@@ -215,6 +216,17 @@ async function createInjectedRuntimeRegistryParams(): Promise<ResolveEngineRegis
 }
 
 describe('resolveCliEngineRegistry runtimeCore', () => {
+    it('admits only the canonical ACP runtime discriminant instead of undeployed structural predecessors', () => {
+        expect(shouldNormalizeManifestOnlyAcpBackend({ runtimeKind: 'acp' } as never)).toBe(true);
+        expect(shouldNormalizeManifestOnlyAcpBackend({
+            runtimeKind: null,
+            richDefinition: {
+                provenance: 'external',
+                definition: { acp: {}, engine: { kind: 'acp' }, runtimeKind: 'acp' },
+            },
+        } as never)).toBe(false);
+    });
+
     beforeEach(() => {
         vi.resetModules();
         resolveMergedContributionRegistryMock.mockReset();

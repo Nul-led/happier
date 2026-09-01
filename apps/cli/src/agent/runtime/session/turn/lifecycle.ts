@@ -80,7 +80,6 @@ function buildMutationBase(params: Readonly<{
 export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): SessionTurnLifecycle {
     let activeTurnId: string | null = null;
     let lastActiveTurnTouchAtMs: number | null = null;
-    const knownTurnIds = new Set<string>();
     let acceptedLifecycleTail = Promise.resolve();
     let acceptedLifecyclePublicationRetired = false;
     const turnsWithMarkerButNoAcceptedBegin = new Set<string>();
@@ -91,12 +90,12 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
             turnId: string;
             terminalStatus?: 'completed' | 'failed';
         }>,
-    ): Promise<void> {
+    ): Promise<boolean> {
         for (;;) {
-            if (acceptedLifecyclePublicationRetired) return;
+            if (acceptedLifecyclePublicationRetired) return false;
             try {
                 await params.onAcceptedTurnLifecycle?.(lifecycle);
-                return;
+                return true;
             } catch {
                 // Accepted begin identity is marker custody. Retain and retry the serialized
                 // obligation instead of allowing cleanup to race a runner exit with no exact id.
@@ -119,10 +118,6 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
         if (!params.onAcceptedTurnLifecycle) {
             try {
                 void Promise.resolve(enqueue(mutation))
-                    .then(async (admission) => {
-                        if (admission?.terminalStatusOverride === 'failed' && 'turnId' in mutation) {
-                        }
-                    })
                     .catch(() => undefined);
             } catch {
                 // Mutation persistence is best-effort; runtime lifecycle observation must keep progressing.
@@ -133,7 +128,8 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
         acceptedLifecycleTail = acceptedLifecycleTail.then(async () => {
             const mutationTurnId = 'turnId' in mutation ? mutation.turnId : null;
             if (acceptedLifecycle?.event === 'task_started') {
-                await publishAcceptedBeginMarker(acceptedLifecycle);
+                const markerPublished = await publishAcceptedBeginMarker(acceptedLifecycle);
+                if (!markerPublished) return;
                 turnsWithMarkerButNoAcceptedBegin.add(acceptedLifecycle.turnId);
                 try {
                     await enqueue(mutation);
@@ -154,8 +150,6 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
             } catch {
                 return;
             }
-            if (admission?.terminalStatusOverride === 'failed' && mutationTurnId) {
-            }
             if (!acceptedLifecycle) return;
             const acceptedLifecycleAfterAdmission =
                 admission?.terminalStatusOverride === 'failed'
@@ -169,10 +163,6 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
                 // settlement can then close the stale turn idempotently.
             }
         });
-    }
-
-    function hasKnownTurn(turnId: string): boolean {
-        return activeTurnId === turnId || knownTurnIds.has(turnId);
     }
 
     return {
@@ -194,7 +184,6 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
             if (event.kind === 'turn-start') {
                 activeTurnId = event.turnId;
                 lastActiveTurnTouchAtMs = null;
-                knownTurnIds.add(event.turnId);
                 publish(
                     {
                         ...buildMutationBase({ session: params.session, agentId: params.agentId, action: 'begin', event }),
@@ -227,7 +216,7 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
             }
 
             if (event.kind === 'turn-agent-id-observed') {
-                if (!hasKnownTurn(event.turnId)) return;
+                if (activeTurnId !== event.turnId) return;
                 publish({
                         ...buildMutationBase({ session: params.session, agentId: params.agentId, action: 'attach_agent_turn_id', event }),
                         action: 'attach_agent_turn_id',
@@ -239,7 +228,7 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
             }
 
             if (event.kind === 'turn-complete') {
-                if (!hasKnownTurn(event.turnId)) return;
+                if (activeTurnId !== event.turnId) return;
                 publish(
                     {
                         ...buildMutationBase({ session: params.session, agentId: params.agentId, action: 'complete', event }),
@@ -257,7 +246,7 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
             }
 
             if (event.kind === 'turn-failed') {
-                if (!hasKnownTurn(event.turnId)) return;
+                if (activeTurnId !== event.turnId) return;
                 publish(
                     {
                         ...buildMutationBase({ session: params.session, agentId: params.agentId, action: 'fail', event }),
@@ -281,7 +270,7 @@ export function createSessionTurnLifecycle(params: SessionTurnLifecycleParams): 
             }
 
             if (event.kind === 'turn-cancelled') {
-                if (!hasKnownTurn(event.turnId)) return;
+                if (activeTurnId !== event.turnId) return;
                 publish(
                     {
                         ...buildMutationBase({ session: params.session, agentId: params.agentId, action: 'cancel', event }),

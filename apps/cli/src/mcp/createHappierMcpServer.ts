@@ -7,6 +7,8 @@ import type { Metadata } from '@/api/types';
 import { registerHappierMcpResources } from '@/mcp/resources/registerHappierMcpResources';
 import { createActionToolExecutorBridge } from '@/agent/tools/happierTools/createActionToolExecutorBridge';
 import { createChangeTitleToolHandler } from '@/agent/tools/happierTools/createChangeTitleToolHandler';
+import { dispatchBuiltInHappierTool } from '@/agent/tools/happierTools/dispatchBuiltInHappierTool';
+import type { HappierBuiltInToolDispatchResult } from '@/agent/tools/happierTools/types';
 import { normalizeExecutionRunRpcPayload } from '@/session/services/executionRuns';
 import { registerHappierMcpBuiltInTools } from '@/mcp/server/registerHappierMcpBuiltInTools';
 import type { StoredCredentials } from '@/persistence';
@@ -110,8 +112,17 @@ export function createHappierMcpServer(
     accountSettings?: AccountSettings | null;
     getAccountSettings?: (() => AccountSettings | null) | null;
     pluginToolCatalog?: readonly ProjectedPluginToolCatalogEntry[];
+    sessionInputVia?: 'action' | 'mcp';
   }>,
-): { mcp: McpServer; toolNames: string[] } {
+): {
+  mcp: McpServer;
+  toolNames: string[];
+  executeTool(request: Readonly<{
+    toolName: string;
+    args: unknown;
+    toolCallId?: string;
+  }>): Promise<HappierBuiltInToolDispatchResult>;
+} {
   // This server is the per-session MCP bridge that a running session agent uses.
   // It must use the `agent` surface so action enablement + approvals can be
   // configured separately from the external MCP surface (`mcp`).
@@ -341,12 +352,24 @@ export function createHappierMcpServer(
     getActionsSettings: readActionsSettings,
     resolveCallerPermissionMode: resolveAgentCallerPermissionMode,
     resolveCausalPermissionAuthority: () => resolveLiveClientCausalPermissionAuthority(client),
+    resolveActiveTurnId: () => client.getActiveTurnId?.() ?? null,
+    sessionInputVia: opts?.sessionInputVia ?? 'mcp',
     sessionAgentSpawnPolicyV1: readSessionAgentSpawnPolicyV1(),
     getSessionAgentSpawnPolicyV1: readSessionAgentSpawnPolicyV1,
     pluginToolCatalog: opts?.pluginToolCatalog,
     defaultSessionMachineId: sessionLocation?.machineId ?? null,
   });
 
+  const toolDeps = {
+    changeTitle: createChangeTitleToolHandler({
+      executor,
+      surface: toolSurface,
+    }),
+    executeActionByToolName: actionToolBridge.executeActionByToolName,
+    resolveActionOptions: (args: Parameters<typeof actionToolBridge.resolveActionOptions>[0]) =>
+      actionToolBridge.resolveActionOptions(args, client.sessionId),
+    isActionEnabled: actionToolBridge.isActionEnabled,
+  };
   const { toolNames } = registerHappierMcpBuiltInTools(mcp as any, {
     sessionId: client.sessionId,
     sessionMachineId: sessionLocation?.machineId ?? null,
@@ -354,19 +377,32 @@ export function createHappierMcpServer(
     actionsSettings: readActionsSettings(),
     getActionsSettings: readActionsSettings,
     pluginToolCatalog: opts?.pluginToolCatalog,
-    deps: {
-      changeTitle: createChangeTitleToolHandler({
-        executor,
-        surface: toolSurface,
-      }),
-      executeActionByToolName: actionToolBridge.executeActionByToolName,
-      resolveActionOptions: (args) => actionToolBridge.resolveActionOptions(args, client.sessionId),
-      isActionEnabled: actionToolBridge.isActionEnabled,
-    },
+    deps: toolDeps,
   });
 
   return {
     mcp,
     toolNames,
+    executeTool: async (request) => await dispatchBuiltInHappierTool({
+      toolName: request.toolName,
+      args: request.args,
+      sessionId: client.sessionId,
+      sessionMachineId: sessionLocation?.machineId ?? null,
+      surface: toolSurface,
+      actionsSettings: readActionsSettings(),
+      getActionsSettings: readActionsSettings,
+      pluginToolCatalog: opts?.pluginToolCatalog,
+      ...(request.toolCallId
+        ? {
+            approvalOrigin: {
+              kind: 'transcript_tool_call' as const,
+              sessionId: client.sessionId,
+              toolCallId: request.toolCallId,
+              toolName: request.toolName,
+            },
+          }
+        : {}),
+      deps: toolDeps,
+    }),
   };
 }

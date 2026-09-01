@@ -6,8 +6,28 @@ import { createChangeTitleToolHandler } from './createChangeTitleToolHandler';
 import { createCliActionExecutor } from '@/session/actions/createCliActionExecutor';
 import { resolveSessionTransportContext } from '@/session/services/resolveSessionTransportContext';
 import { readDaemonPluginCatalog } from '@/daemon/controlClient';
-import { tryDecryptSessionMetadata } from '@/session/transport/encryption/sessionEncryptionContext';
-import { resolvePermissionIntentFromSessionMetadata } from '@happier-dev/agents';
+import { callSessionRpc } from '@/session/transport/rpc/sessionRpc';
+import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { resolveMcpToolCallRequestTimeoutMs } from '@/mcp/mcpToolCallRequestOptions';
+
+function normalizeNativeAgentToolResponse(value: unknown): Awaited<ReturnType<typeof dispatchBuiltInHappierTool>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, errorCode: 'invalid_action_transport_output', error: 'invalid_action_transport_output' };
+  }
+  const response = value as Readonly<Record<string, unknown>>;
+  if (response.ok === true && Object.prototype.hasOwnProperty.call(response, 'result')) {
+    return { ok: true, result: response.result };
+  }
+  if (response.ok === false && typeof response.errorCode === 'string' && typeof response.error === 'string') {
+    return {
+      ok: false,
+      errorCode: response.errorCode,
+      error: response.error,
+      ...(Object.prototype.hasOwnProperty.call(response, 'details') ? { details: response.details } : {}),
+    };
+  }
+  return { ok: false, errorCode: 'invalid_action_transport_output', error: 'invalid_action_transport_output' };
+}
 
 export async function callBuiltInHappierTool(params: Readonly<{
   credentials: StoredCredentials;
@@ -48,30 +68,29 @@ export async function callBuiltInHappierTool(params: Readonly<{
   }
   const { rawSession, sessionId } = sessionTarget;
   const surface = params.surface ?? 'cli';
-  const sessionMetadata = rawSession.metadata && typeof rawSession.metadata === 'object' && !Array.isArray(rawSession.metadata)
-    ? rawSession.metadata
-    : tryDecryptSessionMetadata({ credentials: params.credentials, rawSession });
-  if (surface === 'agent' && sessionMetadata === null) {
-    return {
-      ok: false,
-      errorCode: 'session_metadata_unavailable',
-      error: 'Session metadata is unavailable for Agent tool authorization',
-    };
-  }
-  const callerPermissionMode = surface === 'agent'
-    ? resolvePermissionIntentFromSessionMetadata(sessionMetadata)?.intent ?? 'default'
-    : null;
-  const toolCallId = surface === 'agent' && typeof params.toolCallId === 'string'
-    ? params.toolCallId.trim()
-    : '';
-  const approvalOrigin = toolCallId
-    ? {
-        kind: 'transcript_tool_call' as const,
-        sessionId,
-        toolCallId,
+  if (surface === 'agent') {
+    const request = {
+      token: params.credentials.token,
+      sessionId,
+      method: SESSION_RPC_METHODS.SESSION_AGENT_TOOL_CALL_V1,
+      request: {
         toolName: params.toolName,
-      }
-    : null;
+        args: params.args,
+        ...(typeof params.toolCallId === 'string' && params.toolCallId.trim().length > 0
+          ? { toolCallId: params.toolCallId.trim() }
+          : {}),
+      },
+      timeoutMs: resolveMcpToolCallRequestTimeoutMs({
+        toolName: params.toolName,
+        args: params.args,
+      }),
+    };
+    const response = await callSessionRpc(sessionTarget.mode === 'plain'
+      ? { ...request, mode: 'plain', ctx: null }
+      : { ...request, mode: 'e2ee', ctx: sessionTarget.ctx });
+    return normalizeNativeAgentToolResponse(response);
+  }
+  const callerPermissionMode = null;
   const sessionMachineId = typeof rawSession.machineId === 'string' && rawSession.machineId.trim().length > 0
     ? rawSession.machineId.trim()
     : null;
@@ -108,7 +127,6 @@ export async function callBuiltInHappierTool(params: Readonly<{
     surface,
     actionsSettings,
     pluginToolCatalog,
-    ...(approvalOrigin ? { approvalOrigin } : {}),
     deps: {
       changeTitle: createChangeTitleToolHandler({
         executor,

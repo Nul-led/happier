@@ -796,12 +796,18 @@ describe('contribution module activation transaction deadline', () => {
         type PersistedAgentFacts = readonly import(
             '../../activationSources'
         ).ValidatedAgentSessionRunnerFactoryFactV1[];
+        let assertPersistenceCurrent: (() => void) | undefined;
         let resolvePersistence: ((facts: PersistedAgentFacts) => void) | undefined;
         const persistValidatedAgentSessionRunnerFactories = vi.fn(
-            (): Promise<PersistedAgentFacts | void> =>
-                new Promise((resolve) => {
+            (
+                _facts: PersistedAgentFacts,
+                options: Readonly<{ assertCurrent: () => void }>,
+            ): Promise<PersistedAgentFacts | void> => {
+                assertPersistenceCurrent = options.assertCurrent;
+                return new Promise((resolve) => {
                     resolvePersistence = resolve;
-                }),
+                });
+            },
         );
         try {
             const activation = activateContributionModule({
@@ -833,6 +839,7 @@ describe('contribution module activation transaction deadline', () => {
                 validatedAgentSessionRunnerFactories: [],
             }));
             expect(persistValidatedAgentSessionRunnerFactories).toHaveBeenCalledTimes(1);
+            expect(() => assertPersistenceCurrent?.()).toThrow(/superseded|deadline|current/i);
             expect(() => capturedApi?.agents.registerExternalSessions(
                 AGENT_ID,
                 externalSessionsContribution,

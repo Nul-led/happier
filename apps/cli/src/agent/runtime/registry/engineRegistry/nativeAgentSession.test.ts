@@ -6665,11 +6665,7 @@ describe('native Agent session host adapter', () => {
         const hostServices = readHostServices(capturedContext.current);
         expect(capturedContext.current.services.availability('sessions')).toEqual({ status: 'available' });
         expect(capturedContext.current.services.availability('interactions')).toEqual({ status: 'available' });
-        expect(capturedContext.current.services.sessions.subagents.capabilities().observe).toEqual({
-            status: 'unavailable',
-            code: 'plugin_subagent_durable_custody_unverified',
-        });
-        await expect(capturedContext.current.services.sessions.subagents.observe({
+        await expect(capturedContext.current.session.services.subagents.observe({
             observationId: 'worker-1',
             status: 'running',
         })).rejects.toMatchObject({ code: 'plugin_sessions_not_authenticated' });
@@ -6722,7 +6718,10 @@ describe('native Agent session host adapter', () => {
         ));
     });
 
-    it('passes the canonical child fork source to native sessions.open without converting it to resume', async () => {
+    it('verifies a declared fork continuation before passing the canonical child source to native sessions.open', async () => {
+        const verify = vi.fn<AgentSessionContinuationControl['verify']>(async () => ({
+            status: 'reachable' as const,
+        }));
         const open = vi.fn(async () => ({
             send: vi.fn(async () => ({ status: 'admitted' as const })),
             watch: () => ({ dispose: () => undefined }),
@@ -6741,13 +6740,17 @@ describe('native Agent session host adapter', () => {
                         sessions: {
                             ...contributions.agent.richDefinition.definition.capabilities.sessions,
                             open: ['create', 'fork'],
+                            continuationVerification: {
+                                intents: ['fork'],
+                                requirement: 'required',
+                            },
                         },
                     },
                 },
             },
         };
         const plan = await createNativeAgentRuntimeSessionPlan({
-            runtime: { sessions: { open } },
+            runtime: { sessions: { continuation: { verify }, open } },
             lease: createLease(agentId),
             backend: contributions.backend,
             agent: forkAgent,
@@ -6799,6 +6802,13 @@ describe('native Agent session host adapter', () => {
             expect.objectContaining({ kind: 'resume' }),
             expect.anything(),
         );
+        expect(verify).toHaveBeenCalledOnce();
+        expect(verify.mock.calls[0]?.[0]).toEqual(open.mock.calls[0]?.[0]);
+        expect(verify.mock.calls[0]?.[1]).toMatchObject({
+            session: {
+                providerSessionId: 'provider-parent',
+            },
+        });
         await created.operations.resetOrDisposeRuntime();
     });
 
@@ -10320,6 +10330,44 @@ describe('native Agent session host adapter', () => {
         await expect(runtime.waitForTurnCompletion({ timeoutMs: 10 })).resolves.toBeUndefined();
         await expect(runtime.cancelTurn()).resolves.toBeUndefined();
         expect(cancel).not.toHaveBeenCalled();
+    });
+
+    it('treats an explicit completion timeout as a waiter deadline without terminalizing the turn', async () => {
+        const listeners = new Set<(event: AgentSessionRuntimeEvent) => void>();
+        const session: AgentSessionRuntime = {
+            send: vi.fn(async () => ({ status: 'admitted' as const })),
+            watch(listener) {
+                listeners.add(listener);
+                return { dispose: () => { listeners.delete(listener); } };
+            },
+            dispose: vi.fn(),
+        };
+        const runtime = createNativeAgentSessionOperations(session, 'session-1');
+        runtime.beginTurnLifecycle();
+
+        await expect(runtime.waitForTurnCompletion({ timeoutMs: 1 }))
+            .rejects.toThrow('did not complete within 1ms');
+
+        const completion = runtime.waitForTurnCompletion();
+        for (const listener of listeners) {
+            listener({
+                sequence: 1,
+                sessionId: 'session-1',
+                emittedAtMs: 1,
+                kind: 'turn-start',
+                turnId: 'turn-after-observation-timeout',
+                startedBy: 'provider',
+            });
+            listener({
+                sequence: 2,
+                sessionId: 'session-1',
+                emittedAtMs: 2,
+                kind: 'turn-complete',
+                turnId: 'turn-after-observation-timeout',
+            });
+        }
+
+        await expect(completion).resolves.toBeUndefined();
     });
 
     it('does not resurrect a turn when an admitted send resolves after disposal', async () => {

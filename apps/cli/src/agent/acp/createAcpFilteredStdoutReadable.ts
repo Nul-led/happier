@@ -65,6 +65,7 @@ export function createAcpFilteredStdoutReadable(params: Readonly<{
         }
       };
 
+      let completed = false;
       try {
         // eslint-disable-next-line no-constant-condition
         while (true) {
@@ -136,6 +137,9 @@ export function createAcpFilteredStdoutReadable(params: Readonly<{
         }
 
         if (buffer.trim()) enqueueLine(buffer);
+        completed = true;
+      } catch (error) {
+        controller.error(error);
       } finally {
         reader.releaseLock();
         try {
@@ -143,7 +147,7 @@ export function createAcpFilteredStdoutReadable(params: Readonly<{
         } catch {
           // ignore
         }
-        controller.close();
+        if (completed) controller.close();
       }
     },
   });

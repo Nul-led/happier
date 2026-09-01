@@ -85,6 +85,7 @@ import {
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 import { resolveRunnerMcpServers } from '@/mcp/runtime/resolveRunnerMcpServers';
 import { applyRunnerMcpSessionContext } from '@/mcp/runtime/applyRunnerMcpSessionContext';
+import { registerHappierSessionAgentToolRpc } from '@/mcp/startHappyServer';
 import { resolveCliMemoryRecallGuidanceEnabled } from '@/agent/prompts/library/resolveCliMemoryRecallGuidanceEnabled';
 import { resolveAgentToolsDelivery } from '@/agent/tools/happierTools/runtime/resolveAgentToolsDelivery';
 import {
@@ -1817,15 +1818,17 @@ export async function runHostSessionRuntime(
       metadata: runtimeSessionMetadataSnapshot ?? runtimeMetadata,
     })
     : runtimeOpts.accountSettingsContext?.settings ?? null;
-  const supportsMcpServers = (config.supportsMcpServers ?? true) && resolveAgentToolsDelivery(policyAgentId) === 'native_mcp';
+  const agentToolsDelivery = resolveAgentToolsDelivery(policyAgentId);
+  const supportsMcpServers = (config.supportsMcpServers ?? true) && agentToolsDelivery === 'native_mcp';
   let activeAgentCompositionToolSelection: AgentCompositionToolSelection | null = null;
   const runnerMcpSession = applyRunnerMcpSessionContext(currentLifecycleSession, {
     getPermissionMode: () => permissionModeState.getCurrentPermissionMode() ?? initialPermissionMode,
-    // The MCP server is constructed before the native runtime. This closure is
+    // The Session tool bridge is registered before the native runtime. This closure is
     // intentionally read at tool-call time: it is null before construction and
     // after the canonical active-turn witness is cleared.
     getActiveTurnCausalPermissionAuthority: () =>
       runtimeForInFlightSteer?.readActiveTurnCausalPermissionAuthority?.() ?? null,
+    getActiveTurnId: () => runtimeForInFlightSteer?.readActiveTurnId?.() ?? null,
     getBackendTarget: () => runtimeOpts.backendTarget ? readBackendTargetRefV2(runtimeOpts.backendTarget) : null,
     getCurrentSessionLocation: () => ({
       path: runtimeDirectory,
@@ -1834,6 +1837,14 @@ export async function runHostSessionRuntime(
     }),
     getActiveAgentCompositionToolSelection: () => activeAgentCompositionToolSelection,
   });
+  if (agentToolsDelivery !== 'unsupported') {
+    registerHappierSessionAgentToolRpc(runnerMcpSession, {
+      credentials: runtimeOpts.credentials,
+      accountSettings: runnerMcpAccountSettings,
+      getAccountSettings: () =>
+        getActiveAccountSettingsSnapshot()?.settings ?? runnerMcpAccountSettings,
+    });
+  }
   const { happierMcpServer, mcpServers } = supportsMcpServers
     ? await resolveRunnerMcpServersFn({
       session: runnerMcpSession,

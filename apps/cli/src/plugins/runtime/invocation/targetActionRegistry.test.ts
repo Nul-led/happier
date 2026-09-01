@@ -763,7 +763,7 @@ describe('target action invocation registry', () => {
                     expect(Object.keys(managedServices.dependencies).sort()).toEqual(['ensure', 'remove', 'status', 'update']);
                     expect(context.services.sessions.current).toBeNull();
                     expect(Object.keys(context.services.sessions.subagents).sort()).toEqual([
-                        'capabilities', 'get', 'list', 'observe', 'watch',
+                        'capabilities', 'get', 'list', 'watch',
                     ]);
                     try {
                         await context.services.storage.daemon.get('x');

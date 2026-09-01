@@ -15,7 +15,7 @@ import {
   type PluginId,
 } from '@happier-dev/protocol';
 
-import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
+import { writeFileAtomically, writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 import { isCanonicalAbsolutePathInsideRoot } from '@/utils/path/expandHomeDirPath';
 import { resolveCliRuntimeRootPath } from '@/packagedRuntime/assets/resolveCliRuntimeAssetPath';
 import { pluginInstallReviewPrincipalPresentationMatchesDigest } from '@/plugins/daemon/installReviewPrincipal';
@@ -969,6 +969,7 @@ export async function persistValidatedAgentSessionRunnerFactories(input: Readonl
   factories: readonly z.input<
     typeof ValidatedAgentSessionRunnerFactoryFactV1Schema
   >[];
+  assertCurrent?: () => void;
 }>): Promise<ValidatedAgentSessionRunnerFactoriesRecordV1> {
   const generation = ImmutablePluginGenerationRecordSchema.parse(input.record);
   await assertGenerationNotRetired(input.paths, generation.immutableGenerationId);
@@ -998,7 +999,13 @@ export async function persistValidatedAgentSessionRunnerFactories(input: Readonl
     if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') throw error;
   }
   await mkdir(dirname(path), { recursive: true });
-  await writeJsonAtomic(path, validated);
+  await writeFileAtomically({
+    path,
+    writeTemporaryFile: async (temporaryPath) => {
+      await writeFile(temporaryPath, JSON.stringify(validated, null, 2), { mode: 0o600 });
+    },
+    ...(input.assertCurrent ? { beforeCommit: input.assertCurrent } : {}),
+  });
   await flushFileDurably(path);
   return Object.freeze(validated);
 }
@@ -1033,6 +1040,12 @@ export type CurrentCommittedPluginGeneration = Readonly<{
   immutableGenerationId: string;
   rootPath: string;
   record: ImmutablePluginGenerationRecord;
+  installation?: PluginInstallationStateRecord;
+}>;
+
+export type CurrentPluginExecutionSelection = Readonly<{
+  pluginId: string;
+  immutableGenerationId: string;
   installation?: PluginInstallationStateRecord;
 }>;
 
@@ -1251,6 +1264,15 @@ export async function readCurrentCommittedPluginGenerations(
   rejectedGenerations: ReadonlyMap<string, RejectedCommittedPluginGeneration>;
   unavailableBundledPackageNames: ReadonlySet<string>;
   isCurrent: () => Promise<boolean>;
+  /**
+   * Reads only the current durable execution selection for one plugin. It does
+   * not re-admit or re-hash generation bytes; retained runtimes use it to apply
+   * current enabled/access/trust policy while their admitted generation remains
+   * leased by the host.
+   */
+  readCurrentExecutionSelection?: (
+    pluginId: string,
+  ) => Promise<CurrentPluginExecutionSelection | null>;
 }> | null> {
   const commit = await readPluginRegistryCommitRecord(paths);
   const bundledArtifacts = options?.bundledArtifacts ?? [];
@@ -1394,6 +1416,53 @@ export async function readCurrentCommittedPluginGenerations(
       } catch {
         return false;
       }
+    },
+    async readCurrentExecutionSelection(
+      pluginId: string,
+    ): Promise<CurrentPluginExecutionSelection | null> {
+      let current = await readPluginRegistryCommitRecord(paths);
+      if (!current) {
+        if (commit) return null;
+        const bundled = generations.get(pluginId);
+        return bundled
+          ? Object.freeze({
+              pluginId,
+              immutableGenerationId: bundled.immutableGenerationId,
+              ...(bundled.installation ? { installation: bundled.installation } : {}),
+            })
+          : null;
+      }
+      while (current) {
+        const currentInstallationState = await readPluginRegistryCommitInstallationAuthority(
+          paths,
+          current,
+        );
+        if (!currentInstallationState) return null;
+        const confirmed = await readPluginRegistryCommitRecord(paths);
+        if (!pluginRegistryCommitRecordsEqual(confirmed, current)) {
+          current = confirmed;
+          continue;
+        }
+        const reference = current.pluginGenerations[pluginId];
+        const installation = currentInstallationState.plugins[pluginId];
+        if (!reference || !installation?.trust) return null;
+        const catalogTrust = currentInstallationState.runtimeCatalog
+          ?.plugins[pluginId]?.install.trust;
+        if (
+          (catalogTrust && !isDeepStrictEqual(catalogTrust, installation.trust))
+          || !isPluginTrustRecordAuthorized(installation.trust, {
+            pluginId,
+            distribution: installation.source.distribution,
+            realm: 'daemon',
+          })
+        ) return null;
+        return Object.freeze({
+          pluginId,
+          immutableGenerationId: reference.immutableGenerationId,
+          installation,
+        });
+      }
+      return null;
     },
   });
 }

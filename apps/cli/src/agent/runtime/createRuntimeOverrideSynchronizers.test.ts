@@ -2,17 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createTestMetadata } from '@/testkit/backends/sessionMetadata';
 
-import * as acpRuntimeOverrideSynchronizers from './createAcpRuntimeOverrideSynchronizers';
 import { createRuntimeOverrideSynchronizers } from './createRuntimeOverrideSynchronizers';
 
-describe('createRuntimeOverrideSynchronizers exports', () => {
-  it('exposes the canonical export while keeping the ACP alias', () => {
-    expect(typeof acpRuntimeOverrideSynchronizers.createRuntimeOverrideSynchronizers).toBe('function');
-    expect(acpRuntimeOverrideSynchronizers.createAcpRuntimeOverrideSynchronizers).toBe(
-      acpRuntimeOverrideSynchronizers.createRuntimeOverrideSynchronizers,
-    );
-  });
-
+describe('createRuntimeOverrideSynchronizers', () => {
   it('applies metadata-only permission mode updates through the runtime target', async () => {
     const setPermissionMode = vi.fn(async (_mode: string) => {});
 

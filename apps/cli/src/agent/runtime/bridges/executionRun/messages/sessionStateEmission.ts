@@ -8,10 +8,7 @@ import type { ExecutionRunBackendController } from '@/agent/executionRuns/contro
 import { appendExecutionRunControllerHostBarrier } from '@/agent/executionRuns/controllers/failureSignal';
 import type { ExecutionRunTranscriptPublisher } from '../executionRunTranscriptPublisher';
 import type { ExecutionRunState } from '../executionRunTypes';
-import {
-  AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1,
-  readBackendTargetRefV2,
-} from '@happier-dev/protocol';
+import { readBackendTargetRefV2 } from '@happier-dev/protocol';
 import { normalizePermissionRequestOptionsForAcp } from '@/agent/acp/bridge/acpCommonHandlers';
 import {
   buildExecutionRunParentSessionPermissionRequestEnvelope,
@@ -20,13 +17,10 @@ import {
 import type { ExecutionRunPermissionRequestStoreProvider } from '../executionRunPermissionResponseTarget';
 import type { ExecutionRunPermissionCapability } from '../executionRunHostRuntime';
 import { createExecutionRunCodedError } from '../errors';
+import { EXECUTION_RUN_TASK_RESULT_MAX_CODE_UNITS } from '@/agent/executionRuns/profiles/ExecutionRunIntentProfile';
 
 const EXECUTION_RUN_TASK_OUTPUT_LIMIT_ERROR_CODE = 'execution_run_output_limit_exceeded';
 const EXECUTION_RUN_TASK_OUTPUT_LIMIT_ERROR_MESSAGE = 'Execution-run task output exceeded the configured limit.';
-const EXECUTION_RUN_TASK_OUTPUT_DELTA_MAX_CODE_UNITS =
-  AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1.deltaTextMaxCodeUnits;
-const EXECUTION_RUN_TASK_OUTPUT_TOTAL_MAX_CODE_UNITS =
-  AGENT_SESSION_RUNTIME_LIMITS_CANDIDATE_V1.p0MeasuredCandidates.transcriptTextMaxCodeUnits;
 
 function readNonEmptyString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -171,11 +165,10 @@ export function createExecutionRunControllerMessageHandler(args: Readonly<{
   function exceedsTaskOutputLimit(msg: Extract<Parameters<AgentMessageHandler>[0], { type: 'model-output' }>): boolean {
     if (args.runs.get(args.runId)?.intent !== 'task') return false;
     if (typeof msg.fullText === 'string') {
-      return msg.fullText.length > EXECUTION_RUN_TASK_OUTPUT_TOTAL_MAX_CODE_UNITS;
+      return msg.fullText.length > EXECUTION_RUN_TASK_RESULT_MAX_CODE_UNITS;
     }
     if (typeof msg.textDelta !== 'string') return false;
-    return msg.textDelta.length > EXECUTION_RUN_TASK_OUTPUT_DELTA_MAX_CODE_UNITS
-      || args.ctrl.buffer.length + msg.textDelta.length > EXECUTION_RUN_TASK_OUTPUT_TOTAL_MAX_CODE_UNITS;
+    return args.ctrl.buffer.length + msg.textDelta.length > EXECUTION_RUN_TASK_RESULT_MAX_CODE_UNITS;
   }
 
   function readEffectivePermissionCapability(): ExecutionRunPermissionCapability {

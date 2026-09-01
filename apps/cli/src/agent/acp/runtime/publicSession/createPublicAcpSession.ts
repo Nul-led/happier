@@ -39,7 +39,10 @@ import { extname, isAbsolute, relative, sep } from 'node:path';
 
 import { createAcpBackend } from '@/agent/acp/createAcpBackend';
 import type { AcpBackend, AcpBackendOptions } from '@/agent/acp/AcpBackend';
-import type { AcpPromptSubmissionResult } from '@/agent/acp/runtime/acpRuntimeBackendContract';
+import type {
+  AcpPromptSubmissionResult,
+  AcpPromptSubmissionSettledResult,
+} from '@/agent/acp/runtime/acpRuntimeBackendContract';
 import type { SessionModel } from '@/agent/acp/sessionSettings/sessionSettingsState';
 import {
   defineAcpExtensionNotification,
@@ -129,6 +132,8 @@ export type PublicAcpComposerDependencies = Readonly<{
     payload: Readonly<Record<string, unknown>>,
     options: Readonly<{ signal: AbortSignal }>,
   ) => Promise<Readonly<Record<string, unknown>>>;
+  /** Host-only launch custody for Account-configured ACP backends. */
+  resolveHostLaunch?: PublicAcpHostLaunchResolver;
 }>;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -228,7 +233,7 @@ type PublicAcpTransportTimeouts = Readonly<{
   idleMs?: number;
   toolCallMs?: number;
 }>;
-type PublicAcpLaunch = Readonly<{
+export type PublicAcpHostLaunch = Readonly<{
   command: string;
   args: readonly string[];
   env: Readonly<Record<string, string>>;
@@ -236,6 +241,9 @@ type PublicAcpLaunch = Readonly<{
   timeouts: PublicAcpTransportTimeouts;
   release?: () => void;
 }>;
+export type PublicAcpHostLaunchResolver = (
+  request: AgentSessionOpenRequest,
+) => PublicAcpHostLaunch | Promise<PublicAcpHostLaunch>;
 type ActiveTurn = {
   turnId: string;
   inputIds: AgentSessionSendRequest['inputIds'];
@@ -479,14 +487,40 @@ async function resolveLaunch(
   transport: PluginAgentAcpTransport,
   request: AgentSessionOpenRequest,
   dependencies: PublicAcpComposerDependencies,
-): Promise<PublicAcpLaunch> {
+): Promise<PublicAcpHostLaunch> {
+  const launchEnvironment = AgentLaunchEnvironmentV1Schema.parse(
+    request.launchEnvironment ?? { values: {}, unset: [] },
+  );
+  if (dependencies.resolveHostLaunch) {
+    const resolved = await dependencies.resolveHostLaunch(request);
+    assertComposerCurrent(dependencies);
+    const command = resolved.command.trim();
+    if (!command) {
+      resolved.release?.();
+      throw new Error('Host-resolved ACP launch requires a non-empty command');
+    }
+    const environment = {
+      ...resolved.env,
+      ...launchEnvironment.values,
+    };
+    for (const key of [...resolved.unsetEnv, ...launchEnvironment.unset]) {
+      delete environment[key];
+    }
+    return Object.freeze({
+      command,
+      args: Object.freeze([...resolved.args]),
+      env: Object.freeze(environment),
+      unsetEnv: Object.freeze([
+        ...new Set([...resolved.unsetEnv, ...launchEnvironment.unset]),
+      ]),
+      timeouts: resolved.timeouts,
+      ...(resolved.release ? { release: resolved.release } : {}),
+    });
+  }
   if (transport.kind !== 'stdio') {
     throw new Error(`Public ACP ${transport.kind} transport is not available in this host`);
   }
   const executableId = readLocalExecutableId(transport.executable, dependencies.pluginId);
-  const launchEnvironment = AgentLaunchEnvironmentV1Schema.parse(
-    request.launchEnvironment ?? { values: {}, unset: [] },
-  );
   let command: string;
   let args: readonly string[] | undefined;
   let env: Readonly<Record<string, string>> | undefined;
@@ -1546,6 +1580,9 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
         }
         return { status: 'admitted' as const };
       }
+      const finalizeSubmission = async (
+        settledResult: AcpPromptSubmissionSettledResult,
+      ): Promise<void> => {
       const admissionFailure = readBufferedMessageFailure();
       if (admissionFailure !== null) {
         if (activeTurn === turn) activeTurn = null;
@@ -1565,10 +1602,10 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
           pendingProcessExit = null;
           observeProcessExit(exit);
         }
-        return { status: 'admitted' as const };
+        return;
       }
-      if (activeTurn !== turn || disposed || runtimeEnded) return { status: 'admitted' as const };
-      if (submissionResult.kind === 'rejected_before_effect') {
+      if (activeTurn !== turn || disposed || runtimeEnded) return;
+      if (settledResult.kind === 'rejected_before_effect') {
         activeTurn = null;
         bufferedMessages?.dispose();
         bufferedMessages = null;
@@ -1578,7 +1615,7 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
           inputIds: turn.inputIds,
           diagnostic: diagnostic(
             'acp_input_rejected_before_effect',
-            submissionResult.error.message,
+            settledResult.error.message,
           ),
           retryable: true,
         });
@@ -1587,17 +1624,22 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
           pendingProcessExit = null;
           observeProcessExit(exit);
         }
-        return { status: 'admitted' as const };
+        return;
       }
 
       turn.submissionSettled = true;
-      if (submissionResult.kind === 'effect_may_have_occurred') {
+      if (
+        settledResult.kind === 'effect_may_have_occurred'
+        || settledResult.kind === 'effect_observed_without_prompt_response'
+      ) {
         publish({
           kind: 'input-custody-unknown',
           inputIds: turn.inputIds,
           issue: diagnostic(
             'acp_input_custody_unknown',
-            submissionResult.error.message,
+            settledResult.kind === 'effect_may_have_occurred'
+              ? settledResult.error.message
+              : 'ACP provider effect was observed before the prompt response settled',
           ),
         });
       } else {
@@ -1685,6 +1727,12 @@ export async function createPublicAcpSessionFromAwaitableAdapter(
           observeProcessExit(exit);
         }
       });
+      };
+      if (submissionResult.kind === 'submitted_to_transport') {
+        void submissionResult.settlement.then(finalizeSubmission);
+      } else {
+        await finalizeSubmission(submissionResult);
+      }
       return { status: 'admitted' as const };
     },
     async cancel(cancelRequest: Parameters<NonNullable<AgentSessionRuntime['cancel']>>[0]): Promise<AgentSessionCancelResult> {

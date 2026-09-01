@@ -202,6 +202,19 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
     return run?.sessionId === sessionId ? run : null;
   }
 
+  function projectExecutionRunGetResponse(runId: string, includeStructured: boolean) {
+    const run = params.manager.getPublic(runId);
+    const runState = params.manager.get(runId);
+    if (!run || !runState) return null;
+    const hasLatestToolResult = Object.prototype.hasOwnProperty.call(runState, 'latestToolResult');
+    const structuredMeta = includeStructured ? params.manager.getStructuredMeta(runId) : null;
+    return {
+      run,
+      ...(hasLatestToolResult ? { latestToolResult: params.manager.getLatestToolResult(runId) } : {}),
+      ...(structuredMeta !== null ? { structuredMeta } : {}),
+    };
+  }
+
   async function startRun(
     raw: unknown,
     sessionId: string | null,
@@ -430,14 +443,8 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
       if (!isAuthoritativeScope(sessionId)) return executionRunScopeMismatch();
       const parsed = ExecutionRunGetRequestSchema.parse(request);
       if (!getRunInAuthoritativeScope(parsed.runId, sessionId)) return executionRunNotFound();
-      const run = params.manager.getPublic(parsed.runId)!;
-      const structuredMeta = parsed.includeStructured ? params.manager.getStructuredMeta(parsed.runId) : null;
-      const latestToolResult = params.manager.getLatestToolResult(parsed.runId);
-      return {
-        run,
-        ...(latestToolResult ? { latestToolResult } : {}),
-        ...(structuredMeta ? { structuredMeta } : {}),
-      };
+      return projectExecutionRunGetResponse(parsed.runId, parsed.includeStructured === true)
+        ?? executionRunNotFound();
     },
     executionRunSend: async (sessionId, request) => {
       const disabled = ensureEnabled();
@@ -616,9 +623,9 @@ export function createExecutionRunRpcActionDeps(params: ExecutionRunRpcActionDep
           if (!getRunInAuthoritativeScope(observedRunId, sessionId)) {
             return { ok: false, code: 'execution_run_not_found', message: 'Not found' } as const;
           }
-          const run = params.manager.getPublic(observedRunId);
-          return run
-            ? { ok: true, data: { run } } as const
+          const result = projectExecutionRunGetResponse(observedRunId, true);
+          return result
+            ? { ok: true, data: result } as const
             : { ok: false, code: 'execution_run_not_found', message: 'Not found' } as const;
         },
       });

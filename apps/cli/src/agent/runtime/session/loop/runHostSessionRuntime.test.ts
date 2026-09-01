@@ -1,5 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -74,19 +73,13 @@ import { getResolvedContributionRegistry } from '@/plugins/projection/registry/c
 import type { PluginRuntimeRegistryLease } from '@/plugins/runtime/reload/controller';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
 import { resolveExecutablePluginRuntimeRegistry } from '@/plugins/runtime/resolveExecutablePluginRuntimeRegistry';
-import type { Metadata, PermissionMode } from '@/api/types';
+import type { PermissionMode } from '@/api/types';
 import { resolveAgentSessionRealtimeVoiceAuthority } from '@/agent/runtime/session/realtime/resolveAgentSessionRealtimeVoiceAuthority';
 import {
   ApiSessionClient,
   type ApiSessionClientOptions,
 } from '@/api/session/sessionClient';
-import { resolveSessionClientDurableMutationOutboxPath } from '@/api/session/client/transport/mutations/sessionClientDurableMutationPersistence';
-import { resetSessionClientDurableMutationOutboxStateForTests } from '@/api/session/client/transport/mutations/createSessionClientDurableMutationOutbox';
 import { createPlainSessionFixture } from '@/testkit/backends/sessionFixtures';
-import { createFakeAcpRuntimeBackend } from '@/testkit/backends/acpRuntimeBackend';
-import { createApprovedPermissionHandler } from '@/testkit/backends/permissionHandler';
-import { createAcpRuntime } from '@/agent/acp/runtime/createAcpRuntime';
-import type { AgentMessage } from '@/agent/core/AgentMessage';
 import { DeferredApiSessionClient } from '@/agent/runtime/startup/DeferredApiSessionClient';
 
 vi.mock('@/api/session/client/transport/initializeSessionClientConnection', () => ({
@@ -4367,150 +4360,6 @@ describe('runHostSessionRuntime', () => {
     expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
   });
 
-  it('routes the first persisted-takeover Agent output after runtime_bound through the hosted durable outbox', async () => {
-    const previousHome = process.env.HAPPIER_HOME_DIR;
-    const tempHome = await mkdtemp(join(tmpdir(), 'happier-persisted-takeover-output-'));
-    process.env.HAPPIER_HOME_DIR = tempHome;
-    const sessionId = 'persisted-takeover-hosted-output';
-    const session = new ApiSessionClient(
-      'token',
-      createPlainSessionFixture({ id: sessionId }),
-      { durableMutationDeliveryInitiallyActive: false },
-    );
-
-    try {
-      const harness = createHarness();
-      const correlation = {
-        mode: 'persisted',
-        operationId: 'operation-hosted-output',
-        attemptId: 'attempt-hosted-output',
-      } as const;
-      const order: string[] = [];
-      const backend = createFakeAcpRuntimeBackend({ sessionId: 'native-session-1' });
-      const initialSessionMetadata = session.getMetadataSnapshot();
-      if (!initialSessionMetadata) {
-        throw new Error('expected the canonical plain-session fixture metadata');
-      }
-      let sessionMetadata: Metadata = initialSessionMetadata;
-      session.updateMetadata = async (update: (metadata: Metadata) => Metadata) => {
-        sessionMetadata = update(sessionMetadata);
-      };
-      session.getMetadataSnapshot = () => sessionMetadata;
-      session.enqueueRegisteredSessionStateFieldMutation = async () => undefined;
-      session.refreshSessionSnapshotFromServerRequired = async () => undefined;
-      session.readCurrentPublisherPreconditionForStartup = async () => ({
-        machineId: 'machine-1',
-        committedFenceMs: 1,
-      });
-
-      harness.opts.persistedTakeoverAdmission = correlation;
-      harness.deps.initializeBackendRunSessionFn = async () => ({
-        session,
-        reconnectionHandle: null,
-        reportedSessionId: sessionId,
-        attachedToExistingSession: true,
-      });
-      harness.deps.admitPersistedTakeoverBeforeRuntimeFn = vi.fn(async (actual) => {
-        expect(actual).toEqual({
-          ...correlation,
-          publisherPrecondition: {
-            machineId: 'machine-1',
-            committedFenceMs: 1,
-          },
-        });
-        order.push('admit');
-      });
-      harness.deps.reportPersistedTakeoverRuntimeBoundFn = vi.fn(async (actual) => {
-        expect(actual).toEqual({
-          ...correlation,
-          publisherPrecondition: {
-            machineId: 'machine-1',
-            committedFenceMs: 1,
-          },
-        });
-        order.push('runtime_bound');
-      });
-      harness.config.policyAgentId = 'claude';
-      harness.config.providerName = 'Claude';
-      harness.config.agentMessageType = 'claude';
-      setSessionRuntimeFactory(harness.config, (params) => {
-        const runtime = createAcpRuntime({
-          provider: 'claude',
-          directory: params.directory,
-          happierSessionId: sessionId,
-          session: params.session,
-          transcriptSession: params.transcriptSession,
-          messageBuffer: params.messageBuffer,
-          mcpServers: params.mcpServers,
-          permissionHandler: createApprovedPermissionHandler(),
-          onThinkingChange: params.setThinking,
-          ensureBackend: async () => backend,
-        });
-        return {
-          operations: runtime,
-          nativeRuntime: runtime,
-        };
-      });
-      harness.deps.runSessionLoopLifecycleFn = async ({
-        runtime,
-      }: Readonly<{ runtime: ReturnType<typeof createAcpRuntime> }>) => {
-        expect(order).toEqual(['admit', 'runtime_bound']);
-        await runtime.sendTurnPrompt('Begin the hosted turn');
-        runtime.beginTurnLifecycle();
-        backend.emit({
-          type: 'model-output',
-          textDelta: 'First hosted answer',
-        } satisfies AgentMessage);
-        order.push('provider_output');
-        await runtime.waitForTurnCompletion();
-      };
-
-      await runHostSessionRuntime(harness.opts, harness.config, harness.deps);
-
-      const persisted = JSON.parse(
-        await readFile(resolveSessionClientDurableMutationOutboxPath(sessionId), 'utf8'),
-      ) as { mutations?: unknown[] };
-      const mutations = Array.isArray(persisted.mutations) ? persisted.mutations : [];
-      const transcriptMutations = mutations.filter((entry) => (
-        entry
-        && typeof entry === 'object'
-        && (entry as { kind?: unknown }).kind === 'transcript_message_append'
-      ));
-
-      expect(order).toEqual(['admit', 'runtime_bound', 'provider_output']);
-      expect(transcriptMutations).toHaveLength(1);
-      expect(transcriptMutations[0]).toMatchObject({
-        kind: 'transcript_message_append',
-        payload: {
-          sessionId,
-          source: 'transcript_message_append',
-          messageRole: 'agent',
-          content: {
-            t: 'plain',
-            v: {
-              role: 'agent',
-              content: {
-                data: {
-                  type: 'message',
-                  message: 'First hosted answer',
-                },
-              },
-            },
-          },
-        },
-      });
-      expect(JSON.stringify(mutations)).not.toContain('external_session_historical_import');
-    } finally {
-      await resetSessionClientDurableMutationOutboxStateForTests();
-      await rm(tempHome, { recursive: true, force: true });
-      if (previousHome === undefined) {
-        delete process.env.HAPPIER_HOME_DIR;
-      } else {
-        process.env.HAPPIER_HOME_DIR = previousHome;
-      }
-    }
-  });
-
   it('consumes the one-shot persisted-takeover environment handoff even when an injected correlation wins', async () => {
     const previousAdmission =
       process.env[HAPPIER_PERSISTED_TAKEOVER_ADMISSION_ENV_KEY];
@@ -7251,6 +7100,20 @@ describe('runHostSessionRuntime', () => {
 
   it('skips native MCP resolution for shell-bridge providers', async () => {
     const harness = createHarness();
+    const agentId = 'com.acme.review/review';
+    const catalog = getResolvedContributionRegistry();
+    readAgentCatalogSnapshotOverride.mockReturnValue({
+      ...catalog,
+      catalogEntriesById: {
+        ...catalog.catalogEntriesById,
+        [agentId]: {
+          id: agentId,
+          cliSubcommand: 'acme-review',
+          toolDelivery: 'shell_bridge',
+        },
+      },
+    });
+    harness.config.policyAgentId = agentId;
 
     let capturedMcpServers: any = null;
     setSessionRuntimeFactory(harness.config, (params: any) => {
@@ -7270,13 +7133,18 @@ describe('runHostSessionRuntime', () => {
       mcpServers: { happier: { command: 'built-in' } },
     }));
 
-    await runHostSessionRuntime(harness.opts, harness.config, {
-      ...harness.deps,
-      resolveRunnerMcpServersFn,
-    });
+    try {
+      await runHostSessionRuntime(harness.opts, harness.config, {
+        ...harness.deps,
+        resolveRunnerMcpServersFn,
+      });
 
-    expect(resolveRunnerMcpServersFn).not.toHaveBeenCalled();
-    expect(capturedMcpServers).toEqual({});
+      expect(resolveRunnerMcpServersFn).not.toHaveBeenCalled();
+      expect(capturedMcpServers).toEqual({});
+      expect(harness.handlers.has(SESSION_RPC_METHODS.SESSION_AGENT_TOOL_CALL_V1)).toBe(true);
+    } finally {
+      readAgentCatalogSnapshotOverride.mockReset();
+    }
   });
 
   it('uses the Happier session id, not the vendor runtime session id, for shell-bridge prompt instructions', async () => {

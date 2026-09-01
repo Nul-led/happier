@@ -20,7 +20,6 @@ import { readAgentCatalogSnapshot } from '@/agent/catalog/snapshot';
 import { buildRuntimePublicationFromEngineResolution } from '@/agent/runtime/identity/buildRuntimePublicationFromEngineResolution';
 import type {
   ProviderMessageMetaEnricher,
-  RuntimeOutboundTranscriptDispatchFacetV1,
 } from '@happier-dev/agents';
 import {
   evaluateCliSessionAttachEligibility,
@@ -125,22 +124,6 @@ export class SessionHostBridge implements SessionHostBridgeContract {
       agentTarget: agentTarget.data,
       executionSurfaces,
     });
-  }
-
-  async resolveOutboundTranscriptDispatchFacet(backendId?: string | null): Promise<Readonly<{
-    backendId: string;
-    facet: RuntimeOutboundTranscriptDispatchFacetV1;
-  }> | null> {
-    const normalizedBackendId = typeof backendId === 'string' && backendId.trim().length > 0
-      ? backendId.trim()
-      : null;
-    if (!normalizedBackendId) {
-      return null;
-    }
-
-    const resolution = await resolveBackendEngineAdapterResolution(normalizedBackendId);
-    const facet = resolution?.engineAdapter.facets?.transcriptDispatch;
-    return facet ? { backendId: normalizedBackendId, facet } : null;
   }
 
   private async resolveEngineResolutionParams(
@@ -300,7 +283,6 @@ export class SessionHostBridge implements SessionHostBridgeContract {
     const planWithIdentity = withHostSessionRuntimeIdentityPublication({
       plan: planWithHostEvents,
       identity: buildRuntimePublicationFromEngineResolution(resolution, {
-        descriptorSchemaId: 'happier.hostSessionRuntimeIdentity',
         includeExecutionRun: false,
       }),
     });

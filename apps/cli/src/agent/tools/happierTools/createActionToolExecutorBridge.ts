@@ -27,6 +27,7 @@ type ActionExecutorLike = Readonly<{
       approvalOrigin?: ApprovalRequestOriginV1 | null;
       callerPermissionMode?: string | null;
       causalPermissionAuthority?: unknown;
+      sessionInputSource?: unknown;
       sessionAgentSpawnPolicyV1?: unknown;
       actionsSettings?: ActionsSettingsV1 | null;
       actionRequestId?: string | null;
@@ -101,6 +102,8 @@ async function buildActionExecutorContext(params: Readonly<{
   options?: ActionToolExecutionOptions;
   resolveCallerPermissionMode?: (() => Promise<string | null> | string | null) | null;
   resolveCausalPermissionAuthority?: (() => Promise<unknown> | unknown) | null;
+  resolveActiveTurnId?: (() => Promise<string | null> | string | null) | null;
+  sessionInputVia?: 'action' | 'mcp';
   sessionAgentSpawnPolicyV1?: unknown;
   getSessionAgentSpawnPolicyV1?: (() => unknown) | null;
   actionsSettings?: ActionsSettingsV1 | null;
@@ -112,6 +115,7 @@ async function buildActionExecutorContext(params: Readonly<{
   approvalOrigin?: ApprovalRequestOriginV1 | null;
   callerPermissionMode?: string | null;
   causalPermissionAuthority?: unknown;
+  sessionInputSource?: unknown;
   sessionAgentSpawnPolicyV1?: unknown;
   actionsSettings?: ActionsSettingsV1 | null;
   actionRequestId?: string | null;
@@ -124,9 +128,14 @@ async function buildActionExecutorContext(params: Readonly<{
     params.surface === 'agent'
     && typeof params.resolveCausalPermissionAuthority === 'function';
   let causalPermissionAuthority: unknown = null;
+  let activeTurnId: string | null = null;
   if (hasCausalPermissionAuthorityResolver) {
     try {
       causalPermissionAuthority = await params.resolveCausalPermissionAuthority!();
+      const rawTurnId = await params.resolveActiveTurnId?.();
+      activeTurnId = typeof rawTurnId === 'string' && rawTurnId.trim().length > 0
+        ? rawTurnId.trim()
+        : null;
     } catch {
       // An active-turn reader failure is non-authorizing; do not fall back to
       // the mutable Session permission mode for an agent-originated call.
@@ -152,6 +161,15 @@ async function buildActionExecutorContext(params: Readonly<{
     ...(callerPermissionMode ? { callerPermissionMode } : {}),
     ...(hasCausalPermissionAuthorityResolver
       ? { causalPermissionAuthority: causalPermissionAuthority ?? null }
+      : {}),
+    ...(hasCausalPermissionAuthorityResolver && activeTurnId
+      ? {
+          sessionInputSource: {
+            sourceSessionId: params.defaultSessionId,
+            sourceTurnId: activeTurnId,
+            via: params.sessionInputVia ?? 'action',
+          },
+        }
       : {}),
     ...(sessionAgentSpawnPolicyV1 !== undefined
       ? { sessionAgentSpawnPolicyV1 }
@@ -229,6 +247,8 @@ export function createActionToolExecutorBridge(params: Readonly<{
   getActionsSettings?: (() => ActionsSettingsV1 | null) | null;
   resolveCallerPermissionMode?: (() => Promise<string | null> | string | null) | null;
   resolveCausalPermissionAuthority?: (() => Promise<unknown> | unknown) | null;
+  resolveActiveTurnId?: (() => Promise<string | null> | string | null) | null;
+  sessionInputVia?: 'action' | 'mcp';
   sessionAgentSpawnPolicyV1?: unknown;
   getSessionAgentSpawnPolicyV1?: (() => unknown) | null;
   registry?: ResolvedContributionRegistry;
@@ -282,6 +302,8 @@ export function createActionToolExecutorBridge(params: Readonly<{
             options,
             resolveCallerPermissionMode: params.resolveCallerPermissionMode,
             resolveCausalPermissionAuthority: params.resolveCausalPermissionAuthority,
+            resolveActiveTurnId: params.resolveActiveTurnId,
+            sessionInputVia: params.sessionInputVia,
             sessionAgentSpawnPolicyV1: params.sessionAgentSpawnPolicyV1,
             getSessionAgentSpawnPolicyV1: params.getSessionAgentSpawnPolicyV1 ?? null,
             actionsSettings: readActionsSettings(),
@@ -316,6 +338,8 @@ export function createActionToolExecutorBridge(params: Readonly<{
           options,
           resolveCallerPermissionMode: params.resolveCallerPermissionMode,
           resolveCausalPermissionAuthority: params.resolveCausalPermissionAuthority,
+          resolveActiveTurnId: params.resolveActiveTurnId,
+          sessionInputVia: params.sessionInputVia,
           sessionAgentSpawnPolicyV1: params.sessionAgentSpawnPolicyV1,
           getSessionAgentSpawnPolicyV1: params.getSessionAgentSpawnPolicyV1 ?? null,
           actionsSettings: readActionsSettings(),

@@ -256,6 +256,7 @@ export type PluginInvocationServicesFactoryParams = Readonly<{
     targetedContributions?: StableTargetedContributionsOwner;
     composerContent?: StablePluginComposerContentOwner;
     storagePaths?: PluginStorePaths;
+    resolveEphemeralStorageScope?(seed: PluginInvocationServicesSeed): import('@/plugins/runtime/context/storage').PluginStorageOwnerScope;
     daemonDatabase?: StablePluginDaemonDatabaseHost;
     accountStorage?: StablePluginAccountStorageHost;
     secrets?: StableDeclaredPluginSecretsHost;
@@ -368,6 +369,9 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
             return createStablePluginStorageService({
                 pluginId: seed.plugin.id,
                 paths: params.storagePaths,
+                ...(params.resolveEphemeralStorageScope
+                    ? { ephemeralScope: params.resolveEphemeralStorageScope(seed) }
+                    : {}),
                 sessionId: seed.session?.id,
                 generation: seed.generation,
                 signal: seed.signal,
@@ -554,7 +558,7 @@ export const PLUGIN_SERVICE_DESCRIPTORS = Object.freeze({
             return Object.freeze({
                 current: null,
                 list: fail, get: fail, watch: fail,
-                subagents: Object.freeze({ capabilities: fail, list: fail, get: fail, observe: fail, watch: fail }),
+                subagents: Object.freeze({ capabilities: fail, list: fail, get: fail, watch: fail }),
                 external: createUnavailableExternalSessionsAuthorService(code, diagnostic),
             });
         },

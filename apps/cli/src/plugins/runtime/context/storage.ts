@@ -67,6 +67,8 @@ export type CreatePluginStorageOwnerParams = Readonly<{
     pluginId: string;
     paths: PluginStorePaths;
     sessionId?: string | (() => string | null | undefined) | null;
+    /** Host-owned memory for the exact admitted `(pluginId, generation)`. */
+    ephemeralScope?: PluginStorageOwnerScope;
 }>;
 
 /**
@@ -258,6 +260,11 @@ function createMemoryScope(): PluginStorageOwnerScope {
     return scope;
 }
 
+/** Creates one host-private generation lifetime for `storage.ephemeral`. */
+export function createPluginEphemeralStorageScope(): PluginStorageOwnerScope {
+    return createMemoryScope();
+}
+
 function createFileScope(filePath: string): PluginStorageOwnerScope {
     async function readValues(): Promise<JsonObject> {
         try {
@@ -429,7 +436,7 @@ export function createPluginStorageOwner(params: CreatePluginStorageOwnerParams)
     const pluginStorageDir = join(params.paths.storageDir, pluginNamespace);
 
     return Object.freeze({
-        ephemeral: createMemoryScope(),
+        ephemeral: params.ephemeralScope ?? createPluginEphemeralStorageScope(),
         daemonSession: createDaemonSessionFileScope({
             paths: params.paths,
             pluginNamespace,

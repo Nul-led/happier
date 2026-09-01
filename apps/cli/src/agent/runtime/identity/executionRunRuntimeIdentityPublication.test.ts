@@ -121,22 +121,7 @@ describe('withExecutionRunRuntimeIdentityPublication', () => {
         },
       },
     });
-    expect(identity.runtimeDescriptor).toEqual({
-      v: 1,
-      agentId: 'acme.provider',
-      agent: {
-        agentExtra: {
-          owner: 'happier',
-          schemaId: 'happier.executionRunRuntimeIdentity',
-          v: 1,
-          runtimeHandle: {
-            backendId: 'acme.backend',
-            agentId: 'acme.provider',
-            provenance: 'external',
-          },
-        },
-      },
-    });
+    expect(identity.runtimeDescriptor).toBeNull();
   });
 
   it('preserves optional ExecutionRunHostRuntime method presence', () => {

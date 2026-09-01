@@ -354,6 +354,7 @@ import {
     readCurrentCommittedPluginGenerations,
     readCurrentPluginHardRevocationRevision,
     readPreparedImmutablePluginGeneration,
+    type CurrentPluginExecutionSelection,
 } from '../store/registry/generationStore';
 import {
     resolveCurrentInstalledPluginGenerationRuntimeExecutable,
@@ -1989,7 +1990,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 module: preparedActivationGraph.module,
                 committedAuthorization,
                 resolveRelativeModule,
-                persistValidatedAgentSessionRunnerFactories: async (facts) => {
+                persistValidatedAgentSessionRunnerFactories: async (facts, options) => {
                     await persistValidatedAgentSessionRunnerFactories({
                         paths: resolvePluginStorePaths({
                             happyHomeDir: params?.happyHomeDir,
@@ -1997,6 +1998,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                         record: admitted.record,
                         manifestAuthority: 'external',
                         factories: facts,
+                        assertCurrent: options.assertCurrent,
                     });
                     return facts;
                 },
@@ -2012,7 +2014,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
             trustPolicy: target.sourceSpec?.trustPolicy,
             committedAuthorization,
             resolveRelativeModule,
-            persistValidatedAgentSessionRunnerFactories: async (facts) => {
+            persistValidatedAgentSessionRunnerFactories: async (facts, options) => {
                 await persistValidatedAgentSessionRunnerFactories({
                     paths: resolvePluginStorePaths({
                         happyHomeDir: params?.happyHomeDir,
@@ -2020,6 +2022,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
                     record: admitted.record,
                     manifestAuthority: 'external',
                     factories: facts,
+                    assertCurrent: options.assertCurrent,
                 });
                 return facts;
             },
@@ -2890,6 +2893,10 @@ export async function resolveExecutablePluginRuntimeRegistry(
         for (const pluginId of new Set(pluginIds)) {
             retiredRuntimeConsumerPluginIds.add(pluginId);
             resourcesOwner?.retirePlugin(pluginId);
+            invocationServiceOwners.retireEphemeralStorageGeneration(
+                String(activatedRegistry.generation),
+                pluginId,
+            );
             const lifecycle = resolveRuntimeConsumerLifecycle(pluginId);
             if (!lifecycle.controller.signal.aborted) {
                 lifecycle.controller.abort(createRetiredPluginGenerationError(pluginId));
@@ -4555,11 +4562,11 @@ export async function resolveExecutablePluginRuntimeRegistry(
     refreshDeclaredEventSubscriptionBindings();
     const resolveCurrentFinalPolicyGeneration = (
         pluginId: string,
-        authority: PluginRuntimeGenerationAuthority | null = committed,
+        desired: CurrentPluginExecutionSelection | null | undefined =
+            committed?.generations.get(pluginId),
     ): PluginFinalPolicyCurrentGeneration | null => {
         const activationTarget = resolveExactActivationTarget(pluginId);
         const target = committed?.generations.get(pluginId);
-        const desired = authority?.generations.get(pluginId);
         const registryImmutableGenerationId = immutableGenerationIdsByPluginId.get(pluginId);
         if (
             !activationTarget
@@ -4589,6 +4596,13 @@ export async function resolveExecutablePluginRuntimeRegistry(
             selectedAccess: Object.freeze([...(desired?.installation?.optionalAccess ?? [])]),
         });
     };
+    const readCurrentFinalPolicyDesiredGeneration = async (
+        pluginId: string,
+    ): Promise<CurrentPluginExecutionSelection | null> => (
+        committed?.readCurrentExecutionSelection
+            ? await committed.readCurrentExecutionSelection(pluginId)
+            : committed?.generations.get(pluginId) ?? null
+    );
     const resolveVoiceProviderRuntimeLifecycle = (
         identity: PluginContributionIdentityV1,
     ): PluginContributionRuntimeLifecycle | null => {
@@ -4636,19 +4650,10 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 message: 'Plugin package identity is unavailable',
             });
         }
-        const currentAuthority = await readCurrentCommittedPluginGenerations(
-            resolvePluginStorePaths({ happyHomeDir: params?.happyHomeDir }),
-            { bundledArtifacts: bundledExecutableImmutableArtifacts },
-        );
-        if (currentAuthority && !await currentAuthority.isCurrent()) {
-            throw new PluginError({
-                code: 'plugin_final_generation_retired',
-                message: 'Plugin generation authority is unavailable',
-            });
-        }
+        const desired = await readCurrentFinalPolicyDesiredGeneration(pluginId);
         const current = resolveCurrentFinalPolicyGeneration(
             pluginId,
-            currentAuthority,
+            desired,
         );
         if (!current) {
             throw new PluginError({
@@ -4771,19 +4776,10 @@ export async function resolveExecutablePluginRuntimeRegistry(
                 message: 'Fetch method is not currently authorized',
             });
         }
-        const currentAuthority = await readCurrentCommittedPluginGenerations(
-            resolvePluginStorePaths({ happyHomeDir: params?.happyHomeDir }),
-            { bundledArtifacts: bundledExecutableImmutableArtifacts },
-        );
-        if (currentAuthority && !await currentAuthority.isCurrent()) {
-            throw new PluginError({
-                code: 'plugin_final_generation_retired',
-                message: 'Plugin generation authority is unavailable',
-            });
-        }
+        const desired = await readCurrentFinalPolicyDesiredGeneration(pluginId);
         const current = resolveCurrentFinalPolicyGeneration(
             pluginId,
-            currentAuthority,
+            desired,
         );
         if (!current) {
             throw new PluginError({
@@ -5388,6 +5384,7 @@ export async function resolveExecutablePluginRuntimeRegistry(
     async function recordPluginActivationFailure(pluginId: string, message: string): Promise<void> {
         activatedRegistry.recordPluginActivationFailure(pluginId, message);
         await retirePluginConsumers([pluginId]);
+        refreshPluginFinalPolicyCurrentGeneration(pluginId);
         refreshPluginDiagnostics(pluginId, readCurrentScmBackendDiagnostics());
     }
 

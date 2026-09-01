@@ -6,7 +6,6 @@ import {
   buildAcpConfigOptionOverridesV1,
   AccountSettingMutationV1Schema,
   BackendTargetRefV2Schema,
-  DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1,
   derivePluginSessionInputLocalIdV1,
   MemorySearchResultV1Schema,
   MemoryWindowV1Schema,
@@ -18,13 +17,13 @@ import {
   installPromptRegistryItemInLibrary,
   updatePromptBundleInLibrary,
   updatePromptDocInLibrary,
-  SessionAgentSpawnPolicyV1Schema,
   SessionMcpSelectionV1Schema,
   SessionModelSelectionV1Schema,
   SessionModelSelectionResolutionError,
   SessionCreationCorrespondenceV1Schema,
   SessionCreationTargetPreparationResultV1Schema,
   SessionCreationDirectoryApprovalV1Schema,
+  HandoffTargetReplacementPreflightResultV1Schema,
   SCM_WORKTREE_REMOVE_AUTHORIZATION_TOKEN,
   SessionAuthoringTerminalV1Schema,
   normalizeSessionCreationOrganizationPlacementV1,
@@ -106,7 +105,10 @@ import { notifyComposerAttachmentsAfterMessageAccepted } from '@/session/compose
 import {
   sendSessionMessage,
 } from '@/session/services/sendSessionMessage';
+import { findPersistedSessionUserMessageAdmission } from '@/api/session/client/transcript/sessionUserMessageAdmissionRejoin';
+import { validateComposerAttachmentRejoinCorrespondenceV1 } from '@/session/services/admitSessionStructuredInputV1';
 import {
+  buildCausalSessionInputAdmissionV1,
   buildSessionSpawnInitialInputAdmissionForLocalIdV1,
   buildPluginSessionInputAdmissionV1,
 } from '@/session/services/sessionInputAdmissionIdentity';
@@ -453,65 +455,31 @@ function readConfigOptionsRecord(value: unknown): Record<string, SpawnConfigOpti
   return Object.fromEntries(entries) as Record<string, SpawnConfigOptionValue>;
 }
 
-function hasExplicitString(value: unknown): boolean {
-  return typeof value === 'string' && value.trim().length > 0;
-}
-
-function hasExplicitValue(value: unknown): boolean {
-  return value !== undefined;
-}
-
-function normalizeSessionAgentSpawnPolicy(raw: unknown): SessionAgentSpawnPolicyV1 {
-  const parsed = SessionAgentSpawnPolicyV1Schema.safeParse(raw);
-  return parsed.success ? parsed.data : DEFAULT_SESSION_AGENT_SPAWN_POLICY_V1;
-}
-
-function resolveSpawnPolicyDeniedField(params: Readonly<{
+function resolveParentSpawnPolicyDeniedField(params: Readonly<{
   policy: SessionAgentSpawnPolicyV1;
-  input: Readonly<{
-    path?: unknown;
-    directory?: unknown;
-    host?: unknown;
-    machineId?: unknown;
-    serverId?: unknown;
-    agentId?: unknown;
-    backendTargetKey?: unknown;
-    backendTarget?: unknown;
-    modelId?: unknown;
-    providerConnectionId?: unknown;
-    permissionMode?: unknown;
-    agentModeId?: unknown;
-    sessionConfigOptionOverrides?: unknown;
-    configOptions?: unknown;
-    profileId?: unknown;
-    environmentVariables?: unknown;
-    connectedServices?: unknown;
-    mcpSelection?: unknown;
-    transcriptStorage?: unknown;
-    runtimeDescriptorV1?: unknown;
-  }>;
+  input: SessionSpawnNewInputV2;
+  requestedBackendTarget: BackendTargetRefV2;
+  parentDirectory: string | null;
+  parentMachineId: string | null;
+  parentBackendTarget: BackendTargetRefV2 | null;
 }>): string | null {
   const { policy, input } = params;
-  if (!policy.allowCustomDirectory && hasExplicitString(input.path)) return 'path';
-  if (!policy.allowCustomDirectory && hasExplicitString(input.directory)) return 'directory';
-  if (!policy.allowCrossMachine && hasExplicitString(input.host)) return 'host';
-  if (!policy.allowCrossMachine && hasExplicitString(input.machineId)) return 'machineId';
-  if (!policy.allowCrossMachine && hasExplicitString(input.serverId)) return 'serverId';
-  if (!policy.allowBackendTargetOverride && hasExplicitString(input.agentId)) return 'agentId';
-  if (!policy.allowBackendTargetOverride && hasExplicitString(input.backendTargetKey)) return 'backendTargetKey';
-  if (!policy.allowBackendTargetOverride && hasExplicitValue(input.backendTarget)) return 'backendTarget';
-  if (!policy.allowBackendTargetOverride && hasExplicitValue(input.runtimeDescriptorV1)) return 'runtimeDescriptorV1';
-  if (!policy.allowModelOverride && hasExplicitString(input.modelId)) return 'modelId';
-  if (!policy.allowModelOverride && input.providerConnectionId !== undefined) return 'providerConnectionId';
-  if (!policy.allowPermissionModeOverride && hasExplicitString(input.permissionMode)) return 'permissionMode';
-  if (!policy.allowAgentModeOverride && hasExplicitString(input.agentModeId)) return 'agentModeId';
-  if (!policy.allowConfigOptionOverrides && hasExplicitValue(input.sessionConfigOptionOverrides)) return 'sessionConfigOptionOverrides';
-  if (!policy.allowConfigOptionOverrides && hasExplicitValue(input.configOptions)) return 'configOptions';
-  if (!policy.allowProfileOverride && hasExplicitString(input.profileId)) return 'profileId';
-  if (!policy.allowEnvironmentVariables && hasExplicitValue(input.environmentVariables)) return 'environmentVariables';
-  if (!policy.allowConnectedServicesOverride && hasExplicitValue(input.connectedServices)) return 'connectedServices';
-  if (!policy.allowMcpSelectionOverride && hasExplicitValue(input.mcpSelection)) return 'mcpSelection';
-  if (!policy.allowTranscriptStorageOverride && hasExplicitValue(input.transcriptStorage)) return 'transcriptStorage';
+  if (
+    !policy.allowCustomDirectory
+    && (!params.parentDirectory || input.directory !== params.parentDirectory)
+  ) return 'directory';
+  if (
+    !policy.allowCrossMachine
+    && (!params.parentMachineId || input.executionTarget.machineId !== params.parentMachineId)
+  ) return 'executionTarget.machineId';
+  if (
+    !policy.allowBackendTargetOverride
+    && (
+      !params.parentBackendTarget
+      || buildBackendTargetKeyV2(params.requestedBackendTarget)
+        !== buildBackendTargetKeyV2(params.parentBackendTarget)
+    )
+  ) return 'agentTarget';
   return null;
 }
 
@@ -2227,6 +2195,39 @@ export function createCliActionDeps(params: Readonly<{
       request,
       signal,
     ),
+    sessionHandoffTargetReplacementApprovalPreflight: async ({
+      targetMachineId,
+      targetPath,
+      workspaceAction,
+      serverId,
+      operationId,
+      signal,
+    }) => {
+      if (workspaceAction?.kind !== 'copy_once' && workspaceAction?.kind !== 'create_relationship') {
+        return { type: 'not_required' as const };
+      }
+      if (!params.credentials || !targetPath?.trim() || !serverId?.trim() || !operationId.trim()) {
+        return { type: 'error' as const, result: { ok: false, errorCode: 'invalid_input', error: 'invalid_input' } };
+      }
+      try {
+        return HandoffTargetReplacementPreflightResultV1Schema.parse(await callMachineRpc({
+          credentials: params.credentials,
+          machineId: targetMachineId,
+          method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_REPLACEMENT_PREFLIGHT,
+          request: {
+            v: 1,
+            serverId: serverId.trim(),
+            machineId: targetMachineId,
+            operationId: operationId.trim(),
+            targetPath: targetPath.trim(),
+          },
+          ...(signal ? { signal } : {}),
+        }));
+      } catch (error) {
+        const errorCode = readRpcErrorCode(error) ?? 'target_unavailable';
+        return { type: 'error' as const, result: { ok: false, errorCode, error: errorCode } };
+      }
+    },
     sessionHandoffStart: async ({
       sessionId,
       targetMachineId,
@@ -2236,6 +2237,9 @@ export function createCliActionDeps(params: Readonly<{
       workspaceSyncSourceWorkspaceRefId,
       workspaceSyncTargetWorkspaceRefId,
       workspaceSyncSettingsVersion,
+      serverId,
+      actionRequestId,
+      handoffTargetReplacementApproval,
       signal,
     }) => {
       if (!params.credentials) return notSupported();
@@ -2268,12 +2272,38 @@ export function createCliActionDeps(params: Readonly<{
           ...(targetSessionStorageMode ? { targetSessionStorageMode } : {}),
           preferredTransportStrategies: ['direct_peer', 'server_routed_stream'],
           ...(workspaceAction ? { workspaceAction } : {}),
+          ...(serverId ? { accountServerId: serverId } : {}),
           ...(workspaceSyncSourceWorkspaceRefId ? { workspaceSyncSourceWorkspaceRefId } : {}),
           ...(workspaceSyncTargetWorkspaceRefId ? { workspaceSyncTargetWorkspaceRefId } : {}),
           ...(workspaceSyncSettingsVersion === undefined ? {} : { workspaceSyncSettingsVersion }),
+          ...(actionRequestId ? { actionRequestId } : {}),
+          ...(handoffTargetReplacementApproval ? { handoffTargetReplacementApproval } : {}),
         },
         ...(signal ? { signal } : {}),
       });
+    },
+    sessionSpawnNewAgentPolicyPreflight: async ({ input, policy }) => {
+      const requestedTarget = resolveSessionSpawnAgentTarget(input.agentTarget);
+      if (!requestedTarget) return { type: 'denied' as const, field: 'agentTarget' };
+      const parentDirectory = await resolveCurrentSessionValue('path');
+      const parentMachineId = await resolveCurrentSessionValue('machineId');
+      let parentBackendTarget: BackendTargetRefV2 | null = null;
+      try {
+        parentBackendTarget = params.getCurrentSessionBackendTarget?.() ?? null;
+      } catch {
+        parentBackendTarget = null;
+      }
+      const deniedField = resolveParentSpawnPolicyDeniedField({
+        policy,
+        input,
+        requestedBackendTarget: requestedTarget.backendTarget,
+        parentDirectory,
+        parentMachineId,
+        parentBackendTarget,
+      });
+      return deniedField
+        ? { type: 'denied' as const, field: deniedField }
+        : { type: 'allowed' as const };
     },
     sessionSpawnNewDirectoryApprovalPreflight: async ({ input, signal }) => {
       if (!params.credentials) {
@@ -2761,6 +2791,7 @@ export function createCliActionDeps(params: Readonly<{
       permissionModeOverride,
       modelOverride,
       providerConnectionId,
+      sessionInputSource,
       callerSurface,
       signal,
     }) => {
@@ -2835,12 +2866,21 @@ export function createCliActionDeps(params: Readonly<{
             ...(source ? { source } : {}),
           })
         : undefined;
+      const causalSessionInputAdmission = sessionInputSource
+        ? buildCausalSessionInputAdmissionV1(sessionInputSource)
+        : undefined;
+
+      const authoredMessageText = String(message ?? '');
 
       // Declared attachments reach the canonical structured-input admission
       // owner before the Session writer, exactly as a Composer-authored draft
-      // does. Only a plugin caller owns a declaration the host can qualify.
+      // does. A retry first consults the durable Pending/transcript owner: the
+      // plugin preparation callback is not an idempotent boundary and must not
+      // run again after an outcome-unknown write.
       let admittedAttachmentMeta: Record<string, unknown> | undefined;
       let admittedComposerAttachments: readonly ComposerAttachmentInputV1[] = [];
+      let admittedMessageText = authoredMessageText;
+      let rejoinedMessageMeta: Record<string, unknown> | undefined;
       const composerAttachmentRegistry = params.resolveComposerAttachmentSendPreparation?.() ?? null;
       if (attachments && attachments.length > 0) {
         if (!pluginCaller || !pluginLocalId) {
@@ -2849,20 +2889,75 @@ export function createCliActionDeps(params: Readonly<{
             code: 'session_input_untrusted_assertion' as const,
           };
         }
-        const attachmentAdmission = await admitPluginSessionInputAttachmentsV1({
-          attachments: composerAttachmentRegistry,
-          pluginId: pluginCaller.pluginId,
-          sessionId,
-          messageLocalId: pluginLocalId,
-          text: String(message ?? ''),
-          authored: attachments,
-          ...(signal ? { signal } : {}),
-        });
-        if (attachmentAdmission.status === 'rejected') {
-          return { status: 'rejected' as const, code: attachmentAdmission.code };
+        const transport = await resolveTransportForSession(sessionId);
+        if (!transport.ok) {
+          return {
+            status: 'rejected' as const,
+            code: 'session_input_target_unavailable' as const,
+          };
         }
-        admittedAttachmentMeta = attachmentAdmission.meta;
-        admittedComposerAttachments = attachmentAdmission.attachments;
+        const rawAttachmentMeta = {
+          [HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1]: {
+            v: 1 as const,
+            composerAttachments: buildPluginSessionInputAttachmentDraftsV1({
+              pluginId: pluginCaller.pluginId,
+              messageLocalId: pluginLocalId,
+              authored: attachments,
+            }),
+          },
+        };
+        let persisted: Awaited<ReturnType<typeof findPersistedSessionUserMessageAdmission>>;
+        try {
+          persisted = await findPersistedSessionUserMessageAdmission({
+            token: params.credentials.token,
+            sessionId: transport.sessionId,
+            localId: pluginLocalId,
+            queryContext: transport.mode === 'plain'
+              ? { encryptionMode: 'plain' }
+              : {
+                  encryptionMode: 'e2ee',
+                  encryptionKey: transport.ctx.encryptionKey,
+                  encryptionVariant: transport.ctx.encryptionVariant,
+                },
+          });
+        } catch {
+          return {
+            status: 'outcomeUnknown' as const,
+            localId: pluginLocalId,
+            code: 'session_input_rejoin_unavailable',
+          };
+        }
+        if (persisted) {
+          try {
+            validateComposerAttachmentRejoinCorrespondenceV1({
+              meta: rawAttachmentMeta,
+              preparedComposerAttachments: persisted.composerAttachments,
+            });
+          } catch {
+            return {
+              status: 'rejected' as const,
+              code: 'session_input_idempotency_conflict' as const,
+            };
+          }
+          admittedMessageText = persisted.text;
+          rejoinedMessageMeta = persisted.meta;
+          admittedComposerAttachments = persisted.composerAttachments;
+        } else {
+          const attachmentAdmission = await admitPluginSessionInputAttachmentsV1({
+            attachments: composerAttachmentRegistry,
+            pluginId: pluginCaller.pluginId,
+            sessionId: transport.sessionId,
+            messageLocalId: pluginLocalId,
+            text: authoredMessageText,
+            authored: attachments,
+            ...(signal ? { signal } : {}),
+          });
+          if (attachmentAdmission.status === 'rejected') {
+            return { status: 'rejected' as const, code: attachmentAdmission.code };
+          }
+          admittedAttachmentMeta = attachmentAdmission.meta;
+          admittedComposerAttachments = attachmentAdmission.attachments;
+        }
       }
 
       const dispatchMessageHook = async (canonicalSessionId: string, source: 'plugin' | 'user') => {
@@ -2872,7 +2967,7 @@ export function createCliActionDeps(params: Readonly<{
             happySessionId: canonicalSessionId,
             payload: {
               sessionId: canonicalSessionId,
-              text: String(message ?? ''),
+              text: admittedMessageText,
               source,
             },
           });
@@ -2881,17 +2976,24 @@ export function createCliActionDeps(params: Readonly<{
         }
       };
 
-      if (pluginCaller && pluginLocalId && pluginInputAdmission) {
+      const protectedInputAdmission = pluginInputAdmission ?? causalSessionInputAdmission;
+      if (protectedInputAdmission) {
         const protectedResult = await sendSessionMessage({
           credentials: params.credentials,
           idOrPrefix: sessionId,
-          message: String(message ?? ''),
+          message: admittedMessageText,
           requestedAction,
           wait: normalizedWait,
           timeoutMs: normalizedTimeoutSeconds * 1000,
-          localId: pluginLocalId,
-          inputAdmission: pluginInputAdmission,
-          ...((admittedAttachmentMeta || messageMeta || displayText)
+          ...(pluginLocalId
+            ? { localId: pluginLocalId }
+            : typeof localId === 'string' && localId.trim().length > 0
+              ? { localId }
+              : {}),
+          inputAdmission: protectedInputAdmission,
+          ...(rejoinedMessageMeta
+            ? { messageMeta: rejoinedMessageMeta }
+            : (admittedAttachmentMeta || messageMeta || displayText)
             ? {
                 messageMeta: {
                   ...(messageMeta ?? {}),
@@ -2930,7 +3032,7 @@ export function createCliActionDeps(params: Readonly<{
             signal: signal ?? new AbortController().signal,
           });
         }
-        await dispatchMessageHook(canonicalSessionId, 'plugin');
+        await dispatchMessageHook(canonicalSessionId, pluginCaller ? 'plugin' : 'user');
         return admissionResult;
       }
 

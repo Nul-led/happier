@@ -576,7 +576,7 @@ describe('fork connected-service child materialization identity', () => {
     });
   });
 
-  it('adds a fresh child identity when configured ACP latest fork uses the bridge surface', async () => {
+  it('does not infer ACP latest-fork authority for an Account-configured backend', async () => {
     const fork = vi.fn().mockResolvedValue({
       providerSessionId: 'vendor-child-acp',
       launch: {},
@@ -594,7 +594,6 @@ describe('fork connected-service child materialization identity', () => {
       directory: '/tmp/project',
       effectiveCutoffSeqInclusive: 10,
       spawnNonce: 'acp-nonce',
-      forkIsConfiguredAcp: true,
       forkBackendResolution: createConfiguredAcpForkResolution(),
       inheritedForkOverrides: createConnectedServiceInheritedOverrides(),
       forkSurface: { fork } satisfies ForkSurfaceV1,
@@ -602,25 +601,10 @@ describe('fork connected-service child materialization identity', () => {
       stopSession: vi.fn(),
     });
 
-    const spawnIdentity = spawnSession.mock.calls[0]?.[0].connectedServiceMaterializationIdentityV1;
-    const updatedMetadata = readUpdatedMetadata();
-    expect(result).toEqual({ ok: true, childSessionId: 'child-acp' });
-    expect(fork).toHaveBeenCalledWith({
-      parentSessionId: 'parent-session',
-      parentMetadata: {
-        connectedServiceMaterializationIdentityV1: PARENT_MATERIALIZATION_IDENTITY,
-      },
-      directory: '/tmp/project',
-      forkPoint: { kind: 'latest' },
-    });
+    expect(result).toBeNull();
+    expect(fork).not.toHaveBeenCalled();
     expect(mocks.createConfiguredAcpBackend).not.toHaveBeenCalled();
-    expect(spawnIdentity).toEqual(expect.objectContaining({
-      v: 1,
-      id: expect.stringMatching(/^csm_/),
-    }));
-    expect(spawnIdentity?.id).not.toBe(PARENT_MATERIALIZATION_IDENTITY.id);
-    expect(updatedMetadata.connectedServices).toEqual(CONNECTED_SERVICES);
-    expect(updatedMetadata.connectedServiceMaterializationIdentityV1).toEqual(spawnIdentity);
+    expect(spawnSession).not.toHaveBeenCalled();
   });
 
   it('uses a bridge-resolved built-in fork surface for ACP latest fork without catalog fallback', async () => {
@@ -649,7 +633,6 @@ describe('fork connected-service child materialization identity', () => {
       directory: '/tmp/project',
       effectiveCutoffSeqInclusive: 10,
       spawnNonce: 'built-in-acp-nonce',
-      forkIsConfiguredAcp: false,
       forkBackendResolution: createBuiltInForkResolution(),
       inheritedForkOverrides: {
         metadata: {},
@@ -676,7 +659,7 @@ describe('fork connected-service child materialization identity', () => {
     }));
   });
 
-  it('fails closed without spawning when configured ACP bridge fork returns an empty vendor session id', async () => {
+  it('fails closed without spawning when ACP latest fork returns an empty vendor session id', async () => {
     const fork = vi.fn().mockResolvedValue({
       providerSessionId: '   ',
       launch: {},
@@ -692,8 +675,7 @@ describe('fork connected-service child materialization identity', () => {
       directory: '/tmp/project',
       effectiveCutoffSeqInclusive: 10,
       spawnNonce: 'empty-acp-nonce',
-      forkIsConfiguredAcp: true,
-      forkBackendResolution: createConfiguredAcpForkResolution(),
+      forkBackendResolution: createBuiltInForkResolution(),
       inheritedForkOverrides: {
         metadata: {},
         spawn: {},
@@ -733,8 +715,7 @@ describe('fork connected-service child materialization identity', () => {
       directory: '/tmp/project',
       effectiveCutoffSeqInclusive: 10,
       spawnNonce: 'private-state-acp',
-      forkIsConfiguredAcp: true,
-      forkBackendResolution: createConfiguredAcpForkResolution(),
+      forkBackendResolution: createBuiltInForkResolution(),
       inheritedForkOverrides: { metadata: {}, spawn: {} },
       forkSurface: { fork } as ForkSurfaceV1,
       spawnSession,
@@ -766,7 +747,6 @@ describe('fork connected-service child materialization identity', () => {
       parentMetadata: {},
       directory: '/tmp/project',
       effectiveCutoffSeqInclusive: 10,
-      forkIsConfiguredAcp: false,
       spawnNonce: 'acp-timeout-nonce',
       forkBackendResolution: createBuiltInForkResolution(),
       inheritedForkOverrides: {
@@ -805,7 +785,6 @@ describe('fork connected-service child materialization identity', () => {
       parentMetadata: {},
       directory: '/tmp/project',
       effectiveCutoffSeqInclusive: 10,
-      forkIsConfiguredAcp: false,
       spawnNonce: 'acp-error-nonce',
       forkBackendResolution: createBuiltInForkResolution(),
       inheritedForkOverrides: {
@@ -848,7 +827,6 @@ describe('fork connected-service child materialization identity', () => {
       parentMetadata: {},
       directory: '/tmp/project',
       effectiveCutoffSeqInclusive: 10,
-      forkIsConfiguredAcp: false,
       spawnNonce: 'acp-finalization-failure',
       forkBackendResolution: createBuiltInForkResolution(),
       inheritedForkOverrides: {
@@ -906,7 +884,6 @@ describe('fork connected-service child materialization identity', () => {
       parentMetadata: {},
       directory: '/tmp/project',
       effectiveCutoffSeqInclusive: 10,
-      forkIsConfiguredAcp: false,
       spawnNonce: 'acp-auth-failure',
       forkBackendResolution: createBuiltInForkResolution(),
       inheritedForkOverrides: {

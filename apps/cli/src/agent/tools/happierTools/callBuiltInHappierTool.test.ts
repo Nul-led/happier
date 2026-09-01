@@ -44,6 +44,7 @@ const createCliActionExecutor = vi.fn(() => ({
   execute,
 }));
 const execute = vi.fn();
+const callSessionRpc = vi.fn();
 
 vi.mock('@/session/services/resolveSessionTransportContext', () => ({
   resolveSessionTransportContext,
@@ -66,7 +67,7 @@ vi.mock('@/daemon/controlClient', () => ({
 }));
 
 vi.mock('@/session/transport/rpc/sessionRpc', () => ({
-  callSessionRpc: vi.fn(),
+  callSessionRpc,
 }));
 
 const env = process.env;
@@ -150,7 +151,7 @@ describe('callBuiltInHappierTool', () => {
     );
   });
 
-  it('uses the semantic agent surface and session machine for an internal bridge call', async () => {
+  it('routes the internal Agent bridge to the live Session tool owner without reconstructing authority', async () => {
     resolveSessionTransportContext.mockResolvedValueOnce({
       ok: true,
       sessionId: 'sess-1',
@@ -158,7 +159,7 @@ describe('callBuiltInHappierTool', () => {
       ctx: null,
       mode: 'plain' as const,
     });
-    execute.mockResolvedValueOnce({ ok: true, result: { items: [] } });
+    callSessionRpc.mockResolvedValueOnce({ ok: true, result: { items: [] } });
 
     const { callBuiltInHappierTool } = await import('./callBuiltInHappierTool');
     await callBuiltInHappierTool({
@@ -173,26 +174,27 @@ describe('callBuiltInHappierTool', () => {
       toolCallId: 'pi-tool-call-1',
     });
 
-    expect(execute).toHaveBeenCalledWith(
-      'memory.search',
-      expect.objectContaining({ machineId: 'machine-1' }),
-      expect.objectContaining({
-        defaultSessionId: 'sess-1',
-        defaultSessionMachineId: 'machine-1',
-        surface: 'agent',
-        callerPermissionMode: 'safe-yolo',
-        actionRequestId: 'pi-tool-call-1',
-        approvalOrigin: {
-          kind: 'transcript_tool_call',
-          sessionId: 'sess-1',
-          toolCallId: 'pi-tool-call-1',
-          toolName: 'action_execute',
+    expect(callSessionRpc).toHaveBeenCalledWith({
+      token: 'token',
+      sessionId: 'sess-1',
+      method: 'session.agentTool.call.v1',
+      request: {
+        toolName: 'action_execute',
+        args: {
+          actionId: 'memory.search',
+          input: { query: { v: 1, query: 'handoff', scope: { type: 'global' }, mode: 'hints' } },
         },
-      }),
-    );
+        toolCallId: 'pi-tool-call-1',
+      },
+      mode: 'plain',
+      ctx: null,
+      timeoutMs: expect.any(Number),
+    });
+    expect(createCliActionExecutor).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
-  it('rejects agent bridge calls when session permission metadata cannot be decrypted', async () => {
+  it('does not decrypt mutable Session metadata in the subprocess before live authorization', async () => {
     resolveSessionTransportContext.mockResolvedValueOnce({
       ok: true,
       sessionId: 'sess-1',
@@ -206,6 +208,7 @@ describe('callBuiltInHappierTool', () => {
     });
 
     const { callBuiltInHappierTool } = await import('./callBuiltInHappierTool');
+    callSessionRpc.mockResolvedValueOnce({ ok: false, errorCode: 'causal_permission_authority_invalid', error: 'causal_permission_authority_invalid' });
     const result = await callBuiltInHappierTool({
       credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32).fill(1) } },
       sessionId: 'sess-1',
@@ -218,11 +221,8 @@ describe('callBuiltInHappierTool', () => {
       toolCallId: 'pi-tool-call-1',
     });
 
-    expect(result).toEqual({
-      ok: false,
-      errorCode: 'session_metadata_unavailable',
-      error: 'Session metadata is unavailable for Agent tool authorization',
-    });
+    expect(result).toEqual({ ok: false, errorCode: 'causal_permission_authority_invalid', error: 'causal_permission_authority_invalid' });
+    expect(callSessionRpc).toHaveBeenCalledOnce();
     expect(createCliActionExecutor).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
   });

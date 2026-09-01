@@ -15,7 +15,6 @@ export function buildExecutionRunRuntimeIdentityPublication(
   resolution: EngineAdapterResolution,
 ): EngineRuntimePublication {
   return buildRuntimePublicationFromEngineResolution(resolution, {
-    descriptorSchemaId: 'happier.executionRunRuntimeIdentity',
     includeExecutionRun: true,
   });
 }

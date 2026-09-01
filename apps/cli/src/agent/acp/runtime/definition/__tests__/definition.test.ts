@@ -9,7 +9,6 @@ import {
   createAcpBackendFromDefinition,
   createAcpRuntimeDefinition,
   createAcpTransportHandlerFromDefinition,
-  createAcpRuntimeCoreFromDefinition,
   normalizeConfiguredAcpDefinition,
   normalizePluginDeclarativeAcpRuntime,
 } from '../index';
@@ -164,35 +163,6 @@ describe('ACP runtime definitions', () => {
     expect('auth' in definition).toBe(false);
   });
 
-  it('adapts ACP message meta hooks to the provider message meta contract', () => {
-    const definition = createHostAcpDefinitionForTest({
-      pluginId: 'acme.plugin',
-      spec: {
-        backendId: 'acme.plugin.acp',
-        transport: {
-          kind: 'stdio',
-          launch: {
-            kind: 'executable',
-            command: 'acme-agent',
-          },
-        },
-        ux: {
-          title: 'Acme Agent',
-        },
-        messageMeta: {
-          enrichOutgoing: (message, context) => ({ acpMessage: message, context }),
-        },
-      },
-    });
-
-    const adapter = createAcpRuntimeCoreFromDefinition(definition);
-
-    expect(adapter.messageMeta?.buildOutgoingMessageMetaExtras?.({ id: 'msg-1' })).toEqual({
-      acpMessage: { id: 'msg-1' },
-      context: undefined,
-    });
-  });
-
   it('uses the backend id as plugin ACP title when ux metadata is omitted', () => {
     const definition = createHostAcpDefinitionForTest({
       pluginId: 'acme.plugin',
@@ -235,34 +205,6 @@ describe('ACP runtime definitions', () => {
       name: 'Acme Named Agent',
       title: 'Acme Named Agent',
     });
-  });
-
-  it('fails closed when ACP outgoing message meta hooks return a promise', () => {
-    const definition = createHostAcpDefinitionForTest({
-      pluginId: 'acme.plugin',
-      spec: {
-        backendId: 'acme.plugin.async-meta',
-        transport: {
-          kind: 'stdio',
-          launch: {
-            kind: 'executable',
-            command: 'acme-agent',
-          },
-        },
-        ux: {
-          title: 'Acme Async Meta Agent',
-        },
-        messageMeta: {
-          // @ts-expect-error Boundary regression: runtime must fail closed on unchecked async hooks.
-          enrichOutgoing: async (message) => ({ acpMessage: message }),
-        },
-      },
-    });
-
-    const adapter = createAcpRuntimeCoreFromDefinition(definition);
-
-    expect(() => adapter.messageMeta?.buildOutgoingMessageMetaExtras?.({ id: 'msg-1' }))
-      .toThrow(/messageMeta\.enrichOutgoing returned a Promise/);
   });
 
   it('normalizes plugin ACP specs and preserves plugin-owned MCP policy', () => {
@@ -381,7 +323,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('resolves plugin-owned ACP system-tool launches through the bound plugin exec service', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const resolveLaunch = (runtimeCore as Record<string, unknown>).resolveAcpRuntimeLaunch;
     expect(resolveLaunch).toEqual(expect.any(Function));
 
@@ -481,7 +423,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('builds generic transport tool-name inference from provider-owned ACP definitions', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const createTransport = (runtimeCore as Record<string, unknown>).createAcpTransportHandlerFromDefinition;
     expect(createTransport).toEqual(expect.any(Function));
 
@@ -542,7 +484,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('builds runtime transport handlers from V1 T.4 timeout fields', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const createTransport = (runtimeCore as Record<string, unknown>).createAcpTransportHandlerFromDefinition;
     expect(createTransport).toEqual(expect.any(Function));
 
@@ -598,7 +540,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('builds runtime transport handlers from provider-authored stderr and tool heuristics', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const createTransport = (runtimeCore as Record<string, unknown>).createAcpTransportHandlerFromDefinition;
     expect(createTransport).toEqual(expect.any(Function));
 
@@ -735,7 +677,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('resolves runtime launch args from permission-mode argv maps without spawning ACP', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const resolveLaunch = (runtimeCore as Record<string, unknown>).resolveAcpRuntimeLaunch;
     expect(resolveLaunch).toEqual(expect.any(Function));
 
@@ -779,7 +721,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('accepts Tier-2 callback declarations after runtime execution support is present', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const assertSupported = (runtimeCore as Record<string, unknown>).assertAcpRuntimeDefinitionSupported;
     expect(assertSupported).toEqual(expect.any(Function));
 
@@ -810,7 +752,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('lets argvBuilder replace final declarative launch argv without duplicating permission args', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const resolveLaunch = (runtimeCore as Record<string, unknown>).resolveAcpRuntimeLaunch;
     expect(resolveLaunch).toEqual(expect.any(Function));
     const observed: unknown[] = [];
@@ -885,7 +827,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('passes materialized launch env to argvBuilder for env-shaped argv callbacks', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const resolveLaunch = (runtimeCore as Record<string, unknown>).resolveAcpRuntimeLaunch;
     expect(resolveLaunch).toEqual(expect.any(Function));
     const observed: unknown[] = [];
@@ -950,7 +892,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('rejects empty argvBuilder output as a typed callback startup failure', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const resolveLaunch = (runtimeCore as Record<string, unknown>).resolveAcpRuntimeLaunch;
     expect(resolveLaunch).toEqual(expect.any(Function));
 
@@ -986,7 +928,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('wraps thrown argvBuilder failures as typed callback startup failures', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const resolveLaunch = (runtimeCore as Record<string, unknown>).resolveAcpRuntimeLaunch;
     expect(resolveLaunch).toEqual(expect.any(Function));
 
@@ -1024,7 +966,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('supports async argvBuilder callbacks with the same launch contract', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const resolveLaunch = (runtimeCore as Record<string, unknown>).resolveAcpRuntimeLaunch;
     expect(resolveLaunch).toEqual(expect.any(Function));
 
@@ -1058,7 +1000,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('overlays envBuilder output after host launch env materialization', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const resolveLaunch = (runtimeCore as Record<string, unknown>).resolveAcpRuntimeLaunch;
     expect(resolveLaunch).toEqual(expect.any(Function));
     const observedEnv: Array<Readonly<Record<string, string>>> = [];
@@ -1116,7 +1058,7 @@ describe('ACP runtime definitions', () => {
   });
 
   it('passes permissionMode to envBuilder callbacks after host env materialization', async () => {
-    const runtimeCore = await import('../runtimeCore');
+    const runtimeCore = await import('../index');
     const resolveLaunch = (runtimeCore as Record<string, unknown>).resolveAcpRuntimeLaunch;
     expect(resolveLaunch).toEqual(expect.any(Function));
 
@@ -1407,51 +1349,6 @@ describe('ACP runtime definitions', () => {
     await expect(wrappedHandler?.handleToolCall('tool-1', 'unknown', {})).resolves.toEqual({
       decision: 'denied',
       rationale: 'permissionDecision deferred without a fallback permission handler',
-    });
-  });
-
-  it('publishes configured ACP session metadata from runtime plans launched as configured targets', async () => {
-    const definition = createHostAcpDefinitionForTest({
-      pluginId: 'acme.plugin',
-      spec: {
-        backendId: 'acme.plugin-backed-acp.backend',
-        ux: {
-          title: 'Plugin Review Bot',
-        },
-        transport: {
-          kind: 'stdio',
-          launch: {
-            kind: 'executable',
-            command: 'acme-agent',
-          },
-        },
-      },
-    });
-
-    const adapter = createAcpRuntimeCoreFromDefinition(definition);
-    const plan = await adapter.runtimeCore.createSessionRuntime({
-      credentials: { token: 'token-only', encryption: null },
-      backendTarget: {
-        kind: 'backend',
-        backendId: 'acme.plugin-backed-acp.backend',
-        configuredBackendId: 'acme.plugin-backed-acp.backend',
-        sourceKind: 'configured',
-      },
-    });
-
-    expect(plan.config.flavor).toBe('acp:acme.plugin-backed-acp.backend');
-    expect(plan.config.agentMessageType).toBe('acp:acme.plugin-backed-acp.backend');
-    expect(plan.config.runtimeActivityApplicability).toBe('not_applicable');
-    expect(plan.config.augmentSessionMetadata?.({
-      path: '/workspace',
-      flavor: plan.config.flavor,
-    } as never)).toMatchObject({
-      flavor: 'acp:acme.plugin-backed-acp.backend',
-      acpConfiguredBackendV1: {
-        v: 1,
-        backendId: 'acme.plugin-backed-acp.backend',
-        title: 'Plugin Review Bot',
-      },
     });
   });
 

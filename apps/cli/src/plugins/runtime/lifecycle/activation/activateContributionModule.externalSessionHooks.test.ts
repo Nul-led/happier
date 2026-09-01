@@ -541,6 +541,7 @@ describe('real-loader External Session hook aggregate conformance', () => {
         }]);
         expect(persistValidatedAgentSessionRunnerFactories).toHaveBeenCalledWith(
             result.validatedAgentSessionRunnerFactories,
+            { assertCurrent: expect.any(Function) },
         );
     });
 

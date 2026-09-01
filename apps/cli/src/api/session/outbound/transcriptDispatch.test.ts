@@ -1,33 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 
 import { readSessionWorkStateV1FromMetadata } from '@happier-dev/protocol';
-import type { RuntimeOutboundTranscriptDispatchFacetV1 } from '@happier-dev/agents';
-
-const {
-  resolveBackendEngineAdapterResolutionMock,
-  resolveOutboundTranscriptDispatchFacetMock,
-} = vi.hoisted(() => ({
-  resolveBackendEngineAdapterResolutionMock: vi.fn(),
-  resolveOutboundTranscriptDispatchFacetMock: vi.fn(),
-}));
-
-vi.mock('@/agent/runtime/registry/engineRegistry', () => ({
-  resolveBackendEngineAdapterResolution: (...args: unknown[]) => resolveBackendEngineAdapterResolutionMock(...args),
-}));
-
-vi.mock('@/agent/runtime/bridges/session/SessionHostBridge', () => ({
-  getSessionHostBridge: () => ({
-    resolveOutboundTranscriptDispatchFacet: (...args: unknown[]) => resolveOutboundTranscriptDispatchFacetMock(...args),
-  }),
-}));
-
 import {
   applyRuntimeOutboundTranscriptPostSendEffects,
   prepareAcpTranscriptDispatch,
   recordRuntimeOutboundTranscriptToolTraceEvents,
-  readRuntimeOutboundTranscriptDispatchBackendId,
-  resolveRuntimeOutboundTranscriptDispatchFacet,
 } from './transcriptDispatch';
 import type { PostSendReactionPort } from '../client/reactions/providers/postSendReactionPort';
 import type { Metadata } from '../../types';
@@ -62,11 +40,6 @@ function createPostSendReactionPort(metadataOverrides?: Partial<Metadata>): Read
 describe('transcriptDispatch', () => {
   const codexProvider = 'codex';
 
-  beforeEach(() => {
-    resolveBackendEngineAdapterResolutionMock.mockReset();
-    resolveOutboundTranscriptDispatchFacetMock.mockReset();
-  });
-
   it('records only provider-projected outbound tool trace events', async () => {
     await withToolTraceFile('runtime-outbound-trace-', async (filePath) => {
       recordRuntimeOutboundTranscriptToolTraceEvents('session-1', [{
@@ -86,85 +59,6 @@ describe('transcriptDispatch', () => {
         localId: 'tool-local-1',
       });
     });
-  });
-
-  it('reads the active backend id from runtime descriptor providerExtra runtimeHandle', () => {
-    expect(readRuntimeOutboundTranscriptDispatchBackendId({
-      runtimeDescriptorV1: {
-        v: 1,
-        agentId: 'codex',
-        provider: {
-          backendMode: 'appServer',
-          providerExtra: {
-            owner: 'happier',
-            schemaId: 'happier.hostSessionRuntimeIdentity',
-            v: 1,
-            runtimeHandle: {
-              backendId: 'codex',
-              providerId: 'codex',
-            },
-          },
-        },
-      },
-    })).toBe('codex');
-  });
-
-  it('does not infer a backend id when the runtime descriptor has no selected runtime handle', () => {
-    expect(readRuntimeOutboundTranscriptDispatchBackendId({
-      runtimeDescriptorV1: {
-        v: 1,
-        agentId: 'codex',
-        provider: {
-          backendMode: 'appServer',
-          providerExtra: {
-            owner: 'codex',
-            schemaId: 'codex.agentRuntimeDescriptorExtra',
-            v: 1,
-          },
-        },
-      },
-    })).toBeNull();
-  });
-
-  it('resolves the runtime outbound dispatch facet through SessionHostBridge', async () => {
-    const facet: RuntimeOutboundTranscriptDispatchFacetV1 = {
-      prepareDispatch: vi.fn(),
-    };
-    resolveBackendEngineAdapterResolutionMock.mockRejectedValue(new Error('bypassed SessionHostBridge'));
-    resolveOutboundTranscriptDispatchFacetMock.mockResolvedValue({ backendId: 'codex', facet });
-
-    await expect(resolveRuntimeOutboundTranscriptDispatchFacet({
-      metadata: createTestMetadata({
-        runtimeDescriptorV1: {
-          v: 1,
-          agentId: 'codex',
-          provider: {
-            backendMode: 'appServer',
-            providerExtra: {
-              owner: 'happier',
-              schemaId: 'happier.hostSessionRuntimeIdentity',
-              v: 1,
-              runtimeHandle: {
-                backendId: 'codex',
-                providerId: 'codex',
-              },
-            },
-          },
-        },
-      }),
-    })).resolves.toEqual({ backendId: 'codex', facet });
-
-    expect(resolveOutboundTranscriptDispatchFacetMock).toHaveBeenCalledWith('codex');
-    expect(resolveBackendEngineAdapterResolutionMock).not.toHaveBeenCalled();
-  });
-
-  it('does not resolve a dispatch facet when runtime metadata has no backend handle', async () => {
-    await expect(resolveRuntimeOutboundTranscriptDispatchFacet({
-      metadata: createTestMetadata(),
-    })).resolves.toBeNull();
-
-    expect(resolveOutboundTranscriptDispatchFacetMock).not.toHaveBeenCalled();
-    expect(resolveBackendEngineAdapterResolutionMock).not.toHaveBeenCalled();
   });
 
   it('prepares ACP transcript dispatch payloads through the host-generic seam', () => {

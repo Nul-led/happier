@@ -875,6 +875,58 @@ function createHistoryDefinition(): AgentAcpRuntimeDefinition {
 }
 
 describe('createPublicAcpSession', () => {
+  it('uses the host-owned launch resolver for Account-configured ACP without invoking public system-tool resolution', async () => {
+    await withTempDir('happier-public-acp-host-launch-', async (dir) => {
+      const fixture = createFixture(dir, 'completed');
+      const resolveHostLaunch = vi.fn(async () => ({
+        command: process.execPath,
+        args: [path.join(dir, 'public-composer-agent.mjs')],
+        env: {
+          PUBLIC_ACP_SCENARIO: 'completed',
+          PUBLIC_ACP_MEDIA_PATH: path.join(dir, 'generated', 'generated.png'),
+          HOST_ONLY_VALUE: 'kept',
+        },
+        unsetEnv: ['REMOVED_VALUE'],
+        timeouts: { initializeMs: 2_000, idleMs: 20, toolCallMs: 2_000 },
+      }));
+      const session = await createPublicAcpSession({
+        kind: 'create',
+        sessionId: 'host-configured-acp',
+        cwd: dir,
+        launchEnvironment: {
+          values: {
+            HOST_ONLY_VALUE: 'overridden',
+            REQUEST_VALUE: 'present',
+          },
+          unset: ['REMOVED_VALUE'],
+        },
+      }, fixture.options, {
+        ...fixture.dependencies,
+        resolveHostLaunch,
+      });
+      const events: AgentSessionRuntimeEvent[] = [];
+      const subscription = session.watch((event) => { events.push(event); });
+      try {
+        await session.send({
+          inputIds: ['input-host-configured'],
+          input: { text: 'hello' },
+          delivery: { kind: 'newTurn', turnId: 'turn-host-configured' },
+        });
+        await collectUntil(events, 'turn-complete');
+        expect(resolveHostLaunch).toHaveBeenCalledWith(expect.objectContaining({
+          cwd: dir,
+          launchEnvironment: expect.objectContaining({
+            values: expect.objectContaining({ REQUEST_VALUE: 'present' }),
+          }),
+        }));
+        expect(fixture.resolve).not.toHaveBeenCalled();
+      } finally {
+        subscription.dispose();
+        await session.dispose();
+      }
+    });
+  });
+
   it('transforms the raw ACP session/prompt request at the provider dispatch boundary', async () => {
     await withTempDir('happier-public-acp-request-transform-', async (dir) => {
       const fixture = createFixture(dir, 'request-transform');
@@ -2110,6 +2162,7 @@ describe('createPublicAcpSession', () => {
           input: { text: 'reject this' },
           delivery: { kind: 'newTurn', turnId: 'turn-prompt-rejected' },
         })).resolves.toEqual({ status: 'admitted' });
+        await collectUntil(events, 'input-rejected');
 
         expect(events).toContainEqual(expect.objectContaining({
           kind: 'input-rejected',
@@ -2325,6 +2378,10 @@ describe('createPublicAcpSession', () => {
             },
           },
         });
+        await waitForCondition(
+          () => hangingEvents.some((event) => event.kind === 'turn-start'),
+          { timeoutMs: 5_000, intervalMs: 10, label: 'public ACP primary turn start after steer evidence' },
+        );
         expect(hangingEvents.filter((event) => event.kind === 'turn-start')).toHaveLength(1);
         await collectUntil(hangingEvents, 'turn-complete');
       } finally {
@@ -3253,7 +3310,7 @@ describe('createPublicAcpSession', () => {
         expect(evidenceResults).toEqual([true]);
         expect(events.map((event) => event.kind)).toEqual([
           'provider-session-id',
-          'input-accepted',
+          'input-custody-unknown',
           'turn-start',
           'message-delta',
           'tool-call',

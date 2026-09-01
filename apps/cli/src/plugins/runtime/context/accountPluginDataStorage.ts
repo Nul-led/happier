@@ -8,7 +8,7 @@ import {
     PluginAccountKvRowError,
     assertPluginAccountKvExpectedVersionV1,
     clonePluginAccountKvRowV1,
-    commitPluginAccountKvMutationWithRebaseV1,
+    commitPluginAccountKvMutationV1,
     createEmptyPluginAccountKvRowV1,
     deletePluginAccountKvEntryV1,
     listPluginAccountKvEntriesV1,
@@ -1433,19 +1433,27 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     await assertBoundCurrent(lifecycle, operationSignal);
                     const snapshot = await readAccountKvSnapshot(operationSignal);
                     const row = cloneAccountKvRow(snapshot.row);
-                    const touchedKeys = new Set<string>();
+                    const dependencyKeys = new Set<string>();
+                    const writeKeys = new Set<string>();
+                    const transactionSignals = new Set<AbortSignal>();
                     let active = true;
                     let mutated = false;
                     const assertTransactionActive = async (signal?: AbortSignal): Promise<void> => {
                         if (!active) {
                             throw dataError(ACCOUNT_KV_INVALID_CODE, 'Account KV transaction handle is no longer active');
                         }
-                        await assertBoundCurrent(lifecycle, signal ?? operationSignal);
+                        await assertBoundCurrent(lifecycle, operationSignal);
+                        if (signal) {
+                            transactionSignals.add(signal);
+                            await assertBoundCurrent(lifecycle, signal);
+                        }
                     };
                     const transaction: AccountKvTransaction = Object.freeze({
                         async get<TValue extends JsonValue = JsonValue>(key: string, options?: Readonly<{ signal?: AbortSignal }>) {
                             await assertTransactionActive(options?.signal);
-                            const entry = accountKvEntryAt(row, normalizeAccountKvKey(key));
+                            const normalizedKey = normalizeAccountKvKey(key);
+                            dependencyKeys.add(normalizedKey);
+                            const entry = accountKvEntryAt(row, normalizedKey);
                             return entry ? toAccountKvEntry<TValue>(entry) : null;
                         },
                         async set(key: string, value: JsonValue, options: Readonly<{
@@ -1454,13 +1462,14 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         }>) {
                             await assertTransactionActive(options?.signal);
                             const normalizedKey = normalizeAccountKvKey(key);
+                            dependencyKeys.add(normalizedKey);
+                            writeKeys.add(normalizedKey);
                             const previous = assertAccountKvExpectedVersion(
                                 row,
                                 normalizedKey,
                                 options.expectedVersion,
                             );
                             const version = setAccountKvEntry(row, normalizedKey, value, previous);
-                            touchedKeys.add(normalizedKey);
                             mutated = true;
                             return Object.freeze({ version });
                         },
@@ -1470,6 +1479,8 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         }>) {
                             await assertTransactionActive(options?.signal);
                             const normalizedKey = normalizeAccountKvKey(key);
+                            dependencyKeys.add(normalizedKey);
+                            writeKeys.add(normalizedKey);
                             const previous = assertAccountKvExpectedVersion(
                                 row,
                                 normalizedKey,
@@ -1479,7 +1490,6 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                                 throw dataError(ACCOUNT_KV_CONFLICT_CODE, 'Account KV key is absent');
                             }
                             const version = deleteAccountKvEntry(row, normalizedKey, previous);
-                            touchedKeys.add(normalizedKey);
                             mutated = true;
                             return Object.freeze({ version, deleted: true as const });
                         },
@@ -1489,22 +1499,29 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                             new Set([kvScopeIdentity]),
                             async () => await operation(transaction),
                         );
-                        await assertBoundCurrent(lifecycle, operationSignal);
+                        const commitSignal = transactionSignals.size === 0
+                            ? operationSignal
+                            : AbortSignal.any([
+                                ...(operationSignal ? [operationSignal] : []),
+                                ...transactionSignals,
+                            ]);
+                        await assertBoundCurrent(lifecycle, commitSignal);
                         if (mutated) {
-                            await inAccountKvRowAlgebraAsync(async () => await commitPluginAccountKvMutationWithRebaseV1({
+                            await inAccountKvRowAlgebraAsync(async () => await commitPluginAccountKvMutationV1({
                                 initialSnapshot: snapshot,
                                 pendingRow: row,
-                                touchedKeys: [...touchedKeys],
-                                assertCurrent: async () => await assertBoundCurrent(lifecycle, operationSignal),
-                                readLatest: async () => await readAccountKvSnapshot(operationSignal),
+                                dependencyKeys: [...dependencyKeys],
+                                writeKeys: [...writeKeys],
+                                assertCurrent: async () => await assertBoundCurrent(lifecycle, commitSignal),
+                                readLatest: async () => await readAccountKvSnapshot(commitSignal),
                                 write: async (currentSnapshot, currentRow) => await writeAccountKvSnapshot({
                                     snapshot: currentSnapshot,
                                     row: currentRow,
-                                    operationSignal,
+                                    operationSignal: commitSignal,
                                 }),
                             }));
                         }
-                        await assertBoundCurrent(lifecycle, operationSignal);
+                        await assertBoundCurrent(lifecycle, commitSignal);
                         return result;
                     } finally {
                         active = false;
@@ -1725,7 +1742,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     return parsed.data;
                 };
 
-                const forgetTombstoneForRetention = async (
+                const forgetRowForRetention = async (
                     rowId: string,
                     expectedRevision: number,
                     operationSignal?: AbortSignal,
@@ -1734,7 +1751,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                     // Another row may be forgotten between the freshness read
                     // and this request because the epoch is Collection-wide.
                     // Re-read and retry that typed conflict rather than leaving
-                    // a tombstone permanently invisible to retention scans.
+                    // exact retention work stranded after its horizon.
                     for (;;) {
                         const snapshot = await request({
                             path: PLUGIN_COLLECTION_GET_HTTP_PATH_V1,
@@ -1751,7 +1768,12 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         if (!parsedSnapshot.success) {
                             throw dataError(COLLECTION_PROTOCOL_INVALID_CODE, 'Collection currentness response is invalid');
                         }
-                        if (parsedSnapshot.data.row?.revision === expectedRevision) return false;
+                        if (
+                            parsedSnapshot.data.row !== null
+                            && parsedSnapshot.data.row.revision !== expectedRevision
+                        ) {
+                            return false;
+                        }
                         const response = await request({
                             path: PLUGIN_COLLECTION_FORGET_HTTP_PATH_V1,
                             body: PluginCollectionForgetRequestV1Schema.parse({
@@ -1794,7 +1816,7 @@ export function createAccountPluginDataStorageHost(params: Readonly<{
                         rowId: string,
                         options: Readonly<{ expectedRevision: number; signal?: AbortSignal }>,
                     ) {
-                        if (!await forgetTombstoneForRetention(rowId, options.expectedRevision, options.signal)) {
+                        if (!await forgetRowForRetention(rowId, options.expectedRevision, options.signal)) {
                             throw dataError(COLLECTION_CONFLICT_CODE, 'Collection forget conflicted with a newer row revision or absence epoch');
                         }
                         return Object.freeze({ rowId, forgotten: true as const });

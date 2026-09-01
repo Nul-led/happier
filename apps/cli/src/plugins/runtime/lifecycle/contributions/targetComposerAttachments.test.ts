@@ -388,7 +388,7 @@ describe('target composer attachment registry', () => {
     expect(registry.isDeclared({ pluginId: ATTACHMENT.pluginId, localId: 'missing' })).toBe(false);
   });
 
-  it('admits only declaration-valid values, enforces cardinality, and preserves the UI-admitted localized type label', () => {
+  it('admits only declaration-valid values, enforces cardinality, and stamps the declaration title', () => {
     const declaredAttachments = [{
       attachment: ATTACHMENT,
       title: { key: 'attachment.issue.title', fallback: 'Issue context' },
@@ -431,7 +431,10 @@ describe('target composer attachment registry', () => {
       presentation: { label: 'Issue #42', typeLabel: 'Contexte du problème' },
     } as const satisfies ComposerAttachmentInputV1;
 
-    expect(registry.admit({ phase: 'draft', attachments: [draft] })).toEqual([draft]);
+    expect(registry.admit({ phase: 'draft', attachments: [draft] })).toEqual([{
+      ...draft,
+      presentation: { label: 'Issue #42', typeLabel: 'Issue context' },
+    }]);
     expect(() => registry.admit({
       phase: 'draft',
       attachments: [{ ...draft, value: { issueId: 42 } }],
@@ -454,7 +457,7 @@ describe('target composer attachment registry', () => {
     })).toEqual([{
       ...draft,
       value: { issueId: '42', prepared: true },
-      presentation: { label: 'Issue #42 (prepared)', typeLabel: 'Contexte du problème' },
+      presentation: { label: 'Issue #42 (prepared)', typeLabel: 'Issue context' },
     }]);
   });
 
@@ -503,7 +506,10 @@ describe('target composer attachment registry', () => {
     expect(registry.admit({
       phase: 'draft',
       attachments: [stagedDraft],
-    })).toEqual([stagedDraft]);
+    })).toEqual([{
+      ...stagedDraft,
+      presentation: { label: 'Image #42', typeLabel: 'Issue context' },
+    }]);
   });
 
   it('fences a retired direct declaration before schema admission without requiring a callback registration', () => {

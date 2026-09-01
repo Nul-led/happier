@@ -105,7 +105,7 @@ describe('engineRegistry account-configured ACP ingestion', () => {
     });
   });
 
-  it('ingests acpCatalogSettingsV1 backends into the engine registry and launches through the ACP runtimeCore', async () => {
+  it('ingests acpCatalogSettingsV1 backends into the engine registry and launches through the canonical Session runtime', async () => {
     setAccountConfiguredAcpBackend();
 
     const registry = await resolveCliEngineRegistry({
@@ -121,10 +121,11 @@ describe('engineRegistry account-configured ACP ingestion', () => {
     expect(resolution?.backend.source).toEqual({ kind: 'configured' });
     expect(resolution?.agent.source).toEqual({ kind: 'configured' });
 
-    await expect(resolution?.engineAdapter.runtimeCore.createSessionRuntime({
+    const plan = await resolution?.engineAdapter.runtimeCore.createSessionRuntime({
       credentials: { token: 'token-only', encryption: null },
       cwd: '/workspace',
-    })).resolves.toMatchObject({
+    });
+    expect(plan).toMatchObject({
       kind: 'hostSessionRuntimePlan',
       agentId: 'account-configured-acp',
       config: expect.objectContaining({
@@ -132,13 +133,23 @@ describe('engineRegistry account-configured ACP ingestion', () => {
         policyAgentId: 'account-configured-acp',
       }),
     });
+    expect(plan?.config.flavor).toBe('acp:account-configured-acp');
+    expect(plan?.config.agentMessageType).toBe('acp:account-configured-acp');
+    expect(plan?.config.augmentSessionMetadata?.({ path: '/workspace' } as never)).toMatchObject({
+      flavor: 'acp:account-configured-acp',
+      acpConfiguredBackendV1: {
+        v: 1,
+        backendId: 'account-configured-acp',
+        title: 'Account Configured ACP',
+      },
+    });
 
     expect(() => resolution?.engineAdapter.runtimeCore.createExecutionRunBackend({
       cwd: '/workspace',
       backendId: 'account-configured-acp',
       permissionMode: 'read_only',
       accountSettings: accountSettingsParse({}),
-    })).not.toThrow();
+    })).toThrow('Session-derived execution run requires parent Session host custody');
   });
 
   it('resolves account-configured ACP backends through resolveBackendEngineAdapterResolution', async () => {

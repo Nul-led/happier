@@ -1029,15 +1029,25 @@ describe('stable typed settings foundation', () => {
         const oversized = Object.fromEntries(
             Array.from({ length: 257 }, (_, index) => [`server-${index}`, 'https://example.test']),
         ) as JsonValue;
-        const service = createStablePluginSettingsOwner({
+        const owner = createStablePluginSettingsOwner({
             recordStore: createPluginStorageBackedSettingsRecordStore({
                 storageForPlugin: () => storage.daemon,
                 scope: 'account',
             }),
             broker: createStablePluginEventsBroker(),
-        }).bind({ model, seed: seed(() => true) });
+        });
+        const invocationSeed = seed(() => true);
+        const service = owner.bind({ model, seed: invocationSeed });
 
         expect(validateStablePluginSettingValue(model, 'endpointByServer', oversized)).toBe(false);
+        await expect(owner.applyActionPatch({
+            model,
+            seed: invocationSeed,
+            contributionId: 'server-preferences',
+            allowedFieldIds: ['endpointByServer'],
+            patch: { endpointByServer: oversized },
+            expectedRevision: '0',
+        })).rejects.toMatchObject({ code: 'plugin_settings_validation_failed' });
         await expect(service.set('endpointByServer', oversized, { expectedRevision: '0' }))
             .rejects.toMatchObject({ code: 'plugin_settings_validation_failed' });
 

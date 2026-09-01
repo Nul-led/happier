@@ -112,6 +112,38 @@ async function unavailableTestWebSocket(): Promise<never> {
 }
 
 describe('production invocation service owners', () => {
+    it('shares ephemeral storage only within one plugin generation and clears it on retirement', async () => {
+        const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-production-ephemeral-storage-'));
+        const owners = createProductionPluginInvocationServiceOwners({
+            loggerSink: { write: () => {} },
+            storagePaths: resolvePluginStorePaths({ happyHomeDir }),
+        });
+        let correlationId = 0;
+        const createServices = (generation: string, pluginId = 'acme.alpha') => owners.createServices(Object.freeze({
+            plugin: Object.freeze({ id: pluginId, version: '1.0.0' }),
+            contribution: Object.freeze({ id: 'run', qualifiedId: `${pluginId}/actions/run` }),
+            generation,
+            correlationId: `${pluginId}-${generation}-${correlationId += 1}`,
+            surface: 'cli' as const,
+            signal: new AbortController().signal,
+            isGenerationCurrent: () => true,
+        }), owners.createOrdinaryServiceBinding(generation, `${pluginId}-${generation}`));
+
+        const first = createServices('generation-one');
+        await first.storage.ephemeral.set('token', 'generation-one-value');
+        await expect(createServices('generation-one').storage.ephemeral.get('token'))
+            .resolves.toBe('generation-one-value');
+        await expect(createServices('generation-two').storage.ephemeral.get('token'))
+            .resolves.toBeNull();
+        await expect(createServices('generation-one', 'acme.beta').storage.ephemeral.get('token'))
+            .resolves.toBeNull();
+
+        await owners.retireGeneration('generation-one', 'acme.alpha');
+        await expect(createServices('generation-one').storage.ephemeral.get('token'))
+            .resolves.toBeNull();
+        await owners.dispose();
+    });
+
     it('carries the daemon Composer content owner through the production service factory', async () => {
         const workspace = await mkdtemp(join(tmpdir(), 'happier-production-composer-content-'));
         const filesystemRoots = {

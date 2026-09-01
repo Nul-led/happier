@@ -216,10 +216,11 @@ describe('createSessionTurnLifecycle', () => {
         const onAcceptedTurnLifecycle = vi.fn(async () => {
             throw new Error('daemon is quiescing');
         });
+        const enqueueSessionTurnMutation = vi.fn(async () => undefined);
         const lifecycle = createSessionTurnLifecycle({
             session: {
                 sessionId: 'session-1',
-                enqueueSessionTurnMutation: async () => undefined,
+                enqueueSessionTurnMutation,
             },
             onAcceptedTurnLifecycle,
         });
@@ -234,6 +235,8 @@ describe('createSessionTurnLifecycle', () => {
         await vi.waitFor(() => expect(onAcceptedTurnLifecycle).toHaveBeenCalled());
         lifecycle.retireAcceptedLifecyclePublication();
         await lifecycle.drainAcceptedLifecycle();
+
+        expect(enqueueSessionTurnMutation).not.toHaveBeenCalled();
     });
 
     it('authors no broad terminal when runtime-ended has no active exact turn', () => {
@@ -285,6 +288,31 @@ describe('createSessionTurnLifecycle', () => {
 
         expect(mutations.map((mutation) => mutation.action)).toEqual(['begin']);
         expect(lifecycle.hasActiveTurn()).toBe(false);
+    });
+
+    it('ignores late lifecycle evidence for a turn after its exact terminal event', async () => {
+        const mutations: SessionTurnMutationV1[] = [];
+        const lifecycle = createSessionTurnLifecycle({
+            session: {
+                sessionId: 'session-1',
+                enqueueSessionTurnMutation: async (mutation) => {
+                    mutations.push(mutation);
+                },
+            },
+        });
+        lifecycle.observeRuntimeEvent(canonicalRuntimeEvent({
+            kind: 'turn-start', sessionId: 'session-1', emittedAtMs: 100, turnId: 'turn-1',
+        }));
+        lifecycle.observeRuntimeEvent(canonicalRuntimeEvent({
+            kind: 'turn-complete', sessionId: 'session-1', emittedAtMs: 200, turnId: 'turn-1',
+        }));
+        lifecycle.observeRuntimeEvent(canonicalRuntimeEvent({
+            kind: 'turn-agent-id-observed', sessionId: 'session-1', emittedAtMs: 300,
+            turnId: 'turn-1', agentTurnId: 'late-provider-turn',
+        }));
+        await Promise.resolve();
+
+        expect(mutations.map((mutation) => mutation.action)).toEqual(['begin', 'complete']);
     });
 
     it('maps active runtime turn progress to a durable touch mutation only while the turn is active', () => {

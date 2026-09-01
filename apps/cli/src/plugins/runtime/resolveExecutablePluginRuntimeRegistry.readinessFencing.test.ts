@@ -121,6 +121,8 @@ describe('executable plugin readiness fencing', () => {
             });
 
             expect(runtime.activatedPluginIds.has(PLUGIN_ID)).toBe(true);
+            expect(runtime.pluginFinalPolicyCurrentGenerationsById?.get(PLUGIN_ID)?.applied)
+                .toBe(true);
             expect(hasBlockingPluginReloadDiagnostic(runtime, [PLUGIN_ID])).toBe(false);
             expect(runtime.targetActivationFacts?.filter((fact) => fact.pluginId === PLUGIN_ID))
                 .toEqual([expect.objectContaining({ status: 'active' })]);
@@ -134,6 +136,8 @@ describe('executable plugin readiness fencing', () => {
             );
 
             expect(runtime.activatedPluginIds.has(PLUGIN_ID)).toBe(false);
+            expect(runtime.pluginFinalPolicyCurrentGenerationsById?.get(PLUGIN_ID)?.applied)
+                .toBe(false);
             // Exactly one typed diagnostic, and exactly one activation fact: an
             // inactive target may never keep publishing bound contributions.
             expect(runtime.pluginDiagnosticsByPluginId[PLUGIN_ID]).toEqual([{

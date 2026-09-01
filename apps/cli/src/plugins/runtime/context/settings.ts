@@ -2,6 +2,7 @@ import type {
     PluginJsonSchemaValidator,
     PluginSettingFieldV2,
 } from '@happier-dev/protocol';
+import { isBoundedPluginPerActiveServerValueV1 } from '@happier-dev/protocol';
 
 import {
     compilePluginSettingFieldSchema,
@@ -29,9 +30,15 @@ function validatorForField(pluginId: string, field: PluginSettingFieldV2): Plugi
 export function assertPluginSettingFieldValue(params: Readonly<{
     pluginId: string;
     field: PluginSettingFieldV2;
+    fields: readonly PluginSettingFieldV2[];
     value: unknown;
 }>): void {
-    if (!isValidPluginJsonSchemaValue(validatorForField(params.pluginId, params.field), params.value)) {
+    const isPerActiveServerMap = params.fields.some((field) => (
+        field.presentation?.binding?.kind === 'perActiveServer'
+        && field.presentation.binding.byServerIdSettingId === params.field.id
+    ));
+    if (!isValidPluginJsonSchemaValue(validatorForField(params.pluginId, params.field), params.value)
+        || (isPerActiveServerMap && !isBoundedPluginPerActiveServerValueV1(params.value))) {
         throw settingsError(
             'PLUGIN_SETTINGS_VALIDATION_FAILED',
             `Plugin setting '${params.field.id}' failed schema validation`,

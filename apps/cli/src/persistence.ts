@@ -128,6 +128,8 @@ export interface Settings {
     createdAt: number
     updatedAt: number
     lastUsedAt: number
+    /** Exact protocol-owned descriptor observed from this authenticated Home. */
+    homeConnectionDescriptor?: import('@happier-dev/protocol').HomeConnectionDescriptorV1
   }>
   /**
    * Per-server machine IDs (schema v5+).

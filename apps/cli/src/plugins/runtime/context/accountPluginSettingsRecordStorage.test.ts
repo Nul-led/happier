@@ -158,6 +158,46 @@ describe('Account plugin Settings record storage', () => {
         await expect(adapter.writeRecord(model, request)).resolves.toEqual({ status: 'outcomeUnknown' });
     });
 
+    it('accepts an exact applied response after caller cancellation begins post-submit', async () => {
+        const controller = new AbortController();
+        const get = vi.fn().mockResolvedValue({ status: 200, data: { mode: 'plain', updatedAt: 1 } });
+        const post = vi.fn(async () => {
+            controller.abort(new Error('caller retired after issue'));
+            return { status: 200, data: { status: 'updated', revision: 5 } };
+        });
+        const adapter = createAccountPluginSettingsRecordStorage({
+            readCredentials: async () => plainCredentials,
+            isCurrentAccount: () => true,
+            http: { get, post },
+            resolveBaseUrl: () => 'https://server.example',
+        });
+
+        await expect(adapter.writeRecord(model, {
+            expectedRevision: 4,
+            values: { theme: 'light' },
+        }, { signal: controller.signal })).resolves.toEqual({ status: 'updated', revision: 5 });
+    });
+
+    it('accepts an exact applied response after the active Account changes post-submit', async () => {
+        let current = true;
+        const get = vi.fn().mockResolvedValue({ status: 200, data: { mode: 'plain', updatedAt: 1 } });
+        const post = vi.fn(async () => {
+            current = false;
+            return { status: 200, data: { status: 'updated', revision: 5 } };
+        });
+        const adapter = createAccountPluginSettingsRecordStorage({
+            readCredentials: async () => plainCredentials,
+            isCurrentAccount: () => current,
+            http: { get, post },
+            resolveBaseUrl: () => 'https://server.example',
+        });
+
+        await expect(adapter.writeRecord(model, {
+            expectedRevision: 4,
+            values: { theme: 'light' },
+        })).resolves.toEqual({ status: 'updated', revision: 5 });
+    });
+
     it('seals Account E2EE values with the dedicated settings domain and fails closed without material', async () => {
         const get = vi.fn().mockResolvedValue({ status: 200, data: { mode: 'e2ee', updatedAt: 1 } });
         const post = vi.fn().mockResolvedValue({

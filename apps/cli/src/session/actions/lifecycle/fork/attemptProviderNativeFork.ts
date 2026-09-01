@@ -61,17 +61,11 @@ export async function attemptProviderNativeFork(params: Readonly<{
     }
     const configuredAcp = params.forkBackendResolution.configuredAcp;
     if (configuredAcp !== null) {
-        // A configured ACP Session crosses the real daemon fork path only when
-        // its configured catalog proves load-session support and the parent
-        // carries the provider-session identity to load. Anything else falls
-        // back (auto Replay) or is explicitly refused downstream: an
-        // unsupported backend is never blindly attempted.
-        if (
-            configuredAcp.providerSessionId === null
-            || configuredAcp.resolvedBackend?.capabilities.supportsLoadSession !== true
-        ) {
-            return null;
-        }
+        // Account-configured ACP declares load-session support only. It has no
+        // typed fork capability or Agent-owned fork surface, so it must never
+        // infer a provider fork from resumability. Automatic strategy falls
+        // through to the canonical Replay owner.
+        return null;
     } else if (!params.forkBackendResolution.catalogAgentId) {
         return null;
     }

@@ -22,6 +22,14 @@ import {
     createMcpActionSettingsProvider,
 } from '@/mcp/server/createMcpActionEnablement';
 import { readDaemonPluginCatalog } from '@/daemon/controlClient';
+import { SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { z } from 'zod';
+
+const NativeAgentToolCallRequestV1Schema = z.strictObject({
+    toolName: z.string().trim().min(1).max(256),
+    args: z.unknown(),
+    toolCallId: z.string().trim().min(1).max(512).optional(),
+});
 
 export type HappyMcpExecutionRunService = Readonly<{
     start: (request: unknown) => Promise<ExecutionRunServiceResult<unknown>>;
@@ -40,6 +48,7 @@ export type HappyMcpSessionClient = {
     getMetadataSnapshot?(): Metadata | null;
     getPermissionMode?(): PermissionMode | null | undefined;
     getActiveTurnCausalPermissionAuthority?(): SessionInputCausalPermissionAuthorityV1 | null | undefined;
+    getActiveTurnId?(): string | null | undefined;
     getBackendTarget?(): BackendTargetRefV2 | null | undefined;
     getCurrentSessionLocation?(): Readonly<{
         path?: string | null;
@@ -49,6 +58,12 @@ export type HappyMcpSessionClient = {
     getActiveAgentCompositionToolSelection?(): AgentCompositionToolSelection | null | undefined;
     executionRuns?: HappyMcpExecutionRunService;
 };
+
+type HappySessionToolRuntimeOptions = Readonly<{
+    credentials?: StoredCredentials | null;
+    accountSettings?: AccountSettings | null;
+    getAccountSettings?: (() => AccountSettings | null) | null;
+}>;
 
 export function filterPluginToolsForActiveAgentComposition(
     pluginToolCatalog: readonly ProjectedPluginToolCatalogEntry[],
@@ -93,13 +108,59 @@ export function filterPluginToolsForActiveAgentComposition(
     ].sort((left, right) => left.name.localeCompare(right.name) || left.toolId.localeCompare(right.toolId)));
 }
 
+async function readCurrentPluginToolCatalog(
+    client: HappyMcpSessionClient,
+): Promise<readonly ProjectedPluginToolCatalogEntry[]> {
+    const daemonCatalog = await readDaemonPluginCatalog().catch(() => ({
+        kind: 'unavailable' as const,
+        code: 'daemon_unavailable',
+    }));
+    return daemonCatalog.kind === 'available'
+        ? filterPluginToolsForActiveAgentComposition(
+            daemonCatalog.tools,
+            client.getActiveAgentCompositionToolSelection?.() ?? null,
+        )
+        : Object.freeze([]);
+}
+
+export function registerHappierSessionAgentToolRpc(
+    client: HappyMcpSessionClient,
+    opts?: HappySessionToolRuntimeOptions,
+): void {
+    client.rpcHandlerManager.registerHandler(
+        SESSION_RPC_METHODS.SESSION_AGENT_TOOL_CALL_V1,
+        async (raw) => {
+            const parsed = NativeAgentToolCallRequestV1Schema.safeParse(raw);
+            if (!parsed.success) {
+                return {
+                    ok: false as const,
+                    errorCode: 'invalid_action_input',
+                    error: 'invalid_action_input',
+                };
+            }
+            const runtime = createHappierMcpServer(client, {
+                credentials: opts?.credentials ?? null,
+                accountSettings: opts?.accountSettings ?? null,
+                getAccountSettings: opts?.getAccountSettings ?? null,
+                pluginToolCatalog: await readCurrentPluginToolCatalog(client),
+                sessionInputVia: 'action',
+            });
+            try {
+                return await runtime.executeTool({
+                    toolName: parsed.data.toolName,
+                    args: parsed.data.args,
+                    ...(parsed.data.toolCallId ? { toolCallId: parsed.data.toolCallId } : {}),
+                });
+            } finally {
+                await Promise.resolve(runtime.mcp.close()).catch(() => {});
+            }
+        },
+    );
+}
+
 export async function startHappyServer(
     client: HappyMcpSessionClient,
-    opts?: Readonly<{
-        credentials?: StoredCredentials | null;
-        accountSettings?: AccountSettings | null;
-        getAccountSettings?: (() => AccountSettings | null) | null;
-    }>,
+    opts?: HappySessionToolRuntimeOptions,
 ) {
     // Do not eagerly construct an MCP server on startup; only snapshot the names.
     // Full server creation is done per request inside the handler.
@@ -111,19 +172,7 @@ export async function startHappyServer(
         actionSettingsProvider,
         surface: 'agent',
   });
-  const readCurrentPluginToolCatalog = async () => {
-    const daemonCatalog = await readDaemonPluginCatalog().catch(() => ({
-      kind: 'unavailable' as const,
-      code: 'daemon_unavailable',
-    }));
-    return daemonCatalog.kind === 'available'
-      ? filterPluginToolsForActiveAgentComposition(
-        daemonCatalog.tools,
-        client.getActiveAgentCompositionToolSelection?.() ?? null,
-      )
-      : Object.freeze([]);
-  };
-  const initialPluginToolCatalog = await readCurrentPluginToolCatalog();
+  const initialPluginToolCatalog = await readCurrentPluginToolCatalog(client);
   const toolNamesSnapshot = listBuiltInHappierTools({
     surface: 'agent',
     isActionEnabled,
@@ -152,7 +201,7 @@ export async function startHappyServer(
             credentials: opts?.credentials ?? null,
             accountSettings: opts?.accountSettings ?? null,
             getAccountSettings: opts?.getAccountSettings ?? null,
-            pluginToolCatalog: await readCurrentPluginToolCatalog(),
+            pluginToolCatalog: await readCurrentPluginToolCatalog(client),
         });
 
         const transport = new StreamableHTTPServerTransport({

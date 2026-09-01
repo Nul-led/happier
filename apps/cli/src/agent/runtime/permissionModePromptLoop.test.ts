@@ -1,7 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createAcpRuntime } from '@/agent/acp/runtime/createAcpRuntime';
-import type { AgentMessage } from '@/agent/core/AgentMessage';
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
 import type { Metadata } from '@/api/types';
 import { createMutableApiSessionClientFixture } from '@/testkit/backends/sessionFixtures';
@@ -20,14 +18,11 @@ import {
   type RuntimeTurnOperations,
 } from '@/agent/runtime/turns/runtimeTurnOperations';
 import type { StructuredInputComposerReferenceResolver } from '@/agent/runtime/turns/resolveStructuredInputProviderContext';
-import { createFakeAcpRuntimeBackend } from '@/testkit/backends/acpRuntimeBackend';
-import { createApprovedPermissionHandler } from '@/testkit/backends/permissionHandler';
 import { createDeferred } from '@/testkit/async/deferred';
 import { applyAcpConfigOptionIntentSessionMetadata } from '@happier-dev/agents/session/state/metadataWriters';
 import {
   MENTION_KIND_V1,
   ProviderConnectionIdSchema,
-  AgentSessionRuntimeEventV1Schema,
   buildComposerReferenceMentionPayloadV1,
   buildMentionRefForKindV1,
 } from '@happier-dev/protocol';
@@ -2241,77 +2236,6 @@ describe('runPermissionModePromptLoop', () => {
     expect(enqueueAgentMessageCommittedSpy).not.toHaveBeenCalledWith('opencode', expect.objectContaining({
       type: 'message',
     }), expect.anything());
-  });
-
-  it('does not turn runtime-handled provider status errors into assistant transcript messages', async () => {
-    const session = createPromptLoopSession();
-    const runtimeEvents: ReturnType<typeof AgentSessionRuntimeEventV1Schema.parse>[] = [];
-
-    let backend!: ReturnType<typeof createFakeAcpRuntimeBackend>;
-    backend = createFakeAcpRuntimeBackend({
-      sessionId: 'pi-session-status-error',
-      sendPrompt: async () => {
-        backend.emit({ type: 'status', status: 'error', detail: 'Model not found.' } satisfies AgentMessage);
-      },
-      waitForResponseComplete: async () => {
-        throw new Error('Model not found.');
-      },
-    });
-
-    const queue = createModeQueue();
-    const runtime = createAcpRuntime({
-      provider: 'pi',
-      directory: '/tmp',
-      session,
-      messageBuffer: new MessageBuffer(),
-      mcpServers: {},
-      permissionHandler: createApprovedPermissionHandler(),
-      onThinkingChange: () => {},
-      ensureBackend: async () => backend,
-    });
-    runtime.subscribeRuntimeEvents((message) => {
-      const event = AgentSessionRuntimeEventV1Schema.parse(message);
-      runtimeEvents.push(event);
-    });
-    // This prompt-loop slice exercises only permission-mode synchronization hooks.
-    const permissionHandler = {
-      setPermissionMode: vi.fn(),
-      reset: vi.fn(),
-    } as unknown as Parameters<typeof runPermissionModePromptLoop>[0]['permissionHandler'];
-
-    queue.push({ text: 'hello', localId: 'local-status-error' }, { permissionMode: 'default' });
-
-    let shouldExit = false;
-    await runPermissionModePromptLoop({
-      providerName: 'Pi',
-      agentMessageType: 'pi',
-      explicitPermissionMode: undefined,
-      session,
-      messageQueue: queue,
-      permissionHandler,
-      runtime,
-      createOverrideSynchronizer: () => ({ syncFromMetadata: () => {}, flushPendingAfterStart: async () => {} }),
-      messageBuffer: new MessageBuffer(),
-      shouldExit: () => shouldExit,
-      getAbortSignal: () => new AbortController().signal,
-      keepAlive: () => {},
-      setThinking: () => {},
-      sendReady: () => {
-        shouldExit = true;
-      },
-      currentPermissionModeUpdatedAt: 0,
-      setCurrentPermissionMode: () => {},
-      setCurrentPermissionModeUpdatedAt: () => {},
-      formatPromptErrorMessage: formatProviderPromptErrorMessage,
-    });
-
-    const assistantText = runtimeEvents.flatMap((event) => (
-      event.kind === 'transcript-message-committed' && event.role === 'assistant'
-        ? [event.text]
-        : []
-    )).join('\n');
-    expect(assistantText).not.toContain('Model not found');
-    await expect.poll(() => runtimeEvents.some((event) => event.kind === 'turn-failed')).toBe(true);
   });
 
   it('refreshes the session snapshot and re-syncs metadata overrides before sending the next queued prompt when queue delivery wins the race', async () => {

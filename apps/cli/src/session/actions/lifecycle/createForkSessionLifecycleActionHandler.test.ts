@@ -218,8 +218,7 @@ describe('createForkSessionLifecycleActionHandler', () => {
     mocks.declarationSource = 'cold';
   });
 
-  it('routes a load-session-capable configured ACP fork through daemon spawn preparation', async () => {
-    mocks.attemptAcpLatestFork.mockResolvedValue({ ok: true, childSessionId: 'child-acp' });
+  it('falls back to replay for configured ACP because load-session support does not declare fork support', async () => {
     const handler = createForkSessionLifecycleActionHandler({
       sessionHostBridge: createConfiguredAcpBridge({ supportsLoadSession: true }),
       handlers: { spawnSession: vi.fn(), stopSession: vi.fn() },
@@ -230,20 +229,11 @@ describe('createForkSessionLifecycleActionHandler', () => {
       parentSessionId: 'parent-session',
       forkPoint: { type: 'latest' },
       strategy: 'auto',
-    })).resolves.toEqual({ ok: true, childSessionId: 'child-acp' });
+    })).resolves.toEqual({ ok: true, childSessionId: 'child-replay' });
 
-    expect(mocks.attemptAcpLatestFork).toHaveBeenCalledWith(expect.objectContaining({
-      forkIsConfiguredAcp: true,
-      forkBackendResolution: expect.objectContaining({
-        configuredAcp: expect.objectContaining({
-          providerSessionId: 'provider-parent',
-          resolvedBackend: expect.objectContaining({
-            capabilities: { supportsLoadSession: true },
-          }),
-        }),
-      }),
-    }));
-    expect(mocks.createReplayForkSession).not.toHaveBeenCalled();
+    expect(mocks.attemptProviderNativeFork).toHaveBeenCalledOnce();
+    expect(mocks.attemptAcpLatestFork).not.toHaveBeenCalled();
+    expect(mocks.createReplayForkSession).toHaveBeenCalledOnce();
   });
 
   it('falls back to replay for automatic configured ACP fork without load-session support', async () => {

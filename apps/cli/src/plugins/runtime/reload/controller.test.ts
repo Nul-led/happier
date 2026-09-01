@@ -112,6 +112,18 @@ describe('createPluginReloadController', () => {
         vi.restoreAllMocks();
     });
 
+    it('does not cold-resolve a runtime registry outside the daemon lifecycle owner', async () => {
+        const controller = createPluginReloadController();
+
+        await expect(controller.acquireRuntimeRegistry()).rejects.toThrow(
+            'Plugin runtime registry is unavailable until the daemon lifecycle owner publishes it',
+        );
+        expect(controller.getState()).toMatchObject({
+            generation: 0,
+            activeRegistry: null,
+        });
+    });
+
     it('exposes no arbitrary reload owner and joins concurrent cold acquisitions through one resolver', async () => {
         const deferred = createDeferred<ResolvedExecutablePluginRuntimeRegistry>();
         const registry = createRuntimeRegistry('cold');
@@ -190,7 +202,11 @@ describe('createPluginReloadController', () => {
         const calls: string[] = [];
         const previousRollback = new Map([
             ['acme.indexer', new Map([
-                ['account', { generation: 'old-generation', supported: true, fieldIds: ['legacyMode'] }],
+                ['account', {
+                    generation: 'old-generation',
+                    supported: true,
+                    fieldIds: ['legacyMode'] as string[],
+                }],
             ] as const)],
         ] as const);
         const initialRegistry = createRuntimeRegistry('initial', {

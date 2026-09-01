@@ -12,6 +12,9 @@ vi.mock('axios', () => ({
   default: {
     get: mockAxiosGet,
     post: mockAxiosPost,
+    isAxiosError: (value: unknown) => Boolean(
+      value && typeof value === 'object' && (value as { isAxiosError?: unknown }).isAxiosError === true,
+    ),
   },
 }));
 
@@ -2363,7 +2366,7 @@ describe('createCliActionExecutor', () => {
     }));
   });
 
-  it('carries an attachment-only plugin send through admission, retry, dispatch resolution, and transcript replay', async () => {
+  it('rejoins an attachment-only plugin send after response loss without preparing twice', async () => {
     const attachment = { pluginId: 'happier.triage', localId: 'entry' } as const;
     const authored: readonly PluginSessionInputAttachmentV1[] = [
       {
@@ -2441,6 +2444,21 @@ describe('createCliActionExecutor', () => {
         complete: vi.fn(),
       }),
     });
+    lookupSessionsByTags.mockResolvedValue({
+      state: 'available',
+      sessions: [{
+        id: 'sess-1',
+        createdAt: 1,
+        updatedAt: 2,
+        active: true,
+        activeAt: 2,
+        pendingCount: 0,
+        metadataVersion: 1,
+        encryptionMode: 'plain',
+        metadataLayoutVersion: 1,
+        metadata: JSON.stringify({ v: 1 }),
+      }],
+    });
     const cliDeps = createCliActionExecutorHarness({
       token: 'token',
       credentials: {
@@ -2470,36 +2488,76 @@ describe('createCliActionExecutor', () => {
       idempotencyKey: 'delivery-key-1',
       attachments: authored,
     };
+    let persistedContent: Readonly<{
+      t: 'plain';
+      v: Readonly<{
+        role: 'user';
+        content: Readonly<{ type: 'text'; text: string }>;
+        meta: Record<string, unknown>;
+      }>;
+    }> | null = null;
+    let persistedLocalId: string | null = null;
+    mockAxiosGet.mockImplementation(async (url: string) => {
+      if (url.endsWith('/pending')) {
+        return {
+          data: {
+            pending: persistedContent && persistedLocalId
+              ? [{ localId: persistedLocalId, content: persistedContent }]
+              : [],
+          },
+        };
+      }
+      if (url.includes('/messages/by-local-id/')) {
+        throw {
+          isAxiosError: true,
+          response: { status: 404, data: { error: 'Message not found' } },
+        };
+      }
+      throw new Error(`Unexpected GET in attachment rejoin test: ${url}`);
+    });
     sendSessionMessage
-      .mockResolvedValueOnce({
-        ok: true,
-        sessionId: 'sess-1',
-        localId: 'local-1',
-        waited: false,
-        admissionResult: { status: 'accepted', localId: 'local-1' },
+      .mockImplementationOnce(async (request) => {
+        persistedLocalId = String(request.localId);
+        persistedContent = {
+          t: 'plain',
+          v: {
+            role: 'user',
+            content: { type: 'text', text: request.message },
+            meta: request.messageMeta ?? {},
+          },
+        };
+        return {
+          ok: false,
+          code: 'timeout' as const,
+          admissionResult: {
+            status: 'outcomeUnknown' as const,
+            localId: persistedLocalId,
+            code: 'pending_admission_outcome_unknown',
+          },
+        };
       })
-      .mockResolvedValueOnce({
+      .mockImplementationOnce(async (request) => ({
         ok: true,
         sessionId: 'sess-1',
-        localId: 'local-1',
+        localId: String(request.localId),
         waited: false,
-        admissionResult: { status: 'alreadyAccepted', localId: 'local-1' },
-      });
+        admissionResult: { status: 'alreadyAccepted' as const, localId: String(request.localId) },
+      }));
 
     const firstResult = await executor.execute('session.message.send', input, caller);
+    expect(firstResult).toMatchObject({
+      ok: true,
+      result: { status: 'outcomeUnknown', localId: expect.stringMatching(/^plugin-input-v1:/) },
+    });
     expect(sendSessionMessage).toHaveBeenCalledTimes(1);
-    expect(firstResult).toEqual({
+    expect(await executor.execute('session.message.send', input, caller)).toMatchObject({
       ok: true,
-      result: { status: 'accepted', localId: 'local-1' },
+      result: { status: 'alreadyAccepted', localId: persistedLocalId },
     });
-    expect(await executor.execute('session.message.send', input, caller)).toEqual({
-      ok: true,
-      result: { status: 'alreadyAccepted', localId: 'local-1' },
-    });
-    await vi.waitFor(() => expect(afterMessageAccepted).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(afterMessageAccepted).toHaveBeenCalledTimes(1));
     expect(afterMessageAccepted).toHaveBeenNthCalledWith(1, {
       sessionId: 'sess-1',
-      localId: 'local-1',
+      localId: persistedLocalId,
       attachments: [
         {
           instanceId: expect.any(String),
@@ -2517,6 +2575,7 @@ describe('createCliActionExecutor', () => {
     const firstWrite = sendSessionMessage.mock.calls.at(-2)?.[0];
     const retryWrite = sendSessionMessage.mock.calls.at(-1)?.[0];
     expect(retryWrite?.localId).toBe(firstWrite?.localId);
+    expect(retryWrite?.message).toBe(firstWrite?.message);
     expect(retryWrite?.messageMeta).toEqual(firstWrite?.messageMeta);
     const persisted = readHappierStructuredInputV1FromMeta(firstWrite?.messageMeta);
     expect(persisted?.composerAttachments).toHaveLength(2);
@@ -2554,8 +2613,24 @@ describe('createCliActionExecutor', () => {
         description: 'example/repository',
       }),
     ]);
-    expect(prepareForSend).toHaveBeenCalledTimes(2);
+    expect(prepareForSend).toHaveBeenCalledTimes(1);
     expect(resolveForDispatch).toHaveBeenCalledTimes(1);
+
+    const mismatchedRetry = await executor.execute('session.message.send', {
+      ...input,
+      attachments: authored.map((attachment, index) => index === 0
+        ? {
+            ...attachment,
+            value: { ...attachment.value, key: 'forge/items:pull-request:origin:99' },
+          }
+        : attachment),
+    }, caller);
+    expect(mismatchedRetry).toEqual({
+      ok: true,
+      result: { status: 'rejected', code: 'session_input_idempotency_conflict' },
+    });
+    expect(prepareForSend).toHaveBeenCalledTimes(1);
+    expect(sendSessionMessage).toHaveBeenCalledTimes(2);
 
     const rejected = await executor.execute('session.message.send', {
       ...input,

@@ -1844,7 +1844,9 @@ describe('AcpBackend.waitForResponseComplete', () => {
         const started = await backend.startSession();
         emitted.length = 0;
         const sending = backend.sendPrompt(started.sessionId, 'hi');
-        await expect(sending).resolves.toEqual({ kind: 'accepted_by_transport_write' });
+        const submitted = await sending;
+        expect(submitted).toEqual(expect.objectContaining({ kind: 'submitted_to_transport' }));
+        if (submitted.kind !== 'submitted_to_transport') throw new Error('expected prompt transport submission');
         const waitForCompletion = backend.waitForResponseComplete(2_000) as Promise<unknown>;
         await expect(Promise.race([
           waitForCompletion.then(() => 'completed' as const),
@@ -1854,6 +1856,7 @@ describe('AcpBackend.waitForResponseComplete', () => {
           message.type === 'status' && message.status === 'idle'
         ))).toHaveLength(0);
 
+        await expect(submitted.settlement).resolves.toEqual({ kind: 'effect_observed_without_prompt_response' });
         await expect(waitForCompletion).resolves.toEqual({ kind: 'completed', stopReason: 'end_turn' });
       } finally {
         await backendForCleanup?.dispose().catch(() => {});

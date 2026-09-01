@@ -7,6 +7,12 @@ import type {
   ExecutionRunStartRequest,
 } from '@happier-dev/protocol';
 
+/**
+ * Bounds the complete raw task result retained in memory and returned by the
+ * task profile. Individual runtime events use their own aggregate envelope.
+ */
+export const EXECUTION_RUN_TASK_RESULT_MAX_CODE_UNITS = 512 * 1_024;
+
 export type ExecutionRunProfileStartParams = Readonly<{
   sessionId: string | null;
   runId: string;

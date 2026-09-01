@@ -970,6 +970,59 @@ describe('createCliActionDeps hook dispatch', () => {
     expect(callMachineRpc).not.toHaveBeenCalled();
   });
 
+  it('compares Agent child-Session choices with the live parent before approval', async () => {
+    const deps = createCliActionDeps({
+      token: 'token',
+      credentials: {
+        token: 'token',
+        encryption: { type: 'legacy' as const, secret: new Uint8Array([1, 2, 3, 4]) },
+      },
+      sessionId: 'parent-session',
+      rawSession: { path: '/repo/current', machineId: 'machine-current' },
+      getCurrentSessionBackendTarget: () => ({
+        kind: 'backend',
+        backendId: 'codex',
+        sourceKind: 'built_in',
+      }),
+      mode: 'plain',
+      ctx: null,
+    });
+    const policy = {
+      v: 1 as const,
+      allowCustomDirectory: false,
+      allowCrossMachine: false,
+      allowBackendTargetOverride: false,
+      allowModelOverride: false,
+      allowPermissionModeOverride: false,
+      allowAgentModeOverride: false,
+      allowConfigOptionOverrides: false,
+      allowProfileOverride: false,
+      allowConnectedServicesOverride: false,
+      allowMcpSelectionOverride: false,
+      allowTranscriptStorageOverride: false,
+      permissionCeiling: null,
+    };
+    const baseInput = {
+      creationKey: SessionCreationKeyV1Schema.parse('agent-child'),
+      executionTarget: { serverId: configuration.activeServerId, machineId: 'machine-current' },
+      directory: '/repo/current',
+      agentTarget: {
+        kind: 'agent' as const,
+        identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
+      },
+    };
+
+    await expect(deps.sessionSpawnNewAgentPolicyPreflight?.({ input: baseInput, policy }))
+      .resolves.toEqual({ type: 'allowed' });
+    await expect(deps.sessionSpawnNewAgentPolicyPreflight?.({
+      input: {
+        ...baseInput,
+        executionTarget: { ...baseInput.executionTarget, machineId: 'machine-other' },
+      },
+      policy,
+    })).resolves.toEqual({ type: 'denied', field: 'executionTarget.machineId' });
+  });
+
   it('preserves a portable Account server identity in target-owned directory approval on the exact daemon', async () => {
     const prepare = vi.fn(async () => ({
       ok: true as const,

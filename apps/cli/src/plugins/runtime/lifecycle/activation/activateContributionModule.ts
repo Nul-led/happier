@@ -382,6 +382,7 @@ export async function activateContributionModule(params: Readonly<{
             const validatedAgentSessionRunnerFactories = Object.freeze(
                 await params.persistValidatedAgentSessionRunnerFactories?.(
                     sourceValidatedAgentSessionRunnerFactories,
+                    Object.freeze({ assertCurrent: assertActivationTransactionCurrent }),
                 ) ?? sourceValidatedAgentSessionRunnerFactories,
             );
             const factsByLocalAgentId = new Map(

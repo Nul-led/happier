@@ -36,7 +36,7 @@ export function projectPluginTransactionChangeResult(params: Readonly<{
         params.pluginId,
       )
       ? params.transaction.appliedGenerationsByPluginId[params.pluginId] ?? null
-      : params.desiredGeneration,
+      : null,
     pendingSurfaces: params.transaction?.pendingSurfaces ?? Object.freeze([]),
   });
 }

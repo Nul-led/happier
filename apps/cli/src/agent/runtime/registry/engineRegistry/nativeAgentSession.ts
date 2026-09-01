@@ -83,18 +83,20 @@ import { resolveConnectedServiceNativeHomeRoot } from '@/daemon/connectedService
 import {
     createHostSessionPresentationOwner,
     type HostCurrentSessionUiServices,
+    type HostPluginServices,
 } from '@/agent/runtime/state/currentSessionUiTypes';
 import type { AgentRuntimeRegistrationLease } from '@/plugins/runtime/lifecycle/contributions/targetAgents';
-import type {
-    ResolvedAgentContribution,
-    ResolvedAgentRuntimeContribution,
-} from '@/plugins/projection/registry/types';
+import type { PublicAcpHostLaunchResolver } from '@/agent/acp/runtime/publicSession/createPublicAcpSession';
 import {
     readAgentSessionCapabilities,
     type AgentSessionCapabilities,
 } from '@/plugins/projection/registry/agentContributionDefinition';
 import { resolveAgentContributionQualifiedId } from '@/plugins/projection/registry/agentRoutingIdentity';
-import type { BackendExecutionSurfaces } from '@/agent/runtime/registry/engineRegistryTypes';
+import type {
+    BackendExecutionSurfaces,
+    EngineResolutionAgent,
+    EngineResolutionBackend,
+} from '@/agent/runtime/registry/engineRegistryTypes';
 import { resolveBackendExecutionSurfacesFromNativeAgentRuntime } from '@/agent/runtime/registry/backendEngineSurfaceBindings';
 import {
     createNativeAgentHostSessionRuntimePlan,
@@ -877,6 +879,7 @@ export function createNativeAgentSessionHostServices(params: Readonly<{
     sessionMachineId?: string | null;
     memoryRecallGuidanceEnabled?: boolean;
     toolsDelivery?: AgentToolsDelivery;
+    subagents?: AgentSessionHostServices['subagents'];
 }>): AgentSessionHostServices {
     const isSessionScopeCurrent = (): boolean => {
         let current = false;
@@ -1179,6 +1182,14 @@ export function createNativeAgentSessionHostServices(params: Readonly<{
         mcp,
         workflowActivity,
         toolExecution,
+        subagents: params.subagents ?? Object.freeze({
+            async observe() {
+                throw new PluginError({
+                    code: 'agent_subagent_observation_unavailable',
+                    message: 'Subagent observation is unavailable for this Agent runtime scope',
+                });
+            },
+        }),
         ...(nativeHome ? { nativeHome } : {}),
         ...(
             params.toolsDelivery === 'native_extension'
@@ -1187,6 +1198,15 @@ export function createNativeAgentSessionHostServices(params: Readonly<{
                 : {}
         ),
     });
+}
+
+function readAgentSessionSubagentObservationPublisher(
+    services: PluginServices,
+): AgentSessionHostServices['subagents'] | undefined {
+    const subagents = (services as HostPluginServices).sessions.subagents;
+    return typeof subagents.observe === 'function'
+        ? subagents as AgentSessionHostServices['subagents']
+        : undefined;
 }
 
 function cloneNativeAgentSessionMcpServers(
@@ -1731,7 +1751,7 @@ function readConfiguredExternalSessionProviderOps(
  * configured entry by source identity rather than by configured key.
  */
 function readBoundExternalSessionSource(
-    agent: ResolvedAgentContribution,
+    agent: EngineResolutionAgent,
     metadata: Readonly<Record<string, unknown>>,
 ): Readonly<{
     source: ExternalSessionsSource;
@@ -1748,7 +1768,7 @@ function readBoundExternalSessionSource(
         : null;
 }
 
-function hasConnectedServiceProfileSourceInstances(agent: ResolvedAgentContribution): boolean {
+function hasConnectedServiceProfileSourceInstances(agent: EngineResolutionAgent): boolean {
     return agent.richDefinition?.definition.surfaces?.externalSession.sources.some(
         (source) => source.instances?.some((instance) => instance.kind === 'connectedServiceProfiles') === true,
     ) === true;
@@ -1925,7 +1945,7 @@ type NativeAgentToolExecutionLifecycleObserver = Readonly<{
  * host-owned retained interaction such as Voice.
  */
 export async function resolveNativeAgentSessionNativeHomeService(params: Readonly<{
-    agent: ResolvedAgentContribution;
+    agent: EngineResolutionAgent;
     sourceEnvironment: Readonly<Record<string, string>>;
 }>): Promise<ReturnType<typeof createAgentNativeHomeReadService> | null> {
     const descriptor = await params.agent.catalogEntry
@@ -3208,6 +3228,9 @@ export function createNativeAgentSessionOperations(
         readActiveTurnCausalPermissionAuthority() {
             return readActiveTurnAdmissionWitness()?.causalPermissionAuthority ?? null;
         },
+        readActiveTurnId() {
+            return readActiveTurnAdmissionWitness()?.turnId ?? null;
+        },
         subscribeRuntimeEvents(handler) {
             listeners.add(handler);
             if (!disposeStarted) ensureSubscription();
@@ -3491,7 +3514,7 @@ export function createNativeAgentSessionOperations(
                 : (
                     typeof requestedTimeoutMs === 'number' && Number.isFinite(requestedTimeoutMs)
                         ? Math.max(0, Math.trunc(requestedTimeoutMs))
-                        : 30 * 60_000
+                        : null
                 );
             await new Promise<void>((resolve, reject) => {
                 const waiter = {
@@ -3508,9 +3531,9 @@ export function createNativeAgentSessionOperations(
                 completion.waiters.add(waiter);
                 if (timeoutMs !== null) {
                     waiter.timer = setTimeout(() => {
+                        completion.waiters.delete(waiter);
                         const turnIds = [...completion.observedTurnIds];
-                        settleTurnCompletion(
-                            undefined,
+                        reject(
                             new Error(
                                 `Native Agent session turn did not complete within ${timeoutMs}ms${
                                     turnIds.length > 0 ? ` (${turnIds.join(', ')})` : ''
@@ -3758,8 +3781,20 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
     resolveCallerMaterialization?(): PluginMachineMaterializationRefV1 | null;
     /** Direct in-process callers may provide the real registration lease. */
     lease?: AgentRuntimeRegistrationLease;
-    backend: ResolvedAgentRuntimeContribution;
-    agent: ResolvedAgentContribution;
+    backend: EngineResolutionBackend;
+    agent: EngineResolutionAgent;
+    /** Host-owned capabilities for a non-plugin configured Agent runtime. */
+    sessionCapabilities?: AgentSessionCapabilities;
+    /** Exact host policy identity for a non-plugin configured Agent runtime. */
+    policyAgentId?: string;
+    /** Host-owned Session projection for a non-plugin configured Agent runtime. */
+    sessionProjection?: Readonly<{
+        flavor: string;
+        agentMessageType: HostSessionRuntimeConfig['agentMessageType'];
+        augmentSessionMetadata?: HostSessionRuntimeConfig['augmentSessionMetadata'];
+    }>;
+    /** Host-owned executable custody for Account-configured ACP. */
+    resolveAcpHostLaunch?: PublicAcpHostLaunchResolver;
     sessionInput: PluginSessionBindingInput;
     executionSurfaces?: Partial<Pick<BackendExecutionSurfaces, 'externalSession' | 'terminalRuntime'>>;
     externalSessionHostOperations?: Readonly<{
@@ -3859,6 +3894,8 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
         backend: params.backend,
         agent: params.agent,
         sessionInput: params.sessionInput,
+        ...(params.policyAgentId ? { policyAgentId: params.policyAgentId } : {}),
+        ...(params.sessionProjection ? { sessionProjection: params.sessionProjection } : {}),
         ...(params.agentSessionRealtimeVoiceAuthority
             ? {
                 agentSessionRealtimeVoiceAuthority:
@@ -3888,7 +3925,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                 throw new Error(`Agent runtime '${identity.agentId}' requires a session id and working directory`);
             }
             const runtimeIncarnationId = randomUUID();
-            const sessionCapabilities = readAgentSessionCapabilities(
+            const sessionCapabilities = params.sessionCapabilities ?? readAgentSessionCapabilities(
                 params.agent.richDefinition?.definition,
             );
             const resumeId = openIntent.kind === 'resume'
@@ -4655,24 +4692,25 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                 invokedAtMs,
                 sessionId,
                 sessionServices: createNativeAgentSessionHostServices({
-                        owners: sessionHostServices,
-                        agentId: identity.agentId,
-                        sessionId,
-                        directory: cwd,
-                        signal,
-                        isCurrent: identity.isCurrent,
-                        session: hostRuntimeParams.session,
-                        accountSettings: hostRuntimeParams.accountSettings ?? {},
-                        profileId: typeof hostRuntimeParams.metadata.profileId === 'string'
-                            ? hostRuntimeParams.metadata.profileId
-                            : null,
-                        sessionMachineId: hostRuntimeParams.machineId,
-                        memoryRecallGuidanceEnabled: hostRuntimeParams.memoryRecallGuidanceEnabled,
-                        ...(terminalHostScope ? { terminalHost: terminalHostScope.service } : {}),
-                        ...(nativeHome ? { nativeHome } : {}),
-                        publications: publications.services,
-                        readToolExecutionCapability: () => runtime?.toolExecution?.capability ?? null,
-                        toolsDelivery: resolveAgentToolsDelivery(identity.agentId),
+                    owners: sessionHostServices,
+                    agentId: identity.agentId,
+                    sessionId,
+                    directory: cwd,
+                    signal,
+                    isCurrent: identity.isCurrent,
+                    session: hostRuntimeParams.session,
+                    accountSettings: hostRuntimeParams.accountSettings ?? {},
+                    profileId: typeof hostRuntimeParams.metadata.profileId === 'string'
+                        ? hostRuntimeParams.metadata.profileId
+                        : null,
+                    sessionMachineId: hostRuntimeParams.machineId,
+                    memoryRecallGuidanceEnabled: hostRuntimeParams.memoryRecallGuidanceEnabled,
+                    ...(terminalHostScope ? { terminalHost: terminalHostScope.service } : {}),
+                    ...(nativeHome ? { nativeHome } : {}),
+                    publications: publications.services,
+                    readToolExecutionCapability: () => runtime?.toolExecution?.capability ?? null,
+                    toolsDelivery: resolveAgentToolsDelivery(identity.agentId),
+                    subagents: readAgentSessionSubagentObservationPublisher(services),
                 }),
                 signal,
                 services,
@@ -4718,6 +4756,9 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                         : {}),
                     ...(hostRuntimeParams.mcpServers
                         ? { mcpServers: hostRuntimeParams.mcpServers }
+                        : {}),
+                    ...(params.resolveAcpHostLaunch
+                        ? { resolveHostLaunch: params.resolveAcpHostLaunch }
                         : {}),
                 }),
                 workState: createNativeAgentSessionWorkStateService({
@@ -4854,7 +4895,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                     );
                 }
                 const sessionFactory = sessions;
-                if (params.createRuntime) {
+                if (params.createRuntime && params.backend.provenance !== 'configured') {
                     const diagnostics: Parameters<
                         typeof resolveBackendExecutionSurfacesFromNativeAgentRuntime
                     >[0]['diagnostics'] = [];
@@ -4887,9 +4928,12 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                 const continuationDeclaration =
                     sessionCapabilities.continuationVerification;
                 if (
-                    openRequest.kind === 'resume'
-                    && continuationDeclaration?.intents.includes('resume')
+                    openRequest.kind !== 'create'
+                    && continuationDeclaration?.intents.includes(openRequest.kind)
                 ) {
+                    const continuationProviderSessionId = openRequest.kind === 'resume'
+                        ? openRequest.providerSessionId
+                        : openRequest.source.providerSessionId;
                     const continuationContext =
                         createNativeAgentSessionControlContext({
                             context,
@@ -4897,8 +4941,7 @@ export async function createNativeAgentRuntimeSessionPlan(params: Readonly<{
                             activity: 'inactive',
                             connectedAccounts:
                                 openRequest.connectedAccounts ?? [],
-                            providerSessionId:
-                                openRequest.providerSessionId,
+                            providerSessionId: continuationProviderSessionId,
                         });
                     const result = sessions.continuation
                         ? await sessions.continuation.verify(

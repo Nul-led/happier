@@ -17,6 +17,7 @@ import {
 
 import {
   createPublicAcpSession,
+  type PublicAcpHostLaunchResolver,
   type PublicAcpManagedDependencies,
   type PublicAcpSystemTools,
 } from './createPublicAcpSession';
@@ -128,6 +129,8 @@ export function createPublicAcpRuntimeProtocols(params: Readonly<{
     payload: Readonly<Record<string, unknown>>,
     options: Readonly<{ signal: AbortSignal }>,
   ) => Promise<Readonly<Record<string, unknown>>>;
+  /** Host-only executable custody for Account-configured ACP. */
+  resolveHostLaunch?: PublicAcpHostLaunchResolver;
 }>): AgentRuntimeContext['protocols'] {
   return Object.freeze({
     acp: Object.freeze({
@@ -148,6 +151,7 @@ export function createPublicAcpRuntimeProtocols(params: Readonly<{
             ? { transformAgentChildLaunchEnvironment: params.transformAgentChildLaunchEnvironment }
             : {}),
           ...(params.transformAgentRequest ? { transformAgentRequest: params.transformAgentRequest } : {}),
+          ...(params.resolveHostLaunch ? { resolveHostLaunch: params.resolveHostLaunch } : {}),
         });
       },
     }),

@@ -15,7 +15,6 @@ import type {
 } from '@happier-dev/protocol';
 import { readRuntimeDescriptorV1 } from '@happier-dev/protocol';
 
-import type { ResolvedAgentRuntimeContribution } from '@/plugins/projection/registry/types';
 import type { PluginRuntimeHookOperations } from './sessionRuntimeHooks';
 
 export type NormalizedPluginSessionLaunchResult = Readonly<{
@@ -33,26 +32,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function buildGenericPluginRuntimeDescriptor(backend: ResolvedAgentRuntimeContribution): RuntimeDescriptorV1 | null {
-    return {
-        v: 1,
-        agentId: backend.agentId,
-        agent: {
-            agentExtra: {
-                owner: 'happier',
-                schemaId: 'happier.pluginRuntimeDescriptorExtra',
-                v: 1,
-                runtimeHandle: {
-                    backendId: backend.id,
-                    agentId: backend.agentId,
-                    provenance: backend.provenance,
-                    source: backend.source,
-                },
-            },
-        },
-    };
-}
-
 function emitRuntimeMetadataEvent(handler: RuntimeTurnMessageHandler, name: RuntimePublicationEvent['name'], payload: unknown): void {
     if (payload === null || payload === undefined) return;
     handler({
@@ -64,7 +43,6 @@ function emitRuntimeMetadataEvent(handler: RuntimeTurnMessageHandler, name: Runt
 
 export function normalizePluginSessionLaunchResult(params: Readonly<{
     result: PluginSessionLaunchResultCandidate;
-    backend: ResolvedAgentRuntimeContribution;
 }>): NormalizedPluginSessionLaunchResult {
     if (isRuntimeTurnOperations(params.result)) {
         throw new Error('Plugin terminal runtime launch must return an object payload with RuntimeTurnOperations');
@@ -81,8 +59,7 @@ export function normalizePluginSessionLaunchResult(params: Readonly<{
 
     return {
         runtime: runtimeValue,
-        runtimeDescriptor: readRuntimeDescriptorV1(params.result.runtimeDescriptor)
-            ?? buildGenericPluginRuntimeDescriptor(params.backend),
+        runtimeDescriptor: readRuntimeDescriptorV1(params.result.runtimeDescriptor),
         runtimeCapabilities: params.result.runtimeCapabilities ?? null,
         runtimeFacets: normalizePublishedRuntimeFacetsV1(params.result.runtimeFacets),
     };

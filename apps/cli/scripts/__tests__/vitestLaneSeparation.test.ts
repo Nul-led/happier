@@ -40,6 +40,9 @@ describe('Vitest lane separation', () => {
         expect(integrationConfig.test?.exclude).toContain(
             'src/daemon/startup/createDaemonWorkspaceSyncRuntime.real.integration.test.ts',
         );
+        expect(integrationConfig.test?.exclude).toContain(
+            'src/daemon/peer/iroh/workspaceMachineCarrierMutagen.real.integration.test.ts',
+        );
 
         const packageJson = JSON.parse(
             readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),

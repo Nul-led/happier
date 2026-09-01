@@ -42,6 +42,7 @@ export type FileBackedPluginActivationSource = Readonly<{
     resolveRelativeModule?: PluginRelativeModuleResolver<Record<string, unknown>>;
     persistValidatedAgentSessionRunnerFactories?: (
         facts: readonly ValidatedAgentSessionRunnerFactoryFactV1[],
+        options: Readonly<{ assertCurrent: () => void }>,
     ) => Promise<readonly ValidatedAgentSessionRunnerFactoryFactV1[] | void>;
 }>;
 
@@ -62,6 +63,7 @@ export type BundledPluginActivationSource<TModule> = Readonly<{
     resolveRelativeModule?: PluginRelativeModuleResolver<Record<string, unknown>>;
     persistValidatedAgentSessionRunnerFactories?: (
         facts: readonly ValidatedAgentSessionRunnerFactoryFactV1[],
+        options: Readonly<{ assertCurrent: () => void }>,
     ) => Promise<readonly ValidatedAgentSessionRunnerFactoryFactV1[] | void>;
 }>;
 
@@ -72,6 +74,7 @@ export type PreparedPluginActivationSource<TModule> = Readonly<{
     resolveRelativeModule?: PluginRelativeModuleResolver<Record<string, unknown>>;
     persistValidatedAgentSessionRunnerFactories?: (
         facts: readonly ValidatedAgentSessionRunnerFactoryFactV1[],
+        options: Readonly<{ assertCurrent: () => void }>,
     ) => Promise<readonly ValidatedAgentSessionRunnerFactoryFactV1[] | void>;
 }>;
 

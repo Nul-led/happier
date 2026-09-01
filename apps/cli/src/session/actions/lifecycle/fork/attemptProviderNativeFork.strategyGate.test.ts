@@ -84,12 +84,12 @@ describe('attemptProviderNativeFork strategy admission', () => {
     expect(mocks.dispatchProviderNativeFork).not.toHaveBeenCalled();
   });
 
-  it('admits configured ACP only from the canonical load-session capability and parent identity', async () => {
+  it('does not infer configured ACP fork support from load-session capability and parent identity', async () => {
     await callWithStrategy('provider_native', {
       providerSessionId: 'provider-parent',
       supportsLoadSession: true,
     });
-    expect(mocks.dispatchProviderNativeFork).toHaveBeenCalledOnce();
+    expect(mocks.dispatchProviderNativeFork).not.toHaveBeenCalled();
   });
 
   it.each([

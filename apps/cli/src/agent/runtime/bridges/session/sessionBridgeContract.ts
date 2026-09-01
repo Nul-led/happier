@@ -9,7 +9,6 @@ import type {
 } from '@happier-dev/protocol';
 
 import type { BackendExecutionSurfaces } from '@/agent/runtime/registry/engineRegistryTypes';
-import type { RuntimeOutboundTranscriptDispatchFacetV1 } from '@happier-dev/agents';
 import type { CliSessionAttachEligibility } from '@/session/attach/evaluateCliSessionAttachEligibility';
 import type {
   SessionForkBackendTargetResolution,
@@ -44,10 +43,6 @@ export interface SessionHostBridgeContract {
   resolveCurrentExecutionSurfacesForCatalogAgent(
     agentId: string,
   ): Promise<CurrentCatalogAgentExecutionSurfaces | null>;
-  resolveOutboundTranscriptDispatchFacet(backendId?: string | null): Promise<Readonly<{
-    backendId: string;
-    facet: RuntimeOutboundTranscriptDispatchFacetV1;
-  }> | null>;
   createSessionRuntime(backendId: string, params: unknown): Promise<HostSessionRuntimePlan>;
   runSessionCommand(
     backendId: string,

@@ -159,7 +159,7 @@ function writeFakeAcpAgentNeverAckPromptScript(params: { dir: string }): string 
 }
 
 describe('AcpBackend.sendPrompt (prompt ACK vs first session/update)', () => {
-  it('accepts transport custody without waiting for the prompt response or provider output', async () => {
+  it('reports transport submission separately from eventual provider custody', async () => {
     await withTempDir('happier-acp-sendprompt-first-update-', async (dir) => {
       const scriptPath = writeFakeAcpAgentScript({ dir, promptAckDelayMs: 150 });
       let backendForCleanup: AcpBackend | undefined;
@@ -180,16 +180,18 @@ describe('AcpBackend.sendPrompt (prompt ACK vs first session/update)', () => {
           sending,
           delay(50).then(() => 'pending' as const),
         ]);
-        expect(earlyOutcome).toEqual({
-          kind: 'accepted_by_transport_write',
-        });
+        expect(earlyOutcome).toEqual(expect.objectContaining({ kind: 'submitted_to_transport' }));
+        if (earlyOutcome === 'pending' || earlyOutcome.kind !== 'submitted_to_transport') {
+          throw new Error('expected prompt transport submission');
+        }
+        await expect(earlyOutcome.settlement).resolves.toEqual({ kind: 'effect_observed_without_prompt_response' });
       } finally {
         await backendForCleanup?.dispose().catch(() => {});
       }
     });
   }, 20_000);
 
-  it('keeps transport custody accepted when a later prompt response rejects', async () => {
+  it('reports observed provider effect without fabricating acceptance before a late rejection', async () => {
     await withTempDir('happier-acp-sendprompt-gemini-late-error-', async (dir) => {
       const scriptPath = writeFakeAcpAgentScript({
         dir,
@@ -213,8 +215,10 @@ describe('AcpBackend.sendPrompt (prompt ACK vs first session/update)', () => {
 
         const started = await backend.startSession();
         const sendOutcome = await backend.sendPrompt(started.sessionId, 'hi');
-        expect(sendOutcome).toEqual({
-          kind: 'accepted_by_transport_write',
+        expect(sendOutcome).toEqual(expect.objectContaining({ kind: 'submitted_to_transport' }));
+        if (sendOutcome.kind !== 'submitted_to_transport') throw new Error('expected prompt transport submission');
+        await expect(sendOutcome.settlement).resolves.toEqual({
+          kind: 'effect_observed_without_prompt_response',
         });
         await delay(75);
 
@@ -252,9 +256,10 @@ describe('AcpBackend.sendPrompt (prompt ACK vs first session/update)', () => {
         const sending = backend.sendPrompt(started.sessionId, 'hi');
         await delay(10);
         expect(backend.submitCompletionEvidence({ kind: 'completed' })).toBe(true);
-        await expect(sending).resolves.toEqual({
-          kind: 'accepted_by_transport_write',
-        });
+        const submitted = await sending;
+        expect(submitted).toEqual(expect.objectContaining({ kind: 'submitted_to_transport' }));
+        if (submitted.kind !== 'submitted_to_transport') throw new Error('expected prompt transport submission');
+        await expect(submitted.settlement).resolves.toEqual({ kind: 'accepted_by_correlated_provider_effect' });
 
         await delay(100);
         expect(emitted.filter((m) => m?.type === 'status' && m?.status === 'error')).toHaveLength(0);
@@ -268,7 +273,7 @@ describe('AcpBackend.sendPrompt (prompt ACK vs first session/update)', () => {
     });
   }, 20_000);
 
-  it('keeps transport custody accepted when the request-scoped RPC later rejects', async () => {
+  it('reports request-scoped rejection before provider effect', async () => {
     await withTempDir('happier-acp-sendprompt-pre-effect-rejection-', async (dir) => {
       const scriptPath = writeFakeAcpAgentScript({
         dir,
@@ -290,9 +295,11 @@ describe('AcpBackend.sendPrompt (prompt ACK vs first session/update)', () => {
 
         const started = await backend.startSession();
         const outcome = await backend.sendPrompt(started.sessionId, 'hi');
-        expect(outcome).toEqual({
-          kind: 'accepted_by_transport_write',
-        });
+        expect(outcome).toEqual(expect.objectContaining({ kind: 'submitted_to_transport' }));
+        if (outcome.kind !== 'submitted_to_transport') throw new Error('expected prompt transport submission');
+        await expect(outcome.settlement).resolves.toEqual(expect.objectContaining({
+          kind: 'rejected_before_effect',
+        }));
         await delay(25);
       } finally {
         await backendForCleanup?.dispose().catch(() => {});
@@ -300,7 +307,7 @@ describe('AcpBackend.sendPrompt (prompt ACK vs first session/update)', () => {
     });
   }, 20_000);
 
-  it('accepts transport custody when the provider never returns a prompt response', async () => {
+  it('reports unknown effect when neither prompt response nor provider evidence arrives', async () => {
     await withTempDir('happier-acp-sendprompt-no-ack-no-update-', async (dir) => {
       const scriptPath = writeFakeAcpAgentNeverAckPromptScript({ dir });
       let backendForCleanup: AcpBackend | undefined;
@@ -318,9 +325,12 @@ describe('AcpBackend.sendPrompt (prompt ACK vs first session/update)', () => {
         backendForCleanup = backend;
 
         const started = await backend.startSession();
-        await expect(backend.sendPrompt(started.sessionId, 'hi')).resolves.toEqual({
-          kind: 'accepted_by_transport_write',
-        });
+        const outcome = await backend.sendPrompt(started.sessionId, 'hi');
+        expect(outcome).toEqual(expect.objectContaining({ kind: 'submitted_to_transport' }));
+        if (outcome.kind !== 'submitted_to_transport') throw new Error('expected prompt transport submission');
+        await expect(outcome.settlement).resolves.toEqual(expect.objectContaining({
+          kind: 'effect_may_have_occurred',
+        }));
       } finally {
         envScope.restore();
         await backendForCleanup?.dispose().catch(() => {});
@@ -332,6 +342,8 @@ describe('AcpBackend.sendPrompt (prompt ACK vs first session/update)', () => {
     await withTempDir('happier-acp-steer-no-ack-', async (dir) => {
       const scriptPath = writeFakeAcpAgentNeverAckPromptScript({ dir });
       let backendForCleanup: AcpBackend | undefined;
+      const envScope = createAcpSubprocessEnvScope();
+      envScope.patch({ HAPPIER_ACP_PROMPT_LIVENESS_TIMEOUT_MS: '100' });
 
       try {
         const backend = new AcpBackend({
@@ -344,14 +356,20 @@ describe('AcpBackend.sendPrompt (prompt ACK vs first session/update)', () => {
         backendForCleanup = backend;
 
         const started = await backend.startSession();
-        await expect(backend.sendPrompt(started.sessionId, 'primary')).resolves.toEqual({
-          kind: 'accepted_by_transport_write',
-        });
+        const primary = backend.sendPrompt(started.sessionId, 'primary');
+        await delay(10);
         await expect(Promise.race([
           backend.sendSteerPrompt(started.sessionId, 'follow up').then(() => 'written' as const),
           delay(250).then(() => 'timeout' as const),
         ])).resolves.toBe('written');
+        const submitted = await primary;
+        expect(submitted).toEqual(expect.objectContaining({ kind: 'submitted_to_transport' }));
+        if (submitted.kind !== 'submitted_to_transport') throw new Error('expected prompt transport submission');
+        await expect(submitted.settlement).resolves.toEqual(expect.objectContaining({
+          kind: 'effect_may_have_occurred',
+        }));
       } finally {
+        envScope.restore();
         await backendForCleanup?.dispose().catch(() => {});
       }
     });
