@@ -6,6 +6,8 @@ import { RPC_ERROR_CODES, RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 const machineRpcMock = vi.hoisted(() => vi.fn());
 const getReadyServerFeaturesMock = vi.hoisted(() => vi.fn());
+const directExportDownloadMock = vi.hoisted(() => vi.fn());
+const resolveMachineCarrierRouteMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/guardedMachineRpc', () => ({
     callGuardedMachineRpcWithPolicy: (...args: unknown[]) => machineRpcMock(...args),
@@ -13,6 +15,16 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/guardedMachineRpc', () => 
 
 vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
     getReadyServerFeatures: (...args: unknown[]) => getReadyServerFeaturesMock(...args),
+}));
+
+vi.mock('../plumbing/directTransferExportDownload', () => ({
+    downloadBulkPayloadViaDirectExportToDestination: (...args: unknown[]) => directExportDownloadMock(...args),
+}));
+
+vi.mock('../plumbing/machineCarrierHttpLease', () => ({
+    MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR: 'The direct machine connection was interrupted. Retry the transfer.',
+    isIrohMachineCarrierRoute: (route: { kind?: string } | null | undefined) => route?.kind === 'iroh_peer',
+    resolveMachineCarrierRoute: (...args: unknown[]) => resolveMachineCarrierRouteMock(...args),
 }));
 
 describe('uploadComposerMediaStageFromReader', () => {
@@ -23,6 +35,8 @@ describe('uploadComposerMediaStageFromReader', () => {
     afterEach(() => {
         machineRpcMock.mockReset();
         getReadyServerFeaturesMock.mockReset();
+        directExportDownloadMock.mockReset();
+        resolveMachineCarrierRouteMock.mockReset();
     });
 
     it('fails closed when an older daemon does not expose Composer media capability negotiation', async () => {
@@ -185,28 +199,24 @@ describe('uploadComposerMediaStageFromReader', () => {
             sha256,
         };
         const calls: Array<Readonly<{ method: string; payload: unknown }>> = [];
+        const acquire = vi.fn(async () => ({
+            localOrigin: 'http://127.0.0.1:48124',
+            requestHeaders: { 'x-happier-machine-capability': 'capability' },
+            release: vi.fn(),
+        }));
+        resolveMachineCarrierRouteMock.mockResolvedValue({ kind: 'iroh_peer', acquire });
+        directExportDownloadMock.mockImplementation(async (input: Readonly<{
+            request: unknown;
+            destination: { writeBytes: (bytes: Uint8Array) => Promise<void> };
+            acquirePreparedCarrier: (prepared: { operationId: string; maxBytes: number }) => Promise<unknown>;
+        }>) => {
+            await input.acquirePreparedCarrier({ operationId: 'inspection-1', maxBytes: 2 });
+            await input.destination.writeBytes(bytes.subarray(2, 4));
+            return { ok: true, name: handle.name, sizeBytes: 2 };
+        });
         getReadyServerFeaturesMock.mockResolvedValue(null);
         machineRpcMock.mockImplementation(async (input: Readonly<{ method: string; payload: unknown }>) => {
             calls.push(input);
-            if (input.method === RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_INIT) {
-                return {
-                    success: true,
-                    downloadId: 'inspection-1',
-                    chunkSizeBytes: 2,
-                    sizeBytes: 2,
-                    name: handle.name,
-                };
-            }
-            if (input.method === RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_CHUNK) {
-                return {
-                    success: true,
-                    contentBase64: Buffer.from(bytes.subarray(2, 4)).toString('base64'),
-                    isLast: true,
-                };
-            }
-            if (input.method === RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_FINALIZE) {
-                return { success: true };
-            }
             if (input.method === RPC_METHODS.DAEMON_TRANSFER_COMPOSER_MEDIA_RELEASE) {
                 return { success: true };
             }
@@ -228,17 +238,55 @@ describe('uploadComposerMediaStageFromReader', () => {
             attachmentInstanceId: 'attachment-1',
         };
         await expect(releaseComposerContent(handle, { claimant })).resolves.toEqual({ success: true });
-        expect(calls.find((call) => call.method === RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_INIT)).toEqual(expect.objectContaining({
-            payload: expect.objectContaining({
+        expect(directExportDownloadMock).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-current',
+            serverId: 'server-current',
+            request: {
                 t: 'composer_media_stage_inspect_v1',
                 handle,
                 offset: 2,
                 maxBytes: 2,
-                recipientPublicKeyBase64: expect.any(String),
-            }),
+            },
+            acquirePreparedCarrier: expect.any(Function),
         }));
+        expect(resolveMachineCarrierRouteMock).toHaveBeenCalledWith('machine-current', 'server-current');
+        expect(acquire).toHaveBeenCalledWith(expect.objectContaining({
+            operationId: 'inspection-1',
+            maxBytes: 2,
+            flow: 'attachment_transfer',
+        }));
+        expect(calls.some((call) => call.method === RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_INIT)).toBe(false);
         expect(calls.find((call) => call.method === RPC_METHODS.DAEMON_TRANSFER_COMPOSER_MEDIA_RELEASE)).toEqual(expect.objectContaining({
             payload: { handle, claimant },
         }));
+    });
+
+    it('does not fall back to Composer chunk RPC after iroh_peer inspection is selected', async () => {
+        const handle = {
+            v: 1 as const,
+            id: 'opaque-content-3',
+            executionTarget: { serverId: 'server-b', machineId: 'machine-b' },
+            owner: { pluginId: 'com.example.media', localId: 'composer' },
+            mediaKind: 'image' as const,
+            mimeType: 'image/png' as const,
+            name: 'camera.png',
+            sizeBytes: 5,
+            sha256: 'a'.repeat(64),
+        };
+        resolveMachineCarrierRouteMock.mockResolvedValue({ kind: 'iroh_peer', acquire: vi.fn() });
+        directExportDownloadMock.mockImplementation(async (input: Readonly<{
+            acquirePreparedCarrier: (prepared: { operationId: string; maxBytes: number }) => Promise<unknown>;
+        }>) => {
+            await input.acquirePreparedCarrier({ operationId: 'inspection-2', maxBytes: 2 });
+            return { ok: false, error: 'native tunnel closed' };
+        });
+
+        const { inspectComposerContent } = await import('./composerMediaStageTransfers');
+        await expect(inspectComposerContent(handle, { offset: 0, maxBytes: 2 })).resolves.toEqual({
+            success: false,
+            error: 'The direct machine connection was interrupted. Retry the transfer.',
+            errorCode: 'machine_carrier_transport_failed',
+        });
+        expect(machineRpcMock).not.toHaveBeenCalled();
     });
 });

@@ -24,8 +24,6 @@ function areActiveServerSnapshotsEqual(left: ActiveServerSnapshot, right: Active
         && (left.activeLocalRelayUrl ?? null) === (right.activeLocalRelayUrl ?? null)
         && (left.runtimeOrigin ?? null) === (right.runtimeOrigin ?? null)
         && (left.carrier ?? null) === (right.carrier ?? null)
-        && (left.irohObservedPath ?? null) === (right.irohObservedPath ?? null)
-        && (left.irohRelayPolicy ?? null) === (right.irohRelayPolicy ?? null)
         && (left.connectionDescriptorRevision ?? null) === (right.connectionDescriptorRevision ?? null)
         && (left.isSelectionExplicit ?? null) === (right.isSelectionExplicit ?? null)
         && left.generation === right.generation;

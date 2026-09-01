@@ -3,10 +3,13 @@ import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverSc
 
 import { downloadBulkJsonPayloadViaDirectExport } from '../plumbing/directTransferExportDownload';
 import { downloadBulkJsonPayloadViaServerRelay } from '../plumbing/downloadBulkJsonPayloadViaServerRelay';
-import { resolveBulkTransferJsonMaxBytes } from '../plumbing/resolveBulkTransferJsonMaxBytes';
 import { downloadBulkJsonPayloadViaMachineRpc } from './downloadBulkJsonPayloadViaMachineRpc';
 import { downloadJsonPayloadWithCarrierFallbacks } from './downloadJsonPayloadWithCarrierFallbacks';
-import type { AcquireMachineCarrierHttpLease, MachineCarrierTransferFlow } from '../plumbing/machineCarrierHttpLease';
+import {
+    isIrohMachineCarrierRoute,
+    resolveMachineCarrierRoute,
+    type MachineCarrierRoute,
+} from '../plumbing/machineCarrierHttpLease';
 
 type JsonDownloadInitSuccess = Readonly<{
     success: true;
@@ -45,10 +48,6 @@ type MachineJsonCarrierDownloadParams<TPayload, TPayloadWithRecipient extends ob
     abortMethod: string;
     parsePayload: (value: unknown) => TPayload | null;
     signal?: AbortSignal | null;
-    machineCarrierRequired?: boolean;
-    machineCarrierOperationId?: string;
-    machineCarrierFlow?: MachineCarrierTransferFlow;
-    acquireMachineCarrierHttpLease?: AcquireMachineCarrierHttpLease | null;
 }>;
 
 async function callScopedMachineDownloadRpc<TResponse extends { success: boolean }, TPayload>(params: Readonly<{
@@ -80,16 +79,40 @@ export async function downloadJsonPayloadViaMachineTransferCarriers<
         directExportRequest: TDirectExportRequest;
     }>,
 ) {
+    let machineRoute: MachineCarrierRoute | null = null;
+    const downloadViaDirectExport = async () => await downloadBulkJsonPayloadViaDirectExport({
+        machineId: params.machineId,
+        serverId: params.serverId,
+        timeoutMs: params.timeoutMs,
+        request: params.directExportRequest,
+        parsePayload: params.parsePayload,
+        signal: params.signal ?? null,
+        acquirePreparedCarrier: async ({ operationId, maxBytes }) => {
+            machineRoute ??= await resolveMachineCarrierRoute(params.machineId, params.serverId);
+            return machineRoute.kind === 'iroh_peer' ? await machineRoute.acquire({
+                operationId,
+                maxBytes,
+                flow: 'file_transfer',
+                signal: params.signal ?? undefined,
+            })
+                : null;
+        },
+    });
+    let directResult;
+    try {
+        directResult = await downloadViaDirectExport();
+    } catch {
+        if (isIrohMachineCarrierRoute(machineRoute)) {
+            return { ok: false as const, error: 'The direct machine connection was interrupted. Retry the transfer.', errorCode: 'machine_carrier_transport_failed' };
+        }
+        directResult = { ok: false as const, error: 'Direct export unavailable' };
+    }
+    if (directResult.ok) return directResult;
+    if (isIrohMachineCarrierRoute(machineRoute)) {
+        return { ok: false as const, error: 'The direct machine connection was interrupted. Retry the transfer.', errorCode: 'machine_carrier_transport_failed' };
+    }
     return await downloadJsonPayloadWithCarrierFallbacks({
-        downloadViaDirectExport: async (httpOriginOverride) => await downloadBulkJsonPayloadViaDirectExport({
-            machineId: params.machineId,
-            serverId: params.serverId,
-            timeoutMs: params.timeoutMs,
-            request: params.directExportRequest,
-            parsePayload: params.parsePayload,
-            signal: params.signal ?? null,
-            httpOriginOverride: httpOriginOverride ?? null,
-        }),
+        downloadViaDirectExport: async () => directResult,
         downloadViaServerRelay: async () => await downloadBulkJsonPayloadViaServerRelay<TPayload>({
             machineId: params.machineId,
             serverId: params.serverId,
@@ -155,12 +178,5 @@ export async function downloadJsonPayloadViaMachineTransferCarriers<
             }),
             parsePayload: params.parsePayload,
         }),
-        machineCarrierRequired: params.machineCarrierRequired,
-        machineCarrierOperationId: params.machineCarrierOperationId,
-        machineId: params.machineId,
-        machineCarrierFlow: params.machineCarrierFlow,
-        machineCarrierMaxBytes: resolveBulkTransferJsonMaxBytes(null),
-        signal: params.signal ?? null,
-        acquireMachineCarrierHttpLease: params.acquireMachineCarrierHttpLease ?? null,
     });
 }

@@ -103,6 +103,9 @@ describe('UI execution.run Action dependencies', () => {
             SESSION_RPC_METHODS.EXECUTION_RUN_STOP,
             SESSION_RPC_METHODS.EXECUTION_RUN_GET,
         ]);
+        expect(machineRpcWithServerScopeMock.mock.calls[3]?.[0]).toMatchObject({
+            payload: { runId: 'run_1', includeStructured: true },
+        });
     });
 
     it('fails closed without an exact detached target and does not issue a machine RPC', async () => {
@@ -176,6 +179,11 @@ describe('UI execution.run Action dependencies', () => {
         expect(sessionExecutionRunActionMock).toHaveBeenCalledWith(
             'session_1',
             { runId: 'run_1', actionId: 'review.apply' },
+            { serverId: 'server_1' },
+        );
+        expect(sessionExecutionRunGetMock).toHaveBeenLastCalledWith(
+            'session_1',
+            { runId: 'run_1', includeStructured: true },
             { serverId: 'server_1' },
         );
         expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();

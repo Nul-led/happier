@@ -104,10 +104,36 @@ vi.mock('@/components/ui/lists/Item', () => ({
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getActiveServerSnapshot: () => ({ generation: 1, serverId: 'server-a' }),
+    loadHomeViewState: () => null,
+    loadEffectiveHomeViewState: () => null,
+    subscribeHomeViewState: () => () => {},
     listServerProfiles: () => [
         { id: 'server-a', name: 'A', serverUrl: 'http://a', lastUsedAt: 2 },
         { id: 'server-b', name: 'B', serverUrl: 'http://b', lastUsedAt: 1 },
     ],
+    resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
+}));
+
+vi.mock('@/sync/domains/server/serverRuntime', () => ({
+    getActiveServerSnapshot: () => ({ generation: 1, serverId: 'server-a' }),
+}));
+
+vi.mock('@/auth/context/AuthContext', () => ({
+    useAuth: () => ({ refreshFromActiveServer: vi.fn(async () => {}) }),
+}));
+
+vi.mock('@/auth/storage/tokenStorage', () => ({
+    TokenStorage: {
+        getCredentialsForServerUrl: vi.fn(async () => ({ token: 'token', secret: 'secret' })),
+    },
+}));
+
+vi.mock('@/components/settings/server/hooks/useServerAuthStatusByServerId', () => ({
+    useServerAuthStatusByServerId: () => ({ 'server-a': 'signedIn', 'server-b': 'signedIn' }),
+}));
+
+vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
+    setActiveServerAndSwitch: vi.fn(async () => 'switched'),
 }));
 
 describe('ServerPickerScreen header options', () => {
@@ -138,6 +164,15 @@ describe('ServerPickerScreen header options', () => {
 
         await renderScreen(React.createElement(ServerPickerScreen));
         expect(stackOptionsCapture.getResolved()?.presentation).toBeUndefined();
+        standardCleanup();
+    });
+
+    it('gives the standalone picker the only scroll viewport', async () => {
+        const { default: ServerPickerScreen } = await import('@/app/(app)/new/pick/server');
+        const screen = await renderScreen(React.createElement(ServerPickerScreen));
+
+        expect(screen.findAllByType('ItemList')).toHaveLength(1);
+        expect(screen.findAllByType('ItemListStatic')).toHaveLength(0);
         standardCleanup();
     });
 });

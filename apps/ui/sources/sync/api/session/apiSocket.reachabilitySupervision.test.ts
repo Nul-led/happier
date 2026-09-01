@@ -552,9 +552,13 @@ describe('apiSocket reachability supervision', () => {
             });
         });
 
-        it('re-arms focused supervision when the verified runtime origin republishes for this Home', async () => {
+        it('waits for the verified runtime origin when public HTTPS contains embedded credentials', async () => {
             const startParams: Array<Record<string, unknown>> = [];
             let originListener: ((snapshot: Record<string, unknown>) => void) | null = null;
+            const invalidPublicHttpsProfile = {
+                ...irohProfile,
+                publicServerUrl: 'https://admin:secret@public.example.test/api?source=descriptor#home',
+            };
             vi.doMock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', async (importOriginal) => {
                 const actual = await importOriginal<typeof import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool')>();
                 return {
@@ -572,7 +576,7 @@ describe('apiSocket reachability supervision', () => {
                 const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
                 return {
                     ...actual,
-                    getServerProfileById: (id: unknown) => (String(id) === 'srv_home' ? irohProfile : null),
+                    getServerProfileById: (id: unknown) => (String(id) === 'srv_home' ? invalidPublicHttpsProfile : null),
                     subscribeActiveServerRuntimeOrigin: (listener: (snapshot: Record<string, unknown>) => void) => {
                         originListener = listener;
                         return () => {};

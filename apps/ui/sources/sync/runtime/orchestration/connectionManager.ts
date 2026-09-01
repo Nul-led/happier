@@ -1,20 +1,87 @@
 import { TokenStorage, type AuthCredentials } from '@/auth/storage/tokenStorage';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { resolveIndependentHttpsServerOrigin } from '@/sync/domains/server/url/serverUrlCanonical';
 import {
     captureActiveServerRuntimeTarget,
     publishActiveServerRuntimeOrigin,
 } from '@/sync/domains/server/serverRuntime';
 import { ServerScopedTransportUnavailableError } from './serverScopedRpc/resolveServerScopedTransport';
-import { syncRestore, syncSwitchServer } from '@/sync/sync';
+import { sync, syncRestore, syncSwitchServer } from '@/sync/sync';
 import { abortServerFetches } from '@/sync/http/client';
 import { getIrohHomeTunnelRuntime } from '@/sync/runtime/nativeIrohTunnels/runtime';
 import { classifyIrohHomeTunnelSwitchFailure } from '@/sync/runtime/nativeIrohTunnels/fallback';
 import { startNativeSshTunnelRuntimeAppStateLifecycle } from '@/sync/runtime/nativeSshTunnels/runtime';
+import type { IrohHomeTunnelRuntime } from '@/sync/runtime/nativeIrohTunnels/types';
+import { fireAndForget } from '@/utils/system/fireAndForget';
 
 let activeSwitchPromise: Promise<AuthCredentials | null> | null = null;
 let lastAppliedGeneration = -1;
 let requestedGeneration = -1;
+let activeRecoveryPromise: Promise<void> | null = null;
+let recoveryRuntime: IrohHomeTunnelRuntime | null = null;
+let recoveryUnsubscribe: (() => void) | null = null;
+
+function startActiveIrohRecoveryLifecycle(runtime: IrohHomeTunnelRuntime): void {
+    if (recoveryRuntime === runtime && recoveryUnsubscribe) return;
+    recoveryUnsubscribe?.();
+    recoveryRuntime = runtime;
+    recoveryUnsubscribe = runtime.subscribeRecoveryRequired((event) => {
+        if (!event.activePublication) return;
+        const snapshot = getActiveServerSnapshot();
+        const profile = getServerProfileById(snapshot.serverId);
+        if (profile?.serverIdentityId?.trim() !== event.homeServerIdentityId) return;
+        fireAndForget(retryActiveServerConnection(), {
+            tag: 'connectionManager.retryActiveServerConnection.nativeIrohRecovery',
+        });
+    });
+}
+const initialActiveServerSnapshot = getActiveServerSnapshot();
+let appliedActiveServerId = String(initialActiveServerSnapshot.serverId ?? '').trim();
+let appliedActiveServerGeneration = initialActiveServerSnapshot.generation;
+const appliedActiveServerListeners = new Set<(serverId: string, generation: number) => void>();
+const applyingActiveServerListeners = new Set<(serverId: string, generation: number) => void>();
+
+function publishApplyingActiveServerId(serverIdRaw: string, generation: number): void {
+    const serverId = String(serverIdRaw ?? '').trim();
+    for (const listener of applyingActiveServerListeners) listener(serverId, generation);
+}
+
+function publishAppliedActiveServerId(serverIdRaw: string, generation: number): void {
+    const serverId = String(serverIdRaw ?? '').trim();
+    if (serverId === appliedActiveServerId && generation === appliedActiveServerGeneration) return;
+    appliedActiveServerId = serverId;
+    appliedActiveServerGeneration = generation;
+    for (const listener of appliedActiveServerListeners) listener(serverId, generation);
+}
+
+function republishAppliedActiveServer(): void {
+    for (const listener of appliedActiveServerListeners) {
+        listener(appliedActiveServerId, appliedActiveServerGeneration);
+    }
+}
+
+export function getAppliedActiveServerId(): string {
+    return appliedActiveServerId;
+}
+
+export function subscribeAppliedActiveServer(
+    listener: (serverId: string, generation: number) => void,
+): () => void {
+    appliedActiveServerListeners.add(listener);
+    return () => {
+        appliedActiveServerListeners.delete(listener);
+    };
+}
+
+export function subscribeApplyingActiveServer(
+    listener: (serverId: string, generation: number) => void,
+): () => void {
+    applyingActiveServerListeners.add(listener);
+    return () => {
+        applyingActiveServerListeners.delete(listener);
+    };
+}
 
 async function resolveCredentialsForActiveServer(
     snapshot: Readonly<ReturnType<typeof getActiveServerSnapshot>>,
@@ -25,6 +92,17 @@ async function resolveCredentialsForActiveServer(
     return await TokenStorage.getCredentialsForServerUrl(snapshot.serverUrl, {
         serverId: snapshot.serverId,
     });
+}
+
+function isActiveSwitchTargetCurrent(
+    snapshot: Readonly<ReturnType<typeof getActiveServerSnapshot>>,
+    targetGeneration: number,
+): boolean {
+    const currentSnapshot = getActiveServerSnapshot();
+    return currentSnapshot.generation === snapshot.generation
+        && currentSnapshot.serverId === snapshot.serverId
+        && currentSnapshot.serverUrl === snapshot.serverUrl
+        && Math.max(requestedGeneration, currentSnapshot.generation) <= targetGeneration;
 }
 
 /**
@@ -53,8 +131,10 @@ async function ensureIrohHomeTunnelForActiveSwitch(
     // The shared native tunnel app-state mount owns suspend/foreground recovery
     // for Iroh leases as well; there is no second AppState lifecycle owner.
     startNativeSshTunnelRuntimeAppStateLifecycle();
+    const irohRuntime = getIrohHomeTunnelRuntime();
+    startActiveIrohRecoveryLifecycle(irohRuntime);
     try {
-        await getIrohHomeTunnelRuntime().ensureHomeTunnel({
+        await irohRuntime.ensureHomeTunnel({
             homeServerIdentityId,
             endpoint,
             ...(profile.connectionDescriptorRevision === undefined ? {} : { descriptorRevision: profile.connectionDescriptorRevision }),
@@ -72,14 +152,7 @@ async function ensureIrohHomeTunnelForActiveSwitch(
         if (!classifyIrohHomeTunnelSwitchFailure(error).fallbackAllowed) {
             throw error;
         }
-        const publicServerUrl = profile.publicServerUrl?.trim() ?? '';
-        let independentHttpsOrigin = '';
-        try {
-            const parsed = new URL(publicServerUrl);
-            if (parsed.protocol === 'https:') independentHttpsOrigin = parsed.toString().replace(/\/+$/, '');
-        } catch {
-            // Invalid public ingress cannot become a carrier.
-        }
+        const independentHttpsOrigin = resolveIndependentHttpsServerOrigin(profile.publicServerUrl ?? '');
         if (!independentHttpsOrigin) throw new ServerScopedTransportUnavailableError();
         const target = captureActiveServerRuntimeTarget();
         if (!publishActiveServerRuntimeOrigin({
@@ -93,21 +166,53 @@ async function ensureIrohHomeTunnelForActiveSwitch(
     }
 }
 
+/**
+ * Single-shot recovery owner for the focused Home. Native terminal events,
+ * foreground reprobes, and the visible Retry action all reacquire the verified
+ * runtime origin here before asking the existing Sync lifecycle to reconnect.
+ */
+export async function retryActiveServerConnection(): Promise<void> {
+    if (activeRecoveryPromise) return await activeRecoveryPromise;
+    activeRecoveryPromise = (async () => {
+        const snapshot = getActiveServerSnapshot();
+        abortServerFetches();
+        const credentials = await resolveCredentialsForActiveServer(snapshot);
+        await ensureIrohHomeTunnelForActiveSwitch(snapshot, credentials);
+        sync.retryNow();
+    })();
+    try {
+        await activeRecoveryPromise;
+    } finally {
+        activeRecoveryPromise = null;
+    }
+}
+
 async function applyPendingServerSwitches(): Promise<AuthCredentials | null> {
     while (true) {
         const snapshot = getActiveServerSnapshot();
         const targetGeneration = Math.max(requestedGeneration, snapshot.generation);
 
         if (targetGeneration <= lastAppliedGeneration) {
-            return await resolveCredentialsForActiveServer(snapshot);
+            const credentials = await resolveCredentialsForActiveServer(snapshot);
+            if (!isActiveSwitchTargetCurrent(snapshot, targetGeneration)) continue;
+            return credentials;
         }
 
         requestedGeneration = targetGeneration;
         abortServerFetches();
         const credentials = await resolveCredentialsForActiveServer(snapshot);
+        if (!isActiveSwitchTargetCurrent(snapshot, targetGeneration)) continue;
         await ensureIrohHomeTunnelForActiveSwitch(snapshot, credentials);
-        await syncSwitchServer(credentials);
+        if (!isActiveSwitchTargetCurrent(snapshot, targetGeneration)) continue;
+        publishApplyingActiveServerId(snapshot.serverId, targetGeneration);
+        try {
+            await syncSwitchServer(credentials);
+        } catch (error) {
+            republishAppliedActiveServer();
+            throw error;
+        }
         lastAppliedGeneration = targetGeneration;
+        publishAppliedActiveServerId(snapshot.serverId, targetGeneration);
     }
 }
 
@@ -140,6 +245,7 @@ export async function disconnectActiveServerConnection(): Promise<void> {
     await ensureIrohHomeTunnelForActiveSwitch(snapshot, null);
     await syncSwitchServer(null);
     lastAppliedGeneration = Math.max(lastAppliedGeneration, snapshot.generation);
+    publishAppliedActiveServerId(snapshot.serverId, snapshot.generation);
 }
 
 /** Cold-restore entrypoint: prepare the verified carrier before Sync reads its origin. */
@@ -148,4 +254,6 @@ export async function restoreConnectionToActiveServer(credentials: AuthCredentia
     abortServerFetches();
     await ensureIrohHomeTunnelForActiveSwitch(snapshot, credentials);
     await syncRestore(credentials);
+    lastAppliedGeneration = Math.max(lastAppliedGeneration, snapshot.generation);
+    publishAppliedActiveServerId(snapshot.serverId, snapshot.generation);
 }

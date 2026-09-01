@@ -495,6 +495,7 @@ export type SelectionListPagination = Readonly<{
     onEndReached: () => void;
     onRetry?: () => void;
     loadingLabel: string;
+    moreLabel: string;
     retryLabel: string;
     endReachedLabel: string;
 }>;

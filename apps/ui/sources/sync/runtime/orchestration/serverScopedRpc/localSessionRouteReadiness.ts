@@ -1,6 +1,15 @@
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { CREATED_SESSION_NOT_AVAILABLE_LOCALLY_ERROR } from '@/sync/runtime/sessionMessageDeliveryErrors';
 
+// This grace covers only server-to-client propagation after spawn has already
+// succeeded. Provider startup remains owned by the spawn action.
+const POST_SPAWN_SESSION_VISIBILITY_GRACE_MS = 10_000;
+const POST_SPAWN_SESSION_VISIBILITY_RETRY_MS = 250;
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export type EnsureSessionVisibleForMessageRoute = (
     sessionId: string,
     options?: Readonly<{ forceRefresh?: boolean; serverId?: string }>,
@@ -56,6 +65,33 @@ export async function requireLocalSessionVisibleForRoute(params: Readonly<{
         throw new Error(CREATED_SESSION_NOT_AVAILABLE_LOCALLY_ERROR);
     }
     return session;
+}
+
+export async function requireSpawnedSessionVisibleForRoute(params: Readonly<{
+    sessionId: string;
+    serverId?: string | null;
+    getStoredSession: (sessionId: string) => Session | null;
+    ensureSessionVisibleForMessageRoute?: EnsureSessionVisibleForMessageRoute | null;
+}>): Promise<Session> {
+    if (typeof params.ensureSessionVisibleForMessageRoute !== 'function') {
+        return await requireLocalSessionVisibleForRoute(params);
+    }
+
+    const deadline = Date.now() + POST_SPAWN_SESSION_VISIBILITY_GRACE_MS;
+    while (true) {
+        try {
+            return await requireLocalSessionVisibleForRoute(params);
+        } catch (error) {
+            if (!isCreatedSessionUnavailableLocally(error)) {
+                throw error;
+            }
+            const remainingMs = deadline - Date.now();
+            if (remainingMs <= 0) {
+                throw error;
+            }
+            await delay(Math.min(POST_SPAWN_SESSION_VISIBILITY_RETRY_MS, remainingMs));
+        }
+    }
 }
 
 export function isCreatedSessionUnavailableLocally(error: unknown): boolean {

@@ -3,6 +3,19 @@ import { describe, expect, it } from 'vitest';
 import { FeaturesResponseSchema } from '@happier-dev/protocol';
 
 describe('resolveTransferRouteDecision', () => {
+    it('selects exact iroh_peer ahead of every fallback when advertised', async () => {
+        const { resolveTransferRouteDecision } = await import('./resolveTransferRouteDecision');
+        const serverFeatures = FeaturesResponseSchema.parse({
+            features: { machines: { enabled: true, transfer: { enabled: true, directPeer: { enabled: true }, serverRouted: { enabled: true } } } },
+            capabilities: {},
+        });
+        expect(resolveTransferRouteDecision({
+            serverFeatures,
+            directPeerRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
+            directPeerRouteKinds: ['iroh_peer', 'tailscale_serve_direct'],
+            machineRpcDirectRoute: { status: 'viable', checkedAt: 1, expiresAt: 2 },
+        })).toMatchObject({ kind: 'selected', preferredRouteKind: 'iroh_peer' });
+    });
     it('prefers direct peer when the route is viable and the server enables direct peer transfers', async () => {
         const { resolveTransferRouteDecision } = await import('./resolveTransferRouteDecision');
 

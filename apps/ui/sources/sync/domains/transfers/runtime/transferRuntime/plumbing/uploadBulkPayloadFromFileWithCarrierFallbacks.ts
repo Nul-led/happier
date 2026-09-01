@@ -14,12 +14,10 @@ import {
     uploadBulkPayloadFromFile,
 } from './uploadBulkPayloadFromFile';
 import {
+    isIrohMachineCarrierRoute,
     MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
-    MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR,
-    type AcquireMachineCarrierHttpLease,
-    type MachineCarrierHttpLease,
-    normalizeMachineCarrierGrantMaxBytes,
-    normalizeMachineCarrierHttpLocalOrigin,
+    resolveMachineCarrierRoute,
+    type MachineCarrierRoute,
 } from './machineCarrierHttpLease';
 
 type UploadResponse = Readonly<{ success: boolean; error?: string }>;
@@ -63,46 +61,9 @@ export async function uploadBulkPayloadFromFileWithCarrierFallbacks<
     timeoutMs?: number | null;
     signal?: AbortSignal | null;
     onProgress?: ((progress: Readonly<{ uploadedBytes: number; totalBytes: number }>) => void) | null;
-    /** Pin this operation to the authenticated Iroh machine/1 carrier. */
-    machineCarrierRequired?: boolean;
-    machineCarrierOperationId?: string;
-    acquireMachineCarrierHttpLease?: AcquireMachineCarrierHttpLease | null;
 }>): Promise<TResponse | BulkTransferFailureResponse | TransferFinalizeRecoveryFailure<TResponse>> {
-    let machineCarrierLease: MachineCarrierHttpLease | null = null;
+    let machineRoute: MachineCarrierRoute | null = null;
     try {
-        let httpOriginOverride: string | null = null;
-        if (params.machineCarrierRequired) {
-            if (!params.acquireMachineCarrierHttpLease) {
-                return { success: false, error: MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR, errorCode: 'machine_carrier_unavailable' };
-            }
-            const maxBytes = normalizeMachineCarrierGrantMaxBytes(
-                Number.isSafeInteger(params.fileReader.sizeBytes) && params.fileReader.sizeBytes >= 0
-                    ? Math.max(1, params.fileReader.sizeBytes)
-                    : null,
-            );
-            if (maxBytes === null) {
-                return { success: false, error: MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR, errorCode: 'machine_carrier_unavailable' };
-            }
-            try {
-                machineCarrierLease = await params.acquireMachineCarrierHttpLease({
-                    operationId: params.machineCarrierOperationId ?? 'transfer',
-                    machineId: params.machineId,
-                    flow: params.directImportRequest.t === 'session_attachment_upload_v1' ? 'attachment_transfer' : 'file_transfer',
-                    maxBytes,
-                    signal: params.signal ?? undefined,
-                });
-                httpOriginOverride = normalizeMachineCarrierHttpLocalOrigin(machineCarrierLease.localOrigin);
-                if (!httpOriginOverride) {
-                    throw new Error('Machine carrier returned an invalid local HTTP origin');
-                }
-            } catch {
-                return {
-                    success: false,
-                    error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
-                    errorCode: 'machine_carrier_transport_failed',
-                };
-            }
-        }
         let directResult: TResponse | BulkTransferFailureResponse | TransferFinalizeRecoveryFailure<TResponse>;
         try {
             directResult = await uploadBulkPayloadFromFileViaDirectImport<TResponse>({
@@ -114,7 +75,18 @@ export async function uploadBulkPayloadFromFileWithCarrierFallbacks<
                 timeoutMs: params.timeoutMs ?? null,
                 signal: params.signal ?? null,
                 onProgress: params.onProgress ?? null,
-                httpOriginOverride,
+                acquirePreparedCarrier: async ({ operationId, maxBytes }) => {
+                    machineRoute ??= await resolveMachineCarrierRoute(params.machineId, params.serverId);
+                    return machineRoute.kind === 'iroh_peer' ? await machineRoute.acquire({
+                        operationId,
+                        maxBytes,
+                        flow: params.directImportRequest.t === 'session_attachment_upload_v1'
+                            ? 'attachment_transfer'
+                            : 'file_transfer',
+                        signal: params.signal ?? undefined,
+                    })
+                        : null;
+                },
             });
         } catch (error) {
             directResult = toDirectFailure(error);
@@ -134,7 +106,7 @@ export async function uploadBulkPayloadFromFileWithCarrierFallbacks<
             return directResult;
         }
 
-        if (params.machineCarrierRequired) {
+        if (isIrohMachineCarrierRoute(machineRoute)) {
             return {
                 success: false,
                 error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
@@ -153,13 +125,6 @@ export async function uploadBulkPayloadFromFileWithCarrierFallbacks<
             onProgress: params.onProgress ?? null,
         });
     } finally {
-        if (machineCarrierLease) {
-            try {
-                await machineCarrierLease.release();
-            } catch {
-                // Lease cleanup must not replace the authoritative transfer outcome.
-            }
-        }
         await params.fileReader.close();
     }
 }

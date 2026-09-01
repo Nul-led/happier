@@ -1,12 +1,12 @@
 import * as React from 'react';
-import type { ReactTestInstance } from 'react-test-renderer';
+import { act, type ReactTestInstance } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 
 import { createCapturingComponent, createPassThroughComponent, createPassThroughModule } from '@/dev/testkit/mocks/components';
 import { installNewSessionComponentsCommonModuleMocks } from './newSessionComponentsTestHelpers';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
-import { createReactNativeWebMock } from '@/dev/testkit/mocks/reactNative';
+import { createReactNativeNativeMock } from '@/dev/testkit/mocks/reactNative';
 import { createStorageModuleStub } from '@/dev/testkit/mocks/storage';
 import { createTextModuleMock } from '@/dev/testkit/mocks/text';
 import { createUnistylesMock } from '@/dev/testkit/mocks/unistyles';
@@ -17,6 +17,8 @@ import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServe
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const capturedItems: Array<Record<string, unknown>> = [];
+const capturedItemGroups: Array<Record<string, unknown>> = [];
+const capturedItemLists: Array<{ kind: 'scroll' | 'static'; props: Record<string, unknown> }> = [];
 const getCredentialsForServerUrlMock = vi.hoisted(() =>
     vi.fn(async () => ({ token: 'token', secret: 'secret' } as { token: string; secret: string } | null)),
 );
@@ -24,6 +26,14 @@ const refreshFromActiveServerMock = vi.hoisted(() => vi.fn(async () => {}));
 const setActiveServerAndSwitchMock = vi.hoisted(() => vi.fn(
     async (): Promise<ActiveServerSwitchResult> => 'switched',
 ));
+const setNewSessionPickerReturnParamsMock = vi.hoisted(() => vi.fn(() => 'dispatch'));
+const serverAuthStatusState = vi.hoisted(() => ({
+    value: {
+        'server-a': 'signedIn',
+        'server-b': 'signedOut',
+    } as Record<string, 'signedIn' | 'signedOut' | 'unknown'>,
+}));
+const fireAndForgetPromises = vi.hoisted(() => [] as Promise<unknown>[]);
 const serverProfilesState = vi.hoisted(() => ({
     value: [
         { id: 'server-a', name: 'Server A', serverUrl: 'http://server-a.local' },
@@ -31,7 +41,7 @@ const serverProfilesState = vi.hoisted(() => ({
     ] as Array<{ id: string; name: string; serverUrl: string; serverIdentityId?: string }>,
 }));
 const expoRouterMock = createExpoRouterMock({
-    params: { selectedId: 'server-a' },
+    params: { selectedId: 'server-a', draftId: 'draft-1', agentType: 'codex' },
     navigation: { dispatch: vi.fn(), getState: () => undefined },
     router: { replace: vi.fn() },
 });
@@ -58,13 +68,9 @@ installNewSessionComponentsCommonModuleMocks({
     icons: () => ({
         Ionicons: createPassThroughComponent('Ionicons'),
     }),
-    reactNative: () => createReactNativeWebMock({
+    reactNative: () => createReactNativeNativeMock({ platformOS: 'ios' }, {
         View: createPassThroughComponent('View'),
         Pressable: createPassThroughComponent('Pressable'),
-        Platform: {
-            OS: 'ios',
-            select: <T,>(values: { ios?: T; default?: T }) => values.ios ?? values.default,
-        },
     }),
     router: () => expoRouterMock.module,
     storage: () => createStorageModuleStub({
@@ -87,8 +93,19 @@ installNewSessionComponentsCommonModuleMocks({
     }),
 });
 
-vi.mock('@/components/ui/lists/ItemList', () => createPassThroughModule(['ItemListStatic']));
-vi.mock('@/components/ui/lists/ItemGroup', () => createPassThroughModule(['ItemGroup']));
+vi.mock('@/components/ui/lists/ItemList', () => ({
+    ItemList: createCapturingComponent('ItemList', (props) => {
+        capturedItemLists.push({ kind: 'scroll', props });
+    }),
+    ItemListStatic: createCapturingComponent('ItemListStatic', (props) => {
+        capturedItemLists.push({ kind: 'static', props });
+    }),
+}));
+vi.mock('@/components/ui/lists/ItemGroup', () => ({
+    ItemGroup: createCapturingComponent('ItemGroup', (props) => {
+        capturedItemGroups.push(props);
+    }),
+}));
 vi.mock('@/components/ui/lists/Item', () => ({
     Item: createCapturingComponent('Item', (props) => {
         capturedItems.push(props);
@@ -104,6 +121,7 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     listServerProfiles: () => serverProfilesState.value,
     resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
     loadHomeViewState: () => null,
+    loadEffectiveHomeViewState: () => null,
     subscribeHomeViewState: () => () => {},
 }));
 
@@ -123,16 +141,18 @@ vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ refreshFromActiveServer: refreshFromActiveServerMock }),
 }));
 
+vi.mock('@/components/settings/server/hooks/useServerAuthStatusByServerId', () => ({
+    useServerAuthStatusByServerId: () => serverAuthStatusState.value,
+}));
+
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
     setActiveServerAndSwitch: setActiveServerAndSwitchMock,
 }));
 
-vi.mock('@/components/settings/server/modals/ServerSwitchAuthPrompt', () => ({
-    promptSignedOutServerSwitchConfirmation: vi.fn(async () => true),
-}));
-
 vi.mock('@/utils/system/fireAndForget', () => ({
-    fireAndForget: (promise: Promise<unknown>) => promise,
+    fireAndForget: (promise: Promise<unknown>) => {
+        fireAndForgetPromises.push(promise);
+    },
 }));
 
 vi.mock('@/utils/navigation/safeRouterBack', () => ({
@@ -143,22 +163,31 @@ vi.mock('@/components/sessions/new/navigation/setNewSessionPickerReturnParams', 
     const actual = await importOriginal<typeof import('@/components/sessions/new/navigation/setNewSessionPickerReturnParams')>();
     return {
         ...actual,
-        setNewSessionPickerReturnParams: vi.fn(() => 'dispatch'),
+        setNewSessionPickerReturnParams: setNewSessionPickerReturnParamsMock,
     };
 });
 
 describe('NewSessionServerSelectionContent', () => {
     beforeEach(() => {
+        capturedItems.length = 0;
+        capturedItemGroups.length = 0;
+        capturedItemLists.length = 0;
         serverProfilesState.value = [
             { id: 'server-a', name: 'Server A', serverUrl: 'http://server-a.local' },
             { id: 'server-b', name: 'Server B', serverUrl: 'http://server-b.local' },
         ];
+        serverAuthStatusState.value = {
+            'server-a': 'signedIn',
+            'server-b': 'signedOut',
+        };
         getCredentialsForServerUrlMock.mockReset();
         getCredentialsForServerUrlMock.mockResolvedValue({ token: 'token', secret: 'secret' });
         refreshFromActiveServerMock.mockClear();
         setActiveServerAndSwitchMock.mockReset();
         setActiveServerAndSwitchMock.mockResolvedValue('switched');
+        setNewSessionPickerReturnParamsMock.mockClear();
         expoRouterMock.spies.replace.mockClear();
+        fireAndForgetPromises.length = 0;
     });
 
     it('prefers the explicit selected server over stale route params in popover mode', async () => {
@@ -181,7 +210,7 @@ describe('NewSessionServerSelectionContent', () => {
         ]);
     });
 
-    it('looks up credentials using the selected server id when deciding whether to prompt on switch', async () => {
+    it('looks up credentials using the explicit selected Home identity', async () => {
         capturedItems.length = 0;
         getCredentialsForServerUrlMock.mockClear();
         getCredentialsForServerUrlMock.mockResolvedValueOnce(null);
@@ -198,14 +227,18 @@ describe('NewSessionServerSelectionContent', () => {
             throw new Error('Expected Server B item with onPress handler');
         }
 
-        await serverBItem.onPress();
+        serverBItem.onPress();
+        await Promise.all(fireAndForgetPromises);
 
         expect(getCredentialsForServerUrlMock).toHaveBeenCalledWith('http://server-b.local', { serverId: 'server-b' });
     });
 
-    it('carries a signed-out explicit Home target through tab-scoped authentication', async () => {
+    it('uses device-scoped focus for signed-out Home authentication on native', async () => {
         capturedItems.length = 0;
         getCredentialsForServerUrlMock.mockResolvedValueOnce(null);
+        const { Platform } = await import('react-native');
+        const previousPlatform = Platform.OS;
+        (Platform as { OS: string }).OS = 'ios';
         const { NewSessionServerSelectionContent } = await import('./NewSessionServerSelectionContent');
 
         await renderScreen(<NewSessionServerSelectionContent
@@ -218,22 +251,113 @@ describe('NewSessionServerSelectionContent', () => {
         if (!serverBItem || typeof serverBItem.onPress !== 'function') {
             throw new Error('Expected Server B item with onPress handler');
         }
-        await serverBItem.onPress();
+        serverBItem.onPress();
+        await Promise.all(fireAndForgetPromises);
 
-        await vi.waitFor(() => {
-            expect(setActiveServerAndSwitchMock).toHaveBeenCalledWith({
-                serverId: 'server-b',
-                scope: 'tab',
-                refreshAuth: refreshFromActiveServerMock,
-            });
+        expect(setActiveServerAndSwitchMock).toHaveBeenCalledWith({
+            serverId: 'server-b',
+            scope: 'device',
+            refreshAuth: refreshFromActiveServerMock,
         });
         expect(expoRouterMock.spies.replace).toHaveBeenCalledWith({
             pathname: '/',
             params: expect.objectContaining({
                 newSessionAuthContinuation: '1',
                 spawnServerId: 'server-b',
+                draftId: 'draft-1',
+                agentType: 'codex',
             }),
         });
+        (Platform as { OS: string }).OS = previousPlatform;
+    });
+
+    it('exposes the mutually exclusive Home selection as one named radio group', async () => {
+        const { NewSessionServerSelectionContent } = await import('./NewSessionServerSelectionContent');
+
+        await renderScreen(<NewSessionServerSelectionContent
+            maxHeight={520}
+            onClose={() => {}}
+            selectedServerId="server-b"
+        />);
+
+        expect(capturedItemGroups.at(-1)).toMatchObject({
+            accessibilityRole: 'radiogroup',
+            accessibilityLabel: 'server.switchToServer',
+        });
+        expect(capturedItems.map((item) => ({
+            title: item.title,
+            accessibilityRole: item.accessibilityRole,
+            selected: item.selected,
+        }))).toEqual([
+            { title: 'Server A', accessibilityRole: 'radio', selected: false },
+            { title: 'Server B', accessibilityRole: 'radio', selected: true },
+        ]);
+    });
+
+    it('owns scrolling only when rendered as the standalone picker', async () => {
+        const { NewSessionServerSelectionContent } = await import('./NewSessionServerSelectionContent');
+
+        const standalone = await renderScreen(<NewSessionServerSelectionContent
+            maxHeight={520}
+            onClose={() => {}}
+            selectedServerId="server-a"
+            ownsScrollViewport={true}
+        />);
+        expect(capturedItemLists.map((entry) => entry.kind)).toEqual(['scroll']);
+        await act(async () => {
+            standalone.tree.unmount();
+        });
+
+        capturedItemLists.length = 0;
+        await renderScreen(<NewSessionServerSelectionContent
+            maxHeight={520}
+            onClose={() => {}}
+            selectedServerId="server-a"
+            ownsScrollViewport={false}
+        />);
+        expect(capturedItemLists.map((entry) => entry.kind)).toEqual(['static']);
+    });
+
+    it('preserves the current Home and draft when target credential lookup fails', async () => {
+        capturedItems.length = 0;
+        getCredentialsForServerUrlMock.mockRejectedValueOnce(new Error('secure storage unavailable'));
+        const { NewSessionServerSelectionContent } = await import('./NewSessionServerSelectionContent');
+
+        await renderScreen(<NewSessionServerSelectionContent
+            maxHeight={520}
+            onClose={() => {}}
+            selectedServerId="server-a"
+        />);
+
+        const serverBItem = capturedItems.find((item) => item.title === 'Server B');
+        if (!serverBItem || typeof serverBItem.onPress !== 'function') {
+            throw new Error('Expected Server B item with onPress handler');
+        }
+        serverBItem.onPress();
+        await Promise.all(fireAndForgetPromises);
+
+        expect(setActiveServerAndSwitchMock).not.toHaveBeenCalled();
+        expect(setNewSessionPickerReturnParamsMock).not.toHaveBeenCalled();
+        expect(expoRouterMock.spies.replace).not.toHaveBeenCalled();
+    });
+
+    it('shows one Home auth status instead of raw endpoint diagnostics', async () => {
+        capturedItems.length = 0;
+        const { NewSessionServerSelectionContent } = await import('./NewSessionServerSelectionContent');
+
+        await renderScreen(<NewSessionServerSelectionContent
+            maxHeight={520}
+            onClose={() => {}}
+            selectedServerId="server-a"
+        />);
+
+        expect(capturedItems.map((item) => ({
+            title: item.title,
+            subtitle: item.subtitle,
+        }))).toEqual([
+            { title: 'Server A', subtitle: 'server.signedIn' },
+            { title: 'Server B', subtitle: 'server.signedOut' },
+        ]);
     });
 
     it('does not mutate navigation when custody blocks a signed-out Home switch', async () => {
@@ -252,11 +376,33 @@ describe('NewSessionServerSelectionContent', () => {
         if (!serverBItem || typeof serverBItem.onPress !== 'function') {
             throw new Error('Expected Server B item with onPress handler');
         }
-        await serverBItem.onPress();
+        serverBItem.onPress();
+        await Promise.all(fireAndForgetPromises);
 
-        await vi.waitFor(() => {
-            expect(setActiveServerAndSwitchMock).toHaveBeenCalledTimes(1);
-        });
+        expect(setActiveServerAndSwitchMock).toHaveBeenCalledTimes(1);
+        expect(expoRouterMock.spies.replace).not.toHaveBeenCalled();
+    });
+
+    it('preserves the current selection when a signed-out Home switch fails', async () => {
+        capturedItems.length = 0;
+        getCredentialsForServerUrlMock.mockResolvedValueOnce(null);
+        setActiveServerAndSwitchMock.mockRejectedValueOnce(new Error('target unavailable'));
+        const { NewSessionServerSelectionContent } = await import('./NewSessionServerSelectionContent');
+
+        await renderScreen(<NewSessionServerSelectionContent
+            maxHeight={520}
+            onClose={() => {}}
+            selectedServerId="server-a"
+        />);
+
+        const serverBItem = capturedItems.find((item) => item.title === 'Server B');
+        if (!serverBItem || typeof serverBItem.onPress !== 'function') {
+            throw new Error('Expected Server B item with onPress handler');
+        }
+        serverBItem.onPress();
+        await expect(Promise.all(fireAndForgetPromises)).rejects.toThrow('target unavailable');
+
+        expect(setNewSessionPickerReturnParamsMock).not.toHaveBeenCalled();
         expect(expoRouterMock.spies.replace).not.toHaveBeenCalled();
     });
 

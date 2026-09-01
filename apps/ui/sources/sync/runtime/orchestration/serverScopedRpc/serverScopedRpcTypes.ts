@@ -40,6 +40,8 @@ export type ScopedServerRpcContext = Readonly<{
     timeoutMs: number;
     targetServerId: string;
     targetServerUrl: string;
+    /** Present for runtime-produced contexts; optional only for injected test/compatibility adapters. */
+    targetAccountId?: string;
     runtimeOrigin?: string;
     carrier?: 'https' | 'iroh';
     release?: () => Promise<void>;

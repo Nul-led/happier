@@ -163,6 +163,7 @@ export async function resolveScopedSessionCryptoContext(params: Readonly<{
 export async function resolveScopedSessionDataKey(params: Readonly<{
   serverId: string;
   serverUrl: string;
+  runtimeOrigin?: string;
   token: string;
   sessionId: string;
   decryptEncryptionKey: (value: string) => Promise<Uint8Array | null>;

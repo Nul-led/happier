@@ -115,6 +115,7 @@ describe('resolveServerScopedRelaySocket', () => {
             timeoutMs: 2_000,
             targetServerId: 'server-b',
             targetServerUrl: 'https://server-b.example.test',
+            targetAccountId: 'account-b',
             token: 'token-b',
             encryption: {
                 decryptEncryptionKey: async () => null,
@@ -155,6 +156,7 @@ describe('resolveServerScopedRelaySocket', () => {
 
         expect(createEphemeralServerSocketClientSpy).toHaveBeenCalledWith({
             serverUrl: 'https://server-b.example.test',
+            reachabilityServerUrl: 'https://server-b.example.test',
             token: 'token-b',
             timeoutMs: 2_000,
         });
@@ -163,6 +165,7 @@ describe('resolveServerScopedRelaySocket', () => {
             on: expect.any(Function),
         }));
         expect(socket.socketId).toBe('overridden-socket-id');
+        expect(socket.scopeUserId).toBe('account-b');
 
         const listener = vi.fn<(payload: string) => void>();
         const unsubscribe = socket.onEnvelope(listener);
@@ -177,6 +180,43 @@ describe('resolveServerScopedRelaySocket', () => {
 
         socket.disconnect();
         expect(resolveServerScopedContextSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('surfaces scoped transport release failure from awaitable disconnect', async () => {
+        const releaseError = new Error('release failed');
+        const release = vi.fn(async () => {
+            throw releaseError;
+        });
+        createEphemeralServerSocketClientSpy.mockResolvedValue({
+            emit: vi.fn(),
+            timeout: vi.fn(),
+            disconnect: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            getSocketId: vi.fn(() => 'socket-release'),
+        });
+        resolveServerScopedContextSpy.mockResolvedValue({
+            scope: 'scoped',
+            machineId: 'machine-release',
+            timeoutMs: 2_000,
+            targetServerId: 'server-release',
+            targetServerUrl: 'https://server-release.example.test',
+            targetAccountId: 'account-release',
+            token: 'token-release',
+            encryption: null,
+            release,
+        });
+
+        const { createServerScopedRelaySocket } = await import('./serverScopedRelaySocket');
+        const socket = await createServerScopedRelaySocket<string>({
+            machineId: 'machine-release',
+            serverId: 'server-release',
+            createActiveTransport: { send: () => {}, on: () => () => {} },
+            createScopedTransport: () => ({ send: () => {}, on: () => () => {} }),
+        });
+
+        await expect(socket.disconnect()).rejects.toBe(releaseError);
+        expect(release).toHaveBeenCalledTimes(1);
     });
 
     it('falls back to transport- and socket-provided socket ids when scoped overrides are missing', async () => {
@@ -197,6 +237,7 @@ describe('resolveServerScopedRelaySocket', () => {
             timeoutMs: 2_000,
             targetServerId: 'server-c',
             targetServerUrl: 'https://server-c.example.test',
+            targetAccountId: 'account-c',
             token: 'token-c',
             encryption: {
                 decryptEncryptionKey: async () => null,
@@ -245,6 +286,7 @@ describe('resolveServerScopedRelaySocket', () => {
             timeoutMs: 2_000,
             targetServerId: 'server-d',
             targetServerUrl: 'https://server-d.example.test',
+            targetAccountId: 'account-d',
             token: 'token-d',
             encryption: {
                 decryptEncryptionKey: async () => null,
@@ -271,5 +313,72 @@ describe('resolveServerScopedRelaySocket', () => {
         expect(scopedTransportSpy).toHaveBeenCalledTimes(1);
         expect(socketGetSocketIdSpy).toHaveBeenCalledTimes(1);
         expect(socket.socketId).toBe('socket-default-id');
+    });
+
+    it('releases the scoped carrier when socket construction fails', async () => {
+        const releaseSpy = vi.fn(async () => {});
+        resolveServerScopedContextSpy.mockResolvedValue({
+            scope: 'scoped',
+            machineId: 'machine-b',
+            timeoutMs: 2_000,
+            targetServerId: 'server-b',
+            targetServerUrl: 'https://server-b.example.test',
+            targetAccountId: 'account-b',
+            token: 'token-b',
+            encryption: null,
+            carrier: 'iroh',
+            runtimeOrigin: 'http://127.0.0.1:4312',
+            release: releaseSpy,
+        });
+        createEphemeralServerSocketClientSpy.mockRejectedValue(new Error('socket failed'));
+
+        const { createServerScopedRelaySocket } = await import('./serverScopedRelaySocket');
+        await expect(createServerScopedRelaySocket<string>({
+            machineId: 'machine-b',
+            serverId: 'server-b',
+            createActiveTransport: { send: () => {}, on: () => () => {} },
+            createScopedTransport: () => ({ send: () => {}, on: () => () => {} }),
+        })).rejects.toThrow('socket failed');
+
+        expect(releaseSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('disconnects the socket and releases the scoped carrier when transport construction fails', async () => {
+        const releaseSpy = vi.fn(async () => {});
+        const disconnectSpy = vi.fn();
+        createEphemeralServerSocketClientSpy.mockResolvedValue({
+            emit: vi.fn(),
+            timeout: vi.fn(),
+            disconnect: disconnectSpy,
+            on: vi.fn(),
+            off: vi.fn(),
+            getSocketId: vi.fn(() => 'socket-b'),
+        });
+        resolveServerScopedContextSpy.mockResolvedValue({
+            scope: 'scoped',
+            machineId: 'machine-b',
+            timeoutMs: 2_000,
+            targetServerId: 'server-b',
+            targetServerUrl: 'https://server-b.example.test',
+            targetAccountId: 'account-b',
+            token: 'token-b',
+            encryption: null,
+            carrier: 'iroh',
+            runtimeOrigin: 'http://127.0.0.1:4312',
+            release: releaseSpy,
+        });
+
+        const { createServerScopedRelaySocket } = await import('./serverScopedRelaySocket');
+        await expect(createServerScopedRelaySocket<string>({
+            machineId: 'machine-b',
+            serverId: 'server-b',
+            createActiveTransport: { send: () => {}, on: () => () => {} },
+            createScopedTransport: () => {
+                throw new Error('transport failed');
+            },
+        })).rejects.toThrow('transport failed');
+
+        expect(disconnectSpy).toHaveBeenCalledTimes(1);
+        expect(releaseSpy).toHaveBeenCalledTimes(1);
     });
 });

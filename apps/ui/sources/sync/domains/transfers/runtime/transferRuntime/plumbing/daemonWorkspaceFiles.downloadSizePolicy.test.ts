@@ -35,7 +35,7 @@ describe('daemonWorkspaceFiles download size policy', () => {
         });
     });
 
-    it('preflights STAT_FILE before the bulk fallback when direct export and relay are unavailable', async () => {
+    it('uses prepared transfer metadata before the bulk fallback when direct export and relay are unavailable', async () => {
         const rpcCall = vi.fn(async (params: any) => {
             if (params.machineMethod === RPC_METHODS.STAT_FILE) {
                 expect(params.request).toEqual({ path: '/repo/a.txt' });
@@ -81,9 +81,8 @@ describe('daemonWorkspaceFiles download size policy', () => {
         expect(result).toEqual({ ok: true, name: 'a.txt', sizeBytes: 3 });
         expect(createWorkspaceFileTransferRpcCallerMock).toHaveBeenCalledTimes(1);
         expect(createWorkspaceFileTransferRpcCallerMock).toHaveBeenCalledWith({ machineId: 'm1' });
-        expect(rpcCall).toHaveBeenCalledWith(expect.objectContaining({
+        expect(rpcCall).not.toHaveBeenCalledWith(expect.objectContaining({
             machineMethod: RPC_METHODS.STAT_FILE,
-            request: { path: '/repo/a.txt' },
         }));
         expect(rpcCall).toHaveBeenCalledWith(expect.objectContaining({
             machineMethod: RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_CHUNK,

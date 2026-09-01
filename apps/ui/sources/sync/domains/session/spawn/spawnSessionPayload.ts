@@ -18,9 +18,6 @@ import type {
     SessionModelSelectionV1,
     WindowsRemoteSessionLaunchMode,
 } from '@happier-dev/protocol';
-import {
-    buildBackendTransportFieldsFromUiState,
-} from '@/agents/registry/registryUiBehavior';
 
 // Options for spawning a session
 export interface SpawnSessionOptions {
@@ -178,15 +175,6 @@ function buildSpawnHappySessionRpcParamsInternal(
         && canonicalModelSelection.ref.agentTargetKey !== predecessorTargetKey) {
         throw new Error('Spawn model selection target mismatch');
     }
-    const backendTransportFields = canonicalBackendTarget
-        ? buildBackendTransportFieldsFromUiState({
-            machineId,
-            backendTarget: canonicalBackendTarget,
-            runtimeDescriptorV1,
-            providerSessionId: resume,
-        })
-        : {};
-
     const params: SpawnHappySessionRpcParams = {
         type: 'spawn-in-directory',
         directory,
@@ -213,11 +201,7 @@ function buildSpawnHappySessionRpcParamsInternal(
             : {}),
         ...(canonicalModelSelection ? { modelSelection: canonicalModelSelection } : {}),
         ...(sessionConfigOptionOverrides ? { sessionConfigOptionOverrides } : {}),
-        ...(runtimeDescriptorV1
-            ? { runtimeDescriptorV1 }
-            : 'runtimeDescriptorV1' in backendTransportFields && backendTransportFields.runtimeDescriptorV1
-                ? { runtimeDescriptorV1: backendTransportFields.runtimeDescriptorV1 }
-                : {}),
+        ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
         connectedServices,
         ...(mcpSelection ? { mcpSelection } : {}),
         ...(typeof accountSettingsVersionHint === 'number' && Number.isInteger(accountSettingsVersionHint) && accountSettingsVersionHint >= 0

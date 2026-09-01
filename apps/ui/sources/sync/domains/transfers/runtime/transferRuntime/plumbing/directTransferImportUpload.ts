@@ -34,6 +34,11 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
     signal?: AbortSignal | null;
     onProgress?: ((progress: Readonly<{ uploadedBytes: number; totalBytes: number }>) => void) | null;
     httpOriginOverride?: string | null;
+    acquirePreparedCarrier?: ((prepared: Readonly<{ operationId: string; maxBytes: number }>) => Promise<Readonly<{
+        localOrigin: string;
+        requestHeaders: Readonly<Record<string, string>>;
+        release: () => Promise<void> | void;
+    }> | null>) | null;
 }>): Promise<TResponse | BulkTransferFailureResponse | TransferFinalizeRecoveryFailure<TResponse>> {
     const prepared = await prepareDirectImportSession({
         machineId: params.machineId,
@@ -42,6 +47,7 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
         timeoutMs: params.timeoutMs ?? null,
         signal: params.signal ?? null,
         httpOriginOverride: params.httpOriginOverride ?? null,
+        acquirePreparedCarrier: params.acquirePreparedCarrier ?? null,
     });
     if (prepared.success !== true) {
         if (prepared.error === 'Direct import endpoints unavailable') {
@@ -50,6 +56,7 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
         return prepared;
     }
 
+    try {
     let lastFailure: BulkTransferFailureResponse | null = null;
     let didFinalizeSession = false;
     let nextChunkIndex = 0;
@@ -86,6 +93,7 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
                             encryptedDataKeyEnvelopeBase64: request.encryptedDataKeyEnvelopeBase64,
                             timeoutMs: params.timeoutMs ?? null,
                             signal: params.signal ?? null,
+                            requestHeaders: prepared.session.requestHeaders,
                         });
                         if (response.success === true) {
                             nextChunkIndex = request.index + 1;
@@ -97,6 +105,7 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
                             baseUrl,
                             timeoutMs: params.timeoutMs ?? null,
                             signal: params.signal ?? null,
+                            requestHeaders: prepared.session.requestHeaders,
                         });
                         if (finalizeResponse.success !== true) {
                             if (
@@ -247,4 +256,7 @@ export async function uploadBulkPayloadFromFileViaDirectImport<TResponse>(params
         success: false,
         error: 'Direct import upload unavailable',
     };
+    } finally {
+        await Promise.resolve(prepared.session.releaseCarrier?.()).catch(() => undefined);
+    }
 }

@@ -5,7 +5,8 @@ import {
 } from '@happier-dev/protocol';
 
 import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
-import { resolveSocketIoTransports } from '@/sync/runtime/socketIoTransports';
+import { fireAndForget } from '@/utils/system/fireAndForget';
+import { resolveSocketIoTransportsForCarrier } from '@/sync/runtime/socketIoTransports';
 import {
     reportServerUnreachable,
     startServerReachabilitySupervisor,
@@ -35,12 +36,16 @@ type ReachabilityDeps = Readonly<{
     acquireReachability?: (params: Readonly<{ serverUrl: string; runtimeOrigin: string; token: string }>) => Promise<Readonly<{ release: () => Promise<void> }>>;
     startReachability: (params: Readonly<{ serverUrl: string; token: string }>) => Promise<void>;
     waitForReachable: (params: Readonly<{ serverUrl: string; token: string; timeoutMs: number }>) => Promise<void>;
-    reportUnreachable: (serverUrl: string, error: unknown) => void;
+    reportUnreachable: (serverUrl: string, error: unknown, token: string) => void;
     subscribeNetworkAllowed: (listener: (allowed: boolean) => void) => () => void;
 }>;
 
 type Deps = Readonly<{
-    createSocket: (params: Readonly<{ serverUrl: string; token: string }>) => SocketLike;
+    createSocket: (params: Readonly<{
+        serverUrl: string;
+        token: string;
+        carrier: 'https' | 'iroh';
+    }>) => SocketLike;
     reachability: ReachabilityDeps;
     now: () => number;
     readIdleDisconnectMs: () => number;
@@ -51,63 +56,18 @@ type PoolEntry = {
     serverUrl: string;
     reachabilityServerUrl: string;
     token: string;
+    carrier: 'https' | 'iroh';
     socket: SocketLike;
     inUseCount: number;
     connectInFlight: Promise<void> | null;
     intentionalDisconnect: boolean;
     idleDisconnectTimer: ReturnType<typeof setTimeout> | null;
     reachabilityRelease: (() => Promise<void>) | null;
+    teardownRequested: boolean;
+    teardownInFlight: Promise<void> | null;
 };
 
 const INTENTIONAL_DISCONNECT_FLAG_RESET_MS = 1_000;
-
-const GLOBAL_TOKEN_CACHE_KEY_BY_TOKEN_KEY = '__HAPPIER_GLOBAL_SCOPED_RPC_TOKEN_CACHE_KEY_BY_TOKEN__';
-const GLOBAL_TOKEN_CACHE_KEY_MAX_ENTRIES = 512;
-
-function getGlobalTokenCacheHost(): Record<string, unknown> {
-    const g = globalThis as unknown as Record<string, unknown>;
-    const p = typeof process !== 'undefined' ? (process as unknown) : null;
-    if (p && typeof p === 'object') return p as Record<string, unknown>;
-    const gp = g.process;
-    if (gp && typeof gp === 'object') return gp as Record<string, unknown>;
-    return g;
-}
-
-function getGlobalTokenCacheKeyByToken(): Map<string, string> {
-    const host = getGlobalTokenCacheHost();
-    const existing = host[GLOBAL_TOKEN_CACHE_KEY_BY_TOKEN_KEY];
-    if (existing && Object.prototype.toString.call(existing) === '[object Map]') {
-        return existing as Map<string, string>;
-    }
-    const created = new Map<string, string>();
-    host[GLOBAL_TOKEN_CACHE_KEY_BY_TOKEN_KEY] = created;
-    return created;
-}
-
-function getOrCreateTokenCacheKey(token: string): string {
-    const tokenCacheKeyByToken = getGlobalTokenCacheKeyByToken();
-    let key = tokenCacheKeyByToken.get(token);
-    if (key) {
-        tokenCacheKeyByToken.delete(token);
-        tokenCacheKeyByToken.set(token, key);
-        return key;
-    }
-
-    const cryptoAny = (globalThis as any).crypto as { randomUUID?: () => string } | undefined;
-    key =
-        typeof cryptoAny?.randomUUID === 'function'
-            ? cryptoAny.randomUUID()
-            : `tk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
-    tokenCacheKeyByToken.set(token, key);
-
-    while (tokenCacheKeyByToken.size > GLOBAL_TOKEN_CACHE_KEY_MAX_ENTRIES) {
-        const oldest = tokenCacheKeyByToken.keys().next();
-        if (oldest.done) break;
-        tokenCacheKeyByToken.delete(oldest.value);
-    }
-
-    return key;
-}
 
 function normalizeServerUrl(raw: unknown): string {
     const input = String(raw ?? '').trim();
@@ -171,7 +131,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
 }> {
     const deps: Deps = {
         createSocket: overrides?.createSocket ?? ((params) => {
-            const transports = resolveSocketIoTransports();
+            const transports = resolveSocketIoTransportsForCarrier(params.carrier);
             return io(params.serverUrl, {
                 path: '/v1/updates/',
                 auth: {
@@ -205,7 +165,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
                     timeoutMs: params.timeoutMs,
                 });
             },
-            reportUnreachable: reportServerUnreachable,
+            reportUnreachable: (serverUrl, error, token) => reportServerUnreachable(serverUrl, error, token),
             subscribeNetworkAllowed: subscribeServerReachabilityNetworkAllowed,
         },
         now: overrides?.now ?? (() => Date.now()),
@@ -215,31 +175,50 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
     const entriesByKey = new Map<string, PoolEntry>();
     let detachNetworkAllowedListener: (() => void) | null = null;
 
-    const buildKey = (serverUrl: string, token: string) => `${serverUrl}::${getOrCreateTokenCacheKey(token)}`;
+    // The pool is private in-memory custody and already retains the token on each live entry.
+    // Key directly by that credential so unrelated token churn cannot split one live socket.
+    const buildKey = (serverUrl: string, token: string) => JSON.stringify([serverUrl, token]);
 
-    const stopEntrySocket = async (entry: PoolEntry, remove: boolean): Promise<void> => {
-        if (entry.idleDisconnectTimer) {
-            clearTimeout(entry.idleDisconnectTimer);
-            entry.idleDisconnectTimer = null;
-        }
-        entry.intentionalDisconnect = true;
-        try {
-            entry.socket.disconnect();
-        } catch {
-            // ignore
-        }
-        if (remove && entriesByKey.get(entry.key) === entry) {
-            entriesByKey.delete(entry.key);
-        }
-        const releaseReachability = entry.reachabilityRelease;
-        entry.reachabilityRelease = null;
-        await releaseReachability?.();
-        // socket.io-client disconnect events are not guaranteed to be synchronous; keep the
-        // intentional disconnect flag set briefly so we don't report an expected disconnect
-        // as an unreachable server signal.
-        setTimeout(() => {
-            entry.intentionalDisconnect = false;
-        }, INTENTIONAL_DISCONNECT_FLAG_RESET_MS);
+    const stopEntrySocket = (entry: PoolEntry, remove: boolean): Promise<void> => {
+        entry.teardownRequested ||= remove;
+        if (entry.teardownInFlight) return entry.teardownInFlight;
+
+        const run = (async () => {
+            if (entry.idleDisconnectTimer) {
+                clearTimeout(entry.idleDisconnectTimer);
+                entry.idleDisconnectTimer = null;
+            }
+            entry.intentionalDisconnect = true;
+            try {
+                entry.socket.disconnect();
+            } catch {
+                // ignore
+            }
+            const releaseReachability = entry.reachabilityRelease;
+            if (releaseReachability) {
+                await releaseReachability();
+                if (entry.reachabilityRelease === releaseReachability) {
+                    entry.reachabilityRelease = null;
+                }
+            }
+            if (entry.teardownRequested && entriesByKey.get(entry.key) === entry) {
+                entriesByKey.delete(entry.key);
+            }
+            // socket.io-client disconnect events are not guaranteed to be synchronous; keep the
+            // intentional disconnect flag set briefly so we don't report an expected disconnect
+            // as an unreachable server signal.
+            setTimeout(() => {
+                entry.intentionalDisconnect = false;
+            }, INTENTIONAL_DISCONNECT_FLAG_RESET_MS);
+        })();
+        let tracked!: Promise<void>;
+        tracked = run.finally(() => {
+            if (entry.teardownInFlight === tracked) {
+                entry.teardownInFlight = null;
+            }
+        });
+        entry.teardownInFlight = tracked;
+        return tracked;
     };
 
     const scheduleIdleDisconnect = (entry: PoolEntry): void => {
@@ -250,33 +229,41 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             entry.idleDisconnectTimer = null;
         }
         if (idleMs === 0) {
-            void stopEntrySocket(entry, true);
+            fireAndForget(stopEntrySocket(entry, true), { tag: 'scoped-rpc-idle-disconnect' });
             return;
         }
         entry.idleDisconnectTimer = setTimeout(() => {
             entry.idleDisconnectTimer = null;
             if (entry.inUseCount > 0) return;
-            void stopEntrySocket(entry, true);
+            fireAndForget(stopEntrySocket(entry, true), { tag: 'scoped-rpc-idle-disconnect' });
         }, idleMs);
     };
 
-    const getOrCreateEntry = (serverUrl: string, reachabilityServerUrl: string, token: string): PoolEntry => {
-        const key = `${buildKey(reachabilityServerUrl, token)}::${serverUrl}`;
+    const getOrCreateEntry = (
+        serverUrl: string,
+        reachabilityServerUrl: string,
+        token: string,
+        carrier: 'https' | 'iroh',
+    ): PoolEntry => {
+        const key = `${buildKey(reachabilityServerUrl, token)}::${serverUrl}::${carrier}`;
         const existing = entriesByKey.get(key);
         if (existing) return existing;
 
-        const socket = deps.createSocket({ serverUrl, token });
+        const socket = deps.createSocket({ serverUrl, token, carrier });
         const entry: PoolEntry = {
             key,
             serverUrl,
             reachabilityServerUrl,
             token,
+            carrier,
             socket,
             inUseCount: 0,
             connectInFlight: null,
             intentionalDisconnect: false,
             idleDisconnectTimer: null,
             reachabilityRelease: null,
+            teardownRequested: false,
+            teardownInFlight: null,
         };
 
         socket.on('disconnect', (reason: unknown) => {
@@ -284,13 +271,13 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
                 entry.intentionalDisconnect = false;
                 return;
             }
-            deps.reachability.reportUnreachable(reachabilityServerUrl, new Error(typeof reason === 'string' ? reason : 'socket disconnect'));
+            deps.reachability.reportUnreachable(reachabilityServerUrl, new Error(typeof reason === 'string' ? reason : 'socket disconnect'), token);
         });
         socket.on('connect_error', (error: unknown) => {
-            deps.reachability.reportUnreachable(reachabilityServerUrl, error);
+            deps.reachability.reportUnreachable(reachabilityServerUrl, error, token);
         });
         socket.on('error', (error: unknown) => {
-            deps.reachability.reportUnreachable(reachabilityServerUrl, error);
+            deps.reachability.reportUnreachable(reachabilityServerUrl, error, token);
         });
 
         entriesByKey.set(key, entry);
@@ -331,6 +318,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
         const serverUrl = normalizeServerUrl(params.serverUrl);
         const reachabilityServerUrl = normalizeServerUrl(params.reachabilityServerUrl ?? params.serverUrl);
         const token = String(params.token ?? '');
+        const carrier = params.carrier === 'iroh' ? 'iroh' : 'https';
         const timeoutMs = typeof params.timeoutMs === 'number' && params.timeoutMs > 0 ? params.timeoutMs : 30_000;
         if (!serverUrl) {
             throw new Error('Missing server URL');
@@ -339,7 +327,15 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
             throw new Error('Missing token');
         }
 
-        const entry = getOrCreateEntry(serverUrl, reachabilityServerUrl, token);
+        const key = `${buildKey(reachabilityServerUrl, token)}::${serverUrl}::${carrier}`;
+        let entry = entriesByKey.get(key);
+        while (entry?.teardownRequested) {
+            // A retiring socket cannot be revived: join (or retry) its canonical teardown,
+            // then resolve the key again in case another waiter already installed its successor.
+            await stopEntrySocket(entry, true);
+            entry = entriesByKey.get(key);
+        }
+        entry ??= getOrCreateEntry(serverUrl, reachabilityServerUrl, token, carrier);
         entry.inUseCount += 1;
         if (entry.idleDisconnectTimer) {
             clearTimeout(entry.idleDisconnectTimer);
@@ -374,11 +370,10 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
 
     const stopAll = async (): Promise<void> => {
         const entries = Array.from(entriesByKey.values());
-        await Promise.allSettled(entries.map(async (entry) => {
+        await Promise.all(entries.map(async (entry) => {
             entry.inUseCount = 0;
             await stopEntrySocket(entry, true);
         }));
-        entriesByKey.clear();
     };
 
     const resetForTests = () => {
@@ -392,7 +387,7 @@ export function createServerScopedRpcSocketPool(overrides?: Partial<Deps>): Read
 
     detachNetworkAllowedListener = deps.reachability.subscribeNetworkAllowed((allowed) => {
         if (allowed) return;
-        void stopAll();
+        fireAndForget(stopAll(), { tag: 'scoped-rpc-network-disconnect' });
     });
 
     return { acquire, stopAll, resetForTests };

@@ -4,7 +4,9 @@ const mocks = vi.hoisted(() => ({
     registerPushToken: vi.fn(),
     deletePushToken: vi.fn(),
     getCredentialsForServerUrl: vi.fn(),
+    readPushPermission: vi.fn(),
     credentialMutationListeners: new Set<() => void>(),
+    expoPushTokenListeners: new Set<() => void>(),
 }));
 
 vi.mock('react-native', async () => {
@@ -21,11 +23,12 @@ vi.mock('@/log', () => ({
 }));
 
 vi.mock('@/activity/notifications/permission/pushNotificationAccess', () => ({
-    readPushPermission: async () => ({
-        ok: true as const,
-        permission: { granted: true, status: 'granted', canAskAgain: true },
-    }),
+    readPushPermission: (...args: unknown[]) => mocks.readPushPermission(...args),
     readExpoPushToken: async () => ({ ok: true as const, token: 'ExponentPushToken[device]' }),
+    subscribeExpoPushTokenChanges: async (listener: () => void) => {
+        mocks.expoPushTokenListeners.add(listener);
+        return () => mocks.expoPushTokenListeners.delete(listener);
+    },
 }));
 
 vi.mock('@/sync/api/session/apiPush', () => ({
@@ -92,6 +95,7 @@ vi.mock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', () => ({
         release: vi.fn(async () => undefined),
     })),
     subscribeServerReachabilityNetworkAllowed: () => () => {},
+    setServerReachabilityNetworkAllowed: vi.fn(),
     subscribeServerReachabilityState: () => () => {},
     startServerReachabilitySupervisor: vi.fn(async () => undefined),
     stopServerReachabilitySupervisor: vi.fn(async () => undefined),
@@ -111,6 +115,7 @@ vi.mock('@/sync/runtime/nativeIrohTunnels', () => ({
         fallbackAllowed: false,
         failureClass: 'carrier-unavailable',
     }),
+    subscribeIrohHomeTunnelRecoveryRequired: () => () => {},
 }));
 
 vi.mock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
@@ -138,10 +143,16 @@ describe('device-level push token reconciliation lifecycle', () => {
         mocks.registerPushToken.mockReset();
         mocks.deletePushToken.mockReset();
         mocks.getCredentialsForServerUrl.mockReset();
+        mocks.readPushPermission.mockReset();
+        mocks.readPushPermission.mockResolvedValue({
+            ok: true as const,
+            permission: { granted: true, status: 'granted', canAskAgain: true },
+        });
         mocks.getCredentialsForServerUrl.mockResolvedValue({ token: 'home-a-token', secret: 's' });
         mocks.registerPushToken.mockResolvedValue(undefined);
         mocks.deletePushToken.mockResolvedValue(undefined);
         mocks.credentialMutationListeners.clear();
+        mocks.expoPushTokenListeners.clear();
     });
 
     afterEach(() => {
@@ -207,6 +218,25 @@ describe('device-level push token reconciliation lifecycle', () => {
         expect(mocks.registerPushToken).toHaveBeenCalledTimes(1);
     });
 
+    it('schedules a fresh canonical read when Expo reports an in-process push-token change', async () => {
+        const { startConcurrentSessionCacheSync, stopConcurrentSessionCacheSync } = await import('./concurrentSessionCache');
+        stopLifecycle = stopConcurrentSessionCacheSync;
+        mocks.readPushPermission.mockResolvedValue({
+            ok: true as const,
+            permission: { granted: false, status: 'denied', canAskAgain: true },
+        });
+
+        startConcurrentSessionCacheSync();
+        await vi.waitFor(() => expect(mocks.readPushPermission).toHaveBeenCalledTimes(1));
+        mocks.readPushPermission.mockClear();
+
+        await vi.waitFor(() => expect(mocks.expoPushTokenListeners.size).toBe(1));
+        for (const listener of mocks.expoPushTokenListeners) listener();
+
+        await vi.waitFor(() => expect(mocks.readPushPermission).toHaveBeenCalledTimes(1));
+        expect(mocks.registerPushToken).not.toHaveBeenCalled();
+    });
+
     it('does not run or stay scheduled after the device lifecycle stops', async () => {
         const { startConcurrentSessionCacheSync, stopConcurrentSessionCacheSync } = await import('./concurrentSessionCache');
         const { schedulePushTokenReconciliation } = await import('@/sync/engine/account/syncAccount');
@@ -219,5 +249,6 @@ describe('device-level push token reconciliation lifecycle', () => {
         await flushSchedulerTurn();
 
         expect(mocks.registerPushToken).not.toHaveBeenCalled();
+        expect(mocks.expoPushTokenListeners.size).toBe(0);
     });
 });

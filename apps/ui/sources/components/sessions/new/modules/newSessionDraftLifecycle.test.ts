@@ -6,6 +6,8 @@ const repository = vi.hoisted(() => ({
     clear: vi.fn(async () => true),
     clearLaunch: vi.fn(() => true),
     readLaunch: vi.fn(),
+    getSnapshot: vi.fn(),
+    writeExisting: vi.fn(),
 }));
 const settingsRuntime = vi.hoisted(() => ({
     applySettings: vi.fn(),
@@ -18,6 +20,8 @@ vi.mock('@/sync/ops/sessionDrafts/sessionDraftRepository', () => ({
     clearSessionDraftCurrentness: repository.clear,
     clearSessionDraftLaunchCurrentness: repository.clearLaunch,
     readSessionDraftLaunchCurrentness: repository.readLaunch,
+    getSessionDraftSnapshot: repository.getSnapshot,
+    writeExistingSessionDraft: repository.writeExisting,
 }));
 vi.mock('@/sync/domains/state/storageStore', () => ({
     getStorage: () => ({ getState: () => ({ settings: settingsRuntime.settings }) }),
@@ -29,6 +33,8 @@ vi.mock('@/sync/runtime/getSyncSingleton', () => ({
 import {
     captureNewSessionDraftLaunchCurrentness,
     clearCapturedNewSessionDraftAfterLaunch,
+    preserveCreatedSessionDraftAfterUnacceptedFirstTurn,
+    readCapturedNewSessionFirstTurnText,
 } from './newSessionDraftLifecycle';
 
 const scope = { serverId: 'server-a', accountId: 'account-a' } as const;
@@ -48,6 +54,11 @@ beforeEach(() => {
     repository.clearLaunch.mockReturnValue(true);
     repository.readLaunch.mockReset();
     repository.readLaunch.mockReturnValue(currentness);
+    repository.getSnapshot.mockReset();
+    repository.getSnapshot.mockReturnValue({
+        document: { composer: { text: { value: 'Captured prompt' } } },
+    });
+    repository.writeExisting.mockReset();
     settingsRuntime.applySettings.mockReset();
     settingsRuntime.settings = { newSessionOrdinaryEntryDraftId: draftId };
 });
@@ -92,5 +103,38 @@ describe('newSessionDraftLifecycle', () => {
         });
 
         expect(settingsRuntime.applySettings).not.toHaveBeenCalled();
+    });
+
+    it('moves an unaccepted first turn into the created session draft', () => {
+        preserveCreatedSessionDraftAfterUnacceptedFirstTurn({
+            scope,
+            sessionId: 'session-created',
+            draftText: '  Keep this prompt editable  ',
+        });
+
+        expect(repository.writeExisting).toHaveBeenCalledWith({
+            scope,
+            sessionId: 'session-created',
+            patch: { text: 'Keep this prompt editable' },
+            materializationIntent: 'seeded',
+        });
+    });
+
+    it('reads the captured first-turn text only while its mutation is still current', () => {
+        expect(readCapturedNewSessionFirstTurnText({
+            scope,
+            draftId,
+            launchUserAttemptId: 'attempt-a',
+        })).toBe('Captured prompt');
+
+        repository.capture.mockReturnValueOnce({
+            address,
+            mutationIds: { 'composer.text': 'newer-mutation' },
+        });
+        expect(readCapturedNewSessionFirstTurnText({
+            scope,
+            draftId,
+            launchUserAttemptId: 'attempt-a',
+        })).toBeNull();
     });
 });

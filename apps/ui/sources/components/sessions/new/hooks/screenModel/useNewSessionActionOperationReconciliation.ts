@@ -4,15 +4,21 @@ import { actionOperationPresentationCoordinator } from '@/components/inbox/actio
 import {
     readActionOperationDestinationServerId,
     readActionOperationDestinationSessionId,
+    readActionOperationSessionSpawnNewInitialInput,
 } from '@/components/inbox/actionOperations/actionOperationPresentation';
 import { createNewSessionActionOperationOrigin } from '@/components/sessions/new/navigation/newSessionActionOperationOrigin';
-import { clearCapturedNewSessionDraftAfterLaunch } from '@/components/sessions/new/modules/newSessionDraftLifecycle';
-import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
+import {
+    presentCreatedNewSession,
+    projectAcceptedNewSessionFirstTurn,
+} from '@/components/sessions/new/navigation/presentCreatedNewSession';
+import {
+    clearCapturedNewSessionDraftAfterLaunch,
+    preserveCreatedSessionDraftAfterUnacceptedFirstTurn,
+    readCapturedNewSessionFirstTurnText,
+} from '@/components/sessions/new/modules/newSessionDraftLifecycle';
 import { useActionOperationByRequestId } from '@/sync/domains/actionOperations/useActionOperations';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
-import { storage } from '@/sync/domains/state/storage';
-import { sync } from '@/sync/sync';
-import { requireLocalSessionVisibleForRoute } from '@/sync/runtime/orchestration/serverScopedRpc/localSessionRouteReadiness';
+import { CREATED_SESSION_NOT_AVAILABLE_LOCALLY_ERROR } from '@/sync/runtime/sessionMessageDeliveryErrors';
 import { captureExceptionIfEnabled } from '@/utils/system/sentry';
 import { settleSpawnAttemptCustodyFromActionOperation } from '@/sync/domains/session/spawn/spawnAttemptNonceStore';
 
@@ -75,34 +81,62 @@ export function useNewSessionActionOperationReconciliation(params: Readonly<{
         const requestId = params.requestId;
         const draftScope = params.draftScope;
         const destinationServerId = readActionOperationDestinationServerId(operation) ?? draftScope.serverId;
+        const initialInput = readActionOperationSessionSpawnNewInitialInput(operation);
+        const initialInputLocalId = initialInput?.status === 'accepted'
+            || initialInput?.status === 'alreadyAccepted'
+            ? initialInput.localId
+            : null;
+        const capturedFirstTurnText = readCapturedNewSessionFirstTurnText({
+            scope: draftScope,
+            draftId: params.draftId,
+            launchUserAttemptId: requestId,
+        });
         handledTerminalOperationIdRef.current = operation.operationId;
         let cancelled = false;
         let completed = false;
 
         void (async () => {
             try {
-                await requireLocalSessionVisibleForRoute({
+                const presentation = await presentCreatedNewSession({
                     sessionId,
                     serverId: destinationServerId,
-                    getStoredSession: (candidateSessionId) => storage.getState().sessions[candidateSessionId] ?? null,
-                    ensureSessionVisibleForMessageRoute: sync.ensureSessionVisibleForMessageRoute,
+                    requestId,
+                    router: params.router,
+                    isStillActive: () => !cancelled,
+                    operation,
+                    prepareDestination: capturedFirstTurnText
+                        ? () => {
+                            if (initialInputLocalId) {
+                                projectAcceptedNewSessionFirstTurn({
+                                    sessionId,
+                                    localId: initialInputLocalId,
+                                    text: capturedFirstTurnText,
+                                });
+                                return;
+                            }
+                            preserveCreatedSessionDraftAfterUnacceptedFirstTurn({
+                                scope: {
+                                    serverId: destinationServerId,
+                                    accountId: draftScope.accountId,
+                                },
+                                sessionId,
+                                draftText: capturedFirstTurnText,
+                            });
+                        }
+                        : undefined,
                 });
-                if (cancelled) return;
+                if (presentation !== 'opened') {
+                    if (presentation === 'unavailable') {
+                        throw new Error(CREATED_SESSION_NOT_AVAILABLE_LOCALLY_ERROR);
+                    }
+                    return;
+                }
                 params.disableDraftPersistence();
                 await clearCapturedNewSessionDraftAfterLaunch({
                     scope: draftScope,
                     draftId: params.draftId,
                     launchUserAttemptId: requestId,
                 });
-                params.router.replace(buildScopedSessionRouteHref({
-                    sessionId,
-                    serverId: destinationServerId,
-                }), {
-                    dangerouslySingular() {
-                        return 'session';
-                    },
-                });
-                actionOperationPresentationCoordinator.acknowledgeRequestPresented(requestId, operation);
                 await settleSpawnAttemptCustodyFromActionOperation({
                     scope: {
                         serverId: destinationServerId,

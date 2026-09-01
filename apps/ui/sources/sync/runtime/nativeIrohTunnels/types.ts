@@ -1,5 +1,6 @@
 import type { IrohEndpointDescriptorV1, IrohObservedPath, IrohRelayPolicy } from '@happier-dev/iroh-native';
 import type { LoopbackTunnelLease, LoopbackTunnelSnapshot } from '@/sync/runtime/nativeLoopbackTunnels/types';
+import type { DoctorSnapshotHomeTransportDiagnostics } from '@happier-dev/protocol';
 
 /**
  * One reusable Home lease request. The keying facts are the Home/profile
@@ -52,6 +53,14 @@ export type IrohHomeRuntimeOriginLease = IrohHomeTunnelLease & Readonly<{
     release: () => Promise<void>;
 }>;
 
+export type IrohHomeTunnelRecoveryRequired = Readonly<{
+    leaseId: string;
+    homeServerIdentityId: string;
+    reason: 'terminal' | 'foreground_probe_failed' | 'stale_generation';
+    /** True only when this lease owned the focused Home runtime-origin publication. */
+    activePublication: boolean;
+}>;
+
 export type IrohHomeTunnelRuntime = Readonly<{
     /** Acquires a verified origin without reading or publishing active-profile state. */
     acquireHomeRuntimeOrigin: (input: IrohHomeTunnelAcquireInput) => Promise<IrohHomeRuntimeOriginLease>;
@@ -67,5 +76,9 @@ export type IrohHomeTunnelRuntime = Readonly<{
     releaseLeasesForStaleTargets: () => Promise<void>;
     markSuspended: () => void;
     markForeground: () => Promise<void>;
+    /** Transport-fact notification consumed by the existing focused/secondary retry owners. */
+    subscribeRecoveryRequired: (listener: (event: IrohHomeTunnelRecoveryRequired) => void) => () => void;
     listTunnels: () => LoopbackTunnelSnapshot<IrohHomeTunnelLease, never>;
+    /** Pull-only projection for explicit diagnostics surfaces. */
+    readDiagnostics: () => readonly DoctorSnapshotHomeTransportDiagnostics[];
 }>;

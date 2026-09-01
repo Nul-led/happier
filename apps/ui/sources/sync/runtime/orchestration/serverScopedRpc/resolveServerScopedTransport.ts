@@ -1,5 +1,8 @@
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
+import {
+    canonicalizeServerUrl,
+    resolveIndependentHttpsServerOrigin,
+} from '@/sync/domains/server/url/serverUrlCanonical';
 import {
     acquireIrohHomeRuntimeOrigin,
     classifyIrohHomeTunnelSwitchFailure,
@@ -26,18 +29,10 @@ export type ResolvedServerScopedTransport = Readonly<{
     canonicalServerUrl: string;
     runtimeOrigin: string;
     carrier: 'https' | 'iroh';
+    /** Native lifecycle identity, present only for an acquired Iroh carrier. */
+    leaseId?: string;
     release: () => Promise<void>;
 }>;
-
-function resolveIndependentHttpsOrigin(profile: ServerTransportProfile): string | null {
-    const candidate = canonicalizeServerUrl(String(profile.publicServerUrl ?? ''));
-    if (!candidate) return null;
-    try {
-        return new URL(candidate).protocol === 'https:' ? candidate : null;
-    } catch {
-        return null;
-    }
-}
 
 function onceAsync(release: () => Promise<void>): () => Promise<void> {
     let result: Promise<void> | null = null;
@@ -63,6 +58,7 @@ export async function resolveServerScopedTransport(params: Readonly<{
 
     let runtimeOrigin = canonicalServerUrl;
     let carrier: 'https' | 'iroh' = 'https';
+    let leaseId: string | undefined;
     let releaseCarrier = async (): Promise<void> => {};
     const identity = String(params.profile.serverIdentityId ?? '').trim();
     const endpoint = params.profile.irohEndpoint;
@@ -80,10 +76,13 @@ export async function resolveServerScopedTransport(params: Readonly<{
             });
             runtimeOrigin = lease.runtimeOrigin;
             carrier = 'iroh';
+            leaseId = lease.leaseId;
             releaseCarrier = onceAsync(lease.release);
         } catch (error) {
             if (!classifyIrohHomeTunnelSwitchFailure(error).fallbackAllowed) throw error;
-            const independentHttpsOrigin = resolveIndependentHttpsOrigin(params.profile);
+            const independentHttpsOrigin = resolveIndependentHttpsServerOrigin(
+                params.profile.publicServerUrl ?? '',
+            );
             if (!independentHttpsOrigin) throw new ServerScopedTransportUnavailableError();
             runtimeOrigin = independentHttpsOrigin;
         }
@@ -93,6 +92,7 @@ export async function resolveServerScopedTransport(params: Readonly<{
         canonicalServerUrl,
         runtimeOrigin,
         carrier,
+        ...(leaseId ? { leaseId } : {}),
         release: releaseCarrier,
     };
 }

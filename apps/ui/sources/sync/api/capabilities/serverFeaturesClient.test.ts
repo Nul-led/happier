@@ -9,6 +9,7 @@ let activeServerSnapshot = {
 
 let featuresFetchMock: ReturnType<typeof vi.fn>;
 let setServerProfileIdentityForUrlMock: ReturnType<typeof vi.fn>;
+let reconcileServerProfileHomeConnectionDescriptorMock: ReturnType<typeof vi.fn>;
 let learnedServerIdentityId: string | null;
 
 const frozenServerFeaturesTime = new Date('2026-02-13T00:00:00.000Z');
@@ -47,6 +48,7 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
             : id;
     },
     setServerProfileIdentityForUrl: (...args: unknown[]) => setServerProfileIdentityForUrlMock(...args),
+    reconcileServerProfileHomeConnectionDescriptor: (...args: unknown[]) => reconcileServerProfileHomeConnectionDescriptorMock(...args),
 }));
 
 function createResponse(status: number, payload: unknown) {
@@ -84,7 +86,13 @@ describe('serverFeaturesClient', () => {
                 serverId: identity,
                 generation: activeServerSnapshot.generation + 1,
             };
+            return {
+                id: 'server-a',
+                serverUrl: 'https://active.example.test',
+                serverIdentityId: identity,
+            };
         });
+        reconcileServerProfileHomeConnectionDescriptorMock = vi.fn(async () => ({ kind: 'applied' }));
         globalThis.fetch = vi.fn(async (...args: any[]) => {
             const url = String(args[0] ?? '');
             if (url.endsWith('/health')) {
@@ -252,6 +260,31 @@ describe('serverFeaturesClient', () => {
         );
     });
 
+    it('fails closed when the advertised identity conflicts with the saved Home identity', async () => {
+        setServerProfileIdentityForUrlMock.mockReturnValueOnce(null);
+        featuresFetchMock.mockResolvedValueOnce(createResponse(200, {
+            capabilities: {
+                serverIdentity: {
+                    serverIdentityId: 'srv_conflicting_identity',
+                },
+            },
+            features: {},
+        }));
+
+        const {
+            getCachedServerFeaturesSnapshot,
+            getServerFeaturesSnapshot,
+            resetServerFeaturesClientForTests,
+        } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+
+        const result = await getServerFeaturesSnapshot({ force: true, timeoutMs: 50 });
+
+        expect(result).toEqual({ status: 'error', reason: 'identity_conflict' });
+        expect(getCachedServerFeaturesSnapshot()).toEqual(result);
+        expect(reconcileServerProfileHomeConnectionDescriptorMock).not.toHaveBeenCalled();
+    });
+
     it('rekeys a ready feature snapshot when learning the active server identity', async () => {
         const payload = FeaturesResponseSchema.parse({
             features: {
@@ -285,8 +318,112 @@ describe('serverFeaturesClient', () => {
         expect(getCachedServerFeaturesSnapshot({ serverId: 'srv_active_identity' })).toBe(fetched);
     });
 
+    it('surfaces the authenticated full Home descriptor as an exact current-connection observation', async () => {
+        const homeConnectionDescriptor = {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_active_identity',
+            canonicalServerUrl: 'https://active.example.test',
+            revision: 4,
+            endpoints: [{
+                kind: 'iroh' as const,
+                endpointId: 'a'.repeat(64),
+                directAddresses: ['192.168.1.10:4242'],
+            }],
+        };
+        const payload = FeaturesResponseSchema.parse({
+            features: {},
+            capabilities: {
+                serverIdentity: { serverIdentityId: 'srv_active_identity' },
+            },
+            homeConnectionDescriptor,
+        });
+        featuresFetchMock.mockResolvedValueOnce(createResponse(200, payload));
+
+        const {
+            refreshAuthenticatedServerFeaturesSnapshot,
+            resetServerFeaturesClientForTests,
+        } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+        const result = await refreshAuthenticatedServerFeaturesSnapshot({
+            credentials: { token: 'home-token' },
+            force: true,
+            timeoutMs: 50,
+        });
+
+        expect(result.status).toBe('ready');
+        expect(reconcileServerProfileHomeConnectionDescriptorMock).toHaveBeenCalledWith({
+            serverUrl: 'https://active.example.test',
+            observedServerIdentityId: 'srv_active_identity',
+            descriptor: homeConnectionDescriptor,
+            observation: 'exact',
+        });
+        expect(featuresFetchMock.mock.calls.some(([input]) => (
+            String(input).endsWith('/v1/features/authenticated')
+        ))).toBe(true);
+    });
+
+    it('falls back to the public projection on older Homes and preserves its advisory observation mode', async () => {
+        const homeConnectionDescriptor = {
+            v: 1 as const,
+            homeServerIdentityId: 'srv_active_identity',
+            canonicalServerUrl: 'https://active.example.test',
+            revision: 4,
+            endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+        };
+        const payload = FeaturesResponseSchema.parse({
+            features: {},
+            capabilities: {
+                serverIdentity: { serverIdentityId: 'srv_active_identity' },
+            },
+            homeConnectionDescriptor,
+        });
+        featuresFetchMock
+            .mockResolvedValueOnce(createResponse(404, {}))
+            .mockResolvedValueOnce(createResponse(200, payload));
+
+        const {
+            refreshAuthenticatedServerFeaturesSnapshot,
+            resetServerFeaturesClientForTests,
+        } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+        const result = await refreshAuthenticatedServerFeaturesSnapshot({
+            credentials: { token: 'home-token' },
+            force: true,
+            timeoutMs: 50,
+        });
+
+        expect(result.status).toBe('ready');
+        expect(reconcileServerProfileHomeConnectionDescriptorMock).toHaveBeenCalledWith({
+            serverUrl: 'https://active.example.test',
+            observedServerIdentityId: 'srv_active_identity',
+            descriptor: homeConnectionDescriptor,
+            observation: 'public',
+        });
+    });
+
+    it('keeps the default active feature projection public and unauthenticated', async () => {
+        featuresFetchMock.mockResolvedValueOnce(createResponse(200, {
+            capabilities: {
+                serverIdentity: { serverIdentityId: 'srv_active_identity' },
+            },
+            features: {},
+        }));
+
+        const { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+
+        const result = await getServerFeaturesSnapshot({ force: true, timeoutMs: 50 });
+
+        expect(result.status).toBe('ready');
+        expect(featuresFetchMock).toHaveBeenCalledTimes(1);
+        expect(String(featuresFetchMock.mock.calls[0]?.[0])).toMatch(/\/v1\/features$/);
+        expect(String(featuresFetchMock.mock.calls[0]?.[0])).not.toContain('/authenticated');
+    });
+
     it('classifies 404 features endpoint as unsupported', async () => {
-        featuresFetchMock.mockResolvedValueOnce(createResponse(404, {}));
+        featuresFetchMock
+            .mockResolvedValueOnce(createResponse(404, {}))
+            .mockResolvedValueOnce(createResponse(404, {}));
 
         const { getServerFeaturesSnapshot, resetServerFeaturesClientForTests } = await import('./serverFeaturesClient');
         resetServerFeaturesClientForTests();
@@ -792,5 +929,80 @@ describe('serverFeaturesClient', () => {
         const calls = featuresFetchMock.mock.calls;
         expect(calls.length).toBe(1);
         expect(String(calls[0]?.[0] ?? '')).toContain('https://other.example.test');
+    });
+
+    it('does not reuse an in-flight old-origin identity observation for a new runtime origin', async () => {
+        let resolveOldOrigin: ((response: Response) => void) | null = null;
+        featuresFetchMock.mockImplementation(async (input: unknown) => {
+            const url = String(input);
+            if (url === 'https://home.example.test/v1/features') {
+                return await new Promise<Response>((resolve) => {
+                    resolveOldOrigin = resolve;
+                });
+            }
+            if (url === 'http://127.0.0.1:43123/v1/features') {
+                return createResponse(200, {
+                    features: {},
+                    capabilities: {
+                        serverIdentity: { serverIdentityId: 'srv_wrong_home' },
+                    },
+                });
+            }
+            throw new Error(`Unexpected feature probe: ${url}`);
+        });
+
+        const {
+            probeServerFeaturesAtUrl,
+            resetServerFeaturesClientForTests,
+        } = await import('./serverFeaturesClient');
+        resetServerFeaturesClientForTests();
+
+        const oldOriginProbe = probeServerFeaturesAtUrl({
+            endpointUrl: 'https://home.example.test/',
+            runtimeOrigin: 'https://home.example.test',
+            timeoutMs: 2_000,
+        });
+        await vi.waitFor(() => {
+            expect(featuresFetchMock).toHaveBeenCalledTimes(1);
+        });
+
+        const newOriginProbe = probeServerFeaturesAtUrl({
+            endpointUrl: 'https://home.example.test',
+            runtimeOrigin: 'http://127.0.0.1:43123/',
+            timeoutMs: 2_000,
+        });
+
+        let concurrentProbeError: unknown = null;
+        try {
+            await vi.waitFor(() => {
+                expect(featuresFetchMock).toHaveBeenCalledTimes(2);
+            }, { timeout: 100 });
+        } catch (error) {
+            concurrentProbeError = error;
+        }
+
+        const completeOldOrigin: (response: Response) => void = resolveOldOrigin
+            ?? (() => { throw new Error('Expected the old-origin probe to be in flight'); });
+        completeOldOrigin(createResponse(200, {
+            features: {},
+            capabilities: {
+                serverIdentity: { serverIdentityId: 'srv_expected_home' },
+            },
+        }));
+        const [httpsResult, irohResult] = await Promise.all([oldOriginProbe, newOriginProbe]);
+
+        if (concurrentProbeError) throw concurrentProbeError;
+
+        expect(httpsResult.status).toBe('ready');
+        expect(irohResult.status).toBe('ready');
+        expect(httpsResult.serverIdentityId).toBe('srv_expected_home');
+        expect(irohResult.serverIdentityId).toBe('srv_wrong_home');
+        expect(featuresFetchMock).toHaveBeenCalledTimes(2);
+        expect(featuresFetchMock.mock.calls.map((call) => String(call[0]))).toEqual(
+            expect.arrayContaining([
+                'https://home.example.test/v1/features',
+                'http://127.0.0.1:43123/v1/features',
+            ]),
+        );
     });
 });

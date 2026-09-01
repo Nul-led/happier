@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-import { getServerSelectionTargetIconName, getServerSelectionTargetSubtitle } from '@/sync/domains/server/selection/serverSelectionTargets';
+import { getServerSelectionTargetSubtitle } from '@/sync/domains/server/selection/serverSelectionTargets';
 import type { ServerSelectionTarget } from '@/sync/domains/server/selection/serverSelectionTypes';
 import { Icon } from '@/components/ui/icons/Icon';
 import { t } from '@/text';
@@ -12,38 +12,33 @@ type UseConnectionTargetActionsParams = Readonly<{
     activeTargetKey: string;
     onSelectTarget: (target: ServerSelectionTarget) => void;
     selectedColor: string;
-    iconColor: string;
     statusByServerId?: Readonly<Record<string, ConnectionTargetStatusFact>>;
-    focusedServerId?: string | null;
-    defaultServerId?: string | null;
 }>;
 
 export function useConnectionTargetActions(params: UseConnectionTargetActionsParams) {
     return React.useMemo(() => {
+        const serverNameCounts = new Map<string, number>();
+        for (const target of params.targets) {
+            if (target.kind !== 'server') continue;
+            const key = target.name.trim().toLocaleLowerCase();
+            serverNameCounts.set(key, (serverNameCounts.get(key) ?? 0) + 1);
+        }
+
         return params.targets.map((target) => {
             const targetKey = `${target.kind}:${target.id}`;
             const isSelected = targetKey === params.activeTargetKey;
-            const facts = target.kind === 'server'
-                ? [
-                    getServerSelectionTargetSubtitle(target),
-                    target.serverId === params.focusedServerId ? t('server.active') : null,
-                    target.serverId === params.defaultServerId && target.serverId !== params.focusedServerId ? t('server.default') : null,
-                    params.statusByServerId?.[target.serverId]?.label ?? null,
-                ]
-                : [getServerSelectionTargetSubtitle(target), isSelected ? t('server.active') : null];
-            const visibleFacts = facts.filter((value): value is string => typeof value === 'string' && value.length > 0);
+            const status = target.kind === 'server'
+                ? params.statusByServerId?.[target.serverId]?.label ?? t('status.unknown')
+                : getServerSelectionTargetSubtitle(target);
+            const duplicateNameDisambiguator = target.kind === 'server'
+                && (serverNameCounts.get(target.name.trim().toLocaleLowerCase()) ?? 0) > 1
+                    ? getServerSelectionTargetSubtitle(target)
+                    : null;
             return {
                 id: `target-use-${target.kind}-${target.id}`,
                 label: target.name,
-                subtitle: visibleFacts.join(' · '),
-                accessibilityLabel: [target.name, ...visibleFacts].join(', '),
-                icon: (
-                    <Icon
-                        name={getServerSelectionTargetIconName(target)}
-                        size={16}
-                        color={params.iconColor}
-                    />
-                ),
+                subtitle: status,
+                accessibilityLabel: [target.name, status, duplicateNameDisambiguator].filter(Boolean).join(', '),
                 right: isSelected
                     ? <Icon name="check" size={16} color={params.selectedColor} />
                     : null,
@@ -54,5 +49,5 @@ export function useConnectionTargetActions(params: UseConnectionTargetActionsPar
                 },
             };
         });
-    }, [params.activeTargetKey, params.defaultServerId, params.focusedServerId, params.iconColor, params.onSelectTarget, params.selectedColor, params.statusByServerId, params.targets]);
+    }, [params.activeTargetKey, params.onSelectTarget, params.selectedColor, params.statusByServerId, params.targets]);
 }

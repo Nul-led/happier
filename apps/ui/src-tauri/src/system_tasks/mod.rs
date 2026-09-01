@@ -88,6 +88,12 @@ pub async fn system_tasks_open_log_path(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn system_tasks_reveal_output_path(path: String) -> Result<(), String> {
+    let path = normalize_system_task_output_path(&path)?;
+    reveal_system_task_output_path(&path)
+}
+
+#[tauri::command]
 pub async fn respond_system_task_prompt(
     task_id: String,
     answer_json: String,
@@ -378,6 +384,21 @@ fn resolve_happier_log_root_dir() -> Option<PathBuf> {
     resolve_home_dir().map(|home_dir| home_dir.join(".happier"))
 }
 
+fn normalize_system_task_output_path(path: &str) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("System task output path is required.".to_string());
+    }
+
+    let path = PathBuf::from(trimmed);
+    if !path.is_absolute() {
+        return Err("System task output path must be an absolute path.".to_string());
+    }
+
+    std::fs::canonicalize(&path)
+        .map_err(|error| format!("System task output path does not exist: {error}"))
+}
+
 fn resolve_home_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -418,6 +439,32 @@ fn resolve_open_log_path_program() -> &'static str {
         "explorer"
     } else {
         "xdg-open"
+    }
+}
+
+fn reveal_system_task_output_path(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open").arg("-R").arg(path).status();
+
+    #[cfg(target_os = "windows")]
+    let status = Command::new("explorer")
+        .arg(format!("/select,{}", path.display()))
+        .status();
+
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let status = Command::new("xdg-open")
+        .arg(if path.is_dir() {
+            path
+        } else {
+            path.parent().unwrap_or(path)
+        })
+        .status();
+
+    let status = status.map_err(|error| format!("Failed to reveal system task output: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Failed to reveal system task output: {status}"))
     }
 }
 
@@ -829,10 +876,9 @@ mod tests {
         let output_path = temp_dir.join("personal-home-backup.tar");
         fs::write(&output_path, "backup").expect("output file should write");
 
-        let normalized = super::normalize_system_task_output_path(
-            &output_path.display().to_string(),
-        )
-        .expect("existing external output should normalize");
+        let normalized =
+            super::normalize_system_task_output_path(&output_path.display().to_string())
+                .expect("existing external output should normalize");
 
         assert_eq!(
             normalized,
@@ -853,10 +899,8 @@ mod tests {
         let temp_dir = create_temp_dir("missing-system-task-output-path");
         let missing_path = temp_dir.join("missing.tar");
 
-        let error = super::normalize_system_task_output_path(
-            &missing_path.display().to_string(),
-        )
-        .expect_err("missing output paths should be rejected");
+        let error = super::normalize_system_task_output_path(&missing_path.display().to_string())
+            .expect_err("missing output paths should be rejected");
 
         assert!(error.contains("does not exist"));
         let _ = fs::remove_dir_all(temp_dir);

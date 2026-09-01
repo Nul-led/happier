@@ -12,7 +12,7 @@ export type ServerScopedTransferRelaySocket = Readonly<{
     machineId: string;
     sendEnvelope: (payload: TransferRelayV2SendEnvelope) => void;
     onEnvelope: (listener: (payload: TransferRelayV2SendEnvelope) => void) => () => void;
-    disconnect: () => void;
+    disconnect: () => Promise<void>;
 }>;
 
 export async function resolveServerScopedTransferRelaySocket(params: Readonly<{

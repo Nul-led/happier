@@ -43,9 +43,29 @@ describe('concurrentSessionCache teardown ordering', () => {
         delete process.env.EXPO_PUBLIC_HAPPIER_CONCURRENT_CACHE_REFRESH_INTERVAL_MS;
     });
 
-    it('does not report server unreachable during intentional stop teardown', async () => {
+    it('transfers secondary ownership only after focused application and tears it down intentionally', async () => {
         process.env.EXPO_PUBLIC_HAPPY_MULTI_SERVER_CONCURRENT = '1';
         process.env.EXPO_PUBLIC_HAPPIER_CONCURRENT_CACHE_REFRESH_INTERVAL_MS = '600000';
+        let appliedActiveServerId = 'server-a';
+        let appliedActiveServerListener: ((serverId: string) => void) | null = null;
+        let applyingActiveServerListener: ((serverId: string) => void) | null = null;
+        let serverProfilesListener: (() => void) | null = null;
+
+        vi.doMock('@/sync/runtime/orchestration/connectionManager', () => ({
+            getAppliedActiveServerId: () => appliedActiveServerId,
+            subscribeAppliedActiveServer: (listener: (serverId: string) => void) => {
+                appliedActiveServerListener = listener;
+                return () => {
+                    appliedActiveServerListener = null;
+                };
+            },
+            subscribeApplyingActiveServer: (listener: (serverId: string) => void) => {
+                applyingActiveServerListener = listener;
+                return () => {
+                    applyingActiveServerListener = null;
+                };
+            },
+        }));
 
         vi.doMock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', () => ({
             setServerReachabilityNetworkAllowed: (_next: boolean) => {},
@@ -64,9 +84,13 @@ describe('concurrentSessionCache teardown ordering', () => {
             resetServerReachabilitySupervisors: async () => {},
         }));
 
+        const getCredentialsForServerUrlSpy = vi.fn(async (serverUrl: string) => ({
+            token: serverUrl.includes('stack-a') ? 'token-a' : 'token-b',
+            secret: serverUrl.includes('stack-a') ? 'secret-a' : 'secret-b',
+        }));
         vi.doMock('@/auth/storage/tokenStorage', () => ({
             TokenStorage: {
-                getCredentialsForServerUrl: vi.fn(async () => ({ token: 'token-b', secret: 'secret-b' })),
+                getCredentialsForServerUrl: getCredentialsForServerUrlSpy,
             },
             subscribeHomeCredentialMutations: () => () => {},
             isLegacyAuthCredentials: () => true,
@@ -82,7 +106,12 @@ describe('concurrentSessionCache teardown ordering', () => {
             overrides: {
                 loadHomeViewState: () => null,
                 subscribeHomeViewState: () => () => {},
-                subscribeServerProfiles: () => () => {},
+                subscribeServerProfiles: (listener: () => void) => {
+                    serverProfilesListener = listener;
+                    return () => {
+                        serverProfilesListener = null;
+                    };
+                },
             },
         }));
 
@@ -187,6 +216,63 @@ describe('concurrentSessionCache teardown ordering', () => {
         const { startConcurrentSessionCacheSync, stopConcurrentSessionCacheSync } = await import('./concurrentSessionCache');
         startConcurrentSessionCacheSync();
         await vi.advanceTimersByTimeAsync(1);
+
+        expect(getCredentialsForServerUrlSpy).toHaveBeenCalledWith(
+            'https://stack-b.example.test',
+            { serverId: 'server-b' },
+        );
+
+        storage.setState((state) => ({
+            ...state,
+            concurrentSessionListCacheByServerId: {
+                ...state.concurrentSessionListCacheByServerId,
+                'server-b': {
+                    serverName: 'Server B',
+                    sessions: {
+                        'session-b': { id: 'session-b' } as never,
+                    },
+                },
+            },
+            machineListByServerId: {
+                ...state.machineListByServerId,
+                'server-b': [{ id: 'machine-b' } as never],
+            },
+            machineListStatusByServerId: {
+                ...state.machineListStatusByServerId,
+                'server-b': 'idle',
+            },
+        }));
+
+        // A profile event queues reconciliation while A is still the applied
+        // Home. Applying B must invalidate that queued view before releasing
+        // B's secondary transport, otherwise the queued pass recreates B.
+        (serverProfilesListener as (() => void) | null)?.();
+        (applyingActiveServerListener as ((serverId: string) => void) | null)?.('server-b');
+        await vi.advanceTimersByTimeAsync(1);
+        expect(getCredentialsForServerUrlSpy.mock.calls.filter(([serverUrl]) => (
+            serverUrl === 'https://stack-b.example.test'
+        ))).toHaveLength(1);
+        expect(storage.getState().concurrentSessionListCacheByServerId['server-b']?.sessions?.['session-b']).toBeDefined();
+        expect(storage.getState().machineListByServerId['server-b']?.map((machine) => machine.id)).toEqual(['machine-b']);
+        expect(getCredentialsForServerUrlSpy).not.toHaveBeenCalledWith(
+            'https://stack-a.example.test',
+            { serverId: 'server-a' },
+        );
+        (appliedActiveServerListener as ((serverId: string) => void) | null)?.('server-a');
+        await vi.advanceTimersByTimeAsync(1);
+        expect(getCredentialsForServerUrlSpy.mock.calls.filter(([serverUrl]) => (
+            serverUrl === 'https://stack-b.example.test'
+        ))).toHaveLength(2);
+
+        (applyingActiveServerListener as ((serverId: string) => void) | null)?.('server-b');
+        expect(releaseServerReachabilitySupervisorSpy).toHaveBeenCalledTimes(2);
+        appliedActiveServerId = 'server-b';
+        (appliedActiveServerListener as ((serverId: string) => void) | null)?.('server-b');
+        await vi.advanceTimersByTimeAsync(1);
+        expect(getCredentialsForServerUrlSpy).toHaveBeenCalledWith(
+            'https://stack-a.example.test',
+            { serverId: 'server-a' },
+        );
 
         stopConcurrentSessionCacheSync();
 

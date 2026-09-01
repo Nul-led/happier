@@ -1,4 +1,5 @@
 import type { FeaturesResponse as ServerFeatures } from '@happier-dev/protocol';
+import { IrohEndpointDescriptorV1Schema } from '@happier-dev/protocol';
 import type { PeerRouteViabilityRecord as TransferRouteViabilityRecord } from '@happier-dev/peer-mediation';
 
 import type { TransferRouteDecision, ResolveTransferRouteDecisionInput } from '../routing/resolveTransferRouteDecision';
@@ -13,6 +14,7 @@ export type ResolveSessionFileTransferAvailabilityInput = Readonly<{
     machineTargetAvailable: boolean;
     serverFeatures: ServerFeatures | null;
     machineDaemonState?: unknown | null;
+    irohPeerAvailable?: boolean;
     directPeerRoute?: TransferRouteViabilityRecord | null;
     machineRpcDirectRoute?: TransferRouteViabilityRecord | null;
     preferredRouteKinds?: ResolveTransferRouteDecisionInput['preferredRouteKinds'];
@@ -55,12 +57,20 @@ export function resolveSessionFileTransferAvailability(
     }
 
     const daemonTransferRoute = daemonDirectPeerDiagnostics.route;
-    const directPeerRoute = resolveSessionDirectPeerRoute(daemonTransferRoute, input.directPeerRoute);
+    const daemonIrohEndpoint = input.irohPeerAvailable === true && IrohEndpointDescriptorV1Schema.safeParse(
+        (input.machineDaemonState as { peerMediation?: { iroh?: { endpoint?: unknown } } } | null | undefined)
+            ?.peerMediation?.iroh?.endpoint,
+    ).success;
+    const directPeerRoute = daemonIrohEndpoint
+        ? { status: 'viable' as const, checkedAt: 0, expiresAt: Number.MAX_SAFE_INTEGER }
+        : resolveSessionDirectPeerRoute(daemonTransferRoute, input.directPeerRoute);
 
     const decision = resolveTransferRouteDecision({
         serverFeatures: input.serverFeatures,
         directPeerRoute: directPeerRoute ?? { status: 'unknown' },
-        directPeerRouteKinds: daemonDirectPeerDiagnostics.activeRouteKinds,
+        directPeerRouteKinds: daemonIrohEndpoint
+            ? ['iroh_peer', ...daemonDirectPeerDiagnostics.activeRouteKinds.filter((kind) => kind !== 'iroh_peer')]
+            : daemonDirectPeerDiagnostics.activeRouteKinds,
         machineRpcDirectRoute: input.machineRpcDirectRoute ?? { status: 'unknown' },
         preferredRouteKinds: input.preferredRouteKinds,
     });

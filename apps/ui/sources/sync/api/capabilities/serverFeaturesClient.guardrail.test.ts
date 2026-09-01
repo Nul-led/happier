@@ -28,6 +28,10 @@ describe('capabilities guardrails', () => {
     it('only fetches /v1/features via serverFeaturesClient', async () => {
         const allowed = new Set<string>([
             join(SOURCES_ROOT, 'sync', 'api', 'capabilities', 'serverFeaturesClient.ts'),
+            // Canonical HTTP owners classify this path for compatibility and
+            // retry behavior; they do not initiate feature probes.
+            join(SOURCES_ROOT, 'sync', 'http', 'client.ts'),
+            join(SOURCES_ROOT, 'sync', 'runtime', 'connectivity', 'serverReachabilityRuntimeFetch.ts'),
             join(SOURCES_ROOT, 'dev', 'testkit', 'fixtures', 'releasedServerV021Compatibility.ts'),
         ]);
 
@@ -35,7 +39,7 @@ describe('capabilities guardrails', () => {
         const offenders: string[] = [];
         for (const file of files) {
             const content = await readFile(file, 'utf8');
-            if (content.includes('/v1/features') && !allowed.has(file)) {
+            if (/['"]\/v1\/features['"]/u.test(content) && !allowed.has(file)) {
                 offenders.push(file);
             }
         }

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { shouldRefreshConcurrentSessionCacheForUpdate } from './concurrentSessionCacheUpdateClassifier';
+import {
+    shouldRefreshConcurrentSessionCacheForUpdate,
+    shouldSchedulePushTokenReconciliationForUpdate,
+} from './concurrentSessionCacheUpdateClassifier';
 
 describe('shouldRefreshConcurrentSessionCacheForUpdate', () => {
     it('returns true for machine and session-list-affecting updates', () => {
@@ -20,5 +23,14 @@ describe('shouldRefreshConcurrentSessionCacheForUpdate', () => {
         expect(shouldRefreshConcurrentSessionCacheForUpdate({ body: null })).toBe(false);
         expect(shouldRefreshConcurrentSessionCacheForUpdate({ body: { t: 'update-account' } })).toBe(false);
         expect(shouldRefreshConcurrentSessionCacheForUpdate({ body: { t: 'todo-kv-batch' } })).toBe(false);
+    });
+
+    it('recognizes account updates only as push truth changes', () => {
+        const accountUpdate = { body: { t: 'update-account' } };
+
+        expect(shouldSchedulePushTokenReconciliationForUpdate(accountUpdate)).toBe(true);
+        expect(shouldRefreshConcurrentSessionCacheForUpdate(accountUpdate)).toBe(false);
+        expect(shouldSchedulePushTokenReconciliationForUpdate({ body: { t: 'update-machine' } })).toBe(false);
+        expect(shouldSchedulePushTokenReconciliationForUpdate(null)).toBe(false);
     });
 });

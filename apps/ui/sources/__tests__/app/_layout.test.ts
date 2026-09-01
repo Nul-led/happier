@@ -143,13 +143,34 @@ vi.mock('@/components/navigation/Header', () => {
     return { createHeader: () => null };
 });
 
+vi.mock('@/onboarding/showcase', () => ({
+    OnboardingShowcaseAutoShowMount: () => null,
+    useOnboardingShowcaseState: () => ({
+        manifest: { showcaseVersion: 1, cards: [] },
+        hasUnread: false,
+        markSeen: vi.fn(),
+    }),
+}));
+
 vi.mock('@/constants/Typography', () => {
     return {
+        FontWeights: {
+            regular: '400',
+            semiBold: '500',
+            bold: '600',
+        },
         Typography: {
             default: () => ({}),
             header: () => ({}),
             mono: () => ({}),
+            tabular: () => ({}),
+            eyebrow: () => ({}),
+            rowTitle: () => ({}),
             rowMeta: () => ({}),
+            pillLabel: () => ({}),
+            keyHint: () => ({}),
+            timestamp: () => ({}),
+            logo: () => ({}),
         },
     };
 });
@@ -317,6 +338,7 @@ vi.mock('@/utils/platform/platform', () => {
 
 vi.mock('@/utils/platform/desktopHost', () => ({
     isDesktopHost: () => tauriDesktopState.value,
+    desktopHostKind: () => tauriDesktopState.value ? 'tauri' : null,
     invokeDesktopHost: (...args: any[]) => invokeDesktopHostSpy(...args),
     listenDesktopHostEvent: vi.fn(async () => () => {}),
 }));
@@ -451,7 +473,7 @@ describe('RootLayout stack options', () => {
 
             const settingsScreen = tree.root
                 .findAllByType('StackScreen')
-                .find((node) => node.props?.name === 'sliders-horizontal');
+                .find((node) => node.props?.name === 'settings');
             expect(settingsScreen?.props?.options).toMatchObject({ presentation: 'modal' });
             expect(settingsScreen?.props?.options?.animation).toBeUndefined();
         } finally {

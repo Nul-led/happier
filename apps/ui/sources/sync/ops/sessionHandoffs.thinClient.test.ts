@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { computeWorkspaceSyncPolicyDigest } from '@happier-dev/protocol';
 
 const machineRpc = vi.hoisted(() => vi.fn());
 const machineTarget = vi.hoisted(() => vi.fn());
@@ -24,6 +25,13 @@ describe('session handoff UI request client', () => {
     });
 
     it('sends one coordinator request and returns its terminal result without client phase work', async () => {
+        const policyFields = {
+            v: 1 as const,
+            selection: 'git_worktree' as const,
+            extraIgnorePatterns: [],
+            extraIncludePatterns: [],
+            includeGitDirectory: false,
+        };
         machineRpc.mockResolvedValueOnce({
             ok: true,
             handoffId: 'handoff-1',
@@ -35,12 +43,14 @@ describe('session handoff UI request client', () => {
             targetMachineId: 'target-1',
             serverId: 'server-1',
             sessionStorageMode: 'persisted',
-            workspaceTransfer: {
-                enabled: true,
-                strategy: 'transfer_snapshot',
-                conflictPolicy: 'create_sibling_copy',
-                includeIgnoredMode: 'exclude',
-                ignoredIncludeGlobs: [],
+            workspaceAction: {
+                kind: 'create_relationship',
+                mode: 'keep_synced',
+                contentPolicy: {
+                    ...policyFields,
+                    policyDigest: computeWorkspaceSyncPolicyDigest(policyFields),
+                },
+                flushBeforeCommit: true,
             },
         })).resolves.toMatchObject({ ok: true, handoffId: 'handoff-1' });
         expect(machineRpc).toHaveBeenCalledTimes(1);
@@ -48,7 +58,15 @@ describe('session handoff UI request client', () => {
             machineId: 'source-1',
             method: 'daemon.sessionHandoff.start.v3',
             serverId: 'server-1',
-            payload: expect.objectContaining({ sessionId: 'session-1', targetMachineId: 'target-1' }),
+            payload: expect.objectContaining({
+                sessionId: 'session-1',
+                targetMachineId: 'target-1',
+                accountServerId: 'server-1',
+                workspaceAction: expect.objectContaining({
+                    kind: 'create_relationship',
+                    mode: 'keep_synced',
+                }),
+            }),
         }));
     });
 

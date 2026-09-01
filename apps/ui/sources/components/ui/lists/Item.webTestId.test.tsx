@@ -183,6 +183,28 @@ describe('Item web testID forwarding', () => {
         expect(onPress).toHaveBeenCalledTimes(1);
     });
 
+    it('exposes checked checkbox semantics and activates a checkbox row with Space', async () => {
+        const { Item } = await import('./Item');
+        const onPress = vi.fn();
+        const screen = await renderScreen(<Item
+                    testID="home-group-member-b"
+                    title="Home B"
+                    accessibilityRole="checkbox"
+                    webRole="checkbox"
+                    selected
+                    onPress={onPress}
+                />);
+
+        const row = screen.findByTestId('home-group-member-b');
+        expect(row?.props.role).toBe('checkbox');
+        expect(row?.props.accessibilityState).toEqual({ checked: true });
+        expect(row?.props['aria-checked']).toBe(true);
+        const preventDefault = vi.fn();
+        row?.props.onKeyDown?.({ key: ' ', preventDefault });
+        expect(preventDefault).toHaveBeenCalledTimes(1);
+        expect(onPress).toHaveBeenCalledTimes(1);
+    });
+
     it('preserves named checked and disabled semantics for a visible unavailable radio option', async () => {
         const { Item } = await import('./Item');
         const screen = await renderScreen(<Item

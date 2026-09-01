@@ -1,0 +1,175 @@
+import * as React from 'react';
+import { describe, expect, it, vi } from 'vitest';
+
+import { renderScreen } from '@/dev/testkit';
+import type { WorkspaceSyncRelationshipSummary } from '@/sync/domains/sessionHandoff/workspaceSyncRelationshipModel';
+import { installSessionHandoffCommonModuleMocks } from '@/components/sessions/handoff/sessionHandoffTestHelpers';
+
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const routerPushSpy = vi.hoisted(() => vi.fn());
+const openDefaultDetailsSpy = vi.hoisted(() => vi.fn());
+
+installSessionHandoffCommonModuleMocks({
+    typography: async () => ({
+        FontWeights: { regular: '400', semiBold: '500', bold: '600' },
+        Typography: new Proxy({}, { get: () => () => ({}) }),
+    }),
+    text: async () => ({
+        t: (key: string, params?: Record<string, unknown>) => params
+            ? `${key}:${JSON.stringify(params)}`
+            : key,
+    }),
+});
+
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { push: routerPushSpy } }).module;
+});
+
+vi.mock('./openWorkspaceSyncRelationshipDetails', () => ({
+    openWorkspaceSyncRelationshipDetails: openDefaultDetailsSpy,
+}));
+
+vi.mock('@/components/ui/lists/Item', () => ({
+    Item: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement(
+        'Item',
+        props,
+        props.children,
+        props.rightElement as React.ReactNode,
+    ),
+}));
+
+vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
+    DropdownMenu: (props: Readonly<Record<string, unknown> & {
+        trigger?: (state: Readonly<{ toggle: () => void }>) => React.ReactNode;
+    }>) => React.createElement(
+        'DropdownMenu',
+        props,
+        props.trigger?.({ toggle: () => undefined }),
+    ),
+}));
+
+vi.mock('@/components/ui/buttons/IconButton', () => ({
+    IconButton: (props: Record<string, unknown>) => React.createElement('IconButton', props),
+}));
+
+function createSummary(
+    conflictCount: number,
+    mode: WorkspaceSyncRelationshipSummary['relationship']['mode'] = 'keep_both_in_sync',
+): WorkspaceSyncRelationshipSummary {
+    return {
+        relationshipId: 'relationship-1',
+        relationship: {
+            v: 1,
+            relationshipId: 'relationship-1',
+            controllerMachineId: 'machine-alpha',
+            alphaWorkspaceRefId: 'workspace-alpha',
+            betaWorkspaceRefId: 'workspace-beta',
+            mode,
+            contentPolicy: {
+                v: 1,
+                selection: 'git_worktree',
+                extraIgnorePatterns: [],
+                extraIncludePatterns: [],
+                includeGitDirectory: false,
+                policyDigest: 'sha256:test',
+            },
+            enabled: true,
+            createdAtMs: 1,
+            updatedAtMs: 2,
+        },
+        alpha: {
+            workspaceRefId: 'workspace-alpha',
+            workspaceRef: { id: 'workspace-alpha', serverId: 'server-1', machineId: 'machine-alpha', rootPath: '/alpha', label: 'Alpha', createdAtMs: 1 },
+            label: 'Alpha',
+            machineName: 'Alpha Mac',
+        },
+        beta: {
+            workspaceRefId: 'workspace-beta',
+            workspaceRef: { id: 'workspace-beta', serverId: 'server-1', machineId: 'machine-beta', rootPath: '/beta', label: 'Beta', createdAtMs: 1 },
+            label: 'Beta',
+            machineName: 'Beta workstation',
+        },
+        status: {
+            relationshipId: 'relationship-1',
+            controllerMachineId: 'machine-alpha',
+            state: conflictCount > 0 ? 'conflicted' : 'watching',
+            alphaPath: '/alpha',
+            betaPath: '/beta',
+            mode,
+            changedFiles: conflictCount,
+            conflictCount,
+            lastSuccessfulSyncAtMs: 4,
+        },
+    };
+}
+
+describe('WorkspaceSyncRelationshipRow', () => {
+    it('opens general details from every row while keeping conflict attention and actions row-scoped', async () => {
+        const { WorkspaceSyncRelationshipRow } = await import('./WorkspaceSyncRelationshipList');
+        const openDetails = vi.fn();
+        const openConflicts = vi.fn();
+        const summary = createSummary(2);
+        const screen = await renderScreen(
+            <WorkspaceSyncRelationshipRow
+                summary={summary}
+                onOpenDetails={openDetails}
+                onOpenConflicts={openConflicts}
+            />,
+        );
+
+        const row = screen.findByTestId('workspace-sync-relationship-relationship-1');
+        expect(row?.props.showChevron).toBe(true);
+        expect(row?.props.rightElementOutsidePressable).toBe(true);
+        await screen.pressByTestIdAsync('workspace-sync-relationship-relationship-1');
+        expect(openDetails).toHaveBeenCalledWith(summary);
+        expect(openConflicts).not.toHaveBeenCalled();
+
+        const conflictAction = screen.findByTestId('workspace-sync-relationship-relationship-1-conflicts');
+        const moreAction = screen.findByTestId('workspace-sync-relationship-relationship-1-actions');
+        expect(conflictAction?.props.minimumInteractiveTargetSize).toBe(44);
+        expect(moreAction?.props.minimumInteractiveTargetSize).toBe(44);
+        await screen.pressByTestIdAsync('workspace-sync-relationship-relationship-1-conflicts');
+        expect(openConflicts).toHaveBeenCalledWith(summary);
+    });
+
+    it('opens general details for a healthy relationship and does not invent conflict attention', async () => {
+        const { WorkspaceSyncRelationshipRow } = await import('./WorkspaceSyncRelationshipList');
+        const openDetails = vi.fn();
+        const summary = createSummary(0);
+        const screen = await renderScreen(
+            <WorkspaceSyncRelationshipRow summary={summary} onOpenDetails={openDetails} />,
+        );
+
+        await screen.pressByTestIdAsync('workspace-sync-relationship-relationship-1');
+        expect(openDetails).toHaveBeenCalledWith(summary);
+        expect(screen.findByTestId('workspace-sync-relationship-relationship-1-conflicts')).toBeNull();
+    });
+
+    it('uses one-way direction and machine display names for relationship and open actions', async () => {
+        const { WorkspaceSyncRelationshipRow } = await import('./WorkspaceSyncRelationshipList');
+        const summary = createSummary(0, 'keep_synced');
+        const screen = await renderScreen(<WorkspaceSyncRelationshipRow summary={summary} />);
+
+        expect(screen.findByTestId('workspace-sync-relationship-relationship-1')?.props.title).toBe('Alpha → Beta');
+        expect(screen.findByTestId('workspace-sync-relationship-relationship-1')?.props.subtitle).toContain('Alpha Mac → Beta workstation');
+        const menu = screen.findAllByType('DropdownMenu')[0];
+        expect(menu?.props.items).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'open-alpha', title: 'workspaceSync.actions.openOnMachine:{"machine":"Alpha Mac"}' }),
+            expect.objectContaining({ id: 'open-beta', title: 'workspaceSync.actions.openOnMachine:{"machine":"Beta workstation"}' }),
+            expect.objectContaining({ id: 'terminate', title: 'workspaceSync.actions.terminate' }),
+        ]));
+    });
+
+    it('uses the existing details destination when its host surface has no pane callback', async () => {
+        const { WorkspaceSyncRelationshipRow } = await import('./WorkspaceSyncRelationshipList');
+        const summary = createSummary(0);
+        const screen = await renderScreen(
+            <WorkspaceSyncRelationshipRow summary={summary} localWorkspaceRefId="workspace-alpha" />,
+        );
+
+        await screen.pressByTestIdAsync('workspace-sync-relationship-relationship-1');
+        expect(openDefaultDetailsSpy).toHaveBeenCalledWith(summary, 'workspace-alpha');
+    });
+});

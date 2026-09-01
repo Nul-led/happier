@@ -12,6 +12,7 @@ import {
 } from '@/sync/domains/transfers/runtime/transferRuntime';
 import { readMachineTargetForSession } from '@/sync/ops/sessionMachineTarget';
 import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
+import { isIrohMachineHttpLifecycleAvailable } from '@/sync/runtime/nativeIrohTunnels/machineHttpLifecycle';
 
 export function useSessionFileTransferAvailabilityState(sessionId: string): ResolveSessionFileTransferAvailabilityResult {
     const { sessionExists } = useSessionRpcAvailabilityState(sessionId);
@@ -36,6 +37,7 @@ export function useSessionFileTransferAvailabilityState(sessionId: string): Reso
         machineTargetAvailable: machineRpcTargetAvailable,
         serverFeatures: serverSnapshot.status === 'ready' ? serverSnapshot.features : null,
         machineDaemonState: machine?.daemonState ?? null,
+        irohPeerAvailable: isIrohMachineHttpLifecycleAvailable(),
         machineRpcDirectRoute: machineRpcRouteInput
             ? readCachedMachineRpcDirectRoute(machineRpcRouteInput)
             : { status: 'unknown' },

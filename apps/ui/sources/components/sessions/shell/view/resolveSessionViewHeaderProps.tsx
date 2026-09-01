@@ -41,6 +41,16 @@ import { SessionRowAttentionIndicator } from '../row/SessionRowAttentionIndicato
 import { resolveAgentIdFromFlavor, resolveAgentIdFromSessionMetadata } from '@happier-dev/agents';
 import { Icon } from '@/components/ui/icons/Icon';
 import { ActionOperationActivityButton } from '@/components/inbox/actionOperations/ActionOperationActivityButton';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+
+const WORKSPACE_SYNC_CONFLICT_TARGET_SIZE = Math.max(
+    SESSION_HEADER_ACTION_TAP_TARGET_PX,
+    resolveMinimumInteractiveTargetSize(Platform.OS),
+);
+const WORKSPACE_SYNC_CONFLICT_HIT_SLOP = Math.max(
+    0,
+    (WORKSPACE_SYNC_CONFLICT_TARGET_SIZE - SESSION_HEADER_ACTION_TAP_TARGET_PX) / 2,
+);
 
 export type SessionViewHeaderProps = Readonly<{
     title: string;
@@ -430,6 +440,7 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
                 {(input.workspaceSyncConflictCount ?? 0) > 0 && input.onOpenWorkspaceSyncConflicts ? (
                     <Pressable
                         onPress={input.onOpenWorkspaceSyncConflicts}
+                        hitSlop={WORKSPACE_SYNC_CONFLICT_HIT_SLOP}
                         style={({ pressed }) => ({
                             width: SESSION_HEADER_ACTION_TAP_TARGET_PX,
                             height: SESSION_HEADER_ACTION_TAP_TARGET_PX,

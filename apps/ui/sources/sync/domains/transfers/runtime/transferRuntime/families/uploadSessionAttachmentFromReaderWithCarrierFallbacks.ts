@@ -8,7 +8,6 @@ import type {
 import { createWorkspaceFileTransferRpcCaller } from './workspaceFileTransferRpcCaller';
 import { uploadBulkPayloadFromFileWithCarrierFallbacks } from '../plumbing/uploadBulkPayloadFromFileWithCarrierFallbacks';
 import type { TransferFinalizeRecoveryFailure } from '../plumbing/directTransferFinalizeRecovery';
-import type { AcquireMachineCarrierHttpLease } from '../plumbing/machineCarrierHttpLease';
 
 type TransferFailureResponse = Readonly<{ success: false; error: string; errorCode?: string }>;
 type SessionUploadRequest = SessionAttachmentsUploadInitRequest & Readonly<{
@@ -33,8 +32,6 @@ export async function uploadSessionAttachmentFromReaderWithCarrierFallbacks(para
     request: SessionUploadRequest;
     signal?: AbortSignal | null;
     onProgress?: ((progress: Readonly<{ uploadedBytes: number; totalBytes: number }>) => void) | null;
-    machineCarrierRequired?: boolean;
-    acquireMachineCarrierHttpLease?: AcquireMachineCarrierHttpLease | null;
 }>): Promise<
     SessionAttachmentsUploadFinalizeResponse
     | TransferFailureResponse
@@ -82,8 +79,5 @@ export async function uploadSessionAttachmentFromReaderWithCarrierFallbacks(para
         },
         onProgress: params.onProgress ?? null,
         signal: params.signal ?? null,
-        machineCarrierRequired: params.machineCarrierRequired,
-        machineCarrierOperationId: params.request.messageLocalId,
-        acquireMachineCarrierHttpLease: params.acquireMachineCarrierHttpLease ?? null,
     });
 }

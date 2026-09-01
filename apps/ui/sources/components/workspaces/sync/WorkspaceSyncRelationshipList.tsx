@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { useRouter, type Href } from 'expo-router';
+import { Platform, View } from 'react-native';
 
 import { IconButton } from '@/components/ui/buttons/IconButton';
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
@@ -14,6 +15,7 @@ import {
 } from '@/sync/ops/workspaceSync';
 import {
     resolveWorkspaceSyncErrorTranslationKey,
+    formatWorkspaceSyncRelationshipTitle,
     resolveWorkspaceSyncModeTranslationKey,
     resolveWorkspaceSyncStateTranslationKey,
 } from '@/sync/domains/sessionHandoff/workspaceSyncPresentation';
@@ -29,14 +31,21 @@ import type { WorkspaceSyncRelationshipSummary } from '@/sync/domains/sessionHan
 import { resolveProjectRoutePathForSurface } from '@/components/workspaceCockpit/project/projectCockpitState';
 import { Modal } from '@/modal';
 import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { openWorkspaceSyncRelationshipDetails } from './openWorkspaceSyncRelationshipDetails';
 
 export type WorkspaceSyncRelationshipListProps = Readonly<{
     workspaceRefId?: string | null;
+    onOpenDetails?: (summary: WorkspaceSyncRelationshipSummary) => void;
     onOpenConflicts?: (summary: WorkspaceSyncRelationshipSummary) => void;
 }>;
 
-const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRelationshipRow(props: Readonly<{
+const MINIMUM_INTERACTIVE_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Platform.OS);
+
+export const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRelationshipRow(props: Readonly<{
     summary: WorkspaceSyncRelationshipSummary;
+    localWorkspaceRefId?: string | null;
+    onOpenDetails?: (summary: WorkspaceSyncRelationshipSummary) => void;
     onOpenConflicts?: (summary: WorkspaceSyncRelationshipSummary) => void;
 }>) {
     const router = useRouter();
@@ -97,11 +106,11 @@ const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRelationsh
                 ? []
                 : [{ id: 'sync', title: t('workspaceSync.actions.syncNow') }]),
             toggleAction,
-            ...(props.summary.alpha.workspaceRef ? [{ id: 'open-alpha', title: t('workspaceSync.actions.openFolder', { label: props.summary.alpha.label }) }] : []),
-            ...(props.summary.beta.workspaceRef ? [{ id: 'open-beta', title: t('workspaceSync.actions.openFolder', { label: props.summary.beta.label }) }] : []),
+            ...(props.summary.alpha.workspaceRef ? [{ id: 'open-alpha', title: t('workspaceSync.actions.openOnMachine', { machine: props.summary.alpha.machineName ?? props.summary.alpha.label }) }] : []),
+            ...(props.summary.beta.workspaceRef ? [{ id: 'open-beta', title: t('workspaceSync.actions.openOnMachine', { machine: props.summary.beta.machineName ?? props.summary.beta.label }) }] : []),
             { id: 'terminate', title: t('workspaceSync.actions.terminate') },
         ];
-    }, [props.summary.alpha.label, props.summary.alpha.workspaceRef, props.summary.beta.label, props.summary.beta.workspaceRef, props.summary.relationship.enabled]);
+    }, [props.summary.alpha.label, props.summary.alpha.machineName, props.summary.alpha.workspaceRef, props.summary.beta.label, props.summary.beta.machineName, props.summary.beta.workspaceRef, props.summary.relationship.enabled]);
 
     const handleActionSelect = React.useCallback((action: string) => {
         if (action === 'open-alpha' || action === 'open-beta') {
@@ -123,8 +132,16 @@ const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRelationsh
         : t('workspaceSync.lastSynced', {
             at: formatWithCachedDateTimeFormatter(status.lastSuccessfulSyncAtMs, undefined, { dateStyle: 'medium', timeStyle: 'short' }),
         });
+    const machineDirectionLabel = props.summary.alpha.machineName || props.summary.beta.machineName
+        ? formatWorkspaceSyncRelationshipTitle({
+            alphaLabel: props.summary.alpha.machineName ?? props.summary.alpha.label,
+            betaLabel: props.summary.beta.machineName ?? props.summary.beta.label,
+            mode: props.summary.relationship.mode,
+        })
+        : null;
 
     const subtitle = [
+        machineDirectionLabel,
         modeKey ? t(modeKey) : t('workspaceSync.unknownMode'),
         pendingAction ? t('workspaceSync.state.working') : null,
         !props.summary.relationship.enabled
@@ -140,39 +157,73 @@ const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRelationsh
         lastSyncLabel,
         status && status.conflictCount > 0 ? t('workspaceSync.conflictCount', { count: status.conflictCount }) : null,
     ].filter(Boolean).join(' · ');
-    const canOpenConflicts = Boolean(props.onOpenConflicts && status && status.conflictCount > 0);
+    const conflictCount = status?.conflictCount ?? 0;
+    const hasConflicts = conflictCount > 0;
+    const openDetails = React.useCallback(() => {
+        if (props.onOpenDetails) {
+            props.onOpenDetails(props.summary);
+            return;
+        }
+        openWorkspaceSyncRelationshipDetails(props.summary, props.localWorkspaceRefId);
+    }, [props.localWorkspaceRefId, props.onOpenDetails, props.summary]);
+    const openConflicts = React.useCallback(() => {
+        if (props.onOpenConflicts) {
+            props.onOpenConflicts(props.summary);
+            return;
+        }
+        openDetails();
+    }, [openDetails, props.onOpenConflicts, props.summary]);
 
     return (
         <Item
             testID={`workspace-sync-relationship-${props.summary.relationshipId}`}
-            title={`${props.summary.alpha.label} ↔ ${props.summary.beta.label}`}
+            title={formatWorkspaceSyncRelationshipTitle({
+                alphaLabel: props.summary.alpha.label,
+                betaLabel: props.summary.beta.label,
+                mode: props.summary.relationship.mode,
+            })}
             subtitle={subtitle}
-            onPress={canOpenConflicts ? () => props.onOpenConflicts?.(props.summary) : undefined}
-            showChevron={canOpenConflicts}
+            onPress={openDetails}
+            showChevron={true}
             rightElementOutsidePressable={true}
             rightElement={(
-                <DropdownMenu
-                    open={menuOpen}
-                    onOpenChange={setMenuOpen}
-                    items={actionItems}
-                    onSelect={handleActionSelect}
-                    search={false}
-                    variant="default"
-                    rowKind="item"
-                    matchTriggerWidth={false}
-                    placement="bottom"
-                    popoverAnchorAlign="end"
-                    trigger={({ toggle }) => (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                    {hasConflicts ? (
                         <IconButton
-                            iconName="dots-three"
-                            accessibilityLabel={t('workspaceSync.actions.more')}
-                            tooltip={t('workspaceSync.actions.more')}
+                            testID={`workspace-sync-relationship-${props.summary.relationshipId}-conflicts`}
+                            iconName="warning"
+                            accessibilityLabel={t('workspaceSync.conflictCount', { count: conflictCount })}
+                            tooltip={t('workspaceSync.conflictsTitle')}
                             variant="plain"
-                            disabled={pendingAction !== null}
-                            onPress={toggle}
+                            minimumInteractiveTargetSize={MINIMUM_INTERACTIVE_TARGET_SIZE}
+                            onPress={openConflicts}
                         />
-                    )}
-                />
+                    ) : null}
+                    <DropdownMenu
+                        open={menuOpen}
+                        onOpenChange={setMenuOpen}
+                        items={actionItems}
+                        onSelect={handleActionSelect}
+                        search={false}
+                        variant="default"
+                        rowKind="item"
+                        matchTriggerWidth={false}
+                        placement="bottom"
+                        popoverAnchorAlign="end"
+                        trigger={({ toggle }) => (
+                            <IconButton
+                                testID={`workspace-sync-relationship-${props.summary.relationshipId}-actions`}
+                                iconName="dots-three"
+                                accessibilityLabel={t('workspaceSync.actions.more')}
+                                tooltip={t('workspaceSync.actions.more')}
+                                variant="plain"
+                                minimumInteractiveTargetSize={MINIMUM_INTERACTIVE_TARGET_SIZE}
+                                disabled={pendingAction !== null}
+                                onPress={toggle}
+                            />
+                        )}
+                    />
+                </View>
             )}
         />
     );
@@ -190,6 +241,8 @@ export const WorkspaceSyncRelationshipList = React.memo(function WorkspaceSyncRe
                 <WorkspaceSyncRelationshipRow
                     key={summary.relationshipId}
                     summary={summary}
+                    localWorkspaceRefId={props.workspaceRefId}
+                    onOpenDetails={props.onOpenDetails}
                     onOpenConflicts={props.onOpenConflicts}
                 />
             ))}

@@ -1,5 +1,3 @@
-import type { IrohRelayPolicy } from '@happier-dev/iroh-native';
-
 import {
     captureActiveServerRuntimeTarget,
     publishActiveServerRuntimeOrigin,
@@ -13,23 +11,22 @@ import type {
     IrohHomeTunnelAcquireInput,
     IrohHomeTunnelRequest,
     IrohHomeRuntimeOriginLease,
+    IrohHomeTunnelRecoveryRequired,
     IrohHomeTunnelRuntime,
 } from './types';
+import type { IrohRelayPolicy } from '@happier-dev/iroh-native';
 
 export const DEFAULT_IROH_RELAY_POLICY: IrohRelayPolicy = 'automatic';
 
 type PublishedIrohHomeLease = Readonly<{
     target: ActiveServerRuntimeTarget;
-    policy: IrohRelayPolicy;
     release: () => Promise<void>;
 }>;
 
-function resolveEffectiveRelayPolicy(input: IrohHomeTunnelAcquireInput): IrohRelayPolicy {
-    const requestedPolicy = input.policy ?? DEFAULT_IROH_RELAY_POLICY;
-    return requestedPolicy === 'automatic' && (input.endpoint.relayUrls?.length ?? 0) > 0
-        ? 'automatic'
-        : 'disabled';
-}
+type OwnedIrohHomeLease = Readonly<{
+    leaseId: string;
+    release: () => Promise<void>;
+}>;
 
 /**
  * UI lifecycle runtime for the native Iroh Home tunnel. Acquires/releases the
@@ -44,26 +41,39 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
 }> = {}): IrohHomeTunnelRuntime {
     const supervisor = params.createSupervisor?.() ?? createIrohHomeTunnelSupervisor({ native: params.native });
     const publicationsByLeaseId = new Map<string, PublishedIrohHomeLease>();
+    const ownedLeases = new Set<OwnedIrohHomeLease>();
+    const recoveryListeners = new Set<(event: IrohHomeTunnelRecoveryRequired) => void>();
+
+    function notifyRecoveryRequired(event: IrohHomeTunnelRecoveryRequired): void {
+        for (const listener of recoveryListeners) listener(event);
+    }
 
     // Native events carry transport facts only. This UI owner attaches the
     // existing Home/active-generation publication target and is the sole
     // place where a carrier event can affect runtimeOrigin.
     let unsubscribeLifecycle = supervisor.subscribe((event) => {
         const published = publicationsByLeaseId.get(event.lease.leaseId);
-        if (!published) return;
-        if ((event.type === 'ready' || event.type === 'path_changed') && event.lease.localUrl) {
+        if (event.type === 'ready' && event.lease.localUrl && published) {
             publishActiveServerRuntimeOrigin({
                 target: published.target,
                 leaseId: event.lease.leaseId,
                 runtimeOrigin: event.lease.localUrl,
                 carrier: 'iroh',
-                irohObservedPath: event.lease.observedPath,
-                irohRelayPolicy: published.policy,
             });
             return;
         }
         if (event.type === 'degraded' || event.type === 'closed' || event.type === 'error') {
-            releaseActiveServerRuntimeOrigin({ target: published.target, leaseId: event.lease.leaseId });
+            if (published) {
+                releaseActiveServerRuntimeOrigin({ target: published.target, leaseId: event.lease.leaseId });
+            }
+            if (event.type === 'closed' || event.type === 'error') {
+                notifyRecoveryRequired({
+                    leaseId: event.lease.leaseId,
+                    homeServerIdentityId: event.lease.homeServerIdentityId,
+                    reason: 'terminal',
+                    activePublication: published !== undefined,
+                });
+            }
         }
     });
 
@@ -92,13 +102,33 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
     }
 
     async function releaseActiveHomeTunnels(): Promise<void> {
+        const errors: unknown[] = [];
         for (const [leaseId, published] of [...publicationsByLeaseId]) {
             releaseActiveServerRuntimeOrigin({ target: published.target, leaseId });
-            await published.release();
-            if (publicationsByLeaseId.get(leaseId) === published) {
-                publicationsByLeaseId.delete(leaseId);
+            try {
+                await published.release();
+                if (publicationsByLeaseId.get(leaseId) === published) {
+                    publicationsByLeaseId.delete(leaseId);
+                }
+            } catch (error) {
+                errors.push(error);
             }
         }
+        if (errors.length === 1) throw errors[0];
+        if (errors.length > 1) throw new AggregateError(errors, 'Failed to release every active Iroh Home tunnel.');
+    }
+
+    async function releaseEveryOwnedLease(): Promise<void> {
+        const errors: unknown[] = [];
+        for (const owned of [...ownedLeases]) {
+            try {
+                await owned.release();
+            } catch (error) {
+                errors.push(error);
+            }
+        }
+        if (errors.length === 1) throw errors[0];
+        if (errors.length > 1) throw new AggregateError(errors, 'Failed to release every owned Iroh Home tunnel.');
     }
 
     async function acquireHomeRuntimeOrigin(
@@ -126,11 +156,15 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
             throw new Error(`${IROH_HOME_TUNNEL_INVALID_ENDPOINT_ERROR}:runtime-origin-missing`);
         }
         let releasePromise: Promise<void> | null = null;
-        return {
-            ...lease,
-            runtimeOrigin,
+        let released = false;
+        const owned: OwnedIrohHomeLease = {
+            leaseId: lease.leaseId,
             release: () => {
-                releasePromise ??= supervisor.releaseTunnel(lease.leaseId).catch((error: unknown) => {
+                if (released) return Promise.resolve();
+                releasePromise ??= supervisor.releaseTunnel(lease.leaseId).then(() => {
+                    released = true;
+                    ownedLeases.delete(owned);
+                }).catch((error: unknown) => {
                     // Concurrent callers still share one attempt, but a failed
                     // native stop remains retryable through the runtime owner.
                     releasePromise = null;
@@ -139,6 +173,12 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
                 return releasePromise;
             },
         };
+        ownedLeases.add(owned);
+        return {
+            ...lease,
+            runtimeOrigin,
+            release: owned.release,
+        };
     }
 
     return {
@@ -146,7 +186,6 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
 
         async ensureHomeTunnel(input) {
             const target = captureActiveServerRuntimeTarget();
-            const effectiveRelayPolicy = resolveEffectiveRelayPolicy(input);
             // A lease belonging to the prior Home/generation is released as part of this switch.
             await releaseStalePublicationLeases(target);
             // Resolves only after the shared supervisor verified health, authenticated
@@ -157,13 +196,10 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
                 leaseId: lease.leaseId,
                 runtimeOrigin: lease.runtimeOrigin,
                 carrier: 'iroh',
-                irohObservedPath: lease.observedPath,
-                irohRelayPolicy: effectiveRelayPolicy,
             });
             if (!published) {
                 const rejectedPublication: PublishedIrohHomeLease = {
                     target,
-                    policy: effectiveRelayPolicy,
                     release: lease.release,
                 };
                 publicationsByLeaseId.set(lease.leaseId, rejectedPublication);
@@ -188,7 +224,6 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
             ));
             publicationsByLeaseId.set(lease.leaseId, {
                 target,
-                policy: effectiveRelayPolicy,
                 release: lease.release,
             });
             for (const [priorLeaseId, prior] of superseded) {
@@ -210,18 +245,30 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
 
         async releaseHomeTunnel(leaseId) {
             const published = publicationsByLeaseId.get(leaseId) ?? null;
-            if (published) await published.release();
-            else await supervisor.releaseTunnel(leaseId);
-            publicationsByLeaseId.delete(leaseId);
             if (published) releaseActiveServerRuntimeOrigin({ target: published.target, leaseId });
+            if (published) await published.release();
+            else {
+                const owned = [...ownedLeases].find((candidate) => candidate.leaseId === leaseId);
+                if (owned) await owned.release();
+                else await supervisor.releaseTunnel(leaseId);
+            }
+            publicationsByLeaseId.delete(leaseId);
         },
 
         releaseActiveHomeTunnels,
 
         async dispose() {
+            for (const [leaseId, published] of publicationsByLeaseId) {
+                releaseActiveServerRuntimeOrigin({ target: published.target, leaseId });
+            }
+            // The supervisor also owns native handles from acquisitions that
+            // failed before this runtime could receive and retain a lease.
+            await supervisor.dispose();
+            await releaseEveryOwnedLease();
+            publicationsByLeaseId.clear();
             unsubscribeLifecycle();
             unsubscribeLifecycle = () => undefined;
-            await releaseActiveHomeTunnels();
+            recoveryListeners.clear();
         },
 
         async releaseLeasesForStaleTargets() {
@@ -243,27 +290,49 @@ export function createIrohHomeTunnelRuntime(params: Readonly<{
             await supervisor.markForeground();
             const target = captureActiveServerRuntimeTarget();
             for (const lease of supervisor.listTunnels().leases) {
-                if (lease.status !== 'ready' || !lease.localUrl) continue;
                 const published = publicationsByLeaseId.get(lease.leaseId);
+                if (lease.status !== 'ready' || !lease.localUrl) {
+                    notifyRecoveryRequired({
+                        leaseId: lease.leaseId,
+                        homeServerIdentityId: lease.homeServerIdentityId,
+                        reason: 'foreground_probe_failed',
+                        activePublication: published !== undefined,
+                    });
+                    continue;
+                }
                 if (!published || published.target.serverId !== target.serverId) continue;
+                if (published.target.generation !== target.generation) {
+                    notifyRecoveryRequired({
+                        leaseId: lease.leaseId,
+                        homeServerIdentityId: lease.homeServerIdentityId,
+                        reason: 'stale_generation',
+                        activePublication: true,
+                    });
+                    continue;
+                }
                 if (publishActiveServerRuntimeOrigin({
                     target,
                     leaseId: lease.leaseId,
                     runtimeOrigin: lease.localUrl,
                     carrier: 'iroh',
-                    irohObservedPath: lease.observedPath,
-                    irohRelayPolicy: published.policy,
                 })) {
                     publicationsByLeaseId.set(lease.leaseId, { ...published, target });
                 }
             }
         },
 
+        subscribeRecoveryRequired(listener) {
+            recoveryListeners.add(listener);
+            return () => recoveryListeners.delete(listener);
+        },
+
         listTunnels: () => supervisor.listTunnels(),
+        readDiagnostics: () => supervisor.readDiagnostics(),
     };
 }
 
 let singletonRuntime: IrohHomeTunnelRuntime | null = null;
+let singletonDisposePromise: Promise<void> | null = null;
 
 export function getIrohHomeTunnelRuntime(params: Readonly<{
     native?: IrohNativeLifecycleModule | null;
@@ -277,8 +346,17 @@ export function getIrohHomeTunnelRuntime(params: Readonly<{
 
 export async function disposeIrohHomeTunnelRuntime(): Promise<void> {
     const runtime = singletonRuntime;
-    singletonRuntime = null;
-    await runtime?.dispose();
+    if (!runtime) return;
+    if (singletonDisposePromise) return await singletonDisposePromise;
+    singletonDisposePromise = (async () => {
+        await runtime.dispose();
+        if (singletonRuntime === runtime) singletonRuntime = null;
+    })();
+    try {
+        await singletonDisposePromise;
+    } finally {
+        singletonDisposePromise = null;
+    }
 }
 
 /** Stable lifecycle-neutral production seam consumed by enrollment/secondary Home owners. */
@@ -286,4 +364,15 @@ export async function acquireIrohHomeRuntimeOrigin(
     input: IrohHomeTunnelAcquireInput,
 ): Promise<IrohHomeRuntimeOriginLease> {
     return await getIrohHomeTunnelRuntime().acquireHomeRuntimeOrigin(input);
+}
+
+export function subscribeIrohHomeTunnelRecoveryRequired(
+    listener: (event: IrohHomeTunnelRecoveryRequired) => void,
+): () => void {
+    return getIrohHomeTunnelRuntime().subscribeRecoveryRequired(listener);
+}
+
+/** Reads existing diagnostics without constructing the native runtime singleton. */
+export function readIrohHomeTransportDiagnostics() {
+    return singletonRuntime?.readDiagnostics() ?? [];
 }

@@ -1,6 +1,7 @@
 import { type TransferRelayV2SendEnvelope } from '@happier-dev/protocol';
 
 import { resolveServerScopedTransferRelaySocket } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedTransferRelaySocket';
+import { fireAndForget } from '@/utils/system/fireAndForget';
 
 import { type ChunkDownloadProgress } from './chunkTransferClient';
 import { type BulkTransferFileDestination } from './bulkTransferFileDestination';
@@ -177,7 +178,7 @@ export async function downloadBulkPayloadViaServerRelayToDestination(params: Rea
             clearTransferTimeout();
             unsubscribe?.();
             signalCleanup?.();
-            relaySocket.disconnect();
+            fireAndForget(relaySocket.disconnect(), { tag: 'transfer-relay-disconnect' });
             return true;
         };
 

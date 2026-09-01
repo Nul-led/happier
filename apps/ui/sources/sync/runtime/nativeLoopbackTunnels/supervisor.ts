@@ -126,6 +126,36 @@ export function createLoopbackTunnelSupervisor<
         }
     }
 
+    /**
+     * Final owner cleanup is intentionally different from a caller release:
+     * callers that shared an acquisition may each hold a reference, while a
+     * failed acquisition returned no releasable handle at all. Disposal waits
+     * for acquisitions already owned by this supervisor, then stops each exact
+     * native handle once regardless of its reference count. Failed stops remain
+     * stored so the same owner can retry them on a later disposal attempt.
+     */
+    async function dispose(): Promise<void> {
+        await Promise.allSettled([...pending.values()].map(({ promise }) => promise));
+        const errors: unknown[] = [];
+        for (const lease of store.snapshot().leases) {
+            const stored = store.getByKey(lease.key);
+            if (!stored) continue;
+            if (stored.nativeTunnelId) {
+                removeNativeSubscription(stored.nativeTunnelId);
+                try {
+                    await input.adapter.stopLoopbackTunnel(stored.nativeTunnelId);
+                } catch (error) {
+                    store.updateStatus(stored.lease.leaseId, 'failed');
+                    errors.push(error);
+                    continue;
+                }
+            }
+            store.deleteByKey(lease.key);
+        }
+        if (errors.length === 1) throw errors[0];
+        if (errors.length > 1) throw new AggregateError(errors, 'Failed to dispose every loopback tunnel.');
+    }
+
     return {
         async ensureTunnel(request) {
             if (store.isSuspended()) throw new Error(failureCodes.suspended);
@@ -245,6 +275,7 @@ export function createLoopbackTunnelSupervisor<
             }
             store.removeReleasedLease(leaseId);
         },
+        dispose,
         markSuspended() {
             store.markSuspended();
             // The existing app-lifecycle owner suspends observation together

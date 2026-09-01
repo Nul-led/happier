@@ -76,4 +76,16 @@ describe('TerminalScreen legacy deep-link fallback', () => {
         expect(screen.findByTestId('terminal-connect-approve')).toBeTruthy();
         expect(screen.getTextContent()).toContain('abcdefghijkl...');
     });
+
+    it('rejects partial authenticated-pairing parameters through the canonical parser', async () => {
+        localSearchParamsMock.mockReturnValue({ key: 'abc', pairingSecret: 'secret' });
+        const Screen = (await import('@/app/(app)/terminal/index')).default;
+        routerMock.state.params = localSearchParamsMock();
+
+        const screen = await renderScreen(<Screen />);
+        await act(async () => {});
+
+        expect(screen.getTextContent()).toContain('terminal.invalidConnectionLink');
+        expect(screen.findByTestId('terminal-connect-approve')).toBeNull();
+    });
 });

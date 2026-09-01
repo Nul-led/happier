@@ -1,6 +1,7 @@
 import * as React from 'react';
 import {
     arePluginMachineMaterializationRefsEqual,
+    arePluginMachineExecutionOriginsEqual,
     isPluginMachineMaterializationOnServerIdentityV1,
     type PluginMachineExecutionOriginV1,
     type PluginMachineMaterializationV1,
@@ -12,6 +13,10 @@ import type { PluginAccountAvailabilityReader } from '@/sync/domains/plugins/ava
 import { storage } from '@/sync/domains/state/storageStore';
 import { useSetting, useSettingsVersion } from '@/sync/store/hooks';
 import { fireAndForget } from '@/utils/system/fireAndForget';
+import {
+    requireOneShotAccountSettingsMutationApplied,
+    type OneShotAccountSettingsMutationResult,
+} from '@/sync/engine/settings/syncSettings';
 
 import {
     clearPluginMachineExecutionOriginPreference,
@@ -35,7 +40,31 @@ export type FreshPluginMachineExecutionOriginV1 = Readonly<{
     origin: PluginMachineExecutionOriginV1;
     materialization: PluginMachineMaterializationV1;
     machineTarget: FreshMachineAdministrationExecutionTargetV1;
+    /** UI-local fence for origin selection changes, including A -> B -> A. */
+    selectionRevision?: number;
 }>;
+
+type PluginExecutionOriginSelectionRevisionState = Readonly<{
+    pluginId: string;
+    origin: PluginMachineExecutionOriginV1 | null;
+    revision: number;
+}>;
+
+export function advancePluginExecutionOriginSelectionRevision(
+    previous: PluginExecutionOriginSelectionRevisionState,
+    pluginId: string,
+    origin: PluginMachineExecutionOriginV1 | null,
+): PluginExecutionOriginSelectionRevisionState {
+    const unchanged = previous.pluginId === pluginId
+        && (
+            previous.origin === null
+                ? origin === null
+                : origin !== null && arePluginMachineExecutionOriginsEqual(previous.origin, origin)
+        );
+    return unchanged
+        ? previous
+        : Object.freeze({ pluginId, origin, revision: previous.revision + 1 });
+}
 
 function materializationMatchesOrigin(
     materialization: PluginMachineMaterializationV1,
@@ -82,10 +111,14 @@ export type PluginMachineExecutionOriginSelectionV1 = Readonly<{
     state: PluginMachineExecutionOriginStateV1;
     selectedOrigin: PluginMachineExecutionOriginV1 | null;
     canExecute: boolean;
-    selectOrigin: (origin: PluginMachineExecutionOriginV1) => void;
-    clearOrigin: () => void;
+    selectOrigin: (origin: PluginMachineExecutionOriginV1) => Promise<PluginExecutionOriginSelectionMutationResult>;
+    clearOrigin: () => Promise<PluginExecutionOriginSelectionMutationResult>;
     resolveExecutionOrigin: () => FreshPluginMachineExecutionOriginV1 | null;
 }>;
+
+export type PluginExecutionOriginSelectionMutationResult =
+    | OneShotAccountSettingsMutationResult<void>
+    | Readonly<{ status: 'unavailable' }>;
 
 /**
  * Exact plugin-origin selection over the canonical Account Availability
@@ -101,6 +134,16 @@ export function usePluginMachineExecutionOriginSelection(params: Readonly<{
     const selections = useSetting('machineAdministrationSelectionsV1');
     const settingsVersion = useSettingsVersion();
     const storedOrigin = selections.pluginExecutionOriginsByPluginId[params.pluginId] ?? null;
+    const selectionRevisionRef = React.useRef<PluginExecutionOriginSelectionRevisionState>({
+        pluginId: params.pluginId,
+        origin: storedOrigin,
+        revision: 0,
+    });
+    selectionRevisionRef.current = advancePluginExecutionOriginSelectionRevision(
+        selectionRevisionRef.current,
+        params.pluginId,
+        storedOrigin,
+    );
     const materializationAdmission = React.useMemo(
         () => reader?.readMaterializations() ?? null,
         [reader],
@@ -122,38 +165,56 @@ export function usePluginMachineExecutionOriginSelection(params: Readonly<{
     React.useEffect(() => {
         if (storedOrigin || state.kind !== 'selected' || state.selectionSource !== 'soleCandidate') return;
         if (settingsVersion === null) return;
-        fireAndForget(persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
-            setPluginMachineExecutionOriginPreference(current, params.pluginId, state.origin)
-        )), { tag: 'usePluginMachineExecutionOriginSelection.initialize' });
+        fireAndForget(
+            persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
+                setPluginMachineExecutionOriginPreference(current, params.pluginId, state.origin)
+            )).then(requireOneShotAccountSettingsMutationApplied),
+            { tag: 'usePluginMachineExecutionOriginSelection.initialize' },
+        );
     }, [params.pluginId, settingsVersion, state, storedOrigin]);
 
-    const selectOrigin = React.useCallback((origin: PluginMachineExecutionOriginV1) => {
+    const selectOrigin = React.useCallback(async (
+        origin: PluginMachineExecutionOriginV1,
+    ): Promise<PluginExecutionOriginSelectionMutationResult> => {
         const proposed = resolvePluginMachineExecutionOriginState({
             pluginId: params.pluginId,
             storedOrigin: origin,
             candidates,
         });
-        if (proposed.kind !== 'selected') return;
-        if (settingsVersion === null) return;
-        fireAndForget(persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
+        if (proposed.kind !== 'selected' || settingsVersion === null) return { status: 'unavailable' };
+        return await persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
             setPluginMachineExecutionOriginPreference(current, params.pluginId, proposed.origin)
-        )), { tag: 'usePluginMachineExecutionOriginSelection.select' });
+        ));
     }, [candidates, params.pluginId, settingsVersion]);
 
-    const clearOrigin = React.useCallback(() => {
-        if (settingsVersion === null) return;
-        fireAndForget(persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
+    const clearOrigin = React.useCallback(async (): Promise<PluginExecutionOriginSelectionMutationResult> => {
+        if (settingsVersion === null) return { status: 'unavailable' };
+        return await persistMachineAdministrationSelectionMutation(settingsVersion, (current) => (
             clearPluginMachineExecutionOriginPreference(current, params.pluginId)
-        )), { tag: 'usePluginMachineExecutionOriginSelection.clear' });
+        ));
     }, [params.pluginId, settingsVersion]);
 
-    const resolveExecutionOrigin = React.useCallback(() => resolveFreshPluginMachineExecutionOrigin({
-        pluginId: params.pluginId,
-        origin: storage.getState().settings.machineAdministrationSelectionsV1
-            .pluginExecutionOriginsByPluginId[params.pluginId] ?? null,
-        reader,
-        classifyRelease: params.classifyRelease,
-    }), [params.classifyRelease, params.pluginId, reader]);
+    const resolveExecutionOrigin = React.useCallback(() => {
+        const origin = storage.getState().settings.machineAdministrationSelectionsV1
+            .pluginExecutionOriginsByPluginId[params.pluginId] ?? null;
+        selectionRevisionRef.current = advancePluginExecutionOriginSelectionRevision(
+            selectionRevisionRef.current,
+            params.pluginId,
+            origin,
+        );
+        const resolved = resolveFreshPluginMachineExecutionOrigin({
+            pluginId: params.pluginId,
+            origin,
+            reader,
+            classifyRelease: params.classifyRelease,
+        });
+        return resolved === null
+            ? null
+            : Object.freeze({
+                ...resolved,
+                selectionRevision: selectionRevisionRef.current.revision,
+            });
+    }, [params.classifyRelease, params.pluginId, reader]);
 
     return React.useMemo(() => ({
         candidates,

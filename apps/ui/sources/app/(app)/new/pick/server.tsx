@@ -25,6 +25,7 @@ export default React.memo(function ServerPickerScreen() {
             <Stack.Screen options={screenOptions} />
             <NewSessionServerSelectionContent
                 maxHeight={maxHeight}
+                ownsScrollViewport={true}
                 onClose={() => safeRouterBack({ router, navigation, fallbackHref: pickerFallbackHref })}
             />
         </>

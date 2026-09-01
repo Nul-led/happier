@@ -10,8 +10,11 @@ import {
 } from '@happier-dev/protocol';
 
 const getReadyServerFeaturesSpy = vi.hoisted(() => vi.fn());
+const TOKEN_A = 'header.eyJzdWIiOiJhY2NvdW50LTEifQ.signature';
+const DATA_KEY_TOKEN = 'header.eyJzdWIiOiJhY2NvdW50LTEifQ.data-key-signature';
 const getCredentialsForServerUrlSpy = vi.hoisted(() => vi.fn());
 const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
+const captureAuthoritySpy = vi.hoisted(() => vi.fn());
 const listServerProfilesSpy = vi.hoisted(() => vi.fn());
 const storageSnapshot = vi.hoisted(() => ({
     state: {
@@ -22,6 +25,16 @@ const storageSnapshot = vi.hoisted(() => ({
 
 vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
     getReadyServerFeatures: (...args: unknown[]) => getReadyServerFeaturesSpy(...args),
+}));
+
+vi.mock('@/sync/http/client', () => ({
+    serverFetch: async (path: string, init?: RequestInit) => {
+        const active = getActiveServerSnapshotSpy() as { serverUrl: string };
+        const credentials = await getCredentialsForServerUrlSpy() as { token: string };
+        const headers = new Headers(init?.headers);
+        headers.set('Authorization', `Bearer ${credentials.token}`);
+        return await fetch(`${active.serverUrl}${path}`, { ...init, headers });
+    },
 }));
 
 vi.mock('@/auth/storage/tokenStorage', () => ({
@@ -37,6 +50,13 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: (...args: unknown[]) => getActiveServerSnapshotSpy(...args),
+}));
+vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+    getAppliedActiveServerId: () => String((getActiveServerSnapshotSpy() as { serverId?: unknown })?.serverId ?? ''),
+}));
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
+    captureSessionRequestAuthorityForServerAccountScope: (...args: unknown[]) => captureAuthoritySpy(...args),
+    createSessionRequestWithServerScope: ({ activeRequest }: { activeRequest: (path: string, init?: RequestInit) => Promise<Response> }) => activeRequest,
 }));
 
 function normalizeServerProfileTestId(raw: unknown): string {
@@ -201,6 +221,7 @@ describe('production peer mediation live-stream route adapter', () => {
         getCredentialsForServerUrlSpy.mockReset();
         getActiveServerSnapshotSpy.mockReset();
         listServerProfilesSpy.mockReset();
+        captureAuthoritySpy.mockReset();
         vi.unstubAllGlobals();
         getActiveServerSnapshotSpy.mockReturnValue({
             serverId: 'server-a',
@@ -210,9 +231,14 @@ describe('production peer mediation live-stream route adapter', () => {
         listServerProfilesSpy.mockReturnValue([]);
         getReadyServerFeaturesSpy.mockResolvedValue(createFeaturePayload());
         getCredentialsForServerUrlSpy.mockResolvedValue({
-            token: 'token-a',
+            token: TOKEN_A,
             secret: Buffer.from(new Uint8Array(32).fill(7)).toString('base64'),
         });
+        captureAuthoritySpy.mockImplementation(async ({ scope, activeRequest }) => ({
+            scope,
+            request: activeRequest,
+            release: async () => {},
+        }));
     });
 
     it('starts a direct live stream through server grant, nonce proof, loopback probe, and loopback start', async () => {
@@ -348,7 +374,7 @@ describe('production peer mediation live-stream route adapter', () => {
         ['missing endpoint', false],
     ])('reports typed data-key signing unavailability before %s topology or direct traffic', async (_label, hasEndpoint) => {
         getCredentialsForServerUrlSpy.mockResolvedValue({
-            token: 'data-key-token',
+            token: DATA_KEY_TOKEN,
             encryption: { publicKey: 'public-key', machineKey: 'machine-key' },
         });
         storageSnapshot.state = hasEndpoint
@@ -406,7 +432,7 @@ describe('production peer mediation live-stream route adapter', () => {
         const key32 = Buffer.from(new Uint8Array(32).fill(1)).toString('base64url');
         const signature64 = Buffer.from(new Uint8Array(64).fill(2)).toString('base64url');
         getCredentialsForServerUrlSpy.mockResolvedValue({
-            token: 'data-key-token',
+            token: DATA_KEY_TOKEN,
             encryption: { publicKey: 'public-key', machineKey: 'machine-key' },
         });
         const baseFeatures = createFeaturePayload();

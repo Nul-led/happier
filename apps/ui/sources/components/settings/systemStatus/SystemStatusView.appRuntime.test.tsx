@@ -12,6 +12,13 @@ import { pressTestInstanceAsync, renderScreen, standardCleanup } from '@/dev/tes
 
 const setClipboardStringSafeMock = vi.hoisted(() => vi.fn(async () => true));
 const modalAlertMock = vi.hoisted(() => vi.fn());
+const homeTransportDiagnostics = vi.hoisted(() => [{
+    homeServerIdentityId: 'home_1',
+    state: 'connected' as const,
+    current: { carrier: 'iroh' as const, observedPath: 'direct' as const },
+    lastKnown: { carrier: 'iroh' as const, observedPath: 'direct' as const },
+    lastTransitionAtMs: 1_788_200_000_000,
+}]);
 
 afterEach(() => {
     standardCleanup();
@@ -96,8 +103,14 @@ vi.mock('@/utils/ui/clipboard', () => ({
 }));
 
 vi.mock('@/constants/Typography', () => ({
+    FontWeights: {
+        regular: '400',
+        semiBold: '500',
+        bold: '600',
+    },
     Typography: {
         default: () => ({}),
+        rowMeta: () => ({}),
     },
 }));
 
@@ -107,6 +120,11 @@ vi.mock('@/sync/domains/server/serverRuntime', () => ({
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     listServerProfiles: () => [],
+    loadHomeViewState: () => null,
+}));
+
+vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
+    readIrohHomeTransportDiagnostics: () => homeTransportDiagnostics,
 }));
 
 vi.mock('@/sync/runtime/readCurrentAppRuntimeInfo', () => ({
@@ -180,5 +198,6 @@ describe('SystemStatusView app runtime info', () => {
                 launchSource: 'ota',
             },
         });
+        expect(payload.homeTransports).toEqual(homeTransportDiagnostics);
     });
 });

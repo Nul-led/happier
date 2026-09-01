@@ -850,6 +850,7 @@ export const ExternalSessionBrowseCandidatesList = React.memo(function ExternalS
                     onEndReached: props.onLoadMore,
                     onRetry: props.onRetry,
                     loadingLabel: t('common.loading'),
+                    moreLabel: t('common.more'),
                     retryLabel: t('common.retry'),
                     endReachedLabel: t('common.done'),
                 } : undefined}

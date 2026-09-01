@@ -16,9 +16,9 @@ import type { IrohNativeLifecycleModule } from './supervisor';
  * identity stays host-owned: this bridge carries descriptor-derived facts
  * only, never a key path or secret material.
  */
-export const IROH_DESKTOP_START_COMMAND = 'iroh_start_home_tunnel';
-export const IROH_DESKTOP_STOP_COMMAND = 'iroh_stop_home_tunnel';
-export const IROH_DESKTOP_STATUS_COMMAND = 'iroh_get_home_tunnel_status';
+export const IROH_DESKTOP_START_COMMAND = 'iroh_ensure_home_tunnel';
+export const IROH_DESKTOP_STOP_COMMAND = 'iroh_release_home_tunnel';
+export const IROH_DESKTOP_STATUS_COMMAND = 'iroh_get_tunnel_status';
 
 /** Exact lease shape the desktop hosts return; host-owned endpoint handles are stripped host-side. */
 type DesktopIrohNativeLease = Omit<IrohHomeTunnelLease, 'release'>;

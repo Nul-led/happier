@@ -9,7 +9,7 @@ import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { clearPendingSetupIntent, setPendingSetupIntent } from '@/sync/domains/pending/pendingSetupIntent';
 import { buildDismissedThisComputerSetupIntent } from '@/sync/domains/pending/pendingSetupIntent.shared';
 import { getPendingTerminalConnect } from '@/sync/domains/pending/pendingTerminalConnect';
-import { desktopHostKind } from '@/utils/platform/desktopHost';
+import { desktopHostKind, isDesktopHost } from '@/utils/platform/desktopHost';
 import { isDesktopOverlayWindowContext } from '@/desktop/window/isDesktopOverlayWindowContext';
 import { PreAuthOnboardingWizardEntry } from '@/components/onboarding/preAuth/PreAuthOnboardingWizardEntry';
 import { usePendingSetupIntent } from '@/components/onboarding/state/usePendingSetupIntent';

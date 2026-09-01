@@ -1,10 +1,19 @@
 import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
+import tsconfigPaths from 'vite-tsconfig-paths';
 
 import baseConfig from './vitest.config';
 import { resolveVitestFeatureTestExcludeGlobs } from '../../scripts/testing/featureTestGating';
 
 const base = baseConfig as any;
+const integrationAliases = Array.isArray(base.resolve?.alias)
+    ? base.resolve.alias.filter((entry: unknown) => (
+        !entry
+        || typeof entry !== 'object'
+        || !('find' in entry)
+        || (entry as { find?: unknown }).find !== '@'
+    ))
+    : base.resolve?.alias;
 
 /**
  * Harnesses that must run against Legend's NATIVE build.
@@ -32,7 +41,20 @@ export const SHIPPED_NATIVE_LEGEND_INCLUDE_GLOB = 'sources/**/*.fabric.native.re
 export default defineConfig({
     define: base.define,
     optimizeDeps: base.optimizeDeps,
-    plugins: base.plugins,
+    plugins: [
+        ...(base.plugins ?? []),
+        // This real composed lane intentionally imports the production server
+        // grant route and CLI admission verifier. Resolve each app's `@/`
+        // imports against its own project, as the existing server integration
+        // runner already does for cross-app source tests.
+        tsconfigPaths({
+            projects: [
+                resolve('./tsconfig.json'),
+                resolve('../server/tsconfig.json'),
+                resolve('../cli/tsconfig.json'),
+            ],
+        }),
+    ],
     test: {
         ...(base.test ?? {}),
         server: {
@@ -76,8 +98,8 @@ export default defineConfig({
     },
     resolve: {
         ...(base.resolve ?? {}),
-        alias: base.resolve?.alias ?? [
-            { find: '@', replacement: resolve('./sources') },
-        ],
+        // `vite-tsconfig-paths` above owns each app's broad `@/` mapping in
+        // this cross-app lane; preserve every narrower platform/test alias.
+        alias: integrationAliases,
     },
 });

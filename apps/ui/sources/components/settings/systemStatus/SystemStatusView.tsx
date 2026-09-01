@@ -17,6 +17,7 @@ import { useHappyAction } from '@/hooks/ui/useHappyAction';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { listServerProfiles, type ServerProfile } from '@/sync/domains/server/serverProfiles';
 import { readCurrentAppRuntimeInfo } from '@/sync/runtime/readCurrentAppRuntimeInfo';
+import { readIrohHomeTransportDiagnostics } from '@/sync/runtime/nativeIrohTunnels/runtime';
 import {
   useIsDataReady,
   useLastSyncAt,
@@ -150,6 +151,7 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
   const [refreshingMachines, runRefreshMachineAttribution] = useHappyAction(refreshMachineAttribution);
 
   const [copying, copySystemStatusJson] = useHappyAction(async () => {
+    const homeTransports = readIrohHomeTransportDiagnostics();
     const payload = {
       capturedAt: new Date().toISOString(),
       environment: {
@@ -225,6 +227,7 @@ export const SystemStatusView = React.memo(function SystemStatusView() {
         }),
       ),
       machineListStatusByServerId,
+      homeTransports,
     };
 
     const copied = await setClipboardStringSafe(JSON.stringify(payload, null, 2));

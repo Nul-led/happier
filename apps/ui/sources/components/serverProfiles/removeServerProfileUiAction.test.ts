@@ -3,6 +3,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installLocalStorageMock } from '@/auth/storage/tokenStorage.web.testHelpers';
 
 afterEach(() => {
+    try {
+        const localStorage = (globalThis as { localStorage?: Storage }).localStorage;
+        for (let index = localStorage?.length ?? 0; index > 0; index -= 1) {
+            const key = localStorage?.key(index - 1);
+            if (key?.includes('push-token-registration')) localStorage?.removeItem(key);
+        }
+    } catch {
+        // Test cleanup is best-effort when a case deliberately breaks storage.
+    }
     vi.unstubAllGlobals();
     vi.clearAllMocks();
     vi.resetModules();
@@ -79,9 +88,13 @@ describe('removeServerProfileUiAction', () => {
         });
 
         const { removeServerProfileUiAction } = await import('./removeServerProfileUiAction');
+        let removalSettled = false;
         const removal = removeServerProfileUiAction({
             profileId: removedProfile.id,
             serverUrl: removedProfile.serverUrl,
+        }).then((result) => {
+            removalSettled = true;
+            return result;
         });
         await vi.waitFor(() => expect(fetchSpy.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(true));
 
@@ -96,8 +109,12 @@ describe('removeServerProfileUiAction', () => {
             { serverId: retainedProfile.id },
         )).resolves.toMatchObject({ token: 'retained-token' });
 
-        releaseCleanup();
-        await removal;
+        try {
+            await vi.waitFor(() => expect(removalSettled).toBe(true));
+        } finally {
+            releaseCleanup();
+            await removal;
+        }
 
         const deleteCalls = fetchSpy.mock.calls.filter(([, init]) => init?.method === 'DELETE');
         expect(deleteCalls).toHaveLength(2);
@@ -107,6 +124,30 @@ describe('removeServerProfileUiAction', () => {
         ]));
         expect(new Headers(deleteCalls[0]?.[1]?.headers).get('Authorization')).toBe('Bearer removed-token');
 
+        localStorageHandle.restore();
+    });
+
+    it('is idempotent when the same target removal is repeated', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        const localStorageHandle = installLocalStorageMock();
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const profile = profiles.upsertServerProfile({
+            serverUrl: 'https://repeat-removal.example.test',
+            name: 'Repeat removal',
+        });
+        const { removeServerProfileUiAction } = await import('./removeServerProfileUiAction');
+
+        await expect(removeServerProfileUiAction({
+            profileId: profile.id,
+            serverUrl: profile.serverUrl,
+        })).resolves.toEqual({ kind: 'completed' });
+        await expect(removeServerProfileUiAction({
+            profileId: profile.id,
+            serverUrl: profile.serverUrl,
+        })).resolves.toEqual({ kind: 'completed' });
+
+        expect(profiles.getServerProfileById(profile.id)).toBeNull();
         localStorageHandle.restore();
     });
 

@@ -1,3 +1,8 @@
+import {
+    SessionSpawnNewResultV1Schema,
+    type SessionSpawnNewInitialInputDispositionV1,
+} from '@happier-dev/protocol';
+
 import type { ActionOperationProjection } from '@/sync/domains/actionOperations/actionOperationSelectors';
 import type { ActionOperationObservation } from '@/sync/domains/actionOperations/actionOperationStore';
 import { formatShortRelativeTimeAt } from '@/utils/time/formatShortRelativeTime';
@@ -62,6 +67,16 @@ export function readActionOperationDestinationServerId(snapshot: ActionOperation
     if (!snapshot.result || typeof snapshot.result !== 'object' || Array.isArray(snapshot.result)) return null;
     const executionTarget = (snapshot.result as Record<string, unknown>).executionTarget;
     return readStringField(executionTarget, 'serverId');
+}
+
+export function readActionOperationSessionSpawnNewInitialInput(
+    snapshot: ActionOperationSnapshot,
+): SessionSpawnNewInitialInputDispositionV1 | null {
+    if (snapshot.state !== 'succeeded' || snapshot.actionId !== 'session.spawn_new') return null;
+    const result = SessionSpawnNewResultV1Schema.safeParse(snapshot.result);
+    return result.success && result.data.type === 'success'
+        ? result.data.initialInput
+        : null;
 }
 
 export function readActionOperationPluginIdentity(actionId: string): string | null {

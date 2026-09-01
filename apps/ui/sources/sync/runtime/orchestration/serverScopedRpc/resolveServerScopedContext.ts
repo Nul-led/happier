@@ -9,6 +9,7 @@ import {
     resolveServerProfileScopeIdForIdentifier,
 } from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { parseToken } from '@/utils/auth/parseToken';
 import { resolveServerScopedTransport } from './resolveServerScopedTransport';
 
 import type { ResolvedServerRpcContext, ScopedRpcEncryptionContext } from './serverScopedRpcTypes';
@@ -60,6 +61,7 @@ export async function resolveServerScopedContext(params: Readonly<{
     const encryption = isTokenOnlyAuthCredentials(credentials)
         ? null
         : await createEncryptionFromAuthCredentials(credentials) as ScopedRpcEncryptionContext;
+    const targetAccountId = parseToken(credentials.token);
 
     const transport = await resolveServerScopedTransport({
         profile: targetProfile,
@@ -71,6 +73,7 @@ export async function resolveServerScopedContext(params: Readonly<{
         timeoutMs,
         targetServerId: resolvedTargetServerId,
         targetServerUrl: transport.canonicalServerUrl,
+        targetAccountId,
         runtimeOrigin: transport.runtimeOrigin,
         carrier: transport.carrier,
         release: transport.release,

@@ -750,7 +750,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     await hook.unmount();
   });
 
-  it('projects a Pending-owned first prompt before opening the created session route', async () => {
+  it('projects an accepted first prompt before opening the created session route', async () => {
     const { useCreateNewSession, sessionSpawnNewActionBoundarySpy, storageState } = await setupHarness();
     const callOrder: string[] = [];
     storageState.upsertPendingMessage = vi.fn(() => {
@@ -821,7 +821,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
       expect.objectContaining({
         localId: expect.stringMatching(/^spawn-first-turn:new-session-spawn-/),
         source: 'local_outbound',
-        deliveryStatus: 'queued',
+        deliveryStatus: 'accepted',
         text: 'Start here',
         displayText: 'Start here',
       }),
@@ -914,7 +914,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
     }
   });
 
-  it('projects a built-in first turn into pending state before opening the created session route', async () => {
+  it('projects an accepted built-in first turn before opening the created session route', async () => {
     const { useCreateNewSession, sessionSpawnNewActionBoundarySpy, storageState } = await setupHarness();
     const followUpModule = await import('@/sync/runtime/orchestration/serverScopedRpc/followUpSpawnedSession');
     const followUpSpy = vi.mocked(followUpModule.followUpSpawnedSessionWithServerScope);
@@ -995,7 +995,7 @@ describe('useCreateNewSession (daemon unavailable UX)', () => {
       expect.objectContaining({
         localId: firstTurnLocalId,
         source: 'local_outbound',
-        deliveryStatus: 'queued',
+        deliveryStatus: 'accepted',
         text: 'Built-in start here',
         displayText: 'Built-in start here',
       }),

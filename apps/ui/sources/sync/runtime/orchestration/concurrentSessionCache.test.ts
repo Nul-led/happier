@@ -114,4 +114,36 @@ describe('resolveConcurrentTargets', () => {
             },
         ]);
     });
+
+    it('uses the canonical Home URL as the secondary credential and reachability authority', () => {
+        const result = resolveConcurrentTargets({
+            activeServerId: 'server-a',
+            profiles: [
+                profiles[0],
+                {
+                    id: 'server-b',
+                    serverUrl: 'https://legacy-alias.example.test',
+                    canonicalServerUrl: 'https://home-b.example.test',
+                    name: 'Server B',
+                },
+            ],
+            settings: {
+                serverSelectionGroups: [{
+                    id: 'group-main',
+                    name: 'Main',
+                    serverIds: ['server-a', 'server-b'],
+                    presentation: 'grouped',
+                }],
+                serverSelectionActiveTargetKind: 'group',
+                serverSelectionActiveTargetId: 'group-main',
+            },
+        });
+
+        expect(result).toEqual([{
+            id: 'server-b',
+            serverUrl: 'https://home-b.example.test',
+            serverName: 'Server B',
+            canonicalServerUrl: 'https://home-b.example.test',
+        }]);
+    });
 });

@@ -25,6 +25,8 @@ const listServerProfilesSpy = vi.hoisted(() => vi.fn());
 const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
 const machineRpcWithPeerMediationRouteSpy = vi.hoisted(() => vi.fn());
 const requireCurrentAccountStoredContentServerCompatibilitySpy = vi.hoisted(() => vi.fn());
+const TOKEN_A = `header.${btoa(JSON.stringify({ sub: 'account-a' }))}.signature`;
+const TOKEN_B = `header.${btoa(JSON.stringify({ sub: 'account-b' }))}.signature`;
 
 vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', () => ({
     requireCurrentAccountStoredContentServerCompatibility: (...args: unknown[]) =>
@@ -61,9 +63,12 @@ vi.mock('@/auth/encryption/createEncryptionFromAuthCredentials', () => ({
 
 vi.mock('@/sync/domains/server/serverProfiles', async () => {
     const { createServerProfilesModuleMock } = await import('@/dev/testkit/mocks/serverProfiles');
-    return createServerProfilesModuleMock({
+    return {
+        ...createServerProfilesModuleMock({
         listServerProfiles: (...args: unknown[]) => listServerProfilesSpy(...args),
-    });
+        }),
+        loadHomeViewState: () => null,
+    };
 });
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
@@ -379,7 +384,7 @@ describe('machineRpcWithServerScope', () => {
                 activeEmits += 1;
                 return { source: 'late-active' };
             });
-            getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
+            getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: 'secret-a' });
             const machineEncryption = {
                 encryptRaw: vi.fn(async () => 'encrypted-payload'),
                 decryptRaw: vi.fn(async () => ({ source: 'scoped' })),
@@ -429,7 +434,7 @@ describe('machineRpcWithServerScope', () => {
         });
         getReadyServerFeaturesSpy.mockResolvedValueOnce(null);
         machineRpcSpy.mockResolvedValueOnce({ ok: true });
-        getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
+        getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: 'secret-a' });
 
         const machineEncryption = {
             encryptRaw: vi.fn(async () => 'encrypted-payload'),
@@ -486,7 +491,7 @@ describe('machineRpcWithServerScope', () => {
         listServerProfilesSpy.mockReturnValue([
             { id: 'server-b', serverUrl: 'https://server-b.example.test', name: 'Server B' },
         ]);
-        getCredentialsSpy.mockResolvedValue({ token: 'token-b', secret: 'secret-b' });
+        getCredentialsSpy.mockResolvedValue({ token: TOKEN_B, secret: 'secret-b' });
 
         const machineEncryption = {
             encryptRaw: vi.fn(async () => 'encrypted-payload'),
@@ -529,7 +534,7 @@ describe('machineRpcWithServerScope', () => {
         expect(machineRpcSpy).not.toHaveBeenCalled();
         expect(createEphemeralSocketSpy).toHaveBeenCalledWith(expect.objectContaining({
             serverUrl: 'https://server-b.example.test',
-            token: 'token-b',
+            token: TOKEN_B,
             timeoutMs: expect.any(Number),
         }));
         const createEphemeralSocketCalls = createEphemeralSocketSpy.mock.calls as unknown as Array<
@@ -580,7 +585,7 @@ describe('machineRpcWithServerScope', () => {
         listServerProfilesSpy.mockReturnValue([
             { id: 'server-b', serverUrl: 'https://server-b.example.test', name: 'Server B' },
         ]);
-        getCredentialsSpy.mockResolvedValue({ token: 'token-b' });
+        getCredentialsSpy.mockResolvedValue({ token: TOKEN_B });
         vi.stubGlobal('fetch', vi.fn(async () => ({
             ok: true,
             status: 200,
@@ -637,7 +642,7 @@ describe('machineRpcWithServerScope', () => {
         listServerProfilesSpy.mockReturnValue([
             { id: 'server-b', serverUrl: 'https://server-b.example.test', name: 'Server B' },
         ]);
-        getCredentialsSpy.mockResolvedValue({ token: 'token-b' });
+        getCredentialsSpy.mockResolvedValue({ token: TOKEN_B });
         vi.stubGlobal('fetch', vi.fn(async () => ({
             ok: true,
             status: 200,
@@ -672,7 +677,7 @@ describe('machineRpcWithServerScope', () => {
             generation: 1,
         });
         machineRpcSpy.mockRejectedValue(new Error('Machine encryption not found for machine-1'));
-        getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
+        getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: 'secret-a' });
 
         const machineEncryption = {
             encryptRaw: vi.fn(async () => 'encrypted-payload'),
@@ -708,7 +713,7 @@ describe('machineRpcWithServerScope', () => {
         expect(machineRpcSpy).toHaveBeenCalledTimes(1);
         expect(createEphemeralSocketSpy).toHaveBeenCalledWith(expect.objectContaining({
             serverUrl: 'https://server-a.example.test',
-            token: 'token-a',
+            token: TOKEN_A,
             timeoutMs: expect.any(Number),
         }));
         expect((createEphemeralSocketSpy.mock.calls[0]?.[0] as { timeoutMs: number }).timeoutMs).toBeGreaterThan(0);
@@ -726,7 +731,7 @@ describe('machineRpcWithServerScope', () => {
             generation: 1,
         });
         machineRpcSpy.mockRejectedValue(new Error("Cannot read properties of null (reading 'getMachineEncryption')"));
-        getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
+        getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: 'secret-a' });
 
         const machineEncryption = {
             encryptRaw: vi.fn(async () => 'encrypted-payload'),
@@ -762,7 +767,7 @@ describe('machineRpcWithServerScope', () => {
         expect(machineRpcSpy).toHaveBeenCalledTimes(1);
         expect(createEphemeralSocketSpy).toHaveBeenCalledWith(expect.objectContaining({
             serverUrl: 'https://server-a.example.test',
-            token: 'token-a',
+            token: TOKEN_A,
             timeoutMs: expect.any(Number),
         }));
         expect(machineEncryption.encryptRaw).toHaveBeenCalledWith({ value: 5 });
@@ -787,7 +792,7 @@ describe('machineRpcWithServerScope', () => {
         machineRpcSpy.mockRejectedValue(Object.assign(new Error('RPC method not available'), {
             rpcErrorCode: RPC_ERROR_CODES.METHOD_NOT_AVAILABLE,
         }));
-        getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
+        getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: 'secret-a' });
 
         const machineEncryption = {
             encryptRaw: vi.fn(async () => 'encrypted-payload'),
@@ -838,7 +843,7 @@ describe('machineRpcWithServerScope', () => {
         expect(machineRpcSpy).toHaveBeenCalledTimes(1);
         expect(createEphemeralSocketSpy).toHaveBeenCalledWith(expect.objectContaining({
             serverUrl: 'https://server-a.example.test',
-            token: 'token-a',
+            token: TOKEN_A,
             timeoutMs: expect.any(Number),
         }));
         expect((createEphemeralSocketSpy.mock.calls[0]?.[0] as { timeoutMs: number }).timeoutMs).toBeGreaterThan(0);
@@ -870,7 +875,7 @@ describe('machineRpcWithServerScope', () => {
             generation: 1,
         });
         machineRpcSpy.mockImplementation(() => new Promise(() => {}));
-        getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
+        getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: 'secret-a' });
 
         const machineEncryption = {
             encryptRaw: vi.fn(async () => 'encrypted-payload'),
@@ -910,7 +915,7 @@ describe('machineRpcWithServerScope', () => {
         expect(machineRpcSpy).toHaveBeenCalledTimes(1);
         expect(createEphemeralSocketSpy).toHaveBeenCalledWith(expect.objectContaining({
             serverUrl: 'https://server-a.example.test',
-            token: 'token-a',
+            token: TOKEN_A,
             timeoutMs: 1_000,
         }));
         expect(machineEncryption.encryptRaw).toHaveBeenCalledWith({ handoffId: 'handoff_1' });
@@ -932,7 +937,7 @@ describe('machineRpcWithServerScope', () => {
             kind: 'custom',
             generation: 1,
         });
-        getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
+        getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: 'secret-a' });
         createEncryptionSpy.mockImplementation(() => new Promise(() => {}));
 
         const { machineRpcWithServerScope } = await import('./serverScopedMachineRpc');
@@ -962,7 +967,7 @@ describe('machineRpcWithServerScope', () => {
             kind: 'custom',
             generation: 1,
         });
-        getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
+        getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: 'secret-a' });
 
         const machineEncryption = {
             encryptRaw: vi.fn(async () => 'encrypted-payload'),
@@ -997,7 +1002,7 @@ describe('machineRpcWithServerScope', () => {
         await assertion;
         expect(createEphemeralSocketSpy).toHaveBeenCalledWith(expect.objectContaining({
             serverUrl: 'https://server-a.example.test',
-            token: 'token-a',
+            token: TOKEN_A,
             timeoutMs: 1_000,
         }));
         expect(machineEncryption.encryptRaw).not.toHaveBeenCalled();
@@ -1012,7 +1017,7 @@ describe('machineRpcWithServerScope', () => {
             kind: 'custom',
             generation: 1,
         });
-        getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
+        getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: 'secret-a' });
 
         const machineEncryption = {
             encryptRaw: vi.fn(async () => 'encrypted-payload'),
@@ -1070,7 +1075,7 @@ describe('machineRpcWithServerScope', () => {
             kind: 'custom',
             generation: 1,
         });
-        getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
+        getCredentialsSpy.mockResolvedValue({ token: TOKEN_A, secret: 'secret-a' });
 
         const machineEncryption = {
             encryptRaw: vi.fn(async () => 'encrypted-payload'),
@@ -1108,7 +1113,7 @@ describe('machineRpcWithServerScope', () => {
         expect(machineRpcSpy).not.toHaveBeenCalled();
         expect(createEphemeralSocketSpy).toHaveBeenCalledWith(expect.objectContaining({
             serverUrl: 'https://server-a.example.test',
-            token: 'token-a',
+            token: TOKEN_A,
             timeoutMs: expect.any(Number),
         }));
         expect((createEphemeralSocketSpy.mock.calls[0]?.[0] as { timeoutMs: number }).timeoutMs).toBeGreaterThan(0);

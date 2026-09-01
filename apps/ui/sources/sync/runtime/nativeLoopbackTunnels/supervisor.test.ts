@@ -140,6 +140,45 @@ describe('provider-neutral loopback tunnel supervisor', () => {
         expect(supervisor.listTunnels().leases).toEqual([]);
     });
 
+    it('force-disposes one failed native handle shared by concurrent acquisitions', async () => {
+        const { createLoopbackTunnelSupervisor } = await import('./supervisor');
+        let resolveStart: ((value: { nativeTunnelId: string; localPort: number }) => void) | undefined;
+        const stopLoopbackTunnel = vi.fn(async () => undefined)
+            .mockRejectedValueOnce(new Error('native_stop_failed'))
+            .mockResolvedValueOnce(undefined);
+        const supervisor = createLoopbackTunnelSupervisor<Request, LoopbackTunnelLease>({
+            adapter: {
+                startLoopbackTunnel: vi.fn(() => new Promise<{ nativeTunnelId: string; localPort: number }>((resolve) => {
+                    resolveStart = resolve;
+                })),
+                stopLoopbackTunnel,
+            },
+            probe: vi.fn(async () => ({ ok: false as const, reason: 'remote-service-unreachable' })),
+            buildKey: () => 'home-key',
+            createLease: createLeaseFactory(),
+        });
+
+        const first = supervisor.ensureTunnel(createRequest());
+        const second = supervisor.ensureTunnel(createRequest());
+        resolveStart?.({ nativeTunnelId: 'native-shared', localPort: 49152 });
+        const acquisitions = await Promise.allSettled([first, second]);
+
+        expect(acquisitions).toEqual([
+            expect.objectContaining({ status: 'rejected', reason: expect.objectContaining({ message: 'native_stop_failed' }) }),
+            expect.objectContaining({ status: 'rejected', reason: expect.objectContaining({ message: 'native_stop_failed' }) }),
+        ]);
+        expect(supervisor.listTunnels().leases).toEqual([
+            expect.objectContaining({ leaseId: 'loopback:home-key', status: 'failed' }),
+        ]);
+        expect(stopLoopbackTunnel).toHaveBeenCalledTimes(1);
+
+        await supervisor.dispose();
+
+        expect(stopLoopbackTunnel).toHaveBeenCalledTimes(2);
+        expect(stopLoopbackTunnel).toHaveBeenLastCalledWith('native-shared');
+        expect(supervisor.listTunnels().leases).toEqual([]);
+    });
+
     it('applies consumer failure codes, probe diagnostics, and platform limitation configuration', async () => {
         const { createLoopbackTunnelSupervisor } = await import('./supervisor');
         const supervisor = createLoopbackTunnelSupervisor<Request, LoopbackTunnelLease>({

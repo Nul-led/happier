@@ -489,6 +489,10 @@ describe('buildSessionHandoffMetadataPatch', () => {
             agentId: 'acme.agent',
             agent: {
                 providerSessionId: 'external_target_session',
+                resumeCriticalOpaqueState: {
+                    cursor: 'opaque-cursor-v2',
+                    nested: { revision: 7 },
+                },
             },
         } as const;
 

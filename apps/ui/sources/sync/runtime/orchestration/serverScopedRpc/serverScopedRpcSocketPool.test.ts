@@ -116,6 +116,94 @@ describe('serverScopedRpcSocketPool', () => {
         pool.resetForTests();
     });
 
+    it('uses WebSocket-only for Iroh and does not pool it with HTTPS at the same origin', async () => {
+        vi.resetModules();
+        const first = createFakeSocket();
+        const second = createFakeSocket();
+        const ioSpy = vi.fn()
+            .mockReturnValueOnce(first.socket)
+            .mockReturnValueOnce(second.socket);
+        vi.doMock('socket.io-client', () => ({ io: ioSpy }));
+
+        const { createServerScopedRpcSocketPool } = await import('./serverScopedRpcSocketPool');
+        const pool = createServerScopedRpcSocketPool({
+            reachability: {
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 5_000,
+        });
+
+        const irohClient = await pool.acquire({
+            serverUrl: 'http://127.0.0.1:4312',
+            reachabilityServerUrl: 'https://home.example.test',
+            carrier: 'iroh',
+            token: 'token-a',
+            timeoutMs: 1_000,
+        });
+        const httpsClient = await pool.acquire({
+            serverUrl: 'http://127.0.0.1:4312',
+            reachabilityServerUrl: 'https://home.example.test',
+            carrier: 'https',
+            token: 'token-a',
+            timeoutMs: 1_000,
+        });
+
+        expect(ioSpy).toHaveBeenCalledTimes(2);
+        expect(ioSpy.mock.calls[0]?.[1]).toEqual(expect.objectContaining({ transports: ['websocket'] }));
+        expect(ioSpy.mock.calls[1]?.[1]).not.toHaveProperty('transports');
+
+        irohClient.disconnect();
+        httpsClient.disconnect();
+        await pool.stopAll();
+        pool.resetForTests();
+    });
+
+    it('keeps one live socket entry for the same private credential regardless of unrelated tokens', async () => {
+        const createdTokens: string[] = [];
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: ({ token }) => {
+                createdTokens.push(token);
+                return createFakeSocket().socket;
+            },
+            reachability: {
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 60_000,
+        });
+
+        const retained = await pool.acquire({
+            serverUrl: 'https://server.example.test',
+            token: 'retained-token',
+            timeoutMs: 1_000,
+        });
+        for (let index = 0; index < 520; index += 1) {
+            const client = await pool.acquire({
+                serverUrl: 'https://server.example.test',
+                token: `unrelated-token-${index}`,
+                timeoutMs: 1_000,
+            });
+            client.disconnect();
+        }
+        const sameCredential = await pool.acquire({
+            serverUrl: 'https://server.example.test',
+            token: 'retained-token',
+            timeoutMs: 1_000,
+        });
+
+        expect(createdTokens.filter((token) => token === 'retained-token')).toHaveLength(1);
+
+        retained.disconnect();
+        sameCredential.disconnect();
+        await pool.stopAll();
+        pool.resetForTests();
+    });
+
     it('surfaces the underlying socket.io connection id so per-tab transports can target this socket', async () => {
         const ioSpy = vi.fn();
         const { socket } = createFakeSocket({ connectionId: 'conn-xyz' });
@@ -358,6 +446,116 @@ describe('serverScopedRpcSocketPool', () => {
         await pool.acquire({ serverUrl: 'https://server.example.test', token: 'token-a', timeoutMs: 1_000 });
         expect(createSocketSpy).toHaveBeenCalledTimes(3);
         expect(second.connectSpy).toHaveBeenCalledTimes(2);
+
+        pool.resetForTests();
+    });
+
+    it('does not reuse a same-key entry while its reachability release is still in flight', async () => {
+        const first = createFakeSocket();
+        const second = createFakeSocket();
+        const createSocketSpy = vi.fn()
+            .mockReturnValueOnce(first.socket)
+            .mockReturnValueOnce(second.socket);
+        let signalReleaseStarted!: () => void;
+        const releaseStarted = new Promise<void>((resolve) => {
+            signalReleaseStarted = resolve;
+        });
+        let finishFirstRelease!: () => void;
+        const firstReleaseFinished = new Promise<void>((resolve) => {
+            finishFirstRelease = resolve;
+        });
+        const releaseSpy = vi.fn()
+            .mockImplementationOnce(async () => {
+                signalReleaseStarted();
+                await firstReleaseFinished;
+            })
+            .mockResolvedValue(undefined);
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: () => createSocketSpy(),
+            reachability: {
+                acquireReachability: async () => ({ release: releaseSpy }),
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 0,
+        });
+
+        const firstClient = await pool.acquire({
+            serverUrl: 'https://server.example.test',
+            token: 'token-a',
+            timeoutMs: 1_000,
+        });
+        firstClient.disconnect();
+        await releaseStarted;
+
+        let secondAcquireSettled = false;
+        const secondAcquire = pool.acquire({
+            serverUrl: 'https://server.example.test',
+            token: 'token-a',
+            timeoutMs: 1_000,
+        }).finally(() => {
+            secondAcquireSettled = true;
+        });
+        for (let index = 0; index < 6; index += 1) {
+            await Promise.resolve();
+        }
+
+        expect(secondAcquireSettled).toBe(false);
+        expect(first.connectSpy).toHaveBeenCalledTimes(1);
+        expect(createSocketSpy).toHaveBeenCalledTimes(1);
+
+        finishFirstRelease();
+        const secondClient = await secondAcquire;
+        expect(createSocketSpy).toHaveBeenCalledTimes(2);
+        expect(second.connectSpy).toHaveBeenCalledTimes(1);
+
+        secondClient.disconnect();
+        await pool.stopAll();
+        pool.resetForTests();
+    });
+
+    it('retains failed reachability release custody and surfaces stopAll failure', async () => {
+        const first = createFakeSocket();
+        const second = createFakeSocket();
+        const createSocketSpy = vi.fn()
+            .mockReturnValueOnce(first.socket)
+            .mockReturnValueOnce(second.socket);
+        const releaseError = new Error('release failed');
+        const releaseSpy = vi.fn()
+            .mockRejectedValueOnce(releaseError)
+            .mockResolvedValue(undefined);
+        const pool = createServerScopedRpcSocketPool({
+            createSocket: () => createSocketSpy(),
+            reachability: {
+                acquireReachability: async () => ({ release: releaseSpy }),
+                waitForReachable: async () => {},
+                startReachability: async () => {},
+                reportUnreachable: () => {},
+                subscribeNetworkAllowed: () => () => {},
+            },
+            readIdleDisconnectMs: () => 5_000,
+        });
+
+        await pool.acquire({
+            serverUrl: 'https://server.example.test',
+            token: 'token-a',
+            timeoutMs: 1_000,
+        });
+
+        await expect(pool.stopAll()).rejects.toBe(releaseError);
+        expect(releaseSpy).toHaveBeenCalledTimes(1);
+
+        await pool.stopAll();
+        expect(releaseSpy).toHaveBeenCalledTimes(2);
+
+        await pool.acquire({
+            serverUrl: 'https://server.example.test',
+            token: 'token-a',
+            timeoutMs: 1_000,
+        });
+        expect(createSocketSpy).toHaveBeenCalledTimes(2);
 
         pool.resetForTests();
     });

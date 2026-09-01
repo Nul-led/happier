@@ -46,3 +46,23 @@ export function createQRMatrix(data: string, errorCorrectionLevel: 'low' | 'medi
     let bits = qrlib.create(data, { errorCorrectionLevel }).modules.data;
     return new QRMatrix(Array.from(bits));
 }
+
+export type QRMatrixCreationResult =
+    | Readonly<{ ok: true; matrix: QRMatrix }>
+    | Readonly<{ ok: false; reason: 'qr_unavailable' }>;
+
+/**
+ * Non-throwing admission boundary for data that will be handed to the QR
+ * renderer. The qrcode package owns the actual version/capacity calculation;
+ * callers must not approximate that limit from string or payload byte counts.
+ */
+export function tryCreateQRMatrix(
+    data: string,
+    errorCorrectionLevel: 'low' | 'medium' | 'quartile' | 'high',
+): QRMatrixCreationResult {
+    try {
+        return { ok: true, matrix: createQRMatrix(data, errorCorrectionLevel) };
+    } catch {
+        return { ok: false, reason: 'qr_unavailable' };
+    }
+}

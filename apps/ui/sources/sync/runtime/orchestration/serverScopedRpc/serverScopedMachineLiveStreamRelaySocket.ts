@@ -30,7 +30,7 @@ export type ServerScopedMachineLiveStreamRelaySocket = Readonly<{
     socketId: string;
     sendEnvelope: (payload: MachineLiveStreamRelayEnvelopeV1) => void;
     onEnvelope: (listener: (payload: MachineLiveStreamRelayEnvelopeV1) => void) => () => void;
-    disconnect: () => void;
+    disconnect: () => Promise<void>;
 }>;
 
 export async function resolveServerScopedMachineLiveStreamRelaySocket(params: Readonly<{

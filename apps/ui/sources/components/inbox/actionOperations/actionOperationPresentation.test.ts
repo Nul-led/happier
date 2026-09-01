@@ -5,6 +5,7 @@ import {
     classifyActionOperationSection,
     readActionOperationDestinationSessionId,
     readActionOperationDestinationServerId,
+    readActionOperationSessionSpawnNewInitialInput,
     readActionOperationPluginIdentity,
     resolveActionOperationStatus,
 } from './actionOperationPresentation';
@@ -90,5 +91,29 @@ describe('action operation inbox presentation', () => {
     it('derives plugin identity without treating core session actions as plugins', () => {
         expect(readActionOperationPluginIdentity('acme.preview/deploy')).toBe('acme.preview');
         expect(readActionOperationPluginIdentity('session.fork')).toBeNull();
+    });
+
+    it('reads initial-input disposition only from a valid successful session creation result', () => {
+        const acceptedOperation = operation({
+            actionId: 'session.spawn_new',
+            state: 'succeeded',
+            settledAt: 2_000,
+            result: {
+                type: 'success',
+                disposition: 'created',
+                sessionId: 'spawned-session',
+                executionTarget: { serverId: 'server-b', machineId: 'machine-1' },
+                organizationPlacement: { folderId: null, tagIds: [] },
+                initialInput: { status: 'accepted', localId: 'local-first-turn' },
+            },
+        });
+        expect(readActionOperationSessionSpawnNewInitialInput(acceptedOperation)).toEqual({
+            status: 'accepted',
+            localId: 'local-first-turn',
+        });
+        expect(readActionOperationSessionSpawnNewInitialInput(operation({
+            ...acceptedOperation,
+            result: { sessionId: 'legacy-shape-without-input-disposition' },
+        }))).toBeNull();
     });
 });

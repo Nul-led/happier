@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildTerminalConnectDeepLink, parseTerminalConnectUrl } from './terminalConnectUrl';
+import {
+    buildTerminalConnectDeepLink,
+    parseTerminalConnectRouteParams,
+    parseTerminalConnectUrl,
+} from './terminalConnectUrl';
 
 describe('parseTerminalConnectUrl', () => {
     it('parses legacy terminal deeplink format', () => {
@@ -39,6 +43,9 @@ describe('parseTerminalConnectUrl', () => {
 
     it('rejects incomplete authenticated-pairing context', () => {
         expect(parseTerminalConnectUrl('happier://terminal?key=abc&pairingSecret=secret')).toBeNull();
+        expect(parseTerminalConnectUrl(
+            'happier://terminal?key=abc&serverIdentityId=srv_home_expected',
+        )).toBeNull();
         expect(parseTerminalConnectUrl(
             'happier://terminal?key=abc&pairingSecret=secret&createdAt=61000&expiresAt=1000',
         )).toBeNull();
@@ -90,6 +97,44 @@ describe('parseTerminalConnectUrl', () => {
             publicKeyB64Url: 'abcDEF_123-zzz',
             serverUrl: 'https://stack.example.test',
         });
+    });
+});
+
+describe('parseTerminalConnectRouteParams', () => {
+    it('delegates complete authenticated pairing parameters to the canonical parser', () => {
+        expect(parseTerminalConnectRouteParams({
+            key: 'abc',
+            pairingSecret: 'secret',
+            createdAt: '1000',
+            expiresAt: '61000',
+            serverIdentityId: 'srv_home_expected',
+            supportsTokenOnly: '1',
+        })).toEqual({
+            publicKeyB64Url: 'abc',
+            serverUrl: null,
+            serverIdentityId: 'srv_home_expected',
+            pairing: {
+                secretB64Url: 'secret',
+                createdAtMs: 1000,
+                expiresAtMs: 61000,
+            },
+            supportsTokenOnly: true,
+        });
+    });
+
+    it('rejects partial authenticated pairing parameters instead of treating them as legacy', () => {
+        expect(parseTerminalConnectRouteParams({
+            key: 'abc',
+            pairingSecret: 'secret',
+        })).toBeNull();
+    });
+
+    it('retains the released single-unknown-key legacy route shape', () => {
+        expect(parseTerminalConnectRouteParams({ abcDEF_123: '' })).toEqual({
+            publicKeyB64Url: 'abcDEF_123',
+            serverUrl: null,
+        });
+        expect(parseTerminalConnectRouteParams({ server: 'https://example.test' })).toBeNull();
     });
 });
 

@@ -73,6 +73,7 @@ export function useNewSessionAgentInputExtraActionChips(params: Readonly<{
                     maxHeight={Math.min(760, maxHeight)}
                     onClose={requestClose}
                     dismissOnSelection={true}
+                    ownsScrollViewport={false}
                     selectedServerId={params.targetServerId}
                 />
             ),

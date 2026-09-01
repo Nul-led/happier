@@ -40,6 +40,8 @@ import { storage } from '@/sync/domains/state/storage';
 
 import { resolvePeerLoopbackRouteAvailability } from '../loopback/resolvePeerLoopbackRouteAvailability';
 import type { PeerLoopbackRouteAvailabilityResult } from '../loopback/resolvePeerLoopbackRouteAvailability';
+import { requestPeerMediationServerJsonForCredential } from '../peerMediationServerRequest';
+import { readPeerEndpointForServerScope } from '../readPeerEndpointForServerScope';
 import type { MachineRpcDirectRouteResolution } from './client';
 import { resolveMachineRpcDirectRoutePreflight } from './directRoutePreflight';
 
@@ -88,10 +90,6 @@ function normalizeBaseUrl(serverUrl: string): string {
     return String(serverUrl ?? '').trim().replace(/\/+$/, '');
 }
 
-function joinBaseAndPath(serverUrl: string, path: string): string {
-    return `${normalizeBaseUrl(serverUrl)}${path.startsWith('/') ? path : `/${path}`}`;
-}
-
 function resolveTargetServer(serverId: string | null | undefined): TargetServer | null {
     const active = getActiveServerSnapshot();
     const activeServerId = normalizeId(active.serverId);
@@ -111,12 +109,12 @@ function readEndpointFromMachineState(input: Readonly<{
     machineId: string;
 }>): PeerLoopbackEndpointCandidateV1 | null {
     const state = storage.getState();
-    const scopedMachines = state.machineListByServerId?.[input.serverId];
-    const scopedMachine = Array.isArray(scopedMachines)
-        ? scopedMachines.find((machine) => machine.id === input.machineId) ?? null
-        : null;
-    const machine = scopedMachine ?? state.machines[input.machineId] ?? null;
-    const endpoint = machine?.daemonState?.peerMediation?.loopback?.endpoint;
+    const endpoint = readPeerEndpointForServerScope({
+        state,
+        serverId: input.serverId,
+        machineId: input.machineId,
+        select: (machine) => machine.daemonState?.peerMediation?.loopback?.endpoint,
+    });
     const parsed = PeerLoopbackEndpointCandidateV1Schema.safeParse(endpoint);
     return parsed.success ? parsed.data : null;
 }
@@ -170,13 +168,14 @@ async function requestMachineRpcRouteGrant(input: Readonly<{
     timeoutMs?: number;
 }>): Promise<OperationResult<SignedDirectRouteGrantV1>> {
     try {
-        const response = await fetchJson({
-            url: joinBaseAndPath(input.server.serverUrl, '/v1/machines/peer/mediation/route-grants'),
+        const response = await requestPeerMediationServerJsonForCredential({
+            serverId: input.server.serverId,
+            token: input.credentials.token,
+            path: '/v1/machines/peer/mediation/route-grants',
             timeoutMs: input.timeoutMs,
             init: {
                 method: 'POST',
                 headers: {
-                    Authorization: `Bearer ${input.credentials.token}`,
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
@@ -224,13 +223,14 @@ async function requestMachineRpcRouteGrantV2(input: Readonly<{
     timeoutMs?: number;
 }>): Promise<OperationResult<SignedDirectRouteGrantV2>> {
     try {
-        const response = await fetchJson({
-            url: joinBaseAndPath(input.server.serverUrl, '/v1/machines/peer/mediation/route-grants'),
+        const response = await requestPeerMediationServerJsonForCredential({
+            serverId: input.server.serverId,
+            token: input.credentials.token,
+            path: '/v1/machines/peer/mediation/route-grants',
             timeoutMs: input.timeoutMs,
             init: {
                 method: 'POST',
                 headers: {
-                    Authorization: `Bearer ${input.credentials.token}`,
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({

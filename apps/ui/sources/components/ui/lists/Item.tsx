@@ -479,6 +479,7 @@ export const Item = React.memo<ItemProps>((props) => {
     const hasCopyPress = Boolean(copy && isWeb && !onPress);
     const isInteractive = !isInfoMode && (hasPrimaryPressAction || hasCopyLongPress || hasCopyPress);
     const isRadioRole = accessibilityRole === 'radio' || webRole === 'radio';
+    const isCheckboxRole = accessibilityRole === 'checkbox' || webRole === 'checkbox';
     const inferredInteractiveWebRole = isWeb
         ? (webRole ?? (!rightElement || rightElementOutsidePressable ? 'button' : undefined))
         : undefined;
@@ -497,6 +498,7 @@ export const Item = React.memo<ItemProps>((props) => {
         }
     }, [groupItem.targetRef, isGroupedRadio, pressableRef]);
     const isKeyboardActivatableRole = isRadioRole
+        || isCheckboxRole
         || inferredInteractiveWebRole === 'option'
         || inferredInteractiveWebRole === 'button';
     const handleSemanticKeyDown = React.useCallback((event: any) => {
@@ -516,6 +518,7 @@ export const Item = React.memo<ItemProps>((props) => {
         handlePress,
         isGroupedRadio,
         isKeyboardActivatableRole,
+        isCheckboxRole,
         isWeb,
         loading,
         groupItem,
@@ -901,15 +904,17 @@ export const Item = React.memo<ItemProps>((props) => {
         interactiveWebRole ? generatedAccessibilityLabel : undefined
     );
     const interactiveTabIndex = isWeb ? sharedItemBehavior.tabIndex : undefined;
-    const supportsSelectedAccessibilityState = isRadioRole || interactiveWebRole === 'option';
+    const supportsSelectedAccessibilityState = isRadioRole || isCheckboxRole || interactiveWebRole === 'option';
     // React Native Web maps `accessibilityState.selected` to `aria-selected`.
     // That attribute is valid for option/radio-style composite choices, but not
     // for ordinary buttons or passive rows (for example settings destinations
     // and model-pack status rows). Keep `selected` as the visual owner while
     // omitting the invalid web semantic everywhere that has no selection role.
-    const interactiveAccessibilityState = isWeb && !supportsSelectedAccessibilityState
-        ? { ...sharedItemBehavior.accessibilityState, selected: undefined }
-        : sharedItemBehavior.accessibilityState;
+    const interactiveAccessibilityState = isCheckboxRole
+        ? { ...sharedItemBehavior.accessibilityState, selected: undefined, checked: selected === true }
+        : isWeb && !supportsSelectedAccessibilityState
+            ? { ...sharedItemBehavior.accessibilityState, selected: undefined }
+            : sharedItemBehavior.accessibilityState;
     const webDisabledProps = isWeb && (disabled || loading)
         ? ({
             'data-disabled': 'true',
@@ -969,7 +974,7 @@ export const Item = React.memo<ItemProps>((props) => {
                         aria-label={resolvedAccessibilityLabel}
                         accessibilityState={interactiveAccessibilityState}
                         aria-selected={interactiveWebRole === 'option' && selected !== undefined ? selected : undefined}
-                        aria-checked={isRadioRole ? selected === true : undefined}
+                        aria-checked={isRadioRole || isCheckboxRole ? selected === true : undefined}
                         aria-expanded={accessibilityExpanded}
                         aria-disabled={disabled || loading ? true : undefined}
                         tabIndex={interactiveTabIndex as 0 | -1 | undefined}
@@ -1039,7 +1044,7 @@ export const Item = React.memo<ItemProps>((props) => {
                 aria-label={resolvedAccessibilityLabel}
                 accessibilityState={interactiveAccessibilityState}
                 aria-selected={interactiveWebRole === 'option' && selected !== undefined ? selected : undefined}
-                aria-checked={isRadioRole ? selected === true : undefined}
+                aria-checked={isRadioRole || isCheckboxRole ? selected === true : undefined}
                 aria-expanded={accessibilityExpanded}
                 aria-disabled={disabled || loading ? true : undefined}
                 tabIndex={interactiveTabIndex as 0 | -1 | undefined}
@@ -1070,7 +1075,7 @@ export const Item = React.memo<ItemProps>((props) => {
             aria-live={accessibilityLiveRegion === 'none' ? 'off' : accessibilityLiveRegion}
             accessibilityState={interactiveAccessibilityState}
             aria-selected={interactiveWebRole === 'option' && selected !== undefined ? selected : undefined}
-            aria-checked={isRadioRole ? selected === true : undefined}
+            aria-checked={isRadioRole || isCheckboxRole ? selected === true : undefined}
             aria-expanded={accessibilityExpanded}
             aria-disabled={disabled || loading ? true : undefined}
             tabIndex={isWeb && webRole && (disabled || loading) ? -1 : undefined}

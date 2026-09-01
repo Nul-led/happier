@@ -27,6 +27,7 @@ type ActionLike = {
     label?: unknown;
     subtitle?: unknown;
     accessibilityLabel?: unknown;
+    icon?: unknown;
     onPress?: () => void;
 };
 type ActionListSectionProps = {
@@ -59,7 +60,8 @@ const authMocks = vi.hoisted(() => ({
 }));
 
 const connectionMocks = vi.hoisted(() => ({
-    switchConnectionToActiveServer: vi.fn(async (_params?: unknown) => null),
+    switchConnectionToActiveServer: vi.fn(async (_params?: unknown): Promise<unknown> => null),
+    retryActiveServerConnection: vi.fn(async () => undefined),
 }));
 
 const modalMocks = vi.hoisted(() => ({
@@ -216,6 +218,13 @@ vi.mock('@/components/ui/lists/ActionListSection', () => ({
     },
 }));
 
+vi.mock('@/components/navigation/connection/ConnectionTargetList', () => ({
+    ConnectionTargetList: (props: ActionListSectionProps) => {
+        capture.actionSections.push(props);
+        return React.createElement('ConnectionTargetList', props);
+    },
+}));
+
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
     DropdownMenu: (props: DropdownMenuCaptureProps) => {
         capture.dropdownMenuProps.push(props);
@@ -256,6 +265,11 @@ vi.mock('@/sync/sync', () => ({
 
 vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
     switchConnectionToActiveServer: connectionMocks.switchConnectionToActiveServer,
+    retryActiveServerConnection: connectionMocks.retryActiveServerConnection,
+}));
+
+vi.mock('@/utils/platform/desktopHost', () => ({
+    isDesktopHost: () => false,
 }));
 
 vi.mock('@/components/navigation/connectionStatus/useConnectionHealth', () => ({
@@ -277,7 +291,11 @@ function getActions(): ActionLike[] {
 }
 
 function findAction(id: string): ActionLike | undefined {
-    return getActions().find((action) => action.id === id);
+    const actions = getActions();
+    for (let index = actions.length - 1; index >= 0; index -= 1) {
+        if (actions[index]?.id === id) return actions[index];
+    }
+    return undefined;
 }
 
 async function importConnectionStatusControl() {
@@ -290,6 +308,8 @@ afterEach(() => {
     authMocks.refreshFromActiveServer.mockClear();
     connectionMocks.switchConnectionToActiveServer.mockReset();
     connectionMocks.switchConnectionToActiveServer.mockResolvedValue(null);
+    connectionMocks.retryActiveServerConnection.mockReset();
+    connectionMocks.retryActiveServerConnection.mockResolvedValue(undefined);
     modalMocks.confirm.mockReset();
     syncMocks.retryNow.mockReset();
     tokenStorageMock.getCredentialsForServerUrl.mockReset();
@@ -396,7 +416,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
         });
     });
 
-    it('shows server, realtime, and machines rows in the popover', async () => {
+    it('puts the Home list first and keeps technical connection facts behind one disclosure', async () => {
         const ConnectionStatusControl = await importConnectionStatusControl();
         let tree: renderer.ReactTestRenderer | undefined;
         const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
@@ -407,10 +427,33 @@ describe('ConnectionStatusControl (native popover config)', () => {
             await pressTestInstanceAsync(trigger);
         });
 
+        const targetList = tree!.root.findByType('ConnectionTargetList');
+        const detailsDisclosure = screen.findByTestId('connection-details-disclosure');
+        const popoverContent = screen.findByTestId('connection-popover-content');
+        expect(targetList).toBeTruthy();
+        expect(detailsDisclosure?.props.accessibilityState).toEqual({ expanded: false });
+        const orderedSections = (popoverContent?.children ?? []).flatMap((child) => (
+            typeof child === 'object' && child !== null && 'props' in child
+                ? [String((child as { props: { testID?: unknown } }).props.testID ?? '')]
+                : []
+        ));
+        expect(orderedSections.indexOf('connection-target-list-section')).toBeLessThan(
+            orderedSections.indexOf('connection-details-disclosure'),
+        );
+        expect(tree!.root.findAllByProps({ testID: 'connection-popover-relay' })).toHaveLength(0);
+        expect(tree!.root.findAllByProps({ testID: 'connection-popover-realtime' })).toHaveLength(0);
+        expect(tree!.root.findAllByProps({ testID: 'connection-popover-machines' })).toHaveLength(0);
+
+        await act(async () => {
+            await pressTestInstanceAsync(detailsDisclosure);
+        });
+
+        expect(screen.findByTestId('connection-details-disclosure')?.props.accessibilityState).toEqual({ expanded: true });
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-relay' }).length).toBeGreaterThan(0);
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-realtime' }).length).toBeGreaterThan(0);
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-machines' }).length).toBeGreaterThan(0);
-        expect(screen.getTextContent()).toContain('connectionStatus.transport.standard');
+        expect(screen.getTextContent()).not.toContain('connectionStatus.labels.transport');
+        expect(screen.getTextContent()).not.toContain('connectionStatus.labels.connectionMode');
     });
 
     it('places an icon-only retry action next to the relay status badge when the server is unreachable', async () => {
@@ -430,21 +473,27 @@ describe('ConnectionStatusControl (native popover config)', () => {
             await pressTestInstanceAsync(trigger);
         });
 
+        await act(async () => {
+            await pressTestInstanceAsync(screen.findByTestId('connection-details-disclosure'));
+        });
+
         const retryButton = screen.findByTestId('connection-popover-relay-retry');
         expect(retryButton).toBeTruthy();
+        expect(retryButton?.props.style).toMatchObject({ minWidth: 44, minHeight: 44 });
 
         await act(async () => {
             await pressTestInstanceAsync(retryButton);
         });
 
-        expect(syncMocks.retryNow).toHaveBeenCalledTimes(1);
+        expect(connectionMocks.retryActiveServerConnection).toHaveBeenCalledTimes(1);
+        expect(syncMocks.retryNow).not.toHaveBeenCalled();
 
         await act(async () => {
             tree?.unmount();
         });
     });
 
-    it('renders relay switching with a dropdown only when there are more than two targets', async () => {
+    it('renders every Home in the primary list without a nested dropdown', async () => {
         const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         const scope = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
@@ -479,21 +528,11 @@ describe('ConnectionStatusControl (native popover config)', () => {
                 await pressTestInstanceAsync(trigger);
             });
 
-            const latestDropdown = capture.dropdownMenuProps.at(-1);
-            const dropdownTitles = (latestDropdown?.items ?? []).map((item) => item.title);
             const actionLabels = getActionLabels();
 
-            expect(dropdownTitles.some((title) => String(title).toLowerCase().includes('company'))).toBe(true);
-            expect(dropdownTitles.some((title) => String(title).toLowerCase().includes('dev group'))).toBe(true);
-            expect(latestDropdown?.items?.some((item) => item.id === 'connection-popover-manage-relay')).toBe(false);
-            expect(latestDropdown?.selectedId).toBeTruthy();
-            expect(latestDropdown?.itemTrigger).toMatchObject({
-                title: expect.stringContaining('Local'),
-                subtitle: expect.stringContaining('local.example.test'),
-            });
-            expect(latestDropdown?.overlayStyle).toBeUndefined();
-            expect(actionLabels.some((label) => label.toLowerCase().includes('company'))).toBe(false);
-            expect(actionLabels.some((label) => label.toLowerCase().includes('dev group'))).toBe(false);
+            expect(capture.dropdownMenuProps).toHaveLength(0);
+            expect(actionLabels.some((label) => label.toLowerCase().includes('company'))).toBe(true);
+            expect(actionLabels.some((label) => label.toLowerCase().includes('dev group'))).toBe(true);
 
             await act(async () => {
                 tree?.unmount();
@@ -507,7 +546,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
         }
     });
 
-    it('keeps the pending Home name and URL from the same profile during a deferred switch', async () => {
+    it('keeps the pending Home row in the same list during a deferred switch', async () => {
         const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         const scope = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
@@ -537,21 +576,25 @@ describe('ConnectionStatusControl (native popover config)', () => {
                 await pressTestInstanceAsync(trigger);
             });
 
-            const initialDropdown = capture.dropdownMenuProps.at(-1);
-            const companyItem = initialDropdown?.items?.find((item) => item.id === `target-use-server-${company.id}`);
+            const companyItem = findAction(`target-use-server-${company.id}`);
             expect(companyItem).toBeTruthy();
 
             await act(async () => {
-                initialDropdown?.onSelect?.(companyItem?.id ?? '');
+                companyItem?.onPress?.();
                 await Promise.resolve();
             });
 
-            const pendingDropdown = capture.dropdownMenuProps.at(-1);
-            expect(pendingDropdown?.itemTrigger).toMatchObject({
-                title: expect.stringContaining('Company'),
-                subtitle: expect.stringContaining('company.example.test'),
+            const pendingCompany = findAction(`target-use-server-${company.id}`);
+            expect(pendingCompany?.label).toBe('Company');
+            expect(pendingCompany?.subtitle).toBe('status.connecting');
+            expect(trigger.props.accessibilityLabel).toContain('Local');
+            expect(trigger.props.accessibilityLabel).not.toContain('Company');
+
+            await act(async () => {
+                await pressTestInstanceAsync(screen.findByTestId('connection-details-disclosure'));
             });
-            expect(pendingDropdown?.itemTrigger?.subtitle).not.toContain('local.example.test');
+            expect(screen.getTextContent()).toContain('local.example.test');
+            expect(screen.getTextContent()).not.toContain('company.example.test');
 
             await act(async () => {
                 releaseConnection();
@@ -580,6 +623,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
 
         const settingsButton = screen.findByProps({ testID: 'connection-popover-relay-settings' });
         expect(settingsButton).toBeTruthy();
+        expect(settingsButton?.props.style).toMatchObject({ minWidth: 44, minHeight: 44 });
 
         await act(async () => {
             await pressTestInstanceAsync(settingsButton);
@@ -634,11 +678,31 @@ describe('ConnectionStatusControl (native popover config)', () => {
         const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         const scope = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        const webGlobals = globalThis as unknown as Record<string, unknown>;
+        const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+        const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+        const previousSessionStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+        const sessionValues = new Map<string, string>();
+        Object.defineProperties(globalThis, {
+            window: { configurable: true, value: {} },
+            document: { configurable: true, value: {} },
+            sessionStorage: {
+                configurable: true,
+                value: {
+                    getItem: (key: string) => sessionValues.get(key) ?? null,
+                    setItem: (key: string, value: string) => sessionValues.set(key, value),
+                    removeItem: (key: string) => sessionValues.delete(key),
+                },
+            },
+        });
 
         try {
             vi.resetModules();
             const profiles = await import('@/sync/domains/server/serverProfiles');
+            const local = profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
             const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+            profiles.setActiveServerId(local.id, { scope: 'device' });
+            const previousDeviceDefault = profiles.getDeviceDefaultServerId();
             const ConnectionStatusControl = await importConnectionStatusControl();
 
             let tree: renderer.ReactTestRenderer | undefined;
@@ -657,18 +721,65 @@ describe('ConnectionStatusControl (native popover config)', () => {
                 companyItem?.onPress?.();
             });
 
-            expect(connectionMocks.switchConnectionToActiveServer).toHaveBeenCalledTimes(1);
-            expect(authMocks.refreshFromActiveServer).toHaveBeenCalledTimes(1);
+            await vi.waitFor(() => {
+                expect(connectionMocks.switchConnectionToActiveServer).toHaveBeenCalledTimes(1);
+                expect(authMocks.refreshFromActiveServer).toHaveBeenCalledTimes(1);
+                expect(profiles.getTabActiveServerId()).toBe(company.id);
+            });
+            expect(profiles.getDeviceDefaultServerId()).toBe(previousDeviceDefault);
 
             await act(async () => {
                 tree?.unmount();
             });
         } finally {
+            for (const [key, descriptor] of [
+                ['window', previousWindow],
+                ['document', previousDocument],
+                ['sessionStorage', previousSessionStorage],
+            ] as const) {
+                if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+                else delete webGlobals[key];
+            }
             if (previousScope === undefined) {
                 delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
             } else {
                 process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
             }
+        }
+    });
+
+    it('gives same-named Homes distinct accessible labels without adding visible row metadata', async () => {
+        const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
+        try {
+            vi.resetModules();
+            const profiles = await import('@/sync/domains/server/serverProfiles');
+            const first = profiles.upsertServerProfile({ serverUrl: 'https://first.example.test', name: 'Personal Home' });
+            const second = profiles.upsertServerProfile({ serverUrl: 'https://second.example.test', name: 'Personal Home' });
+            machineListStatusState.byServerId = { [first.id]: 'idle', [second.id]: 'idle' };
+
+            const ConnectionStatusControl = await importConnectionStatusControl();
+            const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+            const trigger = screen.findByProps({ accessibilityRole: 'button' });
+            await act(async () => {
+                await pressTestInstanceAsync(trigger);
+            });
+
+            const firstAction = findAction(`target-use-server-${first.id}`);
+            const secondAction = findAction(`target-use-server-${second.id}`);
+            expect(firstAction?.subtitle).toBe('status.connected');
+            expect(secondAction?.subtitle).toBe('status.connected');
+            expect(firstAction?.accessibilityLabel).not.toBe(secondAction?.accessibilityLabel);
+            expect(firstAction?.accessibilityLabel).toContain('first.example.test');
+            expect(secondAction?.accessibilityLabel).toContain('second.example.test');
+
+            await act(async () => {
+                screen.tree.unmount();
+            });
+        } finally {
+            if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+            else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
         }
     });
 
@@ -702,12 +813,12 @@ describe('ConnectionStatusControl (native popover config)', () => {
 
             const localAction = findAction(`target-use-server-${local.id}`);
             const companyAction = findAction(`target-use-server-${company.id}`);
-            expect(localAction?.subtitle).toContain('server.active');
-            expect(localAction?.subtitle).toContain('status.actionRequired');
-            expect(localAction?.accessibilityLabel).toContain('server.active');
-            expect(companyAction?.subtitle).toContain('server.signedOut');
-            expect(companyAction?.subtitle).not.toContain('status.actionRequired');
-            expect(companyAction?.accessibilityLabel).toContain('server.signedOut');
+            expect(localAction?.subtitle).toBe('status.actionRequired');
+            expect(localAction?.accessibilityLabel).toBe(`${local.name}, status.actionRequired`);
+            expect(localAction?.icon).toBeUndefined();
+            expect(companyAction?.subtitle).toBe('server.signedOut');
+            expect(companyAction?.accessibilityLabel).toBe('Company, server.signedOut');
+            expect(companyAction?.icon).toBeUndefined();
 
             await act(async () => {
                 screen.tree.unmount();
@@ -802,7 +913,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
         }
     });
 
-    it('requires confirmation before switching to a signed-out server target', async () => {
+    it('starts target-specific sign-in directly for a signed-out Home', async () => {
         const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         const scope = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
@@ -816,8 +927,6 @@ describe('ConnectionStatusControl (native popover config)', () => {
                 if (url.includes('company.example.test')) return null;
                 return { token: 'scoped-token', secret: 'scoped-secret' };
             });
-            modalMocks.confirm.mockResolvedValue(false);
-
             const ConnectionStatusControl = await importConnectionStatusControl();
 
             let tree: renderer.ReactTestRenderer | undefined;
@@ -836,10 +945,10 @@ describe('ConnectionStatusControl (native popover config)', () => {
                 companyItem?.onPress?.();
             });
 
-            expect(modalMocks.confirm).toHaveBeenCalledTimes(1);
-            expect(connectionMocks.switchConnectionToActiveServer).not.toHaveBeenCalled();
-            expect(authMocks.refreshFromActiveServer).not.toHaveBeenCalled();
-            expect(routerMocks.replace).not.toHaveBeenCalled();
+            expect(modalMocks.confirm).not.toHaveBeenCalled();
+            expect(connectionMocks.switchConnectionToActiveServer).toHaveBeenCalledTimes(1);
+            expect(authMocks.refreshFromActiveServer).toHaveBeenCalledTimes(1);
+            expect(routerMocks.replace).toHaveBeenCalledWith('/');
 
             await act(async () => {
                 tree?.unmount();
@@ -853,16 +962,35 @@ describe('ConnectionStatusControl (native popover config)', () => {
         }
     });
 
-    it('does not update target settings when cancelling a signed-out group switch', async () => {
+    it('activates the first credentialed group member through the primary switcher', async () => {
         const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         const scope = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = scope;
+        const webGlobals = globalThis as unknown as Record<string, unknown>;
+        const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+        const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+        const previousSessionStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+        const sessionValues = new Map<string, string>();
+        Object.defineProperties(globalThis, {
+            window: { configurable: true, value: {} },
+            document: { configurable: true, value: {} },
+            sessionStorage: {
+                configurable: true,
+                value: {
+                    getItem: (key: string) => sessionValues.get(key) ?? null,
+                    setItem: (key: string, value: string) => sessionValues.set(key, value),
+                    removeItem: (key: string) => sessionValues.delete(key),
+                },
+            },
+        });
 
         try {
             vi.resetModules();
             const profiles = await import('@/sync/domains/server/serverProfiles');
+            const selection = await import('@/sync/domains/server/selection/homeViewSelectionState');
             const local = profiles.upsertServerProfile({ serverUrl: 'https://local.example.test', name: 'Local' });
-            const company = profiles.upsertServerProfile({ serverUrl: 'https://company.example.test', name: 'Company' });
+            const signedOut = profiles.upsertServerProfile({ serverUrl: 'https://signed-out.example.test', name: 'Signed out' });
+            const credentialed = profiles.upsertServerProfile({ serverUrl: 'https://credentialed.example.test', name: 'Credentialed' });
             profiles.setActiveServerId(local.id, { scope: 'device' });
 
             settingsState.serverSelectionActiveTargetKind = 'server';
@@ -871,18 +999,22 @@ describe('ConnectionStatusControl (native popover config)', () => {
                 {
                     id: 'grp-one',
                     name: 'One',
-                    serverIds: [company.id],
+                    serverIds: [signedOut.id, credentialed.id],
                     presentation: 'grouped',
                 },
             ];
+            profiles.updateHomeViewState(() => ({
+                version: 1,
+                groups: settingsState.serverSelectionGroups,
+                activeTargetKind: 'server',
+                activeTargetId: local.id,
+            }));
 
             tokenStorageMock.getCredentialsForServerUrl.mockImplementation(async (...args: unknown[]) => {
                 const url = String(args[0] ?? '');
-                if (url.includes('company.example.test')) return null;
+                if (url.includes('signed-out.example.test')) return null;
                 return { token: 'scoped-token', secret: 'scoped-secret' };
             });
-            modalMocks.confirm.mockResolvedValue(false);
-
             const ConnectionStatusControl = await importConnectionStatusControl();
 
             let tree: renderer.ReactTestRenderer | undefined;
@@ -894,24 +1026,37 @@ describe('ConnectionStatusControl (native popover config)', () => {
                 await pressTestInstanceAsync(trigger);
             });
 
-            const latestDropdown = capture.dropdownMenuProps.at(-1);
-            const groupItem = latestDropdown?.items?.find((item) => item.id === 'target-use-group-grp-one');
+            const groupItem = findAction('target-use-group-grp-one');
             expect(groupItem).toBeTruthy();
 
             await act(async () => {
-                latestDropdown?.onSelect?.(groupItem?.id ?? '');
+                groupItem?.onPress?.();
             });
 
-            expect(modalMocks.confirm).toHaveBeenCalledTimes(1);
-            expect(settingsState.serverSelectionActiveTargetKind).toBe('server');
-            expect(settingsState.serverSelectionActiveTargetId).toBe(local.id);
-            expect(connectionMocks.switchConnectionToActiveServer).not.toHaveBeenCalled();
-            expect(authMocks.refreshFromActiveServer).not.toHaveBeenCalled();
+            expect(modalMocks.confirm).not.toHaveBeenCalled();
+            await vi.waitFor(() => {
+                expect(selection.loadEffectiveHomeViewState()?.activeTargetKind).toBe('group');
+                expect(selection.loadEffectiveHomeViewState()?.activeTargetId).toBe('grp-one');
+                expect(profiles.loadHomeViewState()?.activeTargetKind).toBe('server');
+                expect(profiles.loadHomeViewState()?.activeTargetId).toBe(local.id);
+                expect(profiles.getTabActiveServerId()).toBe(credentialed.id);
+                expect(connectionMocks.switchConnectionToActiveServer).toHaveBeenCalledTimes(1);
+                expect(authMocks.refreshFromActiveServer).toHaveBeenCalledTimes(1);
+                expect(routerMocks.replace).not.toHaveBeenCalled();
+            });
 
             await act(async () => {
                 tree?.unmount();
             });
         } finally {
+            for (const [key, descriptor] of [
+                ['window', previousWindow],
+                ['document', previousDocument],
+                ['sessionStorage', previousSessionStorage],
+            ] as const) {
+                if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+                else delete webGlobals[key];
+            }
             if (previousScope === undefined) {
                 delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
             } else {
@@ -980,6 +1125,10 @@ describe('ConnectionStatusControl (native popover config)', () => {
             await pressTestInstanceAsync(trigger);
         });
 
+        await act(async () => {
+            await pressTestInstanceAsync(screen.findByTestId('connection-details-disclosure'));
+        });
+
         const joined = screen.getTextContent();
         expect(joined).toContain('Connection error');
         expect(joined).not.toContain('xhr poll error');
@@ -1001,6 +1150,10 @@ describe('ConnectionStatusControl (native popover config)', () => {
         const trigger = screen.findByProps({ accessibilityRole: 'button' });
         await act(async () => {
             await pressTestInstanceAsync(trigger);
+        });
+
+        await act(async () => {
+            await pressTestInstanceAsync(screen.findByTestId('connection-details-disclosure'));
         });
 
         expect(screen.getTextContent()).toContain('connect.restoreAccount');
@@ -1029,6 +1182,10 @@ describe('ConnectionStatusControl (native popover config)', () => {
         const trigger = screen.findByProps({ accessibilityRole: 'button' });
         await act(async () => {
             await pressTestInstanceAsync(trigger);
+        });
+
+        await act(async () => {
+            await pressTestInstanceAsync(screen.findByTestId('connection-details-disclosure'));
         });
 
         const joined = screen.getTextContent();

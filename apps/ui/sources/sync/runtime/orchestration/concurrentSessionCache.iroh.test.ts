@@ -25,6 +25,12 @@ const profileListeners = new Set<(generation: number) => void>();
 let profiles: ProfileFixture[] = [];
 let stopCache: (() => void) | null = null;
 let networkAllowedListener: ((allowed: boolean) => void) | null = null;
+let recoveryRequiredListener: ((event: Readonly<{
+    leaseId: string;
+    homeServerIdentityId: string;
+    reason: 'terminal' | 'foreground_probe_failed';
+    activePublication: boolean;
+}>) => void) | null = null;
 
 function createSocketStub() {
     const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
@@ -121,6 +127,12 @@ async function configureHarness(params: Readonly<{
 
     vi.doMock('@/sync/runtime/nativeIrohTunnels', () => ({
         acquireIrohHomeRuntimeOrigin: (input: IrohRuntimeOriginAcquireInput) => acquireIrohHomeRuntimeOriginSpy(input),
+        subscribeIrohHomeTunnelRecoveryRequired: (listener: typeof recoveryRequiredListener) => {
+            recoveryRequiredListener = listener;
+            return () => {
+                if (recoveryRequiredListener === listener) recoveryRequiredListener = null;
+            };
+        },
         classifyIrohHomeTunnelSwitchFailure: (error: unknown) => {
             const message = error instanceof Error ? error.message : '';
             return {
@@ -140,6 +152,7 @@ async function configureHarness(params: Readonly<{
                 if (networkAllowedListener === listener) networkAllowedListener = null;
             };
         },
+        setServerReachabilityNetworkAllowed: vi.fn(),
         subscribeServerReachabilityState: (_serverUrl: string, listener: (state: ReturnType<typeof onlineState>) => void) => {
             const timer = setTimeout(() => listener(onlineState()), 0);
             return () => clearTimeout(timer);
@@ -249,6 +262,7 @@ beforeEach(() => {
     profileListeners.clear();
     stopCache = null;
     networkAllowedListener = null;
+    recoveryRequiredListener = null;
 });
 
 afterEach(async () => {
@@ -337,5 +351,28 @@ describe('concurrent session cache Iroh Home routing', () => {
         expect(startReachabilitySpy).not.toHaveBeenCalled();
         expect(fetchedUrls).toEqual([]);
         expect(ioSpy).not.toHaveBeenCalled();
+    });
+
+    it('drops a terminal secondary lease and reacquires it through the existing reconciliation owner', async () => {
+        await configureHarness();
+        const cache = await import('./concurrentSessionCache');
+        stopCache = cache.stopConcurrentSessionCacheSync;
+        cache.startConcurrentSessionCacheSync();
+
+        await vi.advanceTimersByTimeAsync(1);
+        await vi.waitFor(() => expect(acquireIrohHomeRuntimeOriginSpy).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(startReachabilitySpy).toHaveBeenCalledTimes(1));
+        expect(recoveryRequiredListener).toBeTypeOf('function');
+
+        recoveryRequiredListener?.({
+            leaseId: 'lease-home-b',
+            homeServerIdentityId: 'srv_home_b',
+            reason: 'terminal',
+            activePublication: false,
+        });
+        await vi.advanceTimersByTimeAsync(1);
+
+        await vi.waitFor(() => expect(releaseIrohHomeRuntimeOriginSpy).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(acquireIrohHomeRuntimeOriginSpy).toHaveBeenCalledTimes(2));
     });
 });

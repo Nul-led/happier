@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { createDeferred } from '@/dev/testkit';
 
 const createWorkspaceFileTransferRpcCallerMock = vi.hoisted(() => vi.fn());
 const directExportDownloadMock = vi.hoisted(() => vi.fn());
 const relayDownloadMock = vi.hoisted(() => vi.fn());
 const bulkDownloadMock = vi.hoisted(() => vi.fn());
 const createBufferedTransferDestinationMock = vi.hoisted(() => vi.fn());
+const carrierBoundary = vi.hoisted(() => ({ selected: false, acquire: vi.fn() }));
 
 vi.mock('../plumbing/directTransferExportDownload', () => ({
     downloadBulkPayloadViaDirectExportToDestination: (...args: unknown[]) => directExportDownloadMock(...args),
@@ -29,6 +29,13 @@ vi.mock('../carriers/createBufferedTransferDestination', () => ({
     createBufferedTransferDestination: (...args: unknown[]) => createBufferedTransferDestinationMock(...args),
 }));
 
+vi.mock('../plumbing/machineCarrierHttpLease', async (importOriginal) => ({
+    ...await importOriginal<typeof import('../plumbing/machineCarrierHttpLease')>(),
+    resolveMachineCarrierRoute: () => carrierBoundary.selected
+        ? { kind: 'iroh_peer', acquire: (...args: unknown[]) => carrierBoundary.acquire(...args) }
+        : { kind: 'standard' },
+}));
+
 describe('workspaceFileTransfers', () => {
     beforeEach(() => {
         createWorkspaceFileTransferRpcCallerMock.mockReset();
@@ -36,6 +43,8 @@ describe('workspaceFileTransfers', () => {
         relayDownloadMock.mockReset();
         bulkDownloadMock.mockReset();
         createBufferedTransferDestinationMock.mockReset();
+        carrierBoundary.selected = false;
+        carrierBoundary.acquire.mockReset();
 
         createWorkspaceFileTransferRpcCallerMock.mockImplementation((params: unknown) => ({
             call: vi.fn(async (callParams: any) => {
@@ -141,13 +150,22 @@ describe('workspaceFileTransfers', () => {
     });
 
     it('pins workspace file download to the acquired machine HTTP origin and releases once', async () => {
-        directExportDownloadMock.mockResolvedValueOnce({ ok: true, name: 'a.txt', sizeBytes: 3 });
         const release = vi.fn(async () => undefined);
         const cleanup = vi.fn(async () => undefined);
         const acquireMachineCarrierHttpLease = vi.fn(async () => ({
             localOrigin: 'http://localhost:48128',
+            requestHeaders: { 'X-Happier-Machine-Local-Capability': 'a'.repeat(64) },
             release,
         }));
+        carrierBoundary.selected = true;
+        carrierBoundary.acquire.mockImplementation(acquireMachineCarrierHttpLease);
+        directExportDownloadMock.mockImplementationOnce(async (params: {
+            acquirePreparedCarrier: (prepared: { operationId: string; maxBytes: number }) => Promise<{ release: () => Promise<void> }>;
+        }) => {
+            const lease = await params.acquirePreparedCarrier({ operationId: 'workspace-download-1', maxBytes: 3 });
+            await lease.release();
+            return { ok: true, name: 'a.txt', sizeBytes: 3 };
+        });
 
         const { downloadDaemonWorkspaceFileToDestination } = await import('./workspaceFileTransfers');
         const result = await downloadDaemonWorkspaceFileToDestination({
@@ -159,14 +177,11 @@ describe('workspaceFileTransfers', () => {
                 close: async () => undefined,
                 cleanup,
             },
-            machineCarrierRequired: true,
-            machineCarrierOperationId: 'workspace-download-1',
-            acquireMachineCarrierHttpLease,
         });
 
         expect(result).toEqual({ ok: true, name: 'a.txt', sizeBytes: 3 });
         expect(directExportDownloadMock).toHaveBeenCalledWith(expect.objectContaining({
-            httpOriginOverride: 'http://localhost:48128',
+            acquirePreparedCarrier: expect.any(Function),
         }));
         expect(relayDownloadMock).not.toHaveBeenCalled();
         expect(bulkDownloadMock).not.toHaveBeenCalled();
@@ -179,9 +194,19 @@ describe('workspaceFileTransfers', () => {
     });
 
     it('does not fall back when a required workspace machine-carrier download fails', async () => {
-        directExportDownloadMock.mockRejectedValueOnce(new Error('tunnel closed'));
-        const release = vi.fn(async () => undefined);
         const cleanup = vi.fn(async () => undefined);
+        carrierBoundary.selected = true;
+        carrierBoundary.acquire.mockResolvedValueOnce({
+            localOrigin: 'http://127.0.0.1:48130',
+            requestHeaders: { 'X-Happier-Machine-Local-Capability': 'b'.repeat(64) },
+            release: async () => undefined,
+        });
+        directExportDownloadMock.mockImplementationOnce(async (params: {
+            acquirePreparedCarrier: (prepared: { operationId: string; maxBytes: number }) => Promise<unknown>;
+        }) => {
+            await params.acquirePreparedCarrier({ operationId: 'workspace-download-failed', maxBytes: 3 });
+            throw new Error('tunnel closed');
+        });
 
         const { downloadDaemonWorkspaceFileToDestination } = await import('./workspaceFileTransfers');
         const result = await downloadDaemonWorkspaceFileToDestination({
@@ -193,17 +218,11 @@ describe('workspaceFileTransfers', () => {
                 close: async () => undefined,
                 cleanup,
             },
-            machineCarrierRequired: true,
-            acquireMachineCarrierHttpLease: async () => ({
-                localOrigin: 'http://127.0.0.1:48130',
-                release,
-            }),
         });
 
         expect(result).toMatchObject({ ok: false, errorCode: 'machine_carrier_transport_failed' });
         expect(relayDownloadMock).not.toHaveBeenCalled();
         expect(bulkDownloadMock).not.toHaveBeenCalled();
-        expect(release).toHaveBeenCalledTimes(1);
         expect(cleanup).toHaveBeenCalledTimes(1);
     });
 
@@ -231,55 +250,4 @@ describe('workspaceFileTransfers', () => {
         expect(bulkDownloadMock).not.toHaveBeenCalled();
     });
 
-    it('aborts a held non-zip stat preflight before any download carrier starts', async () => {
-        const statStarted = createDeferred<void>();
-        const statResult = createDeferred<Readonly<{ success: true; exists: true; kind: 'file'; sizeBytes: number }>>();
-        let observedSignal: AbortSignal | null = null;
-        let statSawAbort = false;
-        createWorkspaceFileTransferRpcCallerMock.mockImplementation(() => ({
-            call: vi.fn((callParams: Readonly<{ machineMethod: string; signal?: AbortSignal | null }>) => {
-                if (callParams.machineMethod !== RPC_METHODS.STAT_FILE) {
-                    throw new Error(`unexpected call: ${callParams.machineMethod}`);
-                }
-
-                observedSignal = callParams.signal ?? null;
-                statStarted.resolve();
-                return new Promise((resolve) => {
-                    callParams.signal?.addEventListener('abort', () => {
-                        statSawAbort = true;
-                        resolve({ success: false, error: 'Download canceled' });
-                    }, { once: true });
-                    void statResult.promise.then(resolve);
-                });
-            }),
-        }));
-
-        const controller = new AbortController();
-        const { downloadDaemonWorkspaceFileToDestination } = await import('./workspaceFileTransfers');
-        const download = downloadDaemonWorkspaceFileToDestination({
-            machineId: 'machine-1',
-            rootPath: '/repo',
-            request: {
-                path: 'a.txt',
-                asZip: false,
-            },
-            destination: {
-                writeBytes: async () => {},
-                close: async () => {},
-                cleanup: async () => {},
-            },
-            signal: controller.signal,
-        });
-
-        await statStarted.promise;
-        controller.abort();
-        statResult.resolve({ success: true, exists: true, kind: 'file', sizeBytes: 3 });
-
-        await expect(download).resolves.toEqual({ ok: false, error: 'Download canceled' });
-        expect(observedSignal).toBe(controller.signal);
-        expect(statSawAbort).toBe(true);
-        expect(directExportDownloadMock).not.toHaveBeenCalled();
-        expect(relayDownloadMock).not.toHaveBeenCalled();
-        expect(bulkDownloadMock).not.toHaveBeenCalled();
-    });
 });

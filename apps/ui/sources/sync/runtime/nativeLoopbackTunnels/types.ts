@@ -130,6 +130,8 @@ export type LoopbackTunnelSupervisor<
     ensureTunnel: (request: Request) => Promise<Lease>;
     listTunnels: () => LoopbackTunnelSnapshot<Lease, Limitation>;
     releaseTunnel: (leaseId: string) => Promise<void>;
+    /** Force-releases every supervisor-owned native handle, regardless of caller reference count. */
+    dispose: () => Promise<void>;
     markSuspended: () => void;
     markForeground: () => Promise<void>;
     subscribe: (listener: (event: LoopbackTunnelLifecycleEvent<Lease>) => void) => () => void;

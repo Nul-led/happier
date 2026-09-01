@@ -133,6 +133,7 @@ export function ItemRowActions(props: ItemRowActionsProps) {
                 id: action.id,
                 testID: action.id,
                 label: action.title,
+                accessibilityLabel: action.accessibilityLabel,
                 subtitle: action.subtitle,
                 icon: iconNode,
                 onPress: onPress ? () => closeThen(onPress) : undefined,
@@ -245,7 +246,7 @@ export function ItemRowActions(props: ItemRowActionsProps) {
                     ];
                 }}
                 accessibilityRole="button"
-                accessibilityLabel={action.title}
+                accessibilityLabel={action.accessibilityLabel ?? action.title}
             >
                 {normalizeNodeForView(
                     iconNode,

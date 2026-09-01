@@ -1,7 +1,5 @@
 import type {
     HandoffWorkspaceActionV1,
-    WorkspaceContentPolicyV1,
-    WorkspaceSyncPersistentModeV1,
 } from '@happier-dev/protocol';
 
 import { Modal } from '@/modal';
@@ -13,15 +11,10 @@ export type SessionHandoffPickerResult = Readonly<{
     /** Display-only identity used by consequential confirmation copy. */
     targetMachineLabel?: string;
     targetPath?: string;
-    /** Local UI context used to materialize the canonical source WorkspaceRef. */
+    /** Display-only source path used by consequential confirmation copy. */
     sourceRootPath?: string;
     targetSessionStorageMode?: 'direct' | 'persisted';
     workspaceAction?: HandoffWorkspaceActionV1;
-    /** Persistent relationship creation intent; materialized atomically with WorkspaceRefs. */
-    workspaceSyncRelationshipIntent?: Readonly<{
-        mode: WorkspaceSyncPersistentModeV1;
-        contentPolicy: WorkspaceContentPolicyV1;
-    }>;
 }>;
 
 export async function openSessionHandoffPicker(params: Readonly<{

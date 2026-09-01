@@ -60,6 +60,36 @@ describe('resolveScopedSessionDataKey', () => {
     expect(key).toEqual(new Uint8Array([9, 9]));
   });
 
+  it('uses the verified runtime origin for an Iroh-only session key lookup', async () => {
+    runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
+        return { ok: true, status: 200, json: async () => ({}) };
+      }
+      if (url === 'http://127.0.0.1:43111/v2/sessions/session-1') {
+        return { ok: true, status: 200, json: async () => ({ session: validSessionById }) };
+      }
+      throw new Error(`unexpected session lookup: ${url}`);
+    });
+    const decrypt = vi.fn(async () => new Uint8Array([7, 7]));
+
+    await expect(resolveScopedSessionDataKey({
+      serverId: 's-id',
+      serverUrl: 'http://127.0.0.1:3010',
+      runtimeOrigin: 'http://127.0.0.1:43111',
+      token: 'token',
+      sessionId: 'session-1',
+      decryptEncryptionKey: decrypt,
+    })).resolves.toEqual(new Uint8Array([7, 7]));
+
+    expect(runtimeFetchMock.mock.calls.some(([input]) =>
+      String(input) === 'http://127.0.0.1:43111/v2/sessions/session-1',
+    )).toBe(true);
+    expect(runtimeFetchMock.mock.calls.some(([input]) =>
+      String(input) === 'http://127.0.0.1:3010/v2/sessions/session-1',
+    )).toBe(false);
+  });
+
   it('returns null and does not call decryption for an invalid by-id shape', async () => {
     runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : String(input);

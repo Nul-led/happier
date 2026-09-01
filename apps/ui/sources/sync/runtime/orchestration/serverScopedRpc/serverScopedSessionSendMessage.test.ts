@@ -411,6 +411,86 @@ describe('sendSessionMessageWithServerScope', () => {
     }
   });
 
+  it('loads scoped E2EE material through the verified Iroh runtime origin', async () => {
+    const session = buildSession({
+      sessionId: 's1',
+      overrides: { serverId: 'server-1', encryptionMode: 'e2ee' },
+    });
+    storage.getState().applySessions([session]);
+    serverFeaturesSnapshotMock.mockResolvedValue({
+      status: 'ready',
+      features: FeaturesResponseSchema.parse({
+        features: {},
+        capabilities: { session: { pendingInput: { protocolVersion: 1 } } },
+      }),
+    });
+    runtimeFetchMock.mockImplementation(async (request: Readonly<{ url?: string; init?: RequestInit }>) => {
+      if (request.url === 'http://127.0.0.1:43111/v2/sessions/s1') {
+        return Response.json({
+          session: {
+            id: 's1',
+            seq: 1,
+            createdAt: 1,
+            updatedAt: 1,
+            active: true,
+            activeAt: 1,
+            archivedAt: null,
+            metadata: 'metadata',
+            metadataVersion: 1,
+            agentState: null,
+            agentStateVersion: 0,
+            pendingCount: 0,
+            pendingVersion: 0,
+            encryptionMode: 'e2ee',
+            dataEncryptionKey: 'sealed-session-key',
+          },
+        });
+      }
+      const body = JSON.parse(String(request.init?.body ?? 'null')) as { localId?: string; requestedAction?: unknown };
+      return Response.json({ requestedAction: body.requestedAction, pending: { localId: body.localId } });
+    });
+    const release = vi.fn(async () => {});
+    const sessionEncryption = { encryptRawRecord: vi.fn(async () => 'encrypted-record') };
+    const encryption = {
+      decryptEncryptionKey: vi.fn(async () => new Uint8Array([4, 2])),
+      initializeSessions: vi.fn(async () => {}),
+      getSessionEncryption: vi.fn(() => sessionEncryption),
+    };
+    const { sendSessionMessageWithServerScope } = createServerScopedSessionSendMessage({
+      schedulePendingOutboxRetry: vi.fn(),
+      markSessionLiveTailIntent: vi.fn(),
+      resolveContext: vi.fn(async () => ({
+        scope: 'scoped' as const,
+        timeoutMs: 1_000,
+        targetServerId: 'server-1',
+        targetServerUrl: 'http://127.0.0.1:3010',
+        targetAccountId: 'account-1',
+        runtimeOrigin: 'http://127.0.0.1:43111',
+        carrier: 'iroh' as const,
+        token: 'token-1',
+        encryption,
+        release,
+      })),
+    });
+
+    await expect(sendSessionMessageWithServerScope({
+      sessionId: 's1',
+      serverId: 'server-1',
+      message: 'through Home B',
+      messageLocalId: 'iroh-message-1',
+      providerDeliveryIntent: 'first_turn',
+    })).resolves.toMatchObject({ ok: true });
+
+    expect(runtimeFetchMock.mock.calls.some(([request]) =>
+      (request as { url?: string }).url === 'http://127.0.0.1:43111/v2/sessions/s1',
+    )).toBe(true);
+    expect(runtimeFetchMock.mock.calls.some(([request]) =>
+      (request as { url?: string }).url === 'http://127.0.0.1:3010/v2/sessions/s1',
+    )).toBe(false);
+    expect(encryption.initializeSessions).toHaveBeenCalledWith(new Map([['s1', new Uint8Array([4, 2])]]));
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
   it('establishes live-tail intent before a scoped first-turn pending projection', async () => {
     const session = buildSession({
       sessionId: 's1',

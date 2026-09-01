@@ -26,6 +26,13 @@ import type { TransferFinalizeRecoveryFailure } from '../plumbing/directTransfer
 import { uploadBulkPayloadFromFileWithCarrierFallbacks } from '../plumbing/uploadBulkPayloadFromFileWithCarrierFallbacks';
 import { createBufferedTransferDestination } from '../carriers/createBufferedTransferDestination';
 import { downloadBulkPayloadViaMachineRpcToDestination } from '../carriers/downloadBulkPayloadViaMachineRpcToDestination';
+import { downloadBulkPayloadViaDirectExportToDestination } from '../plumbing/directTransferExportDownload';
+import {
+    isIrohMachineCarrierRoute,
+    MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+    resolveMachineCarrierRoute,
+    type MachineCarrierRoute,
+} from '../plumbing/machineCarrierHttpLease';
 
 type TransferFailureResponse = Readonly<{ success: false; error: string; errorCode?: string }>;
 type ComposerMediaStageUploadInitResponse =
@@ -250,6 +257,53 @@ export async function inspectComposerContent(
 
     const expectedSizeBytes = resolveInspectionRange(handle.data, request.data);
     const buffered = createBufferedTransferDestination(request.data.maxBytes);
+    let machineRoute: MachineCarrierRoute | null = null;
+    const direct = await downloadBulkPayloadViaDirectExportToDestination({
+        machineId: handle.data.executionTarget.machineId,
+        serverId: handle.data.executionTarget.serverId,
+        request: {
+            t: 'composer_media_stage_inspect_v1',
+            handle: handle.data,
+            offset: request.data.offset,
+            maxBytes: request.data.maxBytes,
+        },
+        destination: buffered.destination,
+        onInit: async (init) => (
+            init.name === handle.data.name && init.sizeBytes === expectedSizeBytes
+                ? undefined
+                : transferFailure('Composer media inspection returned an invalid range')
+        ),
+        signal: options?.signal ?? null,
+        acquirePreparedCarrier: async ({ operationId, maxBytes }) => {
+            machineRoute ??= await resolveMachineCarrierRoute(
+                handle.data.executionTarget.machineId,
+                handle.data.executionTarget.serverId,
+            );
+            return machineRoute.kind === 'iroh_peer'
+                ? await machineRoute.acquire({
+                    operationId,
+                    flow: 'attachment_transfer',
+                    maxBytes,
+                    signal: options?.signal ?? undefined,
+                })
+                : null;
+        },
+    });
+    if (direct.ok) {
+        const result = ComposerContentInspectWireResultV1Schema.safeParse({
+            offset: request.data.offset,
+            bytesBase64: buffered.toBase64(),
+            eof: request.data.offset + direct.sizeBytes >= handle.data.sizeBytes,
+        });
+        return result.success
+            ? { success: true, result: result.data }
+            : transferFailure('Composer media inspection returned an invalid range');
+    }
+    if (isIrohMachineCarrierRoute(machineRoute)) {
+        buffered.reset();
+        return transferFailure(MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR, 'machine_carrier_transport_failed');
+    }
+    buffered.reset();
     const transferClient = createWorkspaceFileTransferRpcCaller({
         machineId: handle.data.executionTarget.machineId,
         serverId: handle.data.executionTarget.serverId,

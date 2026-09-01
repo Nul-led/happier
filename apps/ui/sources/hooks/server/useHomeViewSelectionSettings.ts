@@ -2,10 +2,10 @@ import * as React from 'react';
 
 import type { Settings } from '@/sync/domains/settings/settings';
 import {
-    loadHomeViewState,
-    subscribeHomeViewState,
-    updateHomeViewState,
-} from '@/sync/domains/server/serverProfiles';
+    loadEffectiveHomeViewState,
+    subscribeEffectiveHomeViewState,
+    updateEffectiveHomeViewState,
+} from '@/sync/domains/server/selection/homeViewSelectionState';
 import { normalizeServerSelectionGroupsForSettings } from '@/sync/domains/server/selection/serverSelectionSettingsAdapter';
 import { getStorage } from '@/sync/domains/state/storageStore';
 
@@ -18,9 +18,9 @@ export function useHomeViewSelectionSettings(
     fallback: HomeViewSelectionSettings,
 ): HomeViewSelectionSettings {
     const state = React.useSyncExternalStore(
-        subscribeHomeViewState,
-        loadHomeViewState,
-        loadHomeViewState,
+        subscribeEffectiveHomeViewState,
+        loadEffectiveHomeViewState,
+        loadEffectiveHomeViewState,
     );
     return React.useMemo(() => state
         ? {
@@ -36,13 +36,15 @@ export function useHomeViewSelectionSettingsMutable(
 ): HomeViewSelectionSettings & Readonly<{
     setHomeViewSelectionSettings: (
         update: HomeViewSelectionSettings | ((current: HomeViewSelectionSettings) => HomeViewSelectionSettings),
+        options?: Readonly<{ targetScope?: 'tab' | 'device' }>,
     ) => void;
 }> {
     const settings = useHomeViewSelectionSettings(fallback);
     const setHomeViewSelectionSettings = React.useCallback((
         update: HomeViewSelectionSettings | ((current: HomeViewSelectionSettings) => HomeViewSelectionSettings),
+        options?: Readonly<{ targetScope?: 'tab' | 'device' }>,
     ) => {
-        const saved = updateHomeViewState((current) => {
+        const saved = updateEffectiveHomeViewState((current) => {
             const currentSettings: HomeViewSelectionSettings = {
                 serverSelectionGroups: normalizeServerSelectionGroupsForSettings(current.groups),
                 serverSelectionActiveTargetKind: current.activeTargetKind,
@@ -55,7 +57,7 @@ export function useHomeViewSelectionSettingsMutable(
                 activeTargetKind: requested.serverSelectionActiveTargetKind,
                 activeTargetId: requested.serverSelectionActiveTargetId,
             };
-        });
+        }, { scope: options?.targetScope ?? 'device' });
         const projected: HomeViewSelectionSettings = {
             serverSelectionGroups: normalizeServerSelectionGroupsForSettings(saved.groups),
             serverSelectionActiveTargetKind: saved.activeTargetKind,

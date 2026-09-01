@@ -68,6 +68,44 @@ describe('resolveScopedMachineTransport', () => {
         )).toBe(false);
     });
 
+    it('uses the verified runtime origin for the machine lookup while retaining the canonical reachability identity', async () => {
+        const fetchSpy = vi.fn(async (url: string) => {
+            if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
+                return { ok: true, status: 200, json: async () => ({}) };
+            }
+            if (url === 'http://127.0.0.1:43111/v1/machines/machine-iroh') {
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async () => ({
+                        machine: {
+                            id: 'machine-iroh',
+                            dataEncryptionKey: MACHINE_PLAIN_DATA_KEY_MARKER,
+                        },
+                    }),
+                };
+            }
+            throw new Error(`unexpected machine lookup: ${url}`);
+        });
+        vi.stubGlobal('fetch', fetchSpy);
+
+        await expect(resolveScopedMachineTransport({
+            serverId: 'server-b',
+            serverUrl: 'http://127.0.0.1:3010',
+            runtimeOrigin: 'http://127.0.0.1:43111',
+            token: 'token-b',
+            machineId: 'machine-iroh',
+        })).resolves.toEqual({ mode: 'plain' });
+
+        expect(fetchSpy).toHaveBeenCalledWith(
+            'http://127.0.0.1:43111/v1/machines/machine-iroh',
+            expect.anything(),
+        );
+        expect(fetchSpy.mock.calls.some(([url]) =>
+            String(url) === 'http://127.0.0.1:3010/v1/machines/machine-iroh',
+        )).toBe(false);
+    });
+
     it('fetches and decrypts machine key on first request then uses cache', async () => {
         const fetchSpy = vi.fn(async (url: string) => {
             if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {

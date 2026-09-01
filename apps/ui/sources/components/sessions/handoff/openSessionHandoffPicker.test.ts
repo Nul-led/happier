@@ -78,25 +78,13 @@ describe('openSessionHandoffPicker', () => {
 
         capturedConfig.props.onResolve({
             targetMachineId: 'machine_target',
-            workspaceTransfer: {
-                enabled: true,
-                strategy: 'sync_changes',
-                conflictPolicy: 'replace_existing',
-                includeIgnoredMode: 'exclude',
-                ignoredIncludeGlobs: [],
-            },
+            workspaceAction: { kind: 'none' },
         });
         capturedConfig.onRequestClose();
 
         await expect(promise).resolves.toEqual({
             targetMachineId: 'machine_target',
-            workspaceTransfer: {
-                enabled: true,
-                strategy: 'sync_changes',
-                conflictPolicy: 'replace_existing',
-                includeIgnoredMode: 'exclude',
-                ignoredIncludeGlobs: [],
-            },
+            workspaceAction: { kind: 'none' },
         });
         expect(hideMock).toHaveBeenCalledWith('modal_1');
     });

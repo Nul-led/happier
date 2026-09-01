@@ -238,6 +238,9 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
                     timeoutMs,
                 }),
         );
+        if (params.signal?.aborted && context.scope === 'scoped') {
+            await context.release?.();
+        }
         throwIfMachineRpcAborted(params.method, params.signal);
 
         if (context.scope === 'active' && !preferScoped) {
@@ -285,12 +288,14 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
             throw new Error('Expected scoped server RPC context');
         }
 
+        try {
         const machineTransport = await timeoutBudget.runWithinTimeout(
             'scoped',
             async (timeoutMs) =>
                 await resolveScopedMachineTransport({
                     serverId: context.targetServerId,
                     serverUrl: context.targetServerUrl,
+                    ...(context.runtimeOrigin ? { runtimeOrigin: context.runtimeOrigin } : {}),
                     token: context.token,
                     machineId: context.machineId,
                     timeoutMs,
@@ -407,6 +412,8 @@ async function machineRpcWithServerTransport<R, A>(params: ServerScopedMachineRp
             });
         } finally {
             socket.disconnect();
+        }
+        } finally {
             await context.release?.();
         }
     };

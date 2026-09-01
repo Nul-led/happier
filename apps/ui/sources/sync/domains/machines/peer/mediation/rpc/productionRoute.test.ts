@@ -11,8 +11,11 @@ import {
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 const getReadyServerFeaturesSpy = vi.hoisted(() => vi.fn());
+const TOKEN_A = 'header.eyJzdWIiOiJhY2NvdW50LTEifQ.signature';
+const DATA_KEY_TOKEN = 'header.eyJzdWIiOiJhY2NvdW50LTEifQ.data-key-signature';
 const getCredentialsForServerUrlSpy = vi.hoisted(() => vi.fn());
 const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
+const captureAuthoritySpy = vi.hoisted(() => vi.fn());
 const listServerProfilesSpy = vi.hoisted(() => vi.fn());
 const storageSnapshot = vi.hoisted(() => ({
     state: {
@@ -24,6 +27,16 @@ const storageGetStateSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
     getReadyServerFeatures: (...args: unknown[]) => getReadyServerFeaturesSpy(...args),
+}));
+
+vi.mock('@/sync/http/client', () => ({
+    serverFetch: async (path: string, init?: RequestInit) => {
+        const active = getActiveServerSnapshotSpy() as { serverUrl: string };
+        const credentials = await getCredentialsForServerUrlSpy() as { token: string };
+        const headers = new Headers(init?.headers);
+        headers.set('Authorization', `Bearer ${credentials.token}`);
+        return await fetch(`${active.serverUrl}${path}`, { ...init, headers });
+    },
 }));
 
 vi.mock('@/auth/storage/tokenStorage', () => ({
@@ -39,6 +52,13 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: (...args: unknown[]) => getActiveServerSnapshotSpy(...args),
+}));
+vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
+    getAppliedActiveServerId: () => String((getActiveServerSnapshotSpy() as { serverId?: unknown })?.serverId ?? ''),
+}));
+vi.mock('@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope', () => ({
+    captureSessionRequestAuthorityForServerAccountScope: (...args: unknown[]) => captureAuthoritySpy(...args),
+    createSessionRequestWithServerScope: ({ activeRequest }: { activeRequest: (path: string, init?: RequestInit) => Promise<Response> }) => activeRequest,
 }));
 
 function normalizeServerProfileTestId(raw: unknown): string {
@@ -167,6 +187,7 @@ describe('production peer mediation machine RPC route adapter', () => {
         storageGetStateSpy.mockReset();
         getActiveServerSnapshotSpy.mockReset();
         listServerProfilesSpy.mockReset();
+        captureAuthoritySpy.mockReset();
         vi.unstubAllGlobals();
         getActiveServerSnapshotSpy.mockReturnValue({
             serverId: 'server-a',
@@ -176,8 +197,14 @@ describe('production peer mediation machine RPC route adapter', () => {
         listServerProfilesSpy.mockReturnValue([]);
         getReadyServerFeaturesSpy.mockResolvedValue(createFeaturePayload());
         getCredentialsForServerUrlSpy.mockResolvedValue({
-            token: 'token-a',
+            token: TOKEN_A,
             secret: Buffer.from(new Uint8Array(32).fill(7)).toString('base64'),
+        });
+        captureAuthoritySpy.mockImplementation(async ({ scope, activeRequest }) => {
+            const current = await getCredentialsForServerUrlSpy();
+            const payload = JSON.parse(Buffer.from(String(current.token).split('.')[1]!, 'base64url').toString('utf8')) as { sub?: string };
+            if (payload.sub !== scope.accountId) throw new Error('Account scope changed');
+            return { scope, request: activeRequest, release: async () => {} };
         });
         storageGetStateSpy.mockImplementation(() => storageSnapshot.state);
     });
@@ -196,7 +223,7 @@ describe('production peer mediation machine RPC route adapter', () => {
             signingIdentity: 'account_signing_v1',
         });
         expect(module.resolvePeerRouteSigningReadiness({
-            token: 'data-key-token',
+            token: DATA_KEY_TOKEN,
             encryption: {
                 publicKey: Buffer.from(new Uint8Array(32).fill(8)).toString('base64'),
                 machineKey: Buffer.from(new Uint8Array(32).fill(9)).toString('base64'),
@@ -229,7 +256,7 @@ describe('production peer mediation machine RPC route adapter', () => {
             capabilities: { machines: { peerMediation: { directRouteGrantProofMintVersions: [2] } } },
         }));
         getCredentialsForServerUrlSpy.mockResolvedValue({
-            token: 'data-key-token',
+            token: DATA_KEY_TOKEN,
             encryption: {
                 publicKey: Buffer.from(new Uint8Array(32).fill(8)).toString('base64'),
                 machineKey: Buffer.from(new Uint8Array(32).fill(9)).toString('base64'),
@@ -302,7 +329,7 @@ describe('production peer mediation machine RPC route adapter', () => {
             machineListByServerId: {},
         };
         getCredentialsForServerUrlSpy.mockResolvedValue({
-            token: 'data-key-token',
+            token: DATA_KEY_TOKEN,
             encryption: {
                 publicKey: Buffer.from(new Uint8Array(32).fill(8)).toString('base64'),
                 machineKey: Buffer.from(new Uint8Array(32).fill(9)).toString('base64'),
@@ -332,7 +359,7 @@ describe('production peer mediation machine RPC route adapter', () => {
     it('does not let an absent daemon endpoint mask data-key signing identity unavailability', async () => {
         storageSnapshot.state = { machines: {}, machineListByServerId: {} };
         getCredentialsForServerUrlSpy.mockResolvedValue({
-            token: 'data-key-token',
+            token: DATA_KEY_TOKEN,
             encryption: {
                 publicKey: Buffer.from(new Uint8Array(32).fill(8)).toString('base64'),
                 machineKey: Buffer.from(new Uint8Array(32).fill(9)).toString('base64'),
@@ -429,9 +456,6 @@ describe('production peer mediation machine RPC route adapter', () => {
             'https://server-a.example.test/v1/machines/peer/mediation/route-grants',
             expect.objectContaining({
                 method: 'POST',
-                headers: expect.objectContaining({
-                    Authorization: 'Bearer token-a',
-                }),
             }),
         );
         expect(fetchSpy.mock.calls.filter(([url]) =>
@@ -481,6 +505,46 @@ describe('production peer mediation machine RPC route adapter', () => {
             receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
             reasonCode: 'grant_missing',
         });
+    });
+
+    it('does not mint a grant when the target credential account changes after endpoint selection', async () => {
+        const endpoint: PeerLoopbackEndpointCandidateV1 = {
+            v: 1,
+            routeKind: 'loopback_direct',
+            url: 'http://127.0.0.1:46012/peer-mediation/v1/probe',
+            endpointFingerprint: 'endpoint_2',
+            expiresAt: Date.now() + 60_000,
+        };
+        storageSnapshot.state = {
+            machines: {
+                machine_1: {
+                    id: 'machine_1',
+                    daemonState: { peerMediation: { loopback: { endpoint } } },
+                },
+            },
+            machineListByServerId: {},
+        };
+        const replacementToken = 'header.eyJzdWIiOiJhY2NvdW50LTIifQ.signature';
+        getCredentialsForServerUrlSpy
+            .mockResolvedValueOnce({ token: TOKEN_A, secret: Buffer.from(new Uint8Array(32).fill(7)).toString('base64') })
+            .mockResolvedValue({ token: replacementToken, secret: Buffer.from(new Uint8Array(32).fill(7)).toString('base64') });
+        const fetchSpy = vi.fn();
+        vi.stubGlobal('fetch', fetchSpy);
+
+        const module = await importProductionRoute();
+        if ('importError' in module) throw module.importError;
+        const result = await module.resolveProductionMachineRpcDirectRoute({
+            serverId: 'server-a',
+            machineId: 'machine_1',
+            method: RPC_METHODS.DAEMON_MEMORY_STATUS,
+        });
+
+        expect(result).toEqual({
+            kind: 'fallback',
+            receipt: PEER_MEDIATION_RECEIPTS.routeFallback,
+            reasonCode: 'grant_missing',
+        });
+        expect(fetchSpy).not.toHaveBeenCalled();
     });
 
     it('fails closed to fallback when the loopback probe transport is unavailable', async () => {

@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 const directExportDownloadMock = vi.hoisted(() => vi.fn());
 const relayJsonDownloadMock = vi.hoisted(() => vi.fn());
 const machineRpcWithServerScopeMock = vi.hoisted(() => vi.fn());
+const carrierBoundary = vi.hoisted(() => ({ selected: false, acquire: vi.fn() }));
 
 vi.mock('../plumbing/directTransferExportDownload', () => ({
     downloadBulkJsonPayloadViaDirectExport: (...args: unknown[]) => directExportDownloadMock(...args),
@@ -18,17 +19,38 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', (
     machineRpcWithServerScope: (...args: unknown[]) => machineRpcWithServerScopeMock(...args),
 }));
 
+vi.mock('../plumbing/machineCarrierHttpLease', async (importOriginal) => ({
+    ...await importOriginal<typeof import('../plumbing/machineCarrierHttpLease')>(),
+    resolveMachineCarrierRoute: () => carrierBoundary.selected
+        ? { kind: 'iroh_peer', acquire: (...args: unknown[]) => carrierBoundary.acquire(...args) }
+        : { kind: 'standard' },
+}));
+
 describe('downloadJsonPayloadViaMachineTransferCarriers', () => {
+    beforeEach(() => {
+        carrierBoundary.selected = false;
+        carrierBoundary.acquire.mockReset();
+    });
+
     it('threads the acquired machine HTTP origin through the production JSON carrier composition', async () => {
         directExportDownloadMock.mockReset();
         relayJsonDownloadMock.mockReset();
         machineRpcWithServerScopeMock.mockReset();
-        directExportDownloadMock.mockResolvedValueOnce({ ok: true, payload: { ok: true } });
         const release = vi.fn(async () => undefined);
         const acquireMachineCarrierHttpLease = vi.fn(async () => ({
             localOrigin: 'http://127.0.0.1:48127',
+            requestHeaders: { 'X-Happier-Machine-Local-Capability': 'a'.repeat(64) },
             release,
         }));
+        carrierBoundary.selected = true;
+        carrierBoundary.acquire.mockImplementation(acquireMachineCarrierHttpLease);
+        directExportDownloadMock.mockImplementationOnce(async (params: {
+            acquirePreparedCarrier: (prepared: { operationId: string; maxBytes: number }) => Promise<{ release: () => Promise<void> }>;
+        }) => {
+            const lease = await params.acquirePreparedCarrier({ operationId: 'prepared-asset-1', maxBytes: 17 });
+            await lease.release();
+            return { ok: true, payload: { ok: true } };
+        });
 
         const { downloadJsonPayloadViaMachineTransferCarriers } = await import('./createJsonMachineRpcCarrierDownloads');
         const result = await downloadJsonPayloadViaMachineTransferCarriers({
@@ -47,18 +69,16 @@ describe('downloadJsonPayloadViaMachineTransferCarriers', () => {
                 externalRef: { name: 'skill-a' },
             },
             parsePayload: (value) => value as { ok: true },
-            machineCarrierRequired: true,
-            machineCarrierOperationId: 'prompt-asset-1',
-            acquireMachineCarrierHttpLease,
         });
 
         expect(result).toEqual({ ok: true, payload: { ok: true } });
         expect(directExportDownloadMock).toHaveBeenCalledWith(expect.objectContaining({
             machineId: 'machine-1',
-            httpOriginOverride: 'http://127.0.0.1:48127',
+            acquirePreparedCarrier: expect.any(Function),
         }));
         expect(acquireMachineCarrierHttpLease).toHaveBeenCalledWith(expect.objectContaining({
-            maxBytes: 2_500_000,
+            operationId: 'prepared-asset-1',
+            maxBytes: 17,
         }));
         expect(relayJsonDownloadMock).not.toHaveBeenCalled();
         expect(machineRpcWithServerScopeMock).not.toHaveBeenCalled();

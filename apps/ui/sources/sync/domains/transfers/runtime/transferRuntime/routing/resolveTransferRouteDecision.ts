@@ -33,6 +33,7 @@ export type TransferRouteDecision =
     }>;
 
 const DEFAULT_ROUTE_PREFERENCE_ORDER: readonly TransferRouteKind[] = [
+    'iroh_peer',
     'direct_peer',
     'server_relay_stream',
     'machine_rpc_direct',
@@ -43,11 +44,13 @@ function isViable(record: TransferRouteViabilityRecord): boolean {
 }
 
 function resolveTransferPeerRoute(input: Readonly<{
-    routeKind: 'direct_peer' | 'server_relay_stream';
+    routeKind: 'iroh_peer' | 'direct_peer' | 'server_relay_stream';
     availability: TransferAvailabilitySnapshot;
 }>): TransferRouteKind | null {
-    const preferredRouteKinds: readonly PeerRouteKind[] = input.routeKind === 'direct_peer'
-        ? input.availability.directPeerRouteKinds
+    const preferredRouteKinds: readonly PeerRouteKind[] = input.routeKind === 'iroh_peer'
+        ? ['iroh_peer']
+        : input.routeKind === 'direct_peer'
+            ? input.availability.directPeerRouteKinds.filter((kind) => kind !== 'iroh_peer')
         : ['server_relay'];
     const decision = resolvePeerRouteDecision({
         flowKind: 'bounded_transfer',
@@ -69,7 +72,9 @@ function resolveTransferPeerRoute(input: Readonly<{
         return null;
     }
 
-    return decision.routeKind === 'server_relay' ? 'server_relay_stream' : 'direct_peer';
+    return decision.routeKind === 'server_relay'
+        ? 'server_relay_stream'
+        : decision.routeKind === 'iroh_peer' ? 'iroh_peer' : 'direct_peer';
 }
 
 export function resolveTransferRouteDecision(
@@ -102,6 +107,14 @@ export function resolveTransferRouteDecision(
 
     const preferredRouteKinds = input.preferredRouteKinds ?? DEFAULT_ROUTE_PREFERENCE_ORDER;
     for (const routeKind of preferredRouteKinds) {
+        if (routeKind === 'iroh_peer' && resolveTransferPeerRoute({ routeKind, availability }) === 'iroh_peer') {
+            return {
+                kind: 'selected',
+                preferredRouteKind: 'iroh_peer',
+                preferScopedMachineRpc: true,
+                availability,
+            };
+        }
         if (routeKind === 'direct_peer' && resolveTransferPeerRoute({ routeKind, availability }) === 'direct_peer') {
             return {
                 kind: 'selected',

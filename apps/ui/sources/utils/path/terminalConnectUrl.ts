@@ -13,6 +13,8 @@ export type ParsedTerminalConnectUrl = Readonly<{
     supportsTokenOnly?: true;
 }>;
 
+export type TerminalConnectRouteParams = Readonly<Record<string, string | string[] | undefined>>;
+
 const SAFE_SERVER_PROTOCOLS = new Set(['http:', 'https:']);
 const TERMINAL_CONNECT_WEB_PATH = '/terminal/connect';
 
@@ -82,7 +84,7 @@ function withPairingContext(
     params: URLSearchParams,
 ): ParsedTerminalConnectUrl | null {
     const pairing = parsePairingContext(params);
-    const hasPairingInput = ['pairingSecret', 'createdAt', 'expiresAt', 'supportsTokenOnly']
+    const hasPairingInput = ['pairingSecret', 'createdAt', 'expiresAt', 'serverIdentityId', 'supportsTokenOnly']
         .some((key) => params.has(key));
     if (!pairing) return hasPairingInput ? null : base;
     const serverIdentityId = normalizeServerIdentityIdCapability(params.get('serverIdentityId'));
@@ -185,4 +187,47 @@ export function parseTerminalConnectUrl(url: string): ParsedTerminalConnectUrl |
 
     const serverUrl = normalizeServerUrl(params.get('server') ?? '');
     return withPairingContext({ publicKeyB64Url: key, serverUrl }, params);
+}
+
+const TERMINAL_CONNECT_ROUTE_PARAM_NAMES = new Set([
+    'key',
+    'server',
+    'serverIdentityId',
+    'pairingSecret',
+    'createdAt',
+    'expiresAt',
+    'supportsTokenOnly',
+]);
+
+function readFirstRouteParam(value: string | string[] | undefined): string {
+    return typeof value === 'string'
+        ? value
+        : Array.isArray(value)
+            ? String(value[0] ?? '')
+            : '';
+}
+
+/**
+ * Adapts Expo Router's decoded search-parameter projection to the canonical
+ * terminal deep-link parser. The route owns no pairing or capability rules.
+ */
+export function parseTerminalConnectRouteParams(
+    searchParams: TerminalConnectRouteParams,
+): ParsedTerminalConnectUrl | null {
+    const params = new URLSearchParams();
+    for (const name of TERMINAL_CONNECT_ROUTE_PARAM_NAMES) {
+        const value = readFirstRouteParam(searchParams[name]);
+        if (value) params.set(name, value);
+    }
+
+    if (!params.get('key')?.trim()) {
+        const legacyKeys = Object.keys(searchParams)
+            .filter((name) => !TERMINAL_CONNECT_ROUTE_PARAM_NAMES.has(name));
+        if (legacyKeys.length !== 1) return null;
+        const legacyKey = legacyKeys[0]?.trim();
+        if (!legacyKey) return null;
+        params.set('key', legacyKey);
+    }
+
+    return parseTerminalConnectUrl(`${resolveAppUrlScheme()}://terminal?${params.toString()}`);
 }

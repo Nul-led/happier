@@ -128,19 +128,19 @@ export async function runtimeFetchWithServerReachability(params: Readonly<{
             timeoutMs: typeof params.timeoutMs === 'number' ? params.timeoutMs : readServerReachabilityWaitTimeoutMs(),
             acceptAuthFailed: true,
         });
-        const probeReportScope = peekServerReachabilityScope(params.serverUrl);
+        const probeReportScope = peekServerReachabilityScope(params.serverUrl, effectiveToken);
         const response = await runtimeFetch(params.url, {
             ...params.init,
             headers,
         });
         if (hasAuth && isAuthenticationResponseStatus(response.status)) {
             if (probeReportScope) {
-                reportServerAuthFailed(params.serverUrl, response.status, probeReportScope);
+                reportServerAuthFailed(params.serverUrl, response.status, probeReportScope, effectiveToken);
             }
         }
         return response;
     } catch (error) {
-        reportServerUnreachable(params.serverUrl, error);
+        reportServerUnreachable(params.serverUrl, error, effectiveToken);
         throw error;
     } finally {
         await reachability.release();

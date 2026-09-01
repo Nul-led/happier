@@ -146,8 +146,6 @@ vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
         serverUrl: 'https://cloud.example.test',
         runtimeOrigin: 'http://127.0.0.1:4312',
         carrier: 'iroh',
-        irohObservedPath: 'relay',
-        irohRelayPolicy: 'automatic',
         generation: 1,
     }),
 }));
@@ -201,10 +199,6 @@ vi.mock('@/components/navigation/connection/ConnectionTargetList', () => ({
     ConnectionTargetList: () => null,
 }));
 
-vi.mock('@/components/settings/server/modals/ServerSwitchAuthPrompt', () => ({
-    promptSignedOutServerSwitchConfirmation: vi.fn(async () => true),
-}));
-
 vi.mock('@/components/navigation/connectionStatus/useConnectionHealth', () => ({
     useConnectionHealth: () => ({
         kind: 'no_machine',
@@ -225,8 +219,9 @@ describe('ConnectionStatusControl (label)', () => {
         expect(joined).not.toContain('status.connected');
 
         const trigger = screen.findByProps({ accessibilityRole: 'button' });
-        expect(trigger.props.accessibilityLabel).toBe('Happier Cloud, status.actionRequired, connectionStatus.transport.secureRelay');
+        expect(trigger.props.accessibilityLabel).toBe('Happier Cloud, status.actionRequired');
         expect(trigger.props.accessibilityState).toEqual({ expanded: false });
+        expect(trigger.props.style.minHeight).toBeGreaterThanOrEqual(44);
     });
 
     it('uses a single-line tail ellipsis contract for long sidebar server labels', async () => {

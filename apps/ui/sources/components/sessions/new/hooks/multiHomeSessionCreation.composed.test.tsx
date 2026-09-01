@@ -345,12 +345,7 @@ describe('multi-Home Session creation composition', () => {
 
     it('rejects an explicit missing B target without falling back to focused A or issuing create', async () => {
         const { profiles, homeA, homeAScopeId, homeAToken } = await arrangeFocusedHomeA();
-        profiles.saveHomeViewState({
-            version: 1,
-            activeTargetKind: 'server',
-            activeTargetId: 'srv_missing_home_b',
-            groups: [{ id: 'home-a-group', name: 'Home A', serverIds: [homeAScopeId] }],
-        });
+        routeBoundary.params.spawnServerId = 'srv_missing_home_b';
         const createHook = await renderProductionCreateCaller({ activeServerId: homeAScopeId });
         const model = createHook.getCurrent();
         expect(model.variant === 'simple' ? model.simpleProps.targetServerId : model.wizardProps.machine.serverId)

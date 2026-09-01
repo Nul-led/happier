@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@/sync/domains/state/storageTypes';
 
-import { requireLocalSessionVisibleForRoute } from './localSessionRouteReadiness';
+import * as localSessionRouteReadiness from './localSessionRouteReadiness';
+
+const {
+    requireLocalSessionVisibleForRoute,
+    requireSpawnedSessionVisibleForRoute,
+} = localSessionRouteReadiness;
 
 describe('requireLocalSessionVisibleForRoute', () => {
     it('checks a route-specific readiness predicate once after the canonical hydration attempt', async () => {
@@ -20,6 +25,35 @@ describe('requireLocalSessionVisibleForRoute', () => {
 
         expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledOnce();
         expect(isLocalSessionReady).toHaveBeenCalledOnce();
+    });
+
+    it('retries bounded post-spawn propagation through the canonical route-readiness owner', async () => {
+        vi.useFakeTimers();
+        try {
+            const stored = {} as Session;
+            let visibleSession: Session | null = null;
+            const ensureSessionVisibleForMessageRoute = vi.fn(async () => {
+                if (ensureSessionVisibleForMessageRoute.mock.calls.length >= 2) {
+                    visibleSession = stored;
+                    return { kind: 'available' };
+                }
+                return { kind: 'missing' };
+            });
+
+            const visibility = requireSpawnedSessionVisibleForRoute({
+                sessionId: 'spawned-session',
+                serverId: 'server-a',
+                getStoredSession: () => visibleSession,
+                ensureSessionVisibleForMessageRoute,
+            });
+
+            await vi.advanceTimersByTimeAsync(250);
+
+            await expect(visibility).resolves.toBe(stored);
+            expect(ensureSessionVisibleForMessageRoute).toHaveBeenCalledTimes(2);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('rejects a locally visible session that fails the route predicate without retry polling', async () => {

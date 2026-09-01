@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { coerceRelativeRoute } from './routeUtils';
+import { coerceRelativeRoute, normalizeInternalReturnPath } from './routeUtils';
 
 describe('coerceRelativeRoute', () => {
     it('accepts a single-leading-slash route', () => {
@@ -34,5 +34,13 @@ describe('coerceRelativeRoute', () => {
 
     it('rejects malformed percent-encoding', () => {
         expect(coerceRelativeRoute('/settings/%')).toBeNull();
+    });
+
+    it('rejects absolute URLs, credentials, and control characters as return paths', () => {
+        expect(normalizeInternalReturnPath('https://example.com/settings')).toBeNull();
+        expect(normalizeInternalReturnPath('https://user:pass@example.com/settings')).toBeNull();
+        expect(normalizeInternalReturnPath('//user:pass@example.com/settings')).toBeNull();
+        expect(normalizeInternalReturnPath('/settings\u0000/account')).toBeNull();
+        expect(normalizeInternalReturnPath('/settings%0a/account')).toBeNull();
     });
 });

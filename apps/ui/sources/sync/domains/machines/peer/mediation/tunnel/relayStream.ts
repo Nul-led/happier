@@ -8,16 +8,17 @@ import {
     type PeerTcpTunnelRelayEnvelope,
 } from '@happier-dev/protocol';
 import {
+    decodeLegacyJsonPeerTcpTunnelFrame,
     decodePeerTcpTunnelBinaryFrameForSession,
     decodePeerTcpTunnelBinarySubstreamFrame,
     encodePeerTcpTunnelBinaryFrameForSession,
     encodePeerTcpTunnelBinaryFrameForSubstream,
     encodePeerTcpTunnelBinarySubstreamOpen,
+    toLegacyJsonPeerTcpTunnelFrame,
     type PeerTcpTunnelFrame,
 } from '@happier-dev/peer-transport/duplexFrames';
 
 import type { PeerTcpTunnelClientStream } from './client';
-import { decodeLegacyJsonPeerTcpTunnelFrame, toLegacyJsonPeerTcpTunnelFrame } from './legacyJsonFrameAdapter';
 
 type SendPeerTcpTunnelRelayEnvelope = (
     event: typeof PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,

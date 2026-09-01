@@ -34,6 +34,11 @@ import {
     isTransferFinalizeRecoveryFailure,
     type TransferFinalizeRecoveryFailure,
 } from '../plumbing/directTransferFinalizeRecovery';
+import {
+    isIrohMachineCarrierRoute,
+    resolveMachineCarrierRoute,
+    type MachineCarrierRoute,
+} from '../plumbing/machineCarrierHttpLease';
 
 type MachinePromptAssetsTransferOpts = Readonly<{
     serverId?: string | null;
@@ -224,6 +229,7 @@ export async function uploadDaemonPromptAsset(
         timeoutMs: opts?.timeoutMs ?? null,
     });
     const preparedPayload = prepareBulkJsonPayloadForUpload(payload);
+    let machineRoute: MachineCarrierRoute | null = null;
 
     if (preparedPayload.ok) {
         const directImportResult = await uploadBulkPayloadFromFileViaDirectImport<PromptAssetMutationResponseV1>({
@@ -244,6 +250,14 @@ export async function uploadDaemonPromptAsset(
                 return parsed.success ? parsed.data : null;
             },
             timeoutMs: opts?.timeoutMs ?? null,
+            acquirePreparedCarrier: async ({ operationId, maxBytes }) => {
+                machineRoute ??= await resolveMachineCarrierRoute(machineId, opts?.serverId);
+                return machineRoute.kind === 'iroh_peer' ? await machineRoute.acquire({
+                    operationId,
+                    maxBytes,
+                    flow: 'file_transfer',
+                }) : null;
+            },
         });
 
         if ('ok' in directImportResult) {
@@ -260,6 +274,13 @@ export async function uploadDaemonPromptAsset(
                 ok: false,
                 errorCode: 'internal_error',
                 error: directImportResult.error,
+            };
+        }
+        if (isIrohMachineCarrierRoute(machineRoute)) {
+            return {
+                ok: false,
+                errorCode: 'internal_error',
+                error: 'The direct machine connection was interrupted. Retry the transfer.',
             };
         }
     }

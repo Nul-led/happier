@@ -17,8 +17,20 @@ export function createWorkspaceSyncConflictDetailsTab(
             relationshipId: summary.relationshipId,
             controllerMachineId: scope.controllerMachineId,
             serverId: scope.serverId,
-            alphaLabel: summary.alpha.label,
-            betaLabel: summary.beta.label,
+            mode: summary.relationship.mode,
+            enabled: summary.relationship.enabled,
+            alpha: {
+                label: summary.alpha.label,
+                machineId: summary.alpha.workspaceRef?.machineId ?? null,
+                machineName: summary.alpha.machineName,
+                rootPath: summary.alpha.workspaceRef?.rootPath ?? null,
+            },
+            beta: {
+                label: summary.beta.label,
+                machineId: summary.beta.workspaceRef?.machineId ?? null,
+                machineName: summary.beta.machineName,
+                rootPath: summary.beta.workspaceRef?.rootPath ?? null,
+            },
             localSide: localWorkspaceRefId === summary.alpha.workspaceRefId
                 ? 'alpha'
                 : localWorkspaceRefId === summary.beta.workspaceRefId

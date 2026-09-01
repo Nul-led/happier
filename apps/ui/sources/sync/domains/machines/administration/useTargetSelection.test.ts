@@ -107,6 +107,20 @@ function machine(id: string, active: boolean): TestMachine {
     };
 }
 
+describe('machine administration selection revision', () => {
+    it('advances monotonically across A-to-B-to-A', async () => {
+        const { advanceMachineAdministrationSelectionRevision } = await import('./useTargetSelection');
+        const targetA = { serverIdentityId: 'server-a', machineId: 'machine-a' };
+        const targetB = { serverIdentityId: 'server-b', machineId: 'machine-b' };
+        const initial = { selectionKey: 'relay', target: targetA, revision: 0 };
+        const selectedB = advanceMachineAdministrationSelectionRevision(initial, 'relay', targetB);
+        const selectedAAgain = advanceMachineAdministrationSelectionRevision(selectedB, 'relay', targetA);
+
+        expect(selectedB.revision).toBe(1);
+        expect(selectedAAgain.revision).toBe(2);
+    });
+});
+
 describe('resolveFreshMachineAdministrationExecutionTarget', () => {
     beforeEach(() => {
         runtime.activeServerId = 'local-a';

@@ -24,9 +24,9 @@ export type SessionHandoffWorkspaceMode = 'none' | WorkspaceSyncModeV1;
  */
 export const SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS = [
     {
-        id: 'none',
-        titleKey: 'settingsSession.handoff.workspaceMode.noneTitle',
-        subtitleKey: 'settingsSession.handoff.workspaceMode.noneSubtitle',
+        id: 'keep_synced',
+        titleKey: 'workspaceSync.mode.keepSynced',
+        subtitleKey: 'settingsSession.handoff.workspaceMode.keepSyncedSubtitle',
     },
     {
         id: 'copy_once',
@@ -34,9 +34,9 @@ export const SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS = [
         subtitleKey: 'settingsSession.handoff.workspaceMode.copyOnceSubtitle',
     },
     {
-        id: 'keep_synced',
-        titleKey: 'workspaceSync.mode.keepSynced',
-        subtitleKey: 'settingsSession.handoff.workspaceMode.keepSyncedSubtitle',
+        id: 'none',
+        titleKey: 'settingsSession.handoff.workspaceMode.noneTitle',
+        subtitleKey: 'settingsSession.handoff.workspaceMode.noneSubtitle',
     },
     {
         id: 'mirror_exactly',
@@ -53,6 +53,27 @@ export const SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS = [
     titleKey: string;
     subtitleKey: string;
 }>[];
+
+export const SESSION_HANDOFF_COMMON_WORKSPACE_SYNC_MODE_OPTIONS = SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS.filter(
+    (option) => option.id === 'keep_synced' || option.id === 'copy_once' || option.id === 'none',
+);
+
+export const SESSION_HANDOFF_ADVANCED_WORKSPACE_SYNC_MODE_OPTIONS = SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS.filter(
+    (option) => option.id === 'mirror_exactly' || option.id === 'keep_both_in_sync',
+);
+
+export const SESSION_HANDOFF_CONTENT_SELECTION_OPTIONS = [
+    {
+        id: 'git_worktree',
+        titleKey: 'settingsSession.handoff.contentSelection.gitTitle',
+        subtitleKey: 'settingsSession.handoff.contentSelection.gitSubtitle',
+    },
+    {
+        id: 'all_files',
+        titleKey: 'settingsSession.handoff.contentSelection.allFilesTitle',
+        subtitleKey: 'settingsSession.handoff.contentSelection.allFilesSubtitle',
+    },
+] as const;
 
 export const SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS = [
     {
@@ -99,12 +120,6 @@ function normalizeWorkspaceMode(value: unknown): SessionHandoffWorkspaceMode {
         ? value
         : 'none';
 }
-function normalizeRelationshipId(value: unknown): string | null {
-    if (typeof value !== 'string') return null;
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-}
-
 /**
  * Normalize persisted presentation defaults. Legacy transfer fields are
  * deliberately ignored; they never get converted into a live workspace
@@ -116,7 +131,6 @@ export function normalizeSessionHandoffDefaults(raw: unknown): SessionHandoffDef
     return {
         v: 1,
         workspaceSyncMode: normalizeWorkspaceMode(candidate.workspaceSyncMode),
-        workspaceSyncRelationshipId: normalizeRelationshipId(candidate.workspaceSyncRelationshipId),
         includeIgnoredMode: candidate.includeIgnoredMode === 'include_selected' ? 'include_selected' : 'exclude',
         ignoredIncludeGlobs: Array.isArray(candidate.ignoredIncludeGlobs)
             ? candidate.ignoredIncludeGlobs.filter((value): value is string => typeof value === 'string')
@@ -133,12 +147,13 @@ export function parseSessionHandoffIgnoredIncludeGlobs(value: string): string[] 
 }
 
 export function buildWorkspaceContentPolicy(args: Readonly<{
+    contentSelection?: 'git_worktree' | 'all_files';
     includeIgnoredMode: SessionHandoffDefaultsV1['includeIgnoredMode'];
     ignoredIncludeGlobs: readonly string[];
 }>): WorkspaceContentPolicyV1 {
     const base: Omit<WorkspaceContentPolicyV1, 'policyDigest'> = {
         v: 1,
-        selection: 'git_worktree',
+        selection: args.contentSelection ?? 'git_worktree',
         extraIgnorePatterns: [],
         extraIncludePatterns: args.includeIgnoredMode === 'include_selected'
             ? [...args.ignoredIncludeGlobs]
@@ -153,15 +168,24 @@ export function buildWorkspaceContentPolicy(args: Readonly<{
 
 /**
  * Construct the protocol action at the request boundary. Persistent modes
- * require an existing relationship identity; no identity is fabricated and
- * no persistent mode is silently downgraded to a copy.
+ * carry creation intent to the daemon, which exclusively owns relationship
+ * identity, endpoint resolution, lifecycle and persistence.
  */
 export function buildSessionHandoffWorkspaceAction(args: Readonly<{
-    workspaceSyncMode: SessionHandoffWorkspaceMode;
     workspaceSyncRelationshipId?: string | null;
+    workspaceSyncMode: SessionHandoffWorkspaceMode;
+    contentSelection: 'git_worktree' | 'all_files';
     includeIgnoredMode: SessionHandoffDefaultsV1['includeIgnoredMode'];
     ignoredIncludeGlobs: readonly string[];
 }>): HandoffWorkspaceActionV1 | undefined {
+    const relationshipId = args.workspaceSyncRelationshipId?.trim();
+    if (relationshipId) {
+        return {
+            kind: 'relationship',
+            relationshipId,
+            flushBeforeCommit: true,
+        };
+    }
     if (args.workspaceSyncMode === 'none') return { kind: 'none' };
     if (args.workspaceSyncMode === 'copy_once') {
         return {
@@ -169,11 +193,10 @@ export function buildSessionHandoffWorkspaceAction(args: Readonly<{
             contentPolicy: buildWorkspaceContentPolicy(args),
         };
     }
-    const relationshipId = normalizeRelationshipId(args.workspaceSyncRelationshipId);
-    if (!relationshipId) return undefined;
     return {
-        kind: 'relationship',
-        relationshipId,
+        kind: 'create_relationship',
+        mode: args.workspaceSyncMode,
+        contentPolicy: buildWorkspaceContentPolicy(args),
         flushBeforeCommit: true,
     };
 }

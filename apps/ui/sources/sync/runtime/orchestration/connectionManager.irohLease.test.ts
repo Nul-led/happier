@@ -25,12 +25,25 @@ function createIrohRuntimeMock() {
         markSuspended: vi.fn(),
         markForeground: vi.fn(async () => undefined),
         listTunnels: vi.fn(() => ({ leases: [], platformLimitations: [] })),
+        subscribeRecoveryRequired: vi.fn((listener: typeof recoveryRequiredListener) => {
+            recoveryRequiredListener = listener;
+            return () => {
+                if (recoveryRequiredListener === listener) recoveryRequiredListener = null;
+            };
+        }),
     };
 }
 
 const irohRuntimeMock = createIrohRuntimeMock();
 
 const startLifecycleSpy = vi.fn();
+const publishActiveServerRuntimeOriginSpy = vi.fn(() => true);
+let recoveryRequiredListener: ((event: Readonly<{
+    leaseId: string;
+    homeServerIdentityId: string;
+    reason: 'terminal' | 'foreground_probe_failed';
+    activePublication: boolean;
+}>) => void) | null = null;
 
 function mockActiveSnapshot(snapshot: Record<string, unknown>): void {
     vi.doMock('@/sync/domains/server/serverRuntime', () => ({
@@ -39,7 +52,7 @@ function mockActiveSnapshot(snapshot: Record<string, unknown>): void {
             serverId: String(snapshot.serverId ?? ''),
             generation: Number(snapshot.generation ?? 0),
         }),
-        publishActiveServerRuntimeOrigin: () => true,
+        publishActiveServerRuntimeOrigin: publishActiveServerRuntimeOriginSpy,
     }));
 }
 
@@ -58,12 +71,17 @@ function mockTokenStorage(credentials: { token: string; secret: string } | null)
     }));
 }
 
-function mockSyncInfra(): { syncSwitchServer: ReturnType<typeof vi.fn>; abortServerFetches: ReturnType<typeof vi.fn> } {
+function mockSyncInfra(): {
+    syncSwitchServer: ReturnType<typeof vi.fn>;
+    retryNow: ReturnType<typeof vi.fn>;
+    abortServerFetches: ReturnType<typeof vi.fn>;
+} {
     const syncSwitchServer = vi.fn(async (_credentials: { token: string; secret: string }) => {});
+    const retryNow = vi.fn();
     const abortServerFetches = vi.fn();
-    vi.doMock('@/sync/sync', () => ({ syncSwitchServer }));
+    vi.doMock('@/sync/sync', () => ({ syncSwitchServer, sync: { retryNow } }));
     vi.doMock('@/sync/http/client', () => ({ abortServerFetches }));
-    return { syncSwitchServer, abortServerFetches };
+    return { syncSwitchServer, retryNow, abortServerFetches };
 }
 
 describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
@@ -74,6 +92,8 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         irohRuntimeMock.releaseLeasesForStaleTargets.mockClear();
         irohRuntimeMock.releaseActiveHomeTunnels.mockClear();
         startLifecycleSpy.mockClear();
+        publishActiveServerRuntimeOriginSpy.mockClear();
+        recoveryRequiredListener = null;
     });
 
     it('acquires and verifies the Iroh lease for an Iroh Home before syncSwitchServer', async () => {
@@ -118,6 +138,49 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         expect(irohRuntimeMock.releaseLeasesForStaleTargets).not.toHaveBeenCalled();
         expect(syncSwitchServer).toHaveBeenCalledWith({ token: 'scoped-token', secret: 'scoped-secret' });
     });
+
+    it.each(['terminal', 'foreground_probe_failed'] as const)(
+        'reacquires a dead focused lease through the one active-connection retry owner for %s recovery',
+        async (reason) => {
+            mockActiveSnapshot({
+                serverId: 'srv_home_a',
+                serverUrl: 'https://iroh-home.example.test',
+                kind: 'custom',
+                generation: 42,
+            });
+            mockProfile({
+                id: 'profile-a',
+                serverIdentityId: 'srv_home_a',
+                serverUrl: 'https://iroh-home.example.test',
+                irohEndpoint: { endpointId: 'endpoint-a' },
+                connectionDescriptorRevision: 7,
+            });
+            mockTokenStorage({ token: 'scoped-token', secret: 'scoped-secret' });
+            const { syncSwitchServer, retryNow } = mockSyncInfra();
+            vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
+                getIrohHomeTunnelRuntime: () => irohRuntimeMock,
+            }));
+            vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
+                startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+            }));
+
+            const { switchConnectionToActiveServer } = await import('./connectionManager');
+            await switchConnectionToActiveServer();
+            irohRuntimeMock.ensureHomeTunnel.mockClear();
+            syncSwitchServer.mockClear();
+
+            recoveryRequiredListener?.({
+                leaseId: 'iroh-home:test',
+                homeServerIdentityId: 'srv_home_a',
+                reason,
+                activePublication: true,
+            });
+
+            await vi.waitFor(() => expect(irohRuntimeMock.ensureHomeTunnel).toHaveBeenCalledTimes(1));
+            expect(retryNow).toHaveBeenCalledTimes(1);
+            expect(syncSwitchServer).not.toHaveBeenCalled();
+        },
+    );
 
     it('acquires and verifies the Iroh lease before cold restore initializes Sync', async () => {
         mockActiveSnapshot({
@@ -283,6 +346,44 @@ describe('switchConnectionToActiveServer Iroh lease acquisition', () => {
         expect(ensureHomeTunnel).toHaveBeenCalledTimes(1);
         expect(syncSwitchServer).toHaveBeenCalledTimes(1);
         expect(syncSwitchServer).toHaveBeenCalledWith({ token: 'scoped-token', secret: 'scoped-secret' });
+    });
+
+    it('publishes the canonical independent HTTPS fallback origin', async () => {
+        mockActiveSnapshot({
+            serverId: 'srv_home_a',
+            serverUrl: 'https://iroh-fail.example.test',
+            kind: 'custom',
+            generation: 9,
+        });
+        mockProfile({
+            id: 'profile-a',
+            serverIdentityId: 'srv_home_a',
+            serverUrl: 'https://iroh-fail.example.test',
+            publicServerUrl: ' HTTPS://Public.Example.test:443/api///?token=secret#fragment ',
+            irohEndpoint: { endpointId: 'endpoint-a' },
+            connectionDescriptorRevision: 2,
+        });
+        mockTokenStorage({ token: 'scoped-token', secret: 'scoped-secret' });
+        mockSyncInfra();
+        vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
+            getIrohHomeTunnelRuntime: () => ({
+                ...irohRuntimeMock,
+                ensureHomeTunnel: vi.fn(async () => {
+                    throw new IrohError('unavailable', 'Native Iroh transport is unavailable.');
+                }),
+            }),
+        }));
+        vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
+            startNativeSshTunnelRuntimeAppStateLifecycle: startLifecycleSpy,
+        }));
+
+        const { switchConnectionToActiveServer } = await import('./connectionManager');
+        await switchConnectionToActiveServer();
+
+        expect(publishActiveServerRuntimeOriginSpy).toHaveBeenCalledWith(expect.objectContaining({
+            runtimeOrigin: 'https://public.example.test/api',
+            carrier: 'https',
+        }));
     });
 
     it('fails typed when Iroh is unavailable and the descriptor proves no independent HTTPS ingress', async () => {

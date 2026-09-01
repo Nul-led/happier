@@ -20,6 +20,9 @@ import { formatByteSize } from '@/utils/files/formatByteSize';
 import { ActivitySpinner, iconMatchedSpinnerSize } from '@/components/ui/feedback/ActivitySpinner';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Icon } from '@/components/ui/icons/Icon';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
+import { Item } from '@/components/ui/lists/Item';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 
 type Props = CustomModalInjectedProps & Readonly<{
     title?: string;
@@ -30,9 +33,7 @@ type Props = CustomModalInjectedProps & Readonly<{
     workspaceSyncEnabled?: boolean;
 }>;
 
-type HandoffStepId = 'prepare-session' | 'transfer-session' | 'transfer-workspace' | 'start-target' | 'finalize';
-
-type HandoffStep = Readonly<{ id: HandoffStepId; label: string }>;
+type PrimaryProgressStepId = 'preparing' | 'moving' | 'ready';
 
 type ProgressStatCounts = Readonly<{
     files?: number;
@@ -173,39 +174,74 @@ const stylesheet = StyleSheet.create((theme) => ({
     actionRow: {
         alignItems: 'flex-end',
     },
+    detailsBody: {
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        gap: 12,
+    },
 }));
 
-const BASE_HANDOFF_STEPS: readonly HandoffStep[] = [
-    { id: 'prepare-session', label: 'Prepare session' },
-    { id: 'transfer-session', label: 'Transfer session data' },
-    { id: 'transfer-workspace', label: 'Transfer workspace' },
-    { id: 'start-target', label: 'Start on target' },
-    { id: 'finalize', label: 'Finalize handoff' },
-];
+const PRIMARY_PROGRESS_STEPS: readonly PrimaryProgressStepId[] = ['preparing', 'moving', 'ready'];
 
-function isRedundantOperationProgressLabel(label: string, stepLabel: string): boolean {
-    const normalize = (value: string) => value.toLowerCase().replace(/\btransferring\b/g, 'transfer').replace(/\s+/g, ' ').trim();
-    return normalize(label) === normalize(stepLabel);
-}
-
-function resolveOperationStepId(operation: ActionOperationSnapshotV1 | undefined): HandoffStepId {
+function resolveOperationPrimaryStep(operation: ActionOperationSnapshotV1 | undefined): PrimaryProgressStepId {
     const progress = operation?.progress;
-    if (!progress) return 'prepare-session';
+    if (!progress) return 'preparing';
     if (progress.kind === 'determinate') {
         const label = progress.label?.toLowerCase() ?? '';
-        if (label.includes('workspace')) return 'transfer-workspace';
-        if (label.includes('session')) return 'transfer-session';
-        return 'prepare-session';
+        if (label.includes('packag') || label.includes('prepar')) return 'preparing';
+        if (label.includes('transfer') || label.includes('import') || label.includes('workspace')) return 'moving';
+        return 'preparing';
     }
-    if (progress.kind === 'indeterminate') return 'prepare-session';
+    if (progress.kind === 'indeterminate') return 'preparing';
     const phase = progress.phase;
-    if (phase === 'session_transfer' || phase === 'preparing_target' || phase === 'workspace_import_session') {
-        return 'transfer-session';
+    if (phase === 'preparing_target') return 'preparing';
+    if (
+        phase === 'session_transfer'
+        || phase === 'workspace_import_session'
+        || phase.startsWith('workspace_')
+        || phase === 'resuming_target'
+        || phase === 'confirming_target'
+        || phase === 'committing_target'
+        || phase === 'cleaning_source'
+        || phase === 'finalizing_target'
+    ) return 'moving';
+    return 'preparing';
+}
+
+function translatePrimaryProgressStep(step: PrimaryProgressStepId): string {
+    switch (step) {
+        case 'preparing':
+            return t('sessionHandoff.progress.primary.preparing');
+        case 'moving':
+            return t('sessionHandoff.progress.primary.moving');
+        case 'ready':
+            return t('sessionHandoff.progress.primary.ready');
     }
-    if (phase.startsWith('workspace_')) return 'transfer-workspace';
-    if (phase === 'resuming_target' || phase === 'confirming_target') return 'start-target';
-    if (phase === 'committing_target' || phase === 'cleaning_source' || phase === 'finalizing_target') return 'finalize';
-    return 'prepare-session';
+}
+
+function resolvePrimaryProgressStep(
+    operation: ActionOperationSnapshotV1 | undefined,
+    status: SessionHandoffStatus | undefined,
+    checkpoint: SessionHandoffProgressCheckpoint | null,
+): PrimaryProgressStepId {
+    if (operation?.state === 'succeeded' || status?.status === 'completed' || status?.status === 'ready_for_cutover') {
+        return 'ready';
+    }
+    if (operation) {
+        return resolveOperationPrimaryStep(operation);
+    }
+    if (
+        checkpoint === 'transfer_blobs'
+        || checkpoint === 'apply'
+        || checkpoint === 'import_session'
+        || checkpoint === 'finalize'
+        || status?.phase === 'transferring'
+        || status?.phase === 'importing'
+        || status?.phase === 'finalizing'
+    ) {
+        return 'moving';
+    }
+    return 'preparing';
 }
 
 function computeProgressFraction(status: SessionHandoffStatus | undefined): number | null {
@@ -369,7 +405,7 @@ function translateCheckpoint(checkpoint: SessionHandoffProgressCheckpoint): stri
     }
 }
 
-export function SessionHandoffProgressModal({ setChrome, title, message, status, operation, onResume, workspaceSyncEnabled = false }: Props) {
+export function SessionHandoffProgressModal({ setChrome, title, message, status, operation, onResume }: Props) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
 
@@ -438,7 +474,6 @@ export function SessionHandoffProgressModal({ setChrome, title, message, status,
     const progressFraction = canShowActiveProgress ? computeProgressFraction(effectiveStatus) : null;
     const summaryChips = buildSummaryChips(effectiveStatus);
     const progressStats = buildProgressStatRows(effectiveStatus);
-    const progressLabel = progressFraction === null ? null : `${Math.round(progressFraction * 100)}%`;
     const checkpointFromProgress = isKnownCheckpoint(effectiveStatus?.progress?.checkpoint) ? effectiveStatus?.progress?.checkpoint : null;
     const currentCheckpoint = checkpointFromProgress;
     const canonicalTimelineForCheckpoint = resolveSessionHandoffProgressTimeline(checkpointFromProgress);
@@ -466,8 +501,8 @@ export function SessionHandoffProgressModal({ setChrome, title, message, status,
     const isAwaitingUserResume = effectiveStatus?.status === 'awaiting_user_resume';
     const currentDetailLabel =
         effectiveStatus?.progress?.current?.relativePath
-        ?? (isFailureState || isReadyForCutover ? effectiveStatus?.progress?.current?.phaseDetail : undefined)
-        ?? (currentCheckpoint ? translateCheckpoint(currentCheckpoint) : null);
+        ?? effectiveStatus?.progress?.current?.phaseDetail
+        ?? null;
     const resolvedTitle =
         title
         ?? (isAwaitingRecovery
@@ -484,21 +519,26 @@ export function SessionHandoffProgressModal({ setChrome, title, message, status,
                 : isFailureState
                     ? t('sessionHandoff.failure.message')
                     : t('sessionHandoff.progress.message'));
-    const progressAnnouncement = [
-        resolvedMessage,
-        currentCheckpoint ? translateCheckpoint(currentCheckpoint) : null,
-        progressLabel,
-    ].filter((part): part is string => Boolean(part)).join('. ');
-    const showSpinner = !isFailureState && !isCompleted && !isReadyForCutover && !isAwaitingUserResume;
     const operationProgress = operation?.progress;
     const determinateOperationProgress = operationProgress?.kind === 'determinate' ? operationProgress : null;
-    const operationProgressFraction = determinateOperationProgress
+    const operationProgressFraction = determinateOperationProgress && determinateOperationProgress.total > 0
         ? Math.max(0, Math.min(1, determinateOperationProgress.current / determinateOperationProgress.total))
         : null;
     const operationProgressLabel = operationProgress?.label ?? null;
-    const operationSteps = BASE_HANDOFF_STEPS.filter((step) => workspaceSyncEnabled || step.id !== 'transfer-workspace');
-    const operationStepId = resolveOperationStepId(operation);
-    const operationStepIndex = operationSteps.findIndex((step) => step.id === operationStepId);
+    const primaryProgressStep = resolvePrimaryProgressStep(operation, effectiveStatus, currentCheckpoint);
+    const primaryProgressStepIndex = PRIMARY_PROGRESS_STEPS.indexOf(primaryProgressStep);
+    const primaryProgressFraction = operation ? operationProgressFraction : progressFraction;
+    const primaryProgressLabel = primaryProgressFraction === null ? null : `${Math.round(primaryProgressFraction * 100)}%`;
+    const progressAnnouncement = [
+        resolvedMessage,
+        translatePrimaryProgressStep(primaryProgressStep),
+        primaryProgressLabel,
+    ].filter((part): part is string => Boolean(part)).join('. ');
+    const operationTechnicalPhase = operationProgress?.kind === 'phase'
+        ? operationProgress.phase
+        : operationProgressLabel;
+    const hasTechnicalDetails = Boolean(operation || currentCheckpoint || summaryChips.length > 0 || progressStats.length > 0 || currentDetailLabel);
+    const [detailsExpanded, setDetailsExpanded] = React.useState(false);
     const resumeInFlightRef = React.useRef(false);
     const [resumeInFlight, setResumeInFlight] = React.useState(false);
     const handleResume = React.useCallback(() => {
@@ -545,15 +585,14 @@ export function SessionHandoffProgressModal({ setChrome, title, message, status,
                     />
                 </View>
             ) : null}
-            {operation || (!effectiveStatus && showSpinner) ? (
-                <View testID="session-handoff-operation-progress" style={styles.timeline}>
-                    {operationSteps.map((step, index) => {
-                        const isDone = operation?.state === 'succeeded' || index < Math.max(operationStepIndex, 0);
-                        const isCurrent = operation?.state !== 'succeeded' && index === Math.max(operationStepIndex, 0);
+            <View testID="session-handoff-primary-progress" style={styles.timeline}>
+                    {PRIMARY_PROGRESS_STEPS.map((step, index) => {
+                        const isCurrent = index === primaryProgressStepIndex;
+                        const isDone = index < primaryProgressStepIndex || (primaryProgressStep === 'ready' && isCurrent);
                         return (
                             <View
-                                key={step.id}
-                                testID={`session-handoff-step-${step.id}`}
+                                key={step}
+                                testID={`session-handoff-primary-step-${step}`}
                                 accessibilityState={{ checked: isDone, selected: isCurrent }}
                                 style={styles.timelineRow}
                             >
@@ -570,40 +609,68 @@ export function SessionHandoffProgressModal({ setChrome, title, message, status,
                                         <View style={styles.timelineDot} />
                                     )}
                                 </View>
-                                <View style={[styles.timelineContent, isCurrent && operationProgressFraction !== null ? styles.timelineContentWithProgress : null]}>
+                                <View style={[styles.timelineContent, isCurrent && primaryProgressFraction !== null ? styles.timelineContentWithProgress : null]}>
                                     <Text style={[styles.timelineLabel, isCurrent ? styles.timelineLabelCurrent : null]}>
-                                        {step.label}
+                                        {translatePrimaryProgressStep(step)}
                                     </Text>
-                                    {isCurrent && operationProgressFraction !== null ? (
+                                    {isCurrent && primaryProgressFraction !== null ? (
                                         <>
-                                            {operationProgressLabel && !isRedundantOperationProgressLabel(operationProgressLabel, step.label) ? (
-                                                <Text style={styles.progressMetaText}>{operationProgressLabel}</Text>
-                                            ) : null}
                                             <View
-                                                testID="session-handoff-operation-progress-bar"
+                                                testID={operation ? 'session-handoff-operation-progress-bar' : 'session-handoff-progress-bar'}
                                                 style={styles.progressTrack}
                                                 accessibilityRole="progressbar"
-                                                accessibilityLabel={operationProgressLabel ?? step.label}
-                                                accessibilityValue={{ min: 0, max: 100, now: Math.round(operationProgressFraction * 100) }}
+                                                accessibilityLabel={translatePrimaryProgressStep(step)}
+                                                accessibilityValue={{ min: 0, max: 100, now: Math.round(primaryProgressFraction * 100) }}
                                             >
-                                                <View style={[styles.progressFill, { width: `${Math.max(operationProgressFraction * 100, 4)}%` }]} />
+                                                <View style={[styles.progressFill, { width: `${Math.max(primaryProgressFraction * 100, 4)}%` }]} />
                                             </View>
-                                            <View style={styles.progressMetaRow}>
-                                                <Text style={styles.progressMetaText}>{Math.round(operationProgressFraction * 100)}%</Text>
-                                                <Text style={styles.currentPath}>{formatByteSize(determinateOperationProgress!.current)} / {formatByteSize(determinateOperationProgress!.total)}</Text>
-                                            </View>
+                                            <Text
+                                                testID={operation ? 'session-handoff-operation-progress-percent' : 'session-handoff-progress-percent'}
+                                                style={styles.progressMetaText}
+                                            >
+                                                {Math.round(primaryProgressFraction * 100)}%
+                                            </Text>
                                         </>
-                                    ) : isCurrent && operationProgressLabel && operationProgress?.kind !== 'phase' ? (
-                                        <Text style={styles.progressMetaText}>{operationProgressLabel}</Text>
                                     ) : null}
                                 </View>
                             </View>
                         );
                     })}
                 </View>
-            ) : null}
-            {effectiveStatus && !operation ? (
-                <View style={styles.progressSection}>
+            {hasTechnicalDetails ? (
+                <ItemGroup>
+                    <ExpandableItem
+                        testID="session-handoff-progress-details"
+                        expanded={detailsExpanded}
+                        onExpandedChange={setDetailsExpanded}
+                        showDivider={false}
+                        header={({ expanded, headerProps }) => (
+                            <Item
+                                {...headerProps}
+                                testID="session-handoff-progress-details-toggle"
+                                title={t('common.details')}
+                                showChevron={false}
+                                rightElement={<Icon name={expanded ? 'caret-down' : 'caret-right'} size={16} color={theme.colors.text.secondary} />}
+                            />
+                        )}
+                    >
+                        <View style={styles.detailsBody}>
+                            {operation ? (
+                                <View testID="session-handoff-operation-technical-details" style={styles.progressSection}>
+                                    {operationTechnicalPhase ? (
+                                        <Text testID="session-handoff-operation-technical-phase" style={styles.progressMetaText}>
+                                            {operationTechnicalPhase}
+                                        </Text>
+                                    ) : null}
+                                    {determinateOperationProgress ? (
+                                        <Text testID="session-handoff-operation-byte-progress" style={styles.currentPath}>
+                                            {formatByteSize(determinateOperationProgress.current)} / {formatByteSize(determinateOperationProgress.total)}
+                                        </Text>
+                                    ) : null}
+                                </View>
+                            ) : null}
+                            {effectiveStatus && !operation ? (
+                                <View style={styles.progressSection}>
                     {currentCheckpoint && currentCheckpointIndex >= 0 ? (
                         <View testID="session-handoff-progress-timeline" style={styles.timeline}>
                             {timeline.map((checkpoint, index) => {
@@ -631,21 +698,10 @@ export function SessionHandoffProgressModal({ setChrome, title, message, status,
                                                 <View style={styles.timelineDot} />
                                             )}
                                         </View>
-                                        <View style={[styles.timelineContent, isCurrent && progressFraction !== null ? styles.timelineContentWithProgress : null]}>
+                                        <View style={styles.timelineContent}>
                                             <Text style={[styles.timelineLabel, isCurrent ? styles.timelineLabelCurrent : null]}>
                                                 {translateCheckpoint(checkpoint)}
                                             </Text>
-                                            {isCurrent && progressFraction !== null ? (
-                                                <View
-                                                    testID="session-handoff-progress-bar"
-                                                    style={styles.progressTrack}
-                                                    accessibilityRole="progressbar"
-                                                    accessibilityLabel={resolvedTitle}
-                                                    accessibilityValue={{ min: 0, max: 100, now: Math.round(progressFraction * 100) }}
-                                                >
-                                                    <View style={[styles.progressFill, { width: `${Math.max(progressFraction * 100, 4)}%` }]} />
-                                                </View>
-                                            ) : null}
                                         </View>
                                     </View>
                                 );
@@ -671,21 +727,18 @@ export function SessionHandoffProgressModal({ setChrome, title, message, status,
                             ))}
                         </View>
                     ) : null}
-                    {progressLabel || currentDetailLabel ? (
+                    {currentDetailLabel ? (
                         <View style={styles.progressMetaRow}>
-                            {progressLabel ? (
-                                <Text testID="session-handoff-progress-percent" style={styles.progressMetaText}>
-                                    {progressLabel}
-                                </Text>
-                            ) : null}
-                            {currentDetailLabel ? (
-                                <Text testID="session-handoff-progress-path" style={styles.currentPath}>
-                                    {currentDetailLabel}
-                                </Text>
-                            ) : null}
+                            <Text testID="session-handoff-progress-path" style={styles.currentPath}>
+                                {currentDetailLabel}
+                            </Text>
                         </View>
                     ) : null}
-                </View>
+                                </View>
+                            ) : null}
+                        </View>
+                    </ExpandableItem>
+                </ItemGroup>
             ) : null}
         </View>
     );

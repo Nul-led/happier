@@ -114,6 +114,24 @@ describe('ItemRowActions', () => {
         expect(onPress).toHaveBeenCalledWith(event);
     });
 
+    it('uses a target-qualified accessible name for a concise inline action title', async () => {
+        const { ItemRowActions } = await import('./ItemRowActions');
+        const screen = await renderScreen(React.createElement(ItemRowActions, {
+            title: 'Home B',
+            compactThreshold: 200,
+            actions: [{
+                id: 'switch-home',
+                inlineTestID: 'switch-home',
+                title: 'Switch',
+                accessibilityLabel: 'Switch: Home B',
+                icon: 'arrows-left-right',
+                onPress: vi.fn(),
+            }],
+        }));
+
+        expect(screen.findByTestId('switch-home')?.props.accessibilityLabel).toBe('Switch: Home B');
+    });
+
     it('invokes overflow actions even when InteractionManager does not run callbacks', async () => {
         const { ItemRowActions } = await import('./ItemRowActions');
 

@@ -13,11 +13,97 @@ vi.mock('@/components/ui/buttons/RoundButton', () => ({
     RoundButton: (props: Record<string, unknown>) => React.createElement('RoundButton', props),
 }));
 
+vi.mock('@/components/ui/lists/ItemGroup', () => ({
+    ItemGroup: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('ItemGroup', props, props.children),
+}));
+
+vi.mock('@/components/ui/lists/Item', () => ({
+    Item: (props: React.PropsWithChildren<Record<string, unknown>>) => React.createElement('Item', props, props.children),
+}));
+
+vi.mock('@/components/ui/lists/ExpandableItem', () => ({
+    ExpandableItem: (props: React.PropsWithChildren<{
+        expanded: boolean;
+        onExpandedChange: (next: boolean) => void;
+        header: (state: Readonly<{
+            expanded: boolean;
+            headerProps: Readonly<{
+                onPress: () => void;
+                accessibilityRole: 'button';
+                accessibilityState: Readonly<{ expanded: boolean }>;
+            }>;
+        }>) => React.ReactNode;
+    }>) => React.createElement(
+        'ExpandableItem',
+        props,
+        props.header({
+            expanded: props.expanded,
+            headerProps: {
+                onPress: () => props.onExpandedChange(!props.expanded),
+                accessibilityRole: 'button',
+                accessibilityState: { expanded: props.expanded },
+            },
+        }),
+        props.expanded ? props.children : null,
+    ),
+}));
+
 function findProgressIndicators(screen: Awaited<ReturnType<typeof renderScreen>>) {
     return screen.findAll((node) => node.props?.accessibilityRole === 'progressbar');
 }
 
+async function expandProgressDetails(screen: Awaited<ReturnType<typeof renderScreen>>) {
+    const toggle = screen.findByTestId('session-handoff-progress-details-toggle');
+    if (toggle?.props.accessibilityState?.expanded !== true) {
+        await screen.pressByTestIdAsync('session-handoff-progress-details-toggle');
+    }
+}
+
 describe('SessionHandoffProgressModal', () => {
+    it('uses three localized primary stages and keeps technical operation details behind one disclosure', async () => {
+        const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
+        const screen = await renderScreen(
+            <SessionHandoffProgressModal
+                onClose={() => {}}
+                operation={{
+                    version: 1,
+                    operationId: 'handoff-operation-primary-progress',
+                    requestId: 'request-primary-progress',
+                    revision: 3,
+                    actionId: 'session.handoff',
+                    state: 'running',
+                    scope: { accountId: 'account-1', machineId: 'source-machine', sessionId: 'session-1' },
+                    title: 'Hand off session',
+                    createdAt: 1,
+                    startedAt: 1,
+                    progress: { kind: 'determinate', current: 1024, total: 4096, label: 'Packaging session state' },
+                    cancellation: 'supported',
+                }}
+            />,
+        );
+
+        expect(screen.findByTestId('session-handoff-primary-step-preparing')).toBeTruthy();
+        expect(screen.findByTestId('session-handoff-primary-step-moving')).toBeTruthy();
+        expect(screen.findByTestId('session-handoff-primary-step-ready')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('sessionHandoff.progress.primary.preparing');
+        expect(screen.getTextContent()).toContain('sessionHandoff.progress.primary.moving');
+        expect(screen.getTextContent()).toContain('sessionHandoff.progress.primary.ready');
+        expect(screen.findByTestId('session-handoff-primary-step-preparing')?.props.accessibilityState?.selected).toBe(true);
+        expect(screen.findByTestId('session-handoff-operation-progress-bar')).toBeTruthy();
+        expect(screen.findByTestId('session-handoff-operation-progress-bar')?.props.accessibilityValue)
+            .toEqual({ min: 0, max: 100, now: 25 });
+        expect(screen.getTextContent()).not.toContain('Packaging session state');
+
+        const detailsToggle = screen.findByTestId('session-handoff-progress-details-toggle');
+        expect(detailsToggle?.props.accessibilityRole).toBe('button');
+        expect(detailsToggle?.props.accessibilityState).toEqual({ expanded: false });
+        await screen.pressByTestIdAsync('session-handoff-progress-details-toggle');
+
+        expect(screen.getTextContent()).toContain('Packaging session state');
+        expect(screen.getTextContent()).toContain('1.0 KB / 4.0 KB');
+        expect(screen.findByTestId('session-handoff-progress-details')?.props.expanded).toBe(true);
+    });
+
     it('shows a spinner while the modal is waiting for the first status update', async () => {
         const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
         const setChrome = vi.fn();
@@ -61,10 +147,12 @@ describe('SessionHandoffProgressModal', () => {
 
         expect(screen.findByTestId('session-handoff-operation-progress-bar')).toBeTruthy();
         expect(screen.getTextContent()).toContain('25');
+        expect(screen.getTextContent()).not.toContain('Packaging session state');
+        await expandProgressDetails(screen);
         expect(screen.getTextContent()).toContain('Packaging session state');
     });
 
-    it('renders operation progress as one stateful checklist with progress nested under the active step', async () => {
+    it('maps technical operation progress onto the localized Moving primary stage', async () => {
         const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
         const screen = await renderScreen(
             <SessionHandoffProgressModal
@@ -87,16 +175,14 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
-        const prepare = screen.findByTestId('session-handoff-step-prepare-session');
-        const transfer = screen.findByTestId('session-handoff-step-transfer-session');
-        const workspace = screen.findByTestId('session-handoff-step-transfer-workspace');
-        const startTarget = screen.findByTestId('session-handoff-step-start-target');
+        const preparing = screen.findByTestId('session-handoff-primary-step-preparing');
+        const moving = screen.findByTestId('session-handoff-primary-step-moving');
+        const ready = screen.findByTestId('session-handoff-primary-step-ready');
 
-        expect(prepare?.props.accessibilityState?.checked).toBe(true);
-        expect(transfer?.props.accessibilityState?.selected).toBe(true);
-        expect(workspace).toBeNull();
-        expect(startTarget?.props.accessibilityState?.selected).toBe(false);
-        expect(transfer?.findByProps({ testID: 'session-handoff-operation-progress-bar' })).toBeTruthy();
+        expect(preparing?.props.accessibilityState?.checked).toBe(true);
+        expect(moving?.props.accessibilityState?.selected).toBe(true);
+        expect(ready?.props.accessibilityState?.selected).toBe(false);
+        expect(moving?.findByProps({ testID: 'session-handoff-operation-progress-bar' })).toBeTruthy();
         expect(screen.getTextContent()).not.toContain('Transferring session data');
     });
 
@@ -122,10 +208,10 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
-        expect(screen.findByTestId('session-handoff-step-transfer-session')?.props.accessibilityState?.selected).toBe(true);
+        expect(screen.findByTestId('session-handoff-primary-step-moving')?.props.accessibilityState?.selected).toBe(true);
     });
 
-    it('suppresses semantically duplicate workspace progress labels', async () => {
+    it('keeps technical workspace progress labels behind Details', async () => {
         const { SessionHandoffProgressModal } = await import('./SessionHandoffProgressModal');
         const screen = await renderScreen(
             <SessionHandoffProgressModal
@@ -149,6 +235,8 @@ describe('SessionHandoffProgressModal', () => {
         );
 
         expect(screen.getTextContent()).not.toContain('Transferring workspace');
+        await expandProgressDetails(screen);
+        expect(screen.getTextContent()).toContain('Transferring workspace');
     });
 
     it('offers Resume for an interrupted handoff but never invokes it during passive render', async () => {
@@ -198,6 +286,7 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
+        await expandProgressDetails(screen);
         for (const checkpoint of SessionHandoffProgressCheckpointSchema.options) {
             expect(screen.findByTestId(`session-handoff-progress-checkpoint-${checkpoint}`)).toBeTruthy();
         }
@@ -258,6 +347,13 @@ describe('SessionHandoffProgressModal', () => {
                 testID: 'session-handoff-progress-modal',
             }),
         );
+        expect(screen.findByTestId('session-handoff-progress-bar')).toBeTruthy();
+        expect(screen.findByTestId('session-handoff-progress-percent')).toBeTruthy();
+        expect(screen.findByTestId('session-handoff-progress-summary')).toBeNull();
+        expect(screen.findByTestId('session-handoff-progress-stats')).toBeNull();
+        expect(screen.findByTestId('session-handoff-progress-path')).toBeNull();
+        expect(screen.findByTestId('session-handoff-progress-timeline')).toBeNull();
+        await expandProgressDetails(screen);
         expect(screen.findByTestId('session-handoff-progress-summary')).toBeTruthy();
         expect(screen.findByTestId('session-handoff-progress-stats')).toBeTruthy();
         expect(screen.findByTestId('session-handoff-progress-bar')).toBeTruthy();
@@ -277,7 +373,8 @@ describe('SessionHandoffProgressModal', () => {
         expect(textContent).toContain('~2');
         expect(textContent).toContain('-1');
         expect(textContent).toContain('2.0 KB');
-        expect(textContent).toContain('50%');
+        expect(screen.findByTestId('session-handoff-progress-bar')?.props.accessibilityValue)
+            .toEqual({ min: 0, max: 100, now: 50 });
         expect(textContent).toContain('README.md');
         expect(textContent).toContain('sessionHandoff.progress.planned');
         expect(textContent).toContain('sessionHandoff.progress.transferred');
@@ -310,7 +407,7 @@ describe('SessionHandoffProgressModal', () => {
 
         const progressBar = screen.findByTestId('session-handoff-progress-bar');
         expect(progressBar?.props.accessibilityRole).toBe('progressbar');
-        expect(progressBar?.props.accessibilityLabel).toBe('sessionHandoff.progress.title');
+        expect(progressBar?.props.accessibilityLabel).toBe('sessionHandoff.progress.primary.moving');
         expect(progressBar?.props.accessibilityValue).toEqual({ min: 0, max: 100, now: 25 });
 
         const initialStatus = screen.findByTestId('session-handoff-progress-status');
@@ -371,6 +468,7 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
+        await expandProgressDetails(screen);
         expect(screen.findByTestId('session-handoff-progress-stats')).toBeTruthy();
         expect(screen.findByTestId('session-handoff-progress-stat-applied')).toBeTruthy();
         expect(screen.findByTestId('session-handoff-progress-bar')).toBeNull();
@@ -405,6 +503,7 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
+        await expandProgressDetails(screen);
         expect(screen.findByTestId('session-handoff-progress-checkpoint-plan')).toBeTruthy();
         expect(screen.findByTestId('session-handoff-progress-checkpoint-scan_source')).toBeNull();
 
@@ -469,6 +568,7 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
+        await expandProgressDetails(screen);
         expect(screen.findByTestId('session-handoff-progress-checkpoint-stage_target')).toBeTruthy();
         expect(screen.findByTestId('session-handoff-progress-checkpoint-import_session')).toBeTruthy();
         expect(screen.findByTestId('session-handoff-progress-checkpoint-finalize')).toBeTruthy();
@@ -543,6 +643,7 @@ describe('SessionHandoffProgressModal', () => {
                 title: 'sessionHandoff.recovery.title',
             }),
         );
+        await expandProgressDetails(screen);
         expect(screen.getTextContent()).toContain('sessionHandoff.recovery.messageAfterSourceStop');
         expect(screen.getTextContent()).toContain('daemon_restart_detected');
         expect(screen.findByTestId('session-handoff-progress-bar')).toBeNull();
@@ -576,6 +677,7 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
+        await expandProgressDetails(screen);
         expect(screen.findByTestId('session-handoff-progress-percent')).toBeNull();
         expect(screen.findByTestId('session-handoff-progress-bar')).toBeNull();
         expect(screen.getTextContent()).toContain('sessionHandoff.progress.timeline.importSession');
@@ -606,6 +708,7 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
+        await expandProgressDetails(screen);
         expect(screen.findByTestId('session-handoff-progress-timeline')).toBeTruthy();
         expect(screen.findByTestId('session-handoff-progress-path')).toBeTruthy();
         expect(screen.getTextContent()).toContain('sessionHandoff.progress.timeline.stageTarget');
@@ -633,6 +736,7 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
+        await expandProgressDetails(screen);
         expect(screen.findByTestId('session-handoff-progress-checkpoint-stage_target')).toBeTruthy();
         expect(screen.findByTestId('session-handoff-progress-checkpoint-import_session')).toBeTruthy();
         expect(screen.findByTestId('session-handoff-progress-checkpoint-finalize')).toBeTruthy();
@@ -665,6 +769,7 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
+        await expandProgressDetails(screen);
         const currentCheckpointRow = screen.findByTestId('session-handoff-progress-checkpoint-import_session');
         expect(currentCheckpointRow?.props.accessibilityState?.selected).toBe(true);
         expect(screen.findByTestId('session-handoff-progress-checkpoint-finalize')?.props.accessibilityState?.selected).toBe(false);
@@ -696,6 +801,7 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
+        await expandProgressDetails(screen);
         expect(screen.findByTestId('session-handoff-progress-checkpoint-transfer_blobs')?.props.accessibilityState?.selected).toBe(true);
 
         act(() => {
@@ -751,6 +857,7 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
+        await expandProgressDetails(screen);
         expect(screen.findByTestId('session-handoff-progress-checkpoint-transfer_blobs')?.props.accessibilityState?.selected).toBe(true);
 
         act(() => {
@@ -799,6 +906,7 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
+        await expandProgressDetails(screen);
         expect(screen.findByTestId('session-handoff-progress-bar')).toBeNull();
         expect(screen.findByTestId('session-handoff-progress-percent')).toBeNull();
         expect(screen.findByTestId('session-handoff-progress-checkpoint-stage_target')).toBeTruthy();
@@ -836,6 +944,7 @@ describe('SessionHandoffProgressModal', () => {
             />,
         );
 
+        await expandProgressDetails(screen);
         expect(screen.findByTestId('session-handoff-progress-summary')).toBeNull();
         const textContent = screen.getTextContent();
         expect(textContent).not.toContain('+2');

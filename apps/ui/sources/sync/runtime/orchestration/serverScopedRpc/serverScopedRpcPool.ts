@@ -55,6 +55,7 @@ function setMachineTransportCache(cacheKey: string, value: ScopedMachineTranspor
 
 async function fetchMachineTransport(params: Readonly<{
     serverUrl: string;
+    runtimeOrigin?: string;
     token: string;
     machineId: string;
     decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
@@ -69,7 +70,8 @@ async function fetchMachineTransport(params: Readonly<{
         const response = await runtimeFetchWithServerReachability({
             serverUrl: params.serverUrl,
             token: params.token,
-            url: `${params.serverUrl}/v1/machines/${encodeURIComponent(params.machineId)}`,
+            url: `${params.runtimeOrigin ?? params.serverUrl}/v1/machines/${encodeURIComponent(params.machineId)}`,
+            ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
             init: {
                 method: 'GET',
                 headers: {
@@ -124,6 +126,7 @@ async function fetchMachineTransport(params: Readonly<{
 export async function resolveScopedMachineTransport(params: Readonly<{
     serverId: string;
     serverUrl: string;
+    runtimeOrigin?: string;
     token: string;
     machineId: string;
     decryptEncryptionKey?: (value: string) => Promise<Uint8Array | null>;
@@ -150,6 +153,7 @@ export async function resolveScopedMachineTransport(params: Readonly<{
     const transport = await machineTransportResolutions.run(keyCacheKey, async () => {
         const resolved = await fetchMachineTransport({
             serverUrl: params.serverUrl,
+            ...(params.runtimeOrigin ? { runtimeOrigin: params.runtimeOrigin } : {}),
             token,
             machineId,
             decryptEncryptionKey: params.decryptEncryptionKey,

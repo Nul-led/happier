@@ -21,9 +21,6 @@ import {
     type SessionModelSelectionV1,
 } from '@happier-dev/protocol';
 import { resolveBundledAgentIdFromContributionIdentity } from '@/agents/catalog/catalog';
-import {
-    buildBackendTransportFieldsFromUiState,
-} from '@/agents/registry/registryUiBehavior';
 import { isPermissionMode, type PermissionMode } from '../../permissions/permissionTypes';
 
 export type ResumeHappySessionRpcParams = {
@@ -122,14 +119,6 @@ export function buildResumeHappySessionRpcParams(input: BuildResumeHappySessionR
         })
         : undefined;
     const canonicalBackendTarget = explicitBackendTarget ?? predecessorBackendTarget;
-    const backendTransportFields = canonicalBackendTarget
-        ? buildBackendTransportFieldsFromUiState({
-            machineId,
-            backendTarget: canonicalBackendTarget,
-            runtimeDescriptorV1,
-            providerSessionId: rest.resume,
-        })
-        : {};
     const canonicalModelSelection = modelSelection
         ? SessionModelSelectionV1Schema.parse(modelSelection)
         : null;
@@ -158,11 +147,7 @@ export function buildResumeHappySessionRpcParams(input: BuildResumeHappySessionR
                 ? { connectedServicesUpdatedAt }
                 : {}
         )),
-        ...(runtimeDescriptorV1
-            ? { runtimeDescriptorV1 }
-            : 'runtimeDescriptorV1' in backendTransportFields && backendTransportFields.runtimeDescriptorV1
-                ? { runtimeDescriptorV1: backendTransportFields.runtimeDescriptorV1 }
-                : {}),
+        ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
         ...(canonicalModelSelection ? { modelSelection: canonicalModelSelection } : {}),
     };
     // Validate shape early to avoid accidentally sending secrets in wrong fields.

@@ -218,6 +218,11 @@ describe('runtimeFetchWithServerReachability', () => {
             setRuntimeFetch: () => {},
         }));
 
+        const { subscribeServerReachabilityState } = await import('./serverReachabilitySupervisorPool');
+        let latestPhase: string | null = null;
+        const unsubscribe = subscribeServerReachabilityState('https://api.example.test', (state) => {
+            latestPhase = state.phase;
+        }, 'token-a');
         const { runtimeFetchWithServerReachability } = await import('./serverReachabilityRuntimeFetch');
         await expect(
             runtimeFetchWithServerReachability({
@@ -232,12 +237,6 @@ describe('runtimeFetchWithServerReachability', () => {
                 },
             }),
         ).rejects.toThrow('Network request failed');
-
-        const { subscribeServerReachabilityState } = await import('./serverReachabilitySupervisorPool');
-        let latestPhase: string | null = null;
-        const unsubscribe = subscribeServerReachabilityState('https://api.example.test', (state) => {
-            latestPhase = state.phase;
-        });
         unsubscribe();
 
         expect(latestPhase).toBe('offline');
@@ -265,6 +264,11 @@ describe('runtimeFetchWithServerReachability', () => {
             setRuntimeFetch: () => {},
         }));
 
+        const { peekServerReachabilityState, startServerReachabilitySupervisor, subscribeServerReachabilityState } = await import('./serverReachabilitySupervisorPool');
+        let latestPhase: string | null = null;
+        const unsubscribe = subscribeServerReachabilityState('https://api.example.test', (state) => {
+            latestPhase = state.phase;
+        }, 'token-a');
         const { runtimeFetchWithServerReachability } = await import('./serverReachabilityRuntimeFetch');
         const response = await runtimeFetchWithServerReachability({
             serverUrl: 'https://api.example.test',
@@ -280,14 +284,14 @@ describe('runtimeFetchWithServerReachability', () => {
 
         expect(response.status).toBe(401);
 
-        const { subscribeServerReachabilityState } = await import('./serverReachabilitySupervisorPool');
-        let latestPhase: string | null = null;
-        const unsubscribe = subscribeServerReachabilityState('https://api.example.test', (state) => {
-            latestPhase = state.phase;
+        await startServerReachabilitySupervisor({
+            serverUrl: 'https://api.example.test',
+            token: 'token-b',
         });
         unsubscribe();
 
         expect(latestPhase).toBe('auth_failed');
+        expect(peekServerReachabilityState('https://api.example.test', 'token-b')?.phase).toBe('online');
     });
 
     it('rejects authenticated requests when the request URL origin differs from the serverUrl origin', async () => {

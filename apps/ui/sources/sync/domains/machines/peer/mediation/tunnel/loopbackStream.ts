@@ -7,6 +7,8 @@ import {
 import {
     decodePeerTcpTunnelBinaryFrameForSession,
     decodePeerTcpTunnelBinarySubstreamFrame,
+    decodeLegacyJsonPeerTcpTunnelFrame,
+    encodeLegacyJsonPeerTcpTunnelFrame,
     encodePeerTcpTunnelBinaryFrameForSession,
     encodePeerTcpTunnelBinaryFrameForSubstream,
     encodePeerTcpTunnelBinarySubstreamOpen,
@@ -14,10 +16,6 @@ import {
 } from '@happier-dev/peer-transport/duplexFrames';
 
 import type { PeerTcpTunnelClientStream } from './client';
-import {
-    decodeLegacyJsonPeerTcpTunnelFrame,
-    encodeLegacyJsonPeerTcpTunnelFrame,
-} from './legacyJsonFrameAdapter';
 
 const DEFAULT_TUNNEL_WEBSOCKET_OPEN_TIMEOUT_MS = 30_000;
 

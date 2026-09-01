@@ -103,7 +103,7 @@ describe('sync/runtime/nativeIrohTunnels desktop lifecycle bridge', () => {
         expect(requestArg).not.toHaveProperty('endpointSeedBase64');
     });
 
-    it.each(['tauri', 'electron'] as const)('releases through %s via iroh_stop_home_tunnel and stays typed for repeated releases', async (hostKind) => {
+    it.each(['tauri', 'electron'] as const)('releases through %s via the canonical handle operation and stays typed for repeated releases', async (hostKind) => {
         installDesktopHost(hostKind === 'electron' ? ELECTRON_USER_AGENT : TAURI_USER_AGENT);
         const module = createDesktopIrohLifecycleModule();
         expect(module).not.toBeNull();
@@ -183,7 +183,7 @@ describe('sync/runtime/nativeIrohTunnels desktop lifecycle bridge', () => {
         const unavailableError = await module!.ensureHomeTunnel(makeRequest()).catch((error: unknown) => error);
         expect(classifyIrohHomeTunnelSwitchFailure(unavailableError).fallbackAllowed).toBe(true);
 
-        hostInvoke.mockRejectedValueOnce(new Error('HAPPIER_DESKTOP_NOT_IMPLEMENTED: iroh_start_home_tunnel'));
+        hostInvoke.mockRejectedValueOnce(new Error('HAPPIER_DESKTOP_NOT_IMPLEMENTED: iroh_ensure_home_tunnel'));
         const notImplementedError = await module!.ensureHomeTunnel(makeRequest()).catch((error: unknown) => error);
         expect(classifyIrohHomeTunnelSwitchFailure(notImplementedError).fallbackAllowed).toBe(true);
 

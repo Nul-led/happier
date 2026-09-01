@@ -181,3 +181,26 @@ export async function readExpoPushToken(
     if (!outcome.ok) return outcome;
     return outcome.value ? { ok: true, token: outcome.value } : { ok: false, reason: 'token_unavailable' };
 }
+
+/**
+ * Subscribe to Expo's ordinary device push-token changes. The callback is only a
+ * truth-change signal: callers must perform a fresh canonical token read rather
+ * than treating the event payload as registration authority.
+ */
+export async function subscribeExpoPushTokenChanges(
+    listener: () => void,
+    opts?: PushNotificationAccessOptions,
+): Promise<(() => void) | null> {
+    if (!isPushNotificationRuntimeSupported()) return null;
+
+    const outcome = await withNotificationRuntime(
+        opts,
+        'expo-notifications addPushTokenListener',
+        async (notifications) => {
+            if (typeof notifications.addPushTokenListener !== 'function') return null;
+            const subscription = notifications.addPushTokenListener(() => listener());
+            return () => subscription.remove();
+        },
+    );
+    return outcome.ok ? outcome.value : null;
+}

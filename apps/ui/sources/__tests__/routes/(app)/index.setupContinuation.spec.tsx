@@ -60,6 +60,7 @@ vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
 
 const tauriDesktopState = vi.hoisted(() => ({ value: true }));
 vi.mock('@/utils/platform/desktopHost', () => ({
+    desktopHostKind: () => tauriDesktopState.value ? 'tauri' : null,
     isDesktopHost: () => tauriDesktopState.value,
 }));
 
@@ -405,6 +406,7 @@ describe('/ (welcome) setup continuation', () => {
 
     it('renders the real Desktop shell after the Personal Home provider releases readiness', async () => {
         isAuthenticated = false;
+        getPendingSetupIntentMock.mockReturnValue(null);
 
         const Screen = (await import('@/app/(app)/index')).default;
         const screen = await renderScreen(React.createElement(Screen));
@@ -423,8 +425,12 @@ describe('/ (welcome) setup continuation', () => {
             isDesktopMainWindow: true,
             explicitlySelectedOtherHome: false,
             completedPersonalHomeProfile: null,
-            candidateLocalProfile: null,
+            candidateLocalProfile: {
+                id: 'local', name: 'Personal Home', serverUrl: 'http://127.0.0.1:43123',
+                serverIdentityId: 'personal-home-identity', createdAt: 1, updatedAt: 1, lastUsedAt: 1,
+            },
             relayRuntime: {
+                relayUrl: 'http://127.0.0.1:43123',
                 installed: true,
                 healthy: true,
                 serviceActive: true,
@@ -447,7 +453,7 @@ describe('/ (welcome) setup continuation', () => {
                 isDesktopMainWindow
                 initialFacts={verifiedUnadopted}
                 readFacts={async () => verifiedUnadopted}
-                operations={{ 'connect-app': async () => { throw new Error('profile store unavailable'); } }}
+                operations={{ 'ensure-home-ready': async () => { throw new Error('profile store unavailable'); } }}
             >
                 <Screen />
             </PersonalHomeBootstrapGate>,

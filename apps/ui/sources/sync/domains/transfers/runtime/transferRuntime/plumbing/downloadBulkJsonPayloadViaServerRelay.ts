@@ -1,6 +1,7 @@
 import { type TransferRelayV2SendEnvelope } from '@happier-dev/protocol';
 
 import { resolveServerScopedTransferRelaySocket } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedTransferRelaySocket';
+import { fireAndForget } from '@/utils/system/fireAndForget';
 
 import { createTransferRecipientKeyPair, decryptEncryptedTransferChunkEnvelope } from './transferChunkEncryption';
 import { resolveBulkTransferJsonMaxBytes } from './resolveBulkTransferJsonMaxBytes';
@@ -148,7 +149,7 @@ export async function downloadBulkJsonPayloadViaServerRelay<TPayload>(params: Re
             clearTransferTimeout();
             unsubscribe?.();
             signalCleanup?.();
-            relaySocket.disconnect();
+            fireAndForget(relaySocket.disconnect(), { tag: 'transfer-relay-disconnect' });
             return true;
         };
 

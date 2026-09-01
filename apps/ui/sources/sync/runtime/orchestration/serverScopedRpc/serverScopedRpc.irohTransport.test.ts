@@ -246,7 +246,9 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
     });
 
     it('falls back to a descriptor-proven independent HTTPS endpoint after pure Iroh unavailability', async () => {
-        irohProfile = buildIrohOnlyProfile({ publicServerUrl: 'https://home-b.example.test' });
+        irohProfile = buildIrohOnlyProfile({
+            publicServerUrl: ' HTTPS://Home-B.Example.test:443/api///?token=secret#fragment ',
+        });
         getActiveServerSnapshotSpy.mockReturnValue({
             serverId: 'srv_home_a',
             serverUrl: 'https://home-a.example.test',
@@ -261,7 +263,7 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
         if (context.scope !== 'scoped') {
             throw new Error('expected scoped context');
         }
-        expect(context.runtimeOrigin).toBe('https://home-b.example.test');
+        expect(context.runtimeOrigin).toBe('https://home-b.example.test/api');
         expect(context.carrier).toBe('https');
     });
 
@@ -353,6 +355,175 @@ describe('scoped transport authority for non-focused Iroh Homes', () => {
         const requestUrls = runtimeFetchSpy.mock.calls.map(([input]) => String(input));
         expect(requestUrls.some((url) => url.startsWith(`${LEASE_RUNTIME_ORIGIN}/v1/example`))).toBe(true);
         expect(requestUrls.some((url) => url.startsWith('http://127.0.0.1:3010/v1/example'))).toBe(false);
+        await vi.waitFor(() => {
+            expect(releaseLeaseSpy).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    it('mints a peer-route grant for a non-focused Iroh-only Home through the verified loopback origin', async () => {
+        const clientEndpointId = 'a'.repeat(64);
+        const machineEndpointId = 'b'.repeat(64);
+        getActiveServerSnapshotSpy.mockReturnValue({
+            serverId: 'srv_home_a',
+            serverUrl: 'https://home-a.example.test',
+            generation: 1,
+        });
+        listServerProfilesSpy.mockReturnValue([irohProfile]);
+        mockVerifiedLease();
+        runtimeFetchSpy.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.endsWith('/v1/auth/ping') || url.endsWith('/health')) {
+                return new Response(JSON.stringify({ ok: true }), { status: 200 });
+            }
+            const request = JSON.parse(String(init?.body)) as { ephemeralPublicKeyBase64Url: string };
+            return new Response(JSON.stringify({
+                ok: true,
+                grant: {
+                    payload: {
+                        v: 2,
+                        grantId: 'grant-v2',
+                        accountId: 'account-b',
+                        machineId: 'machine-b',
+                        flowKind: 'bounded_transfer',
+                        routeKind: 'iroh_peer',
+                        scope: {
+                            kind: 'bounded_transfer',
+                            mode: 'single',
+                            transferId: 'transfer-1',
+                            maxBytes: 1024,
+                        },
+                        iat: 1_000,
+                        exp: 301_000,
+                        aud: 'happier-daemon-route-grant',
+                        endpointFingerprint: machineEndpointId,
+                        proofKind: 'ephemeral_ed25519',
+                        ephemeralPublicKeyBase64Url: request.ephemeralPublicKeyBase64Url,
+                        iroh: {
+                            initiator: { kind: 'account_client', endpointId: clientEndpointId },
+                            target: { machineId: 'machine-b', endpointId: machineEndpointId },
+                            operationKind: 'file_transfer',
+                        },
+                    },
+                    signature: {
+                        keyId: 'key-1',
+                        alg: 'Ed25519',
+                        valueBase64Url: Buffer.from(new Uint8Array(64).fill(4)).toString('base64url'),
+                    },
+                },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        });
+
+        const { requestPeerRouteGrantV2 } = await import(
+            '@/sync/domains/machines/peer/mediation/stream/productionRouteHttp'
+        );
+        const { createSessionRequestWithServerScope } = await import(
+            './createSessionRequestWithServerScope'
+        );
+        const result = await requestPeerRouteGrantV2({
+            authority: {
+                request: createSessionRequestWithServerScope({
+                    serverId: 'srv_home_b',
+                    activeRequest: async () => {
+                        throw new Error('non-focused grant must not use active request');
+                    },
+                }),
+            },
+            request: {
+                v: 2,
+                kind: 'ephemeral_ed25519',
+                ephemeralPublicKeyBase64Url: Buffer.from(new Uint8Array(32).fill(7)).toString('base64url'),
+                machineId: 'machine-b',
+                flowKind: 'bounded_transfer',
+                routeKind: 'iroh_peer',
+                endpointFingerprint: machineEndpointId,
+                ttlMs: 300_000,
+                scope: {
+                    kind: 'bounded_transfer',
+                    mode: 'single',
+                    transferId: 'transfer-1',
+                    maxBytes: 1024,
+                },
+                iroh: {
+                    initiator: { kind: 'account_client', endpointId: clientEndpointId },
+                    target: { machineId: 'machine-b', endpointId: machineEndpointId },
+                    operationKind: 'file_transfer',
+                },
+            },
+            timeoutMs: 5_000,
+        });
+
+        expect(result).toMatchObject({ ok: true, value: { payload: { grantId: 'grant-v2' } } });
+        const requestUrls = runtimeFetchSpy.mock.calls.map(([input]) => String(input));
+        expect(requestUrls).toContain(`${LEASE_RUNTIME_ORIGIN}/v1/machines/peer/mediation/route-grants`);
+        expect(requestUrls).not.toContain('http://127.0.0.1:3010/v1/machines/peer/mediation/route-grants');
+        await vi.waitFor(() => expect(releaseLeaseSpy).toHaveBeenCalledTimes(1));
+    });
+
+    it('releases the Iroh lease when machine preparation fails before socket acquisition', async () => {
+        getActiveServerSnapshotSpy.mockReturnValue({
+            serverId: 'srv_home_a',
+            serverUrl: 'https://home-a.example.test',
+            generation: 1,
+        });
+        listServerProfilesSpy.mockReturnValue([irohProfile]);
+        mockVerifiedLease();
+        runtimeFetchSpy.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith('/v1/auth/ping') || url.endsWith('/health')) {
+                return new Response(JSON.stringify({ ok: true }), { status: 200 });
+            }
+            return new Response(JSON.stringify({ machine: null }), { status: 200 });
+        });
+
+        const { machineRpcWithServerScope } = await import('./serverScopedMachineRpc');
+        await expect(machineRpcWithServerScope({
+            serverId: 'srv_home_b',
+            machineId: 'machine-1',
+            method: 'machine.test',
+            payload: {},
+            timeoutMs: 5_000,
+            onIssued: vi.fn(),
+        })).rejects.toThrow('Machine encryption not found');
+
+        expect(ioSpy).not.toHaveBeenCalled();
+        expect(releaseLeaseSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('releases the Iroh lease when the caller aborts during scoped context acquisition', async () => {
+        const controller = new AbortController();
+        getActiveServerSnapshotSpy.mockReturnValue({
+            serverId: 'srv_home_a',
+            serverUrl: 'https://home-a.example.test',
+            generation: 1,
+        });
+        listServerProfilesSpy.mockReturnValue([irohProfile]);
+        acquireIrohSpy.mockImplementation(async () => {
+            controller.abort();
+            return {
+                leaseId: 'lease-home-b',
+                localUrl: LEASE_RUNTIME_ORIGIN,
+                runtimeOrigin: LEASE_RUNTIME_ORIGIN,
+                homeServerIdentityId: 'srv_home_b',
+                endpointId: 'ep-home-b',
+                carrier: 'iroh',
+                observedPath: 'direct',
+                status: 'ready',
+                release: releaseLeaseSpy,
+            };
+        });
+
+        const { machineRpcWithServerScope } = await import('./serverScopedMachineRpc');
+        await expect(machineRpcWithServerScope({
+            serverId: 'srv_home_b',
+            machineId: 'machine-1',
+            method: 'machine.test',
+            payload: {},
+            timeoutMs: 5_000,
+            signal: controller.signal,
+            onIssued: vi.fn(),
+        })).rejects.toMatchObject({ name: 'AbortError', code: 'MACHINE_RPC_ABORTED' });
+
+        expect(ioSpy).not.toHaveBeenCalled();
         await vi.waitFor(() => {
             expect(releaseLeaseSpy).toHaveBeenCalledTimes(1);
         });

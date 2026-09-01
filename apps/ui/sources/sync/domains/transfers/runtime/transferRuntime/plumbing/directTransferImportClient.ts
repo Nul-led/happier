@@ -15,7 +15,7 @@ import {
     createDirectTransferRequestAbortSignal,
     resolveDirectTransferRequestTimeoutMs,
 } from './directTransferRequestDeadline';
-import { rebaseMachineCarrierHttpEndpoint } from './machineCarrierHttpLease';
+import { rebaseMachineCarrierHttpEndpoint, type MachineCarrierHttpLease } from './machineCarrierHttpLease';
 
 export type ComposerMediaStageUploadRequest = Readonly<{
     t: 'composer_media_stage_upload_v1';
@@ -134,6 +134,8 @@ export type PreparedDirectImportSession = Readonly<{
     recipientPublicKeyBase64: string;
     expiresAt: number;
     baseUrls: readonly string[];
+    requestHeaders?: Readonly<Record<string, string>>;
+    releaseCarrier?: (() => Promise<void> | void) | null;
 }>;
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -334,6 +336,7 @@ export async function prepareDirectImportSession(params: Readonly<{
     signal?: AbortSignal | null;
     preferScoped?: boolean;
     httpOriginOverride?: string | null;
+    acquirePreparedCarrier?: ((prepared: Readonly<{ operationId: string; maxBytes: number }>) => Promise<MachineCarrierHttpLease | null>) | null;
 }>): Promise<
     | Readonly<{ success: true; session: PreparedDirectImportSession }>
     | Readonly<{ success: false; error: string; errorCode?: string }>
@@ -401,6 +404,24 @@ export async function prepareDirectImportSession(params: Readonly<{
         });
     }
 
+    let preparedCarrier: Awaited<ReturnType<NonNullable<typeof params.acquirePreparedCarrier>>> | null = null;
+    let effectiveOrigin = params.httpOriginOverride ?? null;
+    if (params.acquirePreparedCarrier) {
+        try {
+            preparedCarrier = await params.acquirePreparedCarrier({
+                operationId: uploadId,
+                maxBytes: Math.max(1, Math.floor(prepare.expectedSizeBytes)),
+            });
+            if (preparedCarrier) effectiveOrigin = preparedCarrier.localOrigin;
+        } catch {
+            return await failOwnedSession({
+                success: false,
+                error: 'Direct import machine carrier unavailable',
+                errorCode: 'machine_carrier_transport_failed',
+            });
+        }
+    }
+
     const baseUrls: string[] = [];
     let hasMalformedEndpointCandidate = false;
     for (const candidate of prepare.endpointCandidates) {
@@ -410,14 +431,14 @@ export async function prepareDirectImportSession(params: Readonly<{
             continue;
         }
         try {
-            const endpointUrl = params.httpOriginOverride
-                ? rebaseMachineCarrierHttpEndpoint(parsedCandidate.data.url, params.httpOriginOverride)
+            const endpointUrl = effectiveOrigin
+                ? rebaseMachineCarrierHttpEndpoint(parsedCandidate.data.url, effectiveOrigin)
                 : parsedCandidate.data.url;
             if (!isSafeDirectTransferEndpointCandidate({ ...parsedCandidate.data, url: endpointUrl })) {
                 continue;
             }
             const normalizedBaseUrl = normalizeDirectPeerImportEndpointBaseUrl(endpointUrl);
-            baseUrls.push(params.httpOriginOverride
+            baseUrls.push(effectiveOrigin
                 ? `${normalizedBaseUrl}${new URL(endpointUrl).search}`
                 : normalizedBaseUrl);
         } catch {
@@ -427,6 +448,7 @@ export async function prepareDirectImportSession(params: Readonly<{
     }
 
     if (baseUrls.length === 0) {
+        if (preparedCarrier) await Promise.resolve(preparedCarrier.release()).catch(() => undefined);
         return await failOwnedSession(hasMalformedEndpointCandidate
             ? {
                 success: false,
@@ -446,6 +468,8 @@ export async function prepareDirectImportSession(params: Readonly<{
             recipientPublicKeyBase64,
             expiresAt: prepare.expiresAt,
             baseUrls,
+            ...(preparedCarrier ? { requestHeaders: preparedCarrier.requestHeaders } : {}),
+            ...(preparedCarrier ? { releaseCarrier: preparedCarrier.release } : {}),
         },
     };
 }
@@ -455,12 +479,14 @@ async function putJson(url: string, input: Readonly<{
     maxResponseBytes: number;
     timeoutMs: number;
     signal?: AbortSignal | null;
+    requestHeaders?: Readonly<Record<string, string>>;
 }>): Promise<unknown> {
     const requestSignal = createDirectTransferRequestAbortSignal(input);
     try {
         const response = await runtimeFetch(url, {
             method: 'PUT',
             headers: {
+                ...input.requestHeaders,
                 'content-type': 'application/json',
             },
             body: JSON.stringify(input.body),
@@ -480,6 +506,7 @@ export async function sendDirectImportChunk(params: Readonly<{
     encryptedDataKeyEnvelopeBase64: string;
     timeoutMs?: number | null;
     signal?: AbortSignal | null;
+    requestHeaders?: Readonly<Record<string, string>>;
 }>): Promise<DirectTransferImportChunkResponse> {
     const response = await putJson(
         buildDirectImportEndpoint(params.baseUrl, 'chunks', params.index),
@@ -491,6 +518,7 @@ export async function sendDirectImportChunk(params: Readonly<{
             maxResponseBytes: DIRECT_IMPORT_CHUNK_RESPONSE_MAX_BYTES,
             timeoutMs: resolveDirectTransferRequestTimeoutMs(params.timeoutMs),
             signal: params.signal ?? null,
+            requestHeaders: params.requestHeaders,
         },
     );
     if (!isDirectTransferImportChunkResponse(response)) {
@@ -529,6 +557,7 @@ export async function finalizeDirectImportSession(params: Readonly<{
     baseUrl: string;
     timeoutMs?: number | null;
     signal?: AbortSignal | null;
+    requestHeaders?: Readonly<Record<string, string>>;
 }>): Promise<DirectTransferImportFinalizeResponse> {
     const requestSignal = createDirectTransferRequestAbortSignal({
         timeoutMs: resolveDirectTransferRequestTimeoutMs(params.timeoutMs),
@@ -545,6 +574,7 @@ export async function finalizeDirectImportSession(params: Readonly<{
         finalizeRequestIssued = true;
         const response = await runtimeFetch(finalizeUrl, {
             method: 'POST',
+            headers: params.requestHeaders,
             credentials: 'same-origin',
             signal: requestSignal.signal,
         });

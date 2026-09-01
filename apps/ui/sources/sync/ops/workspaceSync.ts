@@ -4,23 +4,18 @@ import {
     ReadWorkspaceSyncFileV1Schema,
     WorkspaceSyncConflictListV1Schema,
     WorkspaceSyncRelationshipIdV1Schema,
+    WorkspaceSyncLegacyStateInspectionV1Schema,
     WorkspaceSyncStatusV1Schema,
     type DeleteWorkspaceSyncConflictLoserV1,
     type ReadWorkspaceSyncFileResultV1,
     type ReadWorkspaceSyncFileV1,
     type WorkspaceSyncConflictListV1,
     type WorkspaceSyncStatusV1,
+    type WorkspaceSyncLegacyStateInspectionV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import { machineRpcWithServerScope } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc';
-import { sync } from '@/sync/sync';
-import { storage } from '@/sync/domains/state/storageStore';
-import { requireOneShotAccountSettingsMutationApplied } from '@/sync/engine/settings/syncSettings';
-import {
-    removeWorkspaceSyncRelationshipRecord,
-    setWorkspaceSyncRelationshipEnabled,
-} from '@/sync/domains/sessionHandoff/workspaceSyncRelationshipMutations';
 
 type WorkspaceSyncControllerScope = Readonly<{
     controllerMachineId: string;
@@ -44,21 +39,6 @@ function strictRecord(value: unknown, keys: readonly string[], method: string): 
         unsupported(method);
     }
     return record;
-}
-
-async function mutateWorkspaceSyncAccountSettings(
-    mutate: (raw: Readonly<Record<string, unknown>>) => Record<string, unknown>,
-): Promise<void> {
-    const expectedSettingsVersion = storage.getState().settingsVersion;
-    if (expectedSettingsVersion === null) {
-        throw new Error('Account settings version is unavailable');
-    }
-    requireOneShotAccountSettingsMutationApplied(
-        await sync.mutateAccountSettingsOnce({
-            expectedSettingsVersion,
-            mutate: (raw) => ({ settings: mutate(raw), value: undefined }),
-        }),
-    );
 }
 
 async function callWorkspaceSync<R>(
@@ -89,6 +69,15 @@ async function runRelationshipCommand(
     return parseStatusEnvelope(await callWorkspaceSync(scope, method, payload), method);
 }
 
+async function runRelationshipLifecycleCommand(
+    scope: WorkspaceSyncRelationshipScope,
+    method: string,
+): Promise<void> {
+    const payload = WorkspaceSyncRelationshipIdV1Schema.parse({ relationshipId: scope.relationshipId });
+    const record = strictRecord(await callWorkspaceSync(scope, method, payload), ['ok'], method);
+    if (record.ok !== true) unsupported(method);
+}
+
 export async function listWorkspaceSyncStatuses(
     scope: WorkspaceSyncControllerScope,
 ): Promise<readonly WorkspaceSyncStatusV1[]> {
@@ -102,6 +91,16 @@ export async function listWorkspaceSyncStatuses(
         statuses.push(parsed.data);
     }
     return statuses;
+}
+
+export async function inspectWorkspaceSyncLegacyState(
+    scope: WorkspaceSyncControllerScope,
+): Promise<WorkspaceSyncLegacyStateInspectionV1> {
+    const method = RPC_METHODS.DAEMON_WORKSPACE_SYNC_LEGACY_INSPECT;
+    const parsed = WorkspaceSyncLegacyStateInspectionV1Schema.safeParse(
+        await callWorkspaceSync(scope, method, {}),
+    );
+    return parsed.success ? parsed.data : unsupported(method);
 }
 
 export async function getWorkspaceSyncStatus(
@@ -121,46 +120,22 @@ export async function flushWorkspaceSyncRelationship(
     return await runRelationshipCommand(scope, RPC_METHODS.DAEMON_WORKSPACE_SYNC_FLUSH);
 }
 
-async function persistRelationshipEnabled(
-    scope: WorkspaceSyncRelationshipScope,
-    enabled: boolean,
-): Promise<void> {
-    const updatedAtMs = Date.now();
-    await mutateWorkspaceSyncAccountSettings((raw) => ({
-        ...raw,
-        workspaceSyncRelationshipsV1: setWorkspaceSyncRelationshipEnabled(
-            raw.workspaceSyncRelationshipsV1,
-            {
-                relationshipId: scope.relationshipId,
-                enabled,
-                updatedAtMs,
-            },
-        ),
-    }));
-}
-
 export async function disableWorkspaceSyncRelationship(
     scope: WorkspaceSyncRelationshipScope,
 ): Promise<void> {
-    await persistRelationshipEnabled(scope, false);
+    await runRelationshipLifecycleCommand(scope, RPC_METHODS.DAEMON_WORKSPACE_SYNC_PAUSE);
 }
 
 export async function enableWorkspaceSyncRelationship(
     scope: WorkspaceSyncRelationshipScope,
 ): Promise<void> {
-    await persistRelationshipEnabled(scope, true);
+    await runRelationshipLifecycleCommand(scope, RPC_METHODS.DAEMON_WORKSPACE_SYNC_RESUME);
 }
 
 export async function terminatePersistedWorkspaceSyncRelationship(
     scope: WorkspaceSyncRelationshipScope,
 ): Promise<void> {
-    await mutateWorkspaceSyncAccountSettings((raw) => ({
-        ...raw,
-        workspaceSyncRelationshipsV1: removeWorkspaceSyncRelationshipRecord(
-            raw.workspaceSyncRelationshipsV1,
-            scope.relationshipId,
-        ),
-    }));
+    await runRelationshipLifecycleCommand(scope, RPC_METHODS.DAEMON_WORKSPACE_SYNC_TERMINATE);
 }
 
 export async function listWorkspaceSyncConflicts(

@@ -17,8 +17,7 @@ type LocalRelayRuntimeTaskKind =
     | 'relay.runtime.personal_home.backup.v1'
     | 'relay.runtime.personal_home.verify_backup.v1'
     | 'relay.runtime.personal_home.restore.v1'
-    | 'relay.runtime.personal_home.erase.v1'
-    | 'relay.runtime.personal_home.relocate.v1';
+    | 'relay.runtime.personal_home.erase.v1';
 
 export type LocalRelayRuntimePurpose = Readonly<{
     kind: 'personal-home';
@@ -31,10 +30,8 @@ export type LocalRelayRuntimeTaskOptions = Readonly<{
     personalHomeOperation?: Readonly<{
         action?: 'recover' | 'finalize';
         outputPath?: string;
-        intent?: 'standard' | 'erase-safety';
         archivePath?: string;
         confirmOverwrite?: boolean;
-        destination?: unknown;
     }>;
 }>;
 
@@ -53,7 +50,7 @@ export function buildLocalRelayRuntimeSystemTaskSpec(
         const requestedCanonicalServerUrl = options.purpose?.canonicalServerUrl.trim() ?? '';
         if (!requestedCanonicalServerUrl) throw new Error('The inspected Personal Home purpose is required.');
         const operationBase = {
-            target: { kind: 'local' as const },
+            ...LOCAL_RELAY_RUNTIME_PARAMS,
             purpose: { kind: 'personal-home' as const, canonicalServerUrl: requestedCanonicalServerUrl },
         };
         const archivePath = operation.archivePath?.trim() ?? '';
@@ -66,7 +63,6 @@ export function buildLocalRelayRuntimeSystemTaskSpec(
             case 'relay.runtime.personal_home.backup.v1':
                 operationParams = {
                     ...(outputPath ? { outputPath } : {}),
-                    ...(operation.intent ? { intent: operation.intent } : {}),
                 };
                 break;
             case 'relay.runtime.personal_home.verify_backup.v1':
@@ -87,8 +83,6 @@ export function buildLocalRelayRuntimeSystemTaskSpec(
             case 'relay.runtime.personal_home.erase.v1':
                 operationParams = {};
                 break;
-            case 'relay.runtime.personal_home.relocate.v1':
-                throw new Error('Personal Home relocation is unavailable until a canonical destination resolver exists.');
         }
         return {
             protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,

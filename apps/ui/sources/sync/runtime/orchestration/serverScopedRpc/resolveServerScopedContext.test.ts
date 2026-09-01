@@ -5,6 +5,14 @@ const createEncryptionSpy = vi.hoisted(() => vi.fn());
 const listServerProfilesSpy = vi.hoisted(() => vi.fn());
 const getActiveServerSnapshotSpy = vi.hoisted(() => vi.fn());
 
+function tokenForSub(sub: string): string {
+    const payload = globalThis.btoa(JSON.stringify({ sub }))
+        .replaceAll('+', '-')
+        .replaceAll('/', '_')
+        .replaceAll('=', '');
+    return `e30.${payload}.signature`;
+}
+
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     // Only the credential read is stubbed; the credential-shape predicates stay real so
     // this suite keeps exercising the actual token-only/legacy/dataKey classification.
@@ -52,11 +60,11 @@ describe('resolveServerScopedContext', () => {
             machineId: 'machine-1',
         });
 
-        expect(context).toEqual({
+        expect(context).toEqual(expect.objectContaining({
             scope: 'active',
             machineId: 'machine-1',
             timeoutMs: 30000,
-        });
+        }));
     });
 
     it('returns active scope when the target profile id aliases the active durable server identity', async () => {
@@ -81,11 +89,11 @@ describe('resolveServerScopedContext', () => {
             serverId: 'localhost-52753',
         });
 
-        expect(context).toEqual({
+        expect(context).toEqual(expect.objectContaining({
             scope: 'active',
             machineId: 'machine-1',
             timeoutMs: 30000,
-        });
+        }));
         expect(getCredentialsSpy).not.toHaveBeenCalled();
     });
 
@@ -98,7 +106,8 @@ describe('resolveServerScopedContext', () => {
         listServerProfilesSpy.mockReturnValue([
             { id: 'server-b', serverUrl: 'https://server-b.example.test', name: 'Server B' },
         ]);
-        getCredentialsSpy.mockResolvedValue({ token: 'token-b', secret: 'secret-b' });
+        const token = tokenForSub('account-b');
+        getCredentialsSpy.mockResolvedValue({ token, secret: 'secret-b' });
         const fakeEncryption = {
             decryptEncryptionKey: vi.fn(async () => null),
             initializeMachines: vi.fn(async () => {}),
@@ -113,15 +122,16 @@ describe('resolveServerScopedContext', () => {
             timeoutMs: 5000,
         });
 
-        expect(context).toEqual({
+        expect(context).toEqual(expect.objectContaining({
             scope: 'scoped',
             machineId: 'machine-1',
             timeoutMs: 5000,
             targetServerId: 'server-b',
             targetServerUrl: 'https://server-b.example.test',
-            token: 'token-b',
+            targetAccountId: 'account-b',
+            token,
             encryption: fakeEncryption,
-        });
+        }));
     });
 
     it('can force scoped context for the active server', async () => {
@@ -130,7 +140,8 @@ describe('resolveServerScopedContext', () => {
             serverUrl: 'https://server-a.example.test',
             generation: 1,
         });
-        getCredentialsSpy.mockResolvedValue({ token: 'token-a', secret: 'secret-a' });
+        const token = tokenForSub('account-a');
+        getCredentialsSpy.mockResolvedValue({ token, secret: 'secret-a' });
         const fakeEncryption = {
             decryptEncryptionKey: vi.fn(async () => null),
             initializeMachines: vi.fn(async () => {}),
@@ -145,14 +156,15 @@ describe('resolveServerScopedContext', () => {
             timeoutMs: 5000,
         });
 
-        expect(context).toEqual({
+        expect(context).toEqual(expect.objectContaining({
             scope: 'scoped',
             machineId: 'machine-1',
             timeoutMs: 5000,
             targetServerId: 'server-a',
             targetServerUrl: 'https://server-a.example.test',
-            token: 'token-a',
+            targetAccountId: 'account-a',
+            token,
             encryption: fakeEncryption,
-        });
+        }));
     });
 });

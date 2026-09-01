@@ -5,6 +5,7 @@ import {
     resolveServerScopedMachineLiveStreamRelaySocket,
     type ServerScopedMachineLiveStreamRelaySocket,
 } from '@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineLiveStreamRelaySocket';
+import { fireAndForget } from '@/utils/system/fireAndForget';
 
 /**
  * Resolves the production `server_relay` socket for a simulator's host machine (Phase 8.1b).
@@ -47,7 +48,7 @@ export function useSimulatorLiveStreamRelaySocket(input: Readonly<{
         })
             .then((next) => {
                 if (disposed) {
-                    next.disconnect();
+                    fireAndForget(next.disconnect(), { tag: 'simulator-live-stream-relay-disconnect' });
                     return;
                 }
                 resolved = next;
@@ -59,7 +60,7 @@ export function useSimulatorLiveStreamRelaySocket(input: Readonly<{
 
         return () => {
             disposed = true;
-            resolved?.disconnect();
+            fireAndForget(resolved?.disconnect(), { tag: 'simulator-live-stream-relay-disconnect' });
             setSocket(null);
         };
     }, [enabled, featureEnabled, machineId, serverId]);

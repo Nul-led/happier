@@ -7,6 +7,7 @@ import {
     peekServerReachabilityState,
     resetServerReachabilitySupervisors,
     startServerReachabilitySupervisor,
+    stopServerReachabilitySupervisor,
     subscribeServerReachabilityState,
 } from './serverReachabilitySupervisorPool';
 
@@ -35,7 +36,7 @@ async function runProbe(params: Readonly<{
         observed.phase = state.phase;
         observed.reason = state.reason;
         observed.nextRetryAt = state.nextRetryAt;
-    });
+    }, params.token);
 
     try {
         await startServerReachabilitySupervisor({
@@ -51,6 +52,32 @@ async function runProbe(params: Readonly<{
 }
 
 describe('serverReachabilitySupervisorPool (readiness probe)', () => {
+    it('isolates authenticated readiness for different credentials at the same canonical URL', async () => {
+        vi.useFakeTimers();
+        setRuntimeFetch(vi.fn(async (_input, init) => {
+            const authorization = new Headers(init?.headers).get('Authorization');
+            if (authorization === 'Bearer rejected-token') {
+                return new Response(null, { status: 401, headers: new Headers() });
+            }
+            return new Response(JSON.stringify({ ok: true }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }));
+
+        await startServerReachabilitySupervisor({
+            serverUrl: 'https://example.test',
+            token: 'accepted-token',
+        });
+        await startServerReachabilitySupervisor({
+            serverUrl: 'https://example.test',
+            token: 'rejected-token',
+        });
+
+        expect(peekServerReachabilityState('https://example.test', 'accepted-token')?.phase).toBe('online');
+        expect(peekServerReachabilityState('https://example.test', 'rejected-token')?.phase).toBe('auth_failed');
+    });
+
     it('hands one canonical supervisor between retained consumers and stops only after the final release', async () => {
         vi.useFakeTimers();
         setRuntimeFetch(vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
@@ -68,13 +95,55 @@ describe('serverReachabilitySupervisorPool (readiness probe)', () => {
             runtimeOrigin: 'http://127.0.0.1:45981',
             token: 'token',
         });
-        expect(peekServerReachabilityState('https://example.test')?.phase).toBe('online');
+        expect(peekServerReachabilityState('https://example.test', 'token')?.phase).toBe('online');
 
         await first.release();
-        expect(peekServerReachabilityState('https://example.test')?.phase).toBe('online');
+        expect(peekServerReachabilityState('https://example.test', 'token')?.phase).toBe('online');
 
         await second.release();
-        expect(peekServerReachabilityState('https://example.test')?.phase).not.toBe('online');
+        expect(peekServerReachabilityState('https://example.test', 'token')?.phase).not.toBe('online');
+    });
+
+    it('keeps the exact scoped entry when it is reacquired while final release is stopping it', async () => {
+        setRuntimeFetch(vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })));
+
+        const first = await acquireServerReachabilitySupervisor({
+            serverUrl: 'https://example.test',
+            token: 'token',
+        });
+        const finalRelease = first.release();
+        const second = await acquireServerReachabilitySupervisor({
+            serverUrl: 'https://example.test',
+            token: 'token',
+        });
+        await finalRelease;
+
+        expect(peekServerReachabilityState('https://example.test', 'token')?.phase).toBe('online');
+
+        await second.release();
+    });
+
+    it('keeps the exact scoped entry when a subscriber arrives while final release is stopping it', async () => {
+        setRuntimeFetch(vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })));
+
+        const first = await acquireServerReachabilitySupervisor({
+            serverUrl: 'https://example.test',
+            token: 'token',
+        });
+        const finalRelease = first.release();
+        const unsubscribe = subscribeServerReachabilityState('https://example.test', () => {}, 'token');
+        await finalRelease;
+
+        expect(peekServerReachabilityState('https://example.test', 'token')?.phase).toBe('online');
+
+        unsubscribe();
+        await stopServerReachabilitySupervisor('https://example.test', 'token');
     });
 
     it('issues only the authenticated ping when a token is available', async () => {

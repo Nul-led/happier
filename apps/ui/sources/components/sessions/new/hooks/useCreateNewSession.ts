@@ -17,7 +17,6 @@ import { resolveNewSessionServerTarget } from '@/sync/domains/server/selection/s
 import { getMissingRequiredConfigEnvVarNames } from '@/utils/profiles/profileConfigRequirements';
 import { getSecretSatisfaction } from '@/utils/secrets/secretSatisfaction';
 import type { SecretChoiceByProfileIdByEnvVarName } from '@/utils/secrets/secretRequirementApply';
-import { writeExistingSessionDraft } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import { getBuiltInProfile } from '@/sync/domains/profiles/profileUtils';
 import { isProfileCompatibleWithBackendTarget, type AIBackendProfile } from '@/sync/domains/profiles/profileCompatibility';
 import type { Settings } from '@/sync/domains/settings/settings';
@@ -68,6 +67,10 @@ import { fireAndForget } from '@/utils/system/fireAndForget';
 import { useMountedRef } from '@/hooks/ui/useMountedRef';
 import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { createNewSessionActionOperationOrigin } from '@/components/sessions/new/navigation/newSessionActionOperationOrigin';
+import {
+    presentCreatedNewSession,
+    projectAcceptedNewSessionFirstTurn,
+} from '@/components/sessions/new/navigation/presentCreatedNewSession';
 import type { SessionMcpSelectionV1 } from '@happier-dev/protocol';
 import type { SessionSpawnSourceContextV1 } from '@happier-dev/protocol';
 import type { NewSessionCheckoutCreationDraft } from '@/sync/domains/state/newSessionCheckoutDraft';
@@ -76,14 +79,6 @@ import {
     buildNewSessionLaunchScopeKey,
     normalizeLaunchScopePart,
 } from '@/components/sessions/new/modules/newSessionLaunchScope';
-import {
-    isCreatedSessionUnavailableLocally,
-    requireLocalSessionVisibleForRoute,
-} from '@/sync/runtime/orchestration/serverScopedRpc/localSessionRouteReadiness';
-import {
-    buildOutgoingUserTextRecord,
-    projectLocalOutboundUserMessage,
-} from '@/sync/domains/messages/outgoingUserMessage';
 import { resolveServerIdForSessionIdFromLocalCache } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerIdForSessionIdFromLocalCache';
 import {
     buildNewSessionAuthoringDraftFromResolvedInputs,
@@ -122,23 +117,9 @@ import {
     captureNewSessionDraftLaunchCurrentness,
     captureNewSessionDraftWorkflowCurrentness,
     clearCapturedNewSessionDraftAfterLaunch,
+    preserveCreatedSessionDraftAfterUnacceptedFirstTurn,
 } from '@/components/sessions/new/modules/newSessionDraftLifecycle';
 import { actionOperationSelectors } from '@/sync/domains/actionOperations/actionOperationSelectors';
-
-function preserveCreatedSessionDraft(params: Readonly<{
-    sessionId: string;
-    draftText: string;
-    scope: ServerAccountScope | null | undefined;
-}>): void {
-    const draftText = params.draftText.trim();
-    if (!draftText || !params.scope) return;
-    writeExistingSessionDraft({
-        scope: params.scope,
-        sessionId: params.sessionId,
-        patch: { text: draftText },
-        materializationIntent: 'seeded',
-    });
-}
 
 type MutableSettingsDelta = {
     -readonly [TKey in keyof Settings]?: Settings[TKey];
@@ -263,15 +244,6 @@ function buildProviderLaunchErrorScopeKey(
         modelRef?.providerConnectionId ?? null,
         modelRef?.modelId ?? params.modelMode,
     ]);
-}
-
-const CREATED_SESSION_ROUTE_RECOVERY_ATTEMPTS = 6;
-const CREATED_SESSION_ROUTE_RECOVERY_DELAY_MS = 500;
-
-function waitForCreatedSessionRouteRecoveryDelay(): Promise<void> {
-    return new Promise((resolve) => {
-        setTimeout(resolve, CREATED_SESSION_ROUTE_RECOVERY_DELAY_MS);
-    });
 }
 
 export function useCreateNewSession(params: Readonly<{
@@ -1173,93 +1145,34 @@ export function useCreateNewSession(params: Readonly<{
                     suffix: postSpawnSessionRouteSuffix,
                 });
 
-                const ensureCreatedSessionVisibleForRoute = async (): Promise<boolean> => {
-                    try {
-                        await requireLocalSessionVisibleForRoute({
-                            sessionId: createdSessionId,
-                            serverId: resolvedTargetServerId,
-                            getStoredSession: (sessionId) => storage.getState().sessions[sessionId] ?? null,
-                            ensureSessionVisibleForMessageRoute: typeof sync.ensureSessionVisibleForMessageRoute === 'function'
-                                ? sync.ensureSessionVisibleForMessageRoute
-                                : null,
-                        });
-                        return true;
-                    } catch (error) {
-                        if (isCreatedSessionUnavailableLocally(error)) {
-                            return false;
-                        }
-                        throw error;
-                    }
-                };
-
                 const projectCreatedSessionFirstTurnForRoute = (): void => {
                     if (!initialMessageText || !initialInputLocalId) {
                         return;
                     }
-                    const state = storage.getState();
-                    const session = state.sessions[createdSessionId] ?? null;
-                    const modelMode = session?.modelMode
-                        || current.modelMode
-                        || (staticAgentId ? getAgentCore(staticAgentId)?.model.defaultMode : null)
-                        || 'default';
-                    const permissionMode = session?.permissionMode || current.permissionMode || 'default';
-                    const rawRecord = buildOutgoingUserTextRecord({
-                        text: initialMessageText,
-                        displayText: initialMessageText,
-                        agentId: current.agentType,
-                        permissionMode,
-                        modelMode,
-                        settings: state.settings,
-                        session,
-                    });
-                    if (session) {
-                        storage.getState().markSessionOptimisticThinking(createdSessionId);
-                    }
-                    projectLocalOutboundUserMessage({
+                    projectAcceptedNewSessionFirstTurn({
                         sessionId: createdSessionId,
                         localId: initialInputLocalId,
                         text: initialMessageText,
-                        displayText: initialMessageText,
-                        rawRecord,
-                        deliveryStatus: 'queued',
+                        fallbackAgentId: current.agentType,
+                        fallbackPermissionMode: current.permissionMode,
+                        fallbackModelMode: current.modelMode,
                     });
                 };
 
                 const openCreatedSessionRoute = async (options?: Readonly<{ projectFirstTurn?: boolean }>): Promise<boolean> => {
-                    const isCreatedSessionVisible = await ensureCreatedSessionVisibleForRoute();
-                    if (!isCreatedSessionVisible) {
-                        return false;
-                    }
-                    if (!isLaunchScopeStillActive()) {
-                        return false;
-                    }
-                    if (options?.projectFirstTurn === true || initialInputLocalId !== null) {
-                        projectCreatedSessionFirstTurnForRoute();
-                    }
-                    current.router.replace(postSpawnReplacementHref ?? buildCreatedSessionRoute(), {
-                        dangerouslySingular() {
-                            return 'session';
-                        },
+                    const presentation = await presentCreatedNewSession({
+                        sessionId: createdSessionId,
+                        serverId: resolvedTargetServerId,
+                        requestId: launchAttempt.attemptId,
+                        router: current.router,
+                        href: postSpawnReplacementHref ?? buildCreatedSessionRoute(),
+                        isStillActive: isLaunchScopeStillActive,
+                        prepareDestination: options?.projectFirstTurn === true || initialInputLocalId !== null
+                            ? projectCreatedSessionFirstTurnForRoute
+                            : undefined,
                     });
-                    actionOperationPresentationCoordinator.acknowledgeRequestPresented(launchAttempt.attemptId);
-                    createdSessionRouteOpened = true;
-                    return true;
-                };
-
-                const openCreatedSessionRouteWithRecovery = async (options?: Readonly<{ projectFirstTurn?: boolean }>): Promise<boolean> => {
-                    for (let attempt = 0; attempt < CREATED_SESSION_ROUTE_RECOVERY_ATTEMPTS; attempt += 1) {
-                        const opened = await openCreatedSessionRoute(options);
-                        if (opened) {
-                            return true;
-                        }
-                        if (!isLaunchScopeStillActive()) {
-                            return false;
-                        }
-                        if (attempt < CREATED_SESSION_ROUTE_RECOVERY_ATTEMPTS - 1) {
-                            await waitForCreatedSessionRouteRecoveryDelay();
-                        }
-                    }
-                    return false;
+                    createdSessionRouteOpened = presentation === 'opened';
+                    return createdSessionRouteOpened;
                 };
 
                 const runAfterCreatedFollowUp = async (): Promise<void> => {
@@ -1420,10 +1333,12 @@ export function useCreateNewSession(params: Readonly<{
                         );
                     }
                     if (initialInputWasNotAccepted) {
-                        preserveCreatedSessionDraft({
+                        preserveCreatedSessionDraftAfterUnacceptedFirstTurn({
                             sessionId: createdSessionId,
                             draftText: initialMessageText || sessionPrompt,
-                            scope: current.draftScope,
+                            scope: current.draftScope
+                                ? { ...current.draftScope, serverId: resolvedTargetServerId }
+                                : null,
                         });
                     }
                     if (mountedRef.current) {
@@ -1438,15 +1353,17 @@ export function useCreateNewSession(params: Readonly<{
                 }
 
                 if (initialInputWasNotAccepted) {
-                    preserveCreatedSessionDraft({
+                    preserveCreatedSessionDraftAfterUnacceptedFirstTurn({
                         sessionId: createdSessionId,
                         draftText: initialMessageText || sessionPrompt,
-                        scope: current.draftScope,
+                        scope: current.draftScope
+                            ? { ...current.draftScope, serverId: resolvedTargetServerId }
+                            : null,
                     });
                 }
 
                 if (!createdSessionRouteOpened && isLaunchScopeStillActive()) {
-                    const openedCreatedSessionRoute = await openCreatedSessionRouteWithRecovery();
+                    const openedCreatedSessionRoute = await openCreatedSessionRoute();
                     if (!openedCreatedSessionRoute) {
                         if (!isLaunchScopeStillActive()) {
                             publishLaunchAttempt(null);

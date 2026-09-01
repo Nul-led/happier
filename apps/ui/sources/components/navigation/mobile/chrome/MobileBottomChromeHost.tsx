@@ -35,7 +35,10 @@ import {
     useSessionLastMobileSurface,
     useSetting,
 } from '@/sync/domains/state/storage';
-import { isOverlaySurfaceRoutePathname } from '@/components/sessions/shell/surface/sessionSurfaceAnchorPathname';
+import {
+    isOverlaySurfaceRoutePathname,
+    normalizeSurfaceRoutePathname,
+} from '@/components/sessions/shell/surface/sessionSurfaceAnchorPathname';
 import { useDeviceType } from '@/utils/platform/responsive';
 import { isMobileWorkspaceCockpitEnabled } from '@/components/workspaceCockpit/mobileWorkspaceExperience';
 import type { TabType } from '@/components/ui/navigation/tabTypes';
@@ -173,7 +176,10 @@ function isBottomChromeStateSettled(
     return state.previous === null && isSameBottomChromeItem(state.current, resolvedChrome);
 }
 
-export const MobileBottomChromeHost = React.memo(() => {
+export const MobileBottomChromeHost = React.memo(function MobileBottomChromeHost(props: Readonly<{
+    /** Canonical pre-push presentation decision from the app stack owner. */
+    newSessionRendersFloatingComposer?: boolean;
+}>) {
     const pathname = usePathname();
     const router = useRouter();
     const params = useGlobalSearchParams<{
@@ -358,6 +364,9 @@ export const MobileBottomChromeHost = React.memo(() => {
     // closing the composer had to build it back afterwards and the two read as a sequence instead of
     // one surface lifting away. Freezing the last real chrome keeps the bar mounted underneath.
     const overlayRouteActive = typeof pathname === 'string' && isOverlaySurfaceRoutePathname(pathname);
+    const androidFloatingNewSessionActive = Platform.OS === 'android'
+        && normalizeSurfaceRoutePathname(pathname) === '/new'
+        && props.newSessionRendersFloatingComposer === true;
     const frozenChromeRef = React.useRef<BottomChromeItem | null>(null);
 
     const resolvedChrome = React.useMemo((): BottomChromeItem | null => {
@@ -871,6 +880,15 @@ export const MobileBottomChromeHost = React.memo(() => {
     // rendering until BOTH are gone. The published chrome height already dropped to 0 above, so the
     // surfaces that pad by it reclaim their space immediately rather than waiting for the fade.
     if (!renderedChrome.current && !renderedChrome.previous) {
+        return null;
+    }
+
+    // Android's transparent native-stack screen and this global chrome host are sibling native
+    // views. The host is mounted after the Stack, so keeping its pixels rendered places them above
+    // the composer's app-painted scrim even though its frozen model is conceptually "under" the
+    // modal. Keep that model intact for an immediate return, but contribute no sibling pixels while
+    // the floating composer is active. Other presentations keep the normal frozen-underlay path.
+    if (androidFloatingNewSessionActive) {
         return null;
     }
 

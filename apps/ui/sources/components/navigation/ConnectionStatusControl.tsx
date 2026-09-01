@@ -10,7 +10,6 @@ import { useSocketStatus, useSyncError, useLastSyncAt, useMachineListStatusBySer
 import { useHomeViewSelectionSettingsMutable } from '@/hooks/server/useHomeViewSelectionSettings';
 import {
     areServerProfileIdentifiersEquivalent,
-    getDeviceDefaultServerId,
     listServerProfiles,
     resolveServerProfileScopeId,
 } from '@/sync/domains/server/serverProfiles';
@@ -29,27 +28,29 @@ import {
 import { buildServerSelectionActiveTargetForServer } from '@/sync/domains/server/selection/serverSelectionActiveTarget';
 import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import { useConnectionTargetActions } from '@/components/navigation/connection/useConnectionTargetActions';
-import { promptSignedOutServerSwitchConfirmation } from '@/components/settings/server/modals/ServerSwitchAuthPrompt';
 import { Text } from '@/components/ui/text/Text';
 import { useConnectionHealth } from '@/components/navigation/connectionStatus/useConnectionHealth';
 import { resolveMachineConnectionSummary } from '@/components/navigation/connectionStatus/resolveMachineConnectionSummary';
-import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
-import { sync } from '@/sync/sync';
+import { retryActiveServerConnection } from '@/sync/runtime/orchestration/connectionManager';
 import { resolveSocketErrorClassification } from '@/sync/runtime/connectivity/resolveSocketErrorClassification';
 import { selectSyncErrorForServer } from '@/sync/runtime/connectivity/syncErrorScope';
 import { runGuardedNavigation } from '@/utils/navigation/runGuardedNavigation';
-import { ActionListSection } from '@/components/ui/lists/ActionListSection';
 import { Icon, type IconName } from '@/components/ui/icons/Icon';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
 import { useServerAuthStatusByServerId } from '@/components/settings/server/hooks/useServerAuthStatusByServerId';
-import { resolveHomeTransportPresentation } from '@/components/navigation/connectionStatus/resolveHomeTransportPresentation';
+import { resolveMinimumInteractiveTargetSize } from '@/components/ui/interactiveTargetSize';
+import { ConnectionTargetList } from '@/components/navigation/connection/ConnectionTargetList';
+import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
+import { resolveServerSelectionGroupActivation } from '@/sync/domains/server/selection/serverSelectionActivation';
+import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { isDesktopHost } from '@/utils/platform/desktopHost';
 
 type Variant = 'sidebar' | 'header';
 const RELAY_SETTINGS_ROUTE = '/settings/server';
-const RELAY_DROPDOWN_TARGET_THRESHOLD = 2;
 const POPOVER_MAX_WIDTH = 420;
 const POPOVER_MIN_WIDTH = 220;
+const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
 
 type ConnectionStatusKey = 'connected' | 'connecting' | 'disconnected' | 'error' | 'action_required' | 'unknown';
 
@@ -87,6 +88,7 @@ const stylesheet = StyleSheet.create((theme) => ({
         minWidth: 0,
         maxWidth: '100%',
         overflow: 'visible',
+        minHeight: minimumInteractiveTargetSize,
     },
     statusText: {
         lineHeight: 16,
@@ -169,8 +171,8 @@ const stylesheet = StyleSheet.create((theme) => ({
         gap: 6,
     },
     statusRowRetryButton: {
-        width: 24,
-        height: 24,
+        minWidth: minimumInteractiveTargetSize,
+        minHeight: minimumInteractiveTargetSize,
         borderRadius: 12,
         alignItems: 'center',
         justifyContent: 'center',
@@ -213,6 +215,8 @@ const stylesheet = StyleSheet.create((theme) => ({
         backgroundColor: theme.colors.background.canvas,
         borderWidth: StyleSheet.hairlineWidth,
         borderColor: theme.colors.border.default,
+        minHeight: minimumInteractiveTargetSize,
+        justifyContent: 'center',
     },
     popoverActionButtonText: {
         fontSize: 12,
@@ -237,8 +241,8 @@ const stylesheet = StyleSheet.create((theme) => ({
         textTransform: 'uppercase',
     },
     popoverSectionIconButton: {
-        width: 24,
-        height: 24,
+        minWidth: minimumInteractiveTargetSize,
+        minHeight: minimumInteractiveTargetSize,
         borderRadius: 6,
         alignItems: 'center',
         justifyContent: 'center',
@@ -246,9 +250,19 @@ const stylesheet = StyleSheet.create((theme) => ({
     popoverRelayBlock: {
         marginBottom: 12,
     },
-    popoverRelayActionList: {
-        paddingTop: 0,
-        paddingBottom: 0,
+    detailsDisclosure: {
+        minHeight: minimumInteractiveTargetSize,
+        marginHorizontal: 16,
+        marginTop: 8,
+        paddingHorizontal: 4,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+    },
+    detailsDisclosureText: {
+        fontSize: 13,
+        color: theme.colors.text.secondary,
+        ...Typography.default('semiBold'),
     },
 }));
 
@@ -408,19 +422,11 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
     } = useHomeViewSelectionSettingsMutable(accountSettings);
 
     const [open, setOpen] = React.useState(false);
-    const [relayDropdownOpen, setRelayDropdownOpen] = React.useState(false);
+    const [detailsExpanded, setDetailsExpanded] = React.useState(false);
     const [pendingServerId, setPendingServerId] = React.useState<string | null>(null);
     const anchorRef = React.useRef<React.ElementRef<typeof View> | null>(null);
     const serverProfilesGeneration = useServerProfilesGeneration();
     const activeServerSnapshot = useActiveServerSnapshot();
-    const transportPresentation = React.useMemo(
-        () => resolveHomeTransportPresentation(activeServerSnapshot),
-        [
-            activeServerSnapshot.carrier,
-            activeServerSnapshot.irohObservedPath,
-            activeServerSnapshot.irohRelayPolicy,
-        ],
-    );
 
     const textSize = props.textSize ?? (props.variant === 'sidebar' ? 11 : 12);
     const dotSize = props.dotSize ?? 6;
@@ -441,7 +447,10 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
         return selectSyncErrorForServer(syncError, activeServerId);
     }, [activeServerId, syncError]);
 
-    const displayServerId = pendingServerId ?? activeServerId;
+    // Keep the trigger on the applied Home until the focus transaction commits.
+    // The pending target row carries the connecting state, so cached/live facts
+    // from the current Home are never presented under the requested Home's name.
+    const displayServerId = activeServerId;
     const displayServerProfile = React.useMemo(() => {
         return servers.find((server) => server.id === displayServerId || resolveServerProfileScopeId(server) === displayServerId) ?? null;
     }, [displayServerId, servers]);
@@ -453,11 +462,17 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
         return toServerUrlDisplay(displayServerUrl) || t('status.connected');
     }, [displayServerProfile, displayServerUrl]);
 
-    const switchServer = React.useCallback(async (serverId: string, scope: 'tab' | 'device' = 'device') => {
+    const switchServer = React.useCallback(async (
+        serverId: string,
+        scope: 'tab' | 'device',
+    ) => {
         setPendingServerId(serverId);
         try {
             const result = await setActiveServerAndSwitch({ serverId, scope, refreshAuth: auth.refreshFromActiveServer });
-            if (result !== 'blocked') setOpen(false);
+            if (result !== 'blocked') {
+                setOpen(false);
+                setDetailsExpanded(false);
+            }
             return result;
         } finally {
             setPendingServerId((current) => current === serverId ? null : current);
@@ -511,53 +526,58 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
         return map;
     }, [servers]);
 
-    const switchTarget = React.useCallback(async (target: (typeof serverTargets)[number]) => {
-        const confirmSignedOutSwitch = async (serverId: string): Promise<boolean> => {
-            const status = authStatusByServerId[serverId] ?? 'unknown';
-            if (status !== 'signedOut') return true;
-            const shouldContinue = await promptSignedOutServerSwitchConfirmation();
-            return shouldContinue;
-        };
+    const resolveTargetAuthStatus = React.useCallback(async (serverId: string) => {
+        const server = serverById.get(serverId);
+        if (!server) return 'unknown' as const;
+        try {
+            const credentials = await TokenStorage.getCredentialsForServerUrl(server.serverUrl, { serverId });
+            return credentials ? 'signedIn' as const : 'signedOut' as const;
+        } catch {
+            return 'unknown' as const;
+        }
+    }, [serverById]);
 
+    const switchTarget = React.useCallback(async (target: (typeof serverTargets)[number]) => {
+        const routineSwitchScope = resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost());
         if (target.kind === 'server') {
             const server = serverById.get(target.serverId);
             if (!server) return;
-            const shouldSwitch = await confirmSignedOutSwitch(target.serverId);
-            if (!shouldSwitch) return;
-            const result = await switchServer(target.serverId, 'device');
+            const result = await switchServer(target.serverId, routineSwitchScope);
             if (result === 'blocked') return;
             const nextTarget = buildServerSelectionActiveTargetForServer(target.serverId);
-            setHomeViewSelectionSettings((current) => ({ ...current, ...nextTarget }));
+            setHomeViewSelectionSettings((current) => ({ ...current, ...nextTarget }), { targetScope: routineSwitchScope });
             if ((authStatusByServerId[target.serverId] ?? 'unknown') === 'signedOut') {
                 router.replace('/');
             }
             return;
         }
 
-        const nextServerId = target.serverIds.includes(activeServerId) ? activeServerId : (target.serverIds[0] ?? '');
-        if (nextServerId) {
-            const shouldSwitch = await confirmSignedOutSwitch(nextServerId);
-            if (!shouldSwitch) return;
-        }
-
+        const activation = await resolveServerSelectionGroupActivation({
+            currentServerId: activeServerId,
+            serverIds: target.serverIds,
+            resolveAuthStatus: resolveTargetAuthStatus,
+        });
+        const nextServerId = activation?.serverId ?? '';
         if (nextServerId && !areServerProfileIdentifiersEquivalent(nextServerId, activeServerId)) {
-            const result = await switchServer(nextServerId, 'device');
+            const result = await switchServer(nextServerId, routineSwitchScope);
             if (result === 'blocked') return;
         }
         setHomeViewSelectionSettings((current) => ({
             ...current,
             serverSelectionActiveTargetKind: 'group',
             serverSelectionActiveTargetId: target.groupId,
-        }));
-        if (nextServerId && (authStatusByServerId[nextServerId] ?? 'unknown') === 'signedOut') {
+        }), { targetScope: routineSwitchScope });
+        if (nextServerId && activation?.authStatus === 'signedOut') {
             router.replace('/');
             return;
         }
         setOpen(false);
+        setDetailsExpanded(false);
     }, [
         activeServerId,
         authStatusByServerId,
         router,
+        resolveTargetAuthStatus,
         setHomeViewSelectionSettings,
         serverById,
         switchServer,
@@ -595,30 +615,8 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
             void switchTarget(target);
         },
         selectedColor: theme.colors.status.connected,
-        iconColor: theme.colors.text.primary,
         statusByServerId: targetStatusByServerId,
-        focusedServerId: activeServerId,
-        defaultServerId: getDeviceDefaultServerId(),
     });
-
-    const relayDropdownItems = React.useMemo<ReadonlyArray<DropdownMenuItem>>(() => {
-        return targetActions.map((action) => ({
-            id: action.id,
-            title: action.label,
-            subtitle: action.subtitle,
-            icon: action.icon,
-            rightElement: action.right,
-            disabled: action.disabled,
-        }));
-    }, [targetActions]);
-
-    const selectedRelayDropdownId = React.useMemo(() => {
-        return targetActions.find((action) => action.selected)?.id ?? null;
-    }, [targetActions]);
-
-    const targetActionById = React.useMemo(() => {
-        return new Map(targetActions.map((action) => [action.id, action] as const));
-    }, [targetActions]);
 
     const syncErrorPresentation = React.useMemo(() => {
         if (!activeSyncError) return null;
@@ -636,14 +634,16 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
         if (result !== true) {
             fireAndForget(result, { tag: 'ConnectionStatusControl.nav.restore' });
         }
-        setRelayDropdownOpen(false);
         setOpen(false);
+        setDetailsExpanded(false);
     }, [router]);
 
     const handleRetry = React.useCallback(() => {
-        sync.retryNow();
-        setRelayDropdownOpen(false);
+        fireAndForget(retryActiveServerConnection(), {
+            tag: 'ConnectionStatusControl.retryActiveServerConnection',
+        });
         setOpen(false);
+        setDetailsExpanded(false);
     }, []);
 
     const handleManageRelay = React.useCallback(() => {
@@ -651,13 +651,12 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
         if (result !== true) {
             fireAndForget(result, { tag: 'ConnectionStatusControl.nav.manageRelay' });
         }
-        setRelayDropdownOpen(false);
         setOpen(false);
+        setDetailsExpanded(false);
     }, [router]);
-    const shouldUseRelayDropdown = targetActions.length > RELAY_DROPDOWN_TARGET_THRESHOLD;
     const popoverMinWidth = props.variant === 'sidebar' && Platform.OS === 'web' ? POPOVER_MIN_WIDTH : undefined;
-    const collapsedStatusLabel = pendingServerId ? t('status.connecting') : t(connectionHealth.statusLabelKey);
-    const collapsedStatusColor = pendingServerId ? theme.colors.status.connecting : connectionHealth.color;
+    const collapsedStatusLabel = t(connectionHealth.statusLabelKey);
+    const collapsedStatusColor = connectionHealth.color;
 
     return (
         <>
@@ -669,14 +668,17 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
             >
                 <Pressable
                     style={styles.statusContainer}
-                    onPress={() => setOpen((currentOpen) => !currentOpen)}
+                    onPress={() => setOpen((currentOpen) => {
+                        if (currentOpen) setDetailsExpanded(false);
+                        return !currentOpen;
+                    })}
                     accessibilityRole="button"
-                    accessibilityLabel={`${activeServerLabel}, ${collapsedStatusLabel}, ${t(transportPresentation.pathLabelKey)}`}
+                    accessibilityLabel={`${activeServerLabel}, ${collapsedStatusLabel}`}
                     accessibilityState={{ expanded: open }}
                 >
                     <StatusDot
                         color={collapsedStatusColor}
-                        isPulsing={pendingServerId ? true : connectionHealth.isPulsing}
+                        isPulsing={connectionHealth.isPulsing}
                         size={dotSize}
                         style={{ marginRight: 4 }}
                     />
@@ -709,8 +711,8 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                         maxWidthCap={POPOVER_MAX_WIDTH}
                         maxHeightCap={520}
                         onRequestClose={() => {
-                            setRelayDropdownOpen(false);
                             setOpen(false);
+                            setDetailsExpanded(false);
                         }}
                     >
                     {({ maxHeight }) => (
@@ -721,11 +723,54 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                             edgeIndicators={true}
                             containerStyle={popoverMinWidth ? { minWidth: popoverMinWidth } : null}
                         >
-                            <View style={styles.popoverContent}>
+                            <View style={styles.popoverContent} testID="connection-popover-content">
                                 <View style={styles.popoverHeader}>
                                     <Text style={styles.popoverTitle}>{t('connectionStatus.title')}</Text>
                                 </View>
 
+                                {targetActions.length > 0 ? (
+                                    <View style={styles.popoverRelayBlock} testID="connection-target-list-section">
+                                        <View style={styles.popoverSection}>
+                                            <View style={styles.popoverSectionHeader}>
+                                                <Text style={styles.popoverSectionTitle}>{t('server.changeServer')}</Text>
+                                                <Pressable
+                                                    testID="connection-popover-relay-settings"
+                                                    accessibilityRole="button"
+                                                    accessibilityLabel={t('server.changeServer')}
+                                                    onPress={handleManageRelay}
+                                                    style={styles.popoverSectionIconButton}
+                                                >
+                                                    <Icon name="sliders-horizontal" size={16} color={theme.colors.text.secondary} />
+                                                </Pressable>
+                                            </View>
+                                        </View>
+
+                                        <ConnectionTargetList
+                                            title=""
+                                            accessibilityLabel={t('server.changeServer')}
+                                            actions={targetActions}
+                                        />
+                                    </View>
+                                ) : null}
+
+                                <Pressable
+                                    testID="connection-details-disclosure"
+                                    accessibilityRole="button"
+                                    accessibilityLabel={t('common.details')}
+                                    accessibilityState={{ expanded: detailsExpanded }}
+                                    onPress={() => setDetailsExpanded((expanded) => !expanded)}
+                                    style={styles.detailsDisclosure}
+                                >
+                                    <Text style={styles.detailsDisclosureText}>{t('common.details')}</Text>
+                                    <Icon
+                                        name={detailsExpanded ? 'caret-up' : 'caret-down'}
+                                        size={14}
+                                        color={theme.colors.text.secondary}
+                                    />
+                                </Pressable>
+
+                                {detailsExpanded ? (
+                                <>
                                 {(() => {
                                     const relayStatusKey = resolveRelayStatusKey({
                                         endpointStatus: (connectionHealth as any).endpointStatus,
@@ -801,7 +846,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                                 testID="connection-popover-relay"
                                                 icon="hard-drives"
                                                 title={t('systemStatus.server.activeServer')}
-                                                subtitle={toServerUrlDisplay(activeServerSnapshot.serverUrl)}
+                                                subtitle={toServerUrlDisplay(displayServerUrl)}
                                                 statusLabel={t(endpointPresentation.labelKey)}
                                                 statusColor={endpointPresentation.color}
                                                 dotColor={endpointPresentation.dotColor}
@@ -833,27 +878,6 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                 })()}
 
                                 <View style={styles.statusMeta}>
-                                    <View style={styles.statusMetaRow}>
-                                        <Text style={styles.statusMetaLabel}>
-                                            {t('connectionStatus.labels.transport')}
-                                        </Text>
-                                        <Text style={styles.statusMetaValue}>
-                                            {t(transportPresentation.pathLabelKey)}
-                                        </Text>
-                                    </View>
-                                    {activeServerSnapshot.carrier === 'iroh' ? (
-                                        <View style={styles.statusMetaRow}>
-                                            <Text style={styles.statusMetaLabel}>
-                                                {t('connectionStatus.labels.connectionMode')}
-                                            </Text>
-                                            <Text
-                                                style={[styles.statusMetaValue, { flexShrink: 1, textAlign: 'right' }]}
-                                                numberOfLines={2}
-                                            >
-                                                {t(transportPresentation.modeLabelKey)}
-                                            </Text>
-                                        </View>
-                                    ) : null}
                                     <View style={styles.statusMetaRow}>
                                         <Text style={styles.statusMetaLabel}>
                                             {t('connectionStatus.labels.lastSync')}
@@ -895,52 +919,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                         ) : null}
                                     </View>
                                 ) : null}
-
-                                {targetActions.length > 0 ? (
-                                    <View style={styles.popoverRelayBlock}>
-                                        <View style={styles.popoverSection}>
-                                            <View style={styles.popoverSectionHeader}>
-                                                <Text style={styles.popoverSectionTitle}>{t('server.changeServer')}</Text>
-                                                <Pressable
-                                                    testID="connection-popover-relay-settings"
-                                                    accessibilityRole="button"
-                                                    accessibilityLabel={t('server.changeServer')}
-                                                    onPress={handleManageRelay}
-                                                    style={styles.popoverSectionIconButton}
-                                                >
-                                                    <Icon name="sliders-horizontal" size={16} color={theme.colors.text.secondary} />
-                                                </Pressable>
-                                            </View>
-                                        </View>
-
-                                        {shouldUseRelayDropdown ? (
-                                            <DropdownMenu
-                                                open={relayDropdownOpen}
-                                                onOpenChange={setRelayDropdownOpen}
-                                                items={relayDropdownItems}
-                                                selectedId={selectedRelayDropdownId}
-                                                onSelect={(itemId) => {
-                                                    targetActionById.get(itemId)?.onPress();
-                                                }}
-                                                variant="default"
-                                                rowKind="item"
-                                                matchTriggerWidth={true}
-                                                connectToTrigger={true}
-                                                itemTrigger={{
-                                                    title: activeServerLabel,
-                                                    subtitle: toServerUrlDisplay(displayServerUrl),
-                                                    showSelectedDetail: false,
-                                                    showSelectedSubtitle: false,
-                                                }}
-                                                maxWidthCap={480}
-                                            />
-                                        ) : (
-                                            <ActionListSection
-                                                actions={targetActions}
-                                                style={styles.popoverRelayActionList}
-                                            />
-                                        )}
-                                    </View>
+                                </>
                                 ) : null}
                             </View>
                         </FloatingOverlay>

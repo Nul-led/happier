@@ -60,6 +60,25 @@ vi.mock('@/components/ui/lists/Item', () => ({
     Item: (props: any) => React.createElement('Item', props, props.rightElement ?? null, props.children ?? null),
 }));
 
+vi.mock('@/components/ui/lists/ExpandableItem', () => ({
+    ExpandableItem: (props: any) => React.createElement(
+        'ExpandableItem',
+        props,
+        typeof props.header === 'function'
+            ? props.header({
+                expanded: props.expanded,
+                toggle: () => props.onExpandedChange(!props.expanded),
+                headerProps: {
+                    onPress: () => props.onExpandedChange(!props.expanded),
+                    accessibilityRole: 'button',
+                    accessibilityState: { expanded: props.expanded },
+                },
+            })
+            : props.header,
+        props.expanded ? props.children : null,
+    ),
+}));
+
 vi.mock('@/components/ui/forms/Switch', () => ({
     Switch: (props: any) => React.createElement('Switch', props),
 }));
@@ -73,34 +92,30 @@ vi.mock('@/components/ui/text/Text', () => ({
     TextInput: (props: any) => React.createElement('TextInput', props),
 }));
 
+vi.mock('@/components/workspaces/sync/WorkspaceSyncLegacyStateRecovery', () => ({
+    WorkspaceSyncLegacyStateRecovery: () => null,
+}));
+
 describe('SessionHandoffSettingsView', () => {
     beforeEach(() => {
         settingsState.sessionHandoffDefaultsV1 = {
             v: 1,
-            workspaceTransferEnabled: true,
-            workspaceTransferStrategy: 'transfer_snapshot',
-            conflictPolicy: 'create_sibling_copy',
+            workspaceSyncMode: 'keep_synced',
             includeIgnoredMode: 'include_selected',
             ignoredIncludeGlobs: [],
             directTargetMode: 'keep_direct',
         };
     });
 
-    it('updates handoff defaults for workspace transfer strategy, conflict policy, ignored files, and direct target mode', async () => {
+    it('keeps common modes concise and reveals advanced modes and content policy through one disclosure', async () => {
         const mod = await import('./SessionHandoffSettingsView');
         const SessionHandoffSettingsView = mod.default;
         const screen = await renderSettingsView(React.createElement(SessionHandoffSettingsView));
 
-        await act(async () => {
-            screen.pressRowByTitle('settingsSession.handoff.workspaceTransfer.title');
-        });
-
-        const strategyMenu = screen.findAll((node) => (
-            node.props?.itemTrigger?.title === 'settingsSession.handoff.workspaceTransfer.strategy.title'
+        const commonModeMenu = screen.findAll((node) => (
+            node.props?.itemTrigger?.title === 'settingsSession.handoff.workspaceMode.title'
         ))[0] ?? null;
-        const conflictMenu = screen.findAll((node) => (
-            node.props?.itemTrigger?.title === 'settingsSession.handoff.conflictPolicy.title'
-        ))[0] ?? null;
+        const advanced = screen.findAll((node) => node.props?.testID === 'session-handoff-settings-advanced')[0] ?? null;
         const ignoredMenu = screen.findAll((node) => (
             node.props?.itemTrigger?.title === 'settingsSession.handoff.includeIgnoredMode.title'
         ))[0] ?? null;
@@ -108,20 +123,30 @@ describe('SessionHandoffSettingsView', () => {
             node.props?.itemTrigger?.title === 'settingsSession.handoff.directTargetMode.title'
         ))[0] ?? null;
 
-        expect(strategyMenu).toBeTruthy();
-        expect(conflictMenu).toBeTruthy();
-        expect(ignoredMenu).toBeTruthy();
+        expect(commonModeMenu?.props.items.map((item: any) => item.id)).toEqual(['keep_synced', 'copy_once', 'none']);
+        expect(advanced?.props.expanded).toBe(false);
+        expect(ignoredMenu).toBeFalsy();
         expect(directModeMenu).toBeTruthy();
 
         await act(async () => {
-            strategyMenu?.props.onSelect('sync_changes');
-            conflictMenu?.props.onSelect('replace_existing');
-            ignoredMenu?.props.onSelect('include_selected');
+            advanced?.props.onExpandedChange(true);
+        });
+
+        const advancedModeMenu = screen.findAll((node) => (
+            node.props?.itemTrigger?.title === 'settingsSession.handoff.advanced.modeTitle'
+        ))[0] ?? null;
+        const expandedIgnoredMenu = screen.findAll((node) => (
+            node.props?.itemTrigger?.title === 'settingsSession.handoff.includeIgnoredMode.title'
+        ))[0] ?? null;
+        expect(advancedModeMenu?.props.items.map((item: any) => item.id)).toEqual(['mirror_exactly', 'keep_both_in_sync']);
+
+        await act(async () => {
+            advancedModeMenu?.props.onSelect('mirror_exactly');
+            expandedIgnoredMenu?.props.onSelect('include_selected');
             directModeMenu?.props.onSelect('convert_to_persisted');
         });
 
-        const updatedScreen = await renderSettingsView(React.createElement(SessionHandoffSettingsView));
-        const globInput = updatedScreen.findAll((node) => typeof node.props?.onChangeText === 'function')[0] ?? null;
+        const globInput = screen.findAll((node) => typeof node.props?.onChangeText === 'function')[0] ?? null;
         expect(globInput).toBeTruthy();
         await act(async () => {
             globInput?.props.onChangeText('dist/**, .env.local');
@@ -129,9 +154,7 @@ describe('SessionHandoffSettingsView', () => {
 
         expect(settingsState.sessionHandoffDefaultsV1).toEqual({
             v: 1,
-            workspaceTransferEnabled: false,
-            workspaceTransferStrategy: 'sync_changes',
-            conflictPolicy: 'replace_existing',
+            workspaceSyncMode: 'mirror_exactly',
             includeIgnoredMode: 'include_selected',
             ignoredIncludeGlobs: ['dist/**', '.env.local'],
             directTargetMode: 'convert_to_persisted',

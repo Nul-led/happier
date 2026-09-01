@@ -4,12 +4,11 @@ import { resolveMachineAbsolutePath } from '@/sync/domains/fileSystem/resolveMac
 
 import { uploadBulkPayloadFromFileWithCarrierFallbacks } from '../plumbing/uploadBulkPayloadFromFileWithCarrierFallbacks';
 import type { TransferFinalizeRecoveryFailure } from '../plumbing/directTransferFinalizeRecovery';
-import type { AcquireMachineCarrierHttpLease, MachineCarrierHttpLease } from '../plumbing/machineCarrierHttpLease';
 import {
+    isIrohMachineCarrierRoute,
     MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
-    MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR,
-    normalizeMachineCarrierGrantMaxBytes,
-    normalizeMachineCarrierHttpLocalOrigin,
+    resolveMachineCarrierRoute,
+    type MachineCarrierRoute,
 } from '../plumbing/machineCarrierHttpLease';
 import { downloadBulkPayloadViaDirectExportToDestination } from '../plumbing/directTransferExportDownload';
 import { downloadBulkPayloadViaServerRelayToDestination } from '../plumbing/downloadBulkPayloadViaServerRelayToDestination';
@@ -174,8 +173,6 @@ export async function uploadDaemonWorkspaceFileFromReader(params: Readonly<{
     request: WorkspaceFileUploadInitRequest;
     signal?: AbortSignal | null;
     onProgress?: ((progress: Readonly<{ uploadedBytes: number; totalBytes: number }>) => void) | null;
-    machineCarrierRequired?: boolean;
-    acquireMachineCarrierHttpLease?: AcquireMachineCarrierHttpLease | null;
 }>): Promise<
     WorkspaceFileUploadFinalizeResponse
     | TransferFailureResponse
@@ -226,9 +223,6 @@ export async function uploadDaemonWorkspaceFileFromReader(params: Readonly<{
         },
         onProgress: params.onProgress ?? null,
         signal: params.signal ?? null,
-        machineCarrierRequired: params.machineCarrierRequired,
-        machineCarrierOperationId: params.request.path,
-        acquireMachineCarrierHttpLease: params.acquireMachineCarrierHttpLease ?? null,
     });
 }
 
@@ -242,11 +236,6 @@ export async function downloadDaemonWorkspaceFileToDestination(params: Readonly<
     onInit?: ((init: Readonly<{ name: string; sizeBytes: number }>) => Promise<void | TransferFailureResponse>) | null;
     signal?: AbortSignal | null;
     onProgress?: ((progress: Readonly<{ downloadedBytes: number; totalBytes: number }>) => void) | null;
-    machineCarrierRequired?: boolean;
-    machineCarrierOperationId?: string;
-    /** Required for archive downloads whose output size cannot be known by stat. */
-    machineCarrierMaxBytes?: number;
-    acquireMachineCarrierHttpLease?: AcquireMachineCarrierHttpLease | null;
 }>): Promise<Readonly<{ ok: true; name: string; sizeBytes: number }> | Readonly<{ ok: false; error: string; errorCode?: string }>> {
     if (typeof params.destination.cleanup !== 'function') {
         return {
@@ -262,66 +251,7 @@ export async function downloadDaemonWorkspaceFileToDestination(params: Readonly<
 
     const absolutePath = resolveAbsoluteWorkspacePath({ rootPath: params.rootPath, agentRootPath: params.agentRootPath, requestPath: params.request.path });
 
-    let fileSizeBytes: number | null = null;
-    if (!params.request.asZip) {
-        const stat = await initTransferClient.call<WorkspaceStatFileResponse, WorkspaceStatFileRequest>({
-            request: { path: absolutePath },
-            machineMethod: RPC_METHODS.STAT_FILE,
-            signal: params.signal ?? null,
-        });
-        if (stat.success !== true) {
-            return { ok: false, error: stat.error };
-        }
-        if (!stat.exists) {
-            return { ok: false, error: 'File does not exist' };
-        }
-        if (stat.kind && stat.kind !== 'file') {
-            return { ok: false, error: 'Path is not a file' };
-        }
-        if (typeof stat.sizeBytes !== 'number' || !Number.isFinite(stat.sizeBytes) || stat.sizeBytes < 0) {
-            return { ok: false, error: 'Unable to resolve file size' };
-        }
-        fileSizeBytes = Math.floor(stat.sizeBytes);
-    }
-
-    let machineCarrierLease: MachineCarrierHttpLease | null = null;
-    let httpOriginOverride: string | null = null;
-    if (params.machineCarrierRequired) {
-        if (!params.acquireMachineCarrierHttpLease) {
-            await params.destination.cleanup();
-            return { ok: false, error: MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR, errorCode: 'machine_carrier_unavailable' };
-        }
-        const maxBytes = normalizeMachineCarrierGrantMaxBytes(
-            fileSizeBytes === null ? params.machineCarrierMaxBytes : Math.max(1, fileSizeBytes),
-        );
-        if (maxBytes === null) {
-            await params.destination.cleanup();
-            return { ok: false, error: MACHINE_CARRIER_REQUIRED_TRANSFER_ERROR, errorCode: 'machine_carrier_unavailable' };
-        }
-        try {
-            machineCarrierLease = await params.acquireMachineCarrierHttpLease({
-                operationId: params.machineCarrierOperationId ?? params.request.path,
-                machineId: params.machineId,
-                flow: 'file_transfer',
-                maxBytes,
-                signal: params.signal ?? undefined,
-            });
-            httpOriginOverride = normalizeMachineCarrierHttpLocalOrigin(machineCarrierLease.localOrigin);
-            if (!httpOriginOverride) {
-                throw new Error('Machine carrier returned an invalid local HTTP origin');
-            }
-        } catch {
-            if (machineCarrierLease) {
-                try {
-                    await machineCarrierLease.release();
-                } catch {
-                    // Lease cleanup must not replace the authoritative transfer outcome.
-                }
-            }
-            await params.destination.cleanup();
-            return { ok: false, error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR, errorCode: 'machine_carrier_transport_failed' };
-        }
-    }
+    let machineRoute: MachineCarrierRoute | null = null;
 
     let directExportResult: Awaited<ReturnType<typeof downloadBulkPayloadViaDirectExportToDestination>>;
     try {
@@ -339,27 +269,28 @@ export async function downloadDaemonWorkspaceFileToDestination(params: Readonly<
             onInit: params.onInit ?? null,
             signal: params.signal ?? null,
             onProgress: params.onProgress ?? null,
-            httpOriginOverride,
+            acquirePreparedCarrier: async ({ operationId, maxBytes }) => {
+                machineRoute ??= await resolveMachineCarrierRoute(params.machineId, params.serverId);
+                return machineRoute.kind === 'iroh_peer' ? await machineRoute.acquire({
+                    operationId,
+                    maxBytes,
+                    flow: 'file_transfer',
+                    signal: params.signal ?? undefined,
+                })
+                    : null;
+            },
         });
     } catch (error) {
-        if (params.machineCarrierRequired) {
+        if (isIrohMachineCarrierRoute(machineRoute)) {
             await params.destination.cleanup();
             return { ok: false, error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR, errorCode: 'machine_carrier_transport_failed' };
         }
         throw error;
-    } finally {
-        if (machineCarrierLease) {
-            try {
-                await machineCarrierLease.release();
-            } catch {
-                // Lease cleanup must not replace the authoritative transfer outcome.
-            }
-        }
     }
     if (directExportResult.ok) {
         return directExportResult;
     }
-    if (params.machineCarrierRequired) {
+    if (isIrohMachineCarrierRoute(machineRoute)) {
         await params.destination.cleanup();
         return { ok: false, error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR, errorCode: 'machine_carrier_transport_failed' };
     }
@@ -511,6 +442,7 @@ export async function downloadDaemonWorkspaceFileToBase64(params: Readonly<{
     const createInlineBufferedDestination = () => createBufferedTransferDestination(params.maxBytes);
 
     const directBufferedDestination = createInlineBufferedDestination();
+    let machineRoute: MachineCarrierRoute | null = null;
     const directExportResult = await downloadBulkPayloadViaDirectExportToDestination({
         machineId: params.machineId,
         ...(typeof params.serverId === 'string' ? { serverId: params.serverId } : {}),
@@ -530,11 +462,27 @@ export async function downloadDaemonWorkspaceFileToBase64(params: Readonly<{
             }
         },
         signal: params.signal ?? null,
+        acquirePreparedCarrier: async ({ operationId, maxBytes }) => {
+            machineRoute ??= await resolveMachineCarrierRoute(params.machineId, params.serverId);
+            return machineRoute.kind === 'iroh_peer' ? await machineRoute.acquire({
+                operationId,
+                maxBytes,
+                flow: 'file_transfer',
+                signal: params.signal ?? undefined,
+            }) : null;
+        },
     });
     if (directExportResult.ok) {
         return {
             ok: true,
             contentBase64: directBufferedDestination.toBase64(),
+        };
+    }
+    if (isIrohMachineCarrierRoute(machineRoute)) {
+        return {
+            ok: false,
+            error: MACHINE_CARRIER_INTERRUPTED_TRANSFER_ERROR,
+            errorCode: 'machine_carrier_transport_failed',
         };
     }
 

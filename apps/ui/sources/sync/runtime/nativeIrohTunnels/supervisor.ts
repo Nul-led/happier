@@ -4,6 +4,7 @@ import {
     type IrohHomeTunnelLease as IrohNativeHomeTunnelLease,
     type IrohNativeAdapter,
 } from '@happier-dev/iroh-native';
+import type { DoctorSnapshotHomeTransportDiagnostics } from '@happier-dev/protocol';
 
 import { createLoopbackTunnelSupervisor } from '@/sync/runtime/nativeLoopbackTunnels/supervisor';
 import type {
@@ -20,12 +21,33 @@ import {
     IROH_HOME_TUNNEL_SUSPENDED_ERROR,
 } from './fallback';
 import { probeIrohHomeTunnelOrigin, type IrohHomeTunnelProbeFailureReason } from './probe';
+import {
+    createInitialIrohHomeTransportDiagnostics,
+    projectIrohHomeTransportDiagnosticsEvent,
+    projectIrohHomeTransportDiagnosticsFailure,
+    projectIrohHomeTransportDiagnosticsReady,
+} from './diagnostics';
 import type { IrohHomeTunnelLease, IrohHomeTunnelRequest } from './types';
 
 /** Lifecycle-only native boundary consumed by the supervisor (see `createIrohNativeAdapter`). */
 export type IrohNativeLifecycleModule = NonNullable<Parameters<typeof createIrohNativeAdapter>[0]>;
 
-export type IrohHomeTunnelSupervisor = LoopbackTunnelSupervisor<IrohHomeTunnelRequest, IrohHomeTunnelLease, never>;
+export type IrohHomeTunnelSupervisor = LoopbackTunnelSupervisor<IrohHomeTunnelRequest, IrohHomeTunnelLease, never> & Readonly<{
+    /** Pull-only Home-scoped projection; reading it never starts native runtime work. */
+    readDiagnostics: () => readonly DoctorSnapshotHomeTransportDiagnostics[];
+}>;
+
+function readDiagnosticError(error: unknown): Readonly<{ code: string; message?: string }> {
+    if (error && typeof error === 'object') {
+        const record = error as { code?: unknown; message?: unknown };
+        const message = typeof record.message === 'string' && record.message.trim() ? record.message : undefined;
+        if (typeof record.code === 'string' && record.code.trim()) {
+            return { code: record.code, ...(message ? { message } : {}) };
+        }
+        if (message) return { code: message.split(':', 1)[0] || 'unknown', message };
+    }
+    return { code: 'unknown' };
+}
 
 /**
  * `undefined` resolves the platform lifecycle module per start: the desktop
@@ -101,7 +123,7 @@ export function createIrohHomeTunnelSupervisor(params: Readonly<{
         },
     };
 
-    return createLoopbackTunnelSupervisor<IrohHomeTunnelRequest, IrohHomeTunnelLease, never, IrohNativeHomeTunnelLease>({
+    const supervisor = createLoopbackTunnelSupervisor<IrohHomeTunnelRequest, IrohHomeTunnelLease, never, IrohNativeHomeTunnelLease>({
         adapter,
         probe: params.probe ?? probeIrohHomeTunnelOrigin,
         probeTimeoutMs: params.probeTimeoutMs,
@@ -134,4 +156,56 @@ export function createIrohHomeTunnelSupervisor(params: Readonly<{
                 : {}),
         }),
     });
+    const diagnosticsByHomeIdentity = new Map<string, DoctorSnapshotHomeTransportDiagnostics>();
+    supervisor.subscribe((event) => {
+        const current = diagnosticsByHomeIdentity.get(event.lease.homeServerIdentityId);
+        if (!current) return;
+        diagnosticsByHomeIdentity.set(
+            event.lease.homeServerIdentityId,
+            projectIrohHomeTransportDiagnosticsEvent(current, event),
+        );
+    });
+
+    return {
+        ...supervisor,
+        async ensureTunnel(request) {
+            const atMs = Date.now();
+            if (!diagnosticsByHomeIdentity.has(request.homeServerIdentityId) && diagnosticsByHomeIdentity.size >= 64) {
+                const oldest = [...diagnosticsByHomeIdentity.entries()].sort(
+                    ([, left], [, right]) => (left.lastTransitionAtMs ?? 0) - (right.lastTransitionAtMs ?? 0),
+                )[0];
+                if (oldest) diagnosticsByHomeIdentity.delete(oldest[0]);
+            }
+            const initial = createInitialIrohHomeTransportDiagnostics({
+                homeServerIdentityId: request.homeServerIdentityId,
+                policy: request.policy,
+                relayUrls: request.relayUrls,
+                directAddresses: request.directAddresses,
+                atMs,
+            });
+            diagnosticsByHomeIdentity.set(request.homeServerIdentityId, initial);
+            try {
+                const lease = await supervisor.ensureTunnel(request);
+                diagnosticsByHomeIdentity.set(
+                    request.homeServerIdentityId,
+                    projectIrohHomeTransportDiagnosticsReady(initial, {
+                        observedPath: lease.observedPath,
+                        atMs: Date.now(),
+                    }),
+                );
+                return lease;
+            } catch (error) {
+                diagnosticsByHomeIdentity.set(
+                    request.homeServerIdentityId,
+                    projectIrohHomeTransportDiagnosticsFailure(initial, {
+                        ...readDiagnosticError(error),
+                        atMs: Date.now(),
+                    }),
+                );
+                throw error;
+            }
+        },
+        readDiagnostics: () => [...diagnosticsByHomeIdentity.values()]
+            .sort((left, right) => left.homeServerIdentityId.localeCompare(right.homeServerIdentityId)),
+    };
 }

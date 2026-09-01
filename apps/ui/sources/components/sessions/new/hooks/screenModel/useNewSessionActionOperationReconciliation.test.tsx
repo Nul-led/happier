@@ -10,11 +10,18 @@ import { actionOperationStore } from '@/sync/domains/actionOperations/actionOper
 
 const clearNewSessionDraftMock = vi.hoisted(() => vi.fn());
 const clearCapturedDraftMock = vi.hoisted(() => vi.fn(async () => undefined));
+const preserveCreatedDraftMock = vi.hoisted(() => vi.fn());
 const ensureSessionVisibleForMessageRouteMock = vi.hoisted(() => vi.fn(async () => ({ kind: 'available' })));
 const presentationRegisterMock = vi.hoisted(() => vi.fn());
 const presentationAcknowledgeRequestMock = vi.hoisted(() => vi.fn());
+const readCapturedFirstTurnTextMock = vi.hoisted(() => vi.fn());
+const markSessionOptimisticThinkingMock = vi.hoisted(() => vi.fn());
+const upsertPendingMessageMock = vi.hoisted(() => vi.fn());
 const storageState = vi.hoisted(() => ({
     sessions: { 'session-created': { id: 'session-created' } } as Record<string, { id: string }>,
+    settings: {},
+    markSessionOptimisticThinking: markSessionOptimisticThinkingMock,
+    upsertPendingMessage: upsertPendingMessageMock,
 }));
 
 vi.mock('@/sync/domains/state/persistence', () => ({
@@ -23,6 +30,8 @@ vi.mock('@/sync/domains/state/persistence', () => ({
 }));
 vi.mock('@/components/sessions/new/modules/newSessionDraftLifecycle', () => ({
     clearCapturedNewSessionDraftAfterLaunch: clearCapturedDraftMock,
+    preserveCreatedSessionDraftAfterUnacceptedFirstTurn: preserveCreatedDraftMock,
+    readCapturedNewSessionFirstTurnText: readCapturedFirstTurnTextMock,
 }));
 
 vi.mock('@/sync/sync', () => ({
@@ -93,10 +102,15 @@ beforeEach(() => {
     clearNewSessionDraftMock.mockReset();
     clearCapturedDraftMock.mockReset();
     clearCapturedDraftMock.mockResolvedValue(undefined);
+    preserveCreatedDraftMock.mockReset();
     ensureSessionVisibleForMessageRouteMock.mockReset();
     ensureSessionVisibleForMessageRouteMock.mockResolvedValue({ kind: 'available' });
     presentationRegisterMock.mockReset();
     presentationAcknowledgeRequestMock.mockReset();
+    readCapturedFirstTurnTextMock.mockReset();
+    readCapturedFirstTurnTextMock.mockReturnValue('Persisted first turn');
+    markSessionOptimisticThinkingMock.mockReset();
+    upsertPendingMessageMock.mockReset();
     storageState.sessions = { 'session-created': { id: 'session-created' } };
 });
 
@@ -159,7 +173,14 @@ describe('useNewSessionActionOperationReconciliation', () => {
         },
     );
 
-    it('hydrates, clears the accepted scoped draft, and routes once after terminal success', async () => {
+    it('projects the accepted first turn, routes once, then clears the scoped draft after terminal success', async () => {
+        const presentationOrder: string[] = [];
+        clearCapturedDraftMock.mockImplementationOnce(async () => {
+            presentationOrder.push('clear');
+        });
+        upsertPendingMessageMock.mockImplementationOnce(() => {
+            presentationOrder.push('project');
+        });
         actionOperationStore.mergeSnapshots([operation('succeeded', {
             result: {
                 type: 'success',
@@ -167,12 +188,16 @@ describe('useNewSessionActionOperationReconciliation', () => {
                 sessionId: 'session-created',
                 executionTarget: { serverId: 'server-b', machineId: 'machine-a' },
                 organizationPlacement: { folderId: null, tagIds: [] },
-                initialInput: { status: 'notRequested' },
+                initialInput: { status: 'accepted', localId: 'local-first-turn' },
             },
         })]);
         const disableDraftPersistence = vi.fn();
         const resetLaunchRequestId = vi.fn();
-        const router = { replace: vi.fn() };
+        const router = {
+            replace: vi.fn(() => {
+                presentationOrder.push('route');
+            }),
+        };
 
         await renderHook(() => useNewSessionActionOperationReconciliation({
             draftId: 'draft-a',
@@ -203,17 +228,66 @@ describe('useNewSessionActionOperationReconciliation', () => {
             'request-1',
             expect.objectContaining({ operationId: 'operation-1' }),
         );
+        expect(markSessionOptimisticThinkingMock).toHaveBeenCalledWith('session-created');
+        expect(upsertPendingMessageMock).toHaveBeenCalledWith(
+            'session-created',
+            expect.objectContaining({
+                localId: 'local-first-turn',
+                text: 'Persisted first turn',
+                deliveryStatus: 'accepted',
+            }),
+        );
+        expect(presentationOrder).toEqual(['project', 'route', 'clear']);
         expect(resetLaunchRequestId).not.toHaveBeenCalled();
 
         act(() => actionOperationStore.mergeSnapshots([operation('succeeded', { revision: 3 })]));
         expect(router.replace).toHaveBeenCalledTimes(1);
     });
 
-    it('does not clear or route terminal success before canonical route readiness is proven', async () => {
-        storageState.sessions = {};
-        ensureSessionVisibleForMessageRouteMock.mockResolvedValue({ kind: 'missing' });
-        actionOperationStore.mergeSnapshots([operation('succeeded')]);
-        const disableDraftPersistence = vi.fn();
+    it('does not clear or route terminal success before bounded route readiness is proven', async () => {
+        vi.useFakeTimers();
+        try {
+            storageState.sessions = {};
+            ensureSessionVisibleForMessageRouteMock.mockResolvedValue({ kind: 'missing' });
+            actionOperationStore.mergeSnapshots([operation('succeeded')]);
+            const disableDraftPersistence = vi.fn();
+            const router = { replace: vi.fn() };
+
+            await renderHook(() => useNewSessionActionOperationReconciliation({
+                draftId: 'draft-a',
+                requestId: 'request-1',
+                draftScope,
+                localCreationInFlight: false,
+                disableDraftPersistence,
+                resetLaunchRequestId: vi.fn(),
+                router,
+            }));
+
+            await vi.advanceTimersByTimeAsync(10_000);
+            expect(ensureSessionVisibleForMessageRouteMock.mock.calls.length).toBeGreaterThan(1);
+            expect(disableDraftPersistence).not.toHaveBeenCalled();
+            expect(clearNewSessionDraftMock).not.toHaveBeenCalled();
+            expect(router.replace).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('preserves an outcome-unknown first turn instead of projecting it as accepted', async () => {
+        actionOperationStore.mergeSnapshots([operation('succeeded', {
+            result: {
+                type: 'success',
+                disposition: 'created',
+                sessionId: 'session-created',
+                executionTarget: { serverId: 'server-b', machineId: 'machine-a' },
+                organizationPlacement: { folderId: null, tagIds: [] },
+                initialInput: {
+                    status: 'outcomeUnknown',
+                    localId: 'local-outcome-unknown',
+                    code: 'ack_timeout',
+                },
+            },
+        })]);
         const router = { replace: vi.fn() };
 
         await renderHook(() => useNewSessionActionOperationReconciliation({
@@ -221,15 +295,18 @@ describe('useNewSessionActionOperationReconciliation', () => {
             requestId: 'request-1',
             draftScope,
             localCreationInFlight: false,
-            disableDraftPersistence,
+            disableDraftPersistence: vi.fn(),
             resetLaunchRequestId: vi.fn(),
             router,
         }));
 
-        await vi.waitFor(() => expect(ensureSessionVisibleForMessageRouteMock).toHaveBeenCalledTimes(1));
-        expect(disableDraftPersistence).not.toHaveBeenCalled();
-        expect(clearNewSessionDraftMock).not.toHaveBeenCalled();
-        expect(router.replace).not.toHaveBeenCalled();
+        await vi.waitFor(() => expect(router.replace).toHaveBeenCalledTimes(1));
+        expect(preserveCreatedDraftMock).toHaveBeenCalledWith({
+            scope: { serverId: 'server-b', accountId: 'account-a' },
+            sessionId: 'session-created',
+            draftText: 'Persisted first turn',
+        });
+        expect(upsertPendingMessageMock).not.toHaveBeenCalled();
     });
 
     it('ignores a colliding request from another account', async () => {

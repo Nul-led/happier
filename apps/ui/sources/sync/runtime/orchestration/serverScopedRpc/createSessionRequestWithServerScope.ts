@@ -66,10 +66,14 @@ export function createSessionRequestForResolvedServerScope(params: Readonly<{
 
 export function createSessionRequestWithServerScope(params: Readonly<{
     serverId?: string | null;
+    timeoutMs?: number;
     activeRequest: (path: string, init?: RequestInit) => Promise<Response>;
 }>): (path: string, init?: RequestInit) => Promise<Response> {
     return async (path: string, init?: RequestInit) => {
-        const context = await resolveServerScopedSessionContext({ serverId: params.serverId ?? null });
+        const context = await resolveServerScopedSessionContext({
+            serverId: params.serverId ?? null,
+            ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
+        });
         try {
             const response = await createSessionRequestForResolvedServerScope({
                 context,

@@ -28,7 +28,10 @@ import {
 import { resolveSocketIoTransports } from '@/sync/runtime/socketIoTransports';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { storage } from '@/sync/domains/state/storage';
-import { canonicalizeServerUrl } from '@/sync/domains/server/url/serverUrlCanonical';
+import {
+    canonicalizeServerUrl,
+    resolveIndependentHttpsServerOrigin,
+} from '@/sync/domains/server/url/serverUrlCanonical';
 import {
     type ManagedConnectionState,
     type ManagedConnectionTransport,
@@ -259,6 +262,7 @@ class ApiSocket {
     private pendingReconnectNotification = false;
     private reachabilityUnsubscribe: (() => void) | null = null;
     private reachabilityServerUrl: string | null = null;
+    private reachabilityToken: string | null = null;
     private runtimeOriginUnsubscribe: (() => void) | null = null;
     private socketTransport: ManagedConnectionTransport | null = null;
     private detachSocketTransportListeners: Array<() => void> = [];
@@ -292,33 +296,36 @@ class ApiSocket {
         const serverUrl = canonicalizeServerUrl(endpoint) || endpoint;
         const runtimeOrigin = resolveActiveServerRuntimeOrigin(snapshot) || serverUrl;
         const focusedProfile = getServerProfileById(snapshot.serverId);
-        const hasIndependentHttpsIngress = (() => {
-            try {
-                return new URL(String(focusedProfile?.publicServerUrl ?? '')).protocol === 'https:';
-            } catch {
-                return false;
-            }
-        })();
+        const hasIndependentHttpsIngress = resolveIndependentHttpsServerOrigin(
+            focusedProfile?.publicServerUrl ?? '',
+        ) !== null;
         const awaitsVerifiedIrohOrigin = Boolean(
             focusedProfile?.irohEndpoint
             && !snapshot.runtimeOrigin
             && !hasIndependentHttpsIngress,
         );
 
-        if (this.reachabilityUnsubscribe && this.reachabilityServerUrl && this.reachabilityServerUrl !== serverUrl) {
+        if (
+            this.reachabilityUnsubscribe
+            && this.reachabilityServerUrl
+            && (this.reachabilityServerUrl !== serverUrl || this.reachabilityToken !== token)
+        ) {
             const previousServerUrl = this.reachabilityServerUrl;
+            const previousToken = this.reachabilityToken;
             this.reachabilityUnsubscribe();
             this.reachabilityUnsubscribe = null;
             this.reachabilityServerUrl = null;
-            void stopServerReachabilitySupervisor(previousServerUrl);
+            this.reachabilityToken = null;
+            void stopServerReachabilitySupervisor(previousServerUrl, previousToken);
         }
 
         if (!this.reachabilityUnsubscribe) {
             this.reachabilityServerUrl = serverUrl;
+            this.reachabilityToken = token;
             this.reachabilityUnsubscribe = subscribeServerReachabilityState(serverUrl, (state) => {
                 this.applyManagedConnectionState(state);
                 this.handleReachabilityStateChange(state);
-            });
+            }, token);
         }
 
         if (!this.runtimeOriginUnsubscribe) {
@@ -348,13 +355,15 @@ class ApiSocket {
 
     disconnect() {
         const previousServerUrl = this.reachabilityServerUrl;
+        const previousToken = this.reachabilityToken;
         this.reachabilityUnsubscribe?.();
         this.runtimeOriginUnsubscribe?.();
         this.runtimeOriginUnsubscribe = null;
         this.reachabilityUnsubscribe = null;
         this.reachabilityServerUrl = null;
+        this.reachabilityToken = null;
         if (previousServerUrl) {
-            void stopServerReachabilitySupervisor(previousServerUrl);
+            void stopServerReachabilitySupervisor(previousServerUrl, previousToken);
         }
         // Intentional disconnects (app backgrounding, server switch, logout) must not be treated as a "reconnect".
         // Reset these flags so the next successful connect becomes a new baseline (no onReconnected callback).
@@ -837,7 +846,7 @@ class ApiSocket {
         const config = this.config;
         if (!config) return;
         void invalidateServerReachabilitySupervisor({ serverUrl: config.endpoint, token: config.token }).catch(() => {
-            reportServerUnreachable(config.endpoint, error);
+            reportServerUnreachable(config.endpoint, error, config.token);
         });
     }
 
@@ -948,7 +957,7 @@ class ApiSocket {
         socket.on?.('server:restarting', (payload: unknown) => {
             const config = this.config;
             if (!config) return;
-            reportServerRestarting(config.endpoint, readPlannedRestartRetryAfterMs(payload));
+            reportServerRestarting(config.endpoint, readPlannedRestartRetryAfterMs(payload), config.token);
         });
         socket.on(
             SOCKET_RPC_EVENTS.REQUEST,

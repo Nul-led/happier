@@ -1,5 +1,3 @@
-import { AppState } from 'react-native';
-
 import {
     createNativeSshTunnelAdapter,
     type NativeSshTunnelAuthPromptResolver,
@@ -16,19 +14,10 @@ import type {
     NativeSshTunnelSnapshot,
     NativeSshTunnelSupervisor,
 } from './types';
+import { isRuntimeActive, subscribeToRuntimeActiveChange } from '@/utils/runtime/isRuntimeActive';
 
 export type NativeSshTunnelRuntime = NativeSshTunnelSupervisor & Readonly<{
     subscribe: (listener: () => void) => () => void;
-}>;
-
-type AppStateStatus = 'active' | 'background' | 'inactive' | 'unknown' | 'extension';
-
-type AppStateLike = Readonly<{
-    currentState?: AppStateStatus | string;
-    addEventListener: (
-        event: 'change',
-        listener: (state: AppStateStatus | string) => void | Promise<void>,
-    ) => Readonly<{ remove: () => void }>;
 }>;
 
 type RuntimeFactoryParams = Readonly<{
@@ -199,38 +188,42 @@ export function getNativeSshTunnelRuntime(params: RuntimeFactoryParams = {}): Na
     return singletonRuntime;
 }
 
-export function bindNativeSshTunnelRuntimeAppState(params: Readonly<{
-    appState: AppStateLike;
+export function bindNativeTunnelRuntimeActivity(params: Readonly<{
+    isActive: () => boolean;
+    subscribe: (listener: () => void | Promise<void>) => () => void;
     runtime: NativeSshTunnelRuntime;
-    /** Companion tunnel runtimes (e.g. Iroh) driven by the same app-state lifecycle mount. */
+    /** Companion tunnel runtimes (e.g. Iroh) driven by the same activity lifecycle mount. */
     additionalRuntimes?: readonly Pick<IrohHomeTunnelRuntime, 'markSuspended' | 'markForeground'>[];
 }>): Readonly<{ remove: () => void }> {
     const runtimes = [params.runtime, ...(params.additionalRuntimes ?? [])];
-    const onStateChange = async (state: AppStateStatus | string): Promise<void> => {
-        if (state === 'background' || state === 'inactive') {
+    let active = params.isActive();
+    const onActivityChange = async (): Promise<void> => {
+        const nextActive = params.isActive();
+        if (nextActive === active) return;
+        active = nextActive;
+        if (!nextActive) {
             for (const runtime of runtimes) runtime.markSuspended();
             return;
         }
-        if (state === 'active') {
-            for (const runtime of runtimes) await runtime.markForeground();
-        }
+        for (const runtime of runtimes) await runtime.markForeground();
     };
-
-    const subscription = params.appState.addEventListener('change', onStateChange);
-    if (params.appState.currentState === 'background' || params.appState.currentState === 'inactive') {
+    if (!active) {
         for (const runtime of runtimes) runtime.markSuspended();
     }
-    return subscription;
+    const unsubscribe = params.subscribe(onActivityChange);
+    return { remove: unsubscribe };
 }
 
 export function startNativeSshTunnelRuntimeAppStateLifecycle(): void {
     if (singletonLifecycleSubscription) {
         return;
     }
-    // One app-state mount owns suspend/foreground recovery for every native
-    // tunnel lifecycle (SSH and Iroh); there is no second AppState singleton.
-    singletonLifecycleSubscription = bindNativeSshTunnelRuntimeAppState({
-        appState: AppState,
+    // One runtime-activity mount owns suspend/foreground recovery for every
+    // native tunnel lifecycle (SSH and Iroh); desktop and mobile use the same
+    // canonical definition of active state.
+    singletonLifecycleSubscription = bindNativeTunnelRuntimeActivity({
+        isActive: isRuntimeActive,
+        subscribe: subscribeToRuntimeActiveChange,
         runtime: getNativeSshTunnelRuntime(),
         additionalRuntimes: [getIrohHomeTunnelRuntime()],
     });

@@ -138,7 +138,7 @@ describe('daemonWorkspaceFiles direct export', () => {
         expect(result).toEqual({ ok: false, error: 'Download canceled' });
         expect(cleanup).toHaveBeenCalledTimes(1);
         expect(relayFileDownloadMock).not.toHaveBeenCalled();
-        expect(rpcCall).toHaveBeenCalledTimes(1);
+        expect(rpcCall).not.toHaveBeenCalled();
     });
 
     it('tries direct export first, then relay-v2, before falling back to the bulk path for inline base64 reads', async () => {

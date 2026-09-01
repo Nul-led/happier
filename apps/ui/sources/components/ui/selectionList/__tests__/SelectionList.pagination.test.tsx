@@ -74,6 +74,7 @@ describe('SelectionList pagination contract', () => {
             requestKey: 'scope\u0000cursor-1',
             onEndReached: vi.fn(),
             loadingLabel: 'Loading more sessions',
+            moreLabel: 'Load more sessions',
             retryLabel: 'Retry loading sessions',
             endReachedLabel: 'All sessions loaded',
         } as const;
@@ -119,12 +120,14 @@ describe('SelectionList pagination contract', () => {
                 requestKey: 'cursor-after-empty-page',
                 onEndReached,
                 loadingLabel: 'Loading more sessions',
+                moreLabel: 'Load more sessions',
                 retryLabel: 'Retry loading sessions',
                 endReachedLabel: 'All sessions loaded',
             },
         })} />);
 
         expect(screen.findByTestId('browse:bodyVirtualizedList')).not.toBeNull();
+        expect(screen.findByTestId('browse:pagination:more')).not.toBeNull();
         expect(typeof legendListState.props?.onEndReached).toBe('function');
         legendListState.props?.onEndReached?.();
         legendListState.props?.onEndReached?.();
@@ -142,6 +145,7 @@ describe('SelectionList pagination contract', () => {
                 requestKey: 'cursor-1',
                 onEndReached,
                 loadingLabel: 'Loading more sessions',
+                moreLabel: 'Load more sessions',
                 retryLabel: 'Retry loading sessions',
                 endReachedLabel: 'All sessions loaded',
             },
@@ -167,6 +171,7 @@ describe('SelectionList pagination contract', () => {
                 requestKey: 'cursor-1',
                 onEndReached,
                 loadingLabel: 'Loading more sessions',
+                moreLabel: 'Load more sessions',
                 retryLabel: 'Retry loading sessions',
                 endReachedLabel: 'All sessions loaded',
             },
@@ -184,6 +189,7 @@ describe('SelectionList pagination contract', () => {
                 onEndReached,
                 onRetry,
                 loadingLabel: 'Loading more sessions',
+                moreLabel: 'Load more sessions',
                 retryLabel: 'Retry loading sessions',
                 endReachedLabel: 'All sessions loaded',
             },
@@ -202,6 +208,7 @@ describe('SelectionList pagination contract', () => {
                 requestKey: null,
                 onEndReached,
                 loadingLabel: 'Loading more sessions',
+                moreLabel: 'Load more sessions',
                 retryLabel: 'Retry loading sessions',
                 endReachedLabel: 'All sessions loaded',
             },

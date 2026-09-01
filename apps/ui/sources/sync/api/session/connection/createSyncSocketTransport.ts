@@ -5,6 +5,7 @@ import {
     CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
     buildAccountStoredContentCompatibilitySocketAuthV1,
 } from '@happier-dev/protocol';
+import { resolveSocketIoTransportsForCarrier } from '@/sync/runtime/socketIoTransports';
 
 type SyncSocket = Socket;
 
@@ -27,6 +28,7 @@ export function createSyncSocketTransport(params: Readonly<{
     transport: ManagedConnectionTransport;
 }> {
     const endpoint = String(params.endpoint ?? '').trim().replace(/\/+$/, '');
+    const transports = resolveSocketIoTransportsForCarrier(params.carrier, params.transports);
     const socket = io(endpoint, {
         // Socket.IO mounts on an Engine.IO endpoint that expects a trailing slash on the wire
         // (`/v1/updates/?EIO=...`). Some browser environments can otherwise surface this as
@@ -40,7 +42,7 @@ export function createSyncSocketTransport(params: Readonly<{
                 CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
             ),
         },
-        ...(params.carrier === 'iroh' ? { transports: ['websocket'] } : (params.transports ? { transports: params.transports } : null)),
+        ...(transports ? { transports } : null),
         // Explicitly disable cookies/credentialed requests for cross-origin polling transport.
         // Our server authenticates via the token in the Socket.IO handshake, and sets
         // `credentials: false` for CORS, so a credentialed polling request is blocked by

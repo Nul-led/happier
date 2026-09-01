@@ -735,11 +735,10 @@ describe('createDefaultActionExecutor (session.fork)', () => {
         sessionId: 'sess_parent',
         targetMachineId: 'machine_2',
         targetSessionStorageMode: 'persisted',
-        workspaceTransfer: {
-          enabled: true,
-          conflictPolicy: 'replace_existing',
-          includeIgnoredMode: 'exclude',
-          ignoredIncludeGlobs: [],
+        workspaceAction: {
+          kind: 'relationship',
+          relationshipId: 'relationship_1',
+          flushBeforeCommit: true,
         },
       },
       { surface: 'ui', placement: 'session_action_menu' } as any,
@@ -752,12 +751,10 @@ describe('createDefaultActionExecutor (session.fork)', () => {
       targetMachineId: 'machine_2',
       sessionStorageMode: 'direct',
       targetSessionStorageMode: 'persisted',
-      workspaceTransfer: {
-        enabled: true,
-        strategy: 'transfer_snapshot',
-        conflictPolicy: 'replace_existing',
-        includeIgnoredMode: 'exclude',
-        ignoredIncludeGlobs: [],
+      workspaceAction: {
+        kind: 'relationship',
+        relationshipId: 'relationship_1',
+        flushBeforeCommit: true,
       },
     }));
   });

@@ -8,7 +8,6 @@ import { SESSION_MACHINE_TARGET_UNAVAILABLE_ERROR } from '@/sync/runtime/session
 
 import { uploadSessionAttachmentFromReaderWithCarrierFallbacks } from './uploadSessionAttachmentFromReaderWithCarrierFallbacks';
 import type { TransferFinalizeRecoveryFailure } from '../plumbing/directTransferFinalizeRecovery';
-import type { AcquireMachineCarrierHttpLease } from '../plumbing/machineCarrierHttpLease';
 
 type SessionRpcFailure = Readonly<{ success: false; error: string; errorCode?: string }>;
 type TransferFailureResponse = Readonly<{ success: false; error: string; errorCode?: string }>;
@@ -39,8 +38,6 @@ export async function uploadDaemonSessionAttachmentFromReader(params: Readonly<{
     request: SessionAttachmentsUploadInitRequest;
     signal?: AbortSignal | null;
     onProgress?: ((progress: Readonly<{ uploadedBytes: number; totalBytes: number }>) => void) | null;
-    machineCarrierRequired?: boolean;
-    acquireMachineCarrierHttpLease?: AcquireMachineCarrierHttpLease | null;
 }>): Promise<
     SessionAttachmentsUploadFinalizeResponse
     | TransferFailureResponse
@@ -75,7 +72,5 @@ export async function uploadDaemonSessionAttachmentFromReader(params: Readonly<{
         },
         onProgress: params.onProgress ?? null,
         signal: params.signal ?? null,
-        machineCarrierRequired: params.machineCarrierRequired,
-        acquireMachineCarrierHttpLease: params.acquireMachineCarrierHttpLease ?? null,
     });
 }

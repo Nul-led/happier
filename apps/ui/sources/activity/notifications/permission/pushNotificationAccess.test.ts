@@ -5,6 +5,7 @@ import {
     readExpoPushToken,
     readPushPermission,
     requestPushPermission,
+    subscribeExpoPushTokenChanges,
 } from './pushNotificationAccess';
 
 vi.mock('expo-constants', () => ({
@@ -152,5 +153,30 @@ describe('readExpoPushToken', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+});
+
+describe('subscribeExpoPushTokenChanges', () => {
+    it('forwards token changes as signals and returns the native removal owner', async () => {
+        const remove = vi.fn();
+        let nativeListener: (() => void) | null = null;
+        const listener = vi.fn();
+
+        const unsubscribe = await subscribeExpoPushTokenChanges(listener, {
+            loadModule: moduleWith({
+                addPushTokenListener: (nextListener: () => void) => {
+                    nativeListener = nextListener;
+                    return { remove };
+                },
+            }),
+        });
+
+        expect(unsubscribe).not.toBeNull();
+        expect(nativeListener).not.toBeNull();
+        (nativeListener as (() => void) | null)?.();
+        expect(listener).toHaveBeenCalledTimes(1);
+
+        unsubscribe?.();
+        expect(remove).toHaveBeenCalledTimes(1);
     });
 });

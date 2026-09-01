@@ -6,3 +6,10 @@ export function resolveSocketIoTransports(): string[] | undefined {
     // compatibility across proxies and dev gateways. We only override when explicitly asked.
     return undefined;
 }
+
+export function resolveSocketIoTransportsForCarrier(
+    carrier: 'https' | 'iroh' | undefined,
+    fallback: string[] | undefined = resolveSocketIoTransports(),
+): string[] | undefined {
+    return carrier === 'iroh' ? ['websocket'] : fallback;
+}

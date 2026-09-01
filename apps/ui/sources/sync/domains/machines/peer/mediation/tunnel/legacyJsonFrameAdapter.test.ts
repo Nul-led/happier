@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
     decodeLegacyJsonPeerTcpTunnelFrame,
     encodeLegacyJsonPeerTcpTunnelFrame,
-} from './legacyJsonFrameAdapter';
+} from '@happier-dev/peer-transport/duplexFrames';
 
 describe('legacy JSON tunnel frame adapter', () => {
     it('keeps base64 at the V1 wire boundary while preserving exact data bytes', () => {

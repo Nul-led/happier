@@ -101,45 +101,44 @@ describe('app native SSH tunnel runtime', () => {
         await loaded!.disposeNativeSshTunnelRuntime();
     });
 
-    it('degrades leases on background AppState changes and re-probes on foreground', async () => {
+    it('degrades and re-probes through the canonical runtime-activity owner', async () => {
         const loaded = await import('./runtime').catch(() => null);
         expect(loaded).not.toBeNull();
 
-        let listener: ((state: 'active' | 'background' | 'inactive') => void | Promise<void>) | null = null;
-        const remove = vi.fn();
-        const appState = {
-            currentState: 'active' as const,
-            addEventListener: vi.fn((_event: 'change', nextListener: (state: 'active' | 'background' | 'inactive') => void | Promise<void>) => {
-                listener = nextListener;
-                return { remove };
-            }),
-        };
+        let active = true;
+        let listener: (() => void | Promise<void>) | null = null;
+        const unsubscribe = vi.fn();
         const supervisor = createSupervisor();
         const runtime = loaded!.createNativeSshTunnelRuntime({ supervisor });
         await runtime.ensureTunnel(createRequest());
 
-        const lifecycle = loaded!.bindNativeSshTunnelRuntimeAppState({
-            appState,
+        const lifecycle = loaded!.bindNativeTunnelRuntimeActivity({
+            isActive: () => active,
+            subscribe: (nextListener: () => void | Promise<void>) => {
+                listener = nextListener;
+                return unsubscribe;
+            },
             runtime,
         });
-        const emitAppState = async (state: 'active' | 'background' | 'inactive') => {
+        const emitActivityChange = async (nextActive: boolean) => {
+            active = nextActive;
             const currentListener = listener;
             if (!currentListener) {
-                throw new Error('AppState listener was not registered');
+                throw new Error('Runtime-activity listener was not registered');
             }
-            await currentListener(state);
+            await currentListener();
         };
 
-        await emitAppState('background');
+        await emitActivityChange(false);
         expect(runtime.listTunnels().leases[0]?.status).toBe('degraded');
         expect(runtime.listTunnels().platformLimitations.map((limitation) => limitation.reason)).toContain('platform-suspended');
 
-        await emitAppState('active');
+        await emitActivityChange(true);
         expect(runtime.listTunnels().leases[0]?.status).toBe('ready');
         expect(supervisor.markForeground).toHaveBeenCalledTimes(1);
 
         lifecycle.remove();
-        expect(remove).toHaveBeenCalledTimes(1);
+        expect(unsubscribe).toHaveBeenCalledTimes(1);
     });
 
     it('rejects new tunnel starts while the native app is suspended', async () => {

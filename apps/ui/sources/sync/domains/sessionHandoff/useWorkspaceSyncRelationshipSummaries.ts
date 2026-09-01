@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-import { useSetting } from '@/sync/domains/state/storage';
+import { useMachineDisplayNamesById, useSetting } from '@/sync/domains/state/storage';
 import {
     projectWorkspaceSyncRelationships,
     projectWorkspaceSyncRelationshipSummaries,
@@ -35,9 +35,17 @@ export function useWorkspaceSyncRelationshipSummaries(
         () => projectWorkspaceSyncRelationships(rawRelationships),
         [rawRelationships],
     );
+    const machineIds = React.useMemo(() => {
+        const workspaceRefsById = new Map(workspaceRefs.map((workspaceRef) => [workspaceRef.id, workspaceRef]));
+        return relationshipModel.all.flatMap((relationship) => [
+            workspaceRefsById.get(relationship.alphaWorkspaceRefId)?.machineId,
+            workspaceRefsById.get(relationship.betaWorkspaceRefId)?.machineId,
+        ]).filter((machineId): machineId is string => typeof machineId === 'string' && machineId.length > 0);
+    }, [relationshipModel, workspaceRefs]);
+    const machineNamesById = useMachineDisplayNamesById(machineIds);
     const baseSummaries = React.useMemo(
-        () => projectWorkspaceSyncRelationshipSummaries({ relationships: relationshipModel, workspaceRefs, statuses: [] }),
-        [relationshipModel, workspaceRefs],
+        () => projectWorkspaceSyncRelationshipSummaries({ relationships: relationshipModel, workspaceRefs, statuses: [], machineNamesById }),
+        [machineNamesById, relationshipModel, workspaceRefs],
     );
     const scopedBaseSummaries = React.useMemo(
         () => baseSummaries.filter((summary) => workspaceRefId === undefined
@@ -72,12 +80,13 @@ export function useWorkspaceSyncRelationshipSummaries(
             relationships: relationshipModel,
             workspaceRefs,
             statuses,
+            machineNamesById,
         }).filter((summary) => workspaceRefId === undefined
             || (workspaceRefId !== null && (
                 summary.alpha.workspaceRefId === workspaceRefId
                 || summary.beta.workspaceRefId === workspaceRefId
             )));
-    }, [relationshipModel, revision, scopedBaseSummaries, workspaceRefId, workspaceRefs]);
+    }, [machineNamesById, relationshipModel, revision, scopedBaseSummaries, workspaceRefId, workspaceRefs]);
 }
 
 export function resolveWorkspaceSyncStatusScope(summary: WorkspaceSyncRelationshipSummary): WorkspaceSyncStatusScope {

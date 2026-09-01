@@ -10,6 +10,7 @@ import {
     PeerLoopbackProbeResponseV1Schema,
     SignedDirectRouteGrantV1Schema,
     SignedDirectRouteGrantV2Schema,
+    DirectRouteGrantRequestV2Schema,
     PeerMachineLiveStreamDirectStartResponseV2Schema,
     createPeerRouteNonceSigningInputV1,
     type MachineLiveStreamCapsV1,
@@ -35,6 +36,12 @@ import {
 } from '@/sync/domains/server/serverProfiles';
 import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { storage } from '@/sync/domains/state/storage';
+import type { ServerAccountSessionRequestAuthority } from '@/sync/runtime/orchestration/serverScopedRpc/createSessionRequestWithServerScope';
+import {
+    requestPeerMediationServerJson,
+    requestPeerMediationServerJsonForCredential,
+} from '../peerMediationServerRequest';
+import { readPeerEndpointForServerScope } from '../readPeerEndpointForServerScope';
 
 export const MACHINE_LIVE_STREAM_DIRECT_FETCH_TIMEOUT_MS = 5_000;
 
@@ -71,6 +78,33 @@ export type OperationResult<T> =
     | Readonly<{ ok: true; value: T }>
     | Readonly<{ ok: false; reasonCode: string }>;
 
+/** Canonical authenticated UI HTTP seam for a V2 peer-route grant. */
+export async function requestPeerRouteGrantV2(input: Readonly<{
+    authority: Pick<ServerAccountSessionRequestAuthority, 'request'>;
+    request: ReturnType<typeof DirectRouteGrantRequestV2Schema.parse>;
+    timeoutMs?: number;
+}>): Promise<OperationResult<SignedDirectRouteGrantV2>> {
+    try {
+        const response = await requestPeerMediationServerJson({
+            authorityRequest: input.authority.request,
+            path: '/v1/machines/peer/mediation/route-grants',
+            timeoutMs: input.timeoutMs,
+            init: {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(input.request),
+            },
+        });
+        if (!response.ok) return { ok: false, reasonCode: 'grant_missing' };
+        const body = response.body as { ok?: unknown; reasonCode?: unknown; grant?: unknown } | null;
+        if (body?.ok !== true) return { ok: false, reasonCode: typeof body?.reasonCode === 'string' ? body.reasonCode : 'grant_missing' };
+        const parsed = SignedDirectRouteGrantV2Schema.safeParse(body.grant);
+        return parsed.success ? { ok: true, value: parsed.data } : { ok: false, reasonCode: 'grant_invalid' };
+    } catch {
+        return { ok: false, reasonCode: 'grant_missing' };
+    }
+}
+
 export type MachineLiveStreamUnsignedStartRequest = Readonly<{
     v: 1;
     streamId: string;
@@ -98,10 +132,6 @@ function normalizeBaseUrl(serverUrl: string): string {
     return String(serverUrl ?? '').trim().replace(/\/+$/, '');
 }
 
-function joinBaseAndPath(serverUrl: string, path: string): string {
-    return `${normalizeBaseUrl(serverUrl)}${path.startsWith('/') ? path : `/${path}`}`;
-}
-
 export function resolveTargetServer(serverId: string | null | undefined): TargetServer | null {
     const active = getActiveServerSnapshot();
     const activeServerId = normalizeId(active.serverId);
@@ -121,12 +151,12 @@ export function readEndpointFromMachineState(input: Readonly<{
     machineId: string;
 }>): PeerLoopbackEndpointCandidateV1 | null {
     const state = storage.getState();
-    const scopedMachines = state.machineListByServerId?.[input.serverId];
-    const scopedMachine = Array.isArray(scopedMachines)
-        ? scopedMachines.find((machine) => machine.id === input.machineId) ?? null
-        : null;
-    const machine = scopedMachine ?? state.machines[input.machineId] ?? null;
-    const endpoint = machine?.daemonState?.peerMediation?.loopback?.endpoint;
+    const endpoint = readPeerEndpointForServerScope({
+        state,
+        serverId: input.serverId,
+        machineId: input.machineId,
+        select: (machine) => machine.daemonState?.peerMediation?.loopback?.endpoint,
+    });
     const parsed = PeerLoopbackEndpointCandidateV1Schema.safeParse(endpoint);
     return parsed.success ? parsed.data : null;
 }
@@ -204,13 +234,14 @@ export async function requestLiveStreamRouteGrant(input: Readonly<{
     timeoutMs?: number;
 }>): Promise<OperationResult<SignedDirectRouteGrantV1>> {
     try {
-        const response = await fetchJson({
-            url: joinBaseAndPath(input.server.serverUrl, '/v1/machines/peer/mediation/route-grants'),
+        const response = await requestPeerMediationServerJsonForCredential({
+            serverId: input.server.serverId,
+            token: input.credentials.token,
+            path: '/v1/machines/peer/mediation/route-grants',
             timeoutMs: input.timeoutMs,
             init: {
                 method: 'POST',
                 headers: {
-                    Authorization: `Bearer ${input.credentials.token}`,
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
@@ -257,12 +288,14 @@ export async function requestLiveStreamRouteGrantV2(input: Readonly<{
     timeoutMs?: number;
 }>): Promise<OperationResult<SignedDirectRouteGrantV2>> {
     try {
-        const response = await fetchJson({
-            url: joinBaseAndPath(input.server.serverUrl, '/v1/machines/peer/mediation/route-grants'),
+        const response = await requestPeerMediationServerJsonForCredential({
+            serverId: input.server.serverId,
+            token: input.credentials.token,
+            path: '/v1/machines/peer/mediation/route-grants',
             timeoutMs: input.timeoutMs,
             init: {
                 method: 'POST',
-                headers: { Authorization: `Bearer ${input.credentials.token}`, 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     v: 2,
                     kind: 'ephemeral_ed25519',
@@ -467,13 +500,14 @@ export async function requestLiveStreamRelayAuthorization(input: Readonly<{
     timeoutMs?: number;
 }>): Promise<OperationResult<MachineLiveStreamRelayAuthorizationV1>> {
     try {
-        const response = await fetchJson({
-            url: joinBaseAndPath(input.server.serverUrl, '/v1/machines/peer/mediation/route-grants'),
+        const response = await requestPeerMediationServerJsonForCredential({
+            serverId: input.server.serverId,
+            token: input.credentials.token,
+            path: '/v1/machines/peer/mediation/route-grants',
             timeoutMs: input.timeoutMs,
             init: {
                 method: 'POST',
                 headers: {
-                    Authorization: `Bearer ${input.credentials.token}`,
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({

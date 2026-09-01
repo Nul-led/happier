@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happier-dev/protocol';
 
 type SocketHandler = (...args: any[]) => void;
 
@@ -80,7 +81,7 @@ describe('createSyncSocketTransport', () => {
                     clientPurpose: 'sync',
                     accountStoredContentCompatibility: {
                         v: 1,
-                        protocolVersion: 3,
+                        protocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION.protocolVersion,
                     },
                 }),
                 transports: ['websocket'],

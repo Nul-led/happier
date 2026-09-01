@@ -1,12 +1,41 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    formatWorkspaceSyncRelationshipTitle,
+    resolveWorkspaceSyncConflictOpenTarget,
     resolveWorkspaceSyncErrorTranslationKey,
     resolveWorkspaceSyncModeTranslationKey,
     resolveWorkspaceSyncStateTranslationKey,
 } from './workspaceSyncPresentation';
 
 describe('workspaceSyncPresentation', () => {
+    it('uses directional relationship titles for immutable one-way and two-way modes', () => {
+        expect(formatWorkspaceSyncRelationshipTitle({
+            alphaLabel: 'Source',
+            betaLabel: 'Destination',
+            mode: 'keep_synced',
+        })).toBe('Source → Destination');
+        expect(formatWorkspaceSyncRelationshipTitle({
+            alphaLabel: 'Alpha',
+            betaLabel: 'Beta',
+            mode: 'keep_both_in_sync',
+        })).toBe('Alpha ↔ Beta');
+    });
+
+    it('opens the exact relationship only when one relationship owns the conflict attention', () => {
+        expect(resolveWorkspaceSyncConflictOpenTarget([
+            { relationshipId: 'one', conflictCount: 2 },
+            { relationshipId: 'healthy', conflictCount: 0 },
+        ])).toEqual({ kind: 'relationship', relationshipId: 'one' });
+        expect(resolveWorkspaceSyncConflictOpenTarget([
+            { relationshipId: 'one', conflictCount: 1 },
+            { relationshipId: 'two', conflictCount: 3 },
+        ])).toEqual({ kind: 'relationshipList' });
+        expect(resolveWorkspaceSyncConflictOpenTarget([
+            { relationshipId: 'healthy', conflictCount: 0 },
+        ])).toEqual({ kind: 'none' });
+    });
+
     it('keeps every released mode distinct and fails closed for unknown modes', () => {
         expect([
             'copy_once',

@@ -25,13 +25,25 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
     });
 
     it('prepares a direct import session and uploads encrypted chunks through the HTTP transfer endpoints', async () => {
+        const order: string[] = [];
+        const release = vi.fn(async () => {});
+        const acquirePreparedCarrier = vi.fn(async () => {
+            order.push('lease');
+            return {
+                localOrigin: 'http://127.0.0.1:48123',
+                requestHeaders: { 'X-Happier-Machine-Local-Capability': 'a'.repeat(64) },
+                release,
+            };
+        });
         const requests: Array<Readonly<{
             method: string;
             url: string;
             headers: Record<string, string>;
         }>> = [];
 
-        prepareImportSessionMock.mockResolvedValue({
+        prepareImportSessionMock.mockImplementation(async () => {
+            order.push('prepare');
+            return {
             success: true,
             uploadId: 'upload-1',
             destDisplayPath: '/repo/payload.bin',
@@ -46,6 +58,7 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
                     expiresAt: 5_000,
                 },
             ],
+            };
         });
 
         setRuntimeFetch(async (input, init) => {
@@ -56,6 +69,7 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
                 url,
                 headers: readHeadersRecord(init?.headers),
             });
+            order.push('transfer');
 
             if (url.includes('/chunks/') && method === 'PUT') {
                 return new Response(JSON.stringify({ success: true }), {
@@ -97,6 +111,7 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
                 sizeBytes: 5,
                 overwrite: true,
             },
+            acquirePreparedCarrier,
         });
 
         expect(result).toEqual({
@@ -109,26 +124,38 @@ describe('uploadBulkPayloadFromFileViaDirectImport', () => {
         expect(prepareImportSessionMock).toHaveBeenCalledWith(expect.objectContaining({
             method: RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE,
         }));
+        expect(acquirePreparedCarrier).toHaveBeenCalledWith({ operationId: 'upload-1', maxBytes: 5 });
+        expect(order.slice(0, 3)).toEqual(['prepare', 'lease', 'transfer']);
+        expect(release).toHaveBeenCalledTimes(1);
         expect(requests).toEqual([
             {
                 method: 'PUT',
-                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-1/chunks/0',
-                headers: { 'content-type': 'application/json' },
+                url: 'http://127.0.0.1:48123/machine-transfers/direct/imports/upload-1/chunks/0',
+                headers: {
+                    'content-type': 'application/json',
+                    'x-happier-machine-local-capability': 'a'.repeat(64),
+                },
             },
             {
                 method: 'PUT',
-                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-1/chunks/1',
-                headers: { 'content-type': 'application/json' },
+                url: 'http://127.0.0.1:48123/machine-transfers/direct/imports/upload-1/chunks/1',
+                headers: {
+                    'content-type': 'application/json',
+                    'x-happier-machine-local-capability': 'a'.repeat(64),
+                },
             },
             {
                 method: 'PUT',
-                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-1/chunks/2',
-                headers: { 'content-type': 'application/json' },
+                url: 'http://127.0.0.1:48123/machine-transfers/direct/imports/upload-1/chunks/2',
+                headers: {
+                    'content-type': 'application/json',
+                    'x-happier-machine-local-capability': 'a'.repeat(64),
+                },
             },
             {
                 method: 'POST',
-                url: 'http://127.0.0.1:46001/machine-transfers/direct/imports/upload-1/finalize',
-                headers: {},
+                url: 'http://127.0.0.1:48123/machine-transfers/direct/imports/upload-1/finalize',
+                headers: { 'x-happier-machine-local-capability': 'a'.repeat(64) },
             },
         ]);
     });

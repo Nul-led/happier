@@ -101,7 +101,17 @@ export function SelectionListPaginationFooter(props: Readonly<{
         );
     }
 
-    if (props.pagination.hasMore) return null;
+    if (props.pagination.hasMore) {
+        return wrapListboxSupplement(
+            <Item
+                testID={measureMode ? undefined : selectionListTestId(props.rootTestID, 'pagination', 'more')}
+                title={props.pagination.moreLabel}
+                onPress={props.pagination.onEndReached}
+                accessibilityLabel={props.pagination.moreLabel}
+                {...(identityProps ?? {})}
+            />,
+        );
+    }
 
     return wrapListboxSupplement(
         <View

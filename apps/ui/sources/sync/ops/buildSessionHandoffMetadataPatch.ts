@@ -96,10 +96,14 @@ export function buildSessionHandoffMetadataPatch(input: Readonly<{
         Object.assign(next, providerPatch.metadataPatch);
     }
 
+    // The Agent owns the payload and the handoff/runtime surface that produced
+    // it. Generic UI only carries the validated envelope; it never rebuilds an
+    // Agent payload from metadata, source fields, or legacy mode flags.
     const runtimeDescriptor = providerPatch?.runtimeDescriptor
-        ?? (!builtInAgentId ? input.targetRuntimeDescriptor ?? null : null);
+        ?? input.targetRuntimeDescriptor
+        ?? null;
     const externalSessionRuntimeDescriptor = providerPatch?.externalSessionRuntimeDescriptor
-        ?? (!builtInAgentId ? input.targetRuntimeDescriptor : undefined);
+        ?? input.targetRuntimeDescriptor;
     next = applyRuntimeDescriptorSessionMetadata(next, runtimeDescriptor);
     if (!runtimeDescriptor) {
         delete next.agentRuntimeDescriptorV1;

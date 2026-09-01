@@ -1,18 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
-import { computeWorkspaceSyncPolicyDigest } from '@happier-dev/protocol';
 
 const machineRpcWithServerScope = vi.hoisted(() => vi.fn());
-const mutateAccountSettingsOnce = vi.hoisted(() => vi.fn());
-const settingsState = vi.hoisted(() => ({ settingsVersion: 7 as number | null }));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/serverScopedMachineRpc', () => ({
     machineRpcWithServerScope: (input: unknown) => machineRpcWithServerScope(input),
-}));
-vi.mock('@/sync/sync', () => ({ sync: { mutateAccountSettingsOnce } }));
-vi.mock('@/sync/domains/state/storageStore', () => ({
-    storage: { getState: () => ({ settingsVersion: settingsState.settingsVersion }) },
 }));
 
 import {
@@ -24,6 +17,7 @@ import {
     disableWorkspaceSyncRelationship,
     enableWorkspaceSyncRelationship,
     terminatePersistedWorkspaceSyncRelationship,
+    inspectWorkspaceSyncLegacyState,
 } from './workspaceSync';
 
 const status = {
@@ -41,50 +35,25 @@ const status = {
 describe('workspace sync UI operations', () => {
     beforeEach(() => {
         machineRpcWithServerScope.mockReset();
-        settingsState.settingsVersion = 7;
-        mutateAccountSettingsOnce.mockReset();
-        mutateAccountSettingsOnce.mockImplementation(async (input: Readonly<{
-            expectedSettingsVersion: number;
-            mutate: (raw: Readonly<Record<string, unknown>>) => Readonly<{
-                settings: Record<string, unknown>;
-                value: unknown;
-            }>;
-        }>) => {
-            const mutation = input.mutate(settingsRaw);
-            settingsRaw = mutation.settings;
-            settingsState.settingsVersion = (settingsState.settingsVersion ?? 0) + 1;
-            return {
-                status: 'applied' as const,
-                settingsVersion: settingsState.settingsVersion,
-                value: mutation.value,
-            };
-        });
-        settingsRaw = { workspaceSyncRelationshipsV1: [relationship] };
     });
 
-    let settingsRaw: Record<string, unknown>;
-    const relationshipPolicyFields = {
-        v: 1 as const,
-        selection: 'all_files' as const,
-        extraIgnorePatterns: [],
-        extraIncludePatterns: [],
-        includeGitDirectory: false,
-    };
-    const relationship = {
-        v: 1 as const,
-        relationshipId: 'relationship-1',
-        controllerMachineId: 'machine-controller',
-        alphaWorkspaceRefId: 'workspace-alpha',
-        betaWorkspaceRefId: 'workspace-beta',
-        mode: 'keep_synced' as const,
-        contentPolicy: {
-            ...relationshipPolicyFields,
-            policyDigest: computeWorkspaceSyncPolicyDigest(relationshipPolicyFields),
-        },
-        enabled: true,
-        createdAtMs: 1,
-        updatedAtMs: 1,
-    };
+    it('reinspects legacy state without publishing a cleanup mutation', async () => {
+        machineRpcWithServerScope.mockResolvedValueOnce({
+            status: 'legacy_workspace_sync_state_unsupported',
+            classification: 'retired_v1',
+            quarantinePath: '/private/state/workspace-replication.retired-123',
+            schemaVersion: 1,
+        });
+
+        await expect(inspectWorkspaceSyncLegacyState({ controllerMachineId: 'machine-controller' }))
+            .resolves.toMatchObject({ classification: 'retired_v1', schemaVersion: 1 });
+        expect(machineRpcWithServerScope).toHaveBeenCalledWith({
+            machineId: 'machine-controller',
+            serverId: undefined,
+            method: RPC_METHODS.DAEMON_WORKSPACE_SYNC_LEGACY_INSPECT,
+            payload: {},
+        });
+    });
 
     it('reads strictly validated status through the relationship controller machine', async () => {
         machineRpcWithServerScope
@@ -180,31 +149,27 @@ describe('workspace sync UI operations', () => {
         })).rejects.toThrow('Unsupported response');
     });
 
-    it('writes lifecycle desired state only through Account Settings and leaves reconciliation to the daemon', async () => {
+    it('routes each lifecycle intent through exactly one daemon operation', async () => {
         const scope = {
             controllerMachineId: 'machine-controller',
             serverId: 'server-1',
             relationshipId: 'relationship-1',
         };
+        machineRpcWithServerScope
+            .mockResolvedValueOnce({ ok: true })
+            .mockResolvedValueOnce({ ok: true })
+            .mockResolvedValueOnce({ ok: true });
+
         await expect(disableWorkspaceSyncRelationship(scope)).resolves.toBeUndefined();
-        expect((settingsRaw.workspaceSyncRelationshipsV1 as any[])[0]?.enabled).toBe(false);
-
         await expect(enableWorkspaceSyncRelationship(scope)).resolves.toBeUndefined();
-        expect((settingsRaw.workspaceSyncRelationshipsV1 as any[])[0]?.enabled).toBe(true);
-
         await expect(terminatePersistedWorkspaceSyncRelationship(scope)).resolves.toBeUndefined();
-        expect(settingsRaw.workspaceSyncRelationshipsV1).toEqual([]);
-        expect(machineRpcWithServerScope).not.toHaveBeenCalled();
-    });
+        expect(machineRpcWithServerScope.mock.calls.map(([input]) => input.method)).toEqual([
+            RPC_METHODS.DAEMON_WORKSPACE_SYNC_PAUSE,
+            RPC_METHODS.DAEMON_WORKSPACE_SYNC_RESUME,
+            RPC_METHODS.DAEMON_WORKSPACE_SYNC_TERMINATE,
+        ]);
 
-    it('removes a relationship without requiring the controller to be online', async () => {
-        await expect(terminatePersistedWorkspaceSyncRelationship({
-            controllerMachineId: 'machine-controller',
-            serverId: 'server-1',
-            relationshipId: 'relationship-1',
-        })).resolves.toBeUndefined();
-
-        expect(settingsRaw.workspaceSyncRelationshipsV1).toEqual([]);
-        expect(machineRpcWithServerScope).not.toHaveBeenCalled();
+        machineRpcWithServerScope.mockResolvedValueOnce({ status });
+        await expect(disableWorkspaceSyncRelationship(scope)).rejects.toThrow('Unsupported response');
     });
 });

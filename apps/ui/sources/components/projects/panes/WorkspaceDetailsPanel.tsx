@@ -52,6 +52,7 @@ import { resolveNewSessionDraftRouteIdentity } from '@/components/sessions/new/n
 import { buildNewSessionLaunchRouteParams } from '@/components/sessions/new/navigation/newSessionRouteParams';
 import { WorkspaceSyncRelationshipList } from '@/components/workspaces/sync/WorkspaceSyncRelationshipList';
 import { createWorkspaceSyncConflictDetailsTab } from '@/components/workspaces/sync/workspaceSyncConflictDetailsTab';
+import { createWorkspaceSyncRelationshipDetailsTab } from '@/components/workspaces/sync/workspaceSyncRelationshipDetailsTab';
 
 export type WorkspaceDetailsPanelHeaderActionRenderParams = Readonly<{
     iconButtonStyle: Readonly<Record<string, unknown>>;
@@ -197,6 +198,9 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
     const openWorkspaceSyncConflicts = React.useCallback((summary: Parameters<typeof createWorkspaceSyncConflictDetailsTab>[0]) => {
         pane.openDetailsTab(createWorkspaceSyncConflictDetailsTab(summary, props.workspaceRef.id), { intent: 'pinned' });
     }, [pane, props.workspaceRef.id]);
+    const openWorkspaceSyncDetails = React.useCallback((summary: Parameters<typeof createWorkspaceSyncRelationshipDetailsTab>[0]) => {
+        pane.openDetailsTab(createWorkspaceSyncRelationshipDetailsTab(summary, props.workspaceRef.id), { intent: 'pinned' });
+    }, [pane, props.workspaceRef.id]);
 
     const renderEmptyState = React.useCallback(() => (
         <ItemList testID="project-details-info" containerStyle={{ paddingTop: 12 }}>
@@ -205,7 +209,11 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
                 <Item title={t('projects.detail.fields.machine')} detail={machineName} mode="info" />
                 <Item title={t('projects.detail.fields.path')} detail={displayPath} mode="info" copy={displayPath} />
             </ItemGroup>
-            <WorkspaceSyncRelationshipList workspaceRefId={props.workspaceRef.id} onOpenConflicts={openWorkspaceSyncConflicts} />
+            <WorkspaceSyncRelationshipList
+                workspaceRefId={props.workspaceRef.id}
+                onOpenDetails={openWorkspaceSyncDetails}
+                onOpenConflicts={openWorkspaceSyncConflicts}
+            />
             {props.renderEmptyStateSupplementaryContent ? props.renderEmptyStateSupplementaryContent() : null}
             <View style={{ alignItems: 'center', paddingHorizontal: 24, paddingTop: 6 }}>
                 <Text style={{ color: theme.colors.text.secondary, fontSize: 13, ...Typography.default(), textAlign: 'center', maxWidth: 680 }}>
@@ -219,6 +227,8 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
         localServiceLauncherState,
         localServicePreviewState,
         machineName,
+        openWorkspaceSyncConflicts,
+        openWorkspaceSyncDetails,
         pluginSurfacePlatform,
         props,
         theme.colors.text.secondary,
@@ -231,9 +241,13 @@ export const WorkspaceDetailsPanel = React.memo((props: WorkspaceDetailsPanelPro
                 <Item title={t('projects.detail.fields.machine')} detail={machineName} mode="info" />
                 <Item title={t('projects.detail.fields.path')} detail={displayPath} mode="info" copy={displayPath} />
             </ItemGroup>
-            <WorkspaceSyncRelationshipList workspaceRefId={props.workspaceRef.id} onOpenConflicts={openWorkspaceSyncConflicts} />
+            <WorkspaceSyncRelationshipList
+                workspaceRefId={props.workspaceRef.id}
+                onOpenDetails={openWorkspaceSyncDetails}
+                onOpenConflicts={openWorkspaceSyncConflicts}
+            />
         </ItemList>
-    ), [displayName, displayPath, machineName, openWorkspaceSyncConflicts, props.workspaceRef.id]);
+    ), [displayName, displayPath, machineName, openWorkspaceSyncConflicts, openWorkspaceSyncDetails, props.workspaceRef.id]);
 
     const detailsSurfaceScope = React.useMemo<DetailsSurfaceScopeV1>(() => ({
         kind: 'project',

@@ -90,6 +90,9 @@ const animatedTimingState = vi.hoisted(() => ({
         finish: (finished?: boolean) => void;
     }>,
 }));
+const platformState = vi.hoisted(() => ({
+    os: 'web' as 'ios' | 'android' | 'web',
+}));
 
 const expoRouterMock = createExpoRouterMock({
     pathname: () => pathState.pathname,
@@ -158,7 +161,12 @@ vi.mock('react-native', async () => {
         },
         View: ({ children, ...props }: any) => React.createElement('View', props, children),
         Pressable: ({ children, ...props }: any) => React.createElement('Pressable', props, children),
-        Platform: { OS: 'web', select: (values: Record<string, unknown>) => values.web ?? values.default },
+        Platform: {
+            get OS() {
+                return platformState.os;
+            },
+            select: (values: Record<string, unknown>) => values[platformState.os] ?? values.default,
+        },
     });
 });
 
@@ -454,6 +462,7 @@ describe('MobileBottomChromeHost', () => {
         keyboardHeightState.value = 0;
         gestureHandlerState.gestures = [];
         cockpitRegistrationState.dismissingSessionId = null;
+        platformState.os = 'web';
     });
 
     it('renders the main app tab bar on the authenticated home route', async () => {
@@ -562,6 +571,45 @@ describe('MobileBottomChromeHost', () => {
         expect(screen.tree.findAllByType('MainAppTabBar' as never)).toHaveLength(1);
 
         pathState.pathname = '/';
+        await act(async () => {
+            notifyPathListeners();
+        });
+
+        expect(screen.tree.findAllByType('MainAppTabBar' as never)).toHaveLength(1);
+    });
+
+    it('suppresses frozen chrome above the Android floating new-session composer', async () => {
+        platformState.os = 'android';
+        pathState.pathname = '/';
+
+        const { MobileBottomChromeHost } = await import('./MobileBottomChromeHost');
+        const screen = await renderScreen(<MobileBottomChromeHost newSessionRendersFloatingComposer />);
+        expect(screen.tree.findAllByType('MainAppTabBar' as never)).toHaveLength(1);
+
+        pathState.pathname = '/new';
+        await act(async () => {
+            notifyPathListeners();
+        });
+
+        expect(screen.tree.findAllByType('MainAppTabBar' as never)).toHaveLength(0);
+
+        pathState.pathname = '/';
+        await act(async () => {
+            notifyPathListeners();
+        });
+
+        expect(screen.tree.findAllByType('MainAppTabBar' as never)).toHaveLength(1);
+        expect(animatedTimingState.timings).toHaveLength(0);
+    });
+
+    it('keeps frozen chrome under the Android new-session wizard modal', async () => {
+        platformState.os = 'android';
+        pathState.pathname = '/';
+
+        const { MobileBottomChromeHost } = await import('./MobileBottomChromeHost');
+        const screen = await renderScreen(<MobileBottomChromeHost />);
+
+        pathState.pathname = '/new';
         await act(async () => {
             notifyPathListeners();
         });

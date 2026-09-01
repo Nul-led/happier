@@ -1,4 +1,4 @@
-import type { FeaturesResponse as ServerFeatures } from '@happier-dev/protocol';
+import type { AuthCredentials, FeaturesResponse as ServerFeatures } from '@happier-dev/protocol';
 import { AsyncTtlCache } from '@happier-dev/protocol';
 
 import * as serverHttp from '@/sync/http/client';
@@ -11,6 +11,7 @@ import {
     areServerProfileIdentifiersEquivalent,
     getServerProfileById,
     resolveServerProfileScopeIdForIdentifier,
+    reconcileServerProfileHomeConnectionDescriptor,
     setServerProfileIdentityForUrl,
 } from '@/sync/domains/server/serverProfiles';
 import { parseServerFeatures } from './serverFeaturesParse';
@@ -30,9 +31,16 @@ const FORCE_COOLDOWN_ENDPOINT_MISSING_MS = 60 * 1000;
 export type ServerFeaturesSnapshot =
     | Readonly<{ status: 'ready'; features: ServerFeatures; serverIdentityId?: string | null }>
     | Readonly<{ status: 'unsupported'; reason: 'endpoint_missing' | 'invalid_payload' }>
-    | Readonly<{ status: 'error'; reason: 'network' | 'timeout' | 'response_status' }>;
+    | Readonly<{ status: 'error'; reason: 'network' | 'timeout' | 'response_status' | 'identity_conflict' }>;
 
 const cache = new AsyncTtlCache<ServerFeaturesSnapshot>({
+    successTtlMs: TTL_READY_MS,
+    errorTtlMs: TTL_ERROR_NETWORK_MS,
+});
+// Full descriptors are an authenticated projection, not a replacement for
+// public capability discovery. Keep their cache and in-flight work separate so
+// pre-auth consumers never inherit a credential requirement.
+const authenticatedCache = new AsyncTtlCache<ServerFeaturesSnapshot>({
     successTtlMs: TTL_READY_MS,
     errorTtlMs: TTL_ERROR_NETWORK_MS,
 });
@@ -58,6 +66,25 @@ function writeServerFeaturesSnapshot(
 ): void {
     cache.setSuccess(cacheKey, snapshot, { ttlMs });
     notifyServerFeaturesSnapshotChanged();
+}
+
+type ActiveFeatureProjection = 'public' | 'authenticated';
+
+function getActiveProjectionCache(projection: ActiveFeatureProjection): AsyncTtlCache<ServerFeaturesSnapshot> {
+    return projection === 'authenticated' ? authenticatedCache : cache;
+}
+
+function writeActiveProjectionSnapshot(
+    projection: ActiveFeatureProjection,
+    cacheKey: string,
+    snapshot: ServerFeaturesSnapshot,
+    ttlMs: number,
+): void {
+    if (projection === 'public') {
+        writeServerFeaturesSnapshot(cacheKey, snapshot, ttlMs);
+        return;
+    }
+    authenticatedCache.setSuccess(cacheKey, snapshot, { ttlMs });
 }
 
 function writeEndpointServerFeaturesSnapshot(
@@ -96,6 +123,7 @@ function getCacheTtlMs(snapshot: ServerFeaturesSnapshot): number {
         case 'network':
             return TTL_ERROR_NETWORK_MS;
         case 'response_status':
+        case 'identity_conflict':
             return TTL_ERROR_RESPONSE_STATUS_MS;
         default:
             return TTL_ERROR_NETWORK_MS;
@@ -123,12 +151,13 @@ function joinBaseAndPath(baseUrl: string, path: string): string {
 }
 
 /**
- * Explicit endpoint probes are keyed by their stable URL rather than the focused
- * server id. Keep the namespace separate from id-scoped entries in the legacy
- * active-server cache; a URL is allowed to be unknown to the local profile store.
+ * Explicit endpoint probes are keyed by their stable URL and effective request
+ * origin rather than the focused server id. Keep the namespace separate from
+ * id-scoped entries in the legacy active-server cache; a URL is allowed to be
+ * unknown to the local profile store.
  */
-function getEndpointCacheKey(endpointUrl: string): string {
-    return `endpoint:${endpointUrl}`;
+function getEndpointCacheKey(endpointUrl: string, runtimeOrigin: string): string {
+    return `endpoint:${endpointUrl}\u0000runtime:${runtimeOrigin}`;
 }
 
 function normalizeExplicitEndpointUrl(raw: unknown): string {
@@ -146,6 +175,30 @@ function normalizeExplicitEndpointUrl(raw: unknown): string {
     }
 }
 
+function resolveEffectiveProbeRuntimeOrigin(
+    endpointUrl: string,
+    runtimeOrigin: unknown,
+): string {
+    const candidate = String(runtimeOrigin ?? '').trim();
+    if (!candidate) return endpointUrl;
+    try {
+        const parsed = new URL(candidate);
+        if (
+            (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+            && !parsed.username
+            && !parsed.password
+            && !parsed.search
+            && !parsed.hash
+        ) {
+            return parsed.toString().replace(/\/+$/, '');
+        }
+    } catch {
+        // Invalid runtime origins use the same stable-endpoint fallback as the
+        // explicit request adapter.
+    }
+    return endpointUrl;
+}
+
 function isAbortErrorLike(error: unknown): boolean {
     if (!error || typeof error !== 'object') return false;
     return 'name' in error && (error as { name?: unknown }).name === 'AbortError';
@@ -156,11 +209,15 @@ async function getServerFeaturesSnapshotWithRetry(
         timeoutMs?: number;
         force?: boolean;
         serverId?: string;
+        projection?: ActiveFeatureProjection;
+        credentials?: AuthCredentials;
     } | undefined,
     remainingSwitchAbortRetries: number,
 ): Promise<ServerFeaturesSnapshot> {
     const force = params?.force ?? false;
     const timeoutMs = params?.timeoutMs ?? 800;
+    const projection = params?.projection ?? 'public';
+    const projectionCache = getActiveProjectionCache(projection);
     const cacheKey = getCacheKey(params?.serverId);
     const requestedServerId = String(params?.serverId ?? '').trim();
     let activeSnapshot = getActiveServerSnapshot();
@@ -171,11 +228,11 @@ async function getServerFeaturesSnapshotWithRetry(
         ? normalizeBaseUrl(getServerProfileById(explicitServerId)?.serverUrl ?? '')
         : null;
 
-    const cachedEntry = cache.get(cacheKey);
+    const cachedEntry = projectionCache.get(cacheKey);
     const cached = cachedEntry?.kind === 'success' ? cachedEntry.value : null;
     if (cached && cachedEntry) {
         const ageMs = Date.now() - cachedEntry.updatedAt;
-        const fresh = cache.isFresh(cachedEntry);
+        const fresh = projectionCache.isFresh(cachedEntry);
         if (fresh) {
             if (!force) return cached;
 
@@ -186,12 +243,12 @@ async function getServerFeaturesSnapshotWithRetry(
         }
     }
 
-    return await cache.runDedupe(cacheKey, async (): Promise<ServerFeaturesSnapshot> => {
-        const cachedEntry2 = cache.get(cacheKey);
+    return await projectionCache.runDedupe(cacheKey, async (): Promise<ServerFeaturesSnapshot> => {
+        const cachedEntry2 = projectionCache.get(cacheKey);
         const cached2 = cachedEntry2?.kind === 'success' ? cachedEntry2.value : null;
         if (cached2 && cachedEntry2) {
             const ageMs = Date.now() - cachedEntry2.updatedAt;
-            const fresh = cache.isFresh(cachedEntry2);
+            const fresh = projectionCache.isFresh(cachedEntry2);
             if (fresh) {
                 if (!force) return cached2;
                 const cooldownMs = getForceCooldownMs(cached2);
@@ -201,7 +258,7 @@ async function getServerFeaturesSnapshotWithRetry(
 
         if (isExplicitServerRequest && !explicitServerUrl) {
             const value: ServerFeaturesSnapshot = { status: 'error', reason: 'network' };
-            writeServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+            writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
             return value;
         }
 
@@ -216,6 +273,7 @@ async function getServerFeaturesSnapshotWithRetry(
 
             try {
                 let response: Response;
+                let descriptorObservation: 'exact' | 'public' = 'public';
                 try {
                     const probedServerUrl = isExplicitServerRequest
                         ? explicitServerUrl!
@@ -235,18 +293,48 @@ async function getServerFeaturesSnapshotWithRetry(
                             },
                             timeoutMs,
                         })
-                        : await serverHttp.serverFetch(
-                            '/v1/features',
-                            {
-                                method: 'GET',
-                                signal: controller.signal,
-                            },
-                            // Treat `/v1/features` as a lightweight capability probe. It should not block behind
-                            // reachability gating/endpoint supervision (which is timer-driven and can delay
-                            // first-paint feature decisions). The TTL cache already provides the needed
-                            // backoff/de-dupe behavior for repeated probes.
-                            { includeAuth: false, retry: 'none' },
-                        );
+                        : projection === 'authenticated'
+                            ? await serverHttp.createServerFetchAtEndpoint({
+                                endpointUrl: activeSnapshot.serverUrl,
+                                runtimeOrigin: activeSnapshot.runtimeOrigin,
+                                serverId: activeSnapshot.serverId,
+                                credentials: params?.credentials,
+                            })(
+                                '/v1/features/authenticated',
+                                {
+                                    method: 'GET',
+                                    signal: controller.signal,
+                                },
+                                { includeAuth: true, retry: 'none' },
+                            )
+                            : await serverHttp.serverFetch(
+                                '/v1/features',
+                                {
+                                    method: 'GET',
+                                    signal: controller.signal,
+                                },
+                                // Public discovery must remain usable before a Home credential exists.
+                                { includeAuth: false, retry: 'none' },
+                            );
+                    if (!isExplicitServerRequest && projection === 'authenticated') {
+                        if (isEndpointMissing(response.status)) {
+                            response = await serverHttp.createServerFetchAtEndpoint({
+                                endpointUrl: activeSnapshot.serverUrl,
+                                runtimeOrigin: activeSnapshot.runtimeOrigin,
+                                serverId: activeSnapshot.serverId,
+                                credentials: params?.credentials,
+                            })(
+                                '/v1/features',
+                                {
+                                    method: 'GET',
+                                    signal: controller.signal,
+                                },
+                                { includeAuth: false, retry: 'none' },
+                            );
+                        } else if (response.ok) {
+                            descriptorObservation = 'exact';
+                        }
+                    }
                 } catch (error) {
                     const timedOut = controller.signal.aborted;
                     const aborted = isAbortErrorLike(error);
@@ -292,7 +380,7 @@ async function getServerFeaturesSnapshotWithRetry(
                     }
 
                     const value: ServerFeaturesSnapshot = { status: 'error', reason: timedOut ? 'timeout' : 'network' };
-                    writeServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+                    writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
                     return value;
                 }
 
@@ -300,14 +388,14 @@ async function getServerFeaturesSnapshotWithRetry(
                     const value: ServerFeaturesSnapshot = isEndpointMissing(response.status)
                         ? { status: 'unsupported', reason: 'endpoint_missing' }
                         : { status: 'error', reason: 'response_status' };
-                    writeServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+                    writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
                     return value;
                 }
 
                 const contentType = String(response.headers?.get?.('content-type') ?? '').toLowerCase();
                 if (contentType && !contentType.includes('application/json') && !contentType.includes('+json')) {
                     const value: ServerFeaturesSnapshot = { status: 'unsupported', reason: 'invalid_payload' };
-                    writeServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+                    writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
                     return value;
                 }
 
@@ -316,23 +404,45 @@ async function getServerFeaturesSnapshotWithRetry(
                     payload = await response.json();
                 } catch {
                     const value: ServerFeaturesSnapshot = { status: 'unsupported', reason: 'invalid_payload' };
-                    writeServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+                    writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
                     return value;
                 }
 
                 const parsed = parseServerFeatures(payload);
                 if (!parsed) {
                     const value: ServerFeaturesSnapshot = { status: 'unsupported', reason: 'invalid_payload' };
-                    writeServerFeaturesSnapshot(cacheKey, value, getCacheTtlMs(value));
+                    writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
                     return value;
                 }
 
                 const serverIdentityId = parsed.capabilities.serverIdentity.serverIdentityId;
                 if (serverIdentityId) {
-                    setServerProfileIdentityForUrl(
-                        isExplicitServerRequest ? explicitServerUrl! : activeSnapshot.serverUrl,
+                    const observedServerUrl = isExplicitServerRequest ? explicitServerUrl! : activeSnapshot.serverUrl;
+                    const learnedProfile = setServerProfileIdentityForUrl(
+                        observedServerUrl,
                         serverIdentityId,
                     );
+                    if (!learnedProfile) {
+                        const value: ServerFeaturesSnapshot = { status: 'error', reason: 'identity_conflict' };
+                        writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
+                        return value;
+                    }
+                    if (
+                        learnedProfile.serverIdentityId === serverIdentityId
+                        && parsed.homeConnectionDescriptor
+                    ) {
+                        const reconciliation = await reconcileServerProfileHomeConnectionDescriptor({
+                            serverUrl: observedServerUrl,
+                            observedServerIdentityId: serverIdentityId,
+                            descriptor: parsed.homeConnectionDescriptor,
+                            observation: descriptorObservation,
+                        });
+                        if (reconciliation.kind === 'conflict') {
+                            const value: ServerFeaturesSnapshot = { status: 'error', reason: 'identity_conflict' };
+                            writeActiveProjectionSnapshot(projection, cacheKey, value, getCacheTtlMs(value));
+                            return value;
+                        }
+                    }
                 }
 
                 const value: ServerFeaturesSnapshot = { status: 'ready', features: parsed };
@@ -344,7 +454,7 @@ async function getServerFeaturesSnapshotWithRetry(
                         parsed.capabilities.accountStoredContentCompatibility,
                 });
                 const ttlMs = getCacheTtlMs(value);
-                writeServerFeaturesSnapshot(cacheKey, value, ttlMs);
+                writeActiveProjectionSnapshot(projection, cacheKey, value, ttlMs);
                 // Learning a stable server identity can synchronously change
                 // the active/profile scope key. Publish the same observed
                 // snapshot under that canonical key before returning so an
@@ -354,7 +464,7 @@ async function getServerFeaturesSnapshotWithRetry(
                 // here would also remove this still-running dedupe entry.
                 const canonicalCacheKey = getCacheKey(params?.serverId);
                 if (canonicalCacheKey !== cacheKey) {
-                    writeServerFeaturesSnapshot(canonicalCacheKey, value, ttlMs);
+                    writeActiveProjectionSnapshot(projection, canonicalCacheKey, value, ttlMs);
                 }
                 return value;
             } finally {
@@ -369,7 +479,23 @@ export async function getServerFeaturesSnapshot(params?: {
     force?: boolean;
     serverId?: string;
 }): Promise<ServerFeaturesSnapshot> {
-    return await getServerFeaturesSnapshotWithRetry(params, 2);
+    return await getServerFeaturesSnapshotWithRetry({ ...params, projection: 'public' }, 2);
+}
+
+/**
+ * Refresh the focused Home's full descriptor after authentication has already
+ * succeeded. Older Homes fall back to the public projection; pre-auth feature
+ * consumers continue to use `getServerFeaturesSnapshot`.
+ */
+export async function refreshAuthenticatedServerFeaturesSnapshot(params: {
+    credentials: AuthCredentials;
+    timeoutMs?: number;
+    force?: boolean;
+}): Promise<ServerFeaturesSnapshot> {
+    return await getServerFeaturesSnapshotWithRetry({
+        ...params,
+        projection: 'authenticated',
+    }, 0);
 }
 
 export function getCachedServerFeaturesSnapshot(params?: { serverId?: string }): ServerFeaturesSnapshot | null {
@@ -463,7 +589,8 @@ export async function probeServerFeaturesAtUrl(
 ): Promise<ServerFeaturesSnapshot> {
     const input = normalizeProbeServerFeaturesArgs(endpointOrInput, options);
     const endpointUrl = normalizeExplicitEndpointUrl(input.endpointUrl);
-    const cacheKey = getEndpointCacheKey(endpointUrl);
+    const runtimeOrigin = resolveEffectiveProbeRuntimeOrigin(endpointUrl, input.runtimeOrigin);
+    const cacheKey = getEndpointCacheKey(endpointUrl, runtimeOrigin);
     const force = input.force ?? false;
     const timeoutMs = typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)
         ? Math.max(0, Math.trunc(input.timeoutMs))
@@ -508,7 +635,7 @@ export async function probeServerFeaturesAtUrl(
             });
             const request = serverHttp.createServerFetchAtEndpoint({
                 endpointUrl,
-                runtimeOrigin: input.runtimeOrigin,
+                runtimeOrigin,
                 serverId: input.serverId,
                 // A feature probe is intentionally unauthenticated. Passing null
                 // also prevents a scoped credential lookup if a future caller
@@ -594,6 +721,7 @@ export async function probeServerFeaturesAtUrl(
 
 export function resetServerFeaturesClientForTests(): void {
     cache.clear();
+    authenticatedCache.clear();
     endpointCache.clear();
     notifyServerFeaturesSnapshotChanged();
 }

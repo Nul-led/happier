@@ -8,6 +8,7 @@ import {
 } from '@/sync/domains/server/serverProfiles';
 import { loadExpoPushTokensToUnregister } from '@/sync/domains/state/pushTokenRegistration';
 import { unregisterPushTokenForHomeBestEffort } from '@/sync/engine/account/syncAccount';
+import { fireAndForget } from '@/utils/system/fireAndForget';
 
 export async function removeServerProfileUiAction(params: Readonly<{
     profileId: string;
@@ -55,10 +56,12 @@ export async function removeServerProfileUiAction(params: Readonly<{
         }
     }
 
-    removeServerProfile(profileId);
-    await Promise.allSettled(
+    if (getServerProfileById(profileId)) {
+        removeServerProfile(profileId);
+    }
+    fireAndForget(Promise.allSettled(
         pushCleanupTargets.map(async (target) =>
             await unregisterPushTokenForHomeBestEffort(target)),
-    );
+    ), { tag: 'removeServerProfileUiAction.unregisterPushToken' });
     return { kind: 'completed' };
 }

@@ -482,6 +482,7 @@ import { resolveSessionViewHeaderProps } from './view/resolveSessionViewHeaderPr
 import { useWorkspaceSyncRelationshipSummaries } from '@/sync/domains/sessionHandoff/useWorkspaceSyncRelationshipSummaries';
 import { resolveWorkspaceSyncConflictCountForWorkspaceRef } from '@/sync/domains/sessionHandoff/workspaceSyncRelationshipModel';
 import { createWorkspaceSyncConflictDetailsTab } from '@/components/workspaces/sync/workspaceSyncConflictDetailsTab';
+import { resolveWorkspaceSyncConflictOpenTarget } from '@/sync/domains/sessionHandoff/workspaceSyncPresentation';
 import { SessionAgentCatalogIdentityIcon } from '@/components/sessions/presentation/SessionAgentCatalogIdentityIcon';
 import {
     readExternalAgentObservationPresentationInput,
@@ -1806,10 +1807,22 @@ const SessionViewFocusedSurface = React.memo((props: SessionViewProps & {
         [headerWorkspaceDisplay.workspaceRefId, headerWorkspaceSyncSummaries],
     );
     const openHeaderWorkspaceSyncConflicts = React.useCallback(() => {
-        const conflicted = headerWorkspaceSyncSummaries.find((summary) => (summary.status?.conflictCount ?? 0) > 0);
-        if (!conflicted) return;
-        pane.openDetailsTab(createWorkspaceSyncConflictDetailsTab(conflicted, headerWorkspaceDisplay.workspaceRefId), { intent: 'pinned' });
-    }, [headerWorkspaceDisplay.workspaceRefId, headerWorkspaceSyncSummaries, pane]);
+        const target = resolveWorkspaceSyncConflictOpenTarget(headerWorkspaceSyncSummaries.map((summary) => ({
+            relationshipId: summary.relationshipId,
+            conflictCount: summary.status?.conflictCount ?? 0,
+        })));
+        if (target.kind === 'none') return;
+        if (target.kind === 'relationshipList') {
+            navigateWithBlurOnWeb(() => routerRef.current.push(buildCurrentSessionHref('/info') as any));
+            return;
+        }
+        const conflicted = headerWorkspaceSyncSummaries.find(
+            (summary) => summary.relationshipId === target.relationshipId,
+        );
+        if (conflicted) {
+            pane.openDetailsTab(createWorkspaceSyncConflictDetailsTab(conflicted, headerWorkspaceDisplay.workspaceRefId), { intent: 'pinned' });
+        }
+    }, [buildCurrentSessionHref, headerWorkspaceDisplay.workspaceRefId, headerWorkspaceSyncSummaries, navigateWithBlurOnWeb, pane]);
 
     // Phase 2.2 — plugin-UI projection + open handler for the session header
     // action menu (closing finding #11; the header action menu was previously

@@ -55,6 +55,20 @@ type RouteNavigationDispatch = Readonly<{
     dispatch?: (action: unknown) => void;
 }>;
 
+/**
+ * React Navigation reports every action that removes the current route through
+ * `usePreventRemove`, including same-page `REPLACE` operations. Only actions
+ * that walk backward in the current stack are system Back; replacements,
+ * resets, and foreign navigation must continue without spending a page-local
+ * Back step.
+ */
+function isBackwardRouteRemovalAction(action: unknown): boolean {
+    if (typeof action !== 'object' || action === null) return false;
+    const type = (action as Readonly<{ type?: unknown }>).type;
+    return type === 'GO_BACK'
+        || type === 'POP';
+}
+
 function ActiveRouteRemovalStepConsumer(props: Readonly<{
     navigation: RouteNavigationDispatch;
     consume: () => boolean;
@@ -65,7 +79,7 @@ function ActiveRouteRemovalStepConsumer(props: Readonly<{
     const handlePreventedRemove = React.useCallback((event: Readonly<{
         data: Readonly<{ action: unknown }>;
     }>) => {
-        if (consumeRef.current()) return;
+        if (isBackwardRouteRemovalAction(event.data.action) && consumeRef.current()) return;
         setPendingRouteAction(event.data.action);
     }, []);
     usePreventRemove(pendingRouteAction === null, handlePreventedRemove);

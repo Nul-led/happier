@@ -5,11 +5,15 @@ import { useUnistyles } from 'react-native-unistyles';
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { Item } from '@/components/ui/lists/Item';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import {
     normalizeSessionHandoffDefaults,
     parseSessionHandoffIgnoredIncludeGlobs,
+    SESSION_HANDOFF_ADVANCED_WORKSPACE_SYNC_MODE_OPTIONS,
+    SESSION_HANDOFF_COMMON_WORKSPACE_SYNC_MODE_OPTIONS,
     SESSION_HANDOFF_DIRECT_TARGET_MODE_OPTIONS,
     SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS,
     SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS,
@@ -19,6 +23,7 @@ import {
 import { useSettingMutable } from '@/sync/domains/state/storage';
 import { Icon } from '@/components/ui/icons/Icon';
 import { WorkspaceSyncRelationshipList } from '@/components/workspaces/sync/WorkspaceSyncRelationshipList';
+import { WorkspaceSyncLegacyStateRecovery } from '@/components/workspaces/sync/WorkspaceSyncLegacyStateRecovery';
 
 export const SessionHandoffSettingsView = React.memo(function SessionHandoffSettingsView() {
     const { theme } = useUnistyles();
@@ -28,6 +33,10 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
     const defaultsRef = React.useRef(defaults);
     const [openWorkspaceModeMenu, setOpenWorkspaceModeMenu] = React.useState(false);
     const [openIgnoredModeMenu, setOpenIgnoredModeMenu] = React.useState(false);
+    const [openAdvancedWorkspaceModeMenu, setOpenAdvancedWorkspaceModeMenu] = React.useState(false);
+    const [advancedExpanded, setAdvancedExpanded] = React.useState(
+        defaults.workspaceSyncMode === 'mirror_exactly' || defaults.workspaceSyncMode === 'keep_both_in_sync',
+    );
     const [openDirectModeMenu, setOpenDirectModeMenu] = React.useState(false);
 
     React.useEffect(() => {
@@ -72,14 +81,14 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
                         icon: <Icon name="folder-open" size={29} color={theme.colors.accent.blue} />,
                         itemProps: { testID: 'session-handoff-workspace-sync-mode-trigger' },
                     }}
-                    items={SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS.map((item) => ({
+                    items={SESSION_HANDOFF_COMMON_WORKSPACE_SYNC_MODE_OPTIONS.map((item) => ({
                         id: item.id,
                         title: t(item.titleKey),
                         subtitle: t(item.subtitleKey),
                         icon: (
                             <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
                                 <Icon
-                                    name={item.id === 'mirror_exactly' ? 'warning' : item.id === 'none' ? 'eye-slash' : 'folder'}
+                                    name={item.id === 'none' ? 'eye-slash' : 'folder'}
                                     size={20}
                                     color={theme.colors.text.secondary}
                                 />
@@ -88,11 +97,51 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
                     }))}
                     onSelect={(itemId) => {
                         const nextMode = itemId as SessionHandoffWorkspaceMode;
-                        updateDefaults({
-                            workspaceSyncMode: nextMode,
-                            workspaceSyncRelationshipId: null,
-                        });
+                        updateDefaults({ workspaceSyncMode: nextMode });
                         setOpenWorkspaceModeMenu(false);
+                    }}
+                />
+                <ExpandableItem
+                    testID="session-handoff-settings-advanced"
+                    expanded={advancedExpanded}
+                    onExpandedChange={setAdvancedExpanded}
+                    header={(state) => (
+                        <Item
+                            {...state.headerProps}
+                            title={t('settingsSession.handoff.advanced.title')}
+                            subtitle={t('settingsSession.handoff.advanced.subtitle')}
+                            icon={<Icon name="sliders-horizontal" size={20} color={theme.colors.text.secondary} />}
+                            rightElement={<Icon name={state.expanded ? 'caret-down' : 'caret-right'} size={16} color={theme.colors.text.secondary} />}
+                            showChevron={false}
+                        />
+                    )}
+                >
+                    <ItemGroup>
+                <DropdownMenu
+                    open={openAdvancedWorkspaceModeMenu}
+                    onOpenChange={setOpenAdvancedWorkspaceModeMenu}
+                    variant="selectable"
+                    search={false}
+                    selectedId={defaults.workspaceSyncMode}
+                    showCategoryTitles={false}
+                    matchTriggerWidth={true}
+                    connectToTrigger={true}
+                    rowKind="item"
+                    popoverBoundaryRef={popoverBoundaryRef}
+                    itemTrigger={{
+                        title: t('settingsSession.handoff.advanced.modeTitle'),
+                        subtitle: t(selectedWorkspaceMode.subtitleKey),
+                        icon: <Icon name="warning" size={29} color={theme.colors.accent.orange} />,
+                        itemProps: { testID: 'session-handoff-settings-advanced-mode-trigger' },
+                    }}
+                    items={SESSION_HANDOFF_ADVANCED_WORKSPACE_SYNC_MODE_OPTIONS.map((item) => ({
+                        id: item.id,
+                        title: t(item.titleKey),
+                        subtitle: t(item.subtitleKey),
+                    }))}
+                    onSelect={(itemId) => {
+                        updateDefaults({ workspaceSyncMode: itemId as SessionHandoffWorkspaceMode });
+                        setOpenAdvancedWorkspaceModeMenu(false);
                     }}
                 />
                 <DropdownMenu
@@ -155,6 +204,8 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
                         />
                     </View>
                 ) : null}
+                    </ItemGroup>
+                </ExpandableItem>
             </ItemGroup>
 
             <ItemGroup
@@ -198,6 +249,7 @@ export const SessionHandoffSettingsView = React.memo(function SessionHandoffSett
                 />
             </ItemGroup>
 
+            <WorkspaceSyncLegacyStateRecovery />
             <WorkspaceSyncRelationshipList />
         </ItemList>
     );

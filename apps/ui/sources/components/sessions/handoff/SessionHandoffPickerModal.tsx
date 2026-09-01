@@ -11,19 +11,29 @@ import { PathSelectionList } from '@/components/ui/pathPicker/PathSelectionList'
 import { DropdownMenu } from '@/components/ui/forms/dropdown/DropdownMenu';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { ItemList } from '@/components/ui/lists/ItemList';
+import { Item } from '@/components/ui/lists/Item';
+import { ExpandableItem } from '@/components/ui/lists/ExpandableItem';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import {
     buildSessionHandoffWorkspaceAction,
-    buildWorkspaceContentPolicy,
     normalizeSessionHandoffDefaults,
     parseSessionHandoffIgnoredIncludeGlobs,
+    SESSION_HANDOFF_ADVANCED_WORKSPACE_SYNC_MODE_OPTIONS,
+    SESSION_HANDOFF_COMMON_WORKSPACE_SYNC_MODE_OPTIONS,
+    SESSION_HANDOFF_CONTENT_SELECTION_OPTIONS,
     SESSION_HANDOFF_DIRECT_TARGET_MODE_OPTIONS,
     SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS,
     SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS,
     type SessionHandoffWorkspaceMode,
 } from '@/sync/domains/sessionHandoff/sessionHandoffDefaults';
 import { resolveSessionHandoffPickerSourceMachineId } from '@/sync/domains/sessionHandoff/resolveSessionHandoffPickerSourceMachineId';
+import {
+    selectWorkspaceSyncRelationshipSummariesForHandoff,
+    type WorkspaceSyncRelationshipSummary,
+} from '@/sync/domains/sessionHandoff/workspaceSyncRelationshipModel';
+import { resolveWorkspaceSyncModeTranslationKey } from '@/sync/domains/sessionHandoff/workspaceSyncPresentation';
+import { useWorkspaceSyncRelationshipSummaries } from '@/sync/domains/sessionHandoff/useWorkspaceSyncRelationshipSummaries';
 import {
     useAllSessionListRenderables,
     useMachineListByServerId,
@@ -71,6 +81,11 @@ function normalizeId(raw: unknown): string {
     return String(raw ?? '').trim();
 }
 
+function relationshipEndpointTitle(summary: WorkspaceSyncRelationshipSummary): string {
+    const separator = summary.relationship.mode === 'keep_both_in_sync' ? ' ↔ ' : ' → ';
+    return `${summary.alpha.label}${separator}${summary.beta.label}`;
+}
+
 const EMPTY_PATH_SELECTION_FAVORITES = [] as const;
 const ignorePathSelectionRequestClose = () => {};
 
@@ -107,12 +122,15 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
     const [favoriteMachinesRaw, setFavoriteMachinesRaw] = useSettingMutable('favoriteMachines');
     const [recentMachinePaths] = useSettingMutable('recentMachinePaths');
     const [sessionHandoffDefaultsRaw] = useSettingMutable('sessionHandoffDefaultsV1');
+    const relationshipSummaries = useWorkspaceSyncRelationshipSummaries();
     const sessionHandoffDefaults = React.useMemo(
         () => normalizeSessionHandoffDefaults(sessionHandoffDefaultsRaw),
         [sessionHandoffDefaultsRaw],
     );
     const [openWorkspaceSyncModeMenu, setOpenWorkspaceSyncModeMenu] = React.useState(false);
     const [openIgnoredModeMenu, setOpenIgnoredModeMenu] = React.useState(false);
+    const [openAdvancedWorkspaceModeMenu, setOpenAdvancedWorkspaceModeMenu] = React.useState(false);
+    const [openContentSelectionMenu, setOpenContentSelectionMenu] = React.useState(false);
     const [openDirectTargetModeMenu, setOpenDirectTargetModeMenu] = React.useState(false);
 
     const allServerMachines = React.useMemo(() => {
@@ -138,18 +156,22 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
         if (!resolvedSourceMachineId) return null;
         return allServerMachines.find((machine: any) => normalizeId(machine?.id) === resolvedSourceMachineId) ?? null;
     }, [allServerMachines, resolvedSourceMachineId]);
+    const resolvedSourceRootPath = React.useMemo(
+        () => resolveAbsolutePath(
+            normalizeId(currentSessionMetadata?.path),
+            currentSessionMetadata?.homeDir ?? sourceMachine?.metadata?.homeDir,
+        ),
+        [currentSessionMetadata, sourceMachine],
+    );
     const workspaceSourcePathSafety = React.useMemo(() => {
         const sourceHomeDir = currentSessionMetadata?.homeDir;
         const fallbackSourceHomeDir = sourceMachine?.metadata?.homeDir;
         return evaluateSessionHandoffWorkspaceTransferSourcePathSafety({
-            sourcePath: resolveAbsolutePath(
-                normalizeId(currentSessionMetadata?.path),
-                sourceHomeDir ?? fallbackSourceHomeDir,
-            ),
+            sourcePath: resolvedSourceRootPath,
             sourceHomeDir,
             fallbackSourceHomeDir,
         });
-    }, [currentSessionMetadata, sourceMachine]);
+    }, [currentSessionMetadata?.homeDir, resolvedSourceRootPath, sourceMachine?.metadata?.homeDir]);
     const isExternalSession = Boolean(
         readExternalSessionLink(currentSessionMetadata),
     );
@@ -238,18 +260,62 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
         () => recentTargetPaths.map((path, index) => ({ path, lastUsedAt: index })),
         [recentTargetPaths],
     );
+    const [selectedRelationshipId, setSelectedRelationshipId] = React.useState<string | null>(null);
     const handleTargetPathChange = React.useCallback((path: string) => {
         setTargetPath(path.trim() || null);
+        setSelectedRelationshipId(null);
     }, []);
     const [workspaceSyncMode, setWorkspaceSyncMode] = React.useState<SessionHandoffWorkspaceMode>(sessionHandoffDefaults.workspaceSyncMode);
+    const [advancedExpanded, setAdvancedExpanded] = React.useState(
+        sessionHandoffDefaults.workspaceSyncMode === 'mirror_exactly' || sessionHandoffDefaults.workspaceSyncMode === 'keep_both_in_sync',
+    );
+    const [contentSelection, setContentSelection] = React.useState<'git_worktree' | 'all_files'>('git_worktree');
     const [includeIgnoredMode, setIncludeIgnoredMode] = React.useState<'exclude' | 'include_selected'>(sessionHandoffDefaults.includeIgnoredMode);
     const [ignoredIncludeGlobs, setIgnoredIncludeGlobs] = React.useState<string[]>([...sessionHandoffDefaults.ignoredIncludeGlobs]);
     const [directTargetMode, setDirectTargetMode] = React.useState<'keep_direct' | 'convert_to_persisted'>(sessionHandoffDefaults.directTargetMode);
+    const matchingRelationshipSummaries = React.useMemo(
+        () => selectWorkspaceSyncRelationshipSummariesForHandoff(relationshipSummaries, {
+            source: {
+                serverId: normalizeId(serverId),
+                machineId: resolvedSourceMachineId ?? '',
+                rootPath: resolvedSourceRootPath,
+            },
+            target: {
+                serverId: normalizeId(serverId),
+                machineId: normalizeId(selectedMachineId),
+                rootPath: resolvedTargetPath,
+            },
+        }),
+        [relationshipSummaries, resolvedSourceMachineId, resolvedSourceRootPath, resolvedTargetPath, selectedMachineId, serverId],
+    );
+    const selectedRelationshipSummary = React.useMemo(
+        () => matchingRelationshipSummaries.find((summary) => summary.relationshipId === selectedRelationshipId) ?? null,
+        [matchingRelationshipSummaries, selectedRelationshipId],
+    );
+    React.useEffect(() => {
+        if (selectedRelationshipId && !selectedRelationshipSummary) {
+            setSelectedRelationshipId(null);
+        }
+    }, [selectedRelationshipId, selectedRelationshipSummary]);
+    const relationshipChoiceItems = React.useMemo(
+        () => matchingRelationshipSummaries.map((summary, index) => ({
+            id: `existing-relationship-${index}`,
+            relationshipId: summary.relationshipId,
+            title: relationshipEndpointTitle(summary),
+            subtitle: t(resolveWorkspaceSyncModeTranslationKey(summary.relationship.mode) ?? 'workspaceSync.mode.keepSynced'),
+        })),
+        [matchingRelationshipSummaries],
+    );
+    const selectedRelationshipChoice = React.useMemo(
+        () => relationshipChoiceItems.find((item) => item.relationshipId === selectedRelationshipId) ?? null,
+        [relationshipChoiceItems, selectedRelationshipId],
+    );
     const selectedWorkspaceSyncMode = React.useMemo(
         () => SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS.find((option) => option.id === workspaceSyncMode)
             ?? SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS[0],
         [workspaceSyncMode],
     );
+    const selectedContentSelection = SESSION_HANDOFF_CONTENT_SELECTION_OPTIONS.find((option) => option.id === contentSelection)!;
     const workspacePolicyControlsDisabled = workspaceSyncMode === 'none';
 
     const handleCancel = React.useCallback(() => {
@@ -262,18 +328,17 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
         const sourceRootPath = normalizeId(currentSessionMetadata?.path);
         if (!targetMachineId) return;
         if (!canAttemptSelectedMachine) return;
-        if (workspaceSyncMode !== 'none' && !workspaceSourcePathSafety.allowed) return;
-        if (workspaceSyncMode !== 'none' && !workspaceTargetPathSafety.allowed) return;
-        const persistentMode = workspaceSyncMode !== 'none' && workspaceSyncMode !== 'copy_once'
-            ? workspaceSyncMode
-            : null;
+        if (selectedRelationshipId && !selectedRelationshipSummary) return;
+        if ((selectedRelationshipSummary || workspaceSyncMode !== 'none') && !workspaceSourcePathSafety.allowed) return;
+        if ((selectedRelationshipSummary || workspaceSyncMode !== 'none') && !workspaceTargetPathSafety.allowed) return;
         const workspaceAction = buildSessionHandoffWorkspaceAction({
+            workspaceSyncRelationshipId: selectedRelationshipSummary?.relationshipId,
             workspaceSyncMode,
-            workspaceSyncRelationshipId: null,
+            contentSelection,
             includeIgnoredMode,
             ignoredIncludeGlobs,
         });
-        if (!workspaceAction && !persistentMode) return;
+        if (!workspaceAction) return;
         onResolve({
             targetMachineId,
             targetMachineLabel: normalizeId(selectedMachine?.metadata?.displayName) || targetMachineId,
@@ -283,24 +348,19 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
                 ? (directTargetMode === 'convert_to_persisted' ? 'persisted' : 'direct')
                 : 'persisted',
             ...(workspaceAction ? { workspaceAction } : {}),
-            ...(persistentMode && !workspaceAction
-                ? {
-                    workspaceSyncRelationshipIntent: {
-                        mode: persistentMode,
-                        contentPolicy: buildWorkspaceContentPolicy({ includeIgnoredMode, ignoredIncludeGlobs }),
-                    },
-                }
-                : {}),
         });
-    }, [canAttemptSelectedMachine, currentSessionMetadata?.path, directTargetMode, ignoredIncludeGlobs, includeIgnoredMode, isExternalSession, onResolve, resolvedTargetPath, selectedMachine?.metadata?.displayName, selectedMachineId, workspaceSourcePathSafety.allowed, workspaceSyncMode, workspaceTargetPathSafety.allowed]);
+    }, [canAttemptSelectedMachine, contentSelection, currentSessionMetadata?.path, directTargetMode, ignoredIncludeGlobs, includeIgnoredMode, isExternalSession, onResolve, resolvedTargetPath, selectedMachine?.metadata?.displayName, selectedMachineId, selectedRelationshipId, selectedRelationshipSummary, workspaceSourcePathSafety.allowed, workspaceSyncMode, workspaceTargetPathSafety.allowed]);
 
-    const canStart = Boolean(selectedMachine && canAttemptSelectedMachine && (
-        workspaceSyncMode === 'none'
+    const canStart = Boolean(selectedMachine && canAttemptSelectedMachine
+        && (!selectedRelationshipId || selectedRelationshipSummary)
+        && (
+        (!selectedRelationshipSummary && workspaceSyncMode === 'none')
         || (workspaceSourcePathSafety.allowed && workspaceTargetPathSafety.allowed && (
-            workspaceSyncMode !== 'copy_once'
+            selectedRelationshipSummary
+            || workspaceSyncMode !== 'copy_once'
             || buildSessionHandoffWorkspaceAction({
                 workspaceSyncMode,
-                workspaceSyncRelationshipId: null,
+                contentSelection,
                 includeIgnoredMode,
                 ignoredIncludeGlobs,
             })
@@ -350,6 +410,7 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
                         onSelect={(machine: any) => {
                             setSelectedMachineId(normalizeId(machine?.id) || null);
                             setTargetPath(null);
+                            setSelectedRelationshipId(null);
                         }}
                         onToggleFavorite={(machine: any) => {
                             const machineId = normalizeId(machine?.id);
@@ -382,85 +443,142 @@ export function SessionHandoffPickerModal({ onClose, setChrome, onResolve, sessi
                             onOpenChange={setOpenWorkspaceSyncModeMenu}
                             variant="selectable"
                             search={false}
-                            selectedId={workspaceSyncMode}
+                            selectedId={selectedRelationshipChoice?.id ?? workspaceSyncMode}
                             showCategoryTitles={false}
                             matchTriggerWidth={true}
                             connectToTrigger={true}
                             rowKind="item"
                             itemTrigger={{
-                                title: t('settingsSession.handoff.workspaceMode.title'),
-                                subtitle: t(selectedWorkspaceSyncMode.subtitleKey),
+                                title: selectedRelationshipChoice?.title ?? t('settingsSession.handoff.workspaceMode.title'),
+                                subtitle: selectedRelationshipChoice?.subtitle ?? t(selectedWorkspaceSyncMode.subtitleKey),
                                 icon: <Icon name="folder" size={16} color={theme.colors.text.secondary} />,
                                 itemProps: { testID: 'session-handoff-workspace-sync-mode-trigger' },
                             }}
-                            items={SESSION_HANDOFF_WORKSPACE_SYNC_MODE_OPTIONS.map((item) => ({
-                                id: item.id,
-                                title: t(item.titleKey),
-                                subtitle: t(item.subtitleKey),
-                            }))}
+                            items={[
+                                ...SESSION_HANDOFF_COMMON_WORKSPACE_SYNC_MODE_OPTIONS.map((item) => ({
+                                    id: item.id,
+                                    title: t(item.titleKey),
+                                    subtitle: t(item.subtitleKey),
+                                })),
+                                ...relationshipChoiceItems.map(({ id, title, subtitle }) => ({ id, title, subtitle })),
+                            ]}
                             onSelect={(itemId) => {
+                                const relationshipChoice = relationshipChoiceItems.find((item) => item.id === itemId);
+                                if (relationshipChoice) {
+                                    setSelectedRelationshipId(relationshipChoice.relationshipId);
+                                    setOpenWorkspaceSyncModeMenu(false);
+                                    return;
+                                }
+                                setSelectedRelationshipId(null);
                                 setWorkspaceSyncMode(itemId as SessionHandoffWorkspaceMode);
                                 setOpenWorkspaceSyncModeMenu(false);
                             }}
                         />
-                        <DropdownMenu
-                            open={openIgnoredModeMenu}
-                            onOpenChange={setOpenIgnoredModeMenu}
-                            variant="selectable"
-                            search={false}
-                            selectedId={includeIgnoredMode}
-                            showCategoryTitles={false}
-                            matchTriggerWidth={true}
-                            connectToTrigger={true}
-                            rowKind="item"
-                            itemTrigger={{
-                                title: t('settingsSession.handoff.includeIgnoredMode.title'),
-                                subtitle: t('settingsSession.handoff.includeIgnoredMode.subtitle'),
-                                icon: <Icon name="funnel-simple" size={16} color={theme.colors.text.secondary} />,
-                                itemProps: {
-                                    disabled: workspacePolicyControlsDisabled,
-                                    testID: 'session-handoff-ignored-mode-trigger',
-                                },
-                            }}
-                            items={SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS.map((item) => ({
-                                id: item.id,
-                                title: t(item.titleKey),
-                                subtitle: t(item.subtitleKey),
-                            }))}
-                            onSelect={(itemId) => {
-                                if (workspacePolicyControlsDisabled) return;
-                                setIncludeIgnoredMode(itemId as 'exclude' | 'include_selected');
-                                setOpenIgnoredModeMenu(false);
-                            }}
-                        />
-                        {includeIgnoredMode === 'include_selected' ? (
-                            <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16 }}>
-                                <Text style={{ fontSize: 14, marginBottom: 8, color: theme.colors.text.secondary }}>
-                                    {t('settingsSession.handoff.includeIgnoredMode.globsTitle')}
-                                </Text>
-                                <TextInput
-                                    accessibilityLabel={t('settingsSession.handoff.includeIgnoredMode.globsTitle')}
-                                    value={ignoredIncludeGlobs.join(', ')}
-                                    onChangeText={(value) => {
-                                        if (workspacePolicyControlsDisabled) return;
-                                        setIgnoredIncludeGlobs(parseSessionHandoffIgnoredIncludeGlobs(value));
+                        {!selectedRelationshipSummary ? <ExpandableItem
+                            testID="session-handoff-advanced"
+                            expanded={advancedExpanded}
+                            onExpandedChange={setAdvancedExpanded}
+                            header={(state) => (
+                                <Item
+                                    {...state.headerProps}
+                                    title={t('settingsSession.handoff.advanced.title')}
+                                    subtitle={t('settingsSession.handoff.advanced.subtitle')}
+                                    icon={<Icon name="sliders-horizontal" size={16} color={theme.colors.text.secondary} />}
+                                    rightElement={<Icon name={state.expanded ? 'caret-down' : 'caret-right'} size={16} color={theme.colors.text.secondary} />}
+                                    showChevron={false}
+                                />
+                            )}
+                        >
+                            <ItemGroup>
+                                <DropdownMenu
+                                    open={openAdvancedWorkspaceModeMenu}
+                                    onOpenChange={setOpenAdvancedWorkspaceModeMenu}
+                                    variant="selectable"
+                                    search={false}
+                                    selectedId={workspaceSyncMode}
+                                    showCategoryTitles={false}
+                                    matchTriggerWidth={true}
+                                    connectToTrigger={true}
+                                    rowKind="item"
+                                    itemTrigger={{
+                                        title: t('settingsSession.handoff.advanced.modeTitle'),
+                                        subtitle: t(selectedWorkspaceSyncMode.subtitleKey),
+                                        icon: <Icon name="warning" size={16} color={theme.colors.text.secondary} />,
+                                        itemProps: { testID: 'session-handoff-advanced-workspace-mode-trigger' },
                                     }}
-                                    placeholder={t('settingsSession.handoff.includeIgnoredMode.globsPlaceholder')}
-                                    autoCapitalize="none"
-                                    autoCorrect={false}
-                                    editable={!workspacePolicyControlsDisabled}
-                                    style={{
-                                        minHeight: 44,
-                                        borderRadius: 10,
-                                        borderWidth: 1,
-                                        borderColor: theme.colors.border.default,
-                                        paddingHorizontal: 12,
-                                        paddingVertical: 10,
-                                        color: theme.colors.text.primary,
+                                    items={SESSION_HANDOFF_ADVANCED_WORKSPACE_SYNC_MODE_OPTIONS.map((item) => ({
+                                        id: item.id,
+                                        title: t(item.titleKey),
+                                        subtitle: t(item.subtitleKey),
+                                    }))}
+                                    onSelect={(itemId) => {
+                                        setSelectedRelationshipId(null);
+                                        setWorkspaceSyncMode(itemId as SessionHandoffWorkspaceMode);
+                                        setOpenAdvancedWorkspaceModeMenu(false);
                                     }}
                                 />
-                            </View>
-                        ) : null}
+                                <DropdownMenu
+                                    open={openContentSelectionMenu}
+                                    onOpenChange={setOpenContentSelectionMenu}
+                                    variant="selectable"
+                                    search={false}
+                                    selectedId={contentSelection}
+                                    showCategoryTitles={false}
+                                    matchTriggerWidth={true}
+                                    connectToTrigger={true}
+                                    rowKind="item"
+                                    itemTrigger={{
+                                        title: t('settingsSession.handoff.contentSelection.title'),
+                                        subtitle: t(selectedContentSelection.subtitleKey),
+                                        icon: <Icon name="files" size={16} color={theme.colors.text.secondary} />,
+                                        itemProps: { disabled: workspacePolicyControlsDisabled, testID: 'session-handoff-content-selection-trigger' },
+                                    }}
+                                    items={SESSION_HANDOFF_CONTENT_SELECTION_OPTIONS.map((item) => ({ id: item.id, title: t(item.titleKey), subtitle: t(item.subtitleKey) }))}
+                                    onSelect={(itemId) => {
+                                        if (workspacePolicyControlsDisabled) return;
+                                        setContentSelection(itemId as typeof contentSelection);
+                                        setOpenContentSelectionMenu(false);
+                                    }}
+                                />
+                                <DropdownMenu
+                                    open={openIgnoredModeMenu}
+                                    onOpenChange={setOpenIgnoredModeMenu}
+                                    variant="selectable"
+                                    search={false}
+                                    selectedId={includeIgnoredMode}
+                                    showCategoryTitles={false}
+                                    matchTriggerWidth={true}
+                                    connectToTrigger={true}
+                                    rowKind="item"
+                                    itemTrigger={{
+                                        title: t('settingsSession.handoff.includeIgnoredMode.title'),
+                                        subtitle: t('settingsSession.handoff.includeIgnoredMode.subtitle'),
+                                        icon: <Icon name="funnel-simple" size={16} color={theme.colors.text.secondary} />,
+                                        itemProps: { disabled: workspacePolicyControlsDisabled, testID: 'session-handoff-ignored-mode-trigger' },
+                                    }}
+                                    items={SESSION_HANDOFF_INCLUDE_IGNORED_MODE_OPTIONS.map((item) => ({ id: item.id, title: t(item.titleKey), subtitle: t(item.subtitleKey) }))}
+                                    onSelect={(itemId) => {
+                                        if (workspacePolicyControlsDisabled) return;
+                                        setIncludeIgnoredMode(itemId as 'exclude' | 'include_selected');
+                                        setOpenIgnoredModeMenu(false);
+                                    }}
+                                />
+                                {includeIgnoredMode === 'include_selected' ? (
+                                    <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16 }}>
+                                        <Text style={{ fontSize: 14, marginBottom: 8, color: theme.colors.text.secondary }}>{t('settingsSession.handoff.includeIgnoredMode.globsTitle')}</Text>
+                                        <TextInput
+                                            accessibilityLabel={t('settingsSession.handoff.includeIgnoredMode.globsTitle')}
+                                            value={ignoredIncludeGlobs.join(', ')}
+                                            onChangeText={(value) => setIgnoredIncludeGlobs(parseSessionHandoffIgnoredIncludeGlobs(value))}
+                                            placeholder={t('settingsSession.handoff.includeIgnoredMode.globsPlaceholder')}
+                                            autoCapitalize="none"
+                                            autoCorrect={false}
+                                            editable={!workspacePolicyControlsDisabled}
+                                        />
+                                    </View>
+                                ) : null}
+                            </ItemGroup>
+                        </ExpandableItem> : null}
                     </ItemGroup>
                     {isExternalSession ? (
                         <ItemGroup

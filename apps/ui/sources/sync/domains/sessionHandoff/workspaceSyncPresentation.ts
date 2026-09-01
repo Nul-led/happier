@@ -35,6 +35,31 @@ export function resolveWorkspaceSyncModeTranslationKey(value: unknown): Workspac
     }
 }
 
+export function formatWorkspaceSyncRelationshipTitle(input: Readonly<{
+    alphaLabel: string;
+    betaLabel: string;
+    mode: unknown;
+}>): string {
+    const separator = input.mode === 'keep_both_in_sync' ? ' ↔ ' : ' → ';
+    return `${input.alphaLabel}${separator}${input.betaLabel}`;
+}
+
+export type WorkspaceSyncConflictOpenTarget =
+    | Readonly<{ kind: 'none' }>
+    | Readonly<{ kind: 'relationship'; relationshipId: string }>
+    | Readonly<{ kind: 'relationshipList' }>;
+
+export function resolveWorkspaceSyncConflictOpenTarget(
+    relationships: readonly Readonly<{ relationshipId: string; conflictCount: number }>[],
+): WorkspaceSyncConflictOpenTarget {
+    const conflicted = relationships.filter((relationship) => relationship.conflictCount > 0);
+    if (conflicted.length === 0) return { kind: 'none' };
+    if (conflicted.length === 1) {
+        return { kind: 'relationship', relationshipId: conflicted[0]!.relationshipId };
+    }
+    return { kind: 'relationshipList' };
+}
+
 export function resolveWorkspaceSyncStateTranslationKey(value: unknown): WorkspaceSyncStateTranslationKey | null {
     switch (value) {
         case 'starting': return 'workspaceSync.state.starting';

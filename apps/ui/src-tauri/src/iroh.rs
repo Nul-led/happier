@@ -1,7 +1,7 @@
 //! Desktop Home-transport lifecycle bridge for the Tauri host.
 //!
-//! Three invoke commands (`iroh_start_home_tunnel`, `iroh_stop_home_tunnel`,
-//! `iroh_get_home_tunnel_status`)
+//! Three invoke commands (`iroh_ensure_home_tunnel`, `iroh_release_home_tunnel`,
+//! `iroh_get_tunnel_status`)
 //! compose the renderer's desktop lifecycle module onto the shared
 //! `happier-iroh-native` JSON lifecycle (one process endpoint per persistent
 //! identity, legacy start/stop lease API). Lifecycle/status only: no tunnel
@@ -13,6 +13,7 @@
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Manager};
 
 /// Canonical persistent endpoint identity location beneath the app-data dir.
@@ -22,6 +23,11 @@ const ENDPOINT_KEY_FILE_NAME: &str = "endpoint.key";
 /// Renderer-visible rejections carry the exact native error code so the shared
 /// fallback classifier keeps owning fail-open versus fail-closed decisions.
 const NATIVE_ERROR_PREFIX: &str = "iroh_native_error:";
+static APPLICATION_ENDPOINT_POLICY: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn application_endpoint_policy() -> &'static Mutex<Option<String>> {
+    APPLICATION_ENDPOINT_POLICY.get_or_init(|| Mutex::new(None))
+}
 
 fn native_error(code: &str, message: impl std::fmt::Display) -> String {
     format!("{NATIVE_ERROR_PREFIX}{code}:{message}")
@@ -36,7 +42,7 @@ fn default_relay_policy() -> String {
 /// injects its canonical endpoint identity itself.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StartHomeTunnelRequest {
+pub struct EnsureHomeTunnelRequest {
     home_server_identity_id: String,
     endpoint_id: String,
     #[serde(default = "default_relay_policy")]
@@ -47,6 +53,138 @@ pub struct StartHomeTunnelRequest {
     relay_urls: Vec<String>,
     #[serde(default)]
     descriptor_revision: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartMachineHttpTunnelRequest {
+    endpoint_id: String,
+    #[serde(default)]
+    policy: Option<String>,
+    #[serde(default)]
+    direct_addresses: Vec<String>,
+    #[serde(default)]
+    relay_urls: Vec<String>,
+    handshake_json: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplicationEndpointRequest {
+    #[serde(default)]
+    policy: Option<String>,
+    #[serde(default)]
+    relay_urls: Vec<String>,
+}
+
+fn application_endpoint_payload(
+    key_path: &std::path::Path,
+    relay_policy: Option<&str>,
+    relay_urls: &[String],
+) -> String {
+    json!({
+        "keyPath": key_path.to_string_lossy(),
+        "relayPolicy": relay_policy,
+        "relayUrls": relay_urls,
+    })
+    .to_string()
+}
+
+fn create_application_endpoint(
+    app: &AppHandle,
+    relay_policy: Option<&str>,
+    relay_urls: &[String],
+) -> Result<Value, String> {
+    let key_path = endpoint_key_path(app)?;
+    let resolved_policy = relay_policy
+        .map(str::to_owned)
+        .or_else(|| application_endpoint_policy().lock().ok()?.clone())
+        .unwrap_or_else(default_relay_policy);
+    let envelope = happier_iroh_native::create_endpoint_json(&application_endpoint_payload(
+        &key_path,
+        Some(&resolved_policy),
+        relay_urls,
+    ));
+    let endpoint = envelope_result(&envelope)?;
+    let applied_policy = response_string(&endpoint, "relayPolicy")?;
+    if let Ok(mut current) = application_endpoint_policy().lock() {
+        *current = Some(applied_policy);
+    }
+    Ok(endpoint)
+}
+
+#[tauri::command]
+pub async fn iroh_get_availability() -> Value {
+    // This command exists only in the Tauri binary that directly linked the
+    // shared Rust lifecycle. Electron and mobile probe their loaded boundaries.
+    json!({ "available": true })
+}
+
+#[tauri::command]
+pub async fn iroh_get_application_endpoint(
+    app: AppHandle,
+    request: ApplicationEndpointRequest,
+) -> Result<Value, String> {
+    let endpoint = tauri::async_runtime::spawn_blocking(move || {
+        create_application_endpoint(&app, request.policy.as_deref(), &request.relay_urls)
+    })
+    .await
+    .map_err(|error| native_error("transport-unavailable", error))??;
+    Ok(json!({ "endpointId": response_string(&endpoint, "endpointId")? }))
+}
+
+#[tauri::command]
+pub async fn iroh_start_machine_http_tunnel(
+    app: AppHandle,
+    request: StartMachineHttpTunnelRequest,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let endpoint =
+            create_application_endpoint(&app, request.policy.as_deref(), &request.relay_urls)?;
+        let endpoint_handle = response_string(&endpoint, "endpointHandle")?;
+        let envelope = happier_iroh_native::start_machine_http_tunnel_json(
+            &json!({
+                "endpointHandle": endpoint_handle,
+                "endpointId": request.endpoint_id,
+                "directAddresses": request.direct_addresses,
+                "relayUrls": request.relay_urls,
+                "handshakeJson": request.handshake_json,
+                "capProfile": "machineBulk",
+            })
+            .to_string(),
+        );
+        let started = envelope_result(&envelope)?;
+        let local_port = started
+            .get("localPort")
+            .and_then(Value::as_u64)
+            .filter(|port| *port > 0 && *port <= u16::MAX as u64)
+            .ok_or_else(|| {
+                native_error(
+                    "transport-unavailable",
+                    "malformed native machine HTTP lease",
+                )
+            })?;
+        Ok(json!({
+            "leaseId": response_string(&started, "machineTunnelId")?,
+            "localOrigin": format!("http://127.0.0.1:{local_port}"),
+            "localCapability": response_string(&started, "localCapability")?,
+        }))
+    })
+    .await
+    .map_err(|error| native_error("transport-unavailable", error))?
+}
+
+#[tauri::command]
+pub async fn iroh_stop_machine_http_tunnel(lease_id: String) -> Result<Value, String> {
+    let envelope = tauri::async_runtime::spawn_blocking(move || {
+        happier_iroh_native::stop_machine_tunnel_json(
+            &json!({ "machineTunnelId": lease_id }).to_string(),
+        )
+    })
+    .await
+    .map_err(|error| native_error("transport-unavailable", error))?;
+    envelope_result(&envelope)?;
+    Ok(Value::Null)
 }
 
 /// Canonical persistent endpoint key path for this installation.
@@ -62,15 +200,14 @@ pub fn endpoint_key_path(app: &AppHandle) -> Result<std::path::PathBuf, String> 
 
 /// Serializes the native start request: descriptor-derived facts verbatim plus
 /// the host-owned key path. The renderer cannot supply identity material.
-fn serialized_start_request(request: &StartHomeTunnelRequest, endpoint_key_path: &str) -> String {
+fn serialized_ensure_request(request: &EnsureHomeTunnelRequest, endpoint_handle: &str) -> String {
     json!({
+        "endpointHandle": endpoint_handle,
         "homeServerIdentityId": request.home_server_identity_id,
         "endpointId": request.endpoint_id,
-        "relayPolicy": request.policy,
         "directAddresses": request.direct_addresses,
         "relayUrls": request.relay_urls,
         "descriptorRevision": request.descriptor_revision,
-        "endpointKeyPath": endpoint_key_path,
     })
     .to_string()
 }
@@ -199,16 +336,17 @@ fn renderer_status(status: Value) -> Result<Value, String> {
 /// host-owned persistent key path, so endpoint identity survives lease
 /// acquire/release cycles and app restarts.
 #[tauri::command]
-pub async fn iroh_start_home_tunnel(
+pub async fn iroh_ensure_home_tunnel(
     app: AppHandle,
-    request: StartHomeTunnelRequest,
+    request: EnsureHomeTunnelRequest,
 ) -> Result<Value, String> {
-    let key_path = endpoint_key_path(&app)?;
-    let payload = serialized_start_request(&request, &key_path.to_string_lossy());
+    let endpoint = create_application_endpoint(&app, Some(&request.policy), &request.relay_urls)?;
+    let endpoint_handle = response_string(&endpoint, "endpointHandle")?;
+    let payload = serialized_ensure_request(&request, &endpoint_handle);
     // The native lifecycle block_on's its own process runtime; keep that off
     // the async-runtime workers like every other blocking host seam.
     let envelope = tauri::async_runtime::spawn_blocking(move || {
-        happier_iroh_native::start_home_tunnel_json(&payload)
+        happier_iroh_native::ensure_home_tunnel_json(&payload)
     })
     .await
     .map_err(|error| {
@@ -217,15 +355,19 @@ pub async fn iroh_start_home_tunnel(
             format!("iroh native lifecycle call failed: {error}"),
         )
     })?;
-    renderer_lease(envelope_result(&envelope)?)
+    let mut started = envelope_result(&envelope)?;
+    if let Some(tunnel_id) = started.get("tunnelId").cloned() {
+        started["leaseId"] = tunnel_id;
+    }
+    renderer_lease(started)
 }
 
 /// Releases one Home tunnel lease by id. Lease-scoped and idempotent: the
 /// process endpoint and its persistent identity stay.
 #[tauri::command]
-pub async fn iroh_stop_home_tunnel(lease_id: String) -> Result<Value, String> {
+pub async fn iroh_release_home_tunnel(lease_id: String) -> Result<Value, String> {
     let envelope = tauri::async_runtime::spawn_blocking(move || {
-        happier_iroh_native::stop_home_tunnel_json(&lease_id)
+        happier_iroh_native::release_home_tunnel_json(&json!({ "tunnelId": lease_id }).to_string())
     })
     .await
     .map_err(|error| {
@@ -242,13 +384,9 @@ pub async fn iroh_stop_home_tunnel(lease_id: String) -> Result<Value, String> {
 /// only active/path facts; endpoint handles, key paths, Home auth, and payloads
 /// never cross this bridge.
 #[tauri::command]
-pub async fn iroh_get_home_tunnel_status(
-    lease_id: String,
-) -> Result<Value, String> {
+pub async fn iroh_get_tunnel_status(lease_id: String) -> Result<Value, String> {
     let envelope = tauri::async_runtime::spawn_blocking(move || {
-        happier_iroh_native::get_tunnel_status_json(
-            &json!({ "tunnelId": lease_id }).to_string(),
-        )
+        happier_iroh_native::get_tunnel_status_json(&json!({ "tunnelId": lease_id }).to_string())
     })
     .await
     .map_err(|error| {
@@ -277,8 +415,46 @@ pub fn shutdown_process_endpoint(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
 
     const ENDPOINT_ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const IROH_COMMANDS: &[&str] = &[
+        "iroh_ensure_home_tunnel",
+        "iroh_release_home_tunnel",
+        "iroh_get_tunnel_status",
+        "iroh_get_availability",
+        "iroh_get_application_endpoint",
+        "iroh_start_machine_http_tunnel",
+        "iroh_stop_machine_http_tunnel",
+    ];
+
+    #[test]
+    fn iroh_commands_are_registered_for_tauri_manifest_and_main_capability() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let build_rs =
+            fs::read_to_string(manifest_dir.join("build.rs")).expect("build.rs should be readable");
+        let capability: Value = serde_json::from_str(
+            &fs::read_to_string(manifest_dir.join("capabilities/default.json"))
+                .expect("default capability should be readable"),
+        )
+        .expect("default capability should be valid JSON");
+        let permissions = capability["permissions"]
+            .as_array()
+            .expect("default capability permissions should be an array");
+
+        for command in IROH_COMMANDS {
+            let permission = format!("allow-{}", command.replace('_', "-"));
+            assert!(
+                build_rs.contains(&format!("\"{command}\"")),
+                "build.rs APP_TAURI_COMMANDS should include {command}",
+            );
+            assert!(
+                permissions.contains(&Value::String(permission.clone())),
+                "default capability should include {permission}",
+            );
+        }
+    }
 
     #[test]
     fn status_projection_exposes_transport_facts_only() {
@@ -295,24 +471,46 @@ mod tests {
     }
 
     #[test]
-    fn start_request_injects_the_host_owned_key_path_and_ignores_renderer_identity_fields() {
+    fn home_and_machine_endpoint_requests_use_the_same_host_identity_with_connection_profiles() {
+        let key_path = std::path::Path::new("/app-data/iroh/endpoint.key");
+        let home: Value = serde_json::from_str(&application_endpoint_payload(
+            key_path,
+            Some("disabled"),
+            &[],
+        ))
+        .unwrap();
+        let machine: Value = serde_json::from_str(&application_endpoint_payload(
+            key_path,
+            Some("disabled"),
+            &[],
+        ))
+        .unwrap();
+        assert_eq!(home["keyPath"], machine["keyPath"]);
+        assert_eq!(home["relayPolicy"], "disabled");
+        assert_eq!(machine["relayPolicy"], "disabled");
+        assert!(home.get("capProfile").is_none());
+        assert!(machine.get("capProfile").is_none());
+    }
+
+    #[test]
+    fn ensure_request_uses_only_the_host_owned_endpoint_handle() {
         // A renderer that ignores the contract and sends key/seed material
         // cannot have it forwarded: the typed request struct has no such
         // fields, and the host path is always the injected one.
-        let request: StartHomeTunnelRequest = serde_json::from_str(
+        let request: EnsureHomeTunnelRequest = serde_json::from_str(
             r#"{"homeServerIdentityId":"srv_home_a","endpointId":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","policy":"disabled","endpointKeyPath":"/tmp/renderer.key","endpointSeedBase64":"AAAA"}"#,
         )
         .expect("renderer request parses with host-identity fields ignored");
-        let payload: Value = serde_json::from_str(&serialized_start_request(
+        let payload: Value = serde_json::from_str(&serialized_ensure_request(
             &request,
             "/app-data/iroh/endpoint.key",
         ))
         .expect("payload is valid JSON");
-        assert_eq!(payload["endpointKeyPath"], "/app-data/iroh/endpoint.key");
+        assert_eq!(payload["endpointHandle"], "/app-data/iroh/endpoint.key");
         assert!(payload.get("endpointSeedBase64").is_none());
         assert_eq!(payload["homeServerIdentityId"], "srv_home_a");
         assert_eq!(payload["endpointId"], ENDPOINT_ID);
-        assert_eq!(payload["relayPolicy"], "disabled");
+        assert!(payload.get("relayPolicy").is_none());
     }
 
     #[test]

@@ -5,6 +5,11 @@ import {
     type WorkspaceSyncStatusV1,
 } from '@happier-dev/protocol';
 
+import {
+    normalizeWorkspaceScopeBase,
+    type WorkspaceScopeBase,
+} from '@/sync/domains/workspaces/workspaceScope';
+
 export type WorkspaceSyncRelationshipModel = Readonly<{
     all: readonly WorkspaceSyncRelationshipV1[];
     enabled: readonly WorkspaceSyncRelationshipV1[];
@@ -16,6 +21,7 @@ export type WorkspaceSyncRelationshipEndpoint = Readonly<{
     workspaceRefId: string;
     workspaceRef: WorkspaceRefV1 | null;
     label: string;
+    machineName: string | null;
 }>;
 
 export type WorkspaceSyncRelationshipSummary = Readonly<{
@@ -59,12 +65,16 @@ export function projectWorkspaceSyncRelationships(raw: unknown): WorkspaceSyncRe
 function endpointFor(
     workspaceRefId: string,
     workspaceRefsById: ReadonlyMap<string, WorkspaceRefV1>,
+    machineNamesById: Readonly<Record<string, string>>,
 ): WorkspaceSyncRelationshipEndpoint {
     const workspaceRef = workspaceRefsById.get(workspaceRefId) ?? null;
+    const machineId = workspaceRef?.machineId ?? '';
+    const machineName = machineId ? machineNamesById[machineId]?.trim() || null : null;
     return {
         workspaceRefId,
         workspaceRef,
         label: workspaceRef?.label?.trim() || workspaceRef?.rootPath || workspaceRefId,
+        machineName,
     };
 }
 
@@ -76,6 +86,7 @@ export function projectWorkspaceSyncRelationshipSummaries(input: Readonly<{
     relationships: WorkspaceSyncRelationshipModel;
     workspaceRefs: readonly WorkspaceRefV1[];
     statuses: readonly WorkspaceSyncStatusV1[];
+    machineNamesById?: Readonly<Record<string, string>>;
 }>): readonly WorkspaceSyncRelationshipSummary[] {
     const workspaceRefsById = new Map(input.workspaceRefs.map((workspaceRef) => [workspaceRef.id, workspaceRef]));
     const statusesByRelationshipId = new Map(
@@ -85,10 +96,50 @@ export function projectWorkspaceSyncRelationshipSummaries(input: Readonly<{
     return input.relationships.all.map((relationship) => ({
         relationshipId: relationship.relationshipId,
         relationship,
-        alpha: endpointFor(relationship.alphaWorkspaceRefId, workspaceRefsById),
-        beta: endpointFor(relationship.betaWorkspaceRefId, workspaceRefsById),
+        alpha: endpointFor(relationship.alphaWorkspaceRefId, workspaceRefsById, input.machineNamesById ?? {}),
+        beta: endpointFor(relationship.betaWorkspaceRefId, workspaceRefsById, input.machineNamesById ?? {}),
         status: statusesByRelationshipId.get(relationship.relationshipId) ?? null,
     }));
+}
+
+function endpointMatchesScope(
+    endpoint: WorkspaceSyncRelationshipEndpoint,
+    scope: WorkspaceScopeBase,
+): boolean {
+    const endpointScope = endpoint.workspaceRef
+        ? normalizeWorkspaceScopeBase(endpoint.workspaceRef)
+        : null;
+    return endpointScope !== null
+        && endpointScope.serverId === scope.serverId
+        && endpointScope.machineId === scope.machineId
+        && endpointScope.rootPath === scope.rootPath;
+}
+
+/**
+ * Existing handoff choices must match both concrete endpoints. One-way modes
+ * preserve their alpha-to-beta direction; only the bidirectional mode can be
+ * selected with the current handoff source and target reversed.
+ */
+export function selectWorkspaceSyncRelationshipSummariesForHandoff(
+    summaries: readonly WorkspaceSyncRelationshipSummary[],
+    scopes: Readonly<{ source: WorkspaceScopeBase; target: WorkspaceScopeBase }>,
+): readonly WorkspaceSyncRelationshipSummary[] {
+    const source = normalizeWorkspaceScopeBase(scopes.source);
+    const target = normalizeWorkspaceScopeBase(scopes.target);
+    if (!source || !target) return [];
+
+    return summaries.filter((summary) => {
+        if (!summary.relationship.enabled) return false;
+        if (!summary.alpha.workspaceRef || !summary.beta.workspaceRef) return false;
+
+        const forward = endpointMatchesScope(summary.alpha, source)
+            && endpointMatchesScope(summary.beta, target);
+        if (forward) return true;
+
+        return summary.relationship.mode === 'keep_both_in_sync'
+            && endpointMatchesScope(summary.beta, source)
+            && endpointMatchesScope(summary.alpha, target);
+    });
 }
 
 export function resolveWorkspaceSyncConflictCountForWorkspaceRef(

@@ -14,6 +14,7 @@ export function buildRemoteSshManageHostSystemTaskSpec(params: Readonly<{
         | 'relayRuntime.start'
         | 'relayRuntime.stop'
         | 'relayRuntime.restart'
+        | 'personalHome.relocate'
         | 'personalHome.erase';
     sshTarget?: string;
     sshUsername?: string;
@@ -30,6 +31,12 @@ export function buildRemoteSshManageHostSystemTaskSpec(params: Readonly<{
     relayRuntime?: Readonly<{
         channel?: 'stable' | 'preview' | 'dev';
         mode?: 'user' | 'system';
+    }>;
+    personalHomeRelocation?: Readonly<{
+        operationId: string;
+        destinationMachineId: string;
+        sourceDescriptorRevision: number;
+        recoveryAction?: 'finish_move' | 'return_to_source';
     }>;
 }>): SystemTaskSpec {
     const parsedTarget = parseSshTarget(params.sshTarget ?? '');
@@ -76,6 +83,18 @@ export function buildRemoteSshManageHostSystemTaskSpec(params: Readonly<{
                             ? params.relayRuntime.channel
                             : 'stable',
                         mode: params.relayRuntime.mode === 'system' ? 'system' : 'user',
+                    },
+                }
+                : {}),
+            ...(params.personalHomeRelocation
+                ? {
+                    personalHomeRelocation: {
+                        operationId: params.personalHomeRelocation.operationId,
+                        destinationMachineId: params.personalHomeRelocation.destinationMachineId,
+                        sourceDescriptorRevision: params.personalHomeRelocation.sourceDescriptorRevision,
+                        ...(params.personalHomeRelocation.recoveryAction
+                            ? { recoveryAction: params.personalHomeRelocation.recoveryAction }
+                            : {}),
                     },
                 }
                 : {}),

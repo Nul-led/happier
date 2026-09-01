@@ -13,6 +13,16 @@ describe('buildLocalRelayRuntimeSystemTaskSpec', () => {
         const spec = buildLocalRelayRuntimeSystemTaskSpec('relay.runtime.status.v1');
         const params = spec.params as Record<string, unknown>;
         expect(params.channel).toBe('dev');
+
+        const operation = buildLocalRelayRuntimeSystemTaskSpec('relay.runtime.personal_home.inspect.v1', {
+            purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+        });
+        expect(operation.params).toEqual({
+            target: { kind: 'local' },
+            channel: 'dev',
+            mode: 'user',
+            purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+        });
         vi.doUnmock('@/config');
     });
 
@@ -34,7 +44,7 @@ describe('buildLocalRelayRuntimeSystemTaskSpec', () => {
 
     describe('Personal Home operation kinds', () => {
         const purpose = { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:43123' };
-        const baseParams = { target: { kind: 'local' }, purpose };
+        const baseParams = { target: { kind: 'local' }, channel: 'stable', mode: 'user', purpose };
 
         it('builds the exact inspect kind with no caller-owned facts', async () => {
             vi.resetModules();
@@ -97,16 +107,6 @@ describe('buildLocalRelayRuntimeSystemTaskSpec', () => {
             const { buildLocalRelayRuntimeSystemTaskSpec } = await import('./buildLocalRelayRuntimeSystemTaskSpec');
             const spec = buildLocalRelayRuntimeSystemTaskSpec('relay.runtime.personal_home.erase.v1', { purpose });
             expect(spec.params).toEqual(baseParams);
-        });
-
-        it('does not build a relocation kind: the UI invents no destination grammar', async () => {
-            vi.resetModules();
-            const { buildLocalRelayRuntimeSystemTaskSpec } = await import('./buildLocalRelayRuntimeSystemTaskSpec');
-            // No canonical relocation target grammar/transfer adapter exists yet, so the UI
-            // caller corridor never constructs a relocate spec.
-            expect(() => buildLocalRelayRuntimeSystemTaskSpec('relay.runtime.personal_home.relocate.v1', {
-                purpose, personalHomeOperation: { destination: 'studio-desk' },
-            })).toThrow();
         });
 
         it('keeps operation specs free of install-time environment facts while binding the inspected purpose', async () => {

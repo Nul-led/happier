@@ -63,6 +63,7 @@ async function requestCoordinator(options: StartSessionHandoffOptions): Promise<
                 ...(options.targetPath ? { targetPath: options.targetPath } : {}),
                 ...(options.targetSessionStorageMode ? { targetSessionStorageMode: options.targetSessionStorageMode } : {}),
                 ...(options.workspaceAction ? { workspaceAction: options.workspaceAction } : {}),
+                ...(normalizeId(options.serverId) ? { accountServerId: normalizeId(options.serverId) } : {}),
                 ...(options.workspaceSyncSourceWorkspaceRefId
                     ? { workspaceSyncSourceWorkspaceRefId: options.workspaceSyncSourceWorkspaceRefId }
                     : {}),

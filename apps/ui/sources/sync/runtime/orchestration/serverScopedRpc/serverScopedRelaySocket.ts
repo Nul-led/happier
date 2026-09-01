@@ -1,6 +1,7 @@
 import { resolveServerScopedContext } from './resolveServerScopedContext';
 import { createEphemeralServerSocketClient } from './createEphemeralServerSocketClient';
 import { storage } from '@/sync/domains/state/storage';
+import { parseToken } from '@/utils/auth/parseToken';
 
 const DEFAULT_SCOPE_PROFILE_ERROR_MESSAGE = 'Active account profile id is unavailable for server-scoped relay socket';
 
@@ -30,6 +31,7 @@ type ScopedSocketClientLike<TPayload> = {
         emitWithAck: (event: string, payload: TPayload) => Promise<unknown>;
     };
     getSocketId: () => string;
+    disconnect: () => void;
 };
 
 export type ServerScopedRelaySocket<TPayload> = Readonly<{
@@ -37,7 +39,7 @@ export type ServerScopedRelaySocket<TPayload> = Readonly<{
     machineId: string;
     sendEnvelope: (payload: TPayload) => void;
     onEnvelope: (listener: (payload: TPayload) => void) => () => void;
-    disconnect: () => void;
+    disconnect: () => Promise<void>;
     socketId?: string;
     viewerId?: string;
 }>;
@@ -97,43 +99,53 @@ export async function resolveServerScopedRelaySocket<TPayload>(params: Readonly<
         serverId: params.serverId,
         timeoutMs: params.timeoutMs,
     });
-    const scopeUserId = readActiveProfileId({
-        missingScopeUserProfileErrorMessage: params.missingScopeUserProfileErrorMessage,
-    });
-
     if (context.scope === 'active') {
+        const scopeUserId = readActiveProfileId({
+            missingScopeUserProfileErrorMessage: params.missingScopeUserProfileErrorMessage,
+        });
         return {
             scopeUserId,
             machineId: context.machineId,
             socketId: params.getActiveSocketId?.(),
             sendEnvelope: params.activeTransport.send,
             onEnvelope: params.activeTransport.on,
-            disconnect: () => {},
+            disconnect: async () => {},
         };
     }
 
-    const socket = await createEphemeralServerSocketClient({
-        serverUrl: context.runtimeOrigin ?? context.targetServerUrl,
-        reachabilityServerUrl: context.targetServerUrl,
-        ...(context.carrier ? { carrier: context.carrier } : {}),
-        token: context.token,
-        timeoutMs: context.timeoutMs,
-    });
-    const scopedTransport = typeof params.scopedTransport === 'function'
-        ? params.scopedTransport(socket)
-        : params.scopedTransport;
+    let socket: ScopedSocketClientLike<TPayload> | null = null;
+    let retainedByReturnedSocket = false;
+    try {
+        socket = await createEphemeralServerSocketClient({
+            serverUrl: context.runtimeOrigin ?? context.targetServerUrl,
+            reachabilityServerUrl: context.targetServerUrl,
+            ...(context.carrier ? { carrier: context.carrier } : {}),
+            token: context.token,
+            timeoutMs: context.timeoutMs,
+        });
+        const scopedTransport = typeof params.scopedTransport === 'function'
+            ? params.scopedTransport(socket)
+            : params.scopedTransport;
 
-    return {
-        scopeUserId,
-        machineId: context.machineId,
-        socketId: params.getScopedSocketId?.(socket) ?? scopedTransport.socketId ?? socket.getSocketId(),
-        sendEnvelope: scopedTransport.send,
-        onEnvelope: scopedTransport.on,
-        disconnect: () => {
-            socket.disconnect();
-            void context.release?.();
-        },
-    };
+        const resolvedSocket: ServerScopedRelaySocket<TPayload> = {
+            scopeUserId: context.targetAccountId ?? parseToken(context.token),
+            machineId: context.machineId,
+            socketId: params.getScopedSocketId?.(socket) ?? scopedTransport.socketId ?? socket.getSocketId(),
+            sendEnvelope: scopedTransport.send,
+            onEnvelope: scopedTransport.on,
+            disconnect: async () => {
+                socket?.disconnect();
+                await context.release?.();
+            },
+        };
+        retainedByReturnedSocket = true;
+        return resolvedSocket;
+    } finally {
+        if (!retainedByReturnedSocket) {
+            socket?.disconnect();
+            await context.release?.();
+        }
+    }
 }
 
 function readActiveProfileId(

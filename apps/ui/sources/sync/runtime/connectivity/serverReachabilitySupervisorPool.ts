@@ -194,8 +194,9 @@ async function probeServerReadiness(params: Readonly<{ endpoint: string; token: 
 }
 
 type ReachabilitySupervisorEntry = {
+    scopeKey: string;
     serverUrl: string;
-    /** Verified request-only transport origin; canonical serverUrl remains the pool key. */
+    /** Verified request-only transport origin; canonical serverUrl remains part of the scope key. */
     runtimeOrigin: string | null;
     token: string | null;
     state: ManagedConnectionState;
@@ -205,9 +206,11 @@ type ReachabilitySupervisorEntry = {
     invalidateInFlight: Promise<void> | null;
     lastInvalidateAt: number;
     ownerCount: number;
+    pendingStartCount: number;
+    stopInFlight: Promise<void> | null;
 };
 
-const entriesByServerUrl = new Map<string, ReachabilitySupervisorEntry>();
+const entriesByScopeKey = new Map<string, ReachabilitySupervisorEntry>();
 
 let didInstallOnlineListener = false;
 
@@ -232,20 +235,32 @@ function ensureOnlineListenerInstalled(): void {
     });
 }
 
-function getOrCreateEntry(serverUrlRaw: string): ReachabilitySupervisorEntry {
+function resolveReachabilityScope(serverUrlRaw: string, token: string | null): Readonly<{
+    serverUrl: string;
+    scopeKey: string;
+}> {
     const serverUrl = canonicalizeServerUrl(String(serverUrlRaw ?? ''));
     if (!serverUrl) {
         throw new Error('Missing server URL');
     }
+    return {
+        serverUrl,
+        scopeKey: JSON.stringify([serverUrl, token]),
+    };
+}
+
+function getOrCreateEntry(serverUrlRaw: string, token: string | null = null): ReachabilitySupervisorEntry {
+    const { serverUrl, scopeKey } = resolveReachabilityScope(serverUrlRaw, token);
     ensureOnlineListenerInstalled();
-    const existing = entriesByServerUrl.get(serverUrl);
+    const existing = entriesByScopeKey.get(scopeKey);
     if (existing) return existing;
 
     const subscribers = new Set<(state: ManagedConnectionState) => void>();
     const entry: ReachabilitySupervisorEntry = {
+        scopeKey,
         serverUrl,
         runtimeOrigin: null,
-        token: null,
+        token,
         state: {
             phase: 'idle',
             reason: null,
@@ -277,10 +292,52 @@ function getOrCreateEntry(serverUrlRaw: string): ReachabilitySupervisorEntry {
         invalidateInFlight: null,
         lastInvalidateAt: Number.NEGATIVE_INFINITY,
         ownerCount: 0,
+        pendingStartCount: 0,
+        stopInFlight: null,
     };
 
-    entriesByServerUrl.set(serverUrl, entry);
+    entriesByScopeKey.set(scopeKey, entry);
     return entry;
+}
+
+function entryHasConsumers(entry: ReachabilitySupervisorEntry): boolean {
+    return entry.ownerCount > 0 || entry.pendingStartCount > 0 || entry.subscribers.size > 0;
+}
+
+async function stopEntryIfUnused(entry: ReachabilitySupervisorEntry): Promise<void> {
+    if (entry.stopInFlight) {
+        await entry.stopInFlight;
+        return;
+    }
+    if (entryHasConsumers(entry)) return;
+
+    const stop = (async () => {
+        await entry.supervisor.stop();
+        if (entriesByScopeKey.get(entry.scopeKey) !== entry) return;
+        if (entryHasConsumers(entry)) {
+            await entry.supervisor.start();
+            return;
+        }
+        entriesByScopeKey.delete(entry.scopeKey);
+    })();
+    entry.stopInFlight = stop;
+    try {
+        await stop;
+    } finally {
+        if (entry.stopInFlight === stop) {
+            entry.stopInFlight = null;
+        }
+    }
+}
+
+function findEntryForRead(serverUrlRaw: string, token?: string | null): ReachabilitySupervisorEntry | null {
+    const serverUrl = canonicalizeServerUrl(String(serverUrlRaw ?? ''));
+    if (!serverUrl) return null;
+    if (token !== undefined) {
+        return entriesByScopeKey.get(JSON.stringify([serverUrl, token])) ?? null;
+    }
+    const matches = Array.from(entriesByScopeKey.values()).filter((entry) => entry.serverUrl === serverUrl);
+    return matches.length === 1 ? matches[0]! : null;
 }
 
 function waitForState(params: Readonly<{
@@ -318,7 +375,7 @@ function waitForState(params: Readonly<{
             if (!params.predicate(state)) return;
             cleanup();
             resolve();
-        });
+        }, params.entry.token);
 
         const cleanup = () => {
             clearTimeout(timeout);
@@ -388,24 +445,21 @@ async function waitForNetworkAllowed(params: Readonly<{ signal?: AbortSignal; ti
 export function subscribeServerReachabilityState(
     serverUrl: string,
     listener: (state: ManagedConnectionState) => void,
+    token: string | null = null,
 ): () => void {
-    const entry = getOrCreateEntry(serverUrl);
+    const entry = getOrCreateEntry(serverUrl, token);
     entry.subscribers.add(listener);
     listener(entry.state);
     return () => entry.subscribers.delete(listener);
 }
 
-export function peekServerReachabilityToken(serverUrl: string): string | null | undefined {
-    const normalized = canonicalizeServerUrl(String(serverUrl ?? ''));
-    if (!normalized) return undefined;
-    const entry = entriesByServerUrl.get(normalized);
+export function peekServerReachabilityToken(serverUrl: string, token?: string | null): string | null | undefined {
+    const entry = findEntryForRead(serverUrl, token);
     return entry ? entry.token : undefined;
 }
 
-export function peekServerReachabilityState(serverUrl: string): ManagedConnectionState | null {
-    const normalized = canonicalizeServerUrl(String(serverUrl ?? ''));
-    if (!normalized) return null;
-    return entriesByServerUrl.get(normalized)?.state ?? null;
+export function peekServerReachabilityState(serverUrl: string, token?: string | null): ManagedConnectionState | null {
+    return findEntryForRead(serverUrl, token)?.state ?? null;
 }
 
 export async function waitForServerReachable(params: Readonly<{
@@ -416,7 +470,7 @@ export async function waitForServerReachable(params: Readonly<{
     acceptAuthFailed?: boolean;
 }>): Promise<void> {
     await waitForNetworkAllowed({ signal: params.signal, timeoutMs: params.timeoutMs });
-    const entry = getOrCreateEntry(params.serverUrl);
+    const entry = getOrCreateEntry(params.serverUrl, params.token);
     const tokenChanged = entry.token !== params.token;
     entry.token = params.token;
 
@@ -445,7 +499,7 @@ export async function invalidateServerReachabilitySupervisor(params: Readonly<{
     serverUrl: string;
     token: string | null;
 }>): Promise<void> {
-    const entry = getOrCreateEntry(params.serverUrl);
+    const entry = getOrCreateEntry(params.serverUrl, params.token);
     const tokenChanged = entry.token !== params.token;
     entry.token = params.token;
 
@@ -495,13 +549,13 @@ export async function invalidateServerReachabilitySupervisor(params: Readonly<{
 }
 
 export async function invalidateAllServerReachabilitySupervisors(): Promise<void> {
-    await Promise.allSettled(Array.from(entriesByServerUrl.values()).map((entry) =>
+    await Promise.allSettled(Array.from(entriesByScopeKey.values()).map((entry) =>
         invalidateServerReachabilitySupervisor({ serverUrl: entry.serverUrl, token: entry.token }),
     ));
 }
 
-export function reportServerUnreachable(serverUrl: string, error: unknown): void {
-    const entry = entriesByServerUrl.get(canonicalizeServerUrl(serverUrl));
+export function reportServerUnreachable(serverUrl: string, error: unknown, token?: string | null): void {
+    const entry = findEntryForRead(serverUrl, token);
     if (!entry) return;
     if (entry.state.phase !== 'online' && entry.state.phase !== 'connecting') {
         return;
@@ -515,8 +569,8 @@ export function reportServerUnreachable(serverUrl: string, error: unknown): void
     });
 }
 
-export function reportServerRestarting(serverUrl: string, retryAfterMs?: number): void {
-    const entry = entriesByServerUrl.get(canonicalizeServerUrl(serverUrl));
+export function reportServerRestarting(serverUrl: string, retryAfterMs?: number, token?: string | null): void {
+    const entry = findEntryForRead(serverUrl, token);
     if (!entry) return;
     if (typeof entry.supervisor.reportProbeResult !== 'function') return;
     const scope = entry.supervisor.captureProbeReportScope?.();
@@ -533,8 +587,9 @@ export function reportServerAuthFailed(
     serverUrl: string,
     statusCode: 401 | 403,
     scope?: ManagedProbeReportScope,
+    token?: string | null,
 ): void {
-    const entry = entriesByServerUrl.get(canonicalizeServerUrl(serverUrl));
+    const entry = findEntryForRead(serverUrl, token);
     if (!entry) return;
     if (typeof entry.supervisor.reportProbeResult !== 'function') return;
     const resolvedScope = scope ?? entry.supervisor.captureProbeReportScope?.();
@@ -546,20 +601,20 @@ export function reportServerAuthFailed(
     }, resolvedScope);
 }
 
-export function peekServerReachabilityScope(serverUrl: string): ManagedProbeReportScope | null {
-    const entry = entriesByServerUrl.get(canonicalizeServerUrl(serverUrl));
+export function peekServerReachabilityScope(serverUrl: string, token?: string | null): ManagedProbeReportScope | null {
+    const entry = findEntryForRead(serverUrl, token);
     const captureProbeReportScope = entry?.supervisor.captureProbeReportScope;
     return typeof captureProbeReportScope === 'function' ? captureProbeReportScope() : null;
 }
 
-export function assertServerReachabilityAuthenticated(serverUrl: string): void {
-    if (peekServerReachabilityState(serverUrl)?.phase === 'auth_failed') {
+export function assertServerReachabilityAuthenticated(serverUrl: string, token?: string | null): void {
+    if (peekServerReachabilityState(serverUrl, token)?.phase === 'auth_failed') {
         throw createNotAuthenticatedError();
     }
 }
 
 export async function stopServerReachabilitySupervisors(): Promise<void> {
-    await Promise.allSettled(Array.from(entriesByServerUrl.values()).map((entry) => entry.supervisor.stop()));
+    await Promise.allSettled(Array.from(entriesByScopeKey.values()).map((entry) => entry.supervisor.stop()));
 }
 
 export async function startServerReachabilitySupervisor(params: Readonly<{
@@ -568,26 +623,32 @@ export async function startServerReachabilitySupervisor(params: Readonly<{
     /** Verified transport-only origin; ownership/subscriptions remain keyed by serverUrl. */
     runtimeOrigin?: string;
 }>): Promise<void> {
-    const entry = getOrCreateEntry(params.serverUrl);
-    const tokenChanged = entry.token !== params.token;
-    const runtimeOriginRaw = String(params.runtimeOrigin ?? '').trim();
-    const runtimeOrigin = runtimeOriginRaw ? canonicalizeServerUrl(runtimeOriginRaw) : null;
-    if (runtimeOriginRaw && !runtimeOrigin) {
-        throw new Error('Invalid server reachability runtime origin');
-    }
-    const runtimeOriginChanged = entry.runtimeOrigin !== runtimeOrigin;
-    entry.token = params.token;
-    entry.runtimeOrigin = runtimeOrigin;
+    const entry = getOrCreateEntry(params.serverUrl, params.token);
+    entry.pendingStartCount += 1;
+    try {
+        await entry.stopInFlight;
+        const tokenChanged = entry.token !== params.token;
+        const runtimeOriginRaw = String(params.runtimeOrigin ?? '').trim();
+        const runtimeOrigin = runtimeOriginRaw ? canonicalizeServerUrl(runtimeOriginRaw) : null;
+        if (runtimeOriginRaw && !runtimeOrigin) {
+            throw new Error('Invalid server reachability runtime origin');
+        }
+        const runtimeOriginChanged = entry.runtimeOrigin !== runtimeOrigin;
+        entry.token = params.token;
+        entry.runtimeOrigin = runtimeOrigin;
 
-    if (!networkAllowed) {
-        return;
-    }
+        if (!networkAllowed) {
+            return;
+        }
 
-    if (entry.state.phase === 'idle' || entry.state.phase === 'shutting_down') {
-        await entry.supervisor.start();
-    } else if (runtimeOriginChanged || (entry.state.phase === 'auth_failed' && tokenChanged)) {
-        await entry.supervisor.stop();
-        await entry.supervisor.start();
+        if (entry.state.phase === 'idle' || entry.state.phase === 'shutting_down') {
+            await entry.supervisor.start();
+        } else if (runtimeOriginChanged || (entry.state.phase === 'auth_failed' && tokenChanged)) {
+            await entry.supervisor.stop();
+            await entry.supervisor.start();
+        }
+    } finally {
+        entry.pendingStartCount = Math.max(0, entry.pendingStartCount - 1);
     }
 }
 
@@ -598,7 +659,7 @@ export async function acquireServerReachabilitySupervisor(params: Readonly<{
     token: string | null;
     runtimeOrigin?: string;
 }>): Promise<ServerReachabilityLease> {
-    const entry = getOrCreateEntry(params.serverUrl);
+    const entry = getOrCreateEntry(params.serverUrl, params.token);
     entry.ownerCount += 1;
     try {
         await startServerReachabilitySupervisor(params);
@@ -612,24 +673,25 @@ export async function acquireServerReachabilitySupervisor(params: Readonly<{
             if (released) return;
             released = true;
             entry.ownerCount = Math.max(0, entry.ownerCount - 1);
-            if (entry.ownerCount === 0 && entry.subscribers.size === 0) {
-                await entry.supervisor.stop();
-            }
+            await stopEntryIfUnused(entry);
         },
     };
 }
 
-export async function stopServerReachabilitySupervisor(serverUrl: string): Promise<void> {
+export async function stopServerReachabilitySupervisor(serverUrl: string, token?: string | null): Promise<void> {
     const normalized = canonicalizeServerUrl(String(serverUrl ?? ''));
-    const entry = normalized ? entriesByServerUrl.get(normalized) : null;
-    if (!entry) return;
-    if (entry.ownerCount > 0 || entry.subscribers.size > 0) return;
-    await entry.supervisor.stop();
+    if (!normalized) return;
+    const entries = token === undefined
+        ? Array.from(entriesByScopeKey.values()).filter((entry) => entry.serverUrl === normalized)
+        : [findEntryForRead(normalized, token)].filter((entry): entry is ReachabilitySupervisorEntry => Boolean(entry));
+    await Promise.allSettled(entries.map(async (entry) => {
+        await stopEntryIfUnused(entry);
+    }));
 }
 
 export async function resetServerReachabilitySupervisors(): Promise<void> {
     await stopServerReachabilitySupervisors();
-    entriesByServerUrl.clear();
+    entriesByScopeKey.clear();
 }
 
 registerRuntimeCleanupForTests('resetServerReachabilitySupervisors', resetServerReachabilitySupervisors);

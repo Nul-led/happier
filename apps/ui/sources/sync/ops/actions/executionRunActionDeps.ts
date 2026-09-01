@@ -170,10 +170,14 @@ export function createUiExecutionRunActionDeps(): UiExecutionRunActionDeps {
                 const response = sessionId === null
                     ? await callDetachedExecutionRunRpc(
                     SESSION_RPC_METHODS.EXECUTION_RUN_GET,
-                    { runId },
+                    { runId, includeStructured: true },
                     opts,
                 )
-                    : await sessionExecutionRunGet(sessionId, { runId }, { serverId: opts?.serverId });
+                    : await sessionExecutionRunGet(
+                    sessionId,
+                    { runId, includeStructured: true },
+                    { serverId: opts?.serverId },
+                );
                 return toExecutionRunWaitReadResult(response);
             },
         }),

@@ -65,6 +65,7 @@ async function defaultGetScopedSessionEncryption(params: Readonly<{
   const sessionDataKey = await resolveScopedSessionDataKey({
     serverId: context.targetServerId,
     serverUrl: context.targetServerUrl,
+    ...(context.runtimeOrigin ? { runtimeOrigin: context.runtimeOrigin } : {}),
     token: context.token,
     sessionId: params.sessionId,
     timeoutMs: context.timeoutMs,

@@ -78,6 +78,8 @@ pub fn run() {
                 app_updates::desktop_fetch_update,
                 app_updates::desktop_install_update,
                 desktop_dialog::desktop_pick_ssh_identity_file,
+                desktop_dialog::desktop_pick_personal_home_backup_archive,
+                desktop_dialog::desktop_save_personal_home_backup_archive,
                 autostart::desktop_get_autostart_enabled,
                 autostart::desktop_set_autostart_enabled,
                 tray::desktop_set_tray_state,
@@ -97,6 +99,7 @@ pub fn run() {
                 system_tasks::cancel_system_task,
                 system_tasks::get_system_task_snapshot,
                 system_tasks::system_tasks_open_log_path,
+                system_tasks::system_tasks_reveal_output_path,
                 system_tasks::respond_system_task_prompt,
                 window_chrome::desktop_get_window_chrome_policy,
                 window_chrome::desktop_get_window_state,
@@ -107,9 +110,13 @@ pub fn run() {
                 window_chrome::desktop_start_window_dragging,
                 window_sizing::desktop_set_window_mode,
                 desktop_boot_credentials::desktop_read_stack_boot_credentials,
-                iroh::iroh_start_home_tunnel,
-                iroh::iroh_stop_home_tunnel,
-                iroh::iroh_get_home_tunnel_status,
+                iroh::iroh_ensure_home_tunnel,
+                iroh::iroh_release_home_tunnel,
+                iroh::iroh_get_tunnel_status,
+                iroh::iroh_get_availability,
+                iroh::iroh_get_application_endpoint,
+                iroh::iroh_start_machine_http_tunnel,
+                iroh::iroh_stop_machine_http_tunnel,
                 secure_storage::desktop_secure_storage_read,
                 secure_storage::desktop_secure_storage_write,
                 secure_storage::desktop_secure_storage_remove,
@@ -227,6 +234,43 @@ mod desktop_dialog {
 
         rx.await
             .map_err(|_| "Failed to receive dialog selection".to_string())
+    }
+
+    #[tauri::command]
+    pub async fn desktop_pick_personal_home_backup_archive(
+        app: AppHandle,
+    ) -> Result<Option<String>, String> {
+        let (tx, rx) = oneshot::channel::<Option<String>>();
+
+        app.dialog()
+            .file()
+            .set_title("Choose a Personal Home backup")
+            .add_filter("Happier Personal Home backup", &["tar"])
+            .pick_file(move |path| {
+                let _ = tx.send(path.map(|p| p.to_string()));
+            });
+
+        rx.await
+            .map_err(|_| "Failed to receive backup archive selection".to_string())
+    }
+
+    #[tauri::command]
+    pub async fn desktop_save_personal_home_backup_archive(
+        app: AppHandle,
+    ) -> Result<Option<String>, String> {
+        let (tx, rx) = oneshot::channel::<Option<String>>();
+
+        app.dialog()
+            .file()
+            .set_title("Export Personal Home backup")
+            .set_file_name("personal-home-backup.tar")
+            .add_filter("Happier Personal Home backup", &["tar"])
+            .save_file(move |path| {
+                let _ = tx.send(path.map(|p| p.to_string()));
+            });
+
+        rx.await
+            .map_err(|_| "Failed to receive backup destination selection".to_string())
     }
 }
 

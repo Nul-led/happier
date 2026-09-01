@@ -5,6 +5,8 @@ import type { IconName } from '@/components/ui/icons/Icon';
 export type ItemAction = {
     id: string;
     title: string;
+    /** Accessible action name when the visible title is intentionally concise. */
+    accessibilityLabel?: string;
     subtitle?: string;
     /**
      * Either an Ionicons icon name (recommended for standard row actions),

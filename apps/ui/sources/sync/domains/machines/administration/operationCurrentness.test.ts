@@ -31,6 +31,13 @@ describe('machine administration operation currentness', () => {
         })).toBe(false);
     });
 
+    it('rejects an A-to-B-to-A selection settlement even when the exact target generation matches again', () => {
+        expect(sameMachineAdministrationExecutionTarget(
+            { ...expected, selectionRevision: 1 },
+            { ...expected, selectionRevision: 3 },
+        )).toBe(false);
+    });
+
     it('also fences a screen operation to its captured selection key', () => {
         expect(isMachineAdministrationExecutionTargetCurrent({
             expectedTarget: expected,

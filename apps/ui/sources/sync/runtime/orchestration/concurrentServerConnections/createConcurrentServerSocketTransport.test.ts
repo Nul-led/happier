@@ -3,7 +3,8 @@ import { CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION } from '@happi
 
 type SocketHandler = (...args: any[]) => void;
 
-vi.mock('@/sync/runtime/socketIoTransports', () => ({
+vi.mock('@/sync/runtime/socketIoTransports', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/runtime/socketIoTransports')>(),
     resolveSocketIoTransports: () => undefined,
 }));
 
@@ -122,7 +123,6 @@ describe('createConcurrentServerSocketTransport', () => {
         const socket = createSocketStub();
         const ioSpy = vi.fn(() => socket);
         vi.doMock('socket.io-client', () => ({ io: ioSpy }));
-        vi.doMock('@/sync/runtime/socketIoTransports', () => ({ resolveSocketIoTransports: () => ['polling', 'websocket'] }));
         const { createConcurrentServerSocketTransport } = await import('./createConcurrentServerSocketTransport');
         createConcurrentServerSocketTransport({
             serverUrl: 'https://home.example',

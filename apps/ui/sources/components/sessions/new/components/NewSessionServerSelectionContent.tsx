@@ -5,7 +5,7 @@ import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { ItemListStatic } from '@/components/ui/lists/ItemList';
+import { ItemList, ItemListStatic } from '@/components/ui/lists/ItemList';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { useSettings } from '@/sync/domains/state/storage';
@@ -19,13 +19,15 @@ import {
 } from '@/sync/domains/server/selection/serverSelectionProfileScopeIds';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { useAuth } from '@/auth/context/AuthContext';
-import { promptSignedOutServerSwitchConfirmation } from '@/components/settings/server/modals/ServerSwitchAuthPrompt';
+import { useServerAuthStatusByServerId } from '@/components/settings/server/hooks/useServerAuthStatusByServerId';
 import { setActiveServerAndSwitch } from '@/sync/domains/server/activeServerSwitch';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { safeRouterBack } from '@/utils/navigation/safeRouterBack';
 import { buildNewSessionPickerFallbackHref, pickNewSessionRouteParams, setNewSessionPickerReturnParams } from '@/components/sessions/new/navigation/setNewSessionPickerReturnParams';
 import { buildNewSessionAuthContinuationRootHref } from '@/components/sessions/new/navigation/newSessionAuthContinuation';
 import { Icon } from '@/components/ui/icons/Icon';
+import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
+import { isDesktopHost } from '@/utils/platform/desktopHost';
 
 type ServerSelectionParams = Readonly<{
     agentType?: string;
@@ -40,11 +42,17 @@ export type NewSessionServerSelectionContentProps = Readonly<{
     onClose: () => void;
     dismissOnSelection?: boolean;
     selectedServerId?: string | null;
+    /** True only when this component is the route-level scroll owner. */
+    ownsScrollViewport?: boolean;
 }>;
 
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
         backgroundColor: theme.colors.background.canvas,
+    },
+    standaloneContainer: {
+        flex: 1,
+        minHeight: 0,
     },
     header: {
         flexDirection: 'row',
@@ -101,6 +109,7 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
         maxHeight,
         onClose,
         dismissOnSelection = false,
+        ownsScrollViewport = false,
     } = props;
     const router = useRouter();
     const navigation = useNavigation();
@@ -125,6 +134,7 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
             return [];
         }
     }, [activeServer.generation]);
+    const authStatusByServerId = useServerAuthStatusByServerId(serverProfiles);
 
     const resolvedTarget = React.useMemo(() => {
         const settings = normalizeServerSelectionSettingsForProfileScopeIds({
@@ -166,24 +176,21 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
         return allowedServerIds[0] ?? activeServer.serverId;
     }, [activeServer.serverId, allowedServerIds, params.selectedId, props.selectedServerId]);
 
-    const confirmSignedOutTarget = React.useCallback(async (serverId: string): Promise<{ allowed: boolean; signedOut: boolean }> => {
+    const resolveTargetAuthState = React.useCallback(async (serverId: string): Promise<'signedIn' | 'signedOut' | 'unavailable'> => {
         const nextServerId = String(serverId ?? '').trim();
-        if (!nextServerId) return { allowed: true, signedOut: false };
+        if (!nextServerId) return 'unavailable';
 
         const profile = serverProfiles.find((srv) => (
             resolveServerProfileScopeId(srv) === nextServerId || srv.id === nextServerId
         )) ?? null;
-        if (!profile) return { allowed: true, signedOut: false };
+        if (!profile) return 'unavailable';
 
         try {
             const creds = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, { serverId: nextServerId });
-            if (creds) return { allowed: true, signedOut: false };
+            return creds ? 'signedIn' : 'signedOut';
         } catch {
-            return { allowed: true, signedOut: false };
+            return 'unavailable';
         }
-
-        const allowed = await promptSignedOutServerSwitchConfirmation();
-        return { allowed, signedOut: true };
     }, [serverProfiles]);
 
     const commitSelectedServer = React.useCallback((serverId: string) => {
@@ -210,12 +217,12 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
 
     const handleServerPress = React.useCallback((serverId: string) => {
         fireAndForget((async () => {
-            const auth = await confirmSignedOutTarget(serverId);
-            if (!auth.allowed) return;
-            if (auth.signedOut) {
+            const authState = await resolveTargetAuthState(serverId);
+            if (authState === 'unavailable') return;
+            if (authState === 'signedOut') {
                 const switchResult = await setActiveServerAndSwitch({
                     serverId,
-                    scope: 'tab',
+                    scope: resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost()),
                     refreshAuth: authContext.refreshFromActiveServer,
                 });
                 if (switchResult === 'blocked') return;
@@ -230,14 +237,15 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
             }
             commitSelectedServer(serverId);
         })(), { tag: 'NewSessionServerSelectionContent.selectServer' });
-    }, [authContext.refreshFromActiveServer, commitSelectedServer, confirmSignedOutTarget, currentRouteParams, dismissOnSelection, onClose, router]);
+    }, [authContext.refreshFromActiveServer, commitSelectedServer, currentRouteParams, dismissOnSelection, onClose, resolveTargetAuthState, router]);
 
     const handleClose = React.useCallback(() => {
         onClose();
     }, [onClose]);
+    const SelectionList = ownsScrollViewport ? ItemList : ItemListStatic;
 
     return (
-        <View style={[styles.container, { maxHeight }]}>
+        <View style={[styles.container, ownsScrollViewport ? styles.standaloneContainer : null, { maxHeight }]}>
             <View style={styles.header}>
                 <View style={styles.headerTextBlock}>
                     <Text style={styles.headerTitle}>{t('server.switchToServer')}</Text>
@@ -256,18 +264,28 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
                 </Pressable>
             </View>
 
-            <ItemListStatic
+            <SelectionList
                 style={styles.list}
                 containerStyle={styles.listContent}
             >
-                <ItemGroup selectableItemCountOverride={filteredServers.length}>
+                <ItemGroup
+                    accessibilityRole="radiogroup"
+                    accessibilityLabel={t('server.switchToServer')}
+                    selectableItemCountOverride={filteredServers.length}
+                >
                     {filteredServers.map(({ profile, serverId }) => {
                         const isSelected = serverId === selectedServerId;
+                        const authStatus = authStatusByServerId[serverId] ?? 'unknown';
+                        const statusLabel = authStatus === 'signedIn'
+                            ? t('server.signedIn')
+                            : authStatus === 'signedOut'
+                                ? t('server.signedOut')
+                                : t('server.authStatusUnknown');
                         return (
                             <Item
                                 key={serverId}
                                 title={profile.name}
-                                subtitle={profile.serverUrl}
+                                subtitle={statusLabel}
                                 icon={(
                                     <Icon
                                         name="hard-drives"
@@ -276,13 +294,14 @@ export function NewSessionServerSelectionContent(props: NewSessionServerSelectio
                                     />
                                 )}
                                 selected={isSelected}
+                                accessibilityRole="radio"
                                 onPress={() => handleServerPress(serverId)}
                                 showChevron={false}
                             />
                         );
                     })}
                 </ItemGroup>
-            </ItemListStatic>
+            </SelectionList>
         </View>
     );
 }

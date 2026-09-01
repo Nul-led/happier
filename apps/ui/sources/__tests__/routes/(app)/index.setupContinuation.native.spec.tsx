@@ -36,6 +36,7 @@ vi.mock('expo-router', () => expoRouterMock.module);
 const tauriDesktopState = vi.hoisted(() => ({ value: true }));
 vi.mock('@/utils/platform/desktopHost', () => ({
     isDesktopHost: () => tauriDesktopState.value,
+    desktopHostKind: () => tauriDesktopState.value ? 'tauri' : null,
 }));
 
 let isAuthenticated = true;
