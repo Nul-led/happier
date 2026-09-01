@@ -228,6 +228,50 @@ describe('useReversePairingSession', () => {
         await hook.unmount();
     });
 
+    it('cancels the one pre-claim attempt without allowing it to continue', async () => {
+        state.qrAvailable = false;
+        let requestSignal: AbortSignal | null = null;
+        state.pairingRequest.mockImplementation((_params, _target, options: { signal: AbortSignal }) => {
+            requestSignal = options.signal;
+            return new Promise(() => {});
+        });
+
+        const { useReversePairingSession } = await import('./useReversePairingSession');
+        const hook = await renderHook(() => useReversePairingSession({ enabled: true }));
+        await vi.waitFor(() => expect(hook.getCurrent().canCancel).toBe(true));
+
+        await act(async () => hook.getCurrent().cancel());
+
+        expect(requestSignal?.aborted).toBe(true);
+        expect(target.close).toHaveBeenCalledOnce();
+        expect(hook.getCurrent().presentation).toEqual({ phase: 'generating' });
+        expect(state.authWait).not.toHaveBeenCalled();
+        await hook.unmount();
+    });
+
+    it('retries the initial bound claim with the same authority before expiry', async () => {
+        vi.useFakeTimers();
+        try {
+            state.pairingRequest
+                .mockResolvedValueOnce({ ok: false, status: 503 })
+                .mockResolvedValueOnce({ ok: true, data: { state: 'requested' } });
+            state.authWait.mockImplementation(() => new Promise(() => {}));
+
+            const { useReversePairingSession } = await import('./useReversePairingSession');
+            const hook = await renderHook(() => useReversePairingSession({ enabled: true }));
+            await act(async () => {
+                await vi.runAllTimersAsync();
+            });
+
+            expect(state.pairingRequest).toHaveBeenCalledTimes(2);
+            expect(state.pairingRequest.mock.calls[1]?.[0]).toEqual(state.pairingRequest.mock.calls[0]?.[0]);
+            expect(hook.getCurrent().presentation.phase).toBe('connecting');
+            await hook.unmount();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('distinguishes the canonical target-qualified adoption partial commit', async () => {
         const { HomeProfileAdoptionPartialCommitError } = await import('@/sync/domains/server/adoptHomeProfile');
         state.adopt.mockRejectedValueOnce(new HomeProfileAdoptionPartialCommitError());

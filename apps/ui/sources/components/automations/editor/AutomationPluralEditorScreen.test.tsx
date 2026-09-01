@@ -67,6 +67,10 @@ vi.mock('@/components/ui/lists/Item', () => ({
                 (pressableRef as (value: unknown) => void)(node);
                 return () => (pressableRef as (value: unknown) => void)(null);
             }
+            if (pressableRef && typeof pressableRef === 'object' && 'current' in pressableRef) {
+                (pressableRef as { current: unknown }).current = node;
+                return () => { (pressableRef as { current: unknown }).current = null; };
+            }
             return undefined;
         });
         return React.createElement('Item', props, props.children, props.rightElement);
@@ -498,7 +502,7 @@ describe('AutomationPluralEditorScreen', () => {
         expect(switches.map((control) => control.props.accessibilityLabel)).toEqual([
             expect.stringContaining('automations.pluralEditor.scheduleTitle'),
             expect.stringContaining('automations.pluralEditor.scheduleTitle'),
-            expect.stringContaining('automations.pluralEditor.turnCompletedTitle'),
+            expect.stringContaining('automations.pluralEditor.lifecycleTitle'),
             expect.stringContaining('Pull request opened'),
         ]);
         expect(new Set(switches.map((control) => control.props.testID)).size).toBe(4);

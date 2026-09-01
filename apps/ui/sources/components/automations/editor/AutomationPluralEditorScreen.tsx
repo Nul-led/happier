@@ -1,12 +1,12 @@
 import * as React from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
-import type {
-    AutomationPluginEventDefinitionTriggerInput,
-    type AutomationSessionLifecycleEvent,
-    AutomationSessionLifecycleTriggerInput,
+import {
     AUTOMATION_SESSION_LIFECYCLE_MAX_MATCH_COUNT,
-    AutomationTriggerDefinitionInput,
+    type AutomationPluginEventDefinitionTriggerInput,
+    type AutomationSessionLifecycleEvent,
+    type AutomationSessionLifecycleTriggerInput,
+    type AutomationTriggerDefinitionInput,
 } from '@happier-dev/protocol';
 
 import { DropdownMenu, type DropdownMenuItem } from '@/components/ui/forms/dropdown/DropdownMenu';
