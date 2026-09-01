@@ -171,63 +171,6 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         }
     });
 
-    it('rejects a fake coupled route without replacing an established Home credential or profile', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_fake_coupled_established_${Date.now()}_${Math.random()}`;
-        const localStorageMock = installLocalStorageMock();
-        restoreLocalStorage = localStorageMock.restore;
-
-        const profiles = await import('@/sync/domains/server/serverProfiles');
-        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
-        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
-        const established = await profiles.adoptHomeProfile({
-            source: 'qr',
-            descriptor: {
-                v: 1,
-                homeServerIdentityId: 'srv_coupled_conflict_home',
-                canonicalServerUrl: 'https://real-established-home.test',
-                revision: 4,
-                endpoints: [{ kind: 'https', url: 'https://real-established-home.test' }],
-            },
-        });
-        await expect(TokenStorage.setCredentialsForServerUrl(
-            'https://real-established-home.test',
-            { serverId: 'srv_coupled_conflict_home' },
-            { token: 'real-established-token' },
-        )).resolves.toBe(true);
-
-        await expect(adoptHomeProfileWithCredentials({
-            source: 'account-directory',
-            descriptorAuthority: 'redemption_coupled',
-            descriptor: {
-                v: 1,
-                homeServerIdentityId: 'srv_coupled_conflict_home',
-                canonicalServerUrl: 'https://fake-coupled-home.test',
-                revision: 100,
-                endpoints: [{ kind: 'https', url: 'https://fake-coupled-home.test' }],
-            },
-            credentials: { token: 'fake-coupled-token' },
-        })).rejects.toMatchObject({ code: 'redemption_authority_conflict' });
-
-        expect(profiles.listServerProfiles()).toEqual(expect.arrayContaining([
-            expect.objectContaining({
-                id: established.id,
-                serverIdentityId: 'srv_coupled_conflict_home',
-                serverUrl: 'https://real-established-home.test',
-            }),
-        ]));
-        await expect(TokenStorage.getCredentialsForServerUrl(
-            'https://real-established-home.test',
-            { serverId: 'srv_coupled_conflict_home' },
-        )).resolves.toEqual({ token: 'real-established-token' });
-        await expect(TokenStorage.getCredentialsForServerUrl(
-            'https://fake-coupled-home.test',
-            { serverId: 'srv_coupled_conflict_home' },
-        )).resolves.toBeNull();
-        for (const [, value] of localStorageMock.store.entries()) {
-            expect(value).not.toContain('fake-coupled-token');
-        }
-    });
-
     it('stores a newly issued credential for a signed-out established Home without accepting advisory routing changes', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_advisory_signed_out_${Date.now()}_${Math.random()}`;
         const localStorageMock = installLocalStorageMock();
@@ -271,8 +214,8 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         )).resolves.toBeNull();
     });
 
-    it('stores through the placeholder-owned identity scope before a coupled descriptor upgrades its route', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_coupled_placeholder_${Date.now()}_${Math.random()}`;
+    it('stores for an advisory-only placeholder without establishing new routing facts', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_advisory_placeholder_${Date.now()}_${Math.random()}`;
         const localStorageMock = installLocalStorageMock();
         restoreLocalStorage = localStorageMock.restore;
 
@@ -293,23 +236,24 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
 
         const adopted = await adoptHomeProfileWithCredentials({
             source: 'account-directory',
-            descriptorAuthority: 'redemption_coupled',
+            descriptorAuthority: 'advisory',
             descriptor: {
                 v: 1,
                 homeServerIdentityId: 'srv_coupled_storage_home',
-                canonicalServerUrl: 'https://home-selected-route.test',
-                revision: 2,
-                endpoints: [{ kind: 'https', url: 'https://home-selected-route.test' }],
+                canonicalServerUrl: 'https://directory-route.test',
+                revision: 50,
+                endpoints: [{ kind: 'https', url: 'https://directory-route.test' }],
             },
-            credentials: { token: 'coupled-home-token' },
+            credentials: { token: 'advisory-home-token' },
         });
 
         expect(adopted.id).toBe(placeholder.id);
-        expect(adopted.canonicalServerUrl ?? adopted.serverUrl).toBe('https://home-selected-route.test');
+        expect(adopted.descriptorProvenance).toBe('advisory-only');
+        expect(adopted.canonicalServerUrl ?? adopted.serverUrl).toBe('https://directory-route.test');
         await expect(TokenStorage.getCredentialsForServerUrl(
-            'https://home-selected-route.test',
+            'https://directory-route.test',
             { serverId: 'srv_coupled_storage_home' },
-        )).resolves.toEqual({ token: 'coupled-home-token' });
+        )).resolves.toEqual({ token: 'advisory-home-token' });
     });
 
     it('reads a pre-adoption loopback credential through the adopted stable identity', async () => {

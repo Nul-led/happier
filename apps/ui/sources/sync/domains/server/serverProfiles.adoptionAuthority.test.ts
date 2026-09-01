@@ -114,68 +114,28 @@ describe('serverProfiles adoption authority', () => {
         });
     });
 
-    it('upgrades only an advisory placeholder from redemption-coupled facts', async () => {
+    it('rejects the retired redemption-coupled authority instead of treating it as established authority', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
         const profiles = await importFresh();
-        const placeholder = await profiles.adoptHomeProfile({
-            source: 'account-directory',
-            descriptorAuthority: 'advisory',
+        const retiredInput = {
+            source: 'account-directory' as const,
+            descriptorAuthority: 'redemption_coupled',
             descriptor: {
                 v: 1,
-                homeServerIdentityId: 'srv_coupled_placeholder_1',
+                homeServerIdentityId: 'srv_retired_authority_1',
                 canonicalServerUrl: 'https://directory-route.example.test',
-                revision: 99,
+                revision: 1,
                 endpoints: [{ kind: 'https', url: 'https://directory-route.example.test' }],
             },
-        });
+        } as unknown as Parameters<typeof profiles.preflightHomeProfileAdoption>[0];
 
-        const coupled = await profiles.adoptHomeProfile({
-            source: 'account-directory',
-            descriptorAuthority: 'redemption_coupled',
-            descriptor: {
-                v: 1,
-                homeServerIdentityId: 'srv_coupled_placeholder_1',
-                canonicalServerUrl: 'https://home-selected.example.test',
-                revision: 2,
-                endpoints: [{ kind: 'iroh', endpointId: 'c'.repeat(64) }],
-            },
-        });
-
-        expect(coupled.id).toBe(placeholder.id);
-        expect(coupled.descriptorProvenance).toBeUndefined();
-        expect(coupled.canonicalServerUrl ?? coupled.serverUrl).toBe('https://home-selected.example.test');
-        expect(coupled.connectionDescriptorRevision).toBe(2);
-    });
-
-    it('keeps equal redemption-coupled facts idempotent and rejects established retargeting', async () => {
-        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
-        const profiles = await importFresh();
-        const descriptor = {
-            v: 1 as const,
-            homeServerIdentityId: 'srv_coupled_established_1',
-            canonicalServerUrl: 'https://established.example.test',
-            revision: 4,
-            endpoints: [{ kind: 'iroh' as const, endpointId: 'd'.repeat(64) }],
-        };
-        const established = await profiles.adoptHomeProfile({ source: 'qr', descriptor });
-
-        await expect(profiles.adoptHomeProfile({
-            source: 'account-directory',
-            descriptorAuthority: 'redemption_coupled',
-            descriptor,
-        })).resolves.toEqual(established);
-
-        await expect(profiles.adoptHomeProfile({
-            source: 'account-directory',
-            descriptorAuthority: 'redemption_coupled',
-            descriptor: {
-                ...descriptor,
-                canonicalServerUrl: 'https://attacker.example.test',
-                revision: 999,
-                endpoints: [{ kind: 'https', url: 'https://attacker.example.test' }],
-            },
-        })).rejects.toMatchObject({ code: 'redemption_authority_conflict' });
-        expect(profiles.getServerProfileById(established.id)).toEqual(established);
+        expect(() => profiles.preflightHomeProfileAdoption(retiredInput))
+            .toThrow('Invalid Home descriptor authority');
+        await expect(profiles.adoptHomeProfile(retiredInput))
+            .rejects.toThrow('Invalid Home descriptor authority');
+        expect(profiles.listServerProfiles()).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ serverIdentityId: 'srv_retired_authority_1' }),
+        ]));
     });
 
     it('keeps current_connection_observation established authority while upgrading advisory-only placeholders wholesale', async () => {

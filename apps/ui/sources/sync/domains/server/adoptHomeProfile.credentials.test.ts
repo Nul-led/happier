@@ -138,13 +138,29 @@ describe('adoptHomeProfileWithCredentials', () => {
     it('reports a partial commit when rollback cannot apply after credential ownership changes', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_rollback_not_applied_${Date.now()}_${Math.random()}`;
         const profiles = await import('./serverProfiles');
-        const rollback = vi.fn(async () => false);
+        const focused = profiles.upsertServerProfile({ serverUrl: 'https://home-a.test', source: 'manual' });
+        profiles.setActiveServerId(focused.id);
+        profiles.saveHomeViewState({
+            version: 1,
+            activeTargetKind: 'server',
+            activeTargetId: focused.id,
+            groups: [{ id: 'g', name: 'Homes', serverIds: [focused.id] }],
+        });
+        const focusBefore = profiles.getActiveServerSnapshot();
+        const viewBefore = profiles.loadHomeViewState();
+        let storedCredential = { token: 'attempted-home-b-token' };
+        const concurrentWinner = { token: 'concurrent-winner-token' };
+        const rollback = vi.fn(async () => {
+            if (storedCredential !== concurrentWinner) storedCredential = { token: 'unexpected-rollback' };
+            return false;
+        });
         setCredentialsForServerUrlWithRollbackMock.mockImplementationOnce(async () => {
             const competitor = profiles.upsertServerProfile({
                 serverUrl: 'https://home-b.test',
                 source: 'manual',
             });
             profiles.setServerProfileIdentityForUrl(competitor.serverUrl, 'srv_competing_home');
+            storedCredential = concurrentWinner;
             return {
                 serverUrl: 'https://home-b.test',
                 serverId: 'srv_home_b',
@@ -176,6 +192,12 @@ describe('adoptHomeProfileWithCredentials', () => {
             rollbackOutcome: { kind: 'not_applied', reason: 'ownership_changed' },
         });
         expect(rollback).toHaveBeenCalledOnce();
+        expect(storedCredential).toBe(concurrentWinner);
+        expect(profiles.getActiveServerSnapshot()).toMatchObject({
+            serverId: focusBefore.serverId,
+            serverUrl: focusBefore.serverUrl,
+        });
+        expect(profiles.loadHomeViewState()).toEqual(viewBefore);
     });
 
     it('writes credentials under the canonical preflight target, then adopts without changing focus or groups', async () => {
