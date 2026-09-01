@@ -144,6 +144,27 @@ describe('Personal Home source relocation coordinator', () => {
     });
   });
 
+  it('preserves transfer-cleanup attention without persisting a remote path or message', async () => {
+    const { params, destination } = await fixture();
+    destination.stage.mockResolvedValueOnce({
+      ...destinationFacts,
+      transferCleanupNeedsAttention: true,
+    });
+    params.publishDestination.mockRejectedValueOnce(new Error('publication unavailable'));
+    params.readPublishedDescriptor.mockResolvedValueOnce(null);
+
+    await expect(coordinatePersonalHomeRelocation(params)).resolves.toMatchObject({
+      status: 'pending',
+      destinationTransferCleanupNeedsAttention: true,
+    });
+
+    params.readPublishedDescriptor.mockResolvedValueOnce(publishedDescriptor);
+    await expect(coordinatePersonalHomeRelocation(params)).resolves.toMatchObject({
+      status: 'committed',
+      destinationTransferCleanupNeedsAttention: true,
+    });
+  });
+
   it('reactivates the untouched source when destination staging fails before source quarantine', async () => {
     const { params, destination } = await fixture();
     destination.stage.mockRejectedValueOnce(new Error('remote restore failed'));

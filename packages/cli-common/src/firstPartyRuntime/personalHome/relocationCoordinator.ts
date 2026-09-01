@@ -18,6 +18,7 @@ export type PersonalHomeRelocationSourceResult = Readonly<{
   sourceDescriptorRevision: number;
   publishedDescriptor?: HomeConnectionDescriptorV1;
   recoveryAction?: 'finish_move' | 'return_to_source';
+  destinationTransferCleanupNeedsAttention?: true;
 }>;
 
 export type PersonalHomeRelocationPublicationFacts = Readonly<{
@@ -69,6 +70,7 @@ type SourceMarker = Readonly<{
   sourceCanonicalServerUrl: string;
   sourceDescriptorRevision: number;
   sourceDescriptor: HomeConnectionDescriptorV1;
+  destinationTransferCleanupNeedsAttention?: true;
 }>;
 
 export class PersonalHomeRelocationSourceActivationBlockedError extends Error {
@@ -88,7 +90,7 @@ function parseSourceMarker(raw: string): SourceMarker {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid marker');
   const marker = value as Record<string, unknown>;
   const sourceDescriptor = HomeConnectionDescriptorV1Schema.safeParse(marker.sourceDescriptor);
-  if (Object.keys(marker).some((key) => !['version', 'operationId', 'phase', 'destinationMachineId', 'bundleSha256', 'homeServerIdentityId', 'sourceCanonicalServerUrl', 'sourceDescriptorRevision', 'sourceDescriptor'].includes(key))
+  if (Object.keys(marker).some((key) => !['version', 'operationId', 'phase', 'destinationMachineId', 'bundleSha256', 'homeServerIdentityId', 'sourceCanonicalServerUrl', 'sourceDescriptorRevision', 'sourceDescriptor', 'destinationTransferCleanupNeedsAttention'].includes(key))
     || marker.version !== 1
     || typeof marker.operationId !== 'string' || !marker.operationId
     || typeof marker.destinationMachineId !== 'string' || !marker.destinationMachineId
@@ -100,6 +102,7 @@ function parseSourceMarker(raw: string): SourceMarker {
     || sourceDescriptor.data.homeServerIdentityId !== marker.homeServerIdentityId
     || sourceDescriptor.data.canonicalServerUrl !== marker.sourceCanonicalServerUrl
     || sourceDescriptor.data.revision !== marker.sourceDescriptorRevision
+    || (marker.destinationTransferCleanupNeedsAttention !== undefined && marker.destinationTransferCleanupNeedsAttention !== true)
     || typeof marker.phase !== 'string' || !['destination_staged', 'source_quarantined', 'pending', 'committed', 'returning_to_source', 'returned_to_source'].includes(marker.phase)) {
     throw new Error('invalid marker');
   }
@@ -223,6 +226,12 @@ function destinationPublicationFacts(
   };
 }
 
+function cleanupAttentionFacts(marker: SourceMarker): Readonly<{ destinationTransferCleanupNeedsAttention: true }> | Readonly<Record<string, never>> {
+  return marker.destinationTransferCleanupNeedsAttention === true
+    ? { destinationTransferCleanupNeedsAttention: true }
+    : {};
+}
+
 /**
  * Source-local cutover owner. The destination remains opaque: this coordinator
  * knows its stable machine identity and retry-safe operation contract, never a
@@ -270,6 +279,7 @@ export async function coordinatePersonalHomeRelocation(
         sourceCanonicalServerUrl: params.sourceCanonicalServerUrl,
         sourceDescriptorRevision: params.sourceDescriptorRevision,
         sourceDescriptor,
+        ...(staged.transferCleanupNeedsAttention === true ? { destinationTransferCleanupNeedsAttention: true as const } : {}),
       };
       await writeSourceMarker(params.sourceDataDir, marker);
     } catch (error) {
@@ -297,6 +307,7 @@ export async function coordinatePersonalHomeRelocation(
         destinationMachineId: params.destinationMachineId,
         sourceDescriptorRevision: params.sourceDescriptorRevision,
         publishedDescriptor: descriptor,
+        ...cleanupAttentionFacts(marker),
       };
     }
   }
@@ -315,6 +326,7 @@ export async function coordinatePersonalHomeRelocation(
         destinationMachineId: params.destinationMachineId,
         sourceDescriptorRevision: params.sourceDescriptorRevision,
         publishedDescriptor: current,
+        ...cleanupAttentionFacts(marker),
       };
     }
     await params.destination.abort(params.operationId);
@@ -349,6 +361,7 @@ export async function coordinatePersonalHomeRelocation(
         destinationMachineId: params.destinationMachineId,
         sourceDescriptorRevision: params.sourceDescriptorRevision,
         recoveryAction: 'return_to_source',
+        ...cleanupAttentionFacts(marker),
       };
     }
     await writeSourceMarker(params.sourceDataDir, { ...marker, phase: 'returning_to_source' });
@@ -364,6 +377,7 @@ export async function coordinatePersonalHomeRelocation(
       destinationMachineId: params.destinationMachineId,
       sourceDescriptorRevision: params.sourceDescriptorRevision,
       publishedDescriptor: current,
+      ...cleanupAttentionFacts(marker),
     };
   }
 
@@ -398,6 +412,7 @@ export async function coordinatePersonalHomeRelocation(
       destinationMachineId: params.destinationMachineId,
       sourceDescriptorRevision: params.sourceDescriptorRevision,
       recoveryAction: 'finish_move',
+      ...cleanupAttentionFacts(marker),
     };
   }
 
@@ -409,5 +424,6 @@ export async function coordinatePersonalHomeRelocation(
     destinationMachineId: params.destinationMachineId,
     sourceDescriptorRevision: params.sourceDescriptorRevision,
     publishedDescriptor: authoritative,
+    ...cleanupAttentionFacts(marker),
   };
 }
