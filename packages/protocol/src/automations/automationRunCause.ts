@@ -64,30 +64,33 @@ const AutomationPluginEventRunCauseSchema = z.object({
   }).strict(),
 }).strict();
 
-const AutomationSessionLifecycleRunCauseSchema = z.object({
+const AUTOMATION_SESSION_LIFECYCLE_RUN_CAUSE_SHAPE = {
   kind: z.literal('trigger'),
   triggerId: AutomationTriggerIdSchema,
   triggerRevision: AutomationTriggerRevisionSchema,
   triggerKind: z.literal('sessionLifecycle'),
   occurrenceKey: AutomationOccurrenceKeyV1Schema,
   occurredAt: AutomationOccurredAtV1Schema,
-  evidence: z.object({
-    event: AutomationSessionLifecycleEventSchema,
-    sourceSessionId: IDENTIFIER_SCHEMA,
-    sourceTurnId: IDENTIFIER_SCHEMA,
-    requestId: IDENTIFIER_SCHEMA.optional(),
-    requestKind: AutomationSessionLifecycleRequestKindSchema.optional(),
-    policy: AutomationSessionLifecyclePolicySnapshotSchema,
-  }).strict().superRefine((value, context) => {
-    const hasRequestIdentity = value.requestId !== undefined && value.requestKind !== undefined;
-    if (value.event === 'userActionRequired' && !hasRequestIdentity) {
-      context.addIssue({ code: 'custom', message: 'User-action causes require request identity' });
-    }
-    if (value.event !== 'userActionRequired'
-      && (value.requestId !== undefined || value.requestKind !== undefined)) {
-      context.addIssue({ code: 'custom', message: 'Terminal causes cannot carry request identity' });
-    }
-  }),
+} as const;
+
+const AutomationSessionLifecycleRunCauseSchema = z.object({
+  ...AUTOMATION_SESSION_LIFECYCLE_RUN_CAUSE_SHAPE,
+  evidence: z.discriminatedUnion('event', [
+    z.object({
+      event: AutomationSessionLifecycleEventSchema.exclude(['userActionRequired']),
+      sourceSessionId: IDENTIFIER_SCHEMA,
+      sourceTurnId: IDENTIFIER_SCHEMA,
+      policy: AutomationSessionLifecyclePolicySnapshotSchema,
+    }).strict(),
+    z.object({
+      event: z.literal('userActionRequired'),
+      sourceSessionId: IDENTIFIER_SCHEMA,
+      sourceTurnId: IDENTIFIER_SCHEMA,
+      requestId: IDENTIFIER_SCHEMA,
+      requestKind: AutomationSessionLifecycleRequestKindSchema,
+      policy: AutomationSessionLifecyclePolicySnapshotSchema,
+    }).strict(),
+  ]),
 }).strict();
 
 const AutomationManualRunCauseSchema = z.object({

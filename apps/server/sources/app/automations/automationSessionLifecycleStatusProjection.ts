@@ -5,6 +5,7 @@ import type { Tx } from "@/storage/inTx";
 
 import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
 import { AUTOMATION_SESSION_LIFECYCLE_TERMINAL_NO_RUN_ACTIONS } from "./automationSessionLifecycleTerminalTruth";
+import { decodeAutomationSessionLifecycleConfiguration } from "./automationSessionLifecycleConfigurationCodec";
 import {
     isTerminalAutomationRunState,
     type AutomationListItem,
@@ -14,47 +15,22 @@ import {
 
 type SessionLifecycleTrigger = AutomationTriggerItem & Readonly<{
     kind: "sessionLifecycle";
-    sessionLifecycleEvent: "parentTurnCompleted";
-    sourceSessionId: string;
-    sourceTurnId: string;
 }>;
 
 function lifecycleTriggers(automations: readonly AutomationListItem[]) {
     return automations.flatMap((automation) => automation.triggers.flatMap((trigger) => (
         trigger.kind === "sessionLifecycle"
-        && trigger.sessionLifecycleEvent === "parentTurnCompleted"
-        && trigger.sourceSessionId !== null
-        && trigger.sourceTurnId !== null
-            ? [{ automation, trigger: trigger as SessionLifecycleTrigger }]
+            ? [{
+                automation,
+                trigger: trigger as SessionLifecycleTrigger,
+                stored: decodeAutomationSessionLifecycleConfiguration(trigger),
+            }]
             : []
     )));
 }
 
 function sourceKey(sessionId: string, turnId: string): string {
     return JSON.stringify([sessionId, turnId]);
-}
-
-function triggerRunKey(trigger: SessionLifecycleTrigger): string {
-    return JSON.stringify([
-        trigger.id,
-        trigger.sessionLifecycleEvent,
-        trigger.sourceSessionId,
-        trigger.sourceTurnId,
-    ]);
-}
-
-function runKey(run: Readonly<{
-    triggerId: string | null;
-    causeSessionLifecycleEvent: "parentTurnCompleted" | null;
-    causeSourceSessionId: string | null;
-    causeSourceTurnId: string | null;
-}>): string {
-    return JSON.stringify([
-        run.triggerId,
-        run.causeSessionLifecycleEvent,
-        run.causeSourceSessionId,
-        run.causeSourceTurnId,
-    ]);
 }
 
 function admittedStatus(
@@ -66,7 +42,7 @@ function admittedStatus(
         : { state: "triggered", runId: run.id };
 }
 
-/** Batch-derived exact-turn status with no independent consumption state. */
+/** Batch-derived lifecycle status from the source facts, budget, and latest immutable Run. */
 export async function loadAutomationSessionLifecycleStatusProjections(params: Readonly<{
     automations: readonly AutomationListItem[];
     tx?: Tx;
@@ -77,65 +53,68 @@ export async function loadAutomationSessionLifecycleStatusProjections(params: Re
     for (const automation of params.automations) result.set(automation.id, new Map());
     if (candidates.length === 0) return result;
 
-    const [turnPages, receiptPages, runPages] = await Promise.all([
-        Promise.all(automationPortableQueryChunks({ values: candidates, bindingsPerValue: 2 })
+    const currentTurnCandidates = candidates.filter(({ stored }) => (
+        stored.definition.policy.kind === "currentTurn"
+    ));
+    const sourceSessionIds = [...new Set(candidates.map(({ stored }) => (
+        stored.definition.sourceSessionId
+    )))];
+    const [sessionPages, turnPages, receiptPages, runPages] = await Promise.all([
+        Promise.all(automationPortableQueryChunks({ values: sourceSessionIds, bindingsPerValue: 1 })
+            .map((page) => client.session.findMany({
+                where: { id: { in: [...page] } },
+                select: { id: true },
+            }))),
+        Promise.all(automationPortableQueryChunks({ values: currentTurnCandidates, bindingsPerValue: 2 })
             .map((page) => client.sessionTurn.findMany({
-                where: { OR: page.map(({ trigger }) => ({
-                    sessionId: trigger.sourceSessionId,
-                    turnId: trigger.sourceTurnId,
+                where: { OR: page.map(({ stored }) => ({
+                    sessionId: stored.definition.sourceSessionId,
+                    turnId: stored.definition.policy.kind === "currentTurn"
+                        ? stored.definition.policy.sourceTurnId
+                        : "",
                 })) },
                 select: { sessionId: true, turnId: true, status: true },
             }))),
         Promise.all(automationPortableQueryChunks({
-            values: candidates,
+            values: currentTurnCandidates,
             bindingsPerValue: 2,
             fixedBindings: 4,
         }).map((page) => client.sessionTurnMutationReceipt.findMany({
             where: {
                 action: { in: [...AUTOMATION_SESSION_LIFECYCLE_TERMINAL_NO_RUN_ACTIONS] },
                 decision: "applied",
-                OR: page.map(({ trigger }) => ({
-                    sessionId: trigger.sourceSessionId,
-                    turnId: trigger.sourceTurnId,
+                OR: page.map(({ stored }) => ({
+                    sessionId: stored.definition.sourceSessionId,
+                    turnId: stored.definition.policy.kind === "currentTurn"
+                        ? stored.definition.policy.sourceTurnId
+                        : "",
                 })),
             },
             select: { id: true, sessionId: true, turnId: true, action: true },
             orderBy: [{ appliedAt: "asc" }, { id: "asc" }],
         }))),
-        Promise.all(automationPortableQueryChunks({
-            values: candidates,
-            bindingsPerValue: 4,
-            fixedBindings: 2,
-        }).map((page) => client.automationRun.findMany({
-            where: {
-                causeKind: "trigger",
-                causeTriggerKind: "sessionLifecycle",
-                OR: page.map(({ trigger }) => ({
-                    triggerId: trigger.id,
-                    causeSessionLifecycleEvent: trigger.sessionLifecycleEvent,
-                    causeSourceSessionId: trigger.sourceSessionId,
-                    causeSourceTurnId: trigger.sourceTurnId,
-                })),
-            },
-            select: {
-                id: true,
-                state: true,
-                triggerId: true,
-                causeSessionLifecycleEvent: true,
-                causeSourceSessionId: true,
-                causeSourceTurnId: true,
-            },
-            orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        }))),
+        Promise.all(automationPortableQueryChunks({ values: candidates, bindingsPerValue: 1 })
+            .map((page) => client.automationRun.findMany({
+                where: {
+                    causeKind: "trigger",
+                    causeTriggerKind: "sessionLifecycle",
+                    triggerId: { in: page.map(({ trigger }) => trigger.id) },
+                },
+                select: { id: true, state: true, triggerId: true },
+                orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+            }))),
     ]);
+
+    const existingSessions = new Set(sessionPages.flat().map((session) => session.id));
     const turnByKey = new Map(turnPages.flat().map((turn) => [
         sourceKey(turn.sessionId, turn.turnId),
         turn.status,
     ]));
-    const runByKey = new Map<string, (typeof runPages)[number][number]>();
+    const latestRunByTrigger = new Map<string, (typeof runPages)[number][number]>();
     for (const run of runPages.flat()) {
-        const key = runKey(run);
-        if (!runByKey.has(key)) runByKey.set(key, run);
+        if (run.triggerId !== null && !latestRunByTrigger.has(run.triggerId)) {
+            latestRunByTrigger.set(run.triggerId, run);
+        }
     }
     const receiptStatusBySource = new Map<string, AutomationSessionLifecycleTriggerStatus>();
     for (const receipt of receiptPages.flat()) {
@@ -147,28 +126,44 @@ export async function loadAutomationSessionLifecycleStatusProjections(params: Re
         if (!receiptStatusBySource.has(key)) receiptStatusBySource.set(key, status);
     }
 
-    for (const { automation, trigger } of candidates) {
+    for (const { automation, trigger, stored } of candidates) {
         const perTrigger = result.get(automation.id)!;
-        const run = runByKey.get(triggerRunKey(trigger));
-        if (run) {
-            perTrigger.set(trigger.id, admittedStatus(run));
+        const definition = stored.definition;
+        const latestRun = latestRunByTrigger.get(trigger.id);
+        if (latestRun && !isTerminalAutomationRunState(latestRun.state)) {
+            perTrigger.set(trigger.id, admittedStatus(latestRun));
             continue;
         }
-        const key = sourceKey(trigger.sourceSessionId, trigger.sourceTurnId);
-        const receiptStatus = receiptStatusBySource.get(key);
-        if (receiptStatus) {
-            perTrigger.set(trigger.id, receiptStatus);
+        if (!existingSessions.has(definition.sourceSessionId)) {
+            perTrigger.set(trigger.id, { state: "sourceUnavailable", runId: null });
             continue;
         }
-        const turnStatus = turnByKey.get(key);
-        if (turnStatus === "failed") perTrigger.set(trigger.id, { state: "sourceFailed", runId: null });
-        else if (turnStatus === "cancelled") perTrigger.set(trigger.id, { state: "sourceCancelled", runId: null });
-        else if (turnStatus === "completed") perTrigger.set(trigger.id, { state: "finished", runId: null });
-        else if (turnStatus === "in_progress") {
-            perTrigger.set(trigger.id, !automation.enabled || !trigger.enabled
-                ? { state: "paused", runId: null }
-                : { state: "waiting", runId: null });
-        } else perTrigger.set(trigger.id, { state: "sourceUnavailable", runId: null });
+        if (definition.policy.kind === "currentTurn") {
+            const key = sourceKey(definition.sourceSessionId, definition.policy.sourceTurnId);
+            const receiptStatus = receiptStatusBySource.get(key);
+            if (receiptStatus) {
+                perTrigger.set(trigger.id, receiptStatus);
+                continue;
+            }
+            const turnStatus = turnByKey.get(key);
+            if (turnStatus === "failed") perTrigger.set(trigger.id, { state: "sourceFailed", runId: null });
+            else if (turnStatus === "cancelled") perTrigger.set(trigger.id, { state: "sourceCancelled", runId: null });
+            else if (turnStatus === "completed") {
+                perTrigger.set(trigger.id, { state: "finished", runId: latestRun?.id ?? null });
+            } else if (turnStatus === "in_progress") {
+                perTrigger.set(trigger.id, !automation.enabled || !trigger.enabled
+                    ? { state: "paused", runId: null }
+                    : { state: "waiting", runId: null });
+            } else perTrigger.set(trigger.id, { state: "sourceUnavailable", runId: null });
+            continue;
+        }
+        if (stored.remainingOccurrences === 0) {
+            perTrigger.set(trigger.id, { state: "finished", runId: latestRun?.id ?? null });
+        } else if (!automation.enabled || !trigger.enabled) {
+            perTrigger.set(trigger.id, { state: "paused", runId: null });
+        } else {
+            perTrigger.set(trigger.id, { state: "waiting", runId: null });
+        }
     }
     return result;
 }

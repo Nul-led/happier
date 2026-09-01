@@ -102,12 +102,12 @@ vi.mock("@/app/encryption/accountEncryptionTransition", () => ({
         acquireAccountEncryptionTransitionFenceInTx(...args),
 }));
 
-const admitCompletedParentTurnAutomationRunsTx = vi.fn<
+const admitSessionLifecycleAutomationRunsTx = vi.fn<
     (...args: unknown[]) => Promise<readonly unknown[]>
 >();
 vi.mock("@/app/automations/automationSessionLifecycleAdmission", () => ({
-    admitCompletedParentTurnAutomationRunsTx: (...args: unknown[]) =>
-        admitCompletedParentTurnAutomationRunsTx(...args),
+    admitSessionLifecycleAutomationRunsTx: (...args: unknown[]) =>
+        admitSessionLifecycleAutomationRunsTx(...args),
 }));
 
 const getSessionParticipantUserIds = vi.fn<(...args: unknown[]) => Promise<string[]>>();
@@ -178,8 +178,8 @@ describe("sessionWriteService", () => {
         sessionMessageRoleMismatchCounter.inc.mockReset();
         acquireAccountEncryptionTransitionFenceInTx.mockReset();
         acquireAccountEncryptionTransitionFenceInTx.mockResolvedValue({ status: "ready" });
-        admitCompletedParentTurnAutomationRunsTx.mockReset();
-        admitCompletedParentTurnAutomationRunsTx.mockResolvedValue([]);
+        admitSessionLifecycleAutomationRunsTx.mockReset();
+        admitSessionLifecycleAutomationRunsTx.mockResolvedValue([]);
         afterTx.mockClear();
         afterTxCallbacks.splice(0);
         warn.mockReset();
@@ -4872,7 +4872,7 @@ describe("sessionWriteService", () => {
             currentTx.session.update.mockResolvedValue({});
             getSessionParticipantUserIds.mockResolvedValue(["u1"]);
             markAccountChanged.mockResolvedValueOnce(102);
-            admitCompletedParentTurnAutomationRunsTx.mockResolvedValue([
+            admitSessionLifecycleAutomationRunsTx.mockResolvedValue([
                 { triggerId: "trigger-admitted", result: { kind: "admitted", run: { id: "run-1" } } },
                 { triggerId: "trigger-ineligible", result: { kind: "ineligible", reason: "definitionInvalid" } },
             ]);
@@ -4897,13 +4897,18 @@ describe("sessionWriteService", () => {
                     thinkingAt: new Date(200),
                 }),
             });
-            expect(admitCompletedParentTurnAutomationRunsTx).toHaveBeenCalledTimes(1);
-            expect(admitCompletedParentTurnAutomationRunsTx).toHaveBeenCalledWith({
+            expect(admitSessionLifecycleAutomationRunsTx).toHaveBeenCalledTimes(1);
+            expect(admitSessionLifecycleAutomationRunsTx).toHaveBeenCalledWith({
                 tx: currentTx,
                 accountId: "u1",
-                sourceSessionId: "s1",
-                sourceTurnId: "turn-1",
-                occurredAt: 200,
+                occurrence: {
+                    v: 1,
+                    kind: "sessionLifecycle",
+                    event: "parentTurnCompleted",
+                    sourceSessionId: "s1",
+                    sourceTurnId: "turn-1",
+                    occurredAt: 200,
+                },
             });
             expect(acquireAccountEncryptionTransitionFenceInTx).toHaveBeenCalledWith(
                 currentTx,
@@ -4920,14 +4925,14 @@ describe("sessionWriteService", () => {
             expect(warn).toHaveBeenCalledWith(
                 {
                     module: "session-write",
-                    event: "automation_exact_turn_admission_ineligible",
+                    event: "automation_session_lifecycle_admission_ineligible",
                     reason: "definitionInvalid",
                     triggerId: "trigger-ineligible",
                     accountId: "u1",
                     sourceSessionId: "s1",
                     sourceTurnId: "turn-1",
                 },
-                "Exact-turn Automation admission was ineligible after Session completion",
+                "Session lifecycle Automation admission was ineligible after Session settlement",
             );
         });
 

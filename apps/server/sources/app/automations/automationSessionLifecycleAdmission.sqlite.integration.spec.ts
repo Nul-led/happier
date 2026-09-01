@@ -10,7 +10,8 @@ import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
-import { admitCompletedParentTurnAutomationRunsTx } from "./automationSessionLifecycleAdmission";
+import { admitSessionLifecycleAutomationRunsTx } from "./automationSessionLifecycleAdmission";
+import { encodeAutomationSessionLifecycleConfiguration } from "./automationSessionLifecycleConfigurationCodec";
 
 function failRunCreate(automationId: string) {
     const mutable = db as any;
@@ -84,6 +85,12 @@ describe("Session lifecycle Automation admission on SQLite", () => {
         enabled?: boolean;
         triggerEnabled?: boolean;
         deleted?: boolean;
+        events?: Array<"parentTurnCompleted" | "parentTurnFailed" | "parentTurnCancelled" | "userActionRequired">;
+        policy?:
+            | { kind: "currentTurn"; sourceTurnId: string }
+            | { kind: "firstMatch" }
+            | { kind: "nextMatches"; count: number }
+            | { kind: "everyMatch" };
     }) {
         const recipe = serializeAutomationStoredDefinitionExecutionRecipeV1({
             v: 1,
@@ -124,6 +131,12 @@ describe("Session lifecycle Automation admission on SQLite", () => {
                 enabled: true,
             },
         });
+        const lifecycle = encodeAutomationSessionLifecycleConfiguration({
+            kind: "sessionLifecycle",
+            sourceSessionId: params.sessionId,
+            events: params.events ?? ["parentTurnCompleted"],
+            policy: params.policy ?? { kind: "currentTurn", sourceTurnId: params.turnId },
+        });
         return await db.automationTrigger.create({
             data: {
                 automationId: automation.id,
@@ -133,16 +146,17 @@ describe("Session lifecycle Automation admission on SQLite", () => {
                     ? {
                         enabled: false,
                         deletedAt: new Date(),
-                        sessionLifecycleEvent: null,
+                        sessionLifecycleEventsJson: null,
+                        sessionLifecyclePolicyKind: null,
+                        sessionLifecycleMatchCount: null,
+                        remainingOccurrences: null,
                         sourceSessionId: null,
                         sourceTurnId: null,
                     }
                     : {
                         enabled: params.triggerEnabled ?? true,
                         deletedAt: null,
-                        sessionLifecycleEvent: "parentTurnCompleted" as const,
-                        sourceSessionId: params.sessionId,
-                        sourceTurnId: params.turnId,
+                        ...lifecycle,
                     }),
             },
             select: { id: true, automationId: true },
@@ -175,12 +189,17 @@ describe("Session lifecycle Automation admission on SQLite", () => {
             turnId: current.turnId,
         });
 
-        await expect(inTx(async (tx) => await admitCompletedParentTurnAutomationRunsTx({
+        await expect(inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
             tx,
             accountId: current.accountId,
-            sourceSessionId: current.sessionId,
-            sourceTurnId: current.turnId,
-            occurredAt: Date.now(),
+            occurrence: {
+                v: 1,
+                kind: "sessionLifecycle",
+                event: "parentTurnCompleted",
+                sourceSessionId: current.sessionId,
+                sourceTurnId: current.turnId,
+                occurredAt: Date.now(),
+            },
         }))).resolves.toEqual([]);
     });
 
@@ -216,14 +235,18 @@ describe("Session lifecycle Automation admission on SQLite", () => {
         for (const chunk of automationPortableQueryChunks({ values: automationRows, bindingsPerValue: 9 })) {
             await db.automation.createMany({ data: [...chunk] });
         }
+        const lifecycle = encodeAutomationSessionLifecycleConfiguration({
+            kind: "sessionLifecycle",
+            sourceSessionId: current.sessionId,
+            events: ["parentTurnCompleted"],
+            policy: { kind: "currentTurn", sourceTurnId: current.turnId },
+        });
         const triggerRows = automationRows.map((automation) => ({
             id: `fan-out-trigger-${automation.id}`,
             automationId: automation.id,
             kind: "sessionLifecycle" as const,
             enabled: true,
-            sessionLifecycleEvent: "parentTurnCompleted" as const,
-            sourceSessionId: current.sessionId,
-            sourceTurnId: current.turnId,
+            ...lifecycle,
             updatedAt: now,
         }));
         for (const chunk of automationPortableQueryChunks({ values: triggerRows, bindingsPerValue: 9 })) {
@@ -379,6 +402,96 @@ describe("Session lifecycle Automation admission on SQLite", () => {
             },
         })).resolves.toMatchObject({ ok: true, didApply: true });
         await expect(db.automationRun.count({ where: { triggerId: created.id } })).resolves.toBe(0);
+        await expect(db.automationTrigger.findUniqueOrThrow({
+            where: { id: created.id },
+            select: { remainingOccurrences: true },
+        })).resolves.toEqual({ remainingOccurrences: 0 });
+    });
+
+    it.each([
+        { action: "fail" as const, event: "parentTurnFailed" as const },
+        { action: "cancel" as const, event: "parentTurnCancelled" as const },
+        { action: "end_session" as const, event: "parentTurnCancelled" as const },
+    ])("admits the selected $event terminal occurrence", async ({ action, event }) => {
+        const current = await source();
+        const created = await trigger({ ...current, events: [event] });
+        const observedAt = Date.now();
+        await expect(applySessionTurnMutation({
+            actorUserId: current.accountId,
+            mutation: {
+                v: 1,
+                sessionId: current.sessionId,
+                mutationId: `${action}-selected-${current.suffix}`,
+                action,
+                turnId: current.turnId,
+                observedAt,
+                ...(action === "fail" ? { issue: {
+                    v: 1 as const,
+                    scope: "primary_session" as const,
+                    status: "failed" as const,
+                    code: "opencode_prompt_submission_failed" as const,
+                    source: "agent_session_error" as const,
+                    occurredAt: observedAt,
+                    provider: "opencode",
+                    sanitizedPreview: "test",
+                } } : {}),
+            },
+        })).resolves.toMatchObject({ ok: true, didApply: true });
+        await expect(db.automationRun.findFirstOrThrow({
+            where: { triggerId: created.id },
+            select: { causeSessionLifecycleEvent: true },
+        })).resolves.toEqual({ causeSessionLifecycleEvent: event });
+    });
+
+    it("shares one bounded budget across selected Events and never decrements a replay twice", async () => {
+        const current = await source();
+        const created = await trigger({
+            ...current,
+            events: ["parentTurnCompleted", "parentTurnFailed"],
+            policy: { kind: "nextMatches", count: 2 },
+        });
+        const first = {
+            v: 1 as const,
+            kind: "sessionLifecycle" as const,
+            event: "parentTurnCompleted" as const,
+            sourceSessionId: current.sessionId,
+            sourceTurnId: `${current.turnId}-1`,
+            occurredAt: Date.now(),
+        };
+        await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+            tx,
+            accountId: current.accountId,
+            occurrence: first,
+        }));
+        await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+            tx,
+            accountId: current.accountId,
+            occurrence: { ...first, occurredAt: first.occurredAt + 1 },
+        }));
+        await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+            tx,
+            accountId: current.accountId,
+            occurrence: {
+                ...first,
+                event: "parentTurnFailed",
+                sourceTurnId: `${current.turnId}-2`,
+                occurredAt: first.occurredAt + 2,
+            },
+        }));
+        await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+            tx,
+            accountId: current.accountId,
+            occurrence: {
+                ...first,
+                sourceTurnId: `${current.turnId}-3`,
+                occurredAt: first.occurredAt + 3,
+            },
+        }));
+        await expect(db.automationRun.count({ where: { triggerId: created.id } })).resolves.toBe(2);
+        await expect(db.automationTrigger.findUniqueOrThrow({
+            where: { id: created.id },
+            select: { remainingOccurrences: true },
+        })).resolves.toEqual({ remainingOccurrences: 0 });
     });
 
     it("keeps a failed exact turn terminal and never admits it", async () => {

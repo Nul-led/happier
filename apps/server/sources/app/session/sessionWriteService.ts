@@ -88,7 +88,7 @@ import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import {
     parsePersistedSessionOwnerMetadataEnvelopeV1,
 } from "@/app/session/metadata/sessionOwnerMetadataPersistence";
-import { admitCompletedParentTurnAutomationRunsTx } from "@/app/automations/automationSessionLifecycleAdmission";
+import { admitSessionLifecycleAutomationRunsTx } from "@/app/automations/automationSessionLifecycleAdmission";
 import { rejoinAutomationOccurrenceInsertRace } from "@/app/automations/automationOccurrencePersistence";
 import { notifySessionTranscriptMutationAfterCommit } from './sessionTranscriptMutationObserver';
 
@@ -3438,13 +3438,27 @@ async function applySessionTurnMutationWithOwnerAccessInTx(params: {
             }) as SessionTurnApplicationRow;
         }
 
-        if (currentTurn?.status === "in_progress" && appliedTurn.status === "completed") {
-            const lifecycleAdmissions = await admitCompletedParentTurnAutomationRunsTx({
+        const lifecycleEvent = currentTurn?.status === "in_progress"
+            ? appliedTurn.status === "completed"
+                ? "parentTurnCompleted" as const
+                : appliedTurn.status === "failed"
+                    ? "parentTurnFailed" as const
+                    : appliedTurn.status === "cancelled"
+                        ? "parentTurnCancelled" as const
+                        : null
+            : null;
+        if (lifecycleEvent !== null) {
+            const lifecycleAdmissions = await admitSessionLifecycleAutomationRunsTx({
                 tx,
                 accountId: writeAuthority.accountId,
-                sourceSessionId: params.turnMutation.sessionId,
-                sourceTurnId: targetTurnId,
-                occurredAt: params.turnMutation.observedAt,
+                occurrence: {
+                    v: 1,
+                    kind: "sessionLifecycle",
+                    event: lifecycleEvent,
+                    sourceSessionId: params.turnMutation.sessionId,
+                    sourceTurnId: targetTurnId,
+                    occurredAt: params.turnMutation.observedAt,
+                },
             });
             for (const admission of lifecycleAdmissions) {
                 if (admission.result.kind !== "ineligible") continue;
@@ -3452,14 +3466,14 @@ async function applySessionTurnMutationWithOwnerAccessInTx(params: {
                     warn(
                         {
                             module: "session-write",
-                            event: "automation_exact_turn_admission_ineligible",
+                            event: "automation_session_lifecycle_admission_ineligible",
                             reason: admission.result.reason,
                             triggerId: admission.triggerId,
                             accountId: writeAuthority.accountId,
                             sourceSessionId: params.turnMutation.sessionId,
                             sourceTurnId: targetTurnId,
                         },
-                        "Exact-turn Automation admission was ineligible after Session completion",
+                        "Session lifecycle Automation admission was ineligible after Session settlement",
                     );
                 });
             }

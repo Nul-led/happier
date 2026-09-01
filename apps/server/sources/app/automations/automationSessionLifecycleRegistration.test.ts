@@ -9,9 +9,9 @@ import {
 const input = {
     kind: "sessionLifecycle" as const,
     enabled: true,
-    event: "parentTurnCompleted" as const,
-    scope: { kind: "exactTurn" as const, sourceSessionId: "source-session", sourceTurnId: "source-turn" },
-    consumption: "once" as const,
+    sourceSessionId: "source-session",
+    events: ["parentTurnCompleted"] as const,
+    policy: { kind: "currentTurn" as const, sourceTurnId: "source-turn" },
 };
 
 function txFixture(params: {
@@ -41,10 +41,31 @@ describe("Session lifecycle trigger registration", () => {
             automationTargetType: "new_session",
             input,
         })).resolves.toEqual({
-            sessionLifecycleEvent: "parentTurnCompleted",
+            kind: "sessionLifecycle",
             sourceSessionId: "source-session",
-            sourceTurnId: "source-turn",
+            events: ["parentTurnCompleted"],
+            policy: { kind: "currentTurn", sourceTurnId: "source-turn" },
         });
+    });
+
+    it("arms future policies from the same-Account Session without requiring an active turn", async () => {
+        const tx = txFixture({ sourceSession: { latestTurnId: null } });
+        await expect(validateSessionLifecycleTriggerRegistrationTx({
+            tx,
+            accountId: "account",
+            automationTargetType: "new_session",
+            input: {
+                kind: "sessionLifecycle",
+                enabled: true,
+                sourceSessionId: "source-session",
+                events: ["parentTurnFailed", "userActionRequired"],
+                policy: { kind: "everyMatch" },
+            },
+        })).resolves.toMatchObject({
+            sourceSessionId: "source-session",
+            policy: { kind: "everyMatch" },
+        });
+        expect(tx.sessionTurn.findUnique).not.toHaveBeenCalled();
     });
 
     it.each([
