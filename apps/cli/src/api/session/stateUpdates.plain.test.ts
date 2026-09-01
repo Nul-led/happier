@@ -258,6 +258,20 @@ describe('stateUpdates (plaintext sessions)', () => {
         pendingPermissionRequestCount: 1,
         pendingUserActionRequestCount: 1,
         pendingRequestNewestCreatedAt: 2,
+        newUserActionRequiredOccurrences: [
+          {
+            requestId: 'req_permission',
+            sourceTurnId: 'turn_1',
+            requestKind: 'permission',
+            occurredAt: 1,
+          },
+          {
+            requestId: 'req_action',
+            sourceTurnId: 'turn_1',
+            requestKind: 'user_action',
+            occurredAt: 2,
+          },
+        ],
       });
       return {
         result: 'success',
@@ -290,12 +304,14 @@ describe('stateUpdates (plaintext sessions)', () => {
             tool: 'Write',
             arguments: { path: '/tmp/a.ts' },
             createdAt: 1,
+            turnId: 'turn_1',
           },
           req_action: {
             tool: 'AskUserQuestion',
             kind: 'user_action',
             arguments: { question: 'Ship it?' },
             createdAt: 2,
+            turnId: 'turn_1',
           },
           req_completed: {
             tool: 'Write',

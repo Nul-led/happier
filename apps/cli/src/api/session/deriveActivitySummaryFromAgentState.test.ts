@@ -40,6 +40,7 @@ describe('deriveActivitySummaryFromAgentState', () => {
       pendingPermissionRequestCount: 1,
       pendingUserActionRequestCount: 1,
       pendingRequestNewestCreatedAt: 250,
+      newUserActionRequiredOccurrences: [],
     });
   });
 
@@ -72,6 +73,91 @@ describe('deriveActivitySummaryFromAgentState', () => {
       pendingPermissionRequestCount: 0,
       pendingUserActionRequestCount: 0,
       pendingRequestNewestCreatedAt: null,
+      newUserActionRequiredOccurrences: [],
     });
+  });
+
+  it('projects only newly added main-turn request identities without private request content', () => {
+    const previous = {
+      requests: {
+        req_existing: {
+          tool: 'Write',
+          arguments: { secret: 'old' },
+          createdAt: 100,
+          turnId: 'turn_1',
+        },
+      },
+      completedRequests: {
+        req_reused: {
+          tool: 'Write',
+          arguments: { secret: 'settled' },
+          createdAt: 50,
+          completedAt: 75,
+          status: 'approved',
+        },
+      },
+    };
+    const updated = {
+      requests: {
+        ...previous.requests,
+        req_permission: {
+          tool: 'Write',
+          arguments: { secret: 'do-not-project' },
+          createdAt: 200,
+          turnId: 'turn_2',
+        },
+        req_action: {
+          tool: 'AskUserQuestion',
+          kind: 'user_action',
+          arguments: { question: 'do-not-project' },
+          createdAt: 250,
+          turnId: 'turn_2',
+        },
+        req_subagent: {
+          tool: 'Write',
+          arguments: {},
+          createdAt: 300,
+          turnId: 'turn_2',
+          subagentRef: { id: 'subagent' },
+        },
+        req_sidechain: {
+          tool: 'Write',
+          arguments: {},
+          createdAt: 350,
+          turnId: 'turn_2',
+          sidechainId: 'sidechain',
+        },
+        req_without_turn: {
+          tool: 'Write',
+          arguments: {},
+          createdAt: 400,
+        },
+        req_reused: {
+          tool: 'Write',
+          arguments: {},
+          createdAt: 450,
+          turnId: 'turn_2',
+        },
+      },
+      completedRequests: previous.completedRequests,
+    };
+
+    expect(deriveActivitySummaryFromAgentState(updated as any, previous as any))
+      .toMatchObject({
+        newUserActionRequiredOccurrences: [
+          {
+            requestId: 'req_permission',
+            sourceTurnId: 'turn_2',
+            requestKind: 'permission',
+            occurredAt: 200,
+          },
+          {
+            requestId: 'req_action',
+            sourceTurnId: 'turn_2',
+            requestKind: 'user_action',
+            occurredAt: 250,
+          },
+        ],
+      });
   });
 });
