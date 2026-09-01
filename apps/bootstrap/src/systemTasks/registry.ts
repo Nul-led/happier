@@ -7,7 +7,7 @@ import { parseSetupRepairThisComputerParams } from '@happier-dev/cli-common/syst
 import { TailscaleCommandError } from '@happier-dev/cli-common/tailscale';
 import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/agents';
 import type { RelayAccessExecutionContext } from '@happier-dev/cli-common/relayAccess';
-import type { SystemTaskJsonObject, SystemTaskJsonValue } from '@happier-dev/protocol';
+import { SystemTaskJsonValueSchema, type SystemTaskJsonObject, type SystemTaskJsonValue } from '@happier-dev/protocol';
 
 import { buildScpCommand, buildSshCommand, redactSshText } from '../ssh/index.js';
 
@@ -38,11 +38,20 @@ import {
   waitForReadyDaemon,
 } from './localDaemonCli.js';
 import { approveLocalRemoteAuthRequestDefault, installRemoteCliDefault, resolveRemoteSshHostTrustDefault, runRemoteBootstrapCommandDefault } from './remoteSshBootstrapTasks.js';
-import { installRemoteCliForManageHostDefault, runRemoteDaemonServiceCommandDefault, runRemotePersonalHomeCommandDefault, runRemoteRelayRuntimeCommandDefault, testRemoteSshConnectionDefault } from './remoteSshManageHostTasks.js';
+import {
+  createRemoteSshPersonalHomeRelocationDestinationDefault,
+  installRemoteCliForManageHostDefault,
+  runRemoteDaemonServiceCommandDefault,
+  runRemotePersonalHomeCommandDefault,
+  runRemoteRelayRuntimeCommandDefault,
+  testRemoteSshConnectionDefault,
+} from './remoteSshManageHostTasks.js';
 import {
   checkRelayRuntimeHealthDefault,
   controlRelayRuntimeDefault,
   createBootstrapPersonalHomeSystemTaskOperations,
+  createBootstrapPersonalHomeOperations,
+  createBootstrapPersonalHomeRelocationDestinationOwner,
   installOrUpdateRelayRuntimeDefault,
   readRelayRuntimeStatusDefault,
 } from './relayRuntimeTasks.js';
@@ -77,7 +86,9 @@ type SystemTaskRegistry = ReturnType<typeof systemTasks.createSystemTaskRegistry
 type HsetupRegistryDeps = Readonly<{
   relayRuntime?: Partial<RelayRuntimeDeps>;
   personalHomeOperations?: systemTasks.PersonalHomeSystemTaskOperations;
+  loadPersonalHomeRelocationDestination?: systemTasks.PersonalHomeTaskKindDeps['loadRelocationDestination'];
   remoteSshBootstrap?: Partial<RemoteSshBootstrapDeps>;
+  remoteSshManageHost?: Partial<systemTasks.RemoteSshManageHostDeps>;
   relayDriftRepair?: Partial<RelayDriftRepairDeps>;
   relayAccess?: Partial<RelayAccessDeps>;
   setupThisComputer?: Partial<SetupThisComputerInteractiveDeps>;
@@ -136,8 +147,14 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
     systemTasks.createRelayRuntimeUninstallTaskKind(relayRuntimeDeps),
   );
   const personalHomeOperations = deps.personalHomeOperations
-    ?? systemTasks.createDeferredPersonalHomeSystemTaskOperations(createBootstrapPersonalHomeSystemTaskOperations);
-  const personalHomeTaskDeps = { operations: personalHomeOperations };
+    ?? systemTasks.createDeferredPersonalHomeSystemTaskOperations(
+      async (target) => await createBootstrapPersonalHomeSystemTaskOperations(target),
+    );
+  const personalHomeTaskDeps = {
+    operations: personalHomeOperations,
+    loadRelocationDestination: deps.loadPersonalHomeRelocationDestination
+      ?? (async (target) => await createBootstrapPersonalHomeRelocationDestinationOwner(target)),
+  };
   const personalHomeInspectHandler = systemTasks.createExecutionRunnerFromKind(
     systemTasks.createPersonalHomeInspectTaskKind(personalHomeTaskDeps),
   );
@@ -153,8 +170,17 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
   const personalHomeEraseHandler = systemTasks.createExecutionRunnerFromKind(
     systemTasks.createPersonalHomeEraseTaskKind(personalHomeTaskDeps),
   );
-  const personalHomeRelocateHandler = systemTasks.createExecutionRunnerFromKind(
-    systemTasks.createPersonalHomeRelocateTaskKind(personalHomeTaskDeps),
+  const personalHomeRelocationDestinationStageHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createPersonalHomeRelocationDestinationStageTaskKind(personalHomeTaskDeps),
+  );
+  const personalHomeRelocationDestinationStatusHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createPersonalHomeRelocationDestinationStatusTaskKind(personalHomeTaskDeps),
+  );
+  const personalHomeRelocationDestinationCommitHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createPersonalHomeRelocationDestinationCommitTaskKind(personalHomeTaskDeps),
+  );
+  const personalHomeRelocationDestinationAbortHandler = systemTasks.createExecutionRunnerFromKind(
+    systemTasks.createPersonalHomeRelocationDestinationAbortTaskKind(personalHomeTaskDeps),
   );
   const relayAccessStatusHandler = systemTasks.createExecutionRunnerFromKind(
     systemTasks.createRelayAccessStatusTaskKind({
@@ -187,7 +213,7 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
     systemTasks.createRemoteSshBootstrapMachineTaskKind(remoteBootstrapDeps),
   );
   const remoteManageHostHandler = systemTasks.createExecutionRunnerFromKind(
-    systemTasks.createRemoteSshManageHostTaskKind(createRemoteSshManageHostDeps(deps.remoteSshBootstrap)),
+    systemTasks.createRemoteSshManageHostTaskKind(createRemoteSshManageHostDeps(deps.remoteSshBootstrap, deps.remoteSshManageHost)),
   );
   const setupThisComputerHandler = systemTasks.createExecutionRunnerFromKind(
     createSetupThisComputerInteractiveTaskKind(deps.setupThisComputer),
@@ -320,7 +346,10 @@ export function createHsetupSystemTaskRegistry(deps: HsetupRegistryDeps = {}): S
     { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup, handler: personalHomeVerifyBackupHandler },
     { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.restore, handler: personalHomeRestoreHandler },
     { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.erase, handler: personalHomeEraseHandler },
-    { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.relocate, handler: personalHomeRelocateHandler },
+    { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationStage, handler: personalHomeRelocationDestinationStageHandler },
+    { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationStatus, handler: personalHomeRelocationDestinationStatusHandler },
+    { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationCommit, handler: personalHomeRelocationDestinationCommitHandler },
+    { kind: systemTasks.PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationAbort, handler: personalHomeRelocationDestinationAbortHandler },
     {
       kind: 'relay.access.status.v1',
       handler: relayAccessStatusHandler,
@@ -631,14 +660,57 @@ function createRemoteSshBootstrapDeps(overrides: HsetupRegistryDeps['remoteSshBo
   };
 }
 
-function createRemoteSshManageHostDeps(overrides: HsetupRegistryDeps['remoteSshBootstrap']): systemTasks.RemoteSshManageHostDeps {
+function createRemoteSshManageHostDeps(
+  bootstrapOverrides: HsetupRegistryDeps['remoteSshBootstrap'],
+  overrides: HsetupRegistryDeps['remoteSshManageHost'],
+): systemTasks.RemoteSshManageHostDeps {
+  const runRelayRuntimeCommand = overrides?.runRelayRuntimeCommand ?? runRemoteRelayRuntimeCommandDefault;
   return {
-    resolveHostTrust: overrides?.resolveHostTrust ?? resolveRemoteSshHostTrustDefault,
-    testConnection: testRemoteSshConnectionDefault,
-    installRemoteCli: installRemoteCliForManageHostDefault,
-    runDaemonServiceCommand: runRemoteDaemonServiceCommandDefault,
-    runRelayRuntimeCommand: runRemoteRelayRuntimeCommandDefault,
-    runPersonalHomeCommand: runRemotePersonalHomeCommandDefault,
+    resolveHostTrust: overrides?.resolveHostTrust ?? bootstrapOverrides?.resolveHostTrust ?? resolveRemoteSshHostTrustDefault,
+    testConnection: overrides?.testConnection ?? testRemoteSshConnectionDefault,
+    installRemoteCli: overrides?.installRemoteCli ?? installRemoteCliForManageHostDefault,
+    runDaemonServiceCommand: overrides?.runDaemonServiceCommand ?? runRemoteDaemonServiceCommandDefault,
+    runRelayRuntimeCommand,
+    runPersonalHomeCommand: overrides?.runPersonalHomeCommand ?? runRemotePersonalHomeCommandDefault,
+    runPersonalHomeRelocation: overrides?.runPersonalHomeRelocation ?? (async (params) => {
+      const source = await createBootstrapPersonalHomeOperations({
+        channel: params.channel,
+        mode: params.mode,
+      });
+      const destination = createRemoteSshPersonalHomeRelocationDestinationDefault({
+        ssh: params.ssh,
+        auth: params.auth,
+        knownHostsMode: params.knownHostsMode,
+        channel: params.channel,
+        mode: params.mode,
+        ensureRuntime: async (purpose) => {
+          await runRelayRuntimeCommand({
+            ssh: params.ssh,
+            auth: params.auth,
+            knownHostsMode: params.knownHostsMode,
+            action: 'installOrUpdate',
+            channel: params.channel,
+            mode: params.mode,
+            purpose,
+          });
+        },
+      });
+      const result = SystemTaskJsonValueSchema.parse(await source.relocate({
+        operationId: params.operationId,
+        sourceDescriptorRevision: params.sourceDescriptorRevision,
+        ...(params.recoveryAction ? { recoveryAction: params.recoveryAction } : {}),
+        destinationMachineId: params.destinationMachineId,
+        destination,
+        publishDestination: params.publishDestination,
+        readPublishedDescriptor: params.readPublishedDescriptor,
+        ...(params.signal ? { signal: params.signal } : {}),
+        progress: params.progress,
+      }));
+      if (!result || typeof result !== 'object' || Array.isArray(result)) {
+        throw new systemTasks.SystemTaskExecutionError('invalid_cli_response', 'Personal Home relocation returned invalid result facts.');
+      }
+      return result as SystemTaskJsonObject;
+    }),
   };
 }
 

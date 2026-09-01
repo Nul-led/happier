@@ -6,7 +6,7 @@ import { join } from 'node:path';
  *
  * The renderer reaches this service only through the existing command registry
  * under the exact command names the Tauri host registers
- * (`iroh_start_home_tunnel`, `iroh_stop_home_tunnel`), so both shells share one
+ * (`iroh_ensure_home_tunnel`, `iroh_release_home_tunnel`), so both shells share one
  * command contract. Lifecycle/status only: no tunnel payload byte crosses the
  * bridge, and the endpoint identity is host-owned — the persistent key path is
  * canonical beneath the Electron `userData` directory and is never accepted
@@ -26,28 +26,36 @@ const NATIVE_ERROR_PREFIX = 'iroh_native_error:';
  * use because addon availability remains a runtime platform boundary.
  */
 export type IrohNodeLifecycleBoundary = Readonly<{
-    startHomeTunnel: (request: {
+    createEndpoint: (request: { keyPath: string; relayPolicy: 'automatic' | 'disabled'; relayUrls?: readonly string[] }) => Promise<{ endpointHandle: string; endpointId: string }>;
+    ensureHomeTunnel: (request: {
+        endpointHandle: string;
         homeServerIdentityId: string;
         endpointId: string;
-        relayPolicy: 'automatic' | 'disabled';
         directAddresses?: readonly string[];
         relayUrls?: readonly string[];
         descriptorRevision?: number;
-        endpointKeyPath?: string;
-        capProfile?: string;
     }) => Promise<{
-        leaseId: string;
+        tunnelId: string;
         homeServerIdentityId: string;
         homeEndpointId: string;
         runtimeOrigin: string;
         carrier: 'iroh';
         observedPath: 'direct' | 'relay' | 'unknown';
         startedAtMs: number;
-        endpointHandle?: string;
+        endpointHandle: string;
     }>;
-    stopHomeTunnel: (leaseId: string) => Promise<void>;
+    releaseHomeTunnel: (tunnelId: string) => Promise<void>;
     getTunnelStatus: (tunnelId: string) => Promise<Record<string, unknown> | null>;
     shutdownEndpoint?: (request: { endpointHandle: string }) => Promise<void>;
+    startMachineHttpTunnel: (request: {
+        endpointHandle: string;
+        endpointId: string;
+        directAddresses?: readonly string[];
+        relayUrls?: readonly string[];
+        handshakeJson: string;
+        capProfile: 'machineBulk';
+    }) => Promise<{ machineTunnelId: string; localPort: number; localCapability: string }>;
+    stopMachineTunnel: (machineTunnelId: string) => Promise<void>;
 }>;
 
 export type DesktopIrohTunnelLease = Readonly<{
@@ -90,9 +98,12 @@ function readNativeBoundary(candidate: unknown): IrohNodeLifecycleBoundary | nul
     if (typeof candidate !== 'object' || candidate === null) return null;
     const record = candidate as Record<string, unknown>;
     if (
-        typeof record.startHomeTunnel !== 'function'
-        || typeof record.stopHomeTunnel !== 'function'
+        typeof record.ensureHomeTunnel !== 'function'
+        || typeof record.releaseHomeTunnel !== 'function'
         || typeof record.getTunnelStatus !== 'function'
+        || typeof record.createEndpoint !== 'function'
+        || typeof record.startMachineHttpTunnel !== 'function'
+        || typeof record.stopMachineTunnel !== 'function'
     ) {
         return null;
     }
@@ -188,6 +199,29 @@ function readStartRequestFacts(request: unknown): {
     };
 }
 
+function readApplicationEndpointConfiguration(request: unknown): {
+    policy?: 'automatic' | 'disabled';
+    relayUrls?: readonly string[];
+} {
+    if (typeof request !== 'object' || request === null) {
+        throw nativeError('invalid-request', 'application endpoint configuration is required');
+    }
+    const record = request as Record<string, unknown>;
+    if (record.policy !== undefined && record.policy !== 'automatic' && record.policy !== 'disabled') {
+        throw nativeError('invalid-request', 'policy must be automatic or disabled');
+    }
+    if (record.relayUrls !== undefined && (
+        !Array.isArray(record.relayUrls)
+        || record.relayUrls.some((entry) => typeof entry !== 'string')
+    )) {
+        throw nativeError('invalid-request', 'relayUrls must be a string array');
+    }
+    return {
+        ...(record.policy === undefined ? {} : { policy: record.policy }),
+        ...(record.relayUrls === undefined ? {} : { relayUrls: record.relayUrls as readonly string[] }),
+    };
+}
+
 /** Validates the native result and strips every host-owned fact. */
 function projectLeaseForRenderer(started: {
     leaseId: string;
@@ -227,36 +261,84 @@ function projectLeaseForRenderer(started: {
 export class ElectronIrohTunnelService {
     readonly #dependencies: ElectronIrohTunnelServiceDependencies;
     #nativePromise: Promise<IrohNodeLifecycleBoundary | null> | null = null;
-    /** Retained only for process shutdown; never renderer-visible. */
-    #endpointHandle: string | null = null;
+    /** The one process endpoint fact; never renderer-visible. */
+    #endpoint: { endpointHandle: string; endpointId: string; policy: 'automatic' | 'disabled' } | null = null;
 
     constructor(dependencies: ElectronIrohTunnelServiceDependencies) {
         this.#dependencies = dependencies;
     }
 
-    async startHomeTunnel(request: unknown): Promise<DesktopIrohTunnelLease> {
+    async ensureHomeTunnel(request: unknown): Promise<DesktopIrohTunnelLease> {
         const native = await this.#requireNative();
         try {
-            const started = await native.startHomeTunnel({
-                ...readStartRequestFacts(request),
-                // The host owns the persistent endpoint identity; missing keys
-                // are provisioned once by the native key store with restrictive
-                // permissions, corrupt keys fail closed without rotation.
-                endpointKeyPath: this.#canonicalEndpointKeyPath(),
+            const facts = readStartRequestFacts(request);
+            const endpoint = await this.#ensureApplicationEndpoint({
+                policy: facts.relayPolicy,
+                ...(facts.relayUrls ? { relayUrls: facts.relayUrls } : {}),
             });
-            if (typeof started.endpointHandle === 'string' && started.endpointHandle.length > 0) {
-                this.#endpointHandle = started.endpointHandle;
-            }
-            return projectLeaseForRenderer(started);
+            const started = await native.ensureHomeTunnel({
+                endpointHandle: endpoint.endpointHandle,
+                homeServerIdentityId: facts.homeServerIdentityId,
+                endpointId: facts.endpointId,
+                ...(facts.directAddresses ? { directAddresses: facts.directAddresses } : {}),
+                ...(facts.relayUrls ? { relayUrls: facts.relayUrls } : {}),
+                ...(facts.descriptorRevision ? { descriptorRevision: facts.descriptorRevision } : {}),
+            });
+            return projectLeaseForRenderer({ ...started, leaseId: started.tunnelId });
         } catch (error) {
             throw toBridgeError(error);
         }
     }
 
-    async stopHomeTunnel(leaseId: string): Promise<void> {
+    async getApplicationEndpoint(request: unknown): Promise<{ endpointId: string }> {
+        const configuration = readApplicationEndpointConfiguration(request);
+        const endpoint = await this.#ensureApplicationEndpoint(configuration);
+        return { endpointId: endpoint.endpointId };
+    }
+
+    async getAvailability(): Promise<{ available: boolean }> {
+        return { available: (await this.#nativeOrNull()) !== null };
+    }
+
+    async startMachineHttpTunnel(request: unknown): Promise<{ leaseId: string; localOrigin: string; localCapability: string }> {
+        if (typeof request !== 'object' || request === null) throw nativeError('invalid-request', 'request is required');
+        const record = request as Record<string, unknown>;
+        if (typeof record.endpointId !== 'string' || typeof record.handshakeJson !== 'string') {
+            throw nativeError('invalid-request', 'endpointId and handshakeJson are required');
+        }
+        const native = await this.#requireNative();
+        const configuration = readApplicationEndpointConfiguration(record);
+        const endpoint = await this.#ensureApplicationEndpoint(configuration);
+        const started = await native.startMachineHttpTunnel({
+            endpointHandle: endpoint.endpointHandle,
+            endpointId: record.endpointId,
+            ...(Array.isArray(record.directAddresses) ? { directAddresses: record.directAddresses as string[] } : {}),
+            ...(Array.isArray(record.relayUrls) ? { relayUrls: record.relayUrls as string[] } : {}),
+            handshakeJson: record.handshakeJson,
+            capProfile: 'machineBulk',
+        });
+        if (!Number.isInteger(started.localPort) || started.localPort < 1 || started.localPort > 65_535) {
+            throw nativeError('transport-unavailable', 'malformed native machine HTTP lease');
+        }
+        if (!/^[0-9a-f]{64}$/u.test(started.localCapability)) {
+            throw nativeError('transport-unavailable', 'malformed native machine HTTP capability');
+        }
+        return {
+            leaseId: started.machineTunnelId,
+            localOrigin: `http://127.0.0.1:${started.localPort}`,
+            localCapability: started.localCapability,
+        };
+    }
+
+    async stopMachineHttpTunnel(leaseId: string): Promise<void> {
+        const native = await this.#requireNative();
+        await native.stopMachineTunnel(leaseId);
+    }
+
+    async releaseHomeTunnel(leaseId: string): Promise<void> {
         const native = await this.#requireNative();
         try {
-            await native.stopHomeTunnel(leaseId);
+            await native.releaseHomeTunnel(leaseId);
         } catch (error) {
             throw toBridgeError(error);
         }
@@ -287,12 +369,41 @@ export class ElectronIrohTunnelService {
      * key file is retained. Identity is never rotated or deleted.
      */
     async shutdownForProcessExit(): Promise<void> {
-        const endpointHandle = this.#endpointHandle;
-        if (endpointHandle === null) return;
+        const endpoint = this.#endpoint;
+        if (endpoint === null) return;
         const native = await this.#nativeOrNull();
         if (!native?.shutdownEndpoint) return;
-        await native.shutdownEndpoint({ endpointHandle });
-        this.#endpointHandle = null;
+        await native.shutdownEndpoint({ endpointHandle: endpoint.endpointHandle });
+        this.#endpoint = null;
+    }
+
+    async #ensureApplicationEndpoint(configuration: Readonly<{
+        policy?: 'automatic' | 'disabled';
+        relayUrls?: readonly string[];
+    }>): Promise<{ endpointHandle: string; endpointId: string }> {
+        const native = await this.#requireNative();
+        const policy = configuration.policy ?? this.#endpoint?.policy ?? 'automatic';
+        const endpoint = await native.createEndpoint({
+            keyPath: this.#canonicalEndpointKeyPath(),
+            relayPolicy: policy,
+            ...(configuration.relayUrls ? { relayUrls: configuration.relayUrls } : {}),
+        });
+        if (
+            typeof endpoint.endpointHandle !== 'string'
+            || endpoint.endpointHandle.length === 0
+            || typeof endpoint.endpointId !== 'string'
+            || endpoint.endpointId.length === 0
+        ) {
+            throw nativeError('transport-unavailable', 'malformed native application endpoint');
+        }
+        if (this.#endpoint && (
+            this.#endpoint.endpointHandle !== endpoint.endpointHandle
+            || this.#endpoint.endpointId !== endpoint.endpointId
+        )) {
+            throw nativeError('endpoint-config-conflict', 'Iroh application endpoint identity changed within one process');
+        }
+        this.#endpoint = { ...endpoint, policy };
+        return endpoint;
     }
 
     #canonicalEndpointKeyPath(): string {

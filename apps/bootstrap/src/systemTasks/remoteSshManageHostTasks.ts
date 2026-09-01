@@ -4,9 +4,22 @@ import {
   type RelayRuntimeTaskParams,
   type SystemTaskSshConnectionConfig,
 } from '@happier-dev/cli-common/systemTasks';
-import type { SystemTaskJsonObject } from '@happier-dev/protocol';
+import type {
+  PersonalHomeRelocationDestinationFacts,
+  PersonalHomeRelocationDestinationOwner,
+  PersonalHomeRelocationDestinationStageInput,
+} from '@happier-dev/cli-common/firstPartyRuntime';
+import {
+  HomeConnectionDescriptorV1Schema,
+  IrohEndpointDescriptorV1Schema,
+  type SystemTaskJsonObject,
+} from '@happier-dev/protocol';
 import type { OpenSshAuth } from '@happier-dev/cli-common/ssh';
-import { runRemoteTextSync } from '@happier-dev/cli-common/ssh';
+import {
+  copyLocalDirectoryToRemoteSync,
+  runRemoteTextSync,
+  safeBashSingleQuote,
+} from '@happier-dev/cli-common/ssh';
 
 import { redactSshText } from '../ssh/index.js';
 import { checkRelayRuntimeHealthDefault, controlRelayRuntimeDefault, installOrUpdateRelayRuntimeDefault, readRelayRuntimeStatusDefault } from './relayRuntimeTasks.js';
@@ -19,6 +32,19 @@ type RemoteSshAuth =
   | Readonly<{ mode: 'password'; password: string }>;
 
 type SshConnectionWithPasswordConfig = SystemTaskSshConnectionConfig & Readonly<{ password?: string }>;
+
+const PERSONAL_HOME_RELOCATION_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const PERSONAL_HOME_RELOCATION_SHA256 = /^[a-f0-9]{64}$/u;
+const PERSONAL_HOME_RELOCATION_DESTINATION_STATUSES = new Set([
+  'absent',
+  'receiving',
+  'staged',
+  'quarantined',
+  'activating',
+  'active',
+  'aborted',
+  'recovery_required',
+]);
 
 function buildRemoteSshConnection(
   ssh: SystemTaskSshConnectionConfig,
@@ -42,6 +68,113 @@ function resolveKnownHostsConfig(
 ): Readonly<{ mode: 'app'; path: string } | { mode: 'system' }> {
   if (knownHostsMode === 'system') return { mode: 'system' };
   return { mode: 'app', path: ssh.knownHostsPath || resolveDefaultKnownHostsPath() };
+}
+
+function resolveOpenSshAuth(ssh: SshConnectionWithPasswordConfig): OpenSshAuth {
+  return ssh.auth === 'keyfile'
+    ? { mode: 'keyFile', privateKeyPath: String(ssh.identityFile ?? '') }
+    : ssh.auth === 'password'
+      ? { mode: 'password', password: String(ssh.password ?? '') }
+      : { mode: 'agent' };
+}
+
+function assertRelocationOperationId(operationId: string): void {
+  if (!PERSONAL_HOME_RELOCATION_OPERATION_ID.test(operationId)) {
+    throw new Error('Invalid Personal Home relocation operation id.');
+  }
+}
+
+function parseRelocationDestinationFacts(
+  value: SystemTaskJsonObject,
+  expectedOperationId: string,
+): Awaited<ReturnType<PersonalHomeRelocationDestinationOwner['status']>> {
+  const allowedKeys = new Set([
+    'operationId',
+    'status',
+    'bundleSha256',
+    'expectedHomeServerIdentityId',
+    'expectedCanonicalServerUrl',
+    'sourceDescriptorRevision',
+    'homeServerIdentityId',
+    'canonicalServerUrl',
+    'minimumOuterRevisionExclusive',
+    'endpoint',
+    'authenticated',
+    'accountCount',
+    'sessionCount',
+    'failureCode',
+  ]);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))
+    || value.operationId !== expectedOperationId
+    || typeof value.status !== 'string'
+    || !PERSONAL_HOME_RELOCATION_DESTINATION_STATUSES.has(value.status)) {
+    throw new Error('Remote Personal Home relocation destination returned invalid operation facts.');
+  }
+  if (value.status === 'absent') {
+    if (Object.keys(value).length !== 2) {
+      throw new Error('Remote Personal Home relocation destination returned invalid absent facts.');
+    }
+    return { operationId: expectedOperationId, status: 'absent' };
+  }
+  if (typeof value.bundleSha256 !== 'string' || !PERSONAL_HOME_RELOCATION_SHA256.test(value.bundleSha256)
+    || typeof value.expectedHomeServerIdentityId !== 'string' || !value.expectedHomeServerIdentityId.trim()
+    || typeof value.expectedCanonicalServerUrl !== 'string' || !value.expectedCanonicalServerUrl.trim()
+    || typeof value.sourceDescriptorRevision !== 'number'
+    || !Number.isSafeInteger(value.sourceDescriptorRevision) || value.sourceDescriptorRevision < 1
+    || (value.homeServerIdentityId !== undefined && (typeof value.homeServerIdentityId !== 'string' || !value.homeServerIdentityId.trim()))
+    || (value.canonicalServerUrl !== undefined && (typeof value.canonicalServerUrl !== 'string' || !value.canonicalServerUrl.trim()))
+    || (value.minimumOuterRevisionExclusive !== undefined
+      && (typeof value.minimumOuterRevisionExclusive !== 'number'
+        || !Number.isSafeInteger(value.minimumOuterRevisionExclusive)
+        || value.minimumOuterRevisionExclusive < value.sourceDescriptorRevision))
+    || (value.authenticated !== undefined && value.authenticated !== true)
+    || (value.accountCount !== undefined
+      && (typeof value.accountCount !== 'number' || !Number.isSafeInteger(value.accountCount) || value.accountCount < 1))
+    || (value.sessionCount !== undefined
+      && (typeof value.sessionCount !== 'number' || !Number.isSafeInteger(value.sessionCount) || value.sessionCount < 0))
+    || (value.failureCode !== undefined && (typeof value.failureCode !== 'string' || !value.failureCode.trim()))) {
+    throw new Error('Remote Personal Home relocation destination returned invalid operation facts.');
+  }
+  if ((value.status === 'quarantined' || value.status === 'activating' || value.status === 'active')
+    && (value.authenticated !== true || typeof value.accountCount !== 'number' || typeof value.sessionCount !== 'number')) {
+    throw new Error('Remote Personal Home relocation destination returned unattested operation facts.');
+  }
+  const endpoint = value.endpoint === undefined
+    ? undefined
+    : IrohEndpointDescriptorV1Schema.safeParse(value.endpoint);
+  if (endpoint && !endpoint.success) {
+    throw new Error('Remote Personal Home relocation destination returned an invalid endpoint descriptor.');
+  }
+  return {
+    operationId: expectedOperationId,
+    status: value.status as PersonalHomeRelocationDestinationFacts['status'],
+    bundleSha256: value.bundleSha256,
+    expectedHomeServerIdentityId: value.expectedHomeServerIdentityId,
+    expectedCanonicalServerUrl: value.expectedCanonicalServerUrl,
+    sourceDescriptorRevision: value.sourceDescriptorRevision,
+    ...(typeof value.homeServerIdentityId === 'string' ? { homeServerIdentityId: value.homeServerIdentityId } : {}),
+    ...(typeof value.canonicalServerUrl === 'string' ? { canonicalServerUrl: value.canonicalServerUrl } : {}),
+    ...(typeof value.minimumOuterRevisionExclusive === 'number' ? { minimumOuterRevisionExclusive: value.minimumOuterRevisionExclusive } : {}),
+    ...(endpoint?.success ? { endpoint: endpoint.data } : {}),
+    ...(value.authenticated === true ? { authenticated: true as const } : {}),
+    ...(typeof value.accountCount === 'number' ? { accountCount: value.accountCount } : {}),
+    ...(typeof value.sessionCount === 'number' ? { sessionCount: value.sessionCount } : {}),
+    ...(typeof value.failureCode === 'string' ? { failureCode: value.failureCode } : {}),
+  };
+}
+
+function parseRemoteTransferDirectory(stdout: string, operationId: string): string {
+  const lines = stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  const expectedNamePrefix = `happier-personal-home-relocation.${operationId}.`;
+  const path = lines.length === 1 ? lines[0] ?? '' : '';
+  const name = path.slice(path.lastIndexOf('/') + 1);
+  if (!path.startsWith('/') || /\s/u.test(path) || path.includes('/../') || path.endsWith('/..')
+    || !name.startsWith(expectedNamePrefix)
+    || !/^[A-Za-z0-9._:-]+$/u.test(name)
+    || name.length <= expectedNamePrefix.length) {
+    throw new Error('Remote host returned an invalid Personal Home relocation transfer directory.');
+  }
+  return path;
 }
 
 export async function testRemoteSshConnectionDefault(params: Readonly<{
@@ -129,6 +262,7 @@ export async function runRemoteRelayRuntimeCommandDefault(params: Readonly<{
   action: 'status' | 'installOrUpdate' | 'start' | 'stop' | 'restart';
   channel: 'stable' | 'preview' | 'dev';
   mode: 'user' | 'system';
+  purpose?: Extract<RelayRuntimeTaskParams['purpose'], { kind: 'personal-home' }>;
 }>): Promise<SystemTaskJsonObject | null> {
   const ssh = buildRemoteSshConnection(params.ssh, params.auth);
   const taskParams: RelayRuntimeTaskParams = {
@@ -138,6 +272,7 @@ export async function runRemoteRelayRuntimeCommandDefault(params: Readonly<{
     },
     channel: params.channel,
     mode: params.mode,
+    ...(params.purpose ? { purpose: params.purpose } : {}),
   };
 
   if (params.action === 'status') {
@@ -218,4 +353,161 @@ export async function runRemotePersonalHomeCommandDefault(params: Readonly<{
     throw new Error('Remote Personal Home command did not return an object result.');
   }
   return data;
+}
+
+/**
+ * Source-facing adapter for the destination-local relocation owner. Archive paths supplied to
+ * `stage` are local to the source host; the operation-scoped remote transfer path stays private to
+ * this SSH boundary and is removed after the installed destination CLI has consumed it.
+ */
+export function createRemoteSshPersonalHomeRelocationDestinationDefault(params: Readonly<{
+  ssh: SystemTaskSshConnectionConfig;
+  auth: RemoteSshAuth;
+  knownHostsMode: 'app' | 'system';
+  channel: 'stable' | 'preview' | 'dev';
+  mode: 'user' | 'system';
+  ensureRuntime(purpose: Extract<RelayRuntimeTaskParams['purpose'], { kind: 'personal-home' }>): Promise<void>;
+}>): PersonalHomeRelocationDestinationOwner {
+  const ssh = buildRemoteSshConnection(params.ssh, params.auth);
+  const knownHosts = resolveKnownHostsConfig(ssh, params.knownHostsMode);
+  const auth = resolveOpenSshAuth(ssh);
+  const remoteCommand = async (args: readonly string[], operationId: string) => parseRelocationDestinationFacts(
+    await runRemotePersonalHomeCommandDefault({
+      ssh: params.ssh,
+      auth: params.auth,
+      knownHostsMode: params.knownHostsMode,
+      channel: params.channel,
+      mode: params.mode,
+      args: [
+        'home',
+        'relocation-destination',
+        ...args,
+        '--json',
+        '--channel',
+        params.channel,
+        '--mode',
+        params.mode,
+      ],
+    }),
+    operationId,
+  );
+  const status = async (operationId: string) => {
+    assertRelocationOperationId(operationId);
+    return await remoteCommand(['status', '--operation-id', operationId], operationId);
+  };
+
+  return Object.freeze({
+    status,
+    stage: async (input: PersonalHomeRelocationDestinationStageInput) => {
+      assertRelocationOperationId(input.operationId);
+      if (!input.archivePath.trim()
+        || !PERSONAL_HOME_RELOCATION_SHA256.test(input.bundleSha256)
+        || !input.expectedHomeServerIdentityId.trim()
+        || !input.expectedCanonicalServerUrl.trim()
+        || !Number.isSafeInteger(input.sourceDescriptorRevision)
+        || input.sourceDescriptorRevision < 1) {
+        throw new Error('Invalid Personal Home relocation destination stage input.');
+      }
+      await params.ensureRuntime({ kind: 'personal-home', canonicalServerUrl: input.expectedCanonicalServerUrl });
+      const transferPrefix = `happier-personal-home-relocation.${input.operationId}.`;
+      const created = runRemoteTextSync({
+        target: ssh.target,
+        port: ssh.port,
+        sshConfigFile: ssh.sshConfigFile,
+        knownHostsMode: knownHosts.mode,
+        knownHostsPath: knownHosts.mode === 'app' ? knownHosts.path : undefined,
+        auth,
+        remoteCommand: `umask 077; mktemp -d "\${TMPDIR:-/tmp}/${transferPrefix}XXXXXX"`,
+        connectTimeoutSec: 10,
+        errorPrefix: `Remote Personal Home relocation staging failed for ${ssh.target}`,
+      });
+      const transferDirectory = parseRemoteTransferDirectory(created.stdout, input.operationId);
+      const remoteArchivePath = `${transferDirectory}/bundle.tar`;
+      let stagedFacts: PersonalHomeRelocationDestinationFacts | undefined;
+      let stageFailure: unknown;
+      try {
+        copyLocalDirectoryToRemoteSync({
+          target: ssh.target,
+          port: ssh.port,
+          sshConfigFile: ssh.sshConfigFile,
+          knownHostsMode: knownHosts.mode,
+          knownHostsPath: knownHosts.mode === 'app' ? knownHosts.path : undefined,
+          auth,
+          localPath: input.archivePath,
+          remotePath: remoteArchivePath,
+          connectTimeoutSec: 10,
+          errorPrefix: `Personal Home relocation archive transfer failed for ${ssh.target}`,
+        });
+        try {
+          const facts = await remoteCommand([
+            'stage',
+            '--operation-id', input.operationId,
+            '--archive', remoteArchivePath,
+            '--bundle-sha256', input.bundleSha256,
+            '--expected-home-id', input.expectedHomeServerIdentityId,
+            '--expected-canonical-server-url', input.expectedCanonicalServerUrl,
+            '--source-descriptor-revision', String(input.sourceDescriptorRevision),
+          ], input.operationId);
+          if (facts.status === 'absent'
+            || facts.bundleSha256 !== input.bundleSha256
+            || facts.expectedHomeServerIdentityId !== input.expectedHomeServerIdentityId
+            || facts.sourceDescriptorRevision !== input.sourceDescriptorRevision) {
+            throw new Error('Remote Personal Home relocation stage returned facts for a different bundle.');
+          }
+          stagedFacts = facts;
+        } catch (stageError) {
+          try {
+            const current = await status(input.operationId);
+            if (current.status !== 'absent'
+              && current.bundleSha256 === input.bundleSha256
+              && current.expectedHomeServerIdentityId === input.expectedHomeServerIdentityId
+              && current.sourceDescriptorRevision === input.sourceDescriptorRevision
+              && (current.status === 'quarantined' || current.status === 'active')) {
+              stagedFacts = current;
+            } else {
+              stageFailure = stageError;
+            }
+          } catch {
+            // Preserve the stage error; the source coordinator may retry the idempotent status call.
+            stageFailure = stageError;
+          }
+        }
+      } catch (error) {
+        stageFailure = error;
+      }
+      try {
+        runRemoteTextSync({
+          target: ssh.target,
+          port: ssh.port,
+          sshConfigFile: ssh.sshConfigFile,
+          knownHostsMode: knownHosts.mode,
+          knownHostsPath: knownHosts.mode === 'app' ? knownHosts.path : undefined,
+          auth,
+          remoteCommand: `rm -f -- ${safeBashSingleQuote(remoteArchivePath)}; rmdir -- ${safeBashSingleQuote(transferDirectory)}`,
+          connectTimeoutSec: 10,
+          errorPrefix: `Remote Personal Home relocation transfer cleanup failed for ${ssh.target}`,
+        });
+      } catch {
+        if (stagedFacts) {
+          stagedFacts = { ...stagedFacts, transferCleanupNeedsAttention: true };
+        }
+      }
+      if (stageFailure) throw stageFailure;
+      if (!stagedFacts) throw new Error('Remote Personal Home relocation stage did not return authoritative destination facts.');
+      return stagedFacts;
+    },
+    commit: async (input) => {
+      assertRelocationOperationId(input.operationId);
+      const publishedDescriptor = HomeConnectionDescriptorV1Schema.parse(input.publishedDescriptor);
+      return await remoteCommand([
+        'commit',
+        '--operation-id', input.operationId,
+        '--published-descriptor-json', JSON.stringify(publishedDescriptor),
+      ], input.operationId) as PersonalHomeRelocationDestinationFacts;
+    },
+    abort: async (operationId) => {
+      assertRelocationOperationId(operationId);
+      return await remoteCommand(['abort', '--operation-id', operationId], operationId) as PersonalHomeRelocationDestinationFacts;
+    },
+  });
 }

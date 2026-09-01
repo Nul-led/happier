@@ -144,6 +144,12 @@ module.exports = { unpackTools };
 `, timestamp);
 }
 
+async function writeProcessCustodyRuntimeFixture(repoRoot: string, timestamp: Date): Promise<string> {
+    const executablePath = join(repoRoot, 'prebuilt', 'happier-process-custody');
+    await writeRepoFile(executablePath, 'signed process custody runtime\n', timestamp);
+    return executablePath;
+}
+
 describe('buildCliBinaryArtifactPayload bundled workspace sync', () => {
     afterEach(async () => {
         await Promise.all(tempDirs.splice(0).map(async (dir) => {
@@ -315,6 +321,7 @@ describe('buildCliBinaryArtifactPayload bundled workspace sync', () => {
         const compileObservedExternals: string[][] = [];
         const prebuiltManagedRuntimePath = join(repoRoot, 'prebuilt', 'happier-cliproxyapi-managed');
         await writeRepoFile(prebuiltManagedRuntimePath, 'signed managed runtime\n', older);
+        const processCustodyRuntimeExecutablePath = await writeProcessCustodyRuntimeFixture(repoRoot, older);
         await writeRepoFile(
             join(repoRoot, 'packages', 'plugins', 'cliproxyapi', 'managed-runtime', 'licenses', 'CLIProxyAPI-LICENSE'),
             'CLIProxyAPI license\n',
@@ -336,6 +343,7 @@ describe('buildCliBinaryArtifactPayload bundled workspace sync', () => {
             payloadDir,
             externals: ['fixture-external', 'pino', 'fixture-external'],
             cliProxyApiManagedRuntimeExecutablePath: prebuiltManagedRuntimePath,
+            processCustodyRuntimeExecutablePath,
             ensureWorkspacePackagesBuiltByName: async (_root, packageNames) => ({
                 ok: true,
                 built: [],
@@ -389,6 +397,11 @@ describe('buildCliBinaryArtifactPayload bundled workspace sync', () => {
             .resolves.toBe('managed runtime\n');
         await expect(readFile(join(payloadDir, 'tools', 'unpacked', 'happier-cliproxyapi-managed'), 'utf8'))
             .resolves.toBe('signed managed runtime\n');
+        const stagedProcessCustodyExecutableName = process.platform === 'win32'
+            ? 'happier-process-custody.exe'
+            : 'happier-process-custody';
+        await expect(readFile(join(payloadDir, 'tools', 'unpacked', stagedProcessCustodyExecutableName), 'utf8'))
+            .resolves.toBe('signed process custody runtime\n');
         const payloadManifest = JSON.parse(await readFile(
             join(payloadDir, 'package-dist', '.build-manifest.json'),
             'utf8',
@@ -541,6 +554,7 @@ describe('buildCliBinaryArtifactPayload bundled workspace sync', () => {
         const compiledEntrypoints: string[] = [];
         const prebuiltManagedRuntimePath = join(repoRoot, 'prebuilt', 'happier-cliproxyapi-managed');
         await writeRepoFile(prebuiltManagedRuntimePath, 'signed managed runtime\n', older);
+        const processCustodyRuntimeExecutablePath = await writeProcessCustodyRuntimeFixture(repoRoot, older);
         await writeRepoFile(
             join(repoRoot, 'packages', 'plugins', 'cliproxyapi', 'managed-runtime', 'licenses', 'CLIProxyAPI-LICENSE'),
             'CLIProxyAPI license\n',
@@ -565,6 +579,7 @@ describe('buildCliBinaryArtifactPayload bundled workspace sync', () => {
                 repoRoot,
                 payloadDir,
                 cliProxyApiManagedRuntimeExecutablePath: prebuiltManagedRuntimePath,
+                processCustodyRuntimeExecutablePath,
                 ensureWorkspacePackagesBuiltByName: async (_root, packageNames) => ({
                     ok: true,
                     built: [],

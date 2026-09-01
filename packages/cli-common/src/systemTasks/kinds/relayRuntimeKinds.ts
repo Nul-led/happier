@@ -18,8 +18,11 @@ import type {
   PersonalHomeOperationContext,
   PersonalHomeOperations,
   PersonalHomeEraseConfirmationFacts,
-  PersonalHomeRelocateInput,
 } from '../../firstPartyRuntime/personalHome/operations.js';
+import type {
+  PersonalHomeRelocationDestinationOwner,
+  PersonalHomeRelocationDestinationStageInput,
+} from '../../firstPartyRuntime/personalHome/relocationDestination.js';
 
 export interface SystemTaskSshConnectionConfig {
   target: string;
@@ -81,8 +84,12 @@ export type RelayRuntimeKindDeps = Readonly<{
 
 export type PersonalHomeTaskBaseParams = Readonly<{
   target: Readonly<{ kind: 'local' }>;
+  channel: 'stable' | 'preview' | 'dev';
+  mode: 'user' | 'system';
   purpose: Extract<ManagedRelayPurpose, { kind: 'personal-home' }>;
 }>;
+
+export type PersonalHomeRuntimeTarget = Pick<PersonalHomeTaskBaseParams, 'channel' | 'mode'>;
 
 export const PERSONAL_HOME_SYSTEM_TASK_KINDS = Object.freeze({
   inspect: 'relay.runtime.personal_home.inspect.v1',
@@ -90,30 +97,34 @@ export const PERSONAL_HOME_SYSTEM_TASK_KINDS = Object.freeze({
   verifyBackup: 'relay.runtime.personal_home.verify_backup.v1',
   restore: 'relay.runtime.personal_home.restore.v1',
   erase: 'relay.runtime.personal_home.erase.v1',
-  relocate: 'relay.runtime.personal_home.relocate.v1',
+  relocationDestinationStage: 'relay.runtime.personal_home.relocation_destination.stage.v1',
+  relocationDestinationStatus: 'relay.runtime.personal_home.relocation_destination.status.v1',
+  relocationDestinationCommit: 'relay.runtime.personal_home.relocation_destination.commit.v1',
+  relocationDestinationAbort: 'relay.runtime.personal_home.relocation_destination.abort.v1',
 } as const);
 
 export const PERSONAL_HOME_SYSTEM_TASK_KIND_IDS = Object.freeze(Object.values(PERSONAL_HOME_SYSTEM_TASK_KINDS));
 
-export type PersonalHomeBackupTaskInput = Readonly<{ outputPath?: string; intent?: 'standard' | 'erase-safety' }>;
+export type PersonalHomeBackupTaskInput = Readonly<{ outputPath?: string }>;
 export type PersonalHomeVerifyBackupTaskInput = Readonly<{ archivePath: string }>;
 export type PersonalHomeRestoreTaskInput =
   | Readonly<{ action?: 'restore'; archivePath: string; confirmOverwrite?: true; expectedHomeServerIdentityId?: string }>
   | Readonly<{ action: 'recover' | 'finalize' }>;
 export type PersonalHomeEraseTaskInput = Readonly<Record<never, never>>;
-export type PersonalHomeRelocateTaskInput = Readonly<{
-  destination: Readonly<{
-    targetId: string;
-    descriptor: HomeConnectionDescriptorV1;
-  }>;
-}>;
+export type PersonalHomeRelocationDestinationStageTaskInput = PersonalHomeRelocationDestinationStageInput;
+export type PersonalHomeRelocationDestinationStatusTaskInput = Readonly<{ operationId: string }>;
+export type PersonalHomeRelocationDestinationCommitTaskInput = Readonly<{ operationId: string; publishedDescriptor: HomeConnectionDescriptorV1 }>;
+export type PersonalHomeRelocationDestinationAbortTaskInput = Readonly<{ operationId: string }>;
 
 export type PersonalHomeInspectTaskParams = PersonalHomeTaskBaseParams;
 export type PersonalHomeBackupTaskParams = PersonalHomeTaskBaseParams & PersonalHomeBackupTaskInput;
 export type PersonalHomeVerifyBackupTaskParams = PersonalHomeTaskBaseParams & PersonalHomeVerifyBackupTaskInput;
 export type PersonalHomeRestoreTaskParams = PersonalHomeTaskBaseParams & PersonalHomeRestoreTaskInput;
 export type PersonalHomeEraseTaskParams = PersonalHomeTaskBaseParams;
-export type PersonalHomeRelocateTaskParams = PersonalHomeTaskBaseParams & PersonalHomeRelocateTaskInput;
+export type PersonalHomeRelocationDestinationStageTaskParams = PersonalHomeTaskBaseParams & PersonalHomeRelocationDestinationStageTaskInput;
+export type PersonalHomeRelocationDestinationStatusTaskParams = PersonalHomeTaskBaseParams & PersonalHomeRelocationDestinationStatusTaskInput;
+export type PersonalHomeRelocationDestinationCommitTaskParams = PersonalHomeTaskBaseParams & PersonalHomeRelocationDestinationCommitTaskInput;
+export type PersonalHomeRelocationDestinationAbortTaskParams = PersonalHomeTaskBaseParams & PersonalHomeRelocationDestinationAbortTaskInput;
 
 export type PersonalHomeSystemTaskParamsByKind = Readonly<{
   [PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect]: PersonalHomeInspectTaskParams;
@@ -121,7 +132,10 @@ export type PersonalHomeSystemTaskParamsByKind = Readonly<{
   [PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup]: PersonalHomeVerifyBackupTaskParams;
   [PERSONAL_HOME_SYSTEM_TASK_KINDS.restore]: PersonalHomeRestoreTaskParams;
   [PERSONAL_HOME_SYSTEM_TASK_KINDS.erase]: PersonalHomeEraseTaskParams;
-  [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocate]: PersonalHomeRelocateTaskParams;
+  [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationStage]: PersonalHomeRelocationDestinationStageTaskParams;
+  [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationStatus]: PersonalHomeRelocationDestinationStatusTaskParams;
+  [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationCommit]: PersonalHomeRelocationDestinationCommitTaskParams;
+  [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationAbort]: PersonalHomeRelocationDestinationAbortTaskParams;
 }>;
 
 /**
@@ -137,18 +151,19 @@ export type PersonalHomeSystemTaskOperations = Readonly<{
   recoverRestore(context: PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
   finalizeRestore(context: PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
   erase(context: PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
-  relocate(input: PersonalHomeRelocateTaskInput & PersonalHomeTaskOperationContext): Promise<SystemTaskJsonValue>;
 }>;
 
 export type PersonalHomeTaskOperationContext = Readonly<{
   signal?: AbortSignal;
   progress(stepId: string, message?: string): void;
   requestedPurpose: Extract<ManagedRelayPurpose, { kind: 'personal-home' }>;
+  runtimeTarget: PersonalHomeRuntimeTarget;
   confirm?(facts: PersonalHomeEraseConfirmationFacts): Promise<boolean>;
 }>;
 
 export type PersonalHomeTaskKindDeps = Readonly<{
   operations?: PersonalHomeSystemTaskOperations;
+  loadRelocationDestination?: (target: PersonalHomeRuntimeTarget) => Promise<PersonalHomeRelocationDestinationOwner>;
 }>;
 
 const PERSONAL_HOME_DOMAIN_ERROR_CODES: ReadonlySet<string> = new Set([
@@ -156,7 +171,15 @@ const PERSONAL_HOME_DOMAIN_ERROR_CODES: ReadonlySet<string> = new Set([
   'identity_unavailable',
   'sqlite_maintenance_required',
   'home_stop_failed',
+  'home_restart_failed',
   'relocation_unavailable',
+  'invalid_relocation_operation',
+  'relocation_operation_conflict',
+  'relocation_bundle_mismatch',
+  'relocation_destination_not_quarantined',
+  'relocation_destination_recovery_required',
+  'relocation_destination_not_staged',
+  'relocation_destination_already_active',
   'restore_unavailable',
   'destination_not_empty',
   'identity_mismatch',
@@ -194,9 +217,6 @@ function translatePersonalHomeDomainError(error: unknown): never {
 export function createPersonalHomeSystemTaskOperations(params: Readonly<{
   operations: PersonalHomeOperations;
   restoreAvailability?: 'available' | 'unavailable';
-  resolveRelocationInput?: (
-    destination: PersonalHomeRelocateTaskInput['destination'],
-  ) => Promise<Omit<PersonalHomeRelocateInput, keyof PersonalHomeOperationContext>>;
 }>): PersonalHomeSystemTaskOperations {
   const result = async (value: Promise<unknown>): Promise<SystemTaskJsonValue> => {
     try {
@@ -214,7 +234,6 @@ export function createPersonalHomeSystemTaskOperations(params: Readonly<{
     inspect: async (context) => await result(params.operations.inspect(ownerContext(context))),
     backup: async (input) => await result(params.operations.backup({
         ...(input.outputPath === undefined ? {} : { outputPath: input.outputPath }),
-        ...(input.intent === undefined ? {} : { intent: input.intent }),
         ...ownerContext(input),
       })),
     verifyBackup: async (input) => await result(params.operations.verifyBackup({ archivePath: input.archivePath, ...ownerContext(input) })),
@@ -238,56 +257,45 @@ export function createPersonalHomeSystemTaskOperations(params: Readonly<{
       if (!context.confirm) throw new SystemTaskExecutionError('confirmation_required', 'Personal Home erase confirmation is unavailable.');
       return await result(params.operations.erase({ confirm: context.confirm, ...ownerContext(context) }));
     },
-    relocate: async (input) => {
-      if (!params.resolveRelocationInput) {
-        throw new SystemTaskExecutionError('unsupported', 'Personal Home relocation target resolution is unavailable.');
-      }
-      const resolved = await params.resolveRelocationInput(input.destination);
-      return await result(params.operations.relocate({
-        ...resolved,
-        ...ownerContext(input),
-      }));
-    },
   });
 }
 
 export function createDeferredPersonalHomeSystemTaskOperations(
-  load: () => Promise<PersonalHomeSystemTaskOperations>,
+  load: (target: PersonalHomeRuntimeTarget) => Promise<PersonalHomeSystemTaskOperations>,
 ): PersonalHomeSystemTaskOperations {
-  let pending: Promise<PersonalHomeSystemTaskOperations> | null = null;
-  const operations = (): Promise<PersonalHomeSystemTaskOperations> => {
-    pending ??= load().catch((error: unknown) => {
-      pending = null;
+  const pendingByTarget = new Map<string, Promise<PersonalHomeSystemTaskOperations>>();
+  const operations = (target: PersonalHomeRuntimeTarget): Promise<PersonalHomeSystemTaskOperations> => {
+    const key = `${target.channel}:${target.mode}`;
+    const existing = pendingByTarget.get(key);
+    if (existing) return existing;
+    const pending = load(target).catch((error: unknown) => {
+      pendingByTarget.delete(key);
       throw error;
     });
+    pendingByTarget.set(key, pending);
     return pending;
   };
   return Object.freeze({
-    inspect: async (context) => await (await operations()).inspect(context),
-    backup: async (input) => await (await operations()).backup(input),
-    verifyBackup: async (input) => await (await operations()).verifyBackup(input),
-    restore: async (input) => await (await operations()).restore(input),
-    recoverRestore: async (input) => await (await operations()).recoverRestore(input),
-    finalizeRestore: async (input) => await (await operations()).finalizeRestore(input),
-    erase: async (input) => await (await operations()).erase(input),
-    relocate: async (input) => await (await operations()).relocate(input),
+    inspect: async (context) => await (await operations(context.runtimeTarget)).inspect(context),
+    backup: async (input) => await (await operations(input.runtimeTarget)).backup(input),
+    verifyBackup: async (input) => await (await operations(input.runtimeTarget)).verifyBackup(input),
+    restore: async (input) => await (await operations(input.runtimeTarget)).restore(input),
+    recoverRestore: async (input) => await (await operations(input.runtimeTarget)).recoverRestore(input),
+    finalizeRestore: async (input) => await (await operations(input.runtimeTarget)).finalizeRestore(input),
+    erase: async (input) => await (await operations(input.runtimeTarget)).erase(input),
   });
 }
 
-const PERSONAL_HOME_BASE_KEYS = ['target', 'purpose'] as const;
+const PERSONAL_HOME_BASE_KEYS = ['target', 'channel', 'mode', 'purpose'] as const;
 
 export function createPersonalHomeInspectTaskKind(deps: PersonalHomeTaskKindDeps): InteractiveSystemTaskKind<SystemTaskJsonValue> {
   return createPersonalHomeTaskKind(deps, PERSONAL_HOME_BASE_KEYS, async (operations, _value, context) => await operations.inspect(context));
 }
 
 export function createPersonalHomeBackupTaskKind(deps: PersonalHomeTaskKindDeps): InteractiveSystemTaskKind<SystemTaskJsonValue> {
-  return createPersonalHomeTaskKind(deps, [...PERSONAL_HOME_BASE_KEYS, 'outputPath', 'intent'], async (operations, value, context) => {
-    if (value.intent !== undefined && value.intent !== 'standard' && value.intent !== 'erase-safety') {
-      throw new SystemTaskExecutionError('invalid_params', 'Invalid Personal Home backup intent.');
-    }
+  return createPersonalHomeTaskKind(deps, [...PERSONAL_HOME_BASE_KEYS, 'outputPath'], async (operations, value, context) => {
     return await operations.backup({
       ...(value.outputPath === undefined ? {} : { outputPath: parseNonEmptyString(value.outputPath, 'outputPath') }),
-      ...(value.intent === undefined ? {} : { intent: value.intent }),
       ...context,
     });
   });
@@ -335,24 +343,72 @@ export function createPersonalHomeEraseTaskKind(deps: PersonalHomeTaskKindDeps):
     await operations.erase(context));
 }
 
-export function createPersonalHomeRelocateTaskKind(deps: PersonalHomeTaskKindDeps): InteractiveSystemTaskKind<SystemTaskJsonValue> {
-  return createPersonalHomeTaskKind(deps, [...PERSONAL_HOME_BASE_KEYS, 'destination'], async (operations, value, context) => {
-    if (!isRecord(value.destination)) {
-      throw new SystemTaskExecutionError('invalid_params', 'Missing relocation destination.');
-    }
-    assertOnlyKeys(value.destination, ['targetId', 'descriptor']);
-    const descriptor = HomeConnectionDescriptorV1Schema.safeParse(value.destination.descriptor);
-    if (!descriptor.success) {
-      throw new SystemTaskExecutionError('invalid_params', 'Invalid relocation destination descriptor.');
-    }
-    return await operations.relocate({
-      destination: {
-        targetId: parseNonEmptyString(value.destination.targetId, 'destination.targetId'),
-        descriptor: descriptor.data,
-      },
-      ...context,
-    });
-  });
+function createPersonalHomeRelocationDestinationTaskKind(
+  deps: PersonalHomeTaskKindDeps,
+  allowedKeys: readonly string[],
+  invoke: (owner: PersonalHomeRelocationDestinationOwner, value: Record<string, unknown>) => Promise<unknown>,
+): InteractiveSystemTaskKind<SystemTaskJsonValue> {
+  return {
+    async run(ctx) {
+      const value = parsePersonalHomeTaskBase(ctx.params, allowedKeys);
+      if (ctx.signal?.aborted) throw new SystemTaskExecutionError('cancelled', 'System task execution was cancelled.');
+      if (!deps.loadRelocationDestination) {
+        throw new SystemTaskExecutionError('unsupported', 'Personal Home relocation destination operations are unavailable.');
+      }
+      try {
+        const owner = await deps.loadRelocationDestination({ channel: value.channel, mode: value.mode });
+        return SystemTaskJsonValueSchema.parse(await invoke(owner, value));
+      } catch (error) {
+        translatePersonalHomeDomainError(error);
+      }
+    },
+  };
+}
+
+export function createPersonalHomeRelocationDestinationStageTaskKind(deps: PersonalHomeTaskKindDeps): InteractiveSystemTaskKind<SystemTaskJsonValue> {
+  return createPersonalHomeRelocationDestinationTaskKind(
+    deps,
+    [...PERSONAL_HOME_BASE_KEYS, 'operationId', 'archivePath', 'bundleSha256', 'expectedHomeServerIdentityId', 'expectedCanonicalServerUrl', 'sourceDescriptorRevision'],
+    async (owner, value) => await owner.stage({
+      operationId: parseNonEmptyString(value.operationId, 'operationId'),
+      archivePath: parseNonEmptyString(value.archivePath, 'archivePath'),
+      bundleSha256: parseNonEmptyString(value.bundleSha256, 'bundleSha256'),
+      expectedHomeServerIdentityId: parseNonEmptyString(value.expectedHomeServerIdentityId, 'expectedHomeServerIdentityId'),
+      expectedCanonicalServerUrl: parseNonEmptyString(value.expectedCanonicalServerUrl, 'expectedCanonicalServerUrl'),
+      sourceDescriptorRevision: parsePositiveInteger(value.sourceDescriptorRevision, 'sourceDescriptorRevision'),
+    }),
+  );
+}
+
+export function createPersonalHomeRelocationDestinationStatusTaskKind(deps: PersonalHomeTaskKindDeps): InteractiveSystemTaskKind<SystemTaskJsonValue> {
+  return createPersonalHomeRelocationDestinationTaskKind(
+    deps,
+    [...PERSONAL_HOME_BASE_KEYS, 'operationId'],
+    async (owner, value) => await owner.status(parseNonEmptyString(value.operationId, 'operationId')),
+  );
+}
+
+export function createPersonalHomeRelocationDestinationCommitTaskKind(deps: PersonalHomeTaskKindDeps): InteractiveSystemTaskKind<SystemTaskJsonValue> {
+  return createPersonalHomeRelocationDestinationTaskKind(
+    deps,
+    [...PERSONAL_HOME_BASE_KEYS, 'operationId', 'publishedDescriptor'],
+    async (owner, value) => {
+      const descriptor = HomeConnectionDescriptorV1Schema.safeParse(value.publishedDescriptor);
+      if (!descriptor.success) throw new SystemTaskExecutionError('invalid_params', 'Invalid published relocation descriptor.');
+      return await owner.commit({
+        operationId: parseNonEmptyString(value.operationId, 'operationId'),
+        publishedDescriptor: descriptor.data,
+      });
+    },
+  );
+}
+
+export function createPersonalHomeRelocationDestinationAbortTaskKind(deps: PersonalHomeTaskKindDeps): InteractiveSystemTaskKind<SystemTaskJsonValue> {
+  return createPersonalHomeRelocationDestinationTaskKind(
+    deps,
+    [...PERSONAL_HOME_BASE_KEYS, 'operationId'],
+    async (owner, value) => await owner.abort(parseNonEmptyString(value.operationId, 'operationId')),
+  );
 }
 
 function createPersonalHomeTaskKind(
@@ -381,6 +437,7 @@ function createPersonalHomeTaskKind(
           ...(message ? { message } : {}),
         }),
         requestedPurpose: value.purpose,
+        runtimeTarget: { channel: value.channel, mode: value.mode },
         confirm: async (facts) => {
           const answer = await ctx.prompt({
             kind: 'personal_home.confirm_erase.v1',
@@ -421,6 +478,13 @@ function parsePersonalHomeTaskBase(params: unknown, allowedKeys: readonly string
   if (params.target.kind !== 'local') {
     throw new SystemTaskExecutionError('invalid_params', 'Personal Home data operations require a local target.');
   }
+  const channel = normalizePublicReleaseRingLabel(params.channel);
+  if (channel !== 'stable' && channel !== 'preview' && channel !== 'dev') {
+    throw new SystemTaskExecutionError('invalid_params', 'Personal Home data operations require an explicit runtime channel.');
+  }
+  if (params.mode !== 'user' && params.mode !== 'system') {
+    throw new SystemTaskExecutionError('invalid_params', 'Personal Home data operations require an explicit runtime mode.');
+  }
   let purpose: ReturnType<typeof parsePersonalHomeRuntimePurpose>;
   try {
     purpose = parsePersonalHomeRuntimePurpose(params.purpose);
@@ -430,6 +494,8 @@ function parsePersonalHomeTaskBase(params: unknown, allowedKeys: readonly string
   return {
     ...params,
     target: { kind: 'local' },
+    channel,
+    mode: params.mode,
     purpose: { kind: 'personal-home', canonicalServerUrl: purpose.canonicalServerUrl },
   };
 }
@@ -452,6 +518,13 @@ function parseNonEmptyString(value: unknown, field: string): string {
     throw new SystemTaskExecutionError('invalid_params', `Missing ${field}.`);
   }
   return parsed;
+}
+
+function parsePositiveInteger(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new SystemTaskExecutionError('invalid_params', `Invalid ${field}.`);
+  }
+  return value;
 }
 
 export function createRelayRuntimeStatusTaskKind(deps: Pick<RelayRuntimeKindDeps, 'readStatus' | 'checkHealth'>): InteractiveSystemTaskKind<RelayRuntimeStatusResult> {

@@ -10,6 +10,7 @@ import { renderSystemdServiceUnit } from './systemd.js';
 import {
   buildReadWindowsScheduledTaskStatusPowerShellCommand,
   buildRemoveWindowsScheduledTaskIfPresentPowerShellCommand,
+  buildSetWindowsScheduledTaskEnabledPowerShellCommand,
   buildApplyWindowsScheduledTaskServicePolicyPowerShellCommand,
   buildStopWindowsScheduledTaskIfRunningPowerShellCommand,
   buildWindowsScheduledTaskPowerShellAction,
@@ -54,6 +55,7 @@ export type PlannedCommand = Readonly<{
   allowFail?: boolean;
   expectedFailure?: 'service-absent';
   completePlanOnExpectedFailure?: boolean;
+  fallbackCommands?: readonly PlannedCommand[];
 }>;
 export type ServicePlan = Readonly<{ writes: PlannedWrite[]; commands: PlannedCommand[] }>;
 export type ServiceRegistrationState = 'registered' | 'absent';
@@ -240,7 +242,7 @@ export function buildServiceCommandEnv(params: Readonly<{
 
 export function planServiceAction(params: Readonly<{
   backend: ServiceBackend;
-  action: 'install' | 'uninstall' | 'start' | 'stop' | 'restart';
+  action: 'install' | 'uninstall' | 'start' | 'stop' | 'restart' | 'quarantine' | 'activate';
   label: string;
   definitionPath?: string;
   definitionContents?: string;
@@ -301,6 +303,14 @@ export function planServiceAction(params: Readonly<{
       commands.push({ cmd: 'systemctl', args: persistent ? [...prefix, 'disable', '--now', unitName] : [...prefix, 'stop', unitName], allowFail: true });
       return { writes, commands };
     }
+    if (action === 'quarantine') {
+      commands.push({ cmd: 'systemctl', args: [...prefix, 'disable', '--now', unitName], allowFail: true });
+      return { writes, commands };
+    }
+    if (action === 'activate') {
+      commands.push({ cmd: 'systemctl', args: [...prefix, 'enable', '--now', unitName] });
+      return { writes, commands };
+    }
     if (action === 'restart') {
       commands.push({ cmd: 'systemctl', args: [...prefix, 'restart', unitName] });
       return { writes, commands };
@@ -311,12 +321,19 @@ export function planServiceAction(params: Readonly<{
     if (!definitionPath) throw new Error('definitionPath is required for launchd operations');
 
     const preferBootstrap = backend === 'launchd-user' && uid != null && uid > 0;
-    if (action === 'install' || action === 'start') {
-      if (preferBootstrap) {
-        commands.push({ cmd: 'launchctl', args: ['bootout', `gui/${uid}/${label}`], allowFail: true });
-        commands.push({ cmd: 'launchctl', args: ['bootstrap', `gui/${uid}`, definitionPath] });
-        commands.push({ cmd: 'launchctl', args: ['enable', `gui/${uid}/${label}`] });
-        commands.push({ cmd: 'launchctl', args: ['kickstart', '-k', `gui/${uid}/${label}`] });
+    const bootstrapDomain = backend === 'launchd-system' ? 'system' : preferBootstrap ? `gui/${uid}` : null;
+    const serviceDomain = bootstrapDomain ? `${bootstrapDomain}/${label}` : null;
+    const bootstrapCommands = bootstrapDomain && serviceDomain
+      ? [
+          { cmd: 'launchctl', args: ['bootout', serviceDomain], allowFail: true },
+          { cmd: 'launchctl', args: ['bootstrap', bootstrapDomain, definitionPath] },
+          { cmd: 'launchctl', args: ['enable', serviceDomain] },
+          { cmd: 'launchctl', args: ['kickstart', '-k', serviceDomain] },
+        ] satisfies PlannedCommand[]
+      : null;
+    if (action === 'install' || action === 'start' || action === 'activate') {
+      if (bootstrapCommands) {
+        commands.push(...bootstrapCommands);
       } else {
         if (action === 'install') {
           commands.push({ cmd: 'launchctl', args: persistent ? ['unload', '-w', definitionPath] : ['unload', definitionPath], allowFail: true });
@@ -325,28 +342,34 @@ export function planServiceAction(params: Readonly<{
       }
       return { writes, commands };
     }
-    if (action === 'uninstall' || action === 'stop') {
-      if (preferBootstrap) {
+    if (action === 'uninstall' || action === 'stop' || action === 'quarantine') {
+      if (bootstrapDomain && serviceDomain) {
         if (action === 'uninstall') {
-          commands.push({ cmd: 'launchctl', args: ['bootout', `gui/${uid}/${label}`], expectedFailure: 'service-absent' });
-          commands.push({ cmd: 'launchctl', args: ['disable', `gui/${uid}/${label}`], expectedFailure: 'service-absent' });
-        } else {
-          commands.push({ cmd: 'launchctl', args: ['disable', `gui/${uid}/${label}`], allowFail: true });
-          commands.push({ cmd: 'launchctl', args: ['bootout', `gui/${uid}`, definitionPath], allowFail: true });
+          commands.push({ cmd: 'launchctl', args: ['bootout', serviceDomain], expectedFailure: 'service-absent' });
+          commands.push({ cmd: 'launchctl', args: ['disable', serviceDomain], expectedFailure: 'service-absent' });
+        } else if (action === 'quarantine') {
+          commands.push({ cmd: 'launchctl', args: ['disable', serviceDomain], allowFail: true });
+          commands.push({ cmd: 'launchctl', args: ['bootout', bootstrapDomain, definitionPath], allowFail: true });
           commands.push({ cmd: 'launchctl', args: ['remove', label], allowFail: true });
+        } else {
+          commands.push({ cmd: 'launchctl', args: ['bootout', serviceDomain], allowFail: true });
         }
       } else {
         commands.push({
           cmd: 'launchctl',
-          args: persistent ? ['unload', '-w', definitionPath] : ['unload', definitionPath],
+          args: action === 'quarantine' || persistent ? ['unload', '-w', definitionPath] : ['unload', definitionPath],
           ...(action === 'uninstall' ? { expectedFailure: 'service-absent' as const } : { allowFail: true }),
         });
       }
       return { writes, commands };
     }
     if (action === 'restart') {
-      if (preferBootstrap) {
-        commands.push({ cmd: 'launchctl', args: ['kickstart', '-k', `gui/${uid}/${label}`] });
+      if (bootstrapCommands && serviceDomain) {
+        commands.push({
+          cmd: 'launchctl',
+          args: ['kickstart', '-k', serviceDomain],
+          fallbackCommands: bootstrapCommands,
+        });
       } else {
         commands.push({ cmd: 'launchctl', args: persistent ? ['unload', '-w', definitionPath] : ['unload', definitionPath], allowFail: true });
         commands.push({ cmd: 'launchctl', args: persistent ? ['load', '-w', definitionPath] : ['load', definitionPath] });
@@ -368,6 +391,13 @@ export function planServiceAction(params: Readonly<{
       })),
     });
     const mode: ServiceMode = backend === 'schtasks-system' ? 'system' : 'user';
+    const setEnabled = (enabled: boolean): PlannedCommand => ({
+      cmd: 'powershell.exe',
+      args: windowsPowerShellCommandArgs(buildSetWindowsScheduledTaskEnabledPowerShellCommand({
+        qualifiedTaskName: name,
+        enabled,
+      })),
+    });
     if (action === 'install') {
       if (!definitionPath) throw new Error('definitionPath is required for schtasks install');
       const ps = buildWindowsScheduledTaskPowerShellAction({ definitionPath });
@@ -414,7 +444,17 @@ export function planServiceAction(params: Readonly<{
       commands.push({ cmd: 'schtasks', args: ['/Run', '/TN', name] });
       return { writes, commands };
     }
+    if (action === 'activate') {
+      commands.push(setEnabled(true));
+      commands.push({ cmd: 'schtasks', args: ['/Run', '/TN', name] });
+      return { writes, commands };
+    }
     if (action === 'stop') {
+      commands.push(stopIfRunning());
+      return { writes, commands };
+    }
+    if (action === 'quarantine') {
+      commands.push(setEnabled(false));
       commands.push(stopIfRunning());
       return { writes, commands };
     }
@@ -485,6 +525,10 @@ export async function applyServicePlan(plan: ServicePlan, options: Readonly<{ ru
     }
 
     if (status !== 0) {
+      if (c.fallbackCommands && c.fallbackCommands.length > 0) {
+        await applyServicePlan({ writes: [], commands: [...c.fallbackCommands] }, options);
+        continue;
+      }
       if (c.allowFail) continue;
       if (c.expectedFailure === 'service-absent' && isBenignServiceAbsenceFailure({
         cmd: c.cmd,

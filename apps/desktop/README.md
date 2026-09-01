@@ -39,6 +39,7 @@ Environment:
 | `HAPPIER_DESKTOP_SERVER_URL` | Relay the app should start against, published as `window.__HAPPIER_WEB_RUNTIME_CONFIG__`. |
 | `HAPPIER_DESKTOP_SERVER_CONTEXT` | Companion to the above; set to `stack` for a stack launch. |
 | `HAPPIER_DESKTOP_INVOKE_LOG` | Append one JSON line per `invoke` to this path. Every invoke is logged to stdout regardless. |
+| `HAPPIER_HSETUP_PATH` | Override the bundled `hsetup` executable used by system tasks. An invalid override fails closed. |
 
 Production mode serves `apps/ui/dist`. Rebuild that bundle from `apps/ui` with
 `yarn tauri:prepare:build`; both desktop targets consume the same export.
@@ -71,7 +72,12 @@ Implemented for real:
 - `desktop_get_autostart_enabled`, `desktop_set_autostart_enabled`
 - `desktop_read_stack_boot_credentials` — a port of the Tauri implementation, same env vars and
   same candidate key paths
-- `iroh_start_home_tunnel`, `iroh_stop_home_tunnel` — the shared Iroh desktop Home-tunnel
+- `start_system_task`, `cancel_system_task`, `get_system_task_snapshot`,
+  `respond_system_task_prompt` — the same bundled `hsetup system-tasks run` owner and event/result
+  contract as Tauri
+- Personal Home backup archive open/save dialogs plus log/output reveal commands, using Electron's
+  native dialog and shell APIs
+- `iroh_ensure_home_tunnel`, `iroh_release_home_tunnel` — the shared Iroh desktop Home-tunnel
   lifecycle through `@happier-dev/iroh-native/node`, loaded only in the main process; the
   endpoint identity key lives at `<userData>/iroh/endpoint.key` and never crosses the bridge
 - `plugin:event|listen`, `|unlisten`, `|emit`, `|emit_to`
@@ -79,7 +85,7 @@ Implemented for real:
   the app makes on desktop is routed through this plugin, so it is part of the boot path
 
 Everything else in `src/main/commands/inventory.ts` — the tray, activity and pet overlays, the
-embedded browser, hosted artifacts, system tasks, and the updater — rejects with
+embedded browser, hosted artifacts, and the updater — rejects with
 `HAPPIER_DESKTOP_NOT_IMPLEMENTED: <command>`. That prefix is the contract: a rejection carrying it
 means this target has no implementation, never that the operation failed. **No command in this
 target returns fabricated data.** Callers already treat command failures as "feature unavailable",

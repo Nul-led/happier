@@ -382,7 +382,7 @@ describe('installOrUpdateRelayRuntimeLocal sequencing', () => {
         env: {
           HAPPIER_SERVER_HOST: '127.0.0.1',
           PORT: '43123',
-          HAPPIER_PUBLIC_SERVER_URL: 'http://127.0.0.1:43123',
+          HAPPIER_CANONICAL_SERVER_URL: 'http://127.0.0.1:43123',
           HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
           HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
           AUTH_ANONYMOUS_SIGNUP_ENABLED: '0',
@@ -599,6 +599,68 @@ describe('installOrUpdateRelayRuntimeLocal sequencing', () => {
       expect(serviceActions).toEqual(['stop', 'install', 'stop', 'install']);
       await expect(readFile(installServerBinaryPath, 'utf8')).resolves.toContain('old-runtime');
       await expect(readFile(configEnvPath, 'utf8')).resolves.toContain('CUSTOM_FLAG=old');
+    } finally {
+      await rm(serviceDefinitionPath, { force: true }).catch(() => undefined);
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not restore the previous runtime when the candidate applied Qualified Connected Accounts V4', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-cli-common-relay-runtime-irreversible-boundary-'));
+    const serviceDefinitionPath = '/tmp/happier-relay-runtime.service';
+    try {
+      const payloadRoot = join(homeDir, 'payload');
+      const boundaryMigration = '20260725100000_activate_qualified_connected_accounts_v4';
+      const migrationsSourceDir = join(payloadRoot, 'prisma', 'sqlite', 'migrations', boundaryMigration);
+      await mkdir(migrationsSourceDir, { recursive: true });
+      await writeFile(join(migrationsSourceDir, 'migration.sql'), '-- irreversible boundary\n', 'utf8');
+
+      const serverBinaryPath = join(payloadRoot, 'happier-server');
+      await writeFile(serverBinaryPath, '#!/bin/sh\necho new-runtime\n', 'utf8');
+
+      const defaults = resolveRelayRuntimeDefaults({
+        platform: 'linux',
+        mode: 'user',
+        channel: 'preview',
+        homeDir,
+      });
+      const installServerBinaryPath = join(defaults.installRoot, 'bin', 'happier-server');
+      const configEnvPath = join(defaults.configDir, 'server.env');
+      await mkdir(dirname(installServerBinaryPath), { recursive: true });
+      await mkdir(dirname(configEnvPath), { recursive: true });
+      await writeFile(installServerBinaryPath, '#!/bin/sh\necho old-runtime\n', 'utf8');
+      await writeFile(configEnvPath, 'PORT=4010\nCUSTOM_FLAG=old\n', 'utf8');
+      await writeFile(serviceDefinitionPath, '[Service]\n', 'utf8');
+
+      const serviceModule = await import('../service/index.js');
+      vi.mocked(serviceModule.applyServicePlan).mockImplementation(async (plan) => {
+        const action = (plan as { __action?: string }).__action;
+        serviceActions.push(String(action ?? 'unknown'));
+        if (action === 'install') throw new Error('candidate install failed after migration');
+      });
+
+      await expect(installOrUpdateRelayRuntimeLocal({
+        serverBinaryPath,
+        channel: 'preview',
+        mode: 'user',
+        platform: 'linux',
+        arch: 'arm64',
+        homeDir,
+        runServiceCommands: true,
+        skipHealthCheck: true,
+        runMigrationAppliedCheckCommand: async ({ args }) => {
+          expect(args).toEqual([`--is-migration-applied=${boundaryMigration}`]);
+          return { status: 0, signal: null };
+        },
+      })).rejects.toMatchObject({
+        code: 'RELAY_RUNTIME_INSTALL_ROLLBACK_INCOMPLETE',
+        rollbackFailures: expect.arrayContaining([
+          expect.objectContaining({ phase: 'irreversible_boundary' }),
+        ]),
+      });
+
+      await expect(readFile(installServerBinaryPath, 'utf8')).resolves.toContain('new-runtime');
+      expect(serviceActions).toEqual(['stop', 'install', 'stop']);
     } finally {
       await rm(serviceDefinitionPath, { force: true }).catch(() => undefined);
       await rm(homeDir, { recursive: true, force: true });

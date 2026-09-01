@@ -123,7 +123,12 @@ describe('createSetupRepairThisComputerTaskKind', () => {
         webappUrl: 'https://app.example.test',
         activeLocalRelayUrl: null,
       }),
-      readAuthStatus: async () => ({ authenticated: true, machineId: 'machine-1' }),
+      readAuthStatus: async () => ({
+        authenticated: true,
+        credentialState: 'valid',
+        machineRegistrationState: 'server-confirmed',
+        machineId: 'machine-1',
+      }),
       configureRelay: async () => undefined,
       requestAuthPairing: async () => ({ publicKey: 'pub-key' }),
       waitForAuthPairing: async () => ({ machineId: 'machine-1' }),
@@ -245,5 +250,120 @@ describe('createSetupRepairThisComputerTaskKind', () => {
       'installDaemonService',
       'startDaemonService',
     ]);
+  });
+
+  it('does not let legacy true booleans override an explicit unknown credential state', async () => {
+    let pairLocalCalls = 0;
+    const kind = createSetupRepairThisComputerTaskKind({
+      readActiveRelayProfile: async () => ({
+        serverUrl: 'https://relay.example.test',
+        webappUrl: 'https://app.example.test',
+        activeLocalRelayUrl: null,
+      }),
+      readAuthStatus: async () => ({
+        authenticated: true,
+        credentialState: 'unknown',
+        machineRegistered: true,
+        machineRegistrationState: 'server-confirmed',
+        machineId: 'machine-local',
+      }),
+      configureRelay: async () => undefined,
+      requestAuthPairing: async () => ({ publicKey: 'pub-key-unknown' }),
+      waitForAuthPairing: async () => ({ machineId: 'machine-new' }),
+      pairLocalMachineIfNeeded: async () => {
+        pairLocalCalls += 1;
+        return 'machine-local';
+      },
+      installDaemonService: async () => undefined,
+      startDaemonService: async () => undefined,
+      waitForReadyDaemon: async () => ({
+        serviceInstalled: true,
+        daemonRunning: true,
+        needsAuth: false,
+        credentialState: 'valid',
+        machineRegistrationState: 'server-confirmed',
+        machineId: 'machine-new',
+      }),
+    });
+    const runner = createSystemTasksRunner({
+      kinds: { 'setup.repairThisComputer.v1': kind },
+    });
+
+    await runner.start({
+      taskId: 'repair-unknown',
+      kind: 'setup.repairThisComputer.v1',
+      params: { activeRelayUrl: 'https://relay.example.test' },
+    });
+
+    const firstPoll = await waitForPendingPrompt(runner, { taskId: 'repair-unknown', cursor: 0 });
+    expect(firstPoll.pendingPrompt?.data).toMatchObject({ publicKey: 'pub-key-unknown' });
+    expect(pairLocalCalls).toBe(0);
+    await runner.respond({ taskId: 'repair-unknown', answer: { approved: true } });
+    const finalPoll = await waitForResult(runner, {
+      taskId: 'repair-unknown',
+      cursor: firstPoll.nextCursor,
+    });
+    expect(finalPoll.result?.ok).toBe(true);
+  });
+
+  it('requires pairing when only legacy booleans and a local machine id claim readiness', async () => {
+    let pairLocalCalls = 0;
+    const kind = createSetupRepairThisComputerTaskKind({
+      readActiveRelayProfile: async () => ({
+        serverUrl: 'https://relay.example.test',
+        webappUrl: 'https://app.example.test',
+        activeLocalRelayUrl: null,
+      }),
+      readAuthStatus: async () => ({
+        authenticated: true,
+        machineRegistered: true,
+        machineId: 'machine-legacy',
+      }),
+      configureRelay: async () => undefined,
+      requestAuthPairing: async () => ({ publicKey: 'pub-key-legacy' }),
+      waitForAuthPairing: async () => ({ machineId: 'machine-current' }),
+      pairLocalMachineIfNeeded: async () => {
+        pairLocalCalls += 1;
+        return 'machine-legacy';
+      },
+      installDaemonService: async () => undefined,
+      startDaemonService: async () => undefined,
+      waitForReadyDaemon: async () => ({
+        serviceInstalled: true,
+        daemonRunning: true,
+        needsAuth: false,
+        credentialState: 'valid',
+        machineRegistrationState: 'server-confirmed',
+        machineId: 'machine-current',
+      }),
+    });
+    const runner = createSystemTasksRunner({
+      kinds: { 'setup.repairThisComputer.v1': kind },
+    });
+
+    await runner.start({
+      taskId: 'repair-legacy-readiness',
+      kind: 'setup.repairThisComputer.v1',
+      params: { activeRelayUrl: 'https://relay.example.test' },
+    });
+
+    const firstPoll = await waitForPendingPrompt(runner, {
+      taskId: 'repair-legacy-readiness',
+      cursor: 0,
+    });
+    expect(firstPoll.pendingPrompt?.data).toMatchObject({ publicKey: 'pub-key-legacy' });
+    expect(pairLocalCalls).toBe(0);
+
+    await runner.respond({ taskId: 'repair-legacy-readiness', answer: { approved: true } });
+    const finalPoll = await waitForResult(runner, {
+      taskId: 'repair-legacy-readiness',
+      cursor: firstPoll.nextCursor,
+    });
+    expect(finalPoll.result).toEqual({
+      protocolVersion: 1,
+      taskId: 'repair-legacy-readiness',
+      ok: true,
+      data: { machineId: 'machine-current' },
+    });
   });
 });

@@ -14,7 +14,12 @@ describe('runSetupMachineRecipe', () => {
 
     const executor = {
       configureRelay: vi.fn(async () => undefined),
-      readAuthStatus: vi.fn(async () => ({ authenticated: true, machineId: 'machine-1' as string | null })),
+      readAuthStatus: vi.fn(async () => ({
+        authenticated: true,
+        credentialState: 'valid' as const,
+        machineRegistrationState: 'server-confirmed' as const,
+        machineId: 'machine-1' as string | null,
+      })),
       requestAuthPairing: vi.fn(async () => ({ publicKey: 'public-key-1' })),
       waitForAuthPairing: vi.fn(async () => ({ machineId: 'machine-1' as string | null })),
       approveAuthPairing: vi.fn(async () => undefined),
@@ -30,7 +35,12 @@ describe('runSetupMachineRecipe', () => {
 
     const result = await runSetupMachineRecipe({
       relayProfile,
-      initialAuthStatus: { authenticated: true, machineId: 'machine-1' },
+      initialAuthStatus: {
+        authenticated: true,
+        credentialState: 'valid',
+        machineRegistrationState: 'server-confirmed',
+        machineId: 'machine-1',
+      },
       executor,
       steps: {
         installService: false,
@@ -64,7 +74,12 @@ describe('runSetupMachineRecipe', () => {
 
     const executor = {
       configureRelay: vi.fn(async () => undefined),
-      readAuthStatus: vi.fn(async () => ({ authenticated: true, machineId: 'machine-1' as string | null })),
+      readAuthStatus: vi.fn(async () => ({
+        authenticated: true,
+        credentialState: 'valid' as const,
+        machineRegistrationState: 'server-confirmed' as const,
+        machineId: 'machine-1' as string | null,
+      })),
       requestAuthPairing: vi.fn(async () => ({ publicKey: 'public-key-1' })),
       waitForAuthPairing: vi.fn(async () => ({ machineId: 'machine-1' as string | null })),
       installDaemonService: vi.fn(async () => undefined),
@@ -73,7 +88,12 @@ describe('runSetupMachineRecipe', () => {
 
     const result = await runSetupMachineRecipe({
       relayProfile,
-      initialAuthStatus: { authenticated: true, machineId: 'machine-1' },
+      initialAuthStatus: {
+        authenticated: true,
+        credentialState: 'valid',
+        machineRegistrationState: 'server-confirmed',
+        machineId: 'machine-1',
+      },
       executor,
       steps: {
         configureRelay: false,
@@ -138,6 +158,77 @@ describe('runSetupMachineRecipe', () => {
     expect(executor.readAuthStatus).toHaveBeenCalledTimes(1);
     expect(executor.requestAuthPairing).toHaveBeenCalledTimes(1);
     expect(executor.waitForAuthPairing).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not skip pairing when stored credentials have an unknown validation state', async () => {
+    const executor = {
+      configureRelay: vi.fn(async () => undefined),
+      readAuthStatus: vi.fn(async () => ({
+        // Compatibility booleans from an older caller must not override the
+        // canonical current-client states.
+        authenticated: true,
+        credentialState: 'unknown' as const,
+        machineRegistered: true,
+        machineRegistrationState: 'server-confirmed' as const,
+        machineId: 'machine-confirmed' as string | null,
+      })),
+      requestAuthPairing: vi.fn(async () => ({ publicKey: 'public-key-unknown' })),
+      waitForAuthPairing: vi.fn(async () => ({ machineId: 'machine-confirmed' as string | null })),
+    } as const;
+
+    await runSetupMachineRecipe({
+      relayProfile: {
+        serverUrl: 'https://relay.example.test',
+        webappUrl: 'https://app.example.test',
+        localServerUrl: null,
+      },
+      executor,
+      steps: {
+        installService: false,
+        startService: false,
+        verifyService: false,
+      },
+      signal: new AbortController().signal,
+      emit() {},
+      approvePairingRequest: async () => undefined,
+    });
+
+    expect(executor.requestAuthPairing).toHaveBeenCalledOnce();
+    expect(executor.waitForAuthPairing).toHaveBeenCalledOnce();
+  });
+
+  it('does not let legacy authenticated and machine-id fields establish remotely verified readiness', async () => {
+    const executor = {
+      configureRelay: vi.fn(async () => undefined),
+      readAuthStatus: vi.fn(async () => ({
+        authenticated: true,
+        machineRegistered: true,
+        machineId: 'machine-legacy' as string | null,
+      })),
+      requestAuthPairing: vi.fn(async () => ({ publicKey: 'public-key-legacy' })),
+      waitForAuthPairing: vi.fn(async () => ({ machineId: 'machine-current' as string | null })),
+    } as const;
+
+    const result = await runSetupMachineRecipe({
+      relayProfile: {
+        serverUrl: 'https://relay.example.test',
+        webappUrl: 'https://app.example.test',
+        localServerUrl: null,
+      },
+      executor,
+      steps: {
+        installService: false,
+        startService: false,
+        verifyService: false,
+      },
+      signal: new AbortController().signal,
+      emit() {},
+      approvePairingRequest: async () => undefined,
+    });
+
+    expect(result).toEqual({ machineId: 'machine-current', publicKey: 'public-key-legacy' });
+    expect(executor.requestAuthPairing).toHaveBeenCalledOnce();
+    expect(executor.waitForAuthPairing).toHaveBeenCalledOnce();
   });
 
   it('throws daemon_service_not_ready with the provided message when readiness verification fails', async () => {

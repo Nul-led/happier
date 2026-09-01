@@ -10,7 +10,7 @@ export type PersonalHomeRestorableConfigurationV1 = Readonly<{
 }>;
 
 export const PERSONAL_HOME_RESTORABLE_CONFIGURATION_ENV_KEYS = Object.freeze({
-  canonicalServerUrl: 'HAPPIER_PUBLIC_SERVER_URL',
+  canonicalServerUrl: 'HAPPIER_CANONICAL_SERVER_URL',
   encryptionStoragePolicy: 'HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY',
   defaultAccountMode: 'HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE',
   plainAccountSettingsAtRest: 'HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_SETTINGS_AT_REST',

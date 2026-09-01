@@ -1,5 +1,9 @@
 import type { PersonalHomeRuntimeLayout } from './layout.js';
 
+/** Stable bootstrap origin shared by the browser-safe UI seam and the managed runtime defaults. */
+export const DEFAULT_PERSONAL_HOME_PORT = 3005;
+export const DEFAULT_PERSONAL_HOME_ORIGIN = `http://127.0.0.1:${DEFAULT_PERSONAL_HOME_PORT}`;
+
 /** The managed runtime purpose carried through the existing relay-host seam. */
 export type ManagedRelayPurpose =
   | Readonly<{ kind: 'generic' }>
@@ -17,7 +21,7 @@ export type PersonalHomeRuntimeSpec = Readonly<{
 export type PersonalHomeRuntimeEnvironment = Readonly<{
   HAPPIER_SERVER_HOST: '127.0.0.1';
   PORT: string;
-  HAPPIER_PUBLIC_SERVER_URL: string;
+  HAPPIER_CANONICAL_SERVER_URL: string;
   HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only';
   HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain';
   AUTH_ANONYMOUS_SIGNUP_ENABLED: '1' | '0';
@@ -26,7 +30,7 @@ export type PersonalHomeRuntimeEnvironment = Readonly<{
 const FIXED_ENVIRONMENT_KEYS = new Set([
   'HAPPIER_SERVER_HOST',
   'PORT',
-  'HAPPIER_PUBLIC_SERVER_URL',
+  'HAPPIER_CANONICAL_SERVER_URL',
   'HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY',
   'HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE',
   'AUTH_ANONYMOUS_SIGNUP_ENABLED',
@@ -127,14 +131,14 @@ export function renderPersonalHomeRuntimeEnv(params: Readonly<{
   const rendered: {
     HAPPIER_SERVER_HOST: '127.0.0.1';
     PORT: string;
-    HAPPIER_PUBLIC_SERVER_URL: string;
+    HAPPIER_CANONICAL_SERVER_URL: string;
     HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only';
     HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain';
     AUTH_ANONYMOUS_SIGNUP_ENABLED: '1' | '0';
   } = {
     HAPPIER_SERVER_HOST: '127.0.0.1',
     PORT: port,
-    HAPPIER_PUBLIC_SERVER_URL: params.spec.canonicalServerUrl,
+    HAPPIER_CANONICAL_SERVER_URL: params.spec.canonicalServerUrl,
     HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
     HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
     AUTH_ANONYMOUS_SIGNUP_ENABLED: signup,
@@ -148,7 +152,7 @@ export function renderPersonalHomeRuntimeEnv(params: Readonly<{
       if (key === 'PORT') {
         if (requirePort(value) !== port) throw new Error('Personal Home PORT cannot change its stable origin');
       }
-      if (key === 'HAPPIER_PUBLIC_SERVER_URL') {
+      if (key === 'HAPPIER_CANONICAL_SERVER_URL') {
         if (requireCanonicalServerUrl(value) !== params.spec.canonicalServerUrl) {
           throw new Error('Personal Home canonicalServerUrl cannot be overridden');
         }

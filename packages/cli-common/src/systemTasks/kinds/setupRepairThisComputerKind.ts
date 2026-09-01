@@ -1,6 +1,10 @@
 import { SystemTaskExecutionError } from '../runSystemTask.js';
 import type { InteractiveSystemTaskKind } from '../interactiveTaskKinds.js';
-import { runSetupMachineRecipe } from '../recipes/setupMachineRecipe.js';
+import {
+  resolveSetupMachineReadiness,
+  runSetupMachineRecipe,
+  type SetupMachineAuthStatus,
+} from '../recipes/setupMachineRecipe.js';
 
 export type SetupRepairThisComputerRelayProfile = Readonly<{
   serverUrl: string;
@@ -8,14 +12,20 @@ export type SetupRepairThisComputerRelayProfile = Readonly<{
   activeLocalRelayUrl: string | null;
 }>;
 
-export type SetupRepairThisComputerAuthStatus =
-  | Readonly<{ authenticated: false }>
-  | Readonly<{ authenticated: true; machineId: string | null }>;
+export type SetupRepairThisComputerAuthStatus = Readonly<{
+  credentialState?: SetupMachineAuthStatus['credentialState'];
+  machineRegistrationState?: SetupMachineAuthStatus['machineRegistrationState'];
+  authenticated: boolean;
+  machineRegistered?: boolean;
+  machineId?: string | null;
+}>;
 
 export type SetupRepairThisComputerDaemonStatus = Readonly<{
   serviceInstalled: boolean;
   daemonRunning: boolean;
   needsAuth: boolean;
+  credentialState?: SetupMachineAuthStatus['credentialState'];
+  machineRegistrationState?: SetupMachineAuthStatus['machineRegistrationState'];
   machineId: string | null;
 }>;
 
@@ -155,8 +165,11 @@ export function createSetupRepairThisComputerTaskKind(
           readAuthStatus: async () => {
             const latest = await deps.readAuthStatus();
             return {
-              authenticated: latest.authenticated === true,
-              machineId: latest.authenticated === true && latest.machineId?.trim() ? latest.machineId.trim() : null,
+              credentialState: latest.credentialState,
+              machineRegistrationState: latest.machineRegistrationState,
+              authenticated: latest.authenticated,
+              machineRegistered: latest.machineRegistered,
+              machineId: latest.machineId?.trim() || null,
             };
           },
           requestAuthPairing: async () => {
@@ -189,6 +202,8 @@ export function createSetupRepairThisComputerTaskKind(
               serviceInstalled: ready.serviceInstalled,
               daemonRunning: ready.daemonRunning,
               needsAuth: ready.needsAuth,
+              credentialState: ready.credentialState,
+              machineRegistrationState: ready.machineRegistrationState,
               machineId: ready.machineId,
             };
           },
@@ -212,7 +227,8 @@ export function createSetupRepairThisComputerTaskKind(
             ...(event.message ? { message: event.message } : {}),
           });
         },
-        approvePairingRequest: initialRecipeAuthStatus.authenticated && initialRecipeAuthStatus.machineId
+        approvePairingRequest: initialRecipeAuthStatus.credentialState === 'valid'
+          && initialRecipeAuthStatus.machineRegistrationState === 'server-confirmed'
           ? undefined
           : async (params) => {
             const answer = await ctx.prompt({
@@ -254,14 +270,32 @@ async function resolveRepairRecipeAuthStatus(params: Readonly<{
   authStatus: SetupRepairThisComputerAuthStatus;
   ctx: Readonly<{ emit: (event: Readonly<{ type: string; stepId?: string; message?: string }>) => void }>;
   deps: SetupRepairThisComputerDeps;
-}>): Promise<Readonly<{ authenticated: boolean; machineId: string | null }>> {
-  if (!params.authStatus.authenticated) {
+}>): Promise<SetupMachineAuthStatus> {
+  const {
+    credentialState,
+    machineRegistrationState,
+    machineId,
+  } = resolveSetupMachineReadiness({
+    credentialState: params.authStatus.credentialState,
+    machineRegistrationState: params.authStatus.machineRegistrationState,
+    authenticated: params.authStatus.authenticated,
+    machineRegistered: params.authStatus.machineRegistered,
+    machineId: params.authStatus.machineId?.trim() || null,
+  });
+
+  if (credentialState !== 'valid') {
     params.ctx.emit({
       type: 'progress',
       stepId: 'setup.repairThisComputer.authenticate',
       message: 'Waiting for pairing approval',
     });
-    return { authenticated: false, machineId: null };
+    return {
+      credentialState,
+      machineRegistrationState,
+      authenticated: false,
+      machineRegistered: machineRegistrationState === 'server-confirmed',
+      machineId,
+    };
   }
 
   params.ctx.emit({
@@ -271,9 +305,15 @@ async function resolveRepairRecipeAuthStatus(params: Readonly<{
   });
 
   const resolvedMachineId = await params.deps.pairLocalMachineIfNeeded().then((id) => String(id ?? '').trim() || null);
+  const resolvedRegistrationState = resolvedMachineId
+    ? 'server-confirmed'
+    : machineRegistrationState;
 
   return {
+    credentialState: 'valid',
+    machineRegistrationState: resolvedRegistrationState,
     authenticated: true,
-    machineId: resolvedMachineId ?? params.authStatus.machineId ?? null,
+    machineRegistered: resolvedRegistrationState === 'server-confirmed',
+    machineId: resolvedMachineId ?? machineId,
   };
 }

@@ -13,13 +13,79 @@ import { normalizePersonalHomeRestorableConfigurationV1 } from './configuration.
 import {
   applyPersonalHomeSanitizedConfiguration,
   createCanonicalPersonalHomeOperations,
+  createCanonicalPersonalHomeRelocationDestinationOwner,
   inspectPersonalHomeSanitizedConfigurationStorage,
   readPersonalHomeSanitizedConfiguration,
   readPersonalHomeIdentityFromSqlite,
+  readPersonalHomeDataCountsFromSqlite,
   resolveCanonicalPersonalHomeRuntimeLayout,
 } from './productionAdapters.js';
 
 describe('Personal Home production adapters', () => {
+  it('binds the relocation destination owner to the explicitly selected runtime target', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'happier-home-relocation-target-'));
+    try {
+      const stable = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'stable', homeDir });
+      const preview = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      await mkdir(stable.configDir, { recursive: true });
+      await mkdir(preview.configDir, { recursive: true });
+      await writeFile(join(stable.configDir, 'server.env'), `HAPPIER_SERVER_LIGHT_DATA_DIR=${stable.dataDir}\nAUTH_ANONYMOUS_SIGNUP_ENABLED=0\n`);
+      await writeFile(join(preview.configDir, 'server.env'), `HAPPIER_SERVER_LIGHT_DATA_DIR=${preview.dataDir}\nAUTH_ANONYMOUS_SIGNUP_ENABLED=0\n`);
+      const archivePath = join(homeDir, 'bad-transfer.tar');
+      await writeFile(archivePath, 'not the transferred bytes');
+      const owner = await createCanonicalPersonalHomeRelocationDestinationOwner({
+        homeDir,
+        platform: 'linux',
+        mode: 'user',
+        channel: 'preview',
+        quarantine: async () => undefined,
+        activate: async () => undefined,
+        readServiceStatus: async () => ({ running: false, quarantined: true }),
+        attestActivatedHome: async () => ({ authenticated: true, homeServerIdentityId: 'srv_home_1', accountCount: 1, sessionCount: 0 }),
+        attestStagedHome: async () => ({ authenticated: true, homeServerIdentityId: 'srv_home_1', accountCount: 1, sessionCount: 0 }),
+        runMigrationProcess: async () => undefined,
+        materializeEndpoint: async () => ({
+          homeServerIdentityId: 'srv_home_1',
+          canonicalServerUrl: 'https://destination.example.test',
+          minimumOuterRevisionExclusive: 7,
+        }),
+      });
+      await expect(owner.stage({
+        operationId: 'operation-1',
+        archivePath,
+        bundleSha256: '0'.repeat(64),
+        expectedHomeServerIdentityId: 'srv_home_1',
+        expectedCanonicalServerUrl: 'https://source.example.test',
+        sourceDescriptorRevision: 7,
+      })).rejects.toMatchObject({ code: 'relocation_bundle_mismatch' });
+      await expect(stat(join(preview.dataDir, '.operations', 'lock'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(join(stable.dataDir, '.operations'))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads exact nonnegative Account and Session counts from the canonical SQLite database', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-home-production-counts-'));
+    const databasePath = join(root, 'home.sqlite');
+    try {
+      const { DatabaseSync } = await import('node:sqlite');
+      const database = new DatabaseSync(databasePath);
+      database.exec('CREATE TABLE "Account" (id TEXT PRIMARY KEY); CREATE TABLE "Session" (id TEXT PRIMARY KEY);');
+      database.prepare('INSERT INTO "Account" (id) VALUES (?)').run('account-1');
+      database.prepare('INSERT INTO "Session" (id) VALUES (?)').run('session-1');
+      database.prepare('INSERT INTO "Session" (id) VALUES (?)').run('session-2');
+      database.close();
+
+      await expect(readPersonalHomeDataCountsFromSqlite(databasePath)).resolves.toEqual({
+        accountCount: 1,
+        sessionCount: 2,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('resolves configuration and data from the explicitly selected runtime channel', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'happier-home-production-channel-'));
     try {
@@ -159,7 +225,7 @@ describe('Personal Home production adapters', () => {
       anonymousSignupPhase: 'loopback-bootstrap-then-disabled',
     }, 'home-identity'));
     await expect(readFile(join(defaults.configDir, 'server.env'), 'utf8')).resolves.toContain(
-      'HAPPIER_PUBLIC_SERVER_URL=http://127.0.0.1:43111',
+      'HAPPIER_CANONICAL_SERVER_URL=http://127.0.0.1:43111',
     );
     expect((await readFile(join(defaults.configDir, 'server.env'), 'utf8')).match(/^AUTH_ANONYMOUS_SIGNUP_ENABLED=0$/gmu)).toHaveLength(1);
     await applied.rollback();

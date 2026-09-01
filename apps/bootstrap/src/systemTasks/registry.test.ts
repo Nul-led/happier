@@ -392,10 +392,14 @@ async function prepareBootstrapPersonalHomeFixture(homeDir: string): Promise<Rea
   writeFileSync(join(layout.privateFilesDir, 'private.txt'), 'bootstrap-private-bytes');
   const database = new DatabaseSync(layout.databasePath);
   database.exec('PRAGMA journal_mode=WAL');
+  database.exec('CREATE TABLE "Account" (id TEXT PRIMARY KEY)');
+  database.exec('CREATE TABLE "Session" (id TEXT PRIMARY KEY)');
   database.exec('CREATE TABLE SimpleCache (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
   database.exec('CREATE TABLE bootstrap_transcript (id TEXT PRIMARY KEY, body TEXT NOT NULL)');
   database.exec('CREATE TABLE _prisma_migrations (migration_name TEXT NOT NULL, checksum TEXT NOT NULL, finished_at TEXT, rolled_back_at TEXT)');
   database.prepare('INSERT INTO SimpleCache (key, value) VALUES (?, ?)').run('server.identity.v1', identity);
+  database.prepare('INSERT INTO "Account" (id) VALUES (?)').run('bootstrap-account-1');
+  database.prepare('INSERT INTO "Session" (id) VALUES (?)').run('bootstrap-session-1');
   database.prepare('INSERT INTO bootstrap_transcript (id, body) VALUES (?, ?)').run('message-1', 'bootstrap transcript bytes');
   database.prepare('INSERT INTO _prisma_migrations (migration_name, checksum, finished_at, rolled_back_at) VALUES (?, ?, ?, NULL)').run(
     migration.name,
@@ -543,7 +547,6 @@ describe('createHsetupSystemTaskRegistry', () => {
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.ensureCli' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.resolveRelay' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.configureRelay' }),
-        expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.checkAuth' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.installService' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.startService' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.verifyService' }),
@@ -608,7 +611,6 @@ describe('createHsetupSystemTaskRegistry', () => {
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.ensureCli' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.resolveRelay' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.configureRelay' }),
-        expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.checkAuth' }),
       ]);
       expect(result).toEqual({
         protocolVersion: 1,
@@ -969,7 +971,6 @@ describe('createHsetupSystemTaskRegistry', () => {
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.ensureCli' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.resolveRelay' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.configureRelay' }),
-        expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.checkAuth' }),
         expect.objectContaining({ type: 'prompt', stepId: 'setup.thisComputer.auth.request' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.auth.wait' }),
         expect.objectContaining({ type: 'progress', stepId: 'setup.thisComputer.installService' }),
@@ -2072,6 +2073,46 @@ describe('createHsetupSystemTaskRegistry', () => {
     });
   });
 
+  it('composes remote Personal Home relocation through the injected source coordinator', async () => {
+    const runPersonalHomeRelocation = vi.fn(async () => ({ operationId: 'operation-1', status: 'committed' }));
+    const result = await executeSystemTask({
+      spec: {
+        protocolVersion: 1,
+        kind: 'remote.ssh.manageHost.v1',
+        params: {
+          action: 'personalHome.relocate',
+          channel: 'preview',
+          relayRuntime: { channel: 'preview', mode: 'system' },
+          personalHomeRelocation: {
+            operationId: 'operation-1',
+            destinationMachineId: 'machine-2',
+            sourceDescriptorRevision: 7,
+          },
+          ssh: { target: 'relocation@example.test', auth: 'agent', port: 2222 },
+        },
+      },
+      taskId: 'task_remote_relocation_1',
+      registry: createHsetupSystemTaskRegistry({
+        remoteSshManageHost: {
+          resolveHostTrust: async () => ({ status: 'trusted' }),
+          installRemoteCli: async () => undefined,
+          runPersonalHomeRelocation,
+        },
+      }),
+      now: () => 1700000000000,
+      emitEvent: () => undefined,
+    });
+    expect(result).toMatchObject({ ok: true, data: { action: 'personalHome.relocate', personalHome: { operationId: 'operation-1', status: 'committed' } } });
+    expect(runPersonalHomeRelocation).toHaveBeenCalledWith(expect.objectContaining({
+      channel: 'preview',
+      mode: 'system',
+      operationId: 'operation-1',
+      sourceDescriptorRevision: 7,
+      destinationMachineId: 'machine-2',
+      ssh: expect.objectContaining({ target: 'relocation@example.test', port: 2222 }),
+    }));
+  });
+
   it('completes remote.ssh.bootstrapMachine.v1 when desktop prompt resolutions are provided up front', async () => {
     const events: unknown[] = [];
     const result = await executeSystemTask({
@@ -2880,7 +2921,6 @@ describe('createHsetupSystemTaskRegistry', () => {
         recoverRestore: async () => ({}),
         finalizeRestore: async () => ({}),
         erase: async () => ({}),
-        relocate: async () => ({}),
       },
     });
 
@@ -2890,6 +2930,8 @@ describe('createHsetupSystemTaskRegistry', () => {
         kind: 'relay.runtime.personal_home.inspect.v1',
         params: {
           target: { kind: 'local' },
+          channel: 'stable',
+          mode: 'user',
           purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
         },
       },
@@ -2903,7 +2945,48 @@ describe('createHsetupSystemTaskRegistry', () => {
     expect(invoked).toEqual(['inspect']);
   });
 
-  it('registers all six exact Personal Home task kinds against one operations instance', async () => {
+  it('routes destination relocation status through the installed-CLI registry boundary', async () => {
+    const status = vi.fn(async () => ({
+      operationId: 'operation-1',
+      status: 'quarantined' as const,
+      bundleSha256: 'a'.repeat(64),
+      expectedHomeServerIdentityId: 'home-1',
+      expectedCanonicalServerUrl: 'http://127.0.0.1:43123',
+      sourceDescriptorRevision: 4,
+    }));
+    const registry = createHsetupSystemTaskRegistry({
+      loadPersonalHomeRelocationDestination: async (target) => {
+        expect(target).toEqual({ channel: 'stable', mode: 'user' });
+        return {
+          stage: async () => { throw new Error('not used'); },
+          status,
+          commit: async () => { throw new Error('not used'); },
+          abort: async () => { throw new Error('not used'); },
+        };
+      },
+    });
+    const result = await executeSystemTask({
+      spec: {
+        protocolVersion: 1,
+        kind: 'relay.runtime.personal_home.relocation_destination.status.v1',
+        params: {
+          target: { kind: 'local' },
+          channel: 'stable',
+          mode: 'user',
+          purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+          operationId: 'operation-1',
+        },
+      },
+      taskId: 'task_personal_home_relocation_destination_status_1',
+      registry,
+      now: () => 1700000000000,
+      emitEvent: () => undefined,
+    });
+    expect(result).toMatchObject({ ok: true, data: { operationId: 'operation-1', status: 'quarantined' } });
+    expect(status).toHaveBeenCalledWith('operation-1');
+  });
+
+  it('registers the five source-local Personal Home task kinds against one operations instance', async () => {
     const calls: string[] = [];
     const registry = createHsetupSystemTaskRegistry({
       personalHomeOperations: {
@@ -2914,11 +2997,12 @@ describe('createHsetupSystemTaskRegistry', () => {
         recoverRestore: async () => ({}),
         finalizeRestore: async () => ({}),
         erase: async () => (calls.push('erase'), {}),
-        relocate: async () => (calls.push('relocate'), {}),
       },
     });
     const base = {
       target: { kind: 'local' as const },
+      channel: 'stable' as const,
+      mode: 'user' as const,
       purpose: { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:43123' },
     };
     const specs = [
@@ -2927,19 +3011,6 @@ describe('createHsetupSystemTaskRegistry', () => {
       ['relay.runtime.personal_home.verify_backup.v1', { ...base, archivePath: '/tmp/home.tar' }],
       ['relay.runtime.personal_home.restore.v1', { ...base, archivePath: '/tmp/home.tar', confirmOverwrite: true }],
       ['relay.runtime.personal_home.erase.v1', base],
-      ['relay.runtime.personal_home.relocate.v1', {
-        ...base,
-        destination: {
-          targetId: 'computer_2',
-          descriptor: {
-            v: 1,
-            homeServerIdentityId: 'srv_home_1',
-            canonicalServerUrl: 'https://home.example.test',
-            revision: 1,
-            endpoints: [{ kind: 'https', url: 'https://home.example.test' }],
-          },
-        },
-      }],
     ] as const;
 
     for (const [kind, params] of specs) {
@@ -2953,7 +3024,7 @@ describe('createHsetupSystemTaskRegistry', () => {
       expect(result.ok).toBe(true);
     }
 
-    expect(calls).toEqual(['inspect', 'backup', 'verify_backup', 'restore', 'erase', 'relocate']);
+    expect(calls).toEqual(['inspect', 'backup', 'verify_backup', 'restore', 'erase']);
   });
 
   it('archives and restores real Home bytes through the default bootstrap registry composition', { timeout: 120_000 }, async () => {
@@ -2995,6 +3066,8 @@ describe('createHsetupSystemTaskRegistry', () => {
       const registry = registryModule.createHsetupSystemTaskRegistry();
       const baseParams = {
         target: { kind: 'local' as const },
+        channel: 'stable' as const,
+        mode: 'user' as const,
         purpose: { kind: 'personal-home' as const, canonicalServerUrl: fixture.canonicalServerUrl },
       };
       const backup = await executeSystemTask({

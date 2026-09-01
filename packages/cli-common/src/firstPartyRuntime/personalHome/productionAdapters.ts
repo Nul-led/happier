@@ -24,6 +24,22 @@ import {
 import { createPersonalHomePathProtection } from './protection.js';
 import { replacePersonalHomeFileDurably, syncPersonalHomeFileAndParent } from './durableFile.js';
 import {
+  finalizePersonalHomeRestoreWithLease,
+  restorePersonalHomeBackupWithLease,
+} from './restore.js';
+import { erasePersonalHomeData } from './erase.js';
+import {
+  createPersonalHomeRelocationDestinationOwner,
+  type PersonalHomeRelocationDestinationOwner,
+} from './relocationDestination.js';
+import type { IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
+import { IrohEndpointDescriptorV1Schema } from '@happier-dev/protocol';
+import { execFileWithDeadline } from '../../process/index.js';
+import {
+  parsePersonalHomeAuthenticatedReadiness,
+  type PersonalHomeAuthenticatedReadiness,
+} from './readiness.js';
+import {
   inspectPersonalHomeSqliteMigrationFrontier,
   migrateStagedPersonalHomeSqliteDatabase,
   resolveInstalledPersonalHomeSqliteMigrationPaths,
@@ -150,6 +166,23 @@ export async function readPersonalHomeIdentityValueFromSqlite(databasePath: stri
   }
 }
 
+export async function readPersonalHomeDataCountsFromSqlite(databasePath: string): Promise<Readonly<{ accountCount: number; sessionCount: number }>> {
+  const { DatabaseSync } = await import('node:sqlite');
+  const database = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    const account = database.prepare('SELECT COUNT(*) AS count FROM "Account"').get() as Readonly<{ count?: unknown }> | undefined;
+    const session = database.prepare('SELECT COUNT(*) AS count FROM "Session"').get() as Readonly<{ count?: unknown }> | undefined;
+    const accountCount = Number(account?.count);
+    const sessionCount = Number(session?.count);
+    if (!Number.isSafeInteger(accountCount) || accountCount < 0 || !Number.isSafeInteger(sessionCount) || sessionCount < 0) {
+      throw new Error('Personal Home account/session counts are invalid');
+    }
+    return { accountCount, sessionCount };
+  } finally {
+    database.close();
+  }
+}
+
 export async function readPersonalHomeIdentityFromSqlite(
   databasePath: string,
   catalog: readonly SqliteMigrationCatalogEntry[],
@@ -179,6 +212,12 @@ export async function readPersonalHomeSanitizedConfiguration(layout: PersonalHom
       if (value !== undefined && value !== '0') throw new Error('Personal Home anonymous signup must be disabled before backup');
       if (value === '0') result[field] = 'loopback-bootstrap-then-disabled';
     } else if (typeof value === 'string' && value) result[field] = value;
+  }
+  if (!result.canonicalServerUrl) {
+    const legacyCanonicalServerUrl = String(env.HAPPIER_PUBLIC_SERVER_URL ?? '').trim();
+    if (legacyCanonicalServerUrl && String(env.HAPPIER_PUBLIC_SERVER_URL_INFERRED ?? '').trim() !== '1') {
+      result.canonicalServerUrl = legacyCanonicalServerUrl;
+    }
   }
   return result;
 }
@@ -268,10 +307,10 @@ export async function createCanonicalPersonalHomeOperations(params: Readonly<{
   mode?: 'user' | 'system';
   channel?: PublicReleaseRingId;
   lifecycle: PersonalHomeOperationsDeps['lifecycle'] & Readonly<{ healthCheck(): Promise<boolean> }>;
+  attestActivatedHome?(): Promise<import('./readiness.js').PersonalHomeAuthenticatedReadiness>;
   readHappierVersion(): Promise<string>;
   readPurpose: PersonalHomeOperationsDeps['readPurpose'];
   runMigrationProcess?: PersonalHomeMigrationProcessRunner;
-  relocation?: PersonalHomeOperationsDeps['relocation'];
 }>): Promise<PersonalHomeOperations> {
   const defaults = resolveRelayRuntimeDefaults({
     platform: params.platform ?? process.platform,
@@ -295,13 +334,207 @@ export async function createCanonicalPersonalHomeOperations(params: Readonly<{
       }).then(() => undefined),
     } : {}),
     readIdentityFromDatabase: (layout, databasePath) => readCanonicalPersonalHomeIdentity(layout, databasePath),
+    readDataCountsFromDatabase: (_layout, databasePath) => readPersonalHomeDataCountsFromSqlite(databasePath),
     readConfiguration: (layout) => readPersonalHomeSanitizedConfiguration(layout),
     prepareConfiguration: (layout, configuration) => preparePersonalHomeSanitizedConfiguration(layout, configuration),
     inspectConfigurationStorage: (layout, configuration) => inspectPersonalHomeSanitizedConfigurationStorage(layout, configuration),
     recoverConfiguration: (layout, artifact) => recoverPersonalHomeSanitizedConfiguration(layout, artifact),
     finalizeConfiguration: (layout, artifact) => finalizePersonalHomeSanitizedConfiguration(layout, artifact),
+    ...(params.attestActivatedHome ? { attestActivatedHome: params.attestActivatedHome } : {}),
     readHappierVersion: params.readHappierVersion,
     isSchemaSupported: async (layout, schemaVersion) => (await readInstalledMigrationCatalog(layout)).some((entry) => entry.name === schemaVersion),
-    ...(params.relocation ? { relocation: params.relocation } : {}),
   });
+}
+
+/** Composes the destination-local relocation authority from the same canonical
+ * layout, restore, SQLite, configuration and deletion owners used by ordinary
+ * Personal Home operations. Remote coordinators never receive local paths. */
+export async function createCanonicalPersonalHomeRelocationDestinationOwner(params: Readonly<{
+  homeDir: string;
+  platform?: NodeJS.Platform;
+  mode?: 'user' | 'system';
+  channel?: PublicReleaseRingId;
+  quarantine(): Promise<void>;
+  activate(): Promise<void>;
+  readServiceStatus(): Promise<Readonly<{ running: boolean; quarantined: boolean }>>;
+  attestActivatedHome(): Promise<import('./readiness.js').PersonalHomeAuthenticatedReadiness>;
+  attestStagedHome(input: Readonly<{ layout: PersonalHomeRuntimeLayout }>): Promise<PersonalHomeAuthenticatedReadiness>;
+  runMigrationProcess: PersonalHomeMigrationProcessRunner;
+  materializeEndpoint(input: Readonly<{
+    layout: PersonalHomeRuntimeLayout;
+    sourceDescriptorRevision: number;
+  }>): Promise<Readonly<{
+    homeServerIdentityId: string;
+    canonicalServerUrl: string;
+    minimumOuterRevisionExclusive: number;
+    endpoint?: IrohEndpointDescriptorV1;
+  }>>;
+}>): Promise<PersonalHomeRelocationDestinationOwner> {
+  const platform = params.platform ?? process.platform;
+  const mode = params.mode ?? 'user';
+  const channel = params.channel ?? 'stable';
+  const defaults = resolveRelayRuntimeDefaults({ platform, mode, channel, homeDir: params.homeDir });
+  const initialLayout = await resolveCanonicalPersonalHomeRuntimeLayout({
+    homeDir: params.homeDir,
+    platform,
+    mode,
+    channel,
+  });
+  const resolveAttestedLayout = async (): Promise<PersonalHomeRuntimeLayout> => {
+    const layout = await resolveCanonicalPersonalHomeRuntimeLayout({
+      homeDir: params.homeDir,
+      platform,
+      mode,
+      channel,
+    });
+    await validateCanonicalPersonalHomeLayout(layout, { ...defaults, homeDir: params.homeDir });
+    if (JSON.stringify(layout) !== JSON.stringify(initialLayout)) {
+      throw new Error('Personal Home relocation destination layout changed while the operation was pending');
+    }
+    return layout;
+  };
+
+  return createPersonalHomeRelocationDestinationOwner({
+    dataDir: initialLayout.dataDir,
+    quarantine: params.quarantine,
+    readServiceStatus: params.readServiceStatus,
+    activate: params.activate,
+    attestActive: params.attestActivatedHome,
+    stageCandidate: async (input) => {
+      const layout = await resolveAttestedLayout();
+      const restored = await restorePersonalHomeBackupWithLease({
+        layout,
+        archivePath: input.archivePath,
+        operationLeaseHeld: true,
+        expectedHomeServerIdentityId: input.expectedHomeServerIdentityId,
+        confirmOverwrite: false,
+        isSchemaSupported: async (schemaVersion) => (await readInstalledMigrationCatalog(layout)).some((entry) => entry.name === schemaVersion),
+        isHomeRunning: async () => (await params.readServiceStatus()).running,
+        stopHome: params.quarantine,
+        sqliteMaintenance: createPersonalHomeSqliteMaintenance,
+        runMigrations: async (databasePath, manifest) => await migrateStagedPersonalHomeSqliteDatabase({
+          layout,
+          databasePath,
+          manifestSchemaVersion: manifest.schemaVersion,
+          runProcess: params.runMigrationProcess,
+        }).then(() => undefined),
+        verifyStagedIdentity: async (databasePath, manifest) =>
+          (await readCanonicalPersonalHomeIdentity(layout, databasePath)).homeServerIdentityId === manifest.homeServerIdentityId,
+        prepareConfiguration: (configuration) => preparePersonalHomeSanitizedConfiguration(layout, configuration),
+        inspectConfigurationStorage: (configuration) => inspectPersonalHomeSanitizedConfigurationStorage(layout, configuration),
+        requireDataCountVerification: true,
+        readDataCountsFromDatabase: (databasePath) => readPersonalHomeDataCountsFromSqlite(databasePath),
+        verifyIdentity: async (manifest) =>
+          (await readCanonicalPersonalHomeIdentity(layout)).homeServerIdentityId === manifest.homeServerIdentityId,
+      });
+      if (restored.outcome !== 'restored') {
+        throw new Error(restored.error ?? 'Personal Home relocation destination restore failed');
+      }
+      const finalization = await finalizePersonalHomeRestoreWithLease({
+        layout,
+        operationLeaseHeld: true,
+        finalizeConfiguration: (artifact) => finalizePersonalHomeSanitizedConfiguration(layout, artifact),
+      });
+      if (finalization.outcome !== 'finalized') {
+        throw new Error(finalization.error ?? 'Personal Home relocation destination restore finalization failed');
+      }
+      const authenticatedReadiness = await params.attestStagedHome({ layout });
+      if (authenticatedReadiness.homeServerIdentityId !== input.expectedHomeServerIdentityId) {
+        throw new Error('Stopped relocation authentication attestation identity does not match the restored Home');
+      }
+      const endpoint = await params.materializeEndpoint({
+        layout,
+        sourceDescriptorRevision: input.sourceDescriptorRevision,
+      });
+      if (endpoint.homeServerIdentityId !== input.expectedHomeServerIdentityId) {
+        throw new Error('Materialized relocation endpoint identity does not match the restored Home');
+      }
+      return { ...endpoint, ...authenticatedReadiness };
+    },
+    abortCandidate: async () => {
+      const layout = await resolveAttestedLayout();
+      await erasePersonalHomeData({ layout, operationLeaseHeld: true, operation: 'relocate' });
+    },
+  });
+}
+
+export async function attestPersonalHomeRelocationDestinationWithServerCommand(params: Readonly<{
+  layout: PersonalHomeRuntimeLayout;
+  serverBinary: string;
+  processEnv?: NodeJS.ProcessEnv;
+}>): Promise<PersonalHomeAuthenticatedReadiness> {
+  const envText = await readFile(join(params.layout.configDir, 'server.env'), 'utf8');
+  const { stdout } = await execFileWithDeadline(params.serverBinary, [
+    '--attest-personal-home-readiness',
+  ], {
+    env: {
+      ...(params.processEnv ?? process.env),
+      ...parseEnvText(envText),
+      HAPPIER_SERVER_LOG_LEVEL: 'silent',
+    },
+    encoding: 'utf8',
+    timeout: 120_000,
+    maxBuffer: 1024 * 1024,
+  });
+  const lastLine = String(stdout).split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).at(-1) ?? '';
+  let value: unknown;
+  try {
+    value = JSON.parse(lastLine) as unknown;
+  } catch {
+    throw new Error('Stopped Personal Home authentication attestation returned invalid JSON');
+  }
+  const readiness = parsePersonalHomeAuthenticatedReadiness(value);
+  if (!readiness) throw new Error('Stopped Personal Home authentication attestation returned invalid facts');
+  const identity = await readCanonicalPersonalHomeIdentity(params.layout);
+  if (readiness.homeServerIdentityId !== identity.homeServerIdentityId) {
+    throw new Error('Stopped Personal Home authentication attestation returned an inconsistent identity');
+  }
+  return readiness;
+}
+
+export async function materializePersonalHomeRelocationEndpointWithServerCommand(params: Readonly<{
+  layout: PersonalHomeRuntimeLayout;
+  serverBinary: string;
+  canonicalServerUrl: string;
+  sourceDescriptorRevision: number;
+  processEnv?: NodeJS.ProcessEnv;
+}>): Promise<Readonly<{
+  homeServerIdentityId: string;
+  canonicalServerUrl: string;
+  minimumOuterRevisionExclusive: number;
+  endpoint?: IrohEndpointDescriptorV1;
+}>> {
+  const envText = await readFile(join(params.layout.configDir, 'server.env'), 'utf8');
+  const { stdout } = await execFileWithDeadline(params.serverBinary, [
+    '--materialize-iroh-endpoint-descriptor',
+    `--source-descriptor-revision=${params.sourceDescriptorRevision}`,
+  ], {
+    env: { ...(params.processEnv ?? process.env), ...parseEnvText(envText) },
+    encoding: 'utf8',
+    timeout: 120_000,
+    maxBuffer: 1024 * 1024,
+  });
+  const value = JSON.parse(String(stdout).trim()) as unknown;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid stopped endpoint materialization result');
+  const result = value as Record<string, unknown>;
+  const identity = await readCanonicalPersonalHomeIdentity(params.layout);
+  if (result.status === 'unavailable') {
+    return {
+      homeServerIdentityId: identity.homeServerIdentityId,
+      canonicalServerUrl: params.canonicalServerUrl,
+      minimumOuterRevisionExclusive: params.sourceDescriptorRevision,
+    };
+  }
+  const endpoint = IrohEndpointDescriptorV1Schema.safeParse(result.endpoint);
+  if (result.status !== 'ready' || result.homeServerIdentityId !== identity.homeServerIdentityId || !endpoint.success
+    || typeof result.minimumOuterRevisionExclusive !== 'number' || !Number.isSafeInteger(result.minimumOuterRevisionExclusive)
+    || result.minimumOuterRevisionExclusive < params.sourceDescriptorRevision) {
+    throw new Error('Stopped endpoint materialization failed or returned inconsistent facts');
+  }
+  return {
+    homeServerIdentityId: identity.homeServerIdentityId,
+    canonicalServerUrl: params.canonicalServerUrl,
+    minimumOuterRevisionExclusive: result.minimumOuterRevisionExclusive,
+    endpoint: endpoint.data,
+  };
 }

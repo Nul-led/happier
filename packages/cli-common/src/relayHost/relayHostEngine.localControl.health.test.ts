@@ -606,6 +606,10 @@ describe('RelayHostEngine (local health control)', () => {
       });
       const rejectionExpectation = expect(controlPromise).rejects.toThrow(/healthy/i);
 
+      // The canonical service-plan owner completes through an async boundary before
+      // the health poll schedules its first retry. Synchronize on the real poll
+      // boundary rather than assuming control() schedules its timer immediately.
+      await vi.waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
       await vi.advanceTimersByTimeAsync(121_000);
 
       await rejectionExpectation;
@@ -636,11 +640,13 @@ describe('RelayHostEngine (local health control)', () => {
         const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
         return {
           ...actual,
-          spawnSync: () => ({
-            status: 1,
-            stdout: '',
-            stderr: 'Failed to connect to bus: Connection refused',
-          }),
+          spawnSync: (cmd: string) => cmd === 'sh'
+            ? { status: 0, stdout: '', stderr: '' }
+            : {
+                status: 1,
+                stdout: '',
+                stderr: 'Failed to connect to bus: Connection refused',
+              },
         };
       });
 

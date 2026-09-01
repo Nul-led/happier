@@ -6,9 +6,66 @@ import { expect, test } from 'vitest';
 
 import {
   readServerRuntimeSupportIdentity,
+  resolveIrohNativeServerSidecarEntries,
   resolveServerRuntimeSupportBuildDbProviders,
   serverRuntimeSupportNeedsPackagedMigration,
 } from './serverSidecars.js';
+
+test('server runtime support stages the ordinary Iroh package root and exact target addon', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'server-iroh-native-sidecar-'));
+  try {
+    const packageRoot = join(root, 'packages', 'iroh-native');
+    await mkdir(join(packageRoot, 'dist'), { recursive: true });
+    await mkdir(join(packageRoot, 'scripts'), { recursive: true });
+    await mkdir(join(packageRoot, 'native'), { recursive: true });
+    await writeFile(join(packageRoot, 'package.json'), '{"name":"@happier-dev/iroh-native"}\n', 'utf8');
+    await writeFile(join(packageRoot, 'dist', 'nodeNative.js'), 'export {};\n', 'utf8');
+    await writeFile(join(packageRoot, 'scripts', 'verify-node-addon-load.mjs'), 'export {};\n', 'utf8');
+    await writeFile(
+      join(packageRoot, 'native', 'happier-iroh-native-lifecycle.linux-x64.node'),
+      'native-addon',
+      'utf8',
+    );
+
+    await expect(resolveIrohNativeServerSidecarEntries({
+      repoRoot: root,
+      target: { os: 'linux', arch: 'x64', bunTarget: 'bun-linux-x64-baseline', exeExt: '' },
+      requireNativeAddon: true,
+    })).resolves.toEqual([
+      {
+        sourcePath: join(packageRoot, 'package.json'),
+        targetPath: join('node_modules', '@happier-dev', 'iroh-native', 'package.json'),
+      },
+      {
+        sourcePath: join(packageRoot, 'dist'),
+        targetPath: join('node_modules', '@happier-dev', 'iroh-native', 'dist'),
+      },
+      {
+        sourcePath: join(packageRoot, 'scripts'),
+        targetPath: join('node_modules', '@happier-dev', 'iroh-native', 'scripts'),
+      },
+      {
+        sourcePath: join(packageRoot, 'native', 'happier-iroh-native-lifecycle.linux-x64.node'),
+        targetPath: join(
+          'node_modules',
+          '@happier-dev',
+          'iroh-native',
+          'native',
+          'happier-iroh-native-lifecycle.linux-x64.node',
+        ),
+      },
+    ]);
+
+    await rm(join(packageRoot, 'native'), { recursive: true, force: true });
+    await expect(resolveIrohNativeServerSidecarEntries({
+      repoRoot: root,
+      target: { os: 'linux', arch: 'x64', bunTarget: 'bun-linux-x64-baseline', exeExt: '' },
+      requireNativeAddon: true,
+    })).rejects.toThrow(/missing Iroh lifecycle addon for linux-x64/i);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('server provider capability is independent of the behavior preset', () => {
   for (const serverComponent of ['happier-server', 'happier-server-light'] as const) {

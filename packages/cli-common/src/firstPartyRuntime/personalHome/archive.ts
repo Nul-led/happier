@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { constants as bufferConstants } from 'node:buffer';
 import { createReadStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rename, lstat, writeFile, rm, open, stat, statfs } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, lstat, writeFile, rm, open, stat, statfs, type FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+import { getHeapStatistics } from 'node:v8';
 import * as tar from 'tar';
 import {
   assertAllowedPersonalHomeBackupDirectoryPath,
@@ -11,12 +13,19 @@ import {
   isAllowedPersonalHomeBackupDirectoryPath,
   normalizePersonalHomeBackupDirectoryPath,
   parsePersonalHomeBackupManifest,
+  serializePersonalHomeManifest,
   type PersonalHomeBackupManifestV1,
 } from './manifest.js';
+import { replacePersonalHomeFileDurably } from './durableFile.js';
 import { createPersonalHomePathProtection } from './protection.js';
 
 export type PersonalHomeArchiveResult = Readonly<{ path: string; sha256: string; archiveBytes: number }>;
-export type PersonalHomeArchiveResourceCapacity = Readonly<{ availableBytes: number; availableEntries?: number }>;
+export type PersonalHomeArchiveResourceCapacity = Readonly<{
+  availableBytes: number;
+  availableEntries?: number;
+  /** Available process memory for parser state, independently of destination storage capacity. */
+  availableMemoryBytes?: number;
+}>;
 export class PersonalHomeArchiveError extends Error { constructor(public readonly code: 'invalid_archive' | 'hash_mismatch' | 'unsupported_archive' | 'resource_limit', message: string) { super(message); this.name = 'PersonalHomeArchiveError'; } }
 
 export async function createPersonalHomeArchive(params: Readonly<{ stagingDir: string; outputPath: string; manifest: PersonalHomeBackupManifestV1 }>): Promise<PersonalHomeArchiveResult> {
@@ -24,7 +33,7 @@ export async function createPersonalHomeArchive(params: Readonly<{ stagingDir: s
   const protect = createPersonalHomePathProtection();
   await mkdir(staging, { recursive: true }); await mkdir(dirname(output), { recursive: true });
   const manifest = parsePersonalHomeBackupManifest(params.manifest);
-  await writeFile(join(staging, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 }); await protect(join(staging, 'manifest.json'), 'file');
+  await writeFile(join(staging, 'manifest.json'), serializePersonalHomeManifest(manifest), { mode: 0o600 }); await protect(join(staging, 'manifest.json'), 'file');
   const names: string[] = [];
   for (const item of await walk(staging)) {
     const name = relative(staging, item.path).split(sep).join('/');
@@ -38,24 +47,71 @@ export async function createPersonalHomeArchive(params: Readonly<{ stagingDir: s
     }
   }
   names.sort();
+  const manifestIndex = names.indexOf('manifest.json');
+  if (manifestIndex < 0) throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup manifest is missing from staging');
+  names.splice(manifestIndex, 1);
+  names.unshift('manifest.json');
   const temporary = `${output}.tmp-${process.pid}-${randomUUID()}`;
   try {
     // All file names are explicit, so directory recursion is disabled: naming a directory together
     // with its descendants makes node-tar emit duplicate Directory entries.
     await tar.create({ cwd: staging, file: temporary, portable: true, noMtime: true, follow: false, noDirRecurse: true }, names);
-    const handle = await open(temporary, 'r+'); try { await handle.sync(); } finally { await handle.close(); }
     const sha256 = await sha256File(temporary); await protect(temporary, 'file');
-    await verifyPersonalHomeArchive(temporary); await rename(temporary, output);
+    await verifyPersonalHomeArchive(temporary);
+    await replacePersonalHomeFileDurably(temporary, output);
     return { path: output, sha256, archiveBytes: (await stat(output)).size };
   } catch (error) { await rm(temporary, { force: true }).catch(() => undefined); throw error; }
 }
 
 type ArchiveEntry = { path: string; type: 'File' | 'OldFile' | 'Directory'; declaredSize: number; actualSize: number; sha256?: string; manifestBytes?: Buffer };
 export type PersonalHomeArchiveInspection = Readonly<{ manifest: PersonalHomeBackupManifestV1; archiveBytes: number; entryCount: number; extractedBytes: number }>;
+export type PersonalHomeArchiveManifestMetadata = Readonly<{
+  manifest: PersonalHomeBackupManifestV1;
+  archiveBytes: number;
+}>;
+
+// Older v1 archives sorted the manifest among payload entries. Quick settings inspection skips
+// payload bodies by offset and caps header decoding at 4 MiB (8,192 physical tar headers). Explicit
+// Verify/Restore remain available for an old archive beyond this quick budget. New archives put it first.
+export const PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_HEADERS = 8_192;
+// Settings inventory runs in the long-lived CLI/desktop host and may inspect several archives.
+// Cap one archive's transient manifest/PAX allocation to node-tar's 16 MiB default read window.
+// This is not a backup/restore limit: explicit Verify and Restore parse the complete finite archive.
+export const PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_MANIFEST_BYTES = 16 * 1024 * 1024;
+
+function parseArchiveManifestBytes(bytes: Buffer): PersonalHomeBackupManifestV1 { return parsePersonalHomeBackupManifest(JSON.parse(bytes.toString('utf8'))); }
 
 function assertCapacity(capacity: PersonalHomeArchiveResourceCapacity): void {
   if (!Number.isSafeInteger(capacity.availableBytes) || capacity.availableBytes < 0) throw new PersonalHomeArchiveError('resource_limit', 'Invalid Personal Home archive byte capacity');
   if (capacity.availableEntries !== undefined && (!Number.isSafeInteger(capacity.availableEntries) || capacity.availableEntries < 0)) throw new PersonalHomeArchiveError('resource_limit', 'Invalid Personal Home archive entry capacity');
+  if (capacity.availableMemoryBytes !== undefined && (!Number.isSafeInteger(capacity.availableMemoryBytes) || capacity.availableMemoryBytes < 0)) throw new PersonalHomeArchiveError('resource_limit', 'Invalid Personal Home archive parser memory capacity');
+}
+
+type ParserMemoryBudget = Readonly<{ charge: (bytes: number, description: string) => void }>;
+
+function createParserMemoryBudget(capacity: PersonalHomeArchiveResourceCapacity): ParserMemoryBudget {
+  const heap = getHeapStatistics();
+  const heapAvailable = Math.max(0, heap.heap_size_limit - heap.used_heap_size);
+  const systemAvailable = process.availableMemory();
+  let remaining = capacity.availableMemoryBytes ?? Math.floor(Math.min(heapAvailable, systemAvailable));
+  return Object.freeze({
+    charge(bytes: number, description: string): void {
+      if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > remaining) {
+        throw new PersonalHomeArchiveError('resource_limit', `Personal Home backup ${description} exceeds available parser memory`);
+      }
+      remaining -= bytes;
+    },
+  });
+}
+
+function manifestWorkingSetBytes(bytes: number): number {
+  // Full verification's public result owns the parsed manifest. While parsing it must retain the
+  // tar body, decoded JSON, parsed values, and its canonical validated projection concurrently.
+  // Accounting those four representations prevents a caller-controlled body from consuming the
+  // process heap without imposing a fixed Home-size or entry-count policy.
+  const workingSet = bytes * 4;
+  if (!Number.isSafeInteger(workingSet)) throw new PersonalHomeArchiveError('resource_limit', 'Personal Home backup manifest parser accounting overflowed');
+  return workingSet;
 }
 
 async function defaultResourceCapacity(path: string): Promise<PersonalHomeArchiveResourceCapacity> {
@@ -73,20 +129,114 @@ async function defaultResourceCapacity(path: string): Promise<PersonalHomeArchiv
   }
 }
 
+/**
+ * Reads only the archive's manifest projection for settings inventory. This deliberately does not
+ * hash or extract payload entries; explicit Verify and Restore own full archive verification.
+ */
+export async function readPersonalHomeArchiveManifestMetadata(path: string): Promise<PersonalHomeArchiveManifestMetadata> {
+  const archiveInfo = await stat(path);
+  if (!archiveInfo.isFile()) throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup archive is not a regular file');
+  const source = await open(path, 'r');
+  try {
+    let position = 0;
+    let headersRead = 0;
+    let metadataBytesRead = 0;
+    let extended: tar.HeaderData | undefined;
+    let globalExtended: tar.HeaderData | undefined;
+    while (position + 512 <= archiveInfo.size) {
+      const headerBytes = Buffer.allocUnsafe(512);
+      await readArchiveBytesExactly(source, headerBytes, position);
+      headersRead += 1;
+      if (headersRead > PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_HEADERS) {
+        throw new PersonalHomeArchiveError('resource_limit', 'Personal Home backup manifest is beyond the quick-inspection header budget');
+      }
+      const header = new tar.Header(headerBytes, 0, extended, globalExtended);
+      if (header.nullBlock) break;
+      if (!header.cksumValid || !header.path || !Number.isSafeInteger(header.size) || (header.size ?? -1) < 0) {
+        throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup archive header is invalid');
+      }
+      const bodySize = header.size ?? 0;
+      const paddedBodySize = Math.ceil(bodySize / 512) * 512;
+      const bodyPosition = position + 512;
+      const nextPosition = bodyPosition + paddedBodySize;
+
+      if (isPersonalHomeTarMetadataEntry(header.type)) {
+        metadataBytesRead += bodySize;
+        if (metadataBytesRead > PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_MANIFEST_BYTES) {
+          throw new PersonalHomeArchiveError('resource_limit', 'Personal Home tar metadata exceeds the quick-inspection memory budget');
+        }
+        if (!Number.isSafeInteger(nextPosition) || nextPosition > archiveInfo.size) {
+          throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup archive entry is truncated');
+        }
+        const metadata = Buffer.allocUnsafe(bodySize);
+        await readArchiveBytesExactly(source, metadata, bodyPosition);
+        const value = metadata.toString('utf8').replace(/\0.*$/s, '');
+        if (header.type === 'ExtendedHeader' || header.type === 'OldExtendedHeader') extended = tar.Pax.parse(value, extended, false);
+        else if (header.type === 'GlobalExtendedHeader') globalExtended = tar.Pax.parse(value, globalExtended, true);
+        else {
+          extended ??= Object.create(null) as tar.HeaderData;
+          if (header.type === 'NextFileHasLongLinkpath') extended.linkpath = value;
+          else extended.path = value;
+        }
+        position = nextPosition;
+        continue;
+      }
+
+      extended = undefined;
+      if (header.path !== 'manifest.json') {
+        if (!Number.isSafeInteger(nextPosition) || nextPosition > archiveInfo.size) {
+          throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup archive entry is truncated');
+        }
+        position = nextPosition;
+        continue;
+      }
+      if ((header.type !== 'File' && header.type !== 'OldFile') || header.linkpath) {
+        throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup manifest entry is invalid');
+      }
+      if (bodySize > PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_MANIFEST_BYTES) {
+        throw new PersonalHomeArchiveError('resource_limit', 'Personal Home manifest bytes exceed the quick-inspection memory budget');
+      }
+      if (!Number.isSafeInteger(nextPosition) || nextPosition > archiveInfo.size) {
+        throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup archive entry is truncated');
+      }
+      const manifestBytes = Buffer.allocUnsafe(bodySize);
+      await readArchiveBytesExactly(source, manifestBytes, bodyPosition);
+      return Object.freeze({ manifest: parseArchiveManifestBytes(manifestBytes), archiveBytes: archiveInfo.size });
+    }
+    throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup manifest is missing');
+  } finally {
+    await source.close();
+  }
+}
+
+function isPersonalHomeTarMetadataEntry(type: tar.Header['type']): boolean {
+  return type === 'ExtendedHeader' || type === 'OldExtendedHeader' || type === 'GlobalExtendedHeader'
+    || type === 'NextFileHasLongPath' || type === 'OldGnuLongPath' || type === 'NextFileHasLongLinkpath';
+}
+
+async function readArchiveBytesExactly(source: FileHandle, target: Buffer, position: number): Promise<void> {
+  let offset = 0;
+  while (offset < target.length) {
+    const { bytesRead } = await source.read(target, offset, target.length - offset, position + offset);
+    if (bytesRead === 0) throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup archive entry is truncated');
+    offset += bytesRead;
+  }
+}
+
 export async function inspectPersonalHomeArchiveSnapshot(path: string, suppliedCapacity?: PersonalHomeArchiveResourceCapacity): Promise<PersonalHomeArchiveInspection> {
   const archiveInfo = await stat(path);
   if (!archiveInfo.isFile()) throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup archive is not a regular file');
-  // Verification itself streams from the immutable snapshot and allocates no extracted
-  // content or filesystem entries. Its parser work remains physically bounded by the
-  // finite archive bytes and tar headers in that snapshot. Extraction callers add the
-  // measured destination inode capacity, including implicit ancestor directories.
+  // Verification streams payload bytes and never materializes extracted file content. It retains
+  // only the manifest and structural/hash metadata required by its public result, charged against
+  // the current process-memory budget. Extraction callers also add measured destination inode
+  // capacity, including implicit ancestor directories.
   const capacity = suppliedCapacity ?? { availableBytes: archiveInfo.size };
   assertCapacity(capacity);
+  const parserMemory = createParserMemoryBudget(capacity);
   const entries: ArchiveEntry[] = [];
   const filesystemEntries = new Set<string>();
   let extractedBytes = 0;
   let validationError: Error | null = null;
-  const reads: Promise<void>[] = [];
   await tar.list({
     file: path,
     strict: true,
@@ -106,9 +256,18 @@ export async function inspectPersonalHomeArchiveSnapshot(path: string, suppliedC
         if (entry.linkpath) throw new Error(`Archive links are not supported: ${entryPath}`);
         if (!Number.isSafeInteger(entry.size) || entry.size < 0) throw new PersonalHomeArchiveError('invalid_archive', `Invalid archive entry size: ${entryPath}`);
         if (entry.size > capacity.availableBytes) throw new PersonalHomeArchiveError('resource_limit', `Personal Home backup entry exceeds destination byte capacity: ${entryPath}`);
+        parserMemory.charge(512 + Buffer.byteLength(entryPath, 'utf8') * 4, 'entry metadata');
+        if (entryPath === 'manifest.json') {
+          if (entry.size > bufferConstants.MAX_LENGTH) throw new PersonalHomeArchiveError('resource_limit', 'Personal Home backup manifest exceeds the runtime buffer contract');
+          parserMemory.charge(manifestWorkingSetBytes(entry.size), 'manifest working set');
+        }
         const components = entryPath.split('/');
         for (let length = 1; length <= components.length; length += 1) {
-          filesystemEntries.add(components.slice(0, length).join('/'));
+          const ancestor = components.slice(0, length).join('/');
+          if (!filesystemEntries.has(ancestor)) {
+            filesystemEntries.add(ancestor);
+            parserMemory.charge(64 + ancestor.length * 2, 'path-index working set');
+          }
           if (capacity.availableEntries !== undefined && filesystemEntries.size > capacity.availableEntries) {
             throw new PersonalHomeArchiveError('resource_limit', 'Personal Home backup needs more filesystem entries than the destination can stage');
           }
@@ -118,46 +277,34 @@ export async function inspectPersonalHomeArchiveSnapshot(path: string, suppliedC
         return;
       }
       const inspected: ArchiveEntry = { path: entryPath, type: entry.type, declaredSize: entry.size, actualSize: 0 };
+      if (entryPath === 'manifest.json') inspected.manifestBytes = Buffer.allocUnsafe(entry.size);
       entries.push(inspected);
-      const read = new Promise<void>((resolveRead, rejectRead) => {
-        const hash = createHash('sha256');
-        const manifestChunks: Buffer[] = [];
-        entry.on('data', (chunk: Buffer) => {
-          if (validationError) return;
-          inspected.actualSize += chunk.length;
-          extractedBytes += chunk.length;
-          if (!Number.isSafeInteger(inspected.actualSize) || !Number.isSafeInteger(extractedBytes)) {
-            validationError = new PersonalHomeArchiveError('resource_limit', 'Personal Home backup byte accounting overflowed');
-            return;
-          }
-          if (extractedBytes > capacity.availableBytes) {
-            validationError = new PersonalHomeArchiveError('resource_limit', 'Personal Home backup exceeds destination byte capacity');
-            return;
-          }
-          hash.update(chunk);
-          if (entryPath === 'manifest.json') manifestChunks.push(Buffer.from(chunk));
-        });
-        entry.on('error', rejectRead);
-        entry.on('end', () => {
-          if (validationError) {
-            resolveRead();
-            return;
-          }
-          inspected.sha256 = hash.digest('hex');
-          if (entryPath === 'manifest.json') inspected.manifestBytes = Buffer.concat(manifestChunks, inspected.actualSize);
-          resolveRead();
-        });
+      const hash = createHash('sha256');
+      entry.on('data', (chunk: Buffer) => {
+        if (validationError) return;
+        if (inspected.manifestBytes) chunk.copy(inspected.manifestBytes, inspected.actualSize);
+        inspected.actualSize += chunk.length;
+        extractedBytes += chunk.length;
+        if (!Number.isSafeInteger(inspected.actualSize) || !Number.isSafeInteger(extractedBytes)) {
+          validationError = new PersonalHomeArchiveError('resource_limit', 'Personal Home backup byte accounting overflowed');
+          return;
+        }
+        if (extractedBytes > capacity.availableBytes) {
+          validationError = new PersonalHomeArchiveError('resource_limit', 'Personal Home backup exceeds destination byte capacity');
+          return;
+        }
+        hash.update(chunk);
       });
-      reads.push(read);
+      entry.on('error', (error) => { validationError ??= error instanceof Error ? error : new Error(String(error)); });
+      entry.on('end', () => { if (!validationError) inspected.sha256 = hash.digest('hex'); });
     },
   });
-  await Promise.all(reads);
   if (validationError) throw validationError;
   for (const entry of entries) if (entry.actualSize !== entry.declaredSize) throw new PersonalHomeArchiveError('hash_mismatch', `Personal Home backup entry size does not match its header: ${entry.path}`);
   assertNonCollidingPersonalHomeBackupPaths(entries.map((entry) => ({ path: entry.path, kind: entry.type === 'Directory' ? 'directory' : 'file' })));
   const manifestEntry = entries.find((entry) => entry.path === 'manifest.json' && entry.type !== 'Directory');
   if (!manifestEntry?.manifestBytes) throw new Error('Personal Home backup manifest is missing');
-  const manifest = parsePersonalHomeBackupManifest(JSON.parse(manifestEntry.manifestBytes.toString('utf8')));
+  const manifest = parseArchiveManifestBytes(manifestEntry.manifestBytes);
   const expectedFiles = new Set(['manifest.json', ...manifest.entries.map((entry) => entry.path)]);
   const archiveFiles = entries.filter((entry) => entry.type !== 'Directory');
   if (archiveFiles.length !== expectedFiles.size || archiveFiles.some((entry) => !expectedFiles.has(entry.path))) throw new Error('Archive file entries do not match manifest');
@@ -226,7 +373,7 @@ export async function extractVerifiedPersonalHomeArchiveSnapshot(archivePath: st
     let parent = dirname(file);
     while (parent !== destination) { await protect(parent, 'directory'); parent = dirname(parent); }
   }
-  const manifest = parsePersonalHomeBackupManifest(JSON.parse(await readFile(join(destination, 'manifest.json'), 'utf8')));
+  const manifest = parseArchiveManifestBytes(await readFile(join(destination, 'manifest.json')));
   if (JSON.stringify(manifest) !== JSON.stringify(inspection.manifest)) throw new PersonalHomeArchiveError('hash_mismatch', 'Extracted Personal Home manifest changed after verification');
   const expectedFiles = new Set(['manifest.json', ...manifest.entries.map((entry) => entry.path)]);
   const archiveFiles = entries.filter((entry) => entry.type !== 'Directory');
@@ -244,6 +391,11 @@ async function sha256File(path: string): Promise<string> { const hash = createHa
 
 export async function verifyPersonalHomeArchive(path: string): Promise<PersonalHomeBackupManifestV1> {
   try { return await withPrivatePersonalHomeArchiveSnapshot(path, verifyPersonalHomeArchiveSnapshot); }
+  catch (error) { if (error instanceof PersonalHomeArchiveError) throw error; throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup archive is invalid'); }
+}
+
+export async function inspectPersonalHomeArchive(path: string): Promise<PersonalHomeArchiveInspection> {
+  try { return await withPrivatePersonalHomeArchiveSnapshot(path, inspectPersonalHomeArchiveSnapshot); }
   catch (error) { if (error instanceof PersonalHomeArchiveError) throw error; throw new PersonalHomeArchiveError('invalid_archive', 'Personal Home backup archive is invalid'); }
 }
 

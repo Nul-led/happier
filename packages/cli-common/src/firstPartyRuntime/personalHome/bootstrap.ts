@@ -19,9 +19,10 @@ export type PersonalHomeAccountCredentials = Readonly<{
 }>;
 
 /**
- * Completion/adoption receipt persisted by the caller-owned profile/adoption
- * seam only after every Home-readiness invariant has been verified. A failed
- * attempt never reaches this step, so absence of the receipt is the retry contract.
+ * Transient verified-completion payload handed to the caller-owned profile/adoption
+ * seam only after every Home-readiness invariant has been verified. This package does
+ * not persist another completion authority; the caller records readiness on the
+ * canonical adopted profile.
  */
 export type PersonalHomeBootstrapReceipt = Readonly<{
     canonicalServerUrl: string;
@@ -87,8 +88,6 @@ export type PersonalHomeBootstrapDeps = Readonly<{
     readListenerOrigin: () => Promise<string>;
     /** Caller-owned completion/adoption persistence (profile upsert seam). Called only after all invariants hold. */
     persistCompletionReceipt: (receipt: PersonalHomeBootstrapReceipt) => Promise<void | Readonly<{ profileId?: string }>>;
-    /** Optional non-loopback carrier; runs last and only after completion is persisted. */
-    exposeCarrier?: () => Promise<void>;
 }>;
 
 /**
@@ -96,8 +95,9 @@ export type PersonalHomeBootstrapDeps = Readonly<{
  * ensure/install/start the runtime with bootstrap signup enabled; create or verify the
  * local account; persist credentials; apply signup closure; restart/reload; verify
  * anonymous signup refusal and authenticated local access; only then persist the
- * completion/adoption receipt; optional carrier last. Every side effect is supplied by
- * an existing owner, so failed attempts are retryable and never mark completion.
+ * completion/adoption receipt. Optional carrier lifecycle remains owned by server startup.
+ * Every side effect is supplied by an existing owner, so failed attempts are retryable and
+ * never mark completion.
  */
 export async function runPersonalHomeBootstrap(deps: PersonalHomeBootstrapDeps): Promise<PersonalHomeBootstrapResult> {
     // 1. Stable loopback layout/origin.
@@ -155,7 +155,7 @@ export async function runPersonalHomeBootstrap(deps: PersonalHomeBootstrapDeps):
         throw new PersonalHomeCredentialsUnverifiedError();
     }
 
-    // 9. Only after every invariant holds, persist the completion/adoption receipt.
+    // 9. Only after every invariant holds, hand verified facts to the completion/adoption seam.
     const receipt: PersonalHomeBootstrapReceipt = Object.freeze({
         canonicalServerUrl,
         localServerUrl,
@@ -164,9 +164,6 @@ export async function runPersonalHomeBootstrap(deps: PersonalHomeBootstrapDeps):
         completedAtMs: Date.now(),
     });
     const persistedReceipt = await deps.persistCompletionReceipt(receipt);
-
-    // 10. Optional non-loopback carrier, strictly last.
-    if (deps.exposeCarrier) await deps.exposeCarrier();
 
     return {
         canonicalServerUrl,

@@ -22,11 +22,20 @@ describe('RelayHostEngine (Personal Home purpose)', () => {
         const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
         return {
           ...actual,
-          spawnSync: () => ({
-            status: 0,
-            stdout: 'LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled\n',
-            stderr: '',
-          }),
+          spawnSync: (_command: string, args: readonly string[] = []) => {
+            const requestsPreviewUnit = args.some((value) => value.includes('happier-server-preview'));
+            return requestsPreviewUnit
+              ? {
+                  status: 0,
+                  stdout: 'LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled\n',
+                  stderr: '',
+                }
+              : {
+                  status: 0,
+                  stdout: 'LoadState=not-found\nActiveState=inactive\nSubState=dead\nUnitFileState=disabled\n',
+                  stderr: '',
+                };
+          },
         };
       });
       vi.doMock('../firstPartyRuntime/relayRuntimeInstall.js', async () => {
@@ -118,6 +127,8 @@ describe('RelayHostEngine (Personal Home purpose)', () => {
       });
 
       expect(restoreHooks?.inspectConfigurationStorage).toBeTypeOf('function');
+      expect(restoreHooks?.readDataCountsFromDatabase).toBeTypeOf('function');
+      expect(restoreHooks?.requireDataCountVerification).toBe(true);
       const storage = await restoreHooks!.inspectConfigurationStorage!(
         normalizePersonalHomeRestorableConfigurationV1({ canonicalServerUrl: 'http://127.0.0.1:43123' }, 'home-identity'),
       );
@@ -299,7 +310,7 @@ describe('RelayHostEngine (Personal Home purpose)', () => {
         `HAPPY_SERVER_LIGHT_FILES_DIR=${join(legacyDataDir, 'legacy-public')}`,
         `HAPPIER_SERVER_LIGHT_PRIVATE_FILES_DIR=${join(currentDataDir, 'current-private')}`,
         `HAPPY_SERVER_LIGHT_PRIVATE_FILES_DIR=${join(legacyDataDir, 'legacy-private')}`,
-        'HAPPIER_PUBLIC_SERVER_URL=http://127.0.0.1:43123',
+        'HAPPIER_CANONICAL_SERVER_URL=http://127.0.0.1:43123',
         'AUTH_ANONYMOUS_SIGNUP_ENABLED=0',
         '',
       ].join('\n'), 'utf8');

@@ -1,13 +1,44 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { resolveRelayRuntimeDefaults } from '../firstPartyRuntime/relayRuntime.js';
 
+const mockedLocalHost = vi.hoisted(() => ({ homeDir: null as string | null }));
+const mockedLocalListener = vi.hoisted(() => ({ state: 'actual' as 'actual' | 'healthy' | 'stopped' }));
+
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return {
+    ...actual,
+    homedir: () => mockedLocalHost.homeDir ?? actual.homedir(),
+  };
+});
+
+vi.mock('node:net', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:net')>();
+  const { EventEmitter } = await import('node:events');
+  return {
+    ...actual,
+    createConnection: (options: import('node:net').NetConnectOpts, connectionListener?: () => void) => {
+      if (mockedLocalListener.state === 'actual') return actual.createConnection(options, connectionListener);
+      const socket = new EventEmitter() as import('node:events').EventEmitter & {
+        setTimeout: (timeoutMs: number) => void;
+        destroy: () => void;
+      };
+      socket.setTimeout = () => undefined;
+      socket.destroy = () => undefined;
+      process.nextTick(() => socket.emit(mockedLocalListener.state === 'healthy' ? 'connect' : 'error', new Error('connection refused')));
+      return socket;
+    },
+  };
+});
+
 const CANONICAL_SERVER_URL = 'http://127.0.0.1:43123';
+const PUBLIC_SERVER_URL = 'https://home.example.test';
 const PERSONAL_HOME_PURPOSE = { kind: 'personal-home', canonicalServerUrl: CANONICAL_SERVER_URL } as const;
 
 describe('RelayHostEngine (Personal Home mutation seam)', () => {
@@ -15,6 +46,8 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    mockedLocalHost.homeDir = null;
+    mockedLocalListener.state = 'actual';
     vi.resetModules();
     vi.clearAllMocks();
   });
@@ -35,7 +68,8 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
     await writeFile(join(defaults.configDir, 'server.env'), [
       'PORT=43123',
       'HAPPIER_SERVER_HOST=127.0.0.1',
-      `HAPPIER_PUBLIC_SERVER_URL=${CANONICAL_SERVER_URL}`,
+      `HAPPIER_CANONICAL_SERVER_URL=${CANONICAL_SERVER_URL}`,
+      `HAPPIER_PUBLIC_SERVER_URL=${PUBLIC_SERVER_URL}`,
       'AUTH_ANONYMOUS_SIGNUP_ENABLED=0',
       'HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=1',
     ].join('\n') + '\n', 'utf8');
@@ -56,36 +90,20 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
     return serverBinaryPath;
   }
 
-  async function writeRelocationMarker(params: Readonly<{
-    dataDir: string;
-    phase: 'staged' | 'verified' | 'pending' | 'committed';
-    localRole: 'source' | 'destination';
-  }>): Promise<void> {
-    const sourceDataDir = params.localRole === 'source' ? params.dataDir : join(dirname(params.dataDir), 'relocation-source');
-    const destinationDataDir = params.localRole === 'destination' ? params.dataDir : join(dirname(params.dataDir), 'relocation-destination');
-    await mkdir(join(params.dataDir, '.operations'), { recursive: true });
-    await writeFile(join(params.dataDir, '.operations', 'relocation.json'), `${JSON.stringify({
-      version: 1,
-      phase: params.phase,
-      sourceDataDir,
-      destinationDataDir,
-      homeServerIdentityId: 'home-identity',
-      bundleSha256: 'a'.repeat(64),
-      priorSourceRunning: true,
-    })}\n`, { mode: 0o600 });
-  }
-
-  function mockLinuxHost(homeDir: string): void {
+  function mockLinuxHost(homeDir: string, serviceState: 'missing' | 'active' = 'missing'): void {
     Object.defineProperty(process, 'platform', { value: 'linux' });
-    vi.doMock('node:os', async () => {
-      const actual = await vi.importActual<typeof import('node:os')>('node:os');
-      return { ...actual, homedir: () => homeDir };
-    });
+    mockedLocalHost.homeDir = homeDir;
     vi.doMock('node:child_process', async () => {
       const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
       return {
         ...actual,
-        spawnSync: () => ({ status: 0, stdout: 'LoadState=not-found\n', stderr: '' }),
+        spawnSync: () => ({
+          status: 0,
+          stdout: serviceState === 'active'
+            ? 'LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled\n'
+            : 'LoadState=not-found\n',
+          stderr: '',
+        }),
       };
     });
     vi.doMock('../service/index.js', async () => {
@@ -103,43 +121,11 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
       status: 200,
       json: async () => ({ ok: true }),
     })) as unknown as typeof fetch;
-    vi.doMock('node:net', async () => {
-      const actual = await vi.importActual<typeof import('node:net')>('node:net');
-      const { EventEmitter } = await vi.importActual<typeof import('node:events')>('node:events');
-      return {
-        ...actual,
-        createConnection: () => {
-          const socket = new EventEmitter() as import('node:events').EventEmitter & {
-            setTimeout: (timeoutMs: number) => void;
-            destroy: () => void;
-          };
-          socket.setTimeout = () => undefined;
-          socket.destroy = () => undefined;
-          process.nextTick(() => socket.emit('connect'));
-          return socket;
-        },
-      };
-    });
+    mockedLocalListener.state = 'healthy';
   }
 
   function mockStoppedLocalHome(): void {
-    vi.doMock('node:net', async () => {
-      const actual = await vi.importActual<typeof import('node:net')>('node:net');
-      const { EventEmitter } = await vi.importActual<typeof import('node:events')>('node:events');
-      return {
-        ...actual,
-        createConnection: () => {
-          const socket = new EventEmitter() as import('node:events').EventEmitter & {
-            setTimeout: (timeoutMs: number) => void;
-            destroy: () => void;
-          };
-          socket.setTimeout = () => undefined;
-          socket.destroy = () => undefined;
-          process.nextTick(() => socket.emit('error', new Error('connection refused')));
-          return socket;
-        },
-      };
-    });
+    mockedLocalListener.state = 'stopped';
   }
 
   function mockRecordingHomeLock(lockEvents: string[]): void {
@@ -197,6 +183,91 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
     }
   });
 
+  it('blocks an ordinary start while this runtime is a quarantined relocation destination', async () => {
+    const runtime = await createInstalledPersonalHomeRuntime();
+    try {
+      mockLinuxHost(runtime.homeDir);
+      mockStoppedLocalHome();
+      const operationsDir = join(runtime.defaults.dataDir, '.operations');
+      await mkdir(operationsDir, { recursive: true });
+      await writeFile(join(operationsDir, 'relocation-destination.json'), `${JSON.stringify({
+        version: 1,
+        operationId: 'system-task:relocation-guard',
+        status: 'quarantined',
+        bundleSha256: 'a'.repeat(64),
+        expectedHomeServerIdentityId: 'home-identity',
+        expectedCanonicalServerUrl: CANONICAL_SERVER_URL,
+        sourceDescriptorRevision: 4,
+        homeServerIdentityId: 'srv_home_1',
+        canonicalServerUrl: CANONICAL_SERVER_URL,
+        minimumOuterRevisionExclusive: 4,
+        authenticated: true,
+        accountCount: 1,
+        sessionCount: 0,
+      })}\n`, 'utf8');
+
+      const engine = await createTestEngine();
+      await expect(engine.control({
+        target: { kind: 'local' },
+        mode: 'user',
+        channel: 'preview',
+        action: 'start',
+      })).rejects.toMatchObject({
+        code: 'PERSONAL_HOME_RELOCATION_DESTINATION_ACTIVATION_BLOCKED',
+      });
+      const serverBinaryPath = await writeLocalServerBinary(runtime.homeDir);
+      await expect(engine.installOrUpdate({
+        target: { kind: 'local' },
+        mode: 'user',
+        channel: 'preview',
+        selfHostRelayBinaryOverride: serverBinaryPath,
+        purpose: PERSONAL_HOME_PURPOSE,
+        env: { PORT: '43123', AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
+      })).rejects.toMatchObject({
+        code: 'PERSONAL_HOME_RELOCATION_DESTINATION_ACTIVATION_BLOCKED',
+      });
+    } finally {
+      await runtime.dispose();
+    }
+  }, 30_000);
+
+  it('allows the canonical engine to activate a source only after recovery records proven source authority', async () => {
+    const runtime = await createInstalledPersonalHomeRuntime();
+    try {
+      mockLinuxHost(runtime.homeDir, 'active');
+      mockHealthyLocalHome();
+      const operationsDir = join(runtime.defaults.dataDir, '.operations');
+      await mkdir(operationsDir, { recursive: true });
+      await writeFile(join(operationsDir, 'relocation-source.json'), `${JSON.stringify({
+        version: 1,
+        operationId: 'system-task:relocation-return',
+        phase: 'returning_to_source',
+        destinationMachineId: 'destination-machine',
+        bundleSha256: 'b'.repeat(64),
+        homeServerIdentityId: 'srv_home_1',
+        sourceCanonicalServerUrl: CANONICAL_SERVER_URL,
+        sourceDescriptorRevision: 4,
+        sourceDescriptor: {
+          v: 1,
+          homeServerIdentityId: 'srv_home_1',
+          canonicalServerUrl: CANONICAL_SERVER_URL,
+          revision: 4,
+          endpoints: [{ kind: 'https', url: CANONICAL_SERVER_URL }],
+        },
+      })}\n`, 'utf8');
+
+      const engine = await createTestEngine();
+      await expect(engine.control({
+        target: { kind: 'local' },
+        mode: 'user',
+        channel: 'preview',
+        action: 'activate',
+      })).resolves.toBeUndefined();
+    } finally {
+      await runtime.dispose();
+    }
+  }, 30_000);
+
   it('does not deadlock lifecycle control inside an operation that already holds the Home lock in this process', async () => {
     const runtime = await createInstalledPersonalHomeRuntime();
     try {
@@ -218,78 +289,12 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
     }
   });
 
-  it('blocks ordinary Personal Home restart after a pending relocation interruption before any service command', async () => {
-    const runtime = await createInstalledPersonalHomeRuntime();
-    const serviceCommands: string[] = [];
-    try {
-      await writeRelocationMarker({ dataDir: runtime.defaults.dataDir, phase: 'pending', localRole: 'source' });
-      Object.defineProperty(process, 'platform', { value: 'linux' });
-      vi.doMock('node:os', async () => {
-        const actual = await vi.importActual<typeof import('node:os')>('node:os');
-        return { ...actual, homedir: () => runtime.homeDir };
-      });
-      vi.doMock('node:child_process', async () => {
-        const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
-        return {
-          ...actual,
-          spawnSync: (cmd: string, args: readonly string[] = []) => {
-            if (cmd === 'systemctl' && args.includes('restart')) serviceCommands.push(`${cmd} ${args.join(' ')}`);
-            return { status: 0, stdout: 'LoadState=not-found\n', stderr: '' };
-          },
-        };
-      });
-      vi.doMock('../service/index.js', async () => {
-        const actual = await vi.importActual<typeof import('../service/index.js')>('../service/index.js');
-        return { ...actual, resolveServiceBackend: () => 'systemd-user' };
-      });
-      mockHealthyLocalHome();
-
-      const engine = await createTestEngine();
-      await expect(engine.control({
-        target: { kind: 'local' },
-        mode: 'user',
-        channel: 'preview',
-        action: 'restart',
-      })).rejects.toMatchObject({ code: 'PERSONAL_HOME_RELOCATION_ACTIVATION_BLOCKED' });
-      expect(serviceCommands).toEqual([]);
-    } finally {
-      await runtime.dispose();
-    }
-  });
-
-  it('blocks Personal Home install activation when a committed marker identifies the local data as retained source', async () => {
-    const runtime = await createInstalledPersonalHomeRuntime();
-    try {
-      await writeRelocationMarker({ dataDir: runtime.defaults.dataDir, phase: 'committed', localRole: 'source' });
-      mockLinuxHost(runtime.homeDir);
-      mockStoppedLocalHome();
-      const serverBinaryPath = await writeLocalServerBinary(runtime.homeDir);
-
-      const { createRelayHostEngine } = await import('./relayHostEngine.js');
-      const engine = createRelayHostEngine({
-        resolveRemoteReleaseTarget: async () => ({ os: 'linux', arch: 'x64' }),
-        runRemoteText: async () => ({ status: 0, stdout: '', stderr: '' }),
-        copyLocalDirectoryToRemote: async () => {},
-        installRemoteComponent: async () => ({ binaryPath: serverBinaryPath, versionId: 'preview-2' }),
-        localInstallPolicy: { runServiceCommands: false, skipHealthCheck: true },
-      });
-
-      await expect(engine.installOrUpdate({
-        target: { kind: 'local' },
-        mode: 'user',
-        channel: 'preview',
-        selfHostRelayBinaryOverride: serverBinaryPath,
-      })).rejects.toMatchObject({ code: 'PERSONAL_HOME_RELOCATION_ACTIVATION_BLOCKED' });
-    } finally {
-      await runtime.dispose();
-    }
-  });
-
   it('a managed update with an omitted purpose preserves the persisted classification, closed signup, and approval policy', async () => {
     const runtime = await createInstalledPersonalHomeRuntime();
     const lockEvents: string[] = [];
     try {
       mockLinuxHost(runtime.homeDir);
+      mockStoppedLocalHome();
       mockRecordingHomeLock(lockEvents);
       const serverBinaryPath = await writeLocalServerBinary(runtime.homeDir);
 
@@ -332,7 +337,7 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
     } finally {
       await runtime.dispose();
     }
-  });
+  }, 30_000);
 
   it('safe uninstall preserves the Personal Home classification for an omitted-purpose reinstall', async () => {
     const runtime = await createInstalledPersonalHomeRuntime();
@@ -366,6 +371,10 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
       expect(uninstalledState).toEqual({ purpose: PERSONAL_HOME_PURPOSE });
       expect(await readFile(join(runtime.defaults.dataDir, 'handy-master-secret.txt'), 'utf8')).toBe('preserved-home-secret');
 
+      // The persisted purpose remains the canonical origin authority while no runtime is
+      // installed, even if the retained environment is unavailable and must be recreated.
+      await rm(join(runtime.defaults.configDir, 'server.env'));
+
       const uninstalledStatus = await engine.readStatus({
         target: { kind: 'local' },
         mode: 'user',
@@ -374,6 +383,8 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
       expect(uninstalledStatus).toMatchObject({
         installed: false,
         purpose: PERSONAL_HOME_PURPOSE,
+        baseUrl: CANONICAL_SERVER_URL,
+        canonicalServerUrl: CANONICAL_SERVER_URL,
         dataPresent: true,
       });
 
@@ -519,7 +530,7 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
       const stateText = await readFile(join(runtime.defaults.installRoot, 'self-host-state.json'), 'utf8');
       expect(JSON.parse(stateText).purpose).toEqual(PERSONAL_HOME_PURPOSE);
       const envText = await readFile(join(runtime.defaults.configDir, 'server.env'), 'utf8');
-      expect(envText).toContain(`HAPPIER_PUBLIC_SERVER_URL=${CANONICAL_SERVER_URL}`);
+      expect(envText).toContain(`HAPPIER_PUBLIC_SERVER_URL=${PUBLIC_SERVER_URL}`);
       expect(lockEvents).toEqual([]);
     } finally {
       await runtime.dispose();

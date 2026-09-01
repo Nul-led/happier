@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, protocol, safeStorage, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, protocol, safeStorage, shell, type IpcMainInvokeEvent } from 'electron';
+import { join } from 'node:path';
 
 import {
     BRIDGE_CHANNELS,
@@ -7,9 +8,12 @@ import {
     type BridgeInvokeRequest,
 } from '../shared/bridge';
 import { describeRequestTarget } from './commands/httpPlugin';
+import { ElectronDesktopFiles } from './commands/desktopFiles';
+import { resolveHsetupPath } from './commands/hsetupPath';
 import { ElectronIrohTunnelService } from './commands/irohTunnel';
 import { createCommandRegistry, describeNotImplemented, runCommand, type WindowMode } from './commands/registry';
 import { ElectronSecureStorage } from './commands/secureStorage';
+import { ElectronSystemTasks } from './commands/systemTasks';
 import type { CommandArgs, CommandContext } from './commands/types';
 import { DesktopEventBus } from './ipc/eventBus';
 import { InvokeLog } from './ipc/invokeLog';
@@ -41,6 +45,37 @@ const irohTunnel = new ElectronIrohTunnelService({
     userDataPath: () => app.getPath('userData'),
 });
 
+const systemTasks = new ElectronSystemTasks({
+    resolveHsetupPath: () => resolveHsetupPath({
+        explicitPath: process.env.HAPPIER_HSETUP_PATH,
+        resourcesPath: process.resourcesPath,
+        appPath: app.getAppPath(),
+        cacheDir: join(app.getPath('userData'), 'systemTasks'),
+    }),
+    emitEvent: (name, payload) => eventBus.emit(name, payload),
+});
+
+const desktopFiles = new ElectronDesktopFiles({
+    pickFile: async ({ title, extensions }) => {
+        const result = await dialog.showOpenDialog({
+            title,
+            properties: ['openFile'],
+            filters: [{ name: 'Happier Personal Home backup', extensions: [...extensions] }],
+        });
+        return result.canceled ? null : result.filePaths[0] ?? null;
+    },
+    saveFile: async ({ title, defaultName, extensions }) => {
+        const result = await dialog.showSaveDialog({
+            title,
+            defaultPath: defaultName,
+            filters: [{ name: 'Happier Personal Home backup', extensions: [...extensions] }],
+        });
+        return result.canceled ? null : result.filePath ?? null;
+    },
+    openPath: (path) => shell.openPath(path),
+    revealPath: (path) => shell.showItemInFolder(path),
+});
+
 const registry = createCommandRegistry({
     eventBus,
     showMainWindow: () => {
@@ -64,6 +99,8 @@ const registry = createCommandRegistry({
         crypto: safeStorage,
     }),
     irohTunnel,
+    systemTasks,
+    desktopFiles,
 });
 
 function buildCommandContext(event: IpcMainInvokeEvent): CommandContext {

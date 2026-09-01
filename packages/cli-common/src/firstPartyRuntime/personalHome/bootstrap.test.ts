@@ -80,7 +80,6 @@ function createHarness(params: HarnessParams = {}): Harness {
             receipts.push(receipt);
             return { profileId: 'profile-1' };
         },
-        exposeCarrier: async () => { ops.push('expose-carrier'); },
     };
 
     return {
@@ -95,7 +94,7 @@ function createHarness(params: HarnessParams = {}): Harness {
 }
 
 describe('runPersonalHomeBootstrap', () => {
-    it('performs the full caller-visible sequence in order: origin, runtime start, account, closure, restart, refusal, authenticated readback, receipt, carrier', async () => {
+    it('performs the full caller-visible sequence in order: origin, runtime start, account, closure, restart, refusal, authenticated readback, receipt', async () => {
         const harness = createHarness();
         const result = await runPersonalHomeBootstrap(harness.deps);
 
@@ -113,7 +112,6 @@ describe('runPersonalHomeBootstrap', () => {
             'read-listener',
             'verify-auth',
             'persist-receipt',
-            'expose-carrier',
         ]);
         expect(result.canonicalServerUrl).toBe('http://127.0.0.1:43123');
         expect(result.localServerUrl).toBe('http://127.0.0.1:43123');
@@ -155,11 +153,10 @@ describe('runPersonalHomeBootstrap', () => {
         expect(harness.getPersistedCredentials()).toEqual({ token: 'token-only-1' });
     });
 
-    it('refuses to complete or expose the carrier when a fresh anonymous signup attempt is still accepted', async () => {
+    it('refuses to complete when a fresh anonymous signup attempt is still accepted', async () => {
         const harness = createHarness({ anonymousSignupRefused: false });
         await expect(runPersonalHomeBootstrap(harness.deps)).rejects.toBeInstanceOf(PersonalHomeSignupClosureError);
         expect(harness.ops).not.toContain('persist-receipt');
-        expect(harness.ops).not.toContain('expose-carrier');
         expect(harness.receipts).toHaveLength(0);
     });
 
@@ -187,7 +184,7 @@ describe('runPersonalHomeBootstrap', () => {
         expect(result.credentials).toEqual({ token: 'token-1', secret: 'secret-1' });
         expect(result.canonicalServerUrl).toBe('http://127.0.0.1:43123');
         expect(harness.receipts).toHaveLength(1);
-        expect(harness.ops[harness.ops.length - 1]).toBe('expose-carrier');
+        expect(harness.ops[harness.ops.length - 1]).toBe('persist-receipt');
     });
 
     it('does not reopen anonymous signup when rerunning an already-closed Home', async () => {

@@ -66,6 +66,9 @@ export function createSetupMachineRecipeExecutorFromRemoteCommandRunner(params: 
       );
       return {
         authenticated: authStatus.authenticated === true,
+        credentialState: readCredentialState(authStatus.credentialState),
+        machineRegistered: authStatus.machineRegistered === true,
+        machineRegistrationState: readMachineRegistrationState(authStatus.machineRegistrationState),
         machineId: typeof authStatus.machineId === 'string' ? authStatus.machineId : null,
       };
     },
@@ -109,6 +112,18 @@ export function createSetupMachineRecipeExecutorFromRemoteCommandRunner(params: 
           );
         },
   };
+}
+
+function readCredentialState(value: unknown): 'missing' | 'valid' | 'invalid' | 'unknown' | undefined {
+  return value === 'missing' || value === 'valid' || value === 'invalid' || value === 'unknown'
+    ? value
+    : undefined;
+}
+
+function readMachineRegistrationState(value: unknown): 'no-local-id' | 'local-only' | 'server-confirmed' | undefined {
+  return value === 'no-local-id' || value === 'local-only' || value === 'server-confirmed'
+    ? value
+    : undefined;
 }
 
 export function createRemoteSetupMachineRecipeHappierExecutor(params: Readonly<{

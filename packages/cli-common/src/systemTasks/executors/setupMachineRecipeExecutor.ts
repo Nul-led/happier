@@ -55,6 +55,8 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
       serviceInstalled: record.service?.installed === true,
       daemonRunning: record.daemon?.running === true,
       needsAuth: record.auth?.needsAuth === true,
+      credentialState: readCredentialState(record.auth),
+      machineRegistrationState: readMachineRegistrationState(record.auth),
       machineId: typeof record.auth?.machineId === 'string' && record.auth.machineId.trim()
         ? record.auth.machineId.trim()
         : null,
@@ -111,7 +113,13 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
       const record = parsed as {
         ok?: boolean;
         error?: { code?: unknown };
-        data?: { authenticated?: unknown; machineId?: unknown };
+        data?: {
+          authenticated?: unknown;
+          credentialState?: unknown;
+          machineRegistered?: unknown;
+          machineRegistrationState?: unknown;
+          machineId?: unknown;
+        };
       };
 
       if (record.ok === false) {
@@ -127,6 +135,9 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
 
       return {
         authenticated: record.data?.authenticated === true,
+        credentialState: readCredentialState(record.data),
+        machineRegistered: record.data?.machineRegistered === true,
+        machineRegistrationState: readMachineRegistrationState(record.data),
         machineId: typeof record.data?.machineId === 'string' && record.data.machineId.trim()
           ? record.data.machineId.trim()
           : null,
@@ -186,6 +197,20 @@ export function createSetupMachineRecipeExecutorFromHappierJsonExecutor(params: 
 
     waitForReadyDaemon,
   };
+}
+
+function readCredentialState(value: unknown): 'missing' | 'valid' | 'invalid' | 'unknown' | undefined {
+  const state = (value as { credentialState?: unknown } | null)?.credentialState;
+  return state === 'missing' || state === 'valid' || state === 'invalid' || state === 'unknown'
+    ? state
+    : undefined;
+}
+
+function readMachineRegistrationState(value: unknown): 'no-local-id' | 'local-only' | 'server-confirmed' | undefined {
+  const state = (value as { machineRegistrationState?: unknown } | null)?.machineRegistrationState;
+  return state === 'no-local-id' || state === 'local-only' || state === 'server-confirmed'
+    ? state
+    : undefined;
 }
 
 function readPositiveIntEnv(

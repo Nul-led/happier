@@ -65,6 +65,22 @@ export function buildStopWindowsScheduledTaskIfRunningPowerShellCommand(params: 
   ].join('; ');
 }
 
+export function buildSetWindowsScheduledTaskEnabledPowerShellCommand(params: Readonly<{
+  qualifiedTaskName: string;
+  enabled: boolean;
+}>): string {
+  const { taskName, taskPath } = splitQualifiedWindowsScheduledTaskName(params.qualifiedTaskName);
+  const command = params.enabled ? 'Enable-ScheduledTask' : 'Disable-ScheduledTask';
+  return [
+    '$ErrorActionPreference = "Stop"',
+    `$taskPath = ${psQuoted(taskPath)}`,
+    `$taskName = ${psQuoted(taskName)}`,
+    '$task = Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction SilentlyContinue',
+    `if ($null -ne $task) { ${command} -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop | Out-Null }`,
+    'exit 0',
+  ].join('; ');
+}
+
 export function buildRemoveWindowsScheduledTaskIfPresentPowerShellCommand(params: Readonly<{
   qualifiedTaskName: string;
 }>): string {

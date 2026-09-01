@@ -207,6 +207,64 @@ function requiredSharpRuntimePackages(target: BinaryTarget): string[] {
     : [`@img/sharp-${suffix}`, `@img/sharp-libvips-${suffix}`];
 }
 
+function resolveIrohNodeAddonTarget(target: BinaryTarget): string {
+  return `${target.os === 'windows' ? 'win32' : target.os}-${target.arch}`;
+}
+
+/**
+ * Stages the runtime-facing Iroh workspace package shape beside a compiled
+ * server. Release builders require the exact target addon; managed/source
+ * artifacts may omit `native/` so optional Iroh support cannot make the Home
+ * itself unavailable.
+ */
+export async function resolveIrohNativeServerSidecarEntries({
+  repoRoot,
+  target,
+  requireNativeAddon = false,
+}: {
+  repoRoot: string;
+  target: BinaryTarget;
+  requireNativeAddon?: boolean;
+}): Promise<StageEntry[]> {
+  const packageRoot = join(repoRoot, 'packages', 'iroh-native');
+  const packageTargetRoot = join('node_modules', '@happier-dev', 'iroh-native');
+  const requiredEntries = [
+    ['package.json', 'package.json'],
+    ['dist', 'dist'],
+    ['scripts', 'scripts'],
+  ] as const;
+  const entries: StageEntry[] = [];
+  for (const [sourceRelativePath, targetRelativePath] of requiredEntries) {
+    const sourcePath = join(packageRoot, sourceRelativePath);
+    const info = await stat(sourcePath).catch(() => null);
+    if (!info) {
+      throw new Error(`[component-artifacts] missing Iroh native package runtime path: ${sourcePath}`);
+    }
+    entries.push({
+      sourcePath,
+      targetPath: join(packageTargetRoot, targetRelativePath),
+    });
+  }
+
+  const nativePath = join(packageRoot, 'native');
+  const addonTarget = resolveIrohNodeAddonTarget(target);
+  const addonName = `happier-iroh-native-lifecycle.${addonTarget}.node`;
+  const addonPath = join(nativePath, addonName);
+  const addonInfo = await stat(addonPath).catch(() => null);
+  if (requireNativeAddon && !addonInfo?.isFile()) {
+    throw new Error(
+      `[component-artifacts] missing Iroh lifecycle addon for ${target.os}-${target.arch}: ${addonPath}`,
+    );
+  }
+  if (addonInfo?.isFile()) {
+    entries.push({
+      sourcePath: addonPath,
+      targetPath: join(packageTargetRoot, 'native', addonName),
+    });
+  }
+  return entries;
+}
+
 async function collectInstalledPackageSidecars({
   repoRoot,
   packageName,
@@ -424,6 +482,11 @@ export async function resolveServerRuntimeSupportEntries({
   });
 
   if (target) {
+    entries.push(...await resolveIrohNativeServerSidecarEntries({
+      repoRoot,
+      target,
+      requireNativeAddon: String(env.HAPPIER_SERVER_REQUIRE_IROH_NATIVE ?? '').trim() === '1',
+    }));
     const sharpVisited = new Set<string>();
     entries.push(...await collectInstalledPackageSidecars({
       repoRoot,

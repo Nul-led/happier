@@ -1,4 +1,9 @@
-import type { SystemTaskJsonObject, SystemTaskJsonValue } from '@happier-dev/protocol';
+import {
+  HomeConnectionDescriptorV1Schema,
+  type HomeConnectionDescriptorV1,
+  type SystemTaskJsonObject,
+  type SystemTaskJsonValue,
+} from '@happier-dev/protocol';
 import { normalizePublicReleaseRingLabel } from '@happier-dev/release-runtime/releaseRings';
 
 import { SystemTaskExecutionError } from '../runSystemTask.js';
@@ -7,6 +12,7 @@ import { parseSystemTaskSshConfig, type SystemTaskSshConnectionConfig } from './
 import type { RemoteHostTrustResolution } from './remoteSshBootstrapMachineKind.js';
 import { materializeSshIdentityPrivateKeyToTempFile } from '../ssh/materializeSshIdentityPrivateKeyToTempFile.js';
 import { createPersonalHomeEraseConfirmationToken } from '../../firstPartyRuntime/personalHome/operations.js';
+import type { PersonalHomeRelocationPublicationFacts } from '../../firstPartyRuntime/personalHome/relocationCoordinator.js';
 
 export type RemoteSshManageHostAction =
   | 'testConnection'
@@ -20,9 +26,10 @@ export type RemoteSshManageHostAction =
   | 'relayRuntime.start'
   | 'relayRuntime.stop'
   | 'relayRuntime.restart'
+  | 'personalHome.relocate'
   | 'personalHome.erase';
 
-type RemoteSshAuth =
+export type RemoteSshAuth =
   | Readonly<{ mode: 'agent' }>
   | Readonly<{ mode: 'keyFile'; privateKeyPath: string }>
   | Readonly<{ mode: 'password'; password: string }>;
@@ -66,6 +73,21 @@ export type RemoteSshManageHostDeps = Readonly<{
     channel: 'stable' | 'preview' | 'dev';
     mode: 'user' | 'system';
     args: readonly string[];
+  }>) => Promise<SystemTaskJsonObject>;
+  runPersonalHomeRelocation?: (params: Readonly<{
+    ssh: SystemTaskSshConnectionConfig;
+    auth: RemoteSshAuth;
+    knownHostsMode: 'app' | 'system';
+    channel: 'stable' | 'preview' | 'dev';
+    mode: 'user' | 'system';
+    destinationMachineId: string;
+    operationId: string;
+    sourceDescriptorRevision: number;
+    recoveryAction?: 'finish_move' | 'return_to_source';
+    signal?: AbortSignal;
+    progress(stepId: string, message?: string): void;
+    publishDestination(facts: PersonalHomeRelocationPublicationFacts): Promise<HomeConnectionDescriptorV1>;
+    readPublishedDescriptor(homeServerIdentityId: string): Promise<HomeConnectionDescriptorV1 | null>;
   }>) => Promise<SystemTaskJsonObject>;
 }>;
 
@@ -146,6 +168,44 @@ export function createRemoteSshManageHostTaskKind(
             channel: parsed.channel,
           });
           return { action: parsed.action } satisfies SystemTaskJsonObject;
+        }
+
+        if (parsed.action === 'personalHome.relocate') {
+          if (!deps.runPersonalHomeRelocation) throw new SystemTaskExecutionError('unsupported', 'Remote Personal Home relocation is unavailable.');
+          if (!parsed.relayRuntime || !parsed.personalHomeRelocation) {
+            throw new SystemTaskExecutionError('invalid_params', 'Remote Personal Home relocation requires an exact runtime target and operation.');
+          }
+          const relocation = parsed.personalHomeRelocation;
+          const runtimeChannel = parsed.relayRuntime.channel ?? 'stable';
+          const runtimeMode = parsed.relayRuntime.mode ?? 'user';
+          ctx.emit({ type: 'progress', stepId: 'remote.cli.install', message: 'Ensuring Happier CLI is installed' });
+          await deps.installRemoteCli({ ssh: parsed.ssh, auth, knownHostsMode, channel: parsed.channel });
+          const personalHome = await deps.runPersonalHomeRelocation({
+            ssh: parsed.ssh,
+            auth,
+            knownHostsMode,
+            channel: runtimeChannel,
+            mode: runtimeMode,
+            destinationMachineId: relocation.destinationMachineId,
+            operationId: relocation.operationId,
+            sourceDescriptorRevision: relocation.sourceDescriptorRevision,
+            ...(relocation.recoveryAction ? { recoveryAction: relocation.recoveryAction } : {}),
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+            progress: (stepId, message) => ctx.emit({ type: 'progress', stepId, ...(message ? { message } : {}) }),
+            publishDestination: async (facts) => parseRelocationDescriptorPromptAnswer(await ctx.prompt({
+              kind: 'personal_home.publish_relocation_descriptor.v1',
+              stepId: 'personal_home.publish_relocation_descriptor',
+              message: 'Publishing the verified Personal Home destination',
+              data: facts,
+            }), false),
+            readPublishedDescriptor: async (homeServerIdentityId) => parseRelocationDescriptorPromptAnswer(await ctx.prompt({
+              kind: 'personal_home.read_relocation_descriptor.v1',
+              stepId: 'personal_home.read_relocation_descriptor',
+              message: 'Reading the current Personal Home destination',
+              data: { operationId: relocation.operationId, homeServerIdentityId },
+            }), true),
+          });
+          return { action: parsed.action, personalHome } satisfies SystemTaskJsonObject;
         }
 
         if (parsed.action === 'personalHome.erase') {
@@ -380,6 +440,12 @@ type RemoteSshManageHostParams = Readonly<{
     channel?: 'stable' | 'preview' | 'dev';
     mode?: 'user' | 'system';
   }>;
+  personalHomeRelocation?: Readonly<{
+    operationId: string;
+    destinationMachineId: string;
+    sourceDescriptorRevision: number;
+    recoveryAction?: 'finish_move' | 'return_to_source';
+  }>;
 }>;
 
 function parseRemoteSshManageHostParams(params: unknown): RemoteSshManageHostParams {
@@ -406,18 +472,25 @@ function parseRemoteSshManageHostParams(params: unknown): RemoteSshManageHostPar
   const relayRuntimeRecord = record.relayRuntime && typeof record.relayRuntime === 'object' && !Array.isArray(record.relayRuntime)
     ? record.relayRuntime as Record<string, unknown>
     : null;
-  if (action === 'personalHome.erase' && (
+  if ((action === 'personalHome.erase' || action === 'personalHome.relocate') && (
     !relayRuntimeRecord
     || !normalizePublicReleaseRingLabel(relayRuntimeRecord.channel)
     || (relayRuntimeRecord.mode !== 'user' && relayRuntimeRecord.mode !== 'system')
   )) {
     throw new SystemTaskExecutionError(
       'invalid_params',
-      'Remote Personal Home erase requires an explicit runtime channel and mode.',
+      'Remote Personal Home operation requires an explicit runtime channel and mode.',
     );
   }
   const relayRuntime = relayRuntimeRecord
     ? parseRelayRuntimeOptions(relayRuntimeRecord)
+    : undefined;
+  const relocationRecord = record.personalHomeRelocation && typeof record.personalHomeRelocation === 'object'
+    && !Array.isArray(record.personalHomeRelocation)
+    ? record.personalHomeRelocation as Record<string, unknown>
+    : null;
+  const personalHomeRelocation = action === 'personalHome.relocate'
+    ? parsePersonalHomeRelocationOptions(relocationRecord)
     : undefined;
 
   return {
@@ -428,6 +501,7 @@ function parseRemoteSshManageHostParams(params: unknown): RemoteSshManageHostPar
     knownHostsMode,
     serviceMode,
     ...(relayRuntime ? { relayRuntime } : {}),
+    ...(personalHomeRelocation ? { personalHomeRelocation } : {}),
   };
 }
 
@@ -443,7 +517,45 @@ function isRemoteSshManageHostAction(value: string): value is RemoteSshManageHos
     || value === 'relayRuntime.start'
     || value === 'relayRuntime.stop'
     || value === 'relayRuntime.restart'
+    || value === 'personalHome.relocate'
     || value === 'personalHome.erase';
+}
+
+function parsePersonalHomeRelocationOptions(
+  value: Record<string, unknown> | null,
+): NonNullable<RemoteSshManageHostParams['personalHomeRelocation']> {
+  if (!value || Object.keys(value).some((key) => key !== 'operationId' && key !== 'destinationMachineId' && key !== 'sourceDescriptorRevision' && key !== 'recoveryAction')) {
+    throw new SystemTaskExecutionError('invalid_params', 'Remote Personal Home relocation requires exact operation facts.');
+  }
+  const operationId = typeof value.operationId === 'string' ? value.operationId.trim() : '';
+  const destinationMachineId = typeof value.destinationMachineId === 'string' ? value.destinationMachineId.trim() : '';
+  const sourceDescriptorRevision = value.sourceDescriptorRevision;
+  const recoveryAction = value.recoveryAction;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(operationId) || !destinationMachineId || destinationMachineId.length > 256
+    || typeof sourceDescriptorRevision !== 'number' || !Number.isSafeInteger(sourceDescriptorRevision) || sourceDescriptorRevision < 1
+    || (recoveryAction !== undefined && recoveryAction !== 'finish_move' && recoveryAction !== 'return_to_source')) {
+    throw new SystemTaskExecutionError('invalid_params', 'Remote Personal Home relocation requires exact operation facts.');
+  }
+  return { operationId, destinationMachineId, sourceDescriptorRevision, ...(recoveryAction ? { recoveryAction } : {}) };
+}
+
+function parseRelocationDescriptorPromptAnswer(value: unknown, allowNull: false): HomeConnectionDescriptorV1;
+function parseRelocationDescriptorPromptAnswer(value: unknown, allowNull: true): HomeConnectionDescriptorV1 | null;
+function parseRelocationDescriptorPromptAnswer(
+  value: unknown,
+  allowNull: boolean,
+): HomeConnectionDescriptorV1 | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'descriptor')) {
+    throw new SystemTaskExecutionError('invalid_params', 'Personal Home relocation publication returned an invalid descriptor response.');
+  }
+  const descriptor = (value as { descriptor?: unknown }).descriptor;
+  if (allowNull && descriptor === null) return null;
+  const parsed = HomeConnectionDescriptorV1Schema.safeParse(descriptor);
+  if (!parsed.success) {
+    throw new SystemTaskExecutionError('invalid_params', 'Personal Home relocation publication returned an invalid descriptor response.');
+  }
+  return parsed.data;
 }
 
 function isJsonObject(value: SystemTaskJsonValue | undefined): value is SystemTaskJsonObject {

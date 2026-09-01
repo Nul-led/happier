@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, readFile, lstat, cp, readdir, writeFile, rm, stat, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, parse, relative, resolve } from 'node:path';
-import { createPersonalHomeArchive, verifyPersonalHomeArchive } from './archive.js';
+import { createPersonalHomeArchive, readPersonalHomeArchiveManifestMetadata, verifyPersonalHomeArchive } from './archive.js';
 import { type PersonalHomeRuntimeLayout } from './layout.js';
 import { fingerprintMasterSecret, type PersonalHomeBackupEntry, type PersonalHomeBackupManifestV1 } from './manifest.js';
 import { assertStablePersonalHomeSqliteSnapshot, PersonalHomeSqliteSnapshotError } from './sqliteSnapshot.js';
@@ -84,7 +84,7 @@ async function assertSafeOutputPath(layout: PersonalHomeRuntimeLayout, outputPat
 }
 
 export async function createPersonalHomeBackup(params: Readonly<{
-  layout: PersonalHomeRuntimeLayout; outputPath: string; stagingDir: string; homeServerIdentityId: string; schemaVersion: string; happierVersion: string; configuration: Record<string, unknown>; sqlite: PersonalHomeSqliteMaintenance; rotate?: Readonly<{ maxBackups?: number }>; wasRunning?: boolean; stopHome?: () => Promise<void>; startHome?: () => Promise<void>;
+  layout: PersonalHomeRuntimeLayout; outputPath: string; stagingDir: string; homeServerIdentityId: string; schemaVersion: string; happierVersion: string; configuration: Record<string, unknown>; sqlite: PersonalHomeSqliteMaintenance; wasRunning?: boolean; stopHome?: () => Promise<void>; startHome?: () => Promise<void>;
 }>): Promise<PersonalHomeBackupResult> {
   return withPersonalHomeOperationLock(params.layout.dataDir, 'backup', () =>
     createPersonalHomeBackupWithLease({ ...params, operationLeaseHeld: true }));
@@ -92,7 +92,7 @@ export async function createPersonalHomeBackup(params: Readonly<{
 
 /** Package-internal primitive for callers that already hold the canonical Home operation lease. */
 export async function createPersonalHomeBackupWithLease(params: Readonly<{
-  layout: PersonalHomeRuntimeLayout; outputPath: string; stagingDir: string; homeServerIdentityId: string; schemaVersion: string; happierVersion: string; configuration: Record<string, unknown>; sqlite: PersonalHomeSqliteMaintenance; rotate?: Readonly<{ maxBackups?: number }>; wasRunning?: boolean; stopHome?: () => Promise<void>; startHome?: () => Promise<void>; operationLeaseHeld: true;
+  layout: PersonalHomeRuntimeLayout; outputPath: string; stagingDir: string; homeServerIdentityId: string; schemaVersion: string; happierVersion: string; configuration: Record<string, unknown>; sqlite: PersonalHomeSqliteMaintenance; wasRunning?: boolean; stopHome?: () => Promise<void>; startHome?: () => Promise<void>; operationLeaseHeld: true;
 }>): Promise<PersonalHomeBackupResult> {
     if (!params.sqlite || typeof params.sqlite.close !== 'function') {
       throw new PersonalHomeSqliteSnapshotError('sqlite_maintenance_required', 'SQLite maintenance with an explicit close boundary is required');
@@ -150,7 +150,6 @@ export async function createPersonalHomeBackupWithLease(params: Readonly<{
       const manifest: PersonalHomeBackupManifestV1 = { format: 'happier-personal-home-backup', version: 1, createdAt: new Date().toISOString(), happierVersion: params.happierVersion, schemaVersion: params.schemaVersion, homeServerIdentityId: params.homeServerIdentityId, masterSecretFingerprint: fingerprintMasterSecret(await readFile(params.layout.masterSecretPath)), databaseProvider: 'sqlite', filesProvider: 'local', sourcePlatform: params.layout.platform, sourceRuntimeMode: params.layout.mode, entries: entries.sort((a, b) => a.path.localeCompare(b.path)) };
       const archive = await createPersonalHomeArchive({ stagingDir: staging, outputPath: params.outputPath, manifest });
       await verifyPersonalHomeArchive(archive.path);
-      await rotatePersonalHomeBackups({ backupsDir: params.layout.backupsDir, ...params.rotate, protectPath: archive.path });
       backupResult = { path: archive.path, manifest, sha256: archive.sha256, archiveBytes: archive.archiveBytes };
     } finally {
       await rm(staging, { recursive: true, force: true }).catch(() => undefined);
@@ -160,8 +159,6 @@ export async function createPersonalHomeBackupWithLease(params: Readonly<{
     return homeNeedsAttention ? { ...backupResult, homeNeedsAttention: true } : backupResult;
 }
 
-export type PersonalHomeBackupRotationResult = Readonly<{ retained: string[]; removed: string[] }>;
-export type VerifiedPersonalHomeBackupInventoryEntry = Readonly<{ path: string; createdAt: string; archiveBytes: number; homeServerIdentityId: string }>;
 export type PersonalHomeBackupArchiveInventoryEntry = Readonly<{ path: string; createdAt: string; archiveBytes: number }>;
 export async function listPersonalHomeBackupArchives(backupsDir: string): Promise<PersonalHomeBackupArchiveInventoryEntry[]> {
   const inventory: PersonalHomeBackupArchiveInventoryEntry[] = [];
@@ -173,32 +170,10 @@ export async function listPersonalHomeBackupArchives(backupsDir: string): Promis
     try {
       const info = await lstat(path);
       if (!info.isFile()) continue;
-      inventory.push({ path, createdAt: info.mtime.toISOString(), archiveBytes: info.size });
+      const metadata = await readPersonalHomeArchiveManifestMetadata(path);
+      inventory.push({ path, createdAt: metadata.manifest.createdAt, archiveBytes: metadata.archiveBytes });
     } catch { /* An entry that disappears or cannot be inspected is not a current archive fact. */ }
   }
   inventory.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.path.localeCompare(a.path));
   return inventory;
-}
-export async function listVerifiedPersonalHomeBackups(backupsDir: string): Promise<VerifiedPersonalHomeBackupInventoryEntry[]> {
-  const inventory: VerifiedPersonalHomeBackupInventoryEntry[] = [];
-  let names: string[];
-  try { names = await readdir(backupsDir); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
-  for (const name of names) {
-    if (!name.endsWith('.tar')) continue;
-    const path = resolve(backupsDir, name);
-    try {
-      const [info, manifest] = await Promise.all([stat(path), verifyPersonalHomeArchive(path)]);
-      inventory.push({ path, createdAt: manifest.createdAt, archiveBytes: info.size, homeServerIdentityId: manifest.homeServerIdentityId });
-    } catch { /* Unverified archives are retained for diagnosis but never reported or rotated as usable. */ }
-  }
-  inventory.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.path.localeCompare(a.path));
-  return inventory;
-}
-export async function rotatePersonalHomeBackups(params: Readonly<{ backupsDir: string; maxBackups?: number; protectPath?: string }>): Promise<PersonalHomeBackupRotationResult> {
-  const maxBackups = Math.max(1, Math.floor(params.maxBackups ?? 5)); await mkdir(params.backupsDir, { recursive: true });
-  const candidates = await listVerifiedPersonalHomeBackups(params.backupsDir);
-  if (params.protectPath) candidates.sort((a, b) => Number(resolve(b.path) === resolve(params.protectPath!)) - Number(resolve(a.path) === resolve(params.protectPath!)) || Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.path.localeCompare(a.path));
-  const retained: string[] = []; const removed: string[] = [];
-  for (const candidate of candidates) { if (retained.length < maxBackups) retained.push(candidate.path); else { await rm(candidate.path, { force: true }); removed.push(candidate.path); } }
-  return { retained, removed };
 }

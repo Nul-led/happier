@@ -17,7 +17,10 @@ import {
   createDeferredPersonalHomeSystemTaskOperations,
   createPersonalHomeEraseTaskKind,
   createPersonalHomeInspectTaskKind,
-  createPersonalHomeRelocateTaskKind,
+  createPersonalHomeRelocationDestinationAbortTaskKind,
+  createPersonalHomeRelocationDestinationCommitTaskKind,
+  createPersonalHomeRelocationDestinationStageTaskKind,
+  createPersonalHomeRelocationDestinationStatusTaskKind,
   createPersonalHomeRestoreTaskKind,
   createPersonalHomeVerifyBackupTaskKind,
   createPersonalHomeSystemTaskOperations,
@@ -35,16 +38,76 @@ import { createExecutionRunnerFromKind } from '../createExecutionRunnerFromKind.
 import { createSystemTaskRegistry, executeSystemTask } from '../runSystemTask.js';
 
 describe('relay runtime shared system task kinds', () => {
-  it('routes rollback and finalization through the existing restore task kind and keeps exactly six ids', async () => {
+  it('routes retry-safe relocation destination actions through one destination-local owner', async () => {
+    const calls: string[] = [];
+    const relocationDestination = {
+      stage: async () => (calls.push('stage'), { operationId: 'operation-1', status: 'quarantined' as const, bundleSha256: 'a'.repeat(64), expectedHomeServerIdentityId: 'home-1', expectedCanonicalServerUrl: 'https://source.example.test', sourceDescriptorRevision: 1 }),
+      status: async () => (calls.push('status'), { operationId: 'operation-1', status: 'quarantined' as const, bundleSha256: 'a'.repeat(64), expectedHomeServerIdentityId: 'home-1', expectedCanonicalServerUrl: 'https://source.example.test', sourceDescriptorRevision: 1 }),
+      commit: async () => (calls.push('commit'), { operationId: 'operation-1', status: 'active' as const, bundleSha256: 'a'.repeat(64), expectedHomeServerIdentityId: 'home-1', expectedCanonicalServerUrl: 'https://source.example.test', sourceDescriptorRevision: 1 }),
+      abort: async () => (calls.push('abort'), { operationId: 'operation-1', status: 'aborted' as const, bundleSha256: 'a'.repeat(64), expectedHomeServerIdentityId: 'home-1', expectedCanonicalServerUrl: 'https://source.example.test', sourceDescriptorRevision: 1 }),
+    };
+    const base = {
+      target: { kind: 'local' as const },
+      channel: 'stable' as const,
+      mode: 'user' as const,
+      purpose: { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:43123' },
+      operationId: 'operation-1',
+    };
+    const cases = [
+      [createPersonalHomeRelocationDestinationStageTaskKind, { ...base, archivePath: '/tmp/bundle.tar', bundleSha256: 'a'.repeat(64), expectedHomeServerIdentityId: 'home-1', expectedCanonicalServerUrl: 'https://source.example.test', sourceDescriptorRevision: 1 }],
+      [createPersonalHomeRelocationDestinationStatusTaskKind, base],
+      [createPersonalHomeRelocationDestinationCommitTaskKind, { ...base, publishedDescriptor: { v: 1, homeServerIdentityId: 'srv_home_1', canonicalServerUrl: 'https://destination.example.test', revision: 2, endpoints: [{ kind: 'https', url: 'https://destination.example.test' }] } }],
+      [createPersonalHomeRelocationDestinationAbortTaskKind, base],
+    ] as const;
+    for (const [factory, params] of cases) {
+      await expect(factory({ loadRelocationDestination: async (target) => {
+        expect(target).toEqual({ channel: 'stable', mode: 'user' });
+        return relocationDestination;
+      } }).run({ params, emit: () => undefined, prompt: async () => undefined })).resolves.toHaveProperty('status');
+    }
+    expect(calls).toEqual(['stage', 'status', 'commit', 'abort']);
+  });
+
+  it('carries the exact Personal Home runtime target to the operation owner', async () => {
+    let receivedContext: unknown;
+    const operations: PersonalHomeSystemTaskOperations = {
+      inspect: async (context) => (receivedContext = context, {}),
+      backup: async () => ({}),
+      verifyBackup: async () => ({}),
+      restore: async () => ({}),
+      recoverRestore: async () => ({}),
+      finalizeRestore: async () => ({}),
+      erase: async () => ({}),
+    };
+
+    await createPersonalHomeInspectTaskKind({ operations }).run({
+      params: {
+        target: { kind: 'local' },
+        channel: 'preview',
+        mode: 'system',
+        purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+      },
+      emit: () => undefined,
+      prompt: async () => undefined,
+    });
+
+    expect(receivedContext).toMatchObject({
+      runtimeTarget: { channel: 'preview', mode: 'system' },
+    });
+  });
+
+  it('routes rollback and finalization through the existing restore task kind and keeps all operation and destination ids', async () => {
     const recoverRestore = vi.fn(async () => ({ outcome: 'rolled_back', affectedTargets: ['/home/data'] }));
     const finalizeRestore = vi.fn(async () => ({ outcome: 'finalized', removedPaths: ['/home/data.rollback'] }));
     const operations: PersonalHomeSystemTaskOperations = {
       inspect: async () => ({}), backup: async () => ({}), verifyBackup: async () => ({}),
-      restore: async () => ({}), recoverRestore, finalizeRestore, erase: async () => ({}), relocate: async () => ({}),
+      restore: async () => ({}), recoverRestore, finalizeRestore, erase: async () => ({}),
     };
     const result = await createPersonalHomeRestoreTaskKind({ operations }).run({
       params: {
         target: { kind: 'local' },
+        channel: 'stable',
+        mode: 'user',
         purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
         action: 'recover',
       },
@@ -57,6 +120,8 @@ describe('relay runtime shared system task kinds', () => {
     const finalized = await createPersonalHomeRestoreTaskKind({ operations }).run({
       params: {
         target: { kind: 'local' },
+        channel: 'stable',
+        mode: 'user',
         purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
         action: 'finalize',
       },
@@ -65,9 +130,9 @@ describe('relay runtime shared system task kinds', () => {
     });
     expect(finalized).toEqual({ outcome: 'finalized', removedPaths: ['/home/data.rollback'] });
     expect(finalizeRestore).toHaveBeenCalledOnce();
-    expect(PERSONAL_HOME_SYSTEM_TASK_KIND_IDS).toHaveLength(6);
+    expect(PERSONAL_HOME_SYSTEM_TASK_KIND_IDS).toHaveLength(9);
   });
-  it('derives all six Personal Home operations from their task kinds', async () => {
+  it('derives the five local Personal Home operations from their task kinds', async () => {
     const calls: Array<readonly [string, unknown]> = [];
     const operations: PersonalHomeSystemTaskOperations = {
       inspect: async () => (calls.push(['inspect', undefined]), { operation: 'inspect' }),
@@ -77,10 +142,11 @@ describe('relay runtime shared system task kinds', () => {
       recoverRestore: async () => ({ operation: 'recover_restore' }),
       finalizeRestore: async () => ({ operation: 'finalize_restore' }),
       erase: async (input) => (calls.push(['erase', input]), { operation: 'erase' }),
-      relocate: async (input) => (calls.push(['relocate', input]), { operation: 'relocate' }),
     };
     const base = {
       target: { kind: 'local' as const },
+      channel: 'stable' as const,
+      mode: 'user' as const,
       purpose: { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:43123' },
     };
     const cases = [
@@ -89,19 +155,6 @@ describe('relay runtime shared system task kinds', () => {
       [createPersonalHomeVerifyBackupTaskKind, { ...base, archivePath: '/tmp/home.tar' }],
       [createPersonalHomeRestoreTaskKind, { ...base, archivePath: '/tmp/home.tar', confirmOverwrite: true, expectedHomeServerIdentityId: 'home_1' }],
       [createPersonalHomeEraseTaskKind, base],
-      [createPersonalHomeRelocateTaskKind, {
-        ...base,
-        destination: {
-          targetId: 'computer_2',
-          descriptor: {
-            v: 1,
-            homeServerIdentityId: 'srv_home_1',
-            canonicalServerUrl: 'https://home.example.test',
-            revision: 1,
-            endpoints: [{ kind: 'https', url: 'https://home.example.test' }],
-          },
-        },
-      }],
     ] as const;
 
     for (const [factory, params] of cases) {
@@ -114,7 +167,7 @@ describe('relay runtime shared system task kinds', () => {
     }
 
     expect(calls.map(([operation]) => operation)).toEqual([
-      'inspect', 'backup', 'verify_backup', 'restore', 'erase', 'relocate',
+      'inspect', 'backup', 'verify_backup', 'restore', 'erase',
     ]);
   });
 
@@ -124,7 +177,6 @@ describe('relay runtime shared system task kinds', () => {
     ['verify backup', createPersonalHomeVerifyBackupTaskKind, {}],
     ['restore', createPersonalHomeRestoreTaskKind, { archivePath: '/tmp/home.tar', confirmOverwrite: false }],
     ['erase', createPersonalHomeEraseTaskKind, { confirmErase: false }],
-    ['relocate', createPersonalHomeRelocateTaskKind, {}],
   ])('rejects invalid %s params before invoking the owner', async (_label, factory, extra) => {
     let calls = 0;
     const operations: PersonalHomeSystemTaskOperations = {
@@ -135,12 +187,13 @@ describe('relay runtime shared system task kinds', () => {
       recoverRestore: async () => (calls += 1, {}),
       finalizeRestore: async () => (calls += 1, {}),
       erase: async () => (calls += 1, {}),
-      relocate: async () => (calls += 1, {}),
     };
 
     await expect(factory({ operations }).run({
       params: {
         target: { kind: 'local' },
+        channel: 'stable',
+        mode: 'user',
         purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
         ...extra,
       },
@@ -157,7 +210,7 @@ describe('relay runtime shared system task kinds', () => {
   ])('does not authorize erase for a %s prompt answer', async (_label, answer) => {
     let confirmed = false;
     const operations: PersonalHomeSystemTaskOperations = {
-      inspect: async () => ({}), backup: async () => ({}), verifyBackup: async () => ({}), restore: async () => ({}), recoverRestore: async () => ({}), finalizeRestore: async () => ({}), relocate: async () => ({}),
+      inspect: async () => ({}), backup: async () => ({}), verifyBackup: async () => ({}), restore: async () => ({}), recoverRestore: async () => ({}), finalizeRestore: async () => ({}),
       erase: async (context) => {
         confirmed = await context.confirm!({ canonicalServerUrl: 'http://127.0.0.1:43123', homeServerIdentityId: 'home-1', paths: ['/data/home.sqlite'], estimatedBytes: 42 });
         if (!confirmed) throw Object.assign(new Error('declined'), { code: 'confirmation_required' });
@@ -165,7 +218,7 @@ describe('relay runtime shared system task kinds', () => {
       },
     };
     await expect(createPersonalHomeEraseTaskKind({ operations }).run({
-      params: { target: { kind: 'local' }, purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' } },
+      params: { target: { kind: 'local' }, channel: 'stable', mode: 'user', purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' } },
       emit: () => undefined,
       prompt: async () => answer,
     })).rejects.toBeTruthy();
@@ -175,11 +228,11 @@ describe('relay runtime shared system task kinds', () => {
   it('emits the owner-resolved erase prompt and accepts only the narrow approval shape', async () => {
     const prompts: unknown[] = [];
     const operations: PersonalHomeSystemTaskOperations = {
-      inspect: async () => ({}), backup: async () => ({}), verifyBackup: async () => ({}), restore: async () => ({}), recoverRestore: async () => ({}), finalizeRestore: async () => ({}), relocate: async () => ({}),
+      inspect: async () => ({}), backup: async () => ({}), verifyBackup: async () => ({}), restore: async () => ({}), recoverRestore: async () => ({}), finalizeRestore: async () => ({}),
       erase: async (context) => ({ confirmed: await context.confirm!({ canonicalServerUrl: 'http://127.0.0.1:43123', homeServerIdentityId: 'home-1', paths: ['/canonical/home.sqlite'], estimatedBytes: 73 }) }),
     };
     await expect(createPersonalHomeEraseTaskKind({ operations }).run({
-      params: { target: { kind: 'local' }, purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' } },
+      params: { target: { kind: 'local' }, channel: 'stable', mode: 'user', purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' } },
       emit: () => undefined,
       prompt: async (prompt) => { prompts.push(prompt); return { confirmed: true }; },
     })).resolves.toEqual({ confirmed: true });
@@ -203,7 +256,6 @@ describe('relay runtime shared system task kinds', () => {
         recoverRestore: async () => ({}),
         finalizeRestore: async () => ({}),
         erase: async () => ({}),
-        relocate: async () => ({}),
       },
     });
 
@@ -229,12 +281,13 @@ describe('relay runtime shared system task kinds', () => {
       recoverRestore: async () => ({}),
       finalizeRestore: async () => ({}),
       erase: async () => ({}),
-      relocate: async () => ({}),
     };
 
     await expect(createPersonalHomeRestoreTaskKind({ operations }).run({
       params: {
         target: { kind: 'local' },
+        channel: 'stable',
+        mode: 'user',
         purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
         archivePath: '/tmp/home.tar',
       },
@@ -247,6 +300,7 @@ describe('relay runtime shared system task kinds', () => {
 
   it('retries deferred owner composition after a failed load and caches the successful owner', async () => {
     let loads = 0;
+    const targets: unknown[] = [];
     const owner: PersonalHomeSystemTaskOperations = {
       inspect: async () => ({ ready: true }),
       backup: async () => ({}),
@@ -255,15 +309,16 @@ describe('relay runtime shared system task kinds', () => {
       recoverRestore: async () => ({}),
       finalizeRestore: async () => ({}),
       erase: async () => ({}),
-      relocate: async () => ({}),
     };
-    const operations = createDeferredPersonalHomeSystemTaskOperations(async () => {
+    const operations = createDeferredPersonalHomeSystemTaskOperations(async (target) => {
       loads += 1;
+      targets.push(target);
       if (loads === 1) throw new Error('runtime not installed');
       return owner;
     });
     const context = {
       requestedPurpose: { kind: 'personal-home' as const, canonicalServerUrl: 'http://127.0.0.1:43123' },
+      runtimeTarget: { channel: 'stable' as const, mode: 'user' as const },
       progress: () => undefined,
       confirm: async () => true,
     };
@@ -271,7 +326,16 @@ describe('relay runtime shared system task kinds', () => {
     await expect(operations.inspect(context)).rejects.toThrow('runtime not installed');
     await expect(operations.inspect(context)).resolves.toEqual({ ready: true });
     await expect(operations.inspect(context)).resolves.toEqual({ ready: true });
-    expect(loads).toBe(2);
+    await expect(operations.inspect({
+      ...context,
+      runtimeTarget: { channel: 'preview', mode: 'user' },
+    })).resolves.toEqual({ ready: true });
+    expect(loads).toBe(3);
+    expect(targets).toEqual([
+      { channel: 'stable', mode: 'user' },
+      { channel: 'stable', mode: 'user' },
+      { channel: 'preview', mode: 'user' },
+    ]);
   });
 
   it('forwards cancellation and emits only owner-reported progress phases', async () => {
@@ -290,13 +354,14 @@ describe('relay runtime shared system task kinds', () => {
         recoverRestore: async () => ({}),
         finalizeRestore: async () => ({}),
         erase: async () => ({}),
-        relocate: async () => ({}),
       },
     });
 
     await expect(kind.run({
       params: {
         target: { kind: 'local' },
+        channel: 'stable',
+        mode: 'user',
         purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
       },
       signal: controller.signal,
@@ -342,6 +407,8 @@ describe('relay runtime shared system task kinds', () => {
     const result = await createPersonalHomeInspectTaskKind({ operations: taskOperations }).run({
       params: {
         target: { kind: 'local' },
+        channel: 'stable',
+        mode: 'user',
         purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
       },
       emit: () => undefined,
@@ -363,7 +430,7 @@ describe('relay runtime shared system task kinds', () => {
       await mkdir(defaults.configDir, { recursive: true });
       await writeFile(join(defaults.configDir, 'server.env'), [
         `HAPPIER_SERVER_LIGHT_DATA_DIR=${defaults.dataDir}`,
-        'HAPPIER_PUBLIC_SERVER_URL=http://127.0.0.1:43123',
+        'HAPPIER_CANONICAL_SERVER_URL=http://127.0.0.1:43123',
         'HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY=plaintext_only',
         'HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE=plain',
         '',
@@ -389,8 +456,11 @@ describe('relay runtime shared system task kinds', () => {
       await writeFile(layout.masterSecretPath, 'task-restore-master-secret');
       const database = new DatabaseSync(layout.databasePath);
       database.exec('CREATE TABLE SimpleCache (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+      database.exec('CREATE TABLE "Account" (id TEXT PRIMARY KEY)');
+      database.exec('CREATE TABLE "Session" (id TEXT PRIMARY KEY)');
       database.exec('CREATE TABLE _prisma_migrations (migration_name TEXT NOT NULL, checksum TEXT NOT NULL, finished_at TEXT, rolled_back_at TEXT)');
       database.prepare('INSERT INTO SimpleCache (key, value) VALUES (?, ?)').run('server.identity.v1', 'task-restore-home');
+      database.prepare('INSERT INTO "Account" (id) VALUES (?)').run('account-1');
       database.prepare('INSERT INTO _prisma_migrations (migration_name, checksum, finished_at, rolled_back_at) VALUES (?, ?, ?, NULL)').run(
         migrations[0].name,
         createHash('sha256').update(migrations[0].sql).digest('hex'),
@@ -430,6 +500,8 @@ describe('relay runtime shared system task kinds', () => {
       const result = await createPersonalHomeRestoreTaskKind({ operations: taskOperations }).run({
         params: {
           target: { kind: 'local' },
+          channel: 'stable',
+          mode: 'user',
           purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
           archivePath: backup.path,
           confirmOverwrite: true,
@@ -487,6 +559,8 @@ describe('relay runtime shared system task kinds', () => {
     await expect(createPersonalHomeBackupTaskKind({ operations: taskOperations }).run({
       params: {
         target: { kind: 'local' },
+        channel: 'stable',
+        mode: 'user',
         purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:49999' },
       },
       emit: () => undefined,
@@ -531,6 +605,7 @@ describe('relay runtime shared system task kinds', () => {
 
     await expect(taskOperations.backup({
       requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+      runtimeTarget: { channel: 'stable', mode: 'user' },
       progress: () => undefined,
       confirm: async () => false,
     })).rejects.toMatchObject({ code: 'purpose_not_personal_home' });
@@ -566,6 +641,8 @@ describe('relay runtime shared system task kinds', () => {
         kind: PERSONAL_HOME_SYSTEM_TASK_KINDS.backup,
         params: {
           target: { kind: 'local' },
+          channel: 'stable',
+          mode: 'user',
           purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
         },
       },
@@ -617,6 +694,7 @@ describe('relay runtime shared system task kinds', () => {
 
     await expect(taskOperations.inspect({
       requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+      runtimeTarget: { channel: 'stable', mode: 'user' },
       progress: () => undefined,
       confirm: async () => false,
     })).resolves.toMatchObject({ purpose: 'personal-home' });
@@ -624,6 +702,7 @@ describe('relay runtime shared system task kinds', () => {
       archivePath: '/tmp/home.tar',
       confirmOverwrite: true,
       requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+      runtimeTarget: { channel: 'stable', mode: 'user' },
       progress: () => undefined,
       confirm: async () => false,
     })).rejects.toMatchObject({ code: 'unsupported' });

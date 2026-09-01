@@ -23,7 +23,8 @@ export function resolvePersonalHomeEraseTargets(layout: PersonalHomeRuntimeLayou
   return [...new Set([
     layout.databasePath, `${layout.databasePath}-wal`, `${layout.databasePath}-shm`, layout.publicFilesDir,
     layout.privateFilesDir, layout.masterSecretPath, layout.backupsDir, layout.derivedDataDir,
-    layout.irohEndpointKeyPath, resolve(dataRoot, '.operations', 'restore-journal.json'), resolve(dataRoot, '.operations', 'relocation.json'),
+    layout.irohEndpointKeyPath, resolve(dataRoot, '.operations', 'restore-journal.json'),
+    resolve(dataRoot, '.operations', 'relocation-source.json'), resolve(dataRoot, '.operations', 'relocation-destination.json'),
     resolve(layout.configDir, 'server.env'),
   ].map((path) => resolve(path)))];
 }
@@ -39,9 +40,10 @@ function resolveValidatedDataRoot(layout: PersonalHomeRuntimeLayout): string {
 export async function erasePersonalHomeData(params: Readonly<{
   layout: PersonalHomeRuntimeLayout;
   operationLeaseHeld: true;
+  operation?: 'erase' | 'relocate';
 }>): Promise<PersonalHomeEraseResult> {
   const dataRoot = resolveValidatedDataRoot(params.layout);
-  if (!(await isPersonalHomeOperationLockHeld(dataRoot, 'erase'))) {
+  if (!(await isPersonalHomeOperationLockHeld(dataRoot, params.operation ?? 'erase'))) {
     throw new PersonalHomeEraseError('unsafe_data_root', 'Personal Home erase requires the facade operation lease.');
   }
   const removedPaths: string[] = [];

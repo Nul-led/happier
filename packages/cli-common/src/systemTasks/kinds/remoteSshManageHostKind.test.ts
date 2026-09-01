@@ -36,6 +36,91 @@ async function waitForResult(
 }
 
 describe('createRemoteSshManageHostTaskKind', () => {
+  it('calls the injected relocation coordinator with the exact remote target and publication/readback prompts', async () => {
+    const descriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_home1',
+      canonicalServerUrl: 'https://destination.test',
+      revision: 8,
+      endpoints: [{ kind: 'https' as const, url: 'https://destination.test' }],
+    };
+    const runPersonalHomeRelocation = vi.fn(async (input: {
+      destinationMachineId: string;
+      operationId: string;
+      publishDestination(facts: SystemTaskJsonObject): Promise<unknown>;
+      readPublishedDescriptor(homeServerIdentityId: string): Promise<unknown>;
+    }) => {
+      const published = await input.publishDestination({
+        operationId: input.operationId,
+        homeServerIdentityId: 'srv_home1',
+        canonicalServerUrl: descriptor.canonicalServerUrl,
+        minimumOuterRevisionExclusive: 7,
+        endpoints: descriptor.endpoints,
+      });
+      const current = await input.readPublishedDescriptor('srv_home1');
+      return { operationId: input.operationId, status: 'committed', published, current } as SystemTaskJsonObject;
+    });
+    const kind = createRemoteSshManageHostTaskKind({
+      resolveHostTrust: async () => ({ status: 'trusted' }),
+      testConnection: async () => {},
+      installRemoteCli: async () => {},
+      runDaemonServiceCommand: async () => {},
+      runRelayRuntimeCommand: async () => {},
+      runPersonalHomeRelocation,
+    });
+    const runner = createSystemTasksRunner({ kinds: { 'remote.ssh.manageHost.v1': kind } });
+    await runner.start({
+      taskId: 'remote-relocate',
+      kind: 'remote.ssh.manageHost.v1',
+      params: {
+        action: 'personalHome.relocate',
+        channel: 'preview',
+        relayRuntime: { channel: 'preview', mode: 'system' },
+        personalHomeRelocation: { operationId: 'operation-1', destinationMachineId: 'machine-2', sourceDescriptorRevision: 7, recoveryAction: 'return_to_source' },
+        ssh: { target: 'relocation@example.test', auth: 'agent', port: 2222 },
+      },
+    });
+    const publishPrompt = await waitForPendingPrompt(runner, { taskId: 'remote-relocate', cursor: 0 });
+    expect(publishPrompt.pendingPrompt).toMatchObject({
+      kind: 'personal_home.publish_relocation_descriptor.v1',
+      data: { operationId: 'operation-1', homeServerIdentityId: 'srv_home1' },
+    });
+    await runner.respond({ taskId: 'remote-relocate', answer: { descriptor } });
+    const readPrompt = await waitForPendingPrompt(runner, { taskId: 'remote-relocate', cursor: publishPrompt.nextCursor });
+    expect(readPrompt.pendingPrompt).toMatchObject({
+      kind: 'personal_home.read_relocation_descriptor.v1',
+      data: { operationId: 'operation-1', homeServerIdentityId: 'srv_home1' },
+    });
+    await runner.respond({ taskId: 'remote-relocate', answer: { descriptor } });
+    const result = await waitForResult(runner, { taskId: 'remote-relocate', cursor: readPrompt.nextCursor });
+    expect(result.result).toMatchObject({ ok: true, data: { action: 'personalHome.relocate', personalHome: { operationId: 'operation-1', status: 'committed' } } });
+    expect(result.result).not.toHaveProperty('data.personalHome.archivePath');
+    expect(result.result).not.toHaveProperty('data.personalHome.destinationDataDir');
+    expect(runPersonalHomeRelocation).toHaveBeenCalledWith(expect.objectContaining({
+      ssh: expect.objectContaining({ target: 'relocation@example.test', port: 2222 }),
+      channel: 'preview',
+      mode: 'system',
+      destinationMachineId: 'machine-2',
+      operationId: 'operation-1',
+      sourceDescriptorRevision: 7,
+      recoveryAction: 'return_to_source',
+    }));
+  });
+
+  it('fails closed before relocation when its operation and exact runtime target are absent', async () => {
+    const runPersonalHomeRelocation = vi.fn(async () => ({}));
+    const kind = createRemoteSshManageHostTaskKind({
+      resolveHostTrust: async () => ({ status: 'trusted' }), testConnection: async () => {}, installRemoteCli: async () => {},
+      runDaemonServiceCommand: async () => {}, runRelayRuntimeCommand: async () => {}, runPersonalHomeRelocation,
+    });
+    await expect(kind.run({
+      params: { action: 'personalHome.relocate', ssh: { target: 'relocation@example.test', auth: 'agent' } },
+      emit: () => undefined,
+      prompt: async () => ({}),
+    })).rejects.toMatchObject({ code: 'invalid_params' });
+    expect(runPersonalHomeRelocation).not.toHaveBeenCalled();
+  });
+
   it('inspects, prompts with exact facts, then invokes installed-CLI erase with a bound token', async () => {
     const runPersonalHomeCommand = vi.fn(async ({ args }: { args: readonly string[] }): Promise<SystemTaskJsonObject> => {
       if (args[1] === 'status') return { purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' }, identity: { homeServerIdentityId: 'home-1' }, storage: { ownedErasePaths: ['/data/db', '/data/files'], estimatedOwnedBytes: 99 } };

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_PERSONAL_HOME_ORIGIN,
+  DEFAULT_PERSONAL_HOME_PORT,
   createPersonalHomeRuntimeSpec,
   parsePersonalHomeRuntimePurpose,
   renderPersonalHomeRuntimeEnv,
@@ -10,6 +12,10 @@ import { resolvePersonalHomeRuntimeLayout } from './layout.js';
 import { parseRelayRuntimeTaskParams } from '../../systemTasks/kinds/relayRuntimeKinds.js';
 
 describe('Personal Home runtime purpose', () => {
+  it('owns the browser-safe default loopback origin and port', () => {
+    expect(DEFAULT_PERSONAL_HOME_PORT).toBe(3005);
+    expect(DEFAULT_PERSONAL_HOME_ORIGIN).toBe('http://127.0.0.1:3005');
+  });
   it('renders the fixed loopback/plaintext bootstrap environment', () => {
     const spec = createPersonalHomeRuntimeSpec({
       canonicalServerUrl: 'http://127.0.0.1:43123',
@@ -26,7 +32,7 @@ describe('Personal Home runtime purpose', () => {
     expect(renderPersonalHomeRuntimeEnv({ spec, port: 43123 })).toEqual({
       HAPPIER_SERVER_HOST: '127.0.0.1',
       PORT: '43123',
-      HAPPIER_PUBLIC_SERVER_URL: 'http://127.0.0.1:43123',
+      HAPPIER_CANONICAL_SERVER_URL: 'http://127.0.0.1:43123',
       HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
       HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
       AUTH_ANONYMOUS_SIGNUP_ENABLED: '1',
@@ -47,7 +53,7 @@ describe('Personal Home runtime purpose', () => {
       spec,
       port: 43123,
       anonymousSignupEnabled: false,
-    }).HAPPIER_PUBLIC_SERVER_URL).toBe('http://127.0.0.1:43123');
+    }).HAPPIER_CANONICAL_SERVER_URL).toBe('http://127.0.0.1:43123');
   });
 
   it('rejects arbitrary environment injection and malformed purposes', () => {
@@ -59,6 +65,11 @@ describe('Personal Home runtime purpose', () => {
       spec,
       port: 43123,
       overrides: { HANDY_MASTER_SECRET: 'must-not-be-user-injected' },
+    })).toThrow(/unsupported Personal Home environment key/u);
+    expect(() => renderPersonalHomeRuntimeEnv({
+      spec,
+      port: 43123,
+      overrides: { HAPPIER_PUBLIC_SERVER_URL: 'https://home.example.test' },
     })).toThrow(/unsupported Personal Home environment key/u);
     expect(() => parsePersonalHomeRuntimePurpose({
       kind: 'personal-home',

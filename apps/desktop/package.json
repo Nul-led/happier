@@ -15,7 +15,8 @@
     "test:local": "yarn -s build && node --test 'dist/**/*.test.js'"
   },
   "dependencies": {
-    "@happier-dev/iroh-native": "0.0.0"
+    "@happier-dev/iroh-native": "0.0.0",
+    "@happier-dev/protocol": "0.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

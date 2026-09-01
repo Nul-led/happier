@@ -30,6 +30,7 @@ export type { FirstPartyRetentionResolution } from './retentionPolicy.js';
 
 export { resolveInstalledFirstPartyComponentPaths } from './resolveInstalledComponentPaths.js';
 export type { InstalledFirstPartyComponentPaths } from './resolveInstalledComponentPaths.js';
+export { ensureInstalledFirstPartyComponent } from './ensureInstalledFirstPartyComponent.js';
 export { resolveJunctionFreeCurrentPath } from './resolveJunctionFreeCurrentPath.js';
 export {
   readInstalledVersionMarkers,
@@ -77,6 +78,7 @@ export {
   MUTAGEN_ENGINE_TRANSPORT_SPIKE_COMMIT,
   MUTAGEN_ENGINE_UPSTREAM_COMMIT,
   MUTAGEN_ENGINE_UPSTREAM_TAG,
+  MUTAGEN_ENGINE_VERSION,
   MutagenEngineArtifactError,
   assertMutagenEngineArtifactManifest,
   assertMutagenEngineArtifactPayload,
@@ -193,6 +195,8 @@ export type { PersonalHomeSignupPolicyState } from './personalHomeSignupPolicy.j
 export { resolvePersonalHomeRuntimeLayout, assertLayoutPath } from './personalHome/layout.js';
 export type { PersonalHomeRuntimeLayout } from './personalHome/layout.js';
 export {
+  DEFAULT_PERSONAL_HOME_ORIGIN,
+  DEFAULT_PERSONAL_HOME_PORT,
   assertPersonalHomeEnvironmentKeys,
   createPersonalHomeRuntimeSpec,
   parsePersonalHomeRuntimePurpose,
@@ -214,9 +218,24 @@ export { runPersonalHomeBootstrap } from './personalHome/bootstrap.js';
 export type { PersonalHomeBootstrapDeps, PersonalHomeBootstrapResult } from './personalHome/bootstrap.js';
 export { PersonalHomeCredentialsUnverifiedError } from './personalHome/bootstrap.js';
 export { PersonalHomeOperationsError, createPersonalHomeEraseConfirmationToken } from './personalHome/operations.js';
+export {
+  createPersonalHomeRelocationDestinationOwner,
+  PersonalHomeRelocationDestinationError,
+} from './personalHome/relocationDestination.js';
 export { PersonalHomeArchiveError } from './personalHome/archive.js';
 export { PersonalHomeRestoreError } from './personalHome/restore.js';
-export { createCanonicalPersonalHomeOperations } from './personalHome/productionAdapters.js';
+export {
+  parsePersonalHomeAuthenticatedReadiness,
+  readPersonalHomeStartupReadiness,
+  removePersonalHomeStartupReadiness,
+} from './personalHome/readiness.js';
+export type { PersonalHomeAuthenticatedReadiness } from './personalHome/readiness.js';
+export {
+  attestPersonalHomeRelocationDestinationWithServerCommand,
+  createCanonicalPersonalHomeOperations,
+  createCanonicalPersonalHomeRelocationDestinationOwner,
+  materializePersonalHomeRelocationEndpointWithServerCommand,
+} from './personalHome/productionAdapters.js';
 export type {
   PersonalHomeOperations,
   PersonalHomeOperationContext,
@@ -229,9 +248,21 @@ export type {
   PersonalHomeEraseOperationResult,
   PersonalHomeEraseConfirmationFacts,
   PersonalHomeRelocateInput,
-  PersonalHomeRelocationCommit,
   PersonalHomeBackupOperationResult,
   PersonalHomeRestoreOperationResult,
   PersonalHomeRelocateOperationResult,
 } from './personalHome/operations.js';
 export type { PersonalHomeRestoreRecoveryFacts, PersonalHomeRestoreRecoveryResult } from './personalHome/restore.js';
+export type {
+  PersonalHomeRelocationDestinationOwner,
+  PersonalHomeRelocationDestinationDeps,
+  PersonalHomeRelocationDestinationFacts,
+  PersonalHomeRelocationDestinationStatus,
+  PersonalHomeRelocationDestinationStageInput,
+  PersonalHomeRelocationDestinationCommitInput,
+} from './personalHome/relocationDestination.js';
+export { coordinatePersonalHomeRelocation } from './personalHome/relocationCoordinator.js';
+export type {
+  PersonalHomeRelocationSourceCoordinatorParams,
+  PersonalHomeRelocationSourceResult,
+} from './personalHome/relocationCoordinator.js';

@@ -48,17 +48,20 @@ import { resolvePersonalHomeRuntimeLayout } from '../firstPartyRuntime/personalH
 import type { PersonalHomeRuntimeLayout } from '../firstPartyRuntime/personalHome/layout.js';
 import { withPersonalHomeOperationLock } from '../firstPartyRuntime/personalHome/lock.js';
 import { hasMeaningfulPersonalHomeData } from '../firstPartyRuntime/personalHome/restore.js';
+import { assertPersonalHomeRelocationSourceAllowsActivation } from '../firstPartyRuntime/personalHome/relocationCoordinator.js';
+import { assertPersonalHomeRelocationDestinationAllowsActivation } from '../firstPartyRuntime/personalHome/relocationDestination.js';
 import { readEffectivePersonalHomeSignupPolicy } from '../firstPartyRuntime/personalHomeSignupPolicy.js';
 import { withFirstPartyPayloadMutationLock } from '../firstPartyRuntime/withFirstPartyPayloadMutationLock.js';
-import { createPersonalHomeRestorePointWithLease } from '../firstPartyRuntime/personalHome/restorePoint.js';
-import { assertPersonalHomeRelocationAllowsActivation } from '../firstPartyRuntime/personalHome/relocation.js';
+import { createPersonalHomeRestorePointWithLease, openPersonalHomeRestorePointWithLease } from '../firstPartyRuntime/personalHome/restorePoint.js';
 import {
   createPersonalHomeSqliteMaintenance,
   finalizePersonalHomeSanitizedConfiguration,
   inspectPersonalHomeSanitizedConfigurationStorage,
   preparePersonalHomeSanitizedConfiguration,
+  recoverPersonalHomeSanitizedConfiguration,
   readCanonicalPersonalHomeIdentity,
   readPersonalHomeIdentityValueFromSqlite,
+  readPersonalHomeDataCountsFromSqlite,
   readPersonalHomeSanitizedConfiguration,
 } from '../firstPartyRuntime/personalHome/productionAdapters.js';
 
@@ -175,7 +178,11 @@ async function assertExplicitPersonalHomeMatchesPreservedConfiguration(params: R
   }
   const envPath = join(params.defaults.configDir, 'server.env');
   const envText = existsSync(envPath) ? await readFile(envPath, 'utf8').catch(() => '') : '';
-  const configuredCanonicalServerUrl = String(parseEnvText(envText).HAPPIER_PUBLIC_SERVER_URL ?? '').trim();
+  const env = parseEnvText(envText);
+  const configuredCanonicalServerUrl = String(env.HAPPIER_CANONICAL_SERVER_URL ?? '').trim()
+    || (String(env.HAPPIER_PUBLIC_SERVER_URL_INFERRED ?? '').trim() === '1'
+      ? ''
+      : String(env.HAPPIER_PUBLIC_SERVER_URL ?? '').trim());
   if (!configuredCanonicalServerUrl || configuredCanonicalServerUrl !== params.requested.canonicalServerUrl) {
     throw new PersonalHomeRuntimeClassificationRequiredError();
   }
@@ -231,7 +238,10 @@ export type RelayHostEngine = Readonly<{
     canonicalServerUrl?: string;
     layout?: PersonalHomeRuntimeLayout;
   }>>;
-  control: (params: RelayRuntimeTaskParams & Readonly<{ action: 'start' | 'stop' | 'restart' | 'uninstall' }>) => Promise<void>;
+  /** Ordinary start/stop are transient runtime controls; activate/quarantine change durable service authority. */
+  control: (params: RelayRuntimeTaskParams & Readonly<{
+    action: 'start' | 'stop' | 'restart' | 'uninstall' | 'activate' | 'quarantine';
+  }>) => Promise<void>;
 }>;
 
 const LOCAL_RELAY_STATUS_HEALTH_TIMEOUT_MS = 1_000;
@@ -916,18 +926,6 @@ function resolveRemoteServiceDefinitionPath(params: Readonly<{
 }
 
 
-function mapRelayRuntimeServiceControlError(params: Readonly<{
-  backend: ServiceBackend;
-  stderr: string | null | undefined;
-  fallbackMessage: string;
-}>): Error {
-  const stderr = String(params.stderr ?? '').trim();
-  if (params.backend === 'systemd-user' && /failed to connect to bus/i.test(stderr)) {
-    return new Error('Systemd user service is unavailable. Ensure the host has a user systemd session (e.g. enable lingering) or use system mode.');
-  }
-  return new Error(stderr || params.fallbackMessage);
-}
-
 export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngine {
   const now = deps.now ?? (() => Date.now());
 
@@ -1207,10 +1205,28 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
     backend: 'launchd-user' | 'launchd-system';
     label: string;
   }>): Readonly<{ loadState: string; activeState: string; enabledState: string }> => {
-    const result = runLocalText('launchctl', ['list', params.label]);
-    return result.status === 0
-      ? { loadState: 'loaded', activeState: 'active', enabledState: 'enabled' }
-      : { loadState: 'not-found', activeState: '', enabledState: '' };
+    const loaded = runLocalText('launchctl', ['list', params.label]).status === 0;
+    const definitionPath = resolveLaunchdPlistDefinitionPath({
+      backend: params.backend,
+      label: params.label,
+      homeDir: homedir(),
+    });
+    const registered = loaded || existsSync(definitionPath);
+    if (!registered) return { loadState: 'not-found', activeState: '', enabledState: '' };
+
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    const domain = params.backend === 'launchd-system' ? 'system' : uid != null ? `gui/${uid}` : '';
+    const disabledSnapshot = domain ? runLocalText('launchctl', ['print-disabled', domain]) : null;
+    const escapedLabel = params.label.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    const disabledMatch = disabledSnapshot?.status === 0
+      ? new RegExp(`"?${escapedLabel}"?\\s*=>\\s*(true|false)`, 'iu').exec(disabledSnapshot.stdout)
+      : null;
+    const disabled = disabledMatch?.[1]?.toLowerCase() === 'true';
+    return {
+      loadState: 'loaded',
+      activeState: loaded ? 'active' : 'inactive',
+      enabledState: disabled ? 'disabled' : 'enabled',
+    };
   };
 
   const resolveLocalWindowsScheduledTaskState = (params: Readonly<{
@@ -1396,7 +1412,10 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
         if (snapshot.loadState === 'not-found') {
           return { enabled: null, active: null };
         }
-        return { enabled: true, active: true };
+        return {
+          enabled: snapshot.enabledState === 'enabled',
+          active: snapshot.activeState === 'active',
+        };
       }
       const snapshot = resolveLocalWindowsScheduledTaskState({
         label: effectiveServiceName,
@@ -1421,15 +1440,19 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       envText,
     });
     if (!installed && !envText.trim()) {
-      const plannedPort = await resolveNonCollidingRelayPort({
-        platform: process.platform,
-        mode,
-        channel,
-        homeDir: homedir(),
-        defaultPort: defaults.serverPort,
-        configuredPort: null,
-      });
-      baseUrl = `http://${defaults.serverHost}:${plannedPort}`;
+      if (runtimePurpose?.kind === 'personal-home') {
+        baseUrl = runtimePurpose.canonicalServerUrl;
+      } else {
+        const plannedPort = await resolveNonCollidingRelayPort({
+          platform: process.platform,
+          mode,
+          channel,
+          homeDir: homedir(),
+          defaultPort: defaults.serverPort,
+          configuredPort: null,
+        });
+        baseUrl = `http://${defaults.serverHost}:${plannedPort}`;
+      }
     }
     const healthy = service.active === true
       ? await resolveLocalRelayHealth({
@@ -1703,6 +1726,8 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       runServiceCommands: policy.runServiceCommands !== false,
       skipHealthCheck: policy.skipHealthCheck === true,
       ...(resolvePersonalHomeUpgradeLayout ? {
+        resolvePersonalHomeUpdateLayout: resolvePersonalHomeUpgradeLayout,
+        readPersonalHomeWasRunning: async () => (await readLocalStatus({ ...parsed, purpose })).service.active === true,
         assertPersonalHomeStopped: async () => {
           const status = await readLocalStatus({ ...parsed, purpose });
           if (status.service.active === true) {
@@ -1733,7 +1758,23 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
             configuration: await readPersonalHomeSanitizedConfiguration(layout),
             sqlite: await createPersonalHomeSqliteMaintenance(layout.databasePath),
             readIdentityFromDatabase: readPersonalHomeIdentityValueFromSqlite,
+            readDataCountsFromDatabase: readPersonalHomeDataCountsFromSqlite,
             finalizeConfiguration: (artifact) => finalizePersonalHomeSanitizedConfiguration(layout, artifact),
+            recoverConfiguration: (artifact) => recoverPersonalHomeSanitizedConfiguration(layout, artifact),
+            operationLeaseHeld: true,
+          });
+        },
+        openPersonalHomeRestorePoint: async ({ archivePath, expectedHomeServerIdentityId, schemaVersion }) => {
+          const layout = await resolvePersonalHomeUpgradeLayout();
+          return openPersonalHomeRestorePointWithLease({
+            layout,
+            archivePath,
+            expectedHomeServerIdentityId,
+            schemaVersion,
+            readIdentityFromDatabase: readPersonalHomeIdentityValueFromSqlite,
+            readDataCountsFromDatabase: readPersonalHomeDataCountsFromSqlite,
+            finalizeConfiguration: (artifact) => finalizePersonalHomeSanitizedConfiguration(layout, artifact),
+            recoverConfiguration: (artifact) => recoverPersonalHomeSanitizedConfiguration(layout, artifact),
             operationLeaseHeld: true,
           });
         },
@@ -1749,6 +1790,8 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
           inspectConfigurationStorage: async (configuration) => inspectPersonalHomeSanitizedConfigurationStorage(
             await resolvePersonalHomeUpgradeLayout(), configuration,
           ),
+          readDataCountsFromDatabase: readPersonalHomeDataCountsFromSqlite,
+          requireDataCountVerification: true,
         },
       } : {}),
     });
@@ -2114,7 +2157,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
     },
     async control(params) {
       const parsed = params;
-      if (!['start', 'stop', 'restart', 'uninstall'].includes(String(parsed.action))) {
+      if (!['start', 'stop', 'restart', 'uninstall', 'activate', 'quarantine'].includes(String(parsed.action))) {
         throw new Error(`Action '${String(parsed.action)}' is not supported by relay runtime control.`);
       }
       if (parsed.target.kind !== 'ssh') {
@@ -2137,7 +2180,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
           platform: process.platform,
         });
         const preservedHomeDataPresent = await hasMeaningfulPersonalHomeData(mutationLayout);
-        if (preservedHomeDataPresent && !persistedPurpose && parsed.action !== 'stop') {
+        if (preservedHomeDataPresent && !persistedPurpose && parsed.action !== 'stop' && parsed.action !== 'quarantine') {
           await assertExplicitPersonalHomeMatchesPreservedConfiguration({ defaults, requested: parsed.purpose });
         }
         const purpose = resolveEffectiveLocalMutationPurpose({
@@ -2148,8 +2191,9 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
           ? mutationLayout
           : null;
         const runLocalLifecycle = async (): Promise<void> => {
-          if (personalHomeLayout && (parsed.action === 'start' || parsed.action === 'restart')) {
-            await assertPersonalHomeRelocationAllowsActivation(personalHomeLayout.dataDir);
+          if (personalHomeLayout && (parsed.action === 'start' || parsed.action === 'restart' || parsed.action === 'activate')) {
+            await assertPersonalHomeRelocationSourceAllowsActivation(personalHomeLayout.dataDir);
+            await assertPersonalHomeRelocationDestinationAllowsActivation(personalHomeLayout.dataDir);
           }
           const backend = resolveServiceBackend({ platform: process.platform, mode });
           const serviceName = await resolveLocalEffectiveServiceName({
@@ -2158,7 +2202,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
             defaults,
           });
           const ensureLocalRelayHealthy = async (): Promise<void> => {
-            if (parsed.action !== 'start' && parsed.action !== 'restart') {
+            if (parsed.action !== 'start' && parsed.action !== 'restart' && parsed.action !== 'activate') {
               return;
             }
             const envPath = join(defaults.configDir, 'server.env');
@@ -2174,72 +2218,7 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
             });
           };
 
-          if (backend === 'systemd-user' || backend === 'systemd-system') {
-            const prefix = backend === 'systemd-user' ? ['--user'] : [];
-            const result = runLocalText('systemctl', [...prefix, parsed.action, `${serviceName}.service`]);
-            if (result.status !== 0) {
-              throw mapRelayRuntimeServiceControlError({
-                backend,
-                stderr: result.stderr,
-                fallbackMessage: `Failed to ${parsed.action} relay runtime.`,
-              });
-            }
-            await ensureLocalRelayHealthy();
-            return;
-          }
-
-          if (backend === 'launchd-user' || backend === 'launchd-system') {
-            const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
-            const domain = backend === 'launchd-system' ? `system/${serviceName}` : `gui/${uid}/${serviceName}`;
-            const plistPath = backend === 'launchd-system'
-              ? `/Library/LaunchDaemons/${serviceName}.plist`
-              : join(homedir(), 'Library', 'LaunchAgents', `${serviceName}.plist`);
-
-            const runLaunchctl = (args: readonly string[], options: Readonly<{ allowFail?: boolean }> = {}) => {
-              const result = runLocalText('launchctl', args);
-              if (result.status !== 0 && options.allowFail !== true) {
-                throw new Error(result.stderr.trim() || `Failed to ${parsed.action} relay runtime.`);
-              }
-              return result;
-            };
-
-            if (parsed.action === 'stop') {
-              runLaunchctl(['bootout', domain], { allowFail: true });
-              return;
-            }
-
-            if (parsed.action === 'restart') {
-              const kickstartResult = runLaunchctl(['kickstart', '-k', domain], { allowFail: true });
-              if (kickstartResult.status === 0) {
-                await ensureLocalRelayHealthy();
-                return;
-              }
-            }
-
-            if (backend === 'launchd-user' && uid > 0) {
-              runLaunchctl(['bootout', domain], { allowFail: true });
-              runLaunchctl(['bootstrap', `gui/${uid}`, plistPath]);
-              runLaunchctl(['enable', domain]);
-              runLaunchctl(['kickstart', '-k', domain]);
-              await ensureLocalRelayHealthy();
-              return;
-            }
-
-            if (backend === 'launchd-system') {
-              runLaunchctl(['bootout', domain], { allowFail: true });
-              runLaunchctl(['bootstrap', 'system', plistPath]);
-              runLaunchctl(['enable', domain]);
-              runLaunchctl(['kickstart', '-k', domain]);
-              await ensureLocalRelayHealthy();
-              return;
-            }
-
-            runLaunchctl(['kickstart', '-k', domain]);
-            await ensureLocalRelayHealthy();
-            return;
-          }
-
-          const serverBinaryName = 'happier-server.exe';
+          const serverBinaryName = process.platform === 'win32' ? 'happier-server.exe' : 'happier-server';
           const definition = buildServiceDefinition({
             backend,
             homeDir: homedir(),
@@ -2258,10 +2237,21 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
             label: serviceName,
             definitionPath: definition.path,
             taskName: `Happier\\${serviceName}`,
-            persistent: true,
+            persistent: parsed.action === 'activate' || parsed.action === 'quarantine',
           });
           await applyServicePlan(plan, { runCommands: true });
           await ensureLocalRelayHealthy();
+          if (parsed.action === 'activate' || parsed.action === 'quarantine') {
+            const status = await readLocalStatus(parsed);
+            const postconditionMet = parsed.action === 'activate'
+              ? status.service.enabled === true && status.service.active === true
+              : status.service.enabled !== true && status.service.active !== true;
+            if (!postconditionMet) {
+              throw new Error(
+                `Failed to ${parsed.action} relay runtime: service authority is enabled=${String(status.service.enabled)}, active=${String(status.service.active)}.`,
+              );
+            }
+          }
         };
         // External Personal Home lifecycle mutations enter the incumbent Home operation lock;
         // a caller that already holds it in this process proceeds under it (lock-owner
@@ -2274,6 +2264,9 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
         return;
       }
       const knownHostsMode: 'app' | 'system' = parsed.target.ssh.knownHostsPath ? 'app' : 'system';
+      if (parsed.action === 'activate' || parsed.action === 'quarantine') {
+        throw new Error(`Relay runtime ${parsed.action} must execute through the destination's installed local lifecycle owner.`);
+      }
       if (parsed.action === 'uninstall') {
         await uninstallRemote({ parsed, ssh: parsed.target.ssh });
         return;

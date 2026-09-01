@@ -120,7 +120,7 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
       const personalHomeEnv = {
         HAPPIER_SERVER_HOST: '127.0.0.1',
         PORT: '43123',
-        HAPPIER_PUBLIC_SERVER_URL: canonicalServerUrl,
+        HAPPIER_CANONICAL_SERVER_URL: canonicalServerUrl,
         HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
         HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
         AUTH_ANONYMOUS_SIGNUP_ENABLED: '0',
@@ -141,13 +141,16 @@ describe('installOrUpdateRelayRuntimeLocal', () => {
 
       process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED = '1';
       await install();
+      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
+      await writeFile(join(defaults.configDir, 'server.env'), `${await readFileText(join(defaults.configDir, 'server.env'))}HAPPIER_PUBLIC_SERVER_URL=https://home.example.test\n`, 'utf8');
       process.env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED = '0';
       await install();
 
-      const defaults = resolveRelayRuntimeDefaults({ platform: 'linux', mode: 'user', channel: 'preview', homeDir });
       const envText = await readFileText(join(defaults.configDir, 'server.env'));
       expect(envText.match(/^AUTH_ANONYMOUS_SIGNUP_ENABLED=0$/gmu)).toHaveLength(1);
       expect(envText.match(/^HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=1$/gmu)).toHaveLength(1);
+      expect(envText).toContain(`HAPPIER_CANONICAL_SERVER_URL=${canonicalServerUrl}`);
+      expect(envText).toContain('HAPPIER_PUBLIC_SERVER_URL=https://home.example.test');
       expect(envText).not.toContain('AUTH_ANONYMOUS_SIGNUP_ENABLED=1');
       expect(envText).not.toContain('HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED=0');
     } finally {

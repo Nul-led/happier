@@ -11,21 +11,27 @@ const CANONICAL_KEY_PATH = join(USER_DATA, ...IROH_ENDPOINT_KEY_RELPATH);
 
 function createNativeFake() {
     const calls = {
+        create: [] as unknown[],
         start: [] as unknown[],
         stop: [] as string[],
         shutdown: [] as string[],
         status: [] as string[],
+        machineStart: [] as unknown[],
+        machineStop: [] as string[],
     };
     const native = {
-        startHomeTunnel: async (request: {
+        createEndpoint: async (request: unknown) => {
+            calls.create.push(request);
+            return { endpointHandle: CANONICAL_KEY_PATH, endpointId: 'client-endpoint' };
+        },
+        ensureHomeTunnel: async (request: {
+            endpointHandle: string;
             homeServerIdentityId: string;
             endpointId: string;
-            relayPolicy: string;
-            endpointKeyPath?: string;
         }) => {
             calls.start.push(request);
             return {
-                leaseId: 'iroh-lease-1',
+                tunnelId: 'iroh-lease-1',
                 homeServerIdentityId: request.homeServerIdentityId,
                 homeEndpointId: request.endpointId,
                 runtimeOrigin: 'http://127.0.0.1:46011',
@@ -34,10 +40,10 @@ function createNativeFake() {
                 startedAtMs: 42,
                 // The keyed endpoint handle is the canonical key path; it must
                 // never reach the renderer.
-                endpointHandle: request.endpointKeyPath,
+                endpointHandle: request.endpointHandle,
             };
         },
-        stopHomeTunnel: async (leaseId: string) => {
+        releaseHomeTunnel: async (leaseId: string) => {
             calls.stop.push(leaseId);
         },
         getTunnelStatus: async (tunnelId: string) => {
@@ -46,6 +52,13 @@ function createNativeFake() {
         },
         shutdownEndpoint: async (request: { endpointHandle: string }) => {
             calls.shutdown.push(request.endpointHandle);
+        },
+        startMachineHttpTunnel: async (request: unknown) => {
+            calls.machineStart.push(request);
+            return { machineTunnelId: 'machine-lease-1', localPort: 46012, localCapability: 'a'.repeat(64) };
+        },
+        stopMachineTunnel: async (leaseId: string) => {
+            calls.machineStop.push(leaseId);
         },
     };
     return { native, calls };
@@ -62,7 +75,7 @@ test('start injects the host-owned persistent key path and returns only renderer
     const { native, calls } = createNativeFake();
     const service = createService(native);
 
-    const lease = await service.startHomeTunnel({
+    const lease = await service.ensureHomeTunnel({
         homeServerIdentityId: 'srv_home_a',
         endpointId: ENDPOINT_ID,
         policy: 'automatic',
@@ -74,15 +87,19 @@ test('start injects the host-owned persistent key path and returns only renderer
         endpointSeedBase64: 'AAAA',
     });
 
+    assert.deepEqual(calls.create, [{
+        keyPath: CANONICAL_KEY_PATH,
+        relayPolicy: 'automatic',
+        relayUrls: ['https://relay.example.test'],
+    }]);
     assert.deepEqual(calls.start, [
         {
+            endpointHandle: CANONICAL_KEY_PATH,
             homeServerIdentityId: 'srv_home_a',
             endpointId: ENDPOINT_ID,
-            relayPolicy: 'automatic',
             relayUrls: ['https://relay.example.test'],
             directAddresses: ['192.168.1.10:4242'],
             descriptorRevision: 4,
-            endpointKeyPath: CANONICAL_KEY_PATH,
         },
     ]);
     assert.deepEqual(lease, {
@@ -94,6 +111,89 @@ test('start injects the host-owned persistent key path and returns only renderer
         observedPath: 'direct',
         startedAtMs: 42,
     });
+});
+
+test('Home-first and machine-first configurations retain one application EndpointId', async () => {
+    for (const first of ['home', 'machine'] as const) {
+        const { native, calls } = createNativeFake();
+        const service = createService(native);
+        const directOnly = { policy: 'disabled' as const, relayUrls: [] as const };
+
+        if (first === 'home') {
+            await service.ensureHomeTunnel({
+                homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, ...directOnly,
+                directAddresses: ['127.0.0.1:4242'],
+            });
+        }
+        const endpoint = await service.getApplicationEndpoint(directOnly);
+        if (first === 'machine') {
+            await service.ensureHomeTunnel({
+                homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, ...directOnly,
+                directAddresses: ['127.0.0.1:4242'],
+            });
+        }
+
+        assert.equal(endpoint.endpointId, 'client-endpoint');
+        assert.ok(calls.create.length >= 2);
+        assert.deepEqual(new Set(calls.create.map(() => endpoint.endpointId)), new Set(['client-endpoint']));
+        assert.ok(calls.create.every((request) => (
+            request as { relayPolicy?: unknown }
+        ).relayPolicy === 'disabled'));
+    }
+});
+
+test('production automatic plus empty relay configuration is order-independent for Home and machine', async () => {
+    for (const first of ['home', 'machine'] as const) {
+        const { native, calls } = createNativeFake();
+        const service = createService(native);
+        if (first === 'home') {
+            await service.ensureHomeTunnel({
+                homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic', relayUrls: [],
+            });
+        } else {
+            await service.getApplicationEndpoint({});
+        }
+        if (first === 'home') await service.getApplicationEndpoint({});
+        else {
+            await service.ensureHomeTunnel({
+                homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic', relayUrls: [],
+            });
+        }
+        assert.equal(calls.create.length, 2);
+        assert.ok(calls.create.every((request) => (
+            request as { relayPolicy?: unknown }
+        ).relayPolicy === 'automatic'));
+    }
+});
+
+test('automatic Home and machine requests contribute relay sets through one endpoint owner', async () => {
+    const { native, calls } = createNativeFake();
+    const service = createService(native);
+
+    await service.getApplicationEndpoint({ policy: 'automatic', relayUrls: ['https://relay-machine.example.test'] });
+    await service.ensureHomeTunnel({
+        homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic',
+        relayUrls: ['https://relay-home.example.test'],
+    });
+
+    assert.deepEqual(calls.create, [
+        {
+            keyPath: CANONICAL_KEY_PATH,
+            relayPolicy: 'automatic',
+            relayUrls: ['https://relay-machine.example.test'],
+        },
+        {
+            keyPath: CANONICAL_KEY_PATH,
+            relayPolicy: 'automatic',
+            relayUrls: ['https://relay-home.example.test'],
+        },
+    ]);
+});
+
+test('availability is false unless the Electron lifecycle addon actually loads', async () => {
+    await assert.deepEqual(await createService(null).getAvailability(), { available: false });
+    const { native } = createNativeFake();
+    await assert.deepEqual(await createService(native).getAvailability(), { available: true });
 });
 
 test('status polling returns only transport facts and keeps host identity material private', async () => {
@@ -112,8 +212,8 @@ test('stop routes by lease and process shutdown closes the endpoint without touc
     const { native, calls } = createNativeFake();
     const service = createService(native);
 
-    await service.startHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic' });
-    await service.stopHomeTunnel('iroh-lease-1');
+    await service.ensureHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic' });
+    await service.releaseHomeTunnel('iroh-lease-1');
     assert.deepEqual(calls.stop, ['iroh-lease-1']);
 
     // Nothing to shut down before a start: the addon is not even loaded.
@@ -131,24 +231,24 @@ test('stop routes by lease and process shutdown closes the endpoint without touc
 test('native unavailability and native failures reject without ever succeeding', async () => {
     const unavailable = createService(null);
     await assert.rejects(
-        unavailable.startHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic' }),
+        unavailable.ensureHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic' }),
         (error: Error) => error.message.startsWith('iroh_native_error:unavailable:'),
     );
     await assert.rejects(
-        unavailable.stopHomeTunnel('lease'),
+        unavailable.releaseHomeTunnel('lease'),
         (error: Error) => error.message.startsWith('iroh_native_error:unavailable:'),
     );
 
     const { native } = createNativeFake();
     const failing = {
         ...native,
-        startHomeTunnel: async () => {
+        ensureHomeTunnel: async () => {
             throw Object.assign(new Error('endpointId is invalid'), { name: 'IrohNativeOperationError', nativeCode: 'endpoint-identity-invalid' });
         },
     };
     const service = createService(failing);
     await assert.rejects(
-        service.startHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: 'bad', policy: 'automatic' }),
+        service.ensureHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: 'bad', policy: 'automatic' }),
         (error: Error) => error.message === 'iroh_native_error:endpoint-identity-invalid:endpointId is invalid',
     );
 });
@@ -157,43 +257,43 @@ test('malformed native results fail closed instead of being adopted', async () =
     const { native } = createNativeFake();
     const malformed = {
         ...native,
-        startHomeTunnel: async () => ({ leaseId: 'iroh-lease-1' }),
+        ensureHomeTunnel: async () => ({ tunnelId: 'iroh-lease-1' }),
     };
     const service = createService(malformed);
     await assert.rejects(
-        service.startHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic' }),
+        service.ensureHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic' }),
         (error: Error) => error.message.startsWith('iroh_native_error:transport-unavailable:malformed native lease field'),
     );
 
     const externalOrigin = {
         ...native,
-        startHomeTunnel: async () => ({
-            ...(await native.startHomeTunnel({
+        ensureHomeTunnel: async () => ({
+            ...(await native.ensureHomeTunnel({
+                endpointHandle: CANONICAL_KEY_PATH,
                 homeServerIdentityId: 'srv_home_a',
                 endpointId: ENDPOINT_ID,
-                relayPolicy: 'automatic',
             })),
             runtimeOrigin: 'https://attacker.example.test',
         }),
     };
     await assert.rejects(
-        createService(externalOrigin).startHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic' }),
+        createService(externalOrigin).ensureHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic' }),
         (error: Error) => error.message.startsWith('iroh_native_error:transport-unavailable:malformed native lease field runtimeOrigin'),
     );
 
     const invalidObservedPath = {
         ...native,
-        startHomeTunnel: async () => ({
-            ...(await native.startHomeTunnel({
+        ensureHomeTunnel: async () => ({
+            ...(await native.ensureHomeTunnel({
+                endpointHandle: CANONICAL_KEY_PATH,
                 homeServerIdentityId: 'srv_home_a',
                 endpointId: ENDPOINT_ID,
-                relayPolicy: 'automatic',
             })),
             observedPath: 'maybe',
         }),
     };
     await assert.rejects(
-        createService(invalidObservedPath).startHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic' }),
+        createService(invalidObservedPath).ensureHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'automatic' }),
         (error: Error) => error.message.startsWith('iroh_native_error:transport-unavailable:malformed native lease field observedPath'),
     );
 });
@@ -203,11 +303,11 @@ test('renderer request facts are validated fail closed before the native call', 
     const service = createService(native);
 
     await assert.rejects(
-        service.startHomeTunnel({ endpointId: ENDPOINT_ID, policy: 'automatic' }),
+        service.ensureHomeTunnel({ endpointId: ENDPOINT_ID, policy: 'automatic' }),
         (error: Error) => error.message.startsWith('iroh_native_error:invalid-request:'),
     );
     await assert.rejects(
-        service.startHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'relay-everything' }),
+        service.ensureHomeTunnel({ homeServerIdentityId: 'srv_home_a', endpointId: ENDPOINT_ID, policy: 'relay-everything' }),
         (error: Error) => error.message.startsWith('iroh_native_error:invalid-request:'),
     );
     assert.deepEqual(calls.start, []);

@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import * as tar from 'tar';
 
-import { createPersonalHomeBackup, rotatePersonalHomeBackups } from './backup.js';
-import { createPersonalHomeArchive, extractVerifiedPersonalHomeArchive, extractVerifiedPersonalHomeArchiveSnapshot, verifyPersonalHomeArchive, withPrivatePersonalHomeArchiveSnapshot } from './archive.js';
+import { createPersonalHomeBackup } from './backup.js';
+import { createPersonalHomeArchive, extractVerifiedPersonalHomeArchive, extractVerifiedPersonalHomeArchiveSnapshot, PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_HEADERS, PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_MANIFEST_BYTES, readPersonalHomeArchiveManifestMetadata, verifyPersonalHomeArchive, verifyPersonalHomeArchiveSnapshot, withPrivatePersonalHomeArchiveSnapshot } from './archive.js';
 import { resolvePersonalHomeRuntimeLayout } from './layout.js';
 import { finalizePersonalHomeRestoreWithLease, inspectPersonalHomeRestoreRecovery, recoverPersonalHomeRestoreWithLease, restorePersonalHomeBackup as restorePersonalHomeBackupOwner } from './restore.js';
 import { parsePersonalHomeBackupManifest } from './manifest.js';
@@ -64,6 +64,160 @@ function recoveryJournalFixture(layout: ReturnType<typeof resolvePersonalHomeRun
 }
 
 describe('Personal Home backup and restore owner', () => {
+  it('publishes new archives with the bounded manifest as the first tar entry', async () => {
+    const { root, layout } = await fixture();
+    try {
+      const archive = await createPersonalHomeBackup({
+        layout,
+        outputPath: join(layout.backupsDir, 'manifest-first.tar'),
+        stagingDir: join(root, 'staging'),
+        homeServerIdentityId: 'home-identity',
+        schemaVersion: '1',
+        happierVersion: '0',
+        configuration: {},
+        sqlite: sqliteOk,
+      });
+      const bytes = await readFile(archive.path);
+      expect(new tar.Header(bytes.subarray(0, 512)).path).toBe('manifest.json');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('short-circuits legacy manifest-late metadata inspection after the manifest body', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-manifest-late-'));
+    try {
+      const archivePath = join(root, 'legacy.tar');
+      const emptyHash = createHash('sha256').update('').digest('hex');
+      const manifestBytes = Buffer.from(`${JSON.stringify(parsePersonalHomeBackupManifest({
+        format: 'happier-personal-home-backup', version: 1, createdAt: new Date(0).toISOString(), happierVersion: '0',
+        schemaVersion: '1', homeServerIdentityId: 'home-identity', masterSecretFingerprint: emptyHash,
+        databaseProvider: 'sqlite', filesProvider: 'local', sourcePlatform: 'linux', sourceRuntimeMode: 'user',
+        entries: [
+          { path: 'database/home.sqlite', size: 0, sha256: emptyHash },
+          { path: 'secrets/handy-master-secret.txt', size: 0, sha256: emptyHash },
+          { path: 'configuration/home.env.json', size: 0, sha256: emptyHash },
+        ],
+      }))}\n`);
+      const staging = join(root, 'staging');
+      const longPath = `files/public/${'long-segment/'.repeat(24)}payload.txt`;
+      await mkdir(dirname(join(staging, longPath)), { recursive: true });
+      await writeFile(join(staging, longPath), 'payload');
+      await writeFile(join(staging, 'manifest.json'), manifestBytes);
+      await tar.create({ cwd: staging, file: archivePath, portable: true, noMtime: true, noDirRecurse: true }, [longPath, 'manifest.json']);
+      const archiveBytes = await readFile(archivePath);
+      expect(new tar.Header(archiveBytes.subarray(0, 512)).type).toBe('ExtendedHeader');
+      archiveBytes.fill(0x61, archiveBytes.length - 1024, archiveBytes.length - 512);
+      await writeFile(archivePath, archiveBytes);
+
+      await expect(readPersonalHomeArchiveManifestMetadata(archivePath)).resolves.toMatchObject({
+        manifest: { homeServerIdentityId: 'home-identity' },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects oversized manifest metadata before allocating its declared body', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-manifest-bound-'));
+    try {
+      const archivePath = join(root, 'oversized.tar');
+      const header = Buffer.alloc(512);
+      new tar.Header({ path: 'manifest.json', type: 'File', size: PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_MANIFEST_BYTES + 1, mode: 0o600 }).encode(header);
+      await writeFile(archivePath, Buffer.concat([header, Buffer.alloc(1024)]));
+      await expect(readPersonalHomeArchiveManifestMetadata(archivePath)).rejects.toMatchObject({ code: 'resource_limit' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a declared full-verification manifest that exceeds the available parser memory before buffering it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-full-manifest-declared-bound-'));
+    try {
+      const archivePath = join(root, 'oversized.tar');
+      const header = Buffer.alloc(512);
+      new tar.Header({ path: 'manifest.json', type: 'File', size: 1024, mode: 0o600 }).encode(header);
+      await writeFile(archivePath, Buffer.concat([header, Buffer.alloc(1024), Buffer.alloc(1024)]));
+      await expect(verifyPersonalHomeArchiveSnapshot(archivePath, {
+        availableBytes: 4096,
+        availableMemoryBytes: 4095,
+      })).rejects.toMatchObject({ code: 'resource_limit' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an actual full-verification manifest body that cannot fit the available parser working set', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-full-manifest-actual-bound-'));
+    try {
+      const staging = join(root, 'staging');
+      const emptyHash = createHash('sha256').update('').digest('hex');
+      const manifest = parsePersonalHomeBackupManifest({
+        format: 'happier-personal-home-backup', version: 1, createdAt: new Date(0).toISOString(), happierVersion: '0',
+        schemaVersion: '1', homeServerIdentityId: 'home-identity', masterSecretFingerprint: emptyHash,
+        databaseProvider: 'sqlite', filesProvider: 'local', sourcePlatform: 'linux', sourceRuntimeMode: 'user',
+        entries: [
+          { path: 'database/home.sqlite', size: 0, sha256: emptyHash },
+          { path: 'secrets/handy-master-secret.txt', size: 0, sha256: emptyHash },
+          { path: 'configuration/home.env.json', size: 0, sha256: emptyHash },
+        ],
+      });
+      const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+      await mkdir(staging, { recursive: true });
+      await writeFile(join(staging, 'manifest.json'), manifestBytes);
+      for (const entry of manifest.entries) {
+        const target = join(staging, entry.path);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, '');
+      }
+      const archivePath = join(root, 'actual.tar');
+      await tar.create({ cwd: staging, file: archivePath, portable: true, noMtime: true, noDirRecurse: true }, ['manifest.json', ...manifest.entries.map((entry) => entry.path)]);
+      await expect(verifyPersonalHomeArchiveSnapshot(archivePath, {
+        availableBytes: (await stat(archivePath)).size,
+        availableMemoryBytes: manifestBytes.length * 4 - 1,
+      })).rejects.toMatchObject({ code: 'resource_limit' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds quick inventory header work without limiting explicit verification of a valid legacy archive', { timeout: 60_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-quick-entry-bound-'));
+    const emptyHash = createHash('sha256').update('').digest('hex');
+    const paths = [
+      'database/home.sqlite',
+      'secrets/handy-master-secret.txt',
+      'configuration/home.env.json',
+      ...Array.from({ length: PERSONAL_HOME_BACKUP_QUICK_INSPECTION_MAX_HEADERS - 2 }, (_, index) => `files/public/${index}.txt`),
+    ];
+    const manifest = parsePersonalHomeBackupManifest({
+      format: 'happier-personal-home-backup', version: 1, createdAt: new Date(0).toISOString(), happierVersion: '0',
+      schemaVersion: '1', homeServerIdentityId: 'home-identity', masterSecretFingerprint: emptyHash,
+      databaseProvider: 'sqlite', filesProvider: 'local', sourcePlatform: 'linux', sourceRuntimeMode: 'user',
+      entries: paths.map((path) => ({ path, size: 0, sha256: emptyHash })),
+    });
+    const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+    const headers = paths.map((path) => {
+      const header = Buffer.alloc(512);
+      new tar.Header({ path, type: 'File', size: 0, mode: 0o600 }).encode(header);
+      return header;
+    });
+    const manifestHeader = Buffer.alloc(512);
+    new tar.Header({ path: 'manifest.json', type: 'File', size: manifestBytes.length, mode: 0o600 }).encode(manifestHeader);
+    const archivePath = join(root, 'legacy-large.tar');
+    await writeFile(archivePath, Buffer.concat([...headers, manifestHeader, manifestBytes, Buffer.alloc(Math.ceil(manifestBytes.length / 512) * 512 - manifestBytes.length), Buffer.alloc(1024)]));
+    try {
+      await expect(readPersonalHomeArchiveManifestMetadata(archivePath)).rejects.toMatchObject({ code: 'resource_limit' });
+      await expect(verifyPersonalHomeArchiveSnapshot(archivePath, {
+        availableBytes: (await stat(archivePath)).size,
+        availableEntries: Number.MAX_SAFE_INTEGER,
+        availableMemoryBytes: 64 * 1024 * 1024,
+      })).resolves.toMatchObject({ entries: { length: paths.length } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('creates and verifies legacy v1 file-only manifests with more than 4096 entries and safe paths longer than 512 characters', { timeout: 120_000 }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-personal-home-large-manifest-'));
     try {
@@ -625,32 +779,7 @@ describe('Personal Home backup and restore owner', () => {
     }
   });
 
-  it('rotates only verified archives and never removes the newest retained backup', { timeout: 60_000 }, async () => {
-    const { root, layout } = await fixture();
-    try {
-      for (const name of ['one.tar', 'two.tar', 'three.tar']) {
-        await createPersonalHomeBackup({
-          layout,
-          outputPath: join(layout.backupsDir, name),
-          stagingDir: join(root, `staging-${name}`),
-          homeServerIdentityId: 'home-identity',
-          schemaVersion: '1',
-          happierVersion: '0.0.0',
-          configuration: {},
-          sqlite: sqliteOk,
-        });
-      }
-      await writeFile(join(layout.backupsDir, 'unverified.tar'), 'not a tar archive');
-      const result = await rotatePersonalHomeBackups({ backupsDir: layout.backupsDir, maxBackups: 2 });
-      expect(result.retained.length).toBe(2);
-      expect(await readFile(join(layout.backupsDir, 'unverified.tar'), 'utf8')).toBe('not a tar archive');
-      expect((await readdir(layout.backupsDir)).filter((name) => name.endsWith('.tar')).length).toBe(3);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it('applies the owner default retention only after each newly produced backup verifies', { timeout: 60_000 }, async () => {
+  it('keeps every explicit user backup after later backups verify', { timeout: 60_000 }, async () => {
     const { root, layout } = await fixture();
     try {
       for (let index = 0; index < 6; index += 1) {
@@ -662,9 +791,17 @@ describe('Personal Home backup and restore owner', () => {
         });
         await verifyPersonalHomeArchive(result.path);
       }
+      const exported = await createPersonalHomeBackup({
+        layout,
+        outputPath: join(root, 'exported-home.tar'),
+        stagingDir: join(root, 'staging-export'),
+        homeServerIdentityId: 'home-identity', schemaVersion: '1', happierVersion: '0.0.0', configuration: {}, sqlite: sqliteOk,
+      });
+      await verifyPersonalHomeArchive(exported.path);
       expect((await readdir(layout.backupsDir)).filter((name) => name.endsWith('.tar')).sort()).toEqual([
-        '1.tar', '2.tar', '3.tar', '4.tar', '5.tar',
+        '0.tar', '1.tar', '2.tar', '3.tar', '4.tar', '5.tar',
       ]);
+      expect((await stat(exported.path)).isFile()).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1021,21 +1158,22 @@ describe('Personal Home backup and restore owner', () => {
       });
       await writeFile(destination.layout.databasePath, 'destination-before-restore');
       const events: string[] = [];
+      let running = false;
       const result = await restorePersonalHomeBackup({
         layout: destination.layout,
         archivePath,
         expectedHomeServerIdentityId: 'home-identity',
         confirmOverwrite: true,
-        isHomeRunning: async () => false,
-        stopHome: async () => { events.push('stop'); },
-        startHome: async () => { events.push('start'); },
+        isHomeRunning: async () => running,
+        stopHome: async () => { events.push('stop'); running = false; },
+        startHome: async () => { events.push('start'); running = true; },
         healthCheck: async () => false,
         prepareConfiguration,
       });
       expect(result.outcome).toBe('rolled_back');
-      // The restored candidate starts for its health probe, is stopped on failure, and the
-      // previously stopped Home is not restarted after rollback.
-      expect(events).toEqual(['stop', 'start', 'stop']);
+      // The already-stopped destination is not redundantly stopped. The restored candidate
+      // starts for its health probe, is stopped on failure, and the previous Home stays stopped.
+      expect(events).toEqual(['start', 'stop']);
       await expect(readFile(destination.layout.databasePath, 'utf8')).resolves.toBe('destination-before-restore');
     } finally {
       await rm(source.root, { recursive: true, force: true });
@@ -1173,6 +1311,25 @@ describe('Personal Home backup and restore owner', () => {
     }
   });
 
+  it('does not stop a healthy Home when no restore journal exists', async () => {
+    const destination = await fixture();
+    try {
+      let stopCalls = 0;
+      await expect(recoverPersonalHomeRestoreWithLease({
+        layout: destination.layout,
+        operationLeaseHeld: true,
+        isHomeRunning: async () => true,
+        stopHome: async () => { stopCalls += 1; },
+        startHome: async () => undefined,
+        healthCheck: async () => true,
+        recoverConfiguration: async () => undefined,
+      })).resolves.toMatchObject({ outcome: 'rolled_back', restartedHome: false });
+      expect(stopCalls).toBe(0);
+    } finally {
+      await rm(destination.root, { recursive: true, force: true });
+    }
+  });
+
   for (const boundary of ['preserving', 'promoted'] as const) {
     it(`recovers exact previous bytes from a durable journal after the ${boundary} crash boundary`, async () => {
       const destination = await fixture();
@@ -1248,7 +1405,7 @@ describe('Personal Home backup and restore owner', () => {
     } finally { await rm(destination.root, { recursive: true, force: true }); }
   });
 
-  it('rejects journal-controlled paths before stopping the Home or mutating the filesystem', async () => {
+  it('proves the Home stopped before rejecting journal-controlled paths without mutating the filesystem', async () => {
     const destination = await fixture();
     try {
       const id = randomUUID();
@@ -1271,14 +1428,14 @@ describe('Personal Home backup and restore owner', () => {
         healthCheck: async () => true,
         recoverConfiguration: async () => undefined,
       })).resolves.toMatchObject({ outcome: 'recovery_required', restartedHome: false });
-      expect(stopped).toBe(false);
+      expect(stopped).toBe(true);
       await expect(readFile(outside, 'utf8')).resolves.toBe('must-survive');
       await expect(lstat(journalPath)).resolves.toBeTruthy();
     } finally { await rm(destination.root, { recursive: true, force: true }); }
   });
 
   for (const phase of ['applying_configuration', 'activating'] as const) {
-    it(`rejects an out-of-layout configuration rollback artifact in the ${phase} phase before lifecycle mutation`, async () => {
+    it(`stops the Home before rejecting an out-of-layout configuration rollback artifact in the ${phase} phase`, async () => {
       const destination = await fixture();
       try {
         const id = randomUUID();
@@ -1292,18 +1449,19 @@ describe('Personal Home backup and restore owner', () => {
         const journalPath = join(destination.layout.dataDir, '.operations', 'restore-journal.json');
         await mkdir(dirname(journalPath), { recursive: true });
         await writeFile(journalPath, JSON.stringify(journal));
+        let running = true;
         const calls = { isHomeRunning: 0, stopHome: 0, recoverConfiguration: 0 };
 
         await expect(recoverPersonalHomeRestoreWithLease({
           layout: destination.layout,
           operationLeaseHeld: true,
-          isHomeRunning: async () => { calls.isHomeRunning += 1; return true; },
-          stopHome: async () => { calls.stopHome += 1; },
+          isHomeRunning: async () => { calls.isHomeRunning += 1; return running; },
+          stopHome: async () => { calls.stopHome += 1; running = false; },
           startHome: async () => undefined,
           healthCheck: async () => true,
           recoverConfiguration: async () => { calls.recoverConfiguration += 1; },
         })).resolves.toMatchObject({ outcome: 'recovery_required', restartedHome: false });
-        expect(calls).toEqual({ isHomeRunning: 0, stopHome: 0, recoverConfiguration: 0 });
+        expect(calls).toEqual({ isHomeRunning: 2, stopHome: 1, recoverConfiguration: 0 });
         await expect(readFile(outside, 'utf8')).resolves.toBe('must-survive');
         await expect(lstat(journalPath)).resolves.toBeTruthy();
       } finally { await rm(destination.root, { recursive: true, force: true }); }
@@ -1311,7 +1469,7 @@ describe('Personal Home backup and restore owner', () => {
   }
 
   for (const symlinkLocation of ['configuration boundary', 'rollback artifact'] as const) {
-    it(`rejects a symbolic-link ${symlinkLocation} before restore recovery lifecycle mutation`, async () => {
+    it(`stops the Home before rejecting a symbolic-link ${symlinkLocation} during restore recovery`, async () => {
       const destination = await fixture();
       try {
         const id = randomUUID();
@@ -1335,18 +1493,19 @@ describe('Personal Home backup and restore owner', () => {
         const journalPath = join(destination.layout.dataDir, '.operations', 'restore-journal.json');
         await mkdir(dirname(journalPath), { recursive: true });
         await writeFile(journalPath, JSON.stringify(journal));
+        let running = true;
         const calls = { isHomeRunning: 0, stopHome: 0, recoverConfiguration: 0 };
 
         await expect(recoverPersonalHomeRestoreWithLease({
           layout: destination.layout,
           operationLeaseHeld: true,
-          isHomeRunning: async () => { calls.isHomeRunning += 1; return true; },
-          stopHome: async () => { calls.stopHome += 1; },
+          isHomeRunning: async () => { calls.isHomeRunning += 1; return running; },
+          stopHome: async () => { calls.stopHome += 1; running = false; },
           startHome: async () => undefined,
           healthCheck: async () => true,
           recoverConfiguration: async () => { calls.recoverConfiguration += 1; },
         })).resolves.toMatchObject({ outcome: 'recovery_required', restartedHome: false });
-        expect(calls).toEqual({ isHomeRunning: 0, stopHome: 0, recoverConfiguration: 0 });
+        expect(calls).toEqual({ isHomeRunning: 2, stopHome: 1, recoverConfiguration: 0 });
         await expect(lstat(journalPath)).resolves.toBeTruthy();
       } finally { await rm(destination.root, { recursive: true, force: true }); }
     });
@@ -1424,7 +1583,7 @@ describe('Personal Home backup and restore owner', () => {
     } finally { await rm(destination.root, { recursive: true, force: true }); }
   });
 
-  it('rejects incomplete or reordered restore journals before lifecycle mutation', async () => {
+  it('stops the Home before rejecting incomplete or reordered restore journals', async () => {
     const destination = await fixture();
     try {
       const id = randomUUID();
@@ -1444,7 +1603,7 @@ describe('Personal Home backup and restore owner', () => {
         healthCheck: async () => true,
         recoverConfiguration: async () => undefined,
       })).resolves.toMatchObject({ outcome: 'recovery_required', restartedHome: false });
-      expect(stopped).toBe(false);
+      expect(stopped).toBe(true);
       await expect(lstat(journalPath)).resolves.toBeTruthy();
     } finally { await rm(destination.root, { recursive: true, force: true }); }
   });

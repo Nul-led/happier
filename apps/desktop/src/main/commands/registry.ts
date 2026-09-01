@@ -60,9 +60,25 @@ export type RegistryDependencies = Readonly<{
     }>;
     /** Shared Iroh desktop Home-tunnel lifecycle; the endpoint identity stays host-owned. */
     irohTunnel: Readonly<{
-        startHomeTunnel: (request: unknown) => Promise<unknown>;
-        stopHomeTunnel: (leaseId: string) => Promise<void>;
+        ensureHomeTunnel: (request: unknown) => Promise<unknown>;
+        releaseHomeTunnel: (leaseId: string) => Promise<void>;
         getTunnelStatus: (tunnelId: string) => Promise<Record<string, unknown> | null>;
+        getApplicationEndpoint: (request: unknown) => Promise<{ endpointId: string }>;
+        getAvailability: () => Promise<{ available: boolean }>;
+        startMachineHttpTunnel: (request: unknown) => Promise<unknown>;
+        stopMachineHttpTunnel: (leaseId: string) => Promise<void>;
+    }>;
+    systemTasks: Readonly<{
+        start: (specJson: string) => Promise<{ taskId: string }>;
+        cancel: (taskId: string) => Promise<void>;
+        snapshot: (taskId: string) => unknown;
+        respondToPrompt: (taskId: string, answerJson: string) => Promise<void>;
+    }>;
+    desktopFiles: Readonly<{
+        pickPersonalHomeBackupArchive: () => Promise<string | null>;
+        savePersonalHomeBackupArchive: () => Promise<string | null>;
+        openSystemTaskLogPath: (path: string) => Promise<void>;
+        revealSystemTaskOutputPath: (path: string) => void;
     }>;
     platform?: NodeJS.Platform;
 }>;
@@ -134,28 +150,91 @@ export function createCommandRegistry(dependencies: RegistryDependencies): Comma
         return null;
     });
 
-    // Same command names and request/response shapes as the Tauri host: the
-    // renderer's desktop lifecycle module targets one shared contract.
-    registry.set('iroh_start_home_tunnel', async (args) => {
-        if (!args.request || typeof args.request !== 'object') {
-            throw new Error('iroh_start_home_tunnel requires a request');
-        }
-        return dependencies.irohTunnel.startHomeTunnel(args.request);
+    registry.set('start_system_task', (args) => {
+        const specJson = readString(args, 'specJson');
+        if (specJson === null) throw new Error('start_system_task requires specJson');
+        return dependencies.systemTasks.start(specJson);
     });
 
-    registry.set('iroh_stop_home_tunnel', async (args) => {
-        const leaseId = readString(args, 'leaseId');
-        if (leaseId === null) throw new Error('iroh_stop_home_tunnel requires a leaseId');
-        await dependencies.irohTunnel.stopHomeTunnel(leaseId);
+    registry.set('cancel_system_task', async (args) => {
+        const taskId = readString(args, 'taskId');
+        if (taskId === null) throw new Error('cancel_system_task requires a taskId');
+        await dependencies.systemTasks.cancel(taskId);
         return null;
     });
 
-    registry.set('iroh_get_home_tunnel_status', async (args) => {
+    registry.set('get_system_task_snapshot', (args) => {
+        const taskId = readString(args, 'taskId');
+        if (taskId === null) throw new Error('get_system_task_snapshot requires a taskId');
+        return dependencies.systemTasks.snapshot(taskId);
+    });
+
+    registry.set('respond_system_task_prompt', async (args) => {
+        const taskId = readString(args, 'taskId');
+        const answerJson = readString(args, 'answerJson');
+        if (taskId === null || answerJson === null) {
+            throw new Error('respond_system_task_prompt requires a taskId and answerJson');
+        }
+        await dependencies.systemTasks.respondToPrompt(taskId, answerJson);
+        return null;
+    });
+
+    registry.set('desktop_pick_personal_home_backup_archive', () => (
+        dependencies.desktopFiles.pickPersonalHomeBackupArchive()
+    ));
+    registry.set('desktop_save_personal_home_backup_archive', () => (
+        dependencies.desktopFiles.savePersonalHomeBackupArchive()
+    ));
+    registry.set('system_tasks_open_log_path', async (args) => {
+        const path = readString(args, 'path');
+        if (path === null) throw new Error('system_tasks_open_log_path requires a path');
+        await dependencies.desktopFiles.openSystemTaskLogPath(path);
+        return null;
+    });
+    registry.set('system_tasks_reveal_output_path', (args) => {
+        const path = readString(args, 'path');
+        if (path === null) throw new Error('system_tasks_reveal_output_path requires a path');
+        dependencies.desktopFiles.revealSystemTaskOutputPath(path);
+        return null;
+    });
+
+    // Same command names and request/response shapes as the Tauri host: the
+    // renderer's desktop lifecycle module targets one shared contract.
+    registry.set('iroh_ensure_home_tunnel', async (args) => {
+        if (!args.request || typeof args.request !== 'object') {
+            throw new Error('iroh_ensure_home_tunnel requires a request');
+        }
+        return dependencies.irohTunnel.ensureHomeTunnel(args.request);
+    });
+
+    registry.set('iroh_release_home_tunnel', async (args) => {
+        const leaseId = readString(args, 'leaseId');
+        if (leaseId === null) throw new Error('iroh_release_home_tunnel requires a leaseId');
+        await dependencies.irohTunnel.releaseHomeTunnel(leaseId);
+        return null;
+    });
+
+    registry.set('iroh_get_tunnel_status', async (args) => {
         const leaseId = readString(args, 'leaseId');
         if (leaseId === null) {
-            throw new Error('iroh_get_home_tunnel_status requires a leaseId');
+            throw new Error('iroh_get_tunnel_status requires a leaseId');
         }
         return dependencies.irohTunnel.getTunnelStatus(leaseId);
+    });
+    registry.set('iroh_get_availability', () => dependencies.irohTunnel.getAvailability());
+    registry.set('iroh_get_application_endpoint', (args) => {
+        if (!args.request || typeof args.request !== 'object') throw new Error('iroh_get_application_endpoint requires a request');
+        return dependencies.irohTunnel.getApplicationEndpoint(args.request);
+    });
+    registry.set('iroh_start_machine_http_tunnel', (args) => {
+        if (!args.request || typeof args.request !== 'object') throw new Error('iroh_start_machine_http_tunnel requires a request');
+        return dependencies.irohTunnel.startMachineHttpTunnel(args.request);
+    });
+    registry.set('iroh_stop_machine_http_tunnel', async (args) => {
+        const leaseId = readString(args, 'leaseId');
+        if (leaseId === null) throw new Error('iroh_stop_machine_http_tunnel requires a leaseId');
+        await dependencies.irohTunnel.stopMachineHttpTunnel(leaseId);
+        return null;
     });
 
     registry.set('desktop_get_window_chrome_policy', () => ({

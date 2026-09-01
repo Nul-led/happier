@@ -1,9 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, readFile, readdir, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+import { dirname, join } from 'node:path';
 
-import { verifyPersonalHomeArchive } from './archive.js';
+import { inspectPersonalHomeArchive } from './archive.js';
 import {
   createPersonalHomeBackupWithLease,
   listPersonalHomeBackupArchives,
@@ -13,14 +12,18 @@ import {
 import { erasePersonalHomeData, PersonalHomeEraseError, resolvePersonalHomeEraseTargets } from './erase.js';
 import type { PersonalHomeRuntimeLayout } from './layout.js';
 import type { PersonalHomeRestorableConfigurationV1 } from './configuration.js';
+import type { PersonalHomeAuthenticatedReadiness } from './readiness.js';
 import { withPersonalHomeOperationLock } from './lock.js';
 import { fingerprintMasterSecret, type PersonalHomeBackupManifestV1 } from './manifest.js';
 import type { ManagedRelayPurpose } from './personalHomeRuntimeSpec.js';
 import {
-  relocatePersonalHome,
-  type PersonalHomeBundleTransfer,
-  type PersonalHomeRelocationResult,
-} from './relocation.js';
+  coordinatePersonalHomeRelocation,
+  inspectPersonalHomeRelocationSourceRecovery,
+  type PersonalHomeRelocationSourceCoordinatorParams,
+  type PersonalHomeRelocationSourceRecoveryFacts,
+  type PersonalHomeRelocationSourceResult,
+} from './relocationCoordinator.js';
+import type { PersonalHomeRelocationDestinationOwner } from './relocationDestination.js';
 import {
   inspectPersonalHomeRestoreRecovery,
   finalizePersonalHomeRestoreWithLease,
@@ -35,7 +38,7 @@ import {
 
 export type PersonalHomeBackupOperationResult = PersonalHomeBackupResult;
 export type PersonalHomeRestoreOperationResult = PersonalHomeRestoreResult;
-export type PersonalHomeRelocateOperationResult = PersonalHomeRelocationResult;
+export type PersonalHomeRelocateOperationResult = PersonalHomeRelocationSourceResult;
 
 /**
  * Typed result facts read from the Home identity/config owner (server identity seam). Never
@@ -53,6 +56,7 @@ export class PersonalHomeOperationsError extends Error {
       | 'identity_unavailable'
       | 'sqlite_maintenance_required'
       | 'home_stop_failed'
+      | 'home_restart_failed'
       | 'operation_cancelled'
       | 'restore_unavailable'
       | 'restore_recovery_required'
@@ -84,12 +88,16 @@ export type PersonalHomeOperationsDeps = Readonly<{
     isRunning(): Promise<boolean>;
     stop(): Promise<void>;
     start(): Promise<void>;
+    quarantine?(): Promise<void>;
+    activate?(): Promise<void>;
+    readServiceStatus?(): Promise<Readonly<{ running: boolean; quarantined: boolean }>>;
     healthCheck?(): Promise<boolean>;
   }>;
   /** SQLite maintenance for one database (offline TRUNCATE checkpoint + quick_check). */
   sqliteMaintenance(databasePath: string): Promise<PersonalHomeSqliteMaintenance>;
   migrateStagedDatabase?(layout: PersonalHomeRuntimeLayout, databasePath: string, manifest: PersonalHomeBackupManifestV1): Promise<void>;
   readIdentityFromDatabase?(layout: PersonalHomeRuntimeLayout, databasePath: string): Promise<PersonalHomeIdentityFacts>;
+  readDataCountsFromDatabase?(layout: PersonalHomeRuntimeLayout, databasePath: string): Promise<Readonly<{ accountCount: number; sessionCount: number }>>;
   /** Fixed sanitized configuration allowlist reader — never a raw environment dump. */
   readConfiguration(layout: PersonalHomeRuntimeLayout): Promise<Record<string, unknown>>;
   /** Canonical `configDir/server.env` owner with a durable rollback artifact. */
@@ -101,23 +109,15 @@ export type PersonalHomeOperationsDeps = Readonly<{
   inspectConfigurationStorage?(layout: PersonalHomeRuntimeLayout, configuration: PersonalHomeRestorableConfigurationV1): Promise<Readonly<{ targetPath: string; incomingBytes: number; rollbackBytes: number }>>;
   recoverConfiguration(layout: PersonalHomeRuntimeLayout, rollbackArtifact: string): Promise<void>;
   finalizeConfiguration?(layout: PersonalHomeRuntimeLayout, rollbackArtifact: string): Promise<void>;
+  /** Server-light readiness receipt, produced only after AuthModule mints and
+   * verifies a present-user token against the activated restored Home. */
+  attestActivatedHome?(): Promise<PersonalHomeAuthenticatedReadiness>;
   /** Fresh runtime version recorded in backup manifests. */
   readHappierVersion?(): Promise<string>;
   /** Transitional direct-owner test compatibility; canonical production factory uses reader. */
   happierVersion?: string;
   /** Installed migration metadata owner; callers cannot guess ordering from migration names. */
   isSchemaSupported?(layout: PersonalHomeRuntimeLayout, schemaVersion: string): Promise<boolean>;
-  /** Destination/carrier/publication boundary resolved once by production composition. */
-  relocation?: Readonly<{
-    transfer: PersonalHomeBundleTransfer;
-    prepareDestination(input: Readonly<{ dataDir: string }>): Promise<void>;
-    restoreDestinationWithLease(input: Readonly<{ dataDir: string; archivePath: string; operationLeaseHeld: true }>): Promise<void>;
-    verifyDestination(input: Readonly<{ dataDir: string }>): Promise<Readonly<{ homeServerIdentityId: string }>>;
-    startDestination(input: Readonly<{ dataDir: string }>): Promise<Readonly<{ healthy: boolean; homeServerIdentityId: string }>>;
-    stopDestination(input: Readonly<{ dataDir: string }>): Promise<void>;
-    quarantineDestination(input: Readonly<{ dataDir: string }>): Promise<void>;
-    commitSameHomeRelocation(input: PersonalHomeRelocationCommit): Promise<void>;
-  }>;
 }>;
 
 export type PersonalHomeInspection = Readonly<{
@@ -139,11 +139,11 @@ export type PersonalHomeInspection = Readonly<{
     destinationEmpty: boolean;
   }>;
   restoreRecovery: PersonalHomeRestoreRecoveryFacts;
+  relocationRecovery: PersonalHomeRelocationSourceRecoveryFacts;
 }>;
 
 export type PersonalHomeBackupOperationInput = Readonly<{
   outputPath?: string;
-  intent?: 'standard' | 'erase-safety';
 } & PersonalHomeOperationContext>;
 
 export type PersonalHomeOperationContext = Readonly<{
@@ -155,6 +155,7 @@ export type PersonalHomeOperationContext = Readonly<{
 
 export type PersonalHomeBackupVerification = Readonly<{
   manifest: PersonalHomeBackupManifestV1;
+  archiveBytes: number;
   identityMatchesCurrentHome: 'match' | 'mismatch' | 'unknown';
 }>;
 
@@ -194,17 +195,14 @@ export type PersonalHomeEraseOperationResult = Readonly<{
   stoppedRunningHome: boolean;
 }>;
 
-/** Facade-owned publication seam using the canonical server identity vocabulary. */
-export type PersonalHomeRelocationCommit = Readonly<{
-  homeServerIdentityId: string;
-  newConnectionDescriptor: HomeConnectionDescriptorV1;
-}>;
-
 export type PersonalHomeRelocateInput = Readonly<{
-  destinationDataDir: string;
-  destinationDescriptor: HomeConnectionDescriptorV1;
-  publicIntegrationsNeedAttention?: readonly string[];
-  followerAction?: 'none' | 'reconnect' | 'reenroll';
+  operationId: string;
+  sourceDescriptorRevision: number;
+  destinationMachineId: string;
+  recoveryAction?: 'finish_move' | 'return_to_source';
+  destination: PersonalHomeRelocationDestinationOwner;
+  publishDestination: PersonalHomeRelocationSourceCoordinatorParams['publishDestination'];
+  readPublishedDescriptor: PersonalHomeRelocationSourceCoordinatorParams['readPublishedDescriptor'];
 } & PersonalHomeOperationContext>;
 
 export type PersonalHomeOperations = Readonly<{
@@ -215,7 +213,7 @@ export type PersonalHomeOperations = Readonly<{
   erase(input: PersonalHomeEraseOperationInput): Promise<PersonalHomeEraseOperationResult>;
   recoverRestore(input?: PersonalHomeOperationContext): Promise<PersonalHomeRestoreRecoveryResult>;
   finalizeRestore(input?: PersonalHomeOperationContext): Promise<PersonalHomeRestoreFinalizationResult>;
-  relocate(input: PersonalHomeRelocateInput): Promise<PersonalHomeRelocationResult>;
+  relocate(input: PersonalHomeRelocateInput): Promise<PersonalHomeRelocateOperationResult>;
 }>;
 
 type PersonalHomePurpose = Extract<ManagedRelayPurpose, { kind: 'personal-home' }>;
@@ -276,7 +274,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
   const checkCancelled = (context: PersonalHomeOperationContext): void => {
     if (context.signal?.aborted) throw new PersonalHomeOperationsError('operation_cancelled', 'Personal Home operation was cancelled before mutation.');
   };
-  const withStableLayoutLease = async <T>(kind: 'inspect' | 'backup' | 'verify_backup' | 'restore' | 'erase', context: PersonalHomeOperationContext, fn: (layout: PersonalHomeRuntimeLayout, purpose: PersonalHomePurpose) => Promise<T>): Promise<T> => {
+  const withStableLayoutLease = async <T>(kind: 'inspect' | 'backup' | 'verify_backup' | 'restore' | 'erase' | 'relocate', context: PersonalHomeOperationContext, fn: (layout: PersonalHomeRuntimeLayout, purpose: PersonalHomePurpose) => Promise<T>): Promise<T> => {
     checkCancelled(context);
     const initialPurpose = await deps.readPurpose(); assertPersonalHomePurpose(initialPurpose); assertExpectedPurpose(initialPurpose, context);
     const initialLayout = await deps.resolveLayout(); await deps.validateLayout(initialLayout);
@@ -308,6 +306,28 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
     }
   };
 
+  const restartHomeAfterAbortedErase = async (originalError: unknown): Promise<never> => {
+    try {
+      if (!await deps.lifecycle.isRunning()) {
+        await deps.lifecycle.start();
+      }
+      if (!await deps.lifecycle.isRunning()) {
+        throw new Error('the service did not report running');
+      }
+      if (healthCheck && !await healthCheck()) {
+        throw new Error('the Home health check failed');
+      }
+    } catch (restartError) {
+      const originalMessage = originalError instanceof Error ? originalError.message : String(originalError);
+      const restartMessage = restartError instanceof Error ? restartError.message : String(restartError);
+      throw new PersonalHomeOperationsError(
+        'home_restart_failed',
+        `Erase was not performed (${originalMessage}); Personal Home restart could not be verified and needs attention: ${restartMessage}.`,
+      );
+    }
+    throw originalError;
+  };
+
   const readMasterSecretFacts = async (layout: PersonalHomeRuntimeLayout) => {
     try {
       const bytes = await readFile(layout.masterSecretPath);
@@ -318,12 +338,64 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
     }
   };
 
+  const createBackupWithHeldLease = async (params: Readonly<{
+    layout: PersonalHomeRuntimeLayout;
+    identity: PersonalHomeIdentityFacts;
+    outputPath: string;
+    context: PersonalHomeOperationContext;
+    keepStoppedAfterSuccess?: boolean;
+  }>): Promise<Readonly<{ backup: PersonalHomeBackupResult; wasRunning: boolean }>> => {
+    const stagingDir = join(dirname(params.layout.dataDir), `.personal-home-backup-${process.pid}-${randomUUID()}`);
+    const wasRunning = await deps.lifecycle.isRunning();
+    let homeNeedsAttention = false;
+    let result: PersonalHomeBackupResult | undefined;
+    try {
+      if (wasRunning) {
+        checkCancelled(params.context);
+        params.context.progress?.('stopping_home');
+        await deps.lifecycle.stop();
+        if (await deps.lifecycle.isRunning()) throw new PersonalHomeOperationsError('home_stop_failed', 'Personal Home did not stop; backup was not attempted.');
+      }
+      const maintenance = await deps.sqliteMaintenance(params.layout.databasePath);
+      result = await createPersonalHomeBackupWithLease({
+        layout: params.layout,
+        outputPath: params.outputPath,
+        stagingDir,
+        homeServerIdentityId: params.identity.homeServerIdentityId,
+        schemaVersion: params.identity.schemaVersion,
+        happierVersion: await readHappierVersion(),
+        configuration: await deps.readConfiguration(params.layout),
+        sqlite: {
+          checkpoint: async () => { params.context.progress?.('checkpointing'); return maintenance.checkpoint(); },
+          quickCheck: async () => { params.context.progress?.('validating_database'); return maintenance.quickCheck(); },
+          close: () => maintenance.close(),
+        },
+        operationLeaseHeld: true,
+      });
+    } finally {
+      if (wasRunning && (!params.keepStoppedAfterSuccess || !result)) {
+        params.context.progress?.('restarting_home');
+        try {
+          await deps.lifecycle.start();
+          if (healthCheck && !(await healthCheck())) homeNeedsAttention = true;
+        } catch {
+          homeNeedsAttention = true;
+        }
+      }
+    }
+    if (!result) throw new Error('Personal Home backup did not produce a result');
+    return {
+      backup: homeNeedsAttention ? { ...result, homeNeedsAttention: true } : result,
+      wasRunning,
+    };
+  };
+
   const inspect = async (context: PersonalHomeOperationContext = {}): Promise<PersonalHomeInspection> => {
     context.progress?.('acquiring_lock');
     return withStableLayoutLease('inspect', context, async (layout, purpose) => {
       context.progress?.('inspecting');
       const ownedErasePaths = resolvePersonalHomeEraseTargets(layout);
-      const [identity, masterSecret, running, databaseBytes, publicFilesPresent, privateFilesPresent, backupArchives, restoreRecovery, estimatedOwnedBytes, destinationHasData] =
+      const [identity, masterSecret, running, databaseBytes, publicFilesPresent, privateFilesPresent, backupArchives, restoreRecovery, relocationRecovery, estimatedOwnedBytes, destinationHasData] =
       await Promise.all([
         readIdentityOrNull(layout),
         readMasterSecretFacts(layout),
@@ -333,6 +405,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
         isDirectory(layout.privateFilesDir),
         listPersonalHomeBackupArchives(layout.backupsDir),
         inspectPersonalHomeRestoreRecovery(layout),
+        inspectPersonalHomeRelocationSourceRecovery(layout.dataDir),
         estimateOwnedBytes(ownedErasePaths),
         hasMeaningfulPersonalHomeData(layout),
       ]);
@@ -345,6 +418,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
       masterSecret,
       storage: { databasePresent: databaseBytes !== null, databaseBytes, publicFilesPresent, privateFilesPresent, backupsCount: backupArchives.length, latestBackup: backupArchives[0] ?? null, ownedErasePaths, estimatedOwnedBytes, destinationEmpty: !destinationHasData },
       restoreRecovery,
+      relocationRecovery,
       };
     });
   };
@@ -355,70 +429,24 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
       const identity = await requireIdentity(layout);
       const timestamp = new Date().toISOString().replace(/[:.]/gu, '-');
       const outputPath = input.outputPath ?? join(layout.backupsDir, `personal-home-${timestamp}.tar`);
-      if (input.intent === 'erase-safety') {
-        if (!input.outputPath) {
-          throw new PersonalHomeEraseError('unsafe_data_root', 'A pre-erase safety backup requires an explicit output path.');
-        }
-        const resolvedOutput = resolve(outputPath);
-        const protectedRoots = [layout.dataDir, layout.configDir, layout.backupsDir, ...resolvePersonalHomeEraseTargets(layout)];
-        const isInsideProtectedRoot = protectedRoots.some((root) => {
-          const pathFromRoot = relative(resolve(root), resolvedOutput);
-          return pathFromRoot === '' || (pathFromRoot !== '..' && !pathFromRoot.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(pathFromRoot));
-        });
-        if (isInsideProtectedRoot) {
-          throw new PersonalHomeEraseError('unsafe_data_root', 'The pre-erase safety backup must be outside Personal Home data, backups, configuration, and every erase target.');
-        }
-      }
-      const stagingDir = join(dirname(layout.dataDir), `.personal-home-backup-${process.pid}-${randomUUID()}`);
-      const wasRunning = await deps.lifecycle.isRunning();
-      let homeNeedsAttention = false;
-      let result: PersonalHomeBackupResult | undefined;
-      try {
-        if (wasRunning) {
-          checkCancelled(input);
-          input.progress?.('stopping_home');
-          await deps.lifecycle.stop();
-          if (await deps.lifecycle.isRunning()) throw new PersonalHomeOperationsError('home_stop_failed', 'Personal Home did not stop; backup was not attempted.');
-        }
-        const maintenance = await deps.sqliteMaintenance(layout.databasePath);
-        result = await createPersonalHomeBackupWithLease({
+      return (await createBackupWithHeldLease({
         layout,
+        identity,
         outputPath,
-        stagingDir,
-        homeServerIdentityId: identity.homeServerIdentityId,
-        schemaVersion: identity.schemaVersion,
-        happierVersion: await readHappierVersion(),
-        configuration: await deps.readConfiguration(layout),
-        sqlite: {
-          checkpoint: async () => { input.progress?.('checkpointing'); return maintenance.checkpoint(); },
-          quickCheck: async () => { input.progress?.('validating_database'); return maintenance.quickCheck(); },
-          close: () => maintenance.close(),
-        },
-        operationLeaseHeld: true,
-        });
-      } finally {
-        if (wasRunning) {
-          input.progress?.('restarting_home');
-          try {
-            await deps.lifecycle.start();
-            if (healthCheck && !(await healthCheck())) homeNeedsAttention = true;
-          } catch {
-            homeNeedsAttention = true;
-          }
-        }
-      }
-      if (!result) throw new Error('Personal Home backup did not produce a result');
-      return homeNeedsAttention ? { ...result, homeNeedsAttention: true } : result;
+        context: input,
+      })).backup;
     });
   };
 
   const verifyBackup = async (input: Readonly<{ archivePath: string } & PersonalHomeOperationContext>): Promise<PersonalHomeBackupVerification> => {
     return withStableLayoutLease('verify_backup', input, async (layout) => {
       input.progress?.('verifying_archive');
-      const manifest = await verifyPersonalHomeArchive(input.archivePath);
+      const inspection = await inspectPersonalHomeArchive(input.archivePath);
+      const manifest = inspection.manifest;
       const identity = await readIdentityOrNull(layout);
       return {
       manifest,
+      archiveBytes: inspection.archiveBytes,
       identityMatchesCurrentHome: identity === null
         ? 'unknown'
         : identity.homeServerIdentityId === manifest.homeServerIdentityId ? 'match' : 'mismatch',
@@ -429,7 +457,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
   const restore = async (input: PersonalHomeRestoreOperationInput): Promise<PersonalHomeRestoreResult> => {
     input.progress?.('validating_archive');
     return withStableLayoutLease('restore', input, async (layout) => {
-      if (!deps.isSchemaSupported || !deps.migrateStagedDatabase || !deps.readIdentityFromDatabase || !deps.inspectConfigurationStorage) throw new PersonalHomeOperationsError('restore_unavailable', 'Personal Home restore schema, migration, identity, and configuration storage owners are unavailable.');
+      if (!deps.isSchemaSupported || !deps.migrateStagedDatabase || !deps.readIdentityFromDatabase || !deps.readDataCountsFromDatabase || !deps.inspectConfigurationStorage || !deps.attestActivatedHome || !deps.finalizeConfiguration) throw new PersonalHomeOperationsError('restore_unavailable', 'Personal Home restore schema, migration, identity, data-count, authenticated readiness, configuration storage, and finalization owners are unavailable.');
       const destinationHasData = await hasMeaningfulPersonalHomeData(layout);
       const identity = await readIdentityOrNull(layout);
       if (destinationHasData && !identity) {
@@ -437,7 +465,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
       }
       const expectedHomeServerIdentityId = identity?.homeServerIdentityId
         ?? (destinationHasData ? undefined : input.expectedHomeServerIdentityId);
-      return restorePersonalHomeBackupWithLease({
+      const restored = await restorePersonalHomeBackupWithLease({
       layout,
       operationLeaseHeld: true,
       archivePath: input.archivePath,
@@ -456,9 +484,49 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
       verifyStagedIdentity: async (databasePath, manifest) => (await deps.readIdentityFromDatabase!(layout, databasePath)).homeServerIdentityId === manifest.homeServerIdentityId,
       prepareConfiguration: (configuration) => deps.prepareConfiguration(layout, configuration),
       inspectConfigurationStorage: (configuration) => deps.inspectConfigurationStorage!(layout, configuration),
+      ...(destinationHasData ? {
+        requireRecoveryArchiveBeforeMutation: true,
+        createRecoveryArchiveBeforeMutation: async () => {
+          input.progress?.('creating_recovery_archive');
+          const timestamp = new Date().toISOString().replace(/[:.]/gu, '-');
+          const prepared = await createBackupWithHeldLease({
+            layout,
+            identity: identity!,
+            outputPath: join(layout.backupsDir, `personal-home-pre-restore-${timestamp}.tar`),
+            context: input,
+            keepStoppedAfterSuccess: true,
+          });
+          try {
+            checkCancelled(input);
+          } catch (error) {
+            if (prepared.wasRunning) await deps.lifecycle.start().catch(() => undefined);
+            throw error;
+          }
+          return { archive: prepared.backup, wasRunning: prepared.wasRunning };
+        },
+      } : {}),
+      requireDataCountVerification: true,
+      readDataCountsFromDatabase: (databasePath: string) => deps.readDataCountsFromDatabase!(layout, databasePath),
       verifyIdentity: async (manifest: PersonalHomeBackupManifestV1) =>
         (await deps.readIdentity(layout)).homeServerIdentityId === manifest.homeServerIdentityId,
+      requireAuthenticatedAttestation: true,
+      attestActivatedHome: () => deps.attestActivatedHome!(),
       });
+      if (restored.outcome !== 'restored') return restored;
+      input.progress?.('finalizing_restore');
+      const finalization = await finalizePersonalHomeRestoreWithLease({
+        layout,
+        operationLeaseHeld: true,
+        finalizeConfiguration: (artifact) => deps.finalizeConfiguration!(layout, artifact),
+      });
+      if (finalization.outcome !== 'finalized') {
+        return {
+          ...restored,
+          outcome: 'recovery_required',
+          error: finalization.error ?? 'Personal Home restore cleanup requires recovery.',
+        };
+      }
+      return { ...restored, rollbackPaths: [] };
     });
   };
 
@@ -518,8 +586,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
             throw new PersonalHomeOperationsError('home_stop_failed', 'Personal Home did not stop; erase was not attempted.');
           }
         } catch (error) {
-          await deps.lifecycle.start().catch(() => undefined);
-          throw error;
+          await restartHomeAfterAbortedErase(error);
         }
       }
       const paths = resolvePersonalHomeEraseTargets(layout);
@@ -541,7 +608,7 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
         }
         checkCancelled(input);
       } catch (error) {
-        if (wasRunning) await deps.lifecycle.start().catch(() => undefined);
+        if (wasRunning) await restartHomeAfterAbortedErase(error);
         throw error;
       }
       input.progress?.('erasing');
@@ -550,82 +617,103 @@ export function createPersonalHomeOperations(deps: PersonalHomeOperationsDeps): 
     });
   };
 
-  const relocate = async (input: PersonalHomeRelocateInput): Promise<PersonalHomeRelocationResult> => {
+  const relocate = async (input: PersonalHomeRelocateInput): Promise<PersonalHomeRelocateOperationResult> => {
     checkCancelled(input);
     input.progress?.('preflight');
     const purpose = await deps.readPurpose(); assertPersonalHomePurpose(purpose); assertExpectedPurpose(purpose, input);
     const layout = await deps.resolveLayout();
     await deps.validateLayout(layout);
     const identity = await requireIdentity(layout);
-    const adapter = deps.relocation;
-    if (!adapter) throw new PersonalHomeOperationsError('relocation_unavailable', 'Personal Home relocation is unavailable.');
-    // relocatePersonalHome owns the ordered dual-Home locks and the deterministic phase machine;
-    // the source lifecycle is wired to this facade's lifecycle boundary and the publication
-    // callback receives the identity under its canonical homeServerIdentityId name.
-    return relocatePersonalHome({
-      source: { dataDir: layout.dataDir, homeServerIdentityId: identity.homeServerIdentityId },
-      destination: { dataDir: input.destinationDataDir },
-      revalidateSourceUnderLocks: async () => {
-        checkCancelled(input);
-        const currentPurpose = await deps.readPurpose();
-        assertPersonalHomePurpose(currentPurpose);
-        assertExpectedPurpose(currentPurpose, input);
-        const currentLayout = await deps.resolveLayout();
-        await deps.validateLayout(currentLayout);
-        const currentIdentity = await requireIdentity(currentLayout);
-        if (
-          currentPurpose.canonicalServerUrl !== purpose.canonicalServerUrl
-          || JSON.stringify(currentLayout) !== JSON.stringify(layout)
-          || JSON.stringify(currentIdentity) !== JSON.stringify(identity)
-        ) {
-          throw new PersonalHomeOperationsError(
-            'purpose_not_personal_home',
-            'Personal Home purpose, canonical layout, or identity changed while waiting for both relocation locks.',
-          );
-        }
-      },
-      stopSource: async () => {
-        input.progress?.('stopping_source');
-        await deps.lifecycle.stop();
-        if (await deps.lifecycle.isRunning()) {
-          throw new PersonalHomeOperationsError('home_stop_failed', 'Personal Home did not stop; relocation was not attempted.');
-        }
-      },
-      isSourceRunning: () => deps.lifecycle.isRunning(),
-      startSource: async () => { input.progress?.('rolling_back_source'); await deps.lifecycle.start(); },
-      priorSourceRunning: await deps.lifecycle.isRunning(),
-      checkCancelledBeforeCutover: () => checkCancelled(input),
-      createFinalBackup: async () => {
-        const outputPath = join(layout.backupsDir, `personal-home-relocation-${randomUUID()}.tar`);
-        const stagingDir = join(dirname(layout.dataDir), `.personal-home-relocation-backup-${process.pid}-${randomUUID()}`);
-        return createPersonalHomeBackupWithLease({
-          layout,
-          outputPath,
-          stagingDir,
-          homeServerIdentityId: identity.homeServerIdentityId,
-          schemaVersion: identity.schemaVersion,
-          happierVersion: await readHappierVersion(),
-          configuration: await deps.readConfiguration(layout),
-          sqlite: await deps.sqliteMaintenance(layout.databasePath),
-          operationLeaseHeld: true,
-        });
-      },
-      prepareDestination: async () => { input.progress?.('staging_destination'); await adapter.prepareDestination({ dataDir: input.destinationDataDir }); },
-      transfer: adapter.transfer,
-      restoreDestination: async (archivePath) => {
-        input.progress?.('restoring_destination');
-        await adapter.restoreDestinationWithLease({ dataDir: input.destinationDataDir, archivePath, operationLeaseHeld: true });
-      },
-      verifyDestination: async () => { input.progress?.('verifying_destination'); return adapter.verifyDestination({ dataDir: input.destinationDataDir }); },
-      startDestination: async () => { input.progress?.('starting_destination'); return adapter.startDestination({ dataDir: input.destinationDataDir }); },
-      stopDestination: () => adapter.stopDestination({ dataDir: input.destinationDataDir }),
-      quarantineDestination: () => adapter.quarantineDestination({ dataDir: input.destinationDataDir }),
-      commitSameHomeRelocation: adapter.commitSameHomeRelocation,
-      destinationDescriptor: input.destinationDescriptor,
-      ...(input.publicIntegrationsNeedAttention
-        ? { publicIntegrationsNeedAttention: input.publicIntegrationsNeedAttention }
-        : {}),
-      ...(input.followerAction ? { followerAction: input.followerAction } : {}),
+    if (!deps.lifecycle.quarantine || !deps.lifecycle.activate || !deps.lifecycle.readServiceStatus) {
+      throw new PersonalHomeOperationsError('relocation_unavailable', 'Personal Home service quarantine is unavailable.');
+    }
+    const quarantineSource = deps.lifecycle.quarantine;
+    const activateSource = deps.lifecycle.activate;
+    const readSourceServiceStatus = deps.lifecycle.readServiceStatus;
+    return withStableLayoutLease('relocate', input, async (leasedLayout, leasedPurpose) => {
+      if (leasedPurpose.canonicalServerUrl !== purpose.canonicalServerUrl
+        || JSON.stringify(leasedLayout) !== JSON.stringify(layout)) {
+        throw new PersonalHomeOperationsError('purpose_not_personal_home', 'Personal Home purpose or layout changed before relocation acquired its source lock.');
+      }
+      const currentIdentity = await requireIdentity(leasedLayout);
+      if (currentIdentity.homeServerIdentityId !== identity.homeServerIdentityId) {
+        throw new PersonalHomeOperationsError('identity_unavailable', 'Personal Home identity changed before relocation cutover.');
+      }
+      const backupName = createHash('sha256').update(input.operationId).digest('hex').slice(0, 24);
+      let sourceWasRunning = false;
+      return await coordinatePersonalHomeRelocation({
+        sourceDataDir: leasedLayout.dataDir,
+        operationId: input.operationId,
+        homeServerIdentityId: identity.homeServerIdentityId,
+        sourceCanonicalServerUrl: leasedPurpose.canonicalServerUrl,
+        sourceDescriptorRevision: input.sourceDescriptorRevision,
+        ...(input.recoveryAction ? { recoveryAction: input.recoveryAction } : {}),
+        destinationMachineId: input.destinationMachineId,
+        destination: input.destination,
+        publishDestination: input.publishDestination,
+        readPublishedDescriptor: input.readPublishedDescriptor,
+        stopSource: async () => {
+          input.progress?.('stopping_source');
+          sourceWasRunning = await deps.lifecycle.isRunning();
+          if (sourceWasRunning) {
+            try {
+              await deps.lifecycle.stop();
+            } catch (stopError) {
+              let stillRunning: boolean;
+              try {
+                stillRunning = await deps.lifecycle.isRunning();
+              } catch (probeError) {
+                throw new PersonalHomeOperationsError(
+                  'home_stop_failed',
+                  `Personal Home stop failed and its running state could not be verified: ${probeError instanceof Error ? probeError.message : String(probeError)}.`,
+                );
+              }
+              if (stillRunning) throw stopError;
+              try {
+                await activateSource();
+                const recovered = await readSourceServiceStatus();
+                if (!recovered.running || recovered.quarantined) throw new Error('the source service did not report active');
+              } catch (recoveryError) {
+                throw new PersonalHomeOperationsError(
+                  'home_restart_failed',
+                  `Relocation was not attempted after an ambiguous stop; the source Home could not be restored and needs attention: ${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}.`,
+                );
+              }
+              throw stopError;
+            }
+          }
+          if (await deps.lifecycle.isRunning()) throw new PersonalHomeOperationsError('home_stop_failed', 'Personal Home did not stop; relocation was not attempted.');
+        },
+        restoreSourceAfterFailedStage: async () => {
+          if (sourceWasRunning) await activateSource();
+        },
+        quarantineSource: async () => {
+          input.progress?.('quarantining_source');
+          await quarantineSource();
+        },
+        activateSource: async () => {
+          input.progress?.('rolling_back_source');
+          await activateSource();
+        },
+        readSourceServiceStatus,
+        createFinalBackup: async () => {
+          input.progress?.('creating_final_backup');
+          const outputPath = join(leasedLayout.backupsDir, `personal-home-relocation-${backupName}.tar`);
+          const stagingDir = join(dirname(leasedLayout.dataDir), `.personal-home-relocation-backup-${process.pid}-${randomUUID()}`);
+          const backup = await createPersonalHomeBackupWithLease({
+            layout: leasedLayout,
+            outputPath,
+            stagingDir,
+            homeServerIdentityId: identity.homeServerIdentityId,
+            schemaVersion: identity.schemaVersion,
+            happierVersion: await readHappierVersion(),
+            configuration: await deps.readConfiguration(leasedLayout),
+            sqlite: await deps.sqliteMaintenance(leasedLayout.databasePath),
+            operationLeaseHeld: true,
+          });
+          return { archivePath: backup.path, bundleSha256: backup.sha256 };
+        },
+      });
     });
   };
 

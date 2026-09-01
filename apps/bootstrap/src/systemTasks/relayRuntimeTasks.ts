@@ -1,5 +1,6 @@
 import { createConnection } from 'node:net';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import {
   createRelayHostEngine,
   createPersonalHomeSystemTaskOperations,
@@ -14,10 +15,18 @@ import {
   type SystemTaskSshConnectionConfig,
 } from '@happier-dev/cli-common/systemTasks';
 import {
+  attestPersonalHomeRelocationDestinationWithServerCommand,
   checkRelayRuntimeHealth as checkRelayRuntimeHealthShared,
   createCanonicalPersonalHomeOperations,
+  createCanonicalPersonalHomeRelocationDestinationOwner,
+  materializePersonalHomeRelocationEndpointWithServerCommand,
   listInstalledVersionIdsNewestFirst,
   PersonalHomeOperationsError,
+  readPersonalHomeStartupReadiness,
+  removePersonalHomeStartupReadiness,
+  resolveRelayRuntimeDefaults,
+  type PersonalHomeRelocationDestinationOwner,
+  type PersonalHomeOperations,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 
 import { buildScpCommand, buildSshCommand, redactSshText } from '../ssh/index.js';
@@ -37,17 +46,38 @@ export function createBootstrapRelayHostEngine(): ReturnType<typeof createRelayH
 export async function createBootstrapPersonalHomeSystemTaskOperations(params: Readonly<{
   engine?: RelayHostEngine;
   homeDir?: string;
-}> = {}): Promise<PersonalHomeSystemTaskOperations> {
+  channel: 'stable' | 'preview' | 'dev';
+  mode: 'user' | 'system';
+}>): Promise<PersonalHomeSystemTaskOperations> {
+  return createPersonalHomeSystemTaskOperations({
+    operations: await createBootstrapPersonalHomeOperations(params),
+  });
+}
+
+export async function createBootstrapPersonalHomeOperations(params: Readonly<{
+  engine?: RelayHostEngine;
+  homeDir?: string;
+  channel: 'stable' | 'preview' | 'dev';
+  mode: 'user' | 'system';
+}>): Promise<PersonalHomeOperations> {
+  const { releaseChannel } = normalizeBootstrapChannel(params.channel);
   const engine = params.engine ?? createBootstrapRelayHostEngine();
   const runtimeParams = {
     target: { kind: 'local' as const },
-    channel: 'stable' as const,
-    mode: 'user' as const,
+    channel: params.channel,
+    mode: params.mode,
   };
-  const operations = await createCanonicalPersonalHomeOperations({
-    homeDir: params.homeDir ?? homedir(),
-    mode: 'user',
-    channel: 'stable',
+  const homeDir = params.homeDir ?? homedir();
+  const defaults = resolveRelayRuntimeDefaults({
+    homeDir,
+    mode: params.mode,
+    channel: releaseChannel,
+  });
+  const readinessPath = join(defaults.dataDir, 'startup-receipt.json');
+  return await createCanonicalPersonalHomeOperations({
+    homeDir,
+    mode: params.mode,
+    channel: releaseChannel,
     readPurpose: async () => {
       const purpose = (await engine.readStatus(runtimeParams)).purpose;
       if (purpose?.kind !== 'personal-home' || !purpose.canonicalServerUrl.trim()) {
@@ -67,7 +97,19 @@ export async function createBootstrapPersonalHomeSystemTaskOperations(params: Re
     lifecycle: {
       isRunning: async () => (await engine.readStatus(runtimeParams)).service.active === true,
       stop: async () => await engine.control({ ...runtimeParams, action: 'stop' }),
-      start: async () => await engine.control({ ...runtimeParams, action: 'start' }),
+      start: async () => {
+        await removePersonalHomeStartupReadiness(readinessPath);
+        await engine.control({ ...runtimeParams, action: 'start' });
+      },
+      quarantine: async () => await engine.control({ ...runtimeParams, action: 'quarantine' }),
+      activate: async () => {
+        await removePersonalHomeStartupReadiness(readinessPath);
+        await engine.control({ ...runtimeParams, action: 'activate' });
+      },
+      readServiceStatus: async () => {
+        const service = (await engine.readStatus(runtimeParams)).service;
+        return { running: service.active === true, quarantined: service.active === false && service.enabled === false };
+      },
       healthCheck: async () => {
         const snapshot = await engine.readStatus(runtimeParams);
         return typeof snapshot.healthy === 'boolean'
@@ -75,9 +117,60 @@ export async function createBootstrapPersonalHomeSystemTaskOperations(params: Re
           : await checkRelayRuntimeHealthDefault({ baseUrl: snapshot.baseUrl });
       },
     },
+    attestActivatedHome: async () => await readPersonalHomeStartupReadiness({ path: readinessPath }),
     readHappierVersion: async () => (await engine.readStatus(runtimeParams)).version ?? 'unknown',
   });
-  return createPersonalHomeSystemTaskOperations({ operations });
+}
+
+export async function createBootstrapPersonalHomeRelocationDestinationOwner(params: Readonly<{
+  engine?: RelayHostEngine;
+  homeDir?: string;
+  channel: 'stable' | 'preview' | 'dev';
+  mode: 'user' | 'system';
+}>): Promise<PersonalHomeRelocationDestinationOwner> {
+  const { releaseChannel } = normalizeBootstrapChannel(params.channel);
+  const engine = params.engine ?? createBootstrapRelayHostEngine();
+  const homeDir = params.homeDir ?? homedir();
+  const runtimeParams = { target: { kind: 'local' as const }, channel: params.channel, mode: params.mode };
+  const defaults = resolveRelayRuntimeDefaults({ homeDir, mode: params.mode, channel: releaseChannel });
+  const readinessPath = join(defaults.dataDir, 'startup-receipt.json');
+  const serverBinary = join(defaults.installRoot, 'bin', process.platform === 'win32' ? 'happier-server.exe' : 'happier-server');
+  return await createCanonicalPersonalHomeRelocationDestinationOwner({
+    homeDir,
+    mode: params.mode,
+    channel: releaseChannel,
+    quarantine: async () => await engine.control({ ...runtimeParams, action: 'quarantine' }),
+    activate: async () => {
+      await removePersonalHomeStartupReadiness(readinessPath);
+      await engine.control({ ...runtimeParams, action: 'activate' });
+    },
+    readServiceStatus: async () => {
+      const service = (await engine.readStatus(runtimeParams)).service;
+      return { running: service.active === true, quarantined: service.active === false && service.enabled === false };
+    },
+    attestActivatedHome: async () => await readPersonalHomeStartupReadiness({ path: readinessPath }),
+    attestStagedHome: async ({ layout }) => await attestPersonalHomeRelocationDestinationWithServerCommand({
+      layout,
+      serverBinary,
+    }),
+    runMigrationProcess: async ({ command, args, env }) => await runCommandStreaming({
+      cmd: command,
+      args: [...args],
+      env,
+      context: 'personal-home relocation destination staged migration',
+    }),
+    materializeEndpoint: async ({ layout, sourceDescriptorRevision }) => {
+      const status = await engine.readStatus(runtimeParams);
+      const canonicalServerUrl = status.canonicalServerUrl?.trim() ?? '';
+      if (!canonicalServerUrl) throw new Error('Relocation destination canonical server URL is unavailable');
+      return await materializePersonalHomeRelocationEndpointWithServerCommand({
+        layout,
+        serverBinary,
+        canonicalServerUrl,
+        sourceDescriptorRevision,
+      });
+    },
+  });
 }
 
 function shellQuote(value: string): string {

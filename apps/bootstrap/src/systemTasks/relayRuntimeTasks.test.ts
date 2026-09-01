@@ -5,10 +5,12 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { RelayHostEngine } from '@happier-dev/cli-common/systemTasks';
 
-const { preparePayloadMock, createRelayHostEngineMock, createCanonicalPersonalHomeOperationsMock, runCommandStreamingMock } = vi.hoisted(() => ({
+const { preparePayloadMock, createRelayHostEngineMock, createCanonicalPersonalHomeOperationsMock, readPersonalHomeStartupReadinessMock, removePersonalHomeStartupReadinessMock, runCommandStreamingMock } = vi.hoisted(() => ({
     preparePayloadMock: vi.fn(),
     createRelayHostEngineMock: vi.fn(),
     createCanonicalPersonalHomeOperationsMock: vi.fn(),
+    readPersonalHomeStartupReadinessMock: vi.fn(async () => ({ authenticated: true, homeServerIdentityId: 'home-ready', accountCount: 1, sessionCount: 2 })),
+    removePersonalHomeStartupReadinessMock: vi.fn(async () => undefined),
     runCommandStreamingMock: vi.fn(),
 }));
 
@@ -23,6 +25,8 @@ vi.mock('@happier-dev/cli-common/firstPartyRuntime', async (importOriginal) => {
         ...actual,
         prepareFirstPartyComponentPayloadFromGitHubRelease: preparePayloadMock,
         createCanonicalPersonalHomeOperations: createCanonicalPersonalHomeOperationsMock,
+        readPersonalHomeStartupReadiness: readPersonalHomeStartupReadinessMock,
+        removePersonalHomeStartupReadiness: removePersonalHomeStartupReadinessMock,
     };
 });
 
@@ -85,14 +89,21 @@ describe('Personal Home operation composition', () => {
             relocate: async () => ({}),
         });
 
-        const operations = await createBootstrapPersonalHomeSystemTaskOperations({ engine, homeDir: '/tmp/home' });
+        const operations = await createBootstrapPersonalHomeSystemTaskOperations({
+            engine,
+            homeDir: '/tmp/home',
+            channel: 'preview',
+            mode: 'system',
+        });
         await expect(operations.inspect({
             requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+            runtimeTarget: { channel: 'preview', mode: 'system' },
             progress: () => undefined,
         })).resolves.toMatchObject({ purpose: 'personal-home' });
 
         const composition = createCanonicalPersonalHomeOperationsMock.mock.calls[0]?.[0] as {
             lifecycle: { isRunning(): Promise<boolean>; stop(): Promise<void>; start(): Promise<void>; healthCheck(): Promise<boolean> };
+            attestActivatedHome(): Promise<Readonly<{ authenticated: true; homeServerIdentityId: string; accountCount: number; sessionCount: number }>>;
             readPurpose(): Promise<{ kind: 'personal-home'; canonicalServerUrl: string }>;
             readHappierVersion(): Promise<string>;
             runMigrationProcess(input: Readonly<{ command: string; args: readonly string[]; env: NodeJS.ProcessEnv }>): Promise<void>;
@@ -111,9 +122,17 @@ describe('Personal Home operation composition', () => {
             purpose: { kind: 'generic' as const },
         });
         await expect(composition.readPurpose()).rejects.toThrow(/Personal Home/u);
+        await composition.lifecycle.start();
+        await expect(composition.attestActivatedHome()).resolves.toMatchObject({
+            authenticated: true,
+            homeServerIdentityId: 'home-ready',
+        });
+        expect(removePersonalHomeStartupReadinessMock).toHaveBeenCalledWith('/var/lib/happier-preview/startup-receipt.json');
+        expect(readPersonalHomeStartupReadinessMock).toHaveBeenCalledWith({ path: '/var/lib/happier-preview/startup-receipt.json' });
         await expect(operations.restore({
             archivePath: '/tmp/home.tar',
             requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+            runtimeTarget: { channel: 'preview', mode: 'system' },
             progress: () => undefined,
         })).resolves.toEqual({});
         const migrationEnv = { DATABASE_URL: 'file:/tmp/staged.sqlite' };
@@ -134,6 +153,15 @@ describe('Personal Home operation composition', () => {
         await expect(composition.lifecycle.healthCheck()).resolves.toBe(true);
         expect(engine.control).toHaveBeenCalledWith(expect.objectContaining({ action: 'stop' }));
         expect(engine.control).toHaveBeenCalledWith(expect.objectContaining({ action: 'start' }));
+        expect(readStatus).toHaveBeenCalledWith({
+            target: { kind: 'local' },
+            channel: 'preview',
+            mode: 'system',
+        });
+        expect(createCanonicalPersonalHomeOperationsMock).toHaveBeenCalledWith(expect.objectContaining({
+            channel: 'preview',
+            mode: 'system',
+        }));
     });
 });
 

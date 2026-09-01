@@ -32,6 +32,8 @@ function createHarness() {
     const irohStarts: unknown[] = [];
     const irohStops: string[] = [];
     const irohStatusReads: string[] = [];
+    const systemTaskCalls: Array<readonly [string, ...unknown[]]> = [];
+    const desktopFileCalls: Array<readonly [string, ...unknown[]]> = [];
     const registry = createCommandRegistry({
         eventBus,
         showMainWindow: () => {
@@ -56,16 +58,52 @@ function createHarness() {
             },
         },
         irohTunnel: {
-            startHomeTunnel: async (request) => {
+            getAvailability: async () => ({ available: true }),
+            ensureHomeTunnel: async (request) => {
                 irohStarts.push(request);
                 return { leaseId: 'iroh-lease-1' };
             },
-            stopHomeTunnel: async (leaseId) => {
+            releaseHomeTunnel: async (leaseId) => {
                 irohStops.push(leaseId);
             },
             getTunnelStatus: async (leaseId) => {
                 irohStatusReads.push(leaseId);
                 return { active: false, connectionActive: false, observedPath: 'relay' };
+            },
+            getApplicationEndpoint: async () => ({ endpointId: 'a'.repeat(64) }),
+            startMachineHttpTunnel: async () => ({ leaseId: 'machine-lease-1', localOrigin: 'http://127.0.0.1:48123' }),
+            stopMachineHttpTunnel: async () => {},
+        },
+        systemTasks: {
+            start: async (specJson) => {
+                systemTaskCalls.push(['start', specJson]);
+                return { taskId: 'system_task_1' };
+            },
+            cancel: async (taskId) => {
+                systemTaskCalls.push(['cancel', taskId]);
+            },
+            snapshot: (taskId) => {
+                systemTaskCalls.push(['snapshot', taskId]);
+                return { events: [], result: null };
+            },
+            respondToPrompt: async (taskId, answerJson) => {
+                systemTaskCalls.push(['respond', taskId, answerJson]);
+            },
+        },
+        desktopFiles: {
+            pickPersonalHomeBackupArchive: async () => {
+                desktopFileCalls.push(['pick']);
+                return '/tmp/input.tar';
+            },
+            savePersonalHomeBackupArchive: async () => {
+                desktopFileCalls.push(['save']);
+                return '/tmp/output.tar';
+            },
+            openSystemTaskLogPath: async (path) => {
+                desktopFileCalls.push(['open-log', path]);
+            },
+            revealSystemTaskOutputPath: (path) => {
+                desktopFileCalls.push(['reveal', path]);
             },
         },
         platform: 'darwin',
@@ -79,7 +117,19 @@ function createHarness() {
             sender.send('happier-desktop:callback', { callbackId, payload, once: false });
         },
     } satisfies CommandContext;
-    return { eventBus, registry, sender, context, shown, secureValues, irohStarts, irohStops, irohStatusReads };
+    return {
+        eventBus,
+        registry,
+        sender,
+        context,
+        shown,
+        secureValues,
+        irohStarts,
+        irohStops,
+        irohStatusReads,
+        systemTaskCalls,
+        desktopFileCalls,
+    };
 }
 
 test('secure storage commands share the Tauri schema and roundtrip through the injected OS boundary', async () => {
@@ -117,6 +167,37 @@ test('an unimplemented product command is reported as not-implemented, never as 
         `${NOT_IMPLEMENTED_ERROR_PREFIX}: desktop_browser_open_view`,
     );
     assert.equal(isNotImplementedError(`${NOT_IMPLEMENTED_ERROR_PREFIX}: desktop_browser_open_view`), true);
+});
+
+test('Personal Home desktop commands are implemented through the shared Electron host registry', async () => {
+    const { registry, context, systemTaskCalls, desktopFileCalls } = createHarness();
+
+    for (const [command, args] of [
+        ['start_system_task', { specJson: '{"protocolVersion":1,"kind":"system.ping.v1","params":{}}' }],
+        ['get_system_task_snapshot', { taskId: 'system_task_1' }],
+        ['cancel_system_task', { taskId: 'system_task_1' }],
+        ['respond_system_task_prompt', { taskId: 'system_task_1', answerJson: '{}' }],
+        ['desktop_pick_personal_home_backup_archive', {}],
+        ['desktop_save_personal_home_backup_archive', {}],
+        ['system_tasks_open_log_path', { path: '/tmp/logs' }],
+        ['system_tasks_reveal_output_path', { path: '/tmp/personal-home-backup.tar' }],
+    ] as const) {
+        const outcome = await runCommand(registry, command, args, context);
+        assert.equal(outcome.kind, 'implemented', `${command} must not render an unusable Personal Home action`);
+    }
+
+    assert.deepEqual(systemTaskCalls, [
+        ['start', '{"protocolVersion":1,"kind":"system.ping.v1","params":{}}'],
+        ['snapshot', 'system_task_1'],
+        ['cancel', 'system_task_1'],
+        ['respond', 'system_task_1', '{}'],
+    ]);
+    assert.deepEqual(desktopFileCalls, [
+        ['pick'],
+        ['save'],
+        ['open-log', '/tmp/logs'],
+        ['reveal', '/tmp/personal-home-backup.tar'],
+    ]);
 });
 
 test('a command the Tauri target does not register is flagged as unknown to it', async () => {
@@ -204,35 +285,39 @@ test('iroh commands share the exact Tauri names and route through the shared lif
 
     const start = await runCommand(
         registry,
-        'iroh_start_home_tunnel',
+        'iroh_ensure_home_tunnel',
         { request: { homeServerIdentityId: 'srv_home_a', endpointId: 'endpoint-a', policy: 'automatic' } },
         context,
     );
     assert.deepEqual(start, { kind: 'implemented', value: { leaseId: 'iroh-lease-1' } });
     assert.deepEqual(irohStarts, [{ homeServerIdentityId: 'srv_home_a', endpointId: 'endpoint-a', policy: 'automatic' }]);
 
-    assert.deepEqual(await runCommand(registry, 'iroh_stop_home_tunnel', { leaseId: 'iroh-lease-1' }, context), {
+    assert.deepEqual(await runCommand(registry, 'iroh_release_home_tunnel', { leaseId: 'iroh-lease-1' }, context), {
         kind: 'implemented',
         value: null,
     });
     assert.deepEqual(irohStops, ['iroh-lease-1']);
 
-    assert.deepEqual(await runCommand(registry, 'iroh_get_home_tunnel_status', { leaseId: 'iroh-lease-1' }, context), {
+    assert.deepEqual(await runCommand(registry, 'iroh_get_tunnel_status', { leaseId: 'iroh-lease-1' }, context), {
         kind: 'implemented',
         value: { active: false, connectionActive: false, observedPath: 'relay' },
     });
     assert.deepEqual(irohStatusReads, ['iroh-lease-1']);
+    assert.deepEqual(await runCommand(registry, 'iroh_get_availability', {}, context), {
+        kind: 'implemented',
+        value: { available: true },
+    });
 
     await assert.rejects(
-        runCommand(registry, 'iroh_start_home_tunnel', {}, context),
+        runCommand(registry, 'iroh_ensure_home_tunnel', {}, context),
         /requires a request/u,
     );
     await assert.rejects(
-        runCommand(registry, 'iroh_stop_home_tunnel', {}, context),
+        runCommand(registry, 'iroh_release_home_tunnel', {}, context),
         /requires a leaseId/u,
     );
     await assert.rejects(
-        runCommand(registry, 'iroh_get_home_tunnel_status', {}, context),
+        runCommand(registry, 'iroh_get_tunnel_status', {}, context),
         /requires a leaseId/u,
     );
 });

@@ -7,7 +7,11 @@ export type SetupMachineRelayProfile = Readonly<{
 }>;
 
 export type SetupMachineAuthStatus = Readonly<{
+  /** Canonical current-client fact. The booleans below remain reader compatibility for older CLI JSON. */
+  credentialState?: 'missing' | 'valid' | 'invalid' | 'unknown';
+  machineRegistrationState?: 'no-local-id' | 'local-only' | 'server-confirmed';
   authenticated: boolean;
+  machineRegistered?: boolean;
   machineId: string | null;
 }>;
 
@@ -15,8 +19,36 @@ export type SetupMachineDaemonStatus = Readonly<{
   serviceInstalled: boolean;
   daemonRunning: boolean;
   needsAuth: boolean;
+  credentialState?: 'missing' | 'valid' | 'invalid' | 'unknown';
+  machineRegistrationState?: 'no-local-id' | 'local-only' | 'server-confirmed';
   machineId: string | null;
 }>;
+
+export type SetupMachineReadiness = Readonly<{
+  credentialState: NonNullable<SetupMachineAuthStatus['credentialState']>;
+  machineRegistrationState: NonNullable<SetupMachineAuthStatus['machineRegistrationState']>;
+  machineId: string | null;
+}>;
+
+/**
+ * Projects current and legacy auth-status readers onto the canonical readiness
+ * facts used by setup. Older status JSON exposed only convenience booleans;
+ * those values did not prove live credential validation or server registration.
+ */
+export function resolveSetupMachineReadiness(
+  authStatus: SetupMachineAuthStatus,
+): SetupMachineReadiness {
+  const machineId = typeof authStatus.machineId === 'string' && authStatus.machineId.trim()
+    ? authStatus.machineId.trim()
+    : null;
+
+  return {
+    credentialState: authStatus.credentialState ?? 'unknown',
+    machineRegistrationState: authStatus.machineRegistrationState
+      ?? (machineId ? 'local-only' : 'no-local-id'),
+    machineId,
+  };
+}
 
 export type SetupMachineRecipeSteps = Readonly<{
   configureRelay?: boolean;
@@ -92,14 +124,16 @@ export async function runSetupMachineRecipe(params: Readonly<{
   }
 
   const authStatus = params.initialAuthStatus ?? await params.executor.readAuthStatus();
-  const statusMachineId = typeof authStatus.machineId === 'string' && authStatus.machineId.trim()
-    ? authStatus.machineId.trim()
-    : null;
+  const {
+    credentialState,
+    machineRegistrationState,
+    machineId: statusMachineId,
+  } = resolveSetupMachineReadiness(authStatus);
 
   let publicKey: string | null = null;
   let machineId: string | null = statusMachineId;
 
-  const shouldPair = authStatus.authenticated !== true || !statusMachineId;
+  const shouldPair = credentialState !== 'valid' || machineRegistrationState !== 'server-confirmed';
   if (shouldPair) {
     emitProgress(stepIds.authRequest, 'Requesting pairing');
     const requestRaw = await params.executor.requestAuthPairing();
@@ -111,7 +145,7 @@ export async function runSetupMachineRecipe(params: Readonly<{
 
     const payload = requestRaw as Readonly<Record<string, unknown>>;
 
-    if (authStatus.authenticated === true && !statusMachineId) {
+    if (credentialState === 'valid' && machineRegistrationState !== 'server-confirmed') {
       if (params.executor.approveAuthPairing) {
         await params.executor.approveAuthPairing(publicKey);
       } else if (params.approvePairingRequest) {

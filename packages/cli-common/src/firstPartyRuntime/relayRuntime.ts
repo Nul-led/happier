@@ -1,4 +1,5 @@
 import { normalizePublicReleaseRingId, type PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
+import { DEFAULT_PERSONAL_HOME_PORT } from './personalHome/personalHomeRuntimeSpec.js';
 
 type RelayRuntimeMode = 'user' | 'system';
 
@@ -150,9 +151,9 @@ function normalizeSchtasksStatus(raw: RelayRuntimeServiceRaw): RelayRuntimeNorma
 }
 
 const DEFAULT_RELAY_RUNTIME_PORTS: Readonly<Record<PublicReleaseRingId, number>> = Object.freeze({
-  stable: 3005,
-  preview: 3005,
-  publicdev: 3005,
+  stable: DEFAULT_PERSONAL_HOME_PORT,
+  preview: DEFAULT_PERSONAL_HOME_PORT,
+  publicdev: DEFAULT_PERSONAL_HOME_PORT,
 });
 
 function resolveDefaultRelayRuntimePort(channel: PublicReleaseRingId): number {
