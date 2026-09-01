@@ -350,35 +350,6 @@ export const BUNDLED_CANONICAL_AGENT_UI_BEHAVIOR_DESCRIPTORS: Readonly<
         }
       ],
       "linkEnsureRequestExtras": {
-        "runtimeDescriptorFromCandidate": {
-          "agentExtra": {
-            "owner": "codex",
-            "runtimeHandleFields": [
-              "backendMode",
-              "providerSessionId",
-              "home",
-              "connectedServiceId",
-              "connectedServiceProfileId",
-              "connectedServiceGroupId",
-              "homePath"
-            ],
-            "schemaId": "codex.agentRuntimeDescriptorExtra",
-            "v": 1
-          },
-          "backendMode": {
-            "values": [
-              "acp",
-              "appServer"
-            ]
-          },
-          "sourceFields": [
-            "home",
-            "connectedServiceId",
-            "connectedServiceProfileId",
-            "connectedServiceGroupId",
-            "homePath"
-          ]
-        },
         "sourceFromCandidate": {
           "optionalFields": [
             "home",
@@ -457,33 +428,6 @@ export const BUNDLED_CANONICAL_AGENT_UI_BEHAVIOR_DESCRIPTORS: Readonly<
     ]
   },
   "payload": {
-    "backendTransport": {
-      "agentExtra": {
-        "owner": "codex",
-        "schemaId": "codex.agentRuntimeDescriptorExtra",
-        "v": 1
-      },
-      "backendMode": {
-        "aliases": {
-          "mcp": "mcp",
-          "mcp_resume": "acp"
-        },
-        "legacyExperimentalValue": "acp",
-        "values": [
-          "acp",
-          "appServer"
-        ]
-      },
-      "runtimeHandleFields": [
-        "backendMode",
-        "providerSessionId",
-        "home",
-        "connectedServiceId",
-        "connectedServiceProfileId",
-        "connectedServiceGroupId",
-        "homePath"
-      ]
-    },
     "sessionExtras": {
       "aliases": {
         "mcp": "mcp",
@@ -530,14 +474,7 @@ export const BUNDLED_CANONICAL_AGENT_UI_BEHAVIOR_DESCRIPTORS: Readonly<
   },
   "workState": {
     "editableGoals": {
-      "activeModeValues": [
-        "appServer"
-      ],
-      "activeWhenNoPersistedMode": true,
-      "modeValues": [
-        "acp",
-        "appServer"
-      ],
+      "capabilityDriven": true,
       "persistedGoalSnapshot": {
         "itemKind": "goal",
         "path": [
@@ -689,22 +626,9 @@ export const BUNDLED_CANONICAL_AGENT_UI_BEHAVIOR_DESCRIPTORS: Readonly<
   },
   "payload": {
     "environmentVariables": {
-      "agentExtra": {
-        "owner": "opencode",
-        "runtimeHandleFields": [
-          "backendMode",
-          "providerSessionId",
-          "serverBaseUrl",
-          "serverBaseUrlExplicit"
-        ],
-        "schemaId": "opencode.agentRuntimeDescriptorExtra",
-        "v": 1
-      },
       "backendMode": {
         "defaultValue": "server",
         "envKey": "HAPPIER_OPENCODE_BACKEND_MODE",
-        "legacyMetadataKey": "opencodeBackendMode",
-        "runtimeDescriptorField": "backendMode",
         "settingKey": {
           "localId": "opencodeBackendMode",
           "scope": "account"
@@ -725,12 +649,8 @@ export const BUNDLED_CANONICAL_AGENT_UI_BEHAVIOR_DESCRIPTORS: Readonly<
         },
         "envKey": "HAPPIER_OPENCODE_SERVER_URL",
         "explicitEnvKey": "HAPPIER_OPENCODE_SERVER_URL_EXPLICIT",
-        "legacyExplicitMetadataKey": "opencodeServerBaseUrlExplicit",
-        "legacyMetadataKey": "opencodeServerBaseUrl",
         "originOnly": true,
         "rejectCredentials": true,
-        "runtimeDescriptorExplicitField": "serverBaseUrlExplicit",
-        "runtimeDescriptorField": "serverBaseUrl",
         "settingKey": {
           "localId": "opencodeServerBaseUrl",
           "scope": "account"

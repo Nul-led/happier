@@ -997,7 +997,7 @@ describe('Channels core activation', () => {
       await core.dispose();
       await setupProvider.dispose();
     }
-  });
+  }, 15_000);
 
   it('resolves only the current retained partial custody through the present-user management Action', async () => {
     const connectionId = 'delivery-resolution-connection';

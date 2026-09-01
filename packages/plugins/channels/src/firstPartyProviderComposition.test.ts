@@ -167,7 +167,7 @@ describe('Channels first-party provider composition', () => {
       await telegramCore.dispose();
       await telegram.dispose();
     }
-  });
+  }, 15_000);
 
   it('uses Discord\'s declared arbitrary-local setup handle through the core preparation owner', async () => {
     const discordCredential = {

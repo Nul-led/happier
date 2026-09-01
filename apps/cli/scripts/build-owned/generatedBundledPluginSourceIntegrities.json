@@ -4,19 +4,19 @@
       "packageName": "@happier-dev/plugins-antigravity",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-XXLKGZCN.js",
-          "byteLength": 5552799,
-          "digest": "sha256:756679bb6a1a0c55ed84ebbcb5db9df0bd4079a186819630fc7f97578936665c"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-JZB2ZOWI.js",
+          "byteLength": 5567072,
+          "digest": "sha256:d97d4b0618c9284c82107ef753abd4ac14d64cff90267292d2b3f68684d008a9"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/factory.js",
           "byteLength": 221,
-          "digest": "sha256:ab4d3c36d9ab371dbac5604172abd463382fa48017dc346c9cb3376b8c8576c9"
+          "digest": "sha256:7845de8f5aa042837fc6f8feacf2e558e97cd9ccea1393c6917e13d12fa55b5d"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 34438,
-          "digest": "sha256:402ae8c524b9deb50c14e9546c20005d4cf8cee37a4fdc456d3c4495a2e72fc3"
+          "digest": "sha256:a7c4ca52c0f3c0f52f78d75ebb218e7d30dc8afc8ec7c3155d86a7b8ec8d8651"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -1125,8 +1125,8 @@
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 731000,
-          "digest": "sha256:103e3805d4df39c45a086c253c0a994f7e1bccaa4d6f64be300607f7f588ab95"
+          "byteLength": 731109,
+          "digest": "sha256:4ace74eed1f3d937c60618985cee37d39e0653e061c479bcbaf0e49cd70714a7"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -1410,8 +1410,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 2301764,
-          "digest": "sha256:6f83e4e33a3828bac31b625b00ef4a0e09903efc73ab293eb0edb1a40fb5398d"
+          "byteLength": 2305554,
+          "digest": "sha256:2033a7f9d0137d8db4c38fcb56ee2b4c442b622ede7b0b5ec4dfcdcd66b6e7c7"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -1855,8 +1855,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 2221789,
-          "digest": "sha256:78b1426f81630f2d180f9c3c031c2e1b61755671c91f6442250a524ae9c85dfc"
+          "byteLength": 2225578,
+          "digest": "sha256:fb79a2f5294d7f4318a927ff19decb70f6cb7beefbed8274b7f9bfd5412fda1f"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -2095,13 +2095,13 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 7468162,
-          "digest": "sha256:615b24aa2c6584070250736c5aca8e5713d6313253eff0337a8d85bf1fdd7f00"
+          "byteLength": 7490627,
+          "digest": "sha256:bbf47d0ea95df1718838e0f2afceaa49917b3ad043a5a01d2e711b25b3e9ddf9"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
-          "byteLength": 1821016,
-          "digest": "sha256:c5d715eb636902b0aa66b3336194e9d287607b2cb52b122de612fae2f193c350"
+          "byteLength": 1825718,
+          "digest": "sha256:76a62cb1b5b632638826f5f28d72c8d538f3c984b0978492380a031080dcab6c"
         },
         {
           "relativePath": "dist/accountLocalBindingPolicy.d.ts",
@@ -2425,8 +2425,8 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native-web/channels-app-native/entry.mjs.bundle",
-          "byteLength": 2858836,
-          "digest": "sha256:8466b00934993fda3c325a754e7389a95f5b370fc8b7d7d60bce78e8585640a0"
+          "byteLength": 2887092,
+          "digest": "sha256:e20b2c513b2f39fc7b52dd5711cdae919c0ba8d5cfd3549853e43a977f096260"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/android.bundle",
@@ -2440,43 +2440,43 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/src_manifest_ts.chunk.bundle",
-          "byteLength": 1514591,
-          "digest": "sha256:511afef792e96035d5277cff4bc3ba56c9f76bed132c42c2a2bb4fac0f8b40bf"
+          "byteLength": 1515157,
+          "digest": "sha256:0ad492865bd37dbdaf6cd252b8d7e6b1e02927380f8222737af38718ec939b52"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/src_manifest_ts.chunk.bundle.map",
-          "byteLength": 441143,
-          "digest": "sha256:28538e2fe722834aa739369705e02dcc2824727aa74ef761024e616dcd79a5f1"
+          "byteLength": 441265,
+          "digest": "sha256:f8ec49bc2fb35c4187abd0c56ba4211287b8c17043937502aee98e8850aff291"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle",
-          "byteLength": 897324,
-          "digest": "sha256:23b723e5a4ab5da0da1020abbb3badb6e8fa07bca20fcb7fee9395453ac32f77"
+          "byteLength": 898463,
+          "digest": "sha256:c135ce1ade901e56dc7271a56f3fea6c5552fbf6e14086102ea5a9249817307e"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map",
-          "byteLength": 397632,
-          "digest": "sha256:327e95f1f4a2db04a1227b8e43df346d928c70808b6439101aa5695a92465998"
+          "byteLength": 398170,
+          "digest": "sha256:dc81af718f186ebb3af2e4a3635c357e0daa7829db2e5e2a5b162057516bdeab"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-be29ad.chunk.bundle",
-          "byteLength": 6139608,
-          "digest": "sha256:a6f91c131b3a3a16a7fb437c04c7e3072d013c07ec56d2e09dbf618218e3452f"
+          "byteLength": 6141326,
+          "digest": "sha256:76f4391c03de50f7d443e57dd1d4bdb5ec0099449382b61ee37c45abe3b68abf"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-be29ad.chunk.bundle.map",
-          "byteLength": 1201898,
-          "digest": "sha256:6e64025323ffbca8e07a4d33df2bdc4e91dff997f7645cf072ca312b44a7cca1"
+          "byteLength": 1201161,
+          "digest": "sha256:386a9da639eb5fddeaae5e3bfd82c1ffb6d2ee9a003a1f2e426a0395e303ee76"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js.chunk.bundle",
-          "byteLength": 4777432,
-          "digest": "sha256:eb6cfb88edeaa931cc863b65c2d59ca6571795088a43927138ae5294691b4e41"
+          "byteLength": 4779796,
+          "digest": "sha256:d0a6c9a72368dc015732d28d06a5faa8a03d429d8da8c4143fb3aa6dd7b62bcb"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/android/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js.chunk.bundle.map",
-          "byteLength": 861656,
-          "digest": "sha256:75c842cbca05f7e8c2a3ca124a53baf9a18a0a852cbdadaf709b44902a17f223"
+          "byteLength": 861921,
+          "digest": "sha256:e6d60ea640f5af6ea5e7bde16b8e80b7127003b674b3d2fa3897bb2ce575c042"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/ios.bundle",
@@ -2490,48 +2490,48 @@
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/src_manifest_ts.chunk.bundle",
-          "byteLength": 1514591,
-          "digest": "sha256:511afef792e96035d5277cff4bc3ba56c9f76bed132c42c2a2bb4fac0f8b40bf"
+          "byteLength": 1515157,
+          "digest": "sha256:0ad492865bd37dbdaf6cd252b8d7e6b1e02927380f8222737af38718ec939b52"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/src_manifest_ts.chunk.bundle.map",
-          "byteLength": 441143,
-          "digest": "sha256:28538e2fe722834aa739369705e02dcc2824727aa74ef761024e616dcd79a5f1"
+          "byteLength": 441265,
+          "digest": "sha256:f8ec49bc2fb35c4187abd0c56ba4211287b8c17043937502aee98e8850aff291"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle",
-          "byteLength": 897324,
-          "digest": "sha256:23b723e5a4ab5da0da1020abbb3badb6e8fa07bca20fcb7fee9395453ac32f77"
+          "byteLength": 898463,
+          "digest": "sha256:c135ce1ade901e56dc7271a56f3fea6c5552fbf6e14086102ea5a9249817307e"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/src_ui_renderSurface_tsx-webpack_sharing_consume_default_react-native.chunk.bundle.map",
-          "byteLength": 397632,
-          "digest": "sha256:327e95f1f4a2db04a1227b8e43df346d928c70808b6439101aa5695a92465998"
+          "byteLength": 398170,
+          "digest": "sha256:dc81af718f186ebb3af2e4a3635c357e0daa7829db2e5e2a5b162057516bdeab"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-be29ad.chunk.bundle",
-          "byteLength": 6139608,
-          "digest": "sha256:a6f91c131b3a3a16a7fb437c04c7e3072d013c07ec56d2e09dbf618218e3452f"
+          "byteLength": 6141326,
+          "digest": "sha256:76f4391c03de50f7d443e57dd1d4bdb5ec0099449382b61ee37c45abe3b68abf"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_channels-protocol_dist_index_js-node_modules_happier-dev_plu-be29ad.chunk.bundle.map",
-          "byteLength": 1201898,
-          "digest": "sha256:6e64025323ffbca8e07a4d33df2bdc4e91dff997f7645cf072ca312b44a7cca1"
+          "byteLength": 1201161,
+          "digest": "sha256:386a9da639eb5fddeaae5e3bfd82c1ffb6d2ee9a003a1f2e426a0395e303ee76"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js.chunk.bundle",
-          "byteLength": 4777432,
-          "digest": "sha256:eb6cfb88edeaa931cc863b65c2d59ca6571795088a43927138ae5294691b4e41"
+          "byteLength": 4779796,
+          "digest": "sha256:d0a6c9a72368dc015732d28d06a5faa8a03d429d8da8c4143fb3aa6dd7b62bcb"
         },
         {
           "relativePath": "dist/happier-plugin-ui/react-native/channels-app-native/ios/vendors-node_modules_happier-dev_plugin-sdk_dist_storage_index_js.chunk.bundle.map",
-          "byteLength": 861656,
-          "digest": "sha256:75c842cbca05f7e8c2a3ca124a53baf9a18a0a852cbdadaf709b44902a17f223"
+          "byteLength": 861921,
+          "digest": "sha256:e6d60ea640f5af6ea5e7bde16b8e80b7127003b674b3d2fa3897bb2ce575c042"
         },
         {
           "relativePath": "dist/happier-plugin-ui/ui-artifacts.json",
           "byteLength": 7705,
-          "digest": "sha256:03bb551ca02d917e4c491ee250f93f5f4ca8bdcf4f6ca4c944820b5b98e61370"
+          "digest": "sha256:8a6a621f9f61de7fd776b0dd39790acd6071100b1536f241e3123a81aed815b7"
         },
         {
           "relativePath": "dist/index.d.ts",
@@ -2640,18 +2640,18 @@
         },
         {
           "relativePath": "dist/outwardDeliverySupervisor.d.ts.map",
-          "byteLength": 35103,
-          "digest": "sha256:6ce4cb1e69171fbb838d08e9797162d0db7eb1fcec46b2cdd167b89bf43cf005"
+          "byteLength": 35665,
+          "digest": "sha256:47d695088dd2d303d0c892423f8d42bd8a83f5f14aa7a62df3b633aa4fafe97b"
         },
         {
           "relativePath": "dist/outwardDeliverySupervisor.js",
-          "byteLength": 31167,
-          "digest": "sha256:344d9c7b7458b51233933ce9272fc82bb6e0b974663a38a6b7c48681a5a00ca8"
+          "byteLength": 31743,
+          "digest": "sha256:b13a48d08882b75a07b16b45bdf6feb7b7e48bc2aab441070c79b7a5e484a691"
         },
         {
           "relativePath": "dist/outwardDeliverySupervisor.js.map",
-          "byteLength": 54482,
-          "digest": "sha256:94d88a1f1e07bca4ca65dab0b7cf2d6c8b480eb9ab0659632fc2961b7abf088b"
+          "byteLength": 55201,
+          "digest": "sha256:9b06174fb4a0f1d317e98d96ee6b36045d9f75cf944ec55fc144609ff3b4a1ec"
         },
         {
           "relativePath": "dist/pairing.d.ts",
@@ -3120,18 +3120,18 @@
         },
         {
           "relativePath": "dist/ui/renderSurface.d.ts.map",
-          "byteLength": 483854,
-          "digest": "sha256:027f75e4e48e8a030873165112d8d7307da264afa1fde3de0655ba9cd37460eb"
+          "byteLength": 484944,
+          "digest": "sha256:62172a43ed0b153e048fd4d951f38e40c64d3771d02d6cf6a61ed93ed3fe6cb3"
         },
         {
           "relativePath": "dist/ui/renderSurface.js",
-          "byteLength": 431614,
-          "digest": "sha256:7b4b0cb62f648bed004195eb975f482db897eeb113035317f08fc5629f887e0d"
+          "byteLength": 432772,
+          "digest": "sha256:9290a74420af77b69406d8c008a959a2463ca0ebb754d3810e3153c95e2904d5"
         },
         {
           "relativePath": "dist/ui/renderSurface.js.map",
-          "byteLength": 795139,
-          "digest": "sha256:49dd24e73fb25cebb5b1223721476bbe006e4815b701d7112cd6758d0751a7da"
+          "byteLength": 797008,
+          "digest": "sha256:38958861251fc20293a6acae54dcee5e854202e382c70369d606be8c2e5c3462"
         },
         {
           "relativePath": "dist/ui/translations.d.ts",
@@ -3164,19 +3164,19 @@
       "packageName": "@happier-dev/plugins-claude",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-VSYVYK3R.js",
-          "byteLength": 6910763,
-          "digest": "sha256:7a6b77b9d497654e0985e709efb57a98abd549e296b1c47645a42350012a0e37"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-B3J5LRRH.js",
+          "byteLength": 6921060,
+          "digest": "sha256:75dd62d64b2c8f5bb389575149c4bd20a5193431fae8a35f77565bcd6feae88d"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/nativeRuntime.js",
           "byteLength": 507,
-          "digest": "sha256:7671a77210da19c17725d306553742549cd9ac2d12193547b0f438894d1ac9c2"
+          "digest": "sha256:68bb38a14a0fa5657f4a2bf95950c5cb7bf49721adf3ab0edd556053351aa079"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 132403,
-          "digest": "sha256:07344801426b682c3b1ba28b2374f5999e2988d7ba72fe049f6840cfc5e3645a"
+          "digest": "sha256:16dbae8c747ae9c4b8c7806819f4885b47811c556abede80e873cc7138990756"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -7155,8 +7155,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 642182,
-          "digest": "sha256:bf9f573a4de822fbce91f6523560cdeb92944217b32270f8872b61b4d3bbabc2"
+          "byteLength": 642291,
+          "digest": "sha256:1be3952001bf019520332cc79e37e025ce17487720d2ba3e6745ed2ebe9c8acc"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -7294,19 +7294,19 @@
       "packageName": "@happier-dev/plugins-codex",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-YV4ABQD4.js",
-          "byteLength": 6579679,
-          "digest": "sha256:35150354db0c3b74541fe4151c492501504653bc72d05b3180baeb2d2beaaecb"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-KLDD6QYT.js",
+          "byteLength": 6583080,
+          "digest": "sha256:56cce85439d2d5abb9e1d609ae711eaadc298644ab77263361726afd02ca4903"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/engine.js",
           "byteLength": 197,
-          "digest": "sha256:5d6b64d736982163275b52b6bd485411933a17e336917dc4157e47177c2e0c8e"
+          "digest": "sha256:b230751a06b87d1ddb1d4ab9c54791a211d4f5b584e4c53e50eabadf9b88ea6f"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 164082,
-          "digest": "sha256:35fe084f9a34843ee010763247473e783be31d00e58a51fe88ba77d6bf50aca1"
+          "digest": "sha256:a86eaf208e7148cc4dd252e17403481001a085ecd8e7b01059e6a2e041594448"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -10384,19 +10384,19 @@
       "packageName": "@happier-dev/plugins-copilot",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-LPEXI3U7.js",
-          "byteLength": 851385,
-          "digest": "sha256:be903648242a51a4bef801b409e43ec092a3176b3d1d06e32307649f674e7577"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-EPKXJ74B.js",
+          "byteLength": 854406,
+          "digest": "sha256:82c01a4d92aa1659011990ffcb9d5eeec0d10035676434f3728d99acb5ae1935"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/factory.js",
           "byteLength": 127,
-          "digest": "sha256:69933ffbc6ac3739756c1f5799d0f18e33585708f8d4dfdecf46c258d5190686"
+          "digest": "sha256:b6d6d1e4af29611cfd8fbd2cd238f6fa8cf517a99df4c41534f4bd00080f7916"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 184797,
-          "digest": "sha256:3078c7245ff5ef637843a4e128e33949ed7cbda3673ae63e3585127176236bb2"
+          "byteLength": 184906,
+          "digest": "sha256:03e9b814fdbd5dd3878c5114753680bf683186233fb14139c8169b6a75b7f44b"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -12039,19 +12039,19 @@
       "packageName": "@happier-dev/plugins-gemini",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-2BQWU4MW.js",
-          "byteLength": 1163630,
-          "digest": "sha256:7d1159f92abc79b22225eca3a0207cbfacf0557852af2aae215af35a253427d2"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-5CL5O4CQ.js",
+          "byteLength": 1165742,
+          "digest": "sha256:a66850914cd5df071d42adf4864dfffbba5a148868b7b47b1d9849a61c137874"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/factory.js",
           "byteLength": 125,
-          "digest": "sha256:26a9d980fa3f1ba5511da32b60a9b75efa1568ac5bb52ac1ac83eeedba249e37"
+          "digest": "sha256:cdec74161894d2c473a90335c69ded68b581ada51c94b17f1bc707a0ddcbe75e"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 265160,
-          "digest": "sha256:9697551a467600874c0dc2f840f60c9b1bf189150629b91b302db3a1a9d5b148"
+          "byteLength": 265269,
+          "digest": "sha256:80647129b8296c32c278fe8f6a2bb05274bc0fa4290271f538d4365da8eec127"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -12575,8 +12575,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 1744637,
-          "digest": "sha256:9fa910e687a15399b6e533fc12b08a5714caa1ced6871c3b68d4db119dea9c96"
+          "byteLength": 1744746,
+          "digest": "sha256:2f57f12e2ab2541eff8a9872e334428cae2a61bf2935887453543126586f4e5a"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -13125,8 +13125,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 672476,
-          "digest": "sha256:fec03757504ba277d1bfe3f4bf5a12cc214a56019b5c1dd003c33b9cfdf1484a"
+          "byteLength": 672585,
+          "digest": "sha256:c8784374e4453f264c4b4ed1be4c17e827a21502c0d603a68e2eb20b70347f83"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -13324,19 +13324,19 @@
       "packageName": "@happier-dev/plugins-kilo",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-4QDT4O2V.js",
-          "byteLength": 855305,
-          "digest": "sha256:27d6549e37b8929139955477194d236ecb11568ded0fa64cd9accd024503e413"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-P3N7DIKR.js",
+          "byteLength": 858326,
+          "digest": "sha256:e4ec6d616bbc467956e786775f816f0a5a1e896d6f86d0bbf8cc51c430ddea1c"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/factory.js",
           "byteLength": 121,
-          "digest": "sha256:68b98382e3323f068f5926b9afdf6a932aa40753ac160c9fff6c4a52b5ff0f97"
+          "digest": "sha256:2e75b89500b2a88bd45e9587e4d647e401cd94f9dd462fd2db9c26b097978a0c"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 180884,
-          "digest": "sha256:31d4a97895ddced3ea0ad8def484ee6afd88186f1f969f9e357e9bc2482550a6"
+          "byteLength": 180993,
+          "digest": "sha256:abd57cdc71cca469a26de872772a4b619095c110e0c504e13fa84afe241eb92f"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -13690,8 +13690,8 @@
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 737096,
-          "digest": "sha256:2f6035580f531da87cdbbfa65fd88c1e19dea6e1487b208c9840ff36cbe732f8"
+          "byteLength": 737205,
+          "digest": "sha256:42ecbede0c65d29911417ace31251d52d3b593f1d611842d3002468216015250"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -14020,8 +14020,8 @@
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 731420,
-          "digest": "sha256:e8b6fbd0f8930e9623847b4e7437ad22ba57eaee52d8c2bfa0df22ad6f3cef85"
+          "byteLength": 731529,
+          "digest": "sha256:9c4c978640216771b5088833ff8735c273be63b4eac9aebae92d4039d382e4aa"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -14434,19 +14434,19 @@
       "packageName": "@happier-dev/plugins-ohmypi",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-YTXDEKHP.js",
-          "byteLength": 5496595,
-          "digest": "sha256:6fc51064510a8a28b10b578e43d93163a25626bf2b2993a28282109728379476"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-XB2XZ63M.js",
+          "byteLength": 5510845,
+          "digest": "sha256:a36e4073d9c314cda0f403acf1f9ddb8c27c52cf741fbb603141876286fdbf34"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/engine.js",
           "byteLength": 201,
-          "digest": "sha256:c2331619fb8772f70804a2f0cd6828597e8f08b6994faf0dc6c84274bdf8c808"
+          "digest": "sha256:745e7124084159b93e6be9d00a9db1cd1e1c49a2de6e1f0faad969e7eb12c03b"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 33671,
-          "digest": "sha256:f72924f12766d82821e11f382b3b9b964e72d6e66a714a90bf5f934bb414906a"
+          "digest": "sha256:918489e64beecce64b888eef4c820aeb66ccd266697b97fb0ea8b4b5d9101f5d"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -14970,8 +14970,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 626439,
-          "digest": "sha256:c690971a90f49dc37133d2c45698b9795f359075ebb48a4d5d599b9e6dbdb666"
+          "byteLength": 626548,
+          "digest": "sha256:fb379d8de4a4b033b949869940e84c7baa881a2fd02d8addf282df83fbdbb366"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -15070,8 +15070,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 1653320,
-          "digest": "sha256:12b02792fe2e24b3d9fbaa6810ba2b4f07f62b98997c0ba0632fc4fe142f12ac"
+          "byteLength": 1653429,
+          "digest": "sha256:a5a22527bc6e883c94fbb685a83fe8e3f2045bfc324ef6a4485035a091f57455"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -15430,8 +15430,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 1216237,
-          "digest": "sha256:fb6df254d645a37dbc79f444b4771822cc20f4fc862799bab51fa3ae88690758"
+          "byteLength": 1216346,
+          "digest": "sha256:3752bb626db1d02a4e5db961f25343f3ccadf4f41bbedb41a3504b8811e96916"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -15644,19 +15644,19 @@
       "packageName": "@happier-dev/plugins-opencode",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-HS3JYHOC.js",
-          "byteLength": 5753139,
-          "digest": "sha256:e23a2a70b77b6287d41a39bf9487a6f833928ea7ef6e76cda943a8a6632cbfac"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-2EGMKC7I.js",
+          "byteLength": 5763436,
+          "digest": "sha256:6a46591af20cedf9ab08359ea1fa06d46194003bca170d3ae483b79302a12017"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/nativeRuntime.js",
           "byteLength": 209,
-          "digest": "sha256:8d624047d633910f13cd0f0cfd6f7ce4a761f239cae87d55b723d9d61352b7be"
+          "digest": "sha256:a1d425d269afe21322a7036dd73fb0d0f2c1fb37d18a2fb6d8726cb51546d0fa"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 67246,
-          "digest": "sha256:aad098712ef9976b7d65ee848d0505a1d75803b0814f1d93e8ede2742b7a7882"
+          "digest": "sha256:bd12117782991bd0c48679739812a5c07609c3160c61b537ba26ddba9be9a3cc"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -17969,19 +17969,19 @@
       "packageName": "@happier-dev/plugins-pi",
       "files": [
         {
-          "relativePath": ".happier-plugin/.happier-chunks/chunk-KTPS56WY.js",
-          "byteLength": 5683508,
-          "digest": "sha256:18041ee9dd83154dd46752733d28ddbb434b843974e058c3b42cc4032e46d3dc"
+          "relativePath": ".happier-plugin/.happier-chunks/chunk-UZXRHOIM.js",
+          "byteLength": 5686909,
+          "digest": "sha256:d56f1123f080007ba19dd65c02a99fbf4e43c0b7e03ab0eb93c543536c1763da"
         },
         {
           "relativePath": ".happier-plugin/agent/runtime/engine.js",
           "byteLength": 185,
-          "digest": "sha256:9e1e145e8c5c666fa1c3761986009eff2e1bbdb1c7ce9b12f015bb4432f197f2"
+          "digest": "sha256:936adcbb2cce649b40f343d1f35f59de28e7005c6ebe6f3f6cb35d88707f4e08"
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
           "byteLength": 40938,
-          "digest": "sha256:5bafcbeb41500b58b3b9dae21066f3edf7a2d474372851c3cc3b263172593a12"
+          "digest": "sha256:35180caa005eccbfb78e2c0d9e7c36472da2acdfddda958461df15b88bf146a1"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -19025,8 +19025,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 2460557,
-          "digest": "sha256:f5f1830c4931cda619db3adcce9249862f2b4ecad03e025790f62e2d44bd78d4"
+          "byteLength": 2464347,
+          "digest": "sha256:780e415f4992101ff81a594e5549f7adf6e11a19ec52549eac305bf6e40dc19b"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -20250,8 +20250,8 @@
         },
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 728626,
-          "digest": "sha256:4f694718ae3ff29cdecc3eeec20b4c2c23b8c9002e4d5bda1b0868a8ac3e8e7f"
+          "byteLength": 728735,
+          "digest": "sha256:b49f853a6815f13c5fe6c08e7a90320d290e202ab549908c941135f212d844f0"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -20395,8 +20395,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 4883943,
-          "digest": "sha256:5651cf6fa1e9fc606970c9582297b7328b37e00422e4c6002ec3e63fe6a2f2f9"
+          "byteLength": 4898193,
+          "digest": "sha256:a187e0a7be6a505607c140b9bda0c1d0f172b6006290dfad8236aa80603acd0a"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -20720,8 +20720,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 4874440,
-          "digest": "sha256:4339b9bdf32cc1cd407bab6f423f82f7184790629b341ce69af7aef610c2119a"
+          "byteLength": 4888690,
+          "digest": "sha256:31b25a23ee2cfaa6231967fbf44b10f236d2ffdcedbd92af7282e5e6d8a401f1"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -21110,8 +21110,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 5508580,
-          "digest": "sha256:293e01fc1d3a35e89e3f3522b4ba1d699af6e6d4fc67dc50acd8753e61e17e3f"
+          "byteLength": 5518877,
+          "digest": "sha256:6429901b3dd5b761169b7b2399c54caf1dfd0a7ff01b913eb69c165a9b54538e"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -22345,8 +22345,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 5418625,
-          "digest": "sha256:74af1f6b2a865934868358622be46a573e3a4f08104e8190123010f3b25db216"
+          "byteLength": 5428922,
+          "digest": "sha256:167c0218a4015d3a349fd6a1fd98855d015c99f9d1431d16b70fdeda914372d0"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -25360,8 +25360,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 6035821,
-          "digest": "sha256:1cc3a879cd00c066b3ed2b4d7e077a386b7db8025e8e19679df00e28bc5d4473"
+          "byteLength": 6046117,
+          "digest": "sha256:ddc91d786fa47b4cfcea2fbf9edd0934789e757b924dc891d61c45c9f788037d"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -27360,8 +27360,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 5545549,
-          "digest": "sha256:c35c322aa74739ce0749d3e19b913ccfba47f89ec8380d2201ea276f26bfc92a"
+          "byteLength": 5555845,
+          "digest": "sha256:de75f23dce439d5d1dc3c183a2700a5dd9eba98e54fa70f6ed2af376d38ac3ca"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -29015,8 +29015,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 719213,
-          "digest": "sha256:620cc600099e0eaea33bf84a8fb7cfd815478f7363c98a1e72f2f7b8e5065ed0"
+          "byteLength": 719328,
+          "digest": "sha256:331a106a3ca16101c3bac020364eb5c106fd2e88bcab559862ed3ed8de1c9a74"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -29395,8 +29395,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 2461355,
-          "digest": "sha256:7637283a6b4649e99d7e7567c6fd383bf255fe26927d0f123f5bbd95fc073571"
+          "byteLength": 2465145,
+          "digest": "sha256:b423fe619c218c468d9f9ad4b100434e7f75fd1dd6eca55e812de8c2ef6396c7"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
@@ -30410,8 +30410,8 @@
       "files": [
         {
           "relativePath": ".happier-plugin/daemon.js",
-          "byteLength": 5570812,
-          "digest": "sha256:70021abdaad30ca0d90848e629dfc89af7d4c369ce2f50bdfb38baa732351d15"
+          "byteLength": 5585062,
+          "digest": "sha256:6c5ca312c31cf3bd413f37f89e941fb3be648c5d95637853307efa4ff8c71c0d"
         },
         {
           "relativePath": ".happier-plugin/plugin.json",
