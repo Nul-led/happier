@@ -706,9 +706,9 @@ describe('SessionAutomationCreateScreen', () => {
                     definition: {
                         kind: 'sessionLifecycle',
                         enabled: true,
-                        event: 'parentTurnCompleted',
-                        scope: { kind: 'exactTurn', sourceSessionId: 's2', sourceTurnId: 'turn-9' },
-                        consumption: 'once',
+                        sourceSessionId: 's2',
+                        events: ['parentTurnCompleted'],
+                        policy: { kind: 'currentTurn', sourceTurnId: 'turn-9' },
                     },
                 }],
             });
@@ -778,9 +778,9 @@ describe('SessionAutomationCreateScreen', () => {
                     definition: {
                         kind: 'sessionLifecycle',
                         enabled: true,
-                        event: 'parentTurnCompleted',
-                        scope: { kind: 'exactTurn', sourceSessionId: 's2', sourceTurnId: 'turn-9' },
-                        consumption: 'once',
+                        sourceSessionId: 's2',
+                        events: ['parentTurnCompleted'],
+                        policy: { kind: 'currentTurn', sourceTurnId: 'turn-9' },
                     },
                 }],
             });

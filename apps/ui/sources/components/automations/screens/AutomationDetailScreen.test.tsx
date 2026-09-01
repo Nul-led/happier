@@ -865,13 +865,10 @@ describe('AutomationDetailScreen', () => {
                 createdAt: 1,
                 updatedAt: 2,
                 kind: 'sessionLifecycle',
-                event: 'parentTurnCompleted',
-                scope: {
-                    kind: 'exactTurn',
-                    sourceSessionId: 'session-source',
-                    sourceTurnId: 'turn-exact',
-                },
-                consumption: 'once',
+                sourceSessionId: 'session-source',
+                events: ['parentTurnCompleted'],
+                policy: { kind: 'currentTurn', sourceTurnId: 'turn-exact' },
+                remainingOccurrences: 1,
                 status: { state: 'running', runId: 'run-from-turn' },
             }],
         };

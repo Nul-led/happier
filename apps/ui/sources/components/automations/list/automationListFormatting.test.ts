@@ -82,9 +82,10 @@ describe('formatAutomationTriggerLabel', () => {
             createdAt: 1,
             updatedAt: 1,
             kind: 'sessionLifecycle',
-            event: 'parentTurnCompleted',
-            scope: { kind: 'exactTurn', sourceSessionId: 'session-1', sourceTurnId: 'turn-1' },
-            consumption: 'once',
+            sourceSessionId: 'session-1',
+            events: ['parentTurnCompleted'],
+            policy: { kind: 'currentTurn', sourceTurnId: 'turn-1' },
+            remainingOccurrences: 1,
             status: { state: 'sourceCancelled', runId: null },
         });
         if (lifecycleTrigger.kind !== 'sessionLifecycle') throw new Error('expected lifecycle trigger fixture');
@@ -142,6 +143,7 @@ describe('immutable Run cause presentation', () => {
             event: 'parentTurnCompleted',
             sourceSessionId: 'session-1',
             sourceTurnId: 'turn-9',
+            policy: { kind: 'currentTurn' },
         },
     });
 

@@ -199,13 +199,10 @@ function detailTriggers() {
             createdAt: timestamp,
             updatedAt: timestamp,
             kind: 'sessionLifecycle' as const,
-            event: 'parentTurnCompleted' as const,
-            scope: {
-                kind: 'exactTurn' as const,
-                sourceSessionId: 'source-session-b',
-                sourceTurnId: 'turn-old',
-            },
-            consumption: 'once' as const,
+            sourceSessionId: 'source-session-b',
+            events: ['parentTurnCompleted'] as const,
+            policy: { kind: 'currentTurn' as const, sourceTurnId: 'turn-old' },
+            remainingOccurrences: 1,
             status: { state: 'waiting' as const, runId: null },
             triggerDefinitionEnvelope: null,
         }),
@@ -351,9 +348,9 @@ describe('AutomationEditorHostScreen', () => {
             persisted: null,
             definition: {
                 kind: 'sessionLifecycle',
-                event: 'parentTurnCompleted',
-                scope: { kind: 'exactTurn', sourceSessionId: 'source-session', sourceTurnId: 'turn-7' },
-                consumption: 'once',
+                sourceSessionId: 'source-session',
+                events: ['parentTurnCompleted'],
+                policy: { kind: 'currentTurn', sourceTurnId: 'turn-7' },
             },
         });
 

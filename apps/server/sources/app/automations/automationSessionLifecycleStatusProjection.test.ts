@@ -10,7 +10,10 @@ function lifecycleTrigger(id: string, sourceTurnId: string, enabled = true) {
         enabled,
         revision: 1,
         deletedAt: null,
-        sessionLifecycleEvent: "parentTurnCompleted",
+        sessionLifecycleEventsJson: JSON.stringify(["parentTurnCompleted"]),
+        sessionLifecyclePolicyKind: "currentTurn",
+        sessionLifecycleMatchCount: null,
+        remainingOccurrences: 1,
         sourceSessionId: "source-session",
         sourceTurnId,
     } as const;
@@ -83,6 +86,7 @@ describe("Automation Session lifecycle status projection", () => {
                 triggers: activeTriggers,
             }] as any,
             tx: {
+                session: { findMany: vi.fn(async () => [{ id: "source-session" }]) },
                 sessionTurn: { findMany: sessionTurnFindMany },
                 sessionTurnMutationReceipt: { findMany: receiptFindMany },
                 automationRun: { findMany: automationRunFindMany },
@@ -116,6 +120,7 @@ describe("Automation Session lifecycle status projection", () => {
                 }],
             }] as any,
             tx: {
+                session: { findMany: vi.fn(async () => [{ id: "source-session" }]) },
                 sessionTurn: { findMany: vi.fn(async () => [{
                     sessionId: "source-session",
                     turnId: "turn-global-pause",

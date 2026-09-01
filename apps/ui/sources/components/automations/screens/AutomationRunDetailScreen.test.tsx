@@ -366,6 +366,7 @@ describe('AutomationRunDetailScreen', () => {
                     event: 'parentTurnCompleted',
                     sourceSessionId: 'session-source',
                     sourceTurnId: 'turn-exact',
+                    policy: { kind: 'currentTurn' },
                 },
             },
         }];
