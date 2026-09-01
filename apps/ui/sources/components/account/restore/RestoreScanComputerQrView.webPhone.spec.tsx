@@ -574,6 +574,64 @@ describe('RestoreScanComputerQrView (web phone)', () => {
         expect(modalAlertSpy).toHaveBeenCalledWith('home-b.test', 'connect.requesterDeviceAddedBody');
     });
 
+    it('does not dispatch reverse completion UI after unmount', async () => {
+        const requesterPublicKey = new Uint8Array(32).fill(8);
+        const expiresAtMs = Date.now() + 120_000;
+        const reverseInvite = {
+            ...HOME_B_INVITE,
+            direction: 'requester_displays' as const,
+            pairId: 'pair-reverse-unmount',
+            requesterPublicKeyBase64Url: encodeBase64(requesterPublicKey, 'base64url'),
+            expiresAtMs,
+        };
+        const { computeHomeQrBindingProofV2 } = await import('@happier-dev/protocol');
+        const bindingProof = computeHomeQrBindingProofV2({
+            direction: reverseInvite.direction,
+            qrSecret: new Uint8Array(32).fill(4),
+            pairId: reverseInvite.pairId,
+            homeServerIdentityId: reverseInvite.home.homeServerIdentityId,
+            requesterPublicKey,
+            expiresAtMs,
+        });
+        restoreScanSuccessState.pairingStartSpy.mockResolvedValue({
+            ok: true,
+            data: { pairId: reverseInvite.pairId, expiresAt: new Date(expiresAtMs).toISOString() },
+        });
+        restoreScanSuccessState.pairingStatusSpy.mockResolvedValue({
+            ok: true,
+            data: {
+                state: 'requested',
+                pairId: reverseInvite.pairId,
+                expiresAt: new Date(expiresAtMs).toISOString(),
+                requestedPublicKey: encodeBase64(requesterPublicKey),
+                requestedDeviceLabel: null,
+                bindingProof,
+                homeServerIdentityId: reverseInvite.home.homeServerIdentityId,
+            },
+        });
+        let resolveCompletion!: () => void;
+        restoreScanSuccessState.completeTrustedPairingSpy.mockImplementation(() => new Promise<void>((resolve) => {
+            resolveCompletion = resolve;
+        }));
+        const { buildHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
+        const { RestoreScanComputerQrView } = await import('./RestoreScanComputerQrView');
+        const screen = await renderScreen(<RestoreScanComputerQrView />);
+
+        let scanPromise!: Promise<void>;
+        await act(async () => {
+            scanPromise = lastScannerProps.onScan(buildHomeQrInviteDeepLink({ invite: reverseInvite }));
+            await Promise.resolve();
+        });
+        await vi.waitFor(() => expect(restoreScanSuccessState.completeTrustedPairingSpy).toHaveBeenCalledOnce());
+        await screen.unmount();
+        await act(async () => {
+            resolveCompletion();
+            await scanPromise;
+        });
+
+        expect(modalAlertSpy).not.toHaveBeenCalled();
+    });
+
     it('retries transient initial auth and bound-request failures with the same key and proof until success', async () => {
         vi.useFakeTimers();
         vi.spyOn(Math, 'random').mockReturnValue(0);

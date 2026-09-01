@@ -454,8 +454,6 @@ function validateAssertionAgainstLink(
 
 export async function redeemHomeLoginAssertion(params: Readonly<{
     assertion: unknown;
-    /** Descriptor selected by the redeeming Home's canonical publication owner. */
-    connectionDescriptor?: unknown;
     env?: NodeJS.ProcessEnv;
     nowMs?: number;
     approvalId?: string;
@@ -531,16 +529,6 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
                 ? "approval_expired"
                 : "approval_invalid";
         throw new AccountDirectoryError(code);
-    }
-    const connectionDescriptor = HomeConnectionDescriptorV1Schema.safeParse(params.connectionDescriptor);
-    if (
-        !connectionDescriptor.success
-        || connectionDescriptor.data.homeServerIdentityId !== currentServerIdentityId
-    ) {
-        throw new AccountDirectoryError(
-            "home_redemption_unavailable",
-            "Home connection descriptor is unavailable or does not match this Home",
-        );
     }
     const issueHomeToken = params.issueHomeToken;
     if (!issueHomeToken) throw new AccountDirectoryError("home_redemption_unavailable", "Home token issuer is unavailable");
