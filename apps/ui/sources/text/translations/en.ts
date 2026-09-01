@@ -1032,11 +1032,38 @@ export const en = {
             addTriggerSubtitle: 'Schedule it, connect an Event, or wait for one exact turn.',
             scheduleTitle: 'Schedule',
             eventTitle: 'Plugin Event',
+            lifecycleTitle: 'When a Session event occurs',
             turnCompletedTitle: 'When this turn finishes',
             turnCompletedSubtitle: 'Runs once after the exact selected parent turn completes.',
             selectedSession: 'Selected session',
             turnCompletedSource: ({ session, ordinal }: { session: string; ordinal: number }) =>
                 `${session} · one-time trigger ${ordinal}`,
+            lifecycleSource: ({ session, ordinal }: { session: string; ordinal: number }) =>
+                `${session} · Session event trigger ${ordinal}`,
+            lifecycleSourceTitle: 'Source Session',
+            changeLifecycleSource: 'Choose a different Session',
+            lifecycleEventsTitle: 'Events',
+            lifecycleEvent: {
+                parentTurnCompleted: 'Turn completed successfully',
+                parentTurnFailed: 'Turn failed',
+                parentTurnCancelled: 'Turn was cancelled or stopped',
+                userActionRequired: 'Needs your attention',
+            },
+            lifecycleAttentionPrivacy: 'Uses only the request identity and turn—not its private contents.',
+            lifecyclePolicyTitle: 'Occurrence',
+            lifecyclePolicy: {
+                currentTurn: 'Current turn only',
+                firstMatch: 'First matching event',
+                nextMatches: 'Next matching events',
+                everyMatch: 'Every matching event',
+            },
+            lifecyclePolicyDescription: {
+                currentTurn: 'Runs at most once for the Session’s active parent turn.',
+                firstMatch: 'Runs once for the first selected Event after this trigger is saved.',
+                nextMatches: 'Runs for a fixed number of future selected Events.',
+                everyMatch: 'Keeps running for selected Events while this trigger is enabled.',
+            },
+            lifecycleMatchCount: 'Number of matches',
             scheduleInterval: ({ minutes, timezone }: { minutes: number; timezone: string | null }) =>
                 `Every ${minutes} minute${minutes === 1 ? '' : 's'}${timezone ? ` · ${timezone}` : ''}`,
             scheduleCron: ({ expression, timezone }: { expression: string; timezone: string | null }) =>

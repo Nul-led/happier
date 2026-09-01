@@ -153,9 +153,9 @@ function createDraft(): AutomationEditorDraft {
                 definition: {
                     kind: 'sessionLifecycle',
                     enabled: true,
-                    event: 'parentTurnCompleted',
-                    scope: { kind: 'exactTurn', sourceSessionId: 'session-1', sourceTurnId: 'turn-1' },
-                    consumption: 'once',
+                    sourceSessionId: 'session-1',
+                    events: ['parentTurnCompleted'],
+                    policy: { kind: 'currentTurn', sourceTurnId: 'turn-1' },
                 },
             },
             {
@@ -597,11 +597,64 @@ describe('AutomationPluralEditorScreen', () => {
         expect(refreshed.triggers).toHaveLength(1);
         expect(refreshed.triggers[0]?.definition).toMatchObject({
             kind: 'sessionLifecycle',
-            scope: {
-                sourceSessionId: 'session-source',
+            sourceSessionId: 'session-source',
+            events: ['parentTurnCompleted'],
+            policy: {
+                kind: 'currentTurn',
                 sourceTurnId: 'turn-new-current',
             },
         });
+    });
+
+    it('authors a selected Event set and one shared future occurrence policy', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        function StatefulEditorHost(): React.ReactElement {
+            const [value, setValue] = React.useState(() => ({ ...createDraft(), triggers: [] }));
+            return (
+                <AutomationPluralEditorScreen
+                    variant="create"
+                    value={value}
+                    onChange={setValue}
+                    sessionOptions={[{
+                        sessionId: 'session-idle',
+                        label: 'Idle Session',
+                        currentParentTurnId: null,
+                    }]}
+                />
+            );
+        }
+        const screen = await renderScreen(<StatefulEditorHost />);
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-add' }).props.onPress();
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-kind-sessionLifecycle' }).props.onPress();
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-lifecycle-session-picker' }).props.onSelect('session-idle');
+        });
+
+        expect(screen.findByProps({ testID: 'automation-lifecycle-policy-firstMatch' })).toBeDefined();
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-lifecycle-event-parentTurnFailed' })
+                .props.rightElement.props.onValueChange(true);
+            screen.findByProps({ testID: 'automation-lifecycle-policy-nextMatches' }).props.onPress();
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-lifecycle-match-count' }).props.onChangeText('3');
+        });
+
+        const lifecycleRow = screen.findAll((instance) => (
+            String(instance.type) === 'Item'
+            && typeof instance.props.testID === 'string'
+            && instance.props.testID.startsWith('automation-trigger-row-')
+        ))[0]!;
+        expect(lifecycleRow).toBeDefined();
+        await act(async () => { lifecycleRow.props.onPress(); });
+        const failedSwitch = screen.findByProps({ testID: 'automation-lifecycle-event-parentTurnFailed' })
+            .props.rightElement;
+        expect(failedSwitch.props.value).toBe(true);
+        expect(screen.findByProps({ testID: 'automation-lifecycle-match-count' }).props.value).toBe('3');
     });
 
     it('moves focus into the schedule editor when choosing a kind unmounts the pressed control', async () => {
