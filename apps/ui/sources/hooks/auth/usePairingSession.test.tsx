@@ -787,6 +787,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
                 requestedDeviceLabel: 'Phone',
                 homeServerIdentityId: 'srv_home_a',
                 bindingProof: computeHomeQrBindingProofV2({
+                    direction: 'trusted_home_displays',
                     qrSecret: new Uint8Array(32).fill(7),
                     pairId: 'pair_123',
                     homeServerIdentityId: 'srv_home_a',
@@ -842,6 +843,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
                 requestedPublicKey: encodeBase64(requestedPublicKey), requestedDeviceLabel: 'Phone',
                 homeServerIdentityId: 'srv_home_a',
                 bindingProof: computeHomeQrBindingProofV2({
+                    direction: 'trusted_home_displays',
                     qrSecret: new Uint8Array(32).fill(7), pairId: 'pair_123',
                     homeServerIdentityId: 'srv_home_a', requesterPublicKey: requestedPublicKey,
                     expiresAtMs: Date.parse(expiresAt),
@@ -885,6 +887,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
                 requestedPublicKey: encodeBase64(requestedPublicKey), requestedDeviceLabel: null,
                 homeServerIdentityId: 'srv_home_a',
                 bindingProof: computeHomeQrBindingProofV2({
+                    direction: 'trusted_home_displays',
                     qrSecret: new Uint8Array(32).fill(7), pairId: 'pair_123',
                     homeServerIdentityId: 'srv_home_a', requesterPublicKey: requestedPublicKey,
                     expiresAtMs: Date.parse(expiresAt),
@@ -924,6 +927,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
                 requestedPublicKey: encodeBase64(requestedPublicKey), requestedDeviceLabel: null,
                 homeServerIdentityId: 'srv_home_a',
                 bindingProof: computeHomeQrBindingProofV2({
+                    direction: 'trusted_home_displays',
                     qrSecret: new Uint8Array(32).fill(7), pairId: 'pair_123',
                     homeServerIdentityId: 'srv_home_a', requesterPublicKey: requestedPublicKey,
                     expiresAtMs: Date.parse(expiresAt),
@@ -966,6 +970,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             requestedPublicKey: encodeBase64(requestedPublicKey), requestedDeviceLabel: null,
             homeServerIdentityId: 'srv_home_a',
             bindingProof: computeHomeQrBindingProofV2({
+                direction: 'trusted_home_displays',
                 qrSecret: new Uint8Array(32).fill(7), pairId: 'pair_123',
                 homeServerIdentityId: 'srv_home_a', requesterPublicKey: requestedPublicKey,
                 expiresAtMs: Date.parse(expiresAt),
@@ -1042,6 +1047,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
                     requestedPublicKey: encodeBase64(requestedPublicKey), requestedDeviceLabel: null,
                     homeServerIdentityId: 'srv_home_a',
                     bindingProof: computeHomeQrBindingProofV2({
+                        direction: 'trusted_home_displays',
                         qrSecret: new Uint8Array(32).fill(7), pairId: 'pair_123',
                         homeServerIdentityId: 'srv_home_a', requesterPublicKey: requestedPublicKey,
                         expiresAtMs: Date.parse(expiresAt),
@@ -1089,6 +1095,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             requestedPublicKey: encodeBase64(requestedPublicKey), requestedDeviceLabel: null,
             homeServerIdentityId: 'srv_home_a',
             bindingProof: computeHomeQrBindingProofV2({
+                direction: 'trusted_home_displays',
                 qrSecret: new Uint8Array(32).fill(7), pairId: 'pair_123',
                 homeServerIdentityId: 'srv_home_a', requesterPublicKey: requestedPublicKey,
                 expiresAtMs: Date.parse(expiresAt),

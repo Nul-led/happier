@@ -311,6 +311,7 @@ describe('AddPhoneSettingsView', () => {
                 requestedDeviceLabel: 'Phone',
                 homeServerIdentityId: 'srv_test',
                 bindingProof: computeHomeQrBindingProofV2({
+                    direction: 'trusted_home_displays',
                     qrSecret: new Uint8Array(32).fill(7),
                     pairId: 'pair_123',
                     homeServerIdentityId: 'srv_test',

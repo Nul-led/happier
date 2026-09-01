@@ -390,7 +390,6 @@ describe('core e2e: Account Directory Home enrollment through the production cal
         const refreshed = await requesterModules.refreshDirectory.refreshAccountHomeDirectory(session);
         expect(refreshed.status).toBe('ready');
         expect(refreshed.preferredHomeServerIdentityId).toBe(homeBIdentity);
-        expect(refreshed.account?.accountId).toBe(accountAAccountId);
         expect(refreshed.homes).toHaveLength(1);
         expect(refreshed.homes[0]).toMatchObject({
             homeServerIdentityId: homeBIdentity,

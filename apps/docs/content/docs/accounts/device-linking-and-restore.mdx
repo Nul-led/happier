@@ -50,14 +50,17 @@ do not use it; let it expire and create a new QR.
 
 Use **Restore account** on a logged-out device when you want that device to join an existing account.
 
-What happens next depends on the device:
+What happens next depends on the device and whether Happier already knows the exact Home:
 
 - **Phone / mobile-sized web with camera support:** Happier opens the QR scanner first so you can scan a desktop/web QR immediately
-- **Desktop / larger web layouts:** use the secret-key recovery path, or enter a temporary link from the signed-in Home when that input is available
+- **Desktop / larger web layouts with a verified saved Home:** the signed-out desktop can display a temporary QR for a device already enrolled in that same Home to scan
+- **A completely new desktop that does not know the Home:** use the secret-key recovery path, or enter a temporary link from the signed-in Home when that input is available
 
-The current direct Home QR path is the signed-in computer displaying the invite and the joining
-phone scanning it. A reverse flow where the joining device displays the QR is not currently a
-supported recovery path.
+The requester-displayed QR is deliberately limited to a Home profile Happier already saved and can
+verify. The enrolled phone resolves that exact Home, starts the request there, and returns a
+credential sealed for the requesting desktop. A fresh desktop cannot discover an unknown Home by
+displaying its own static QR; it needs the secret key, a temporary Home link, or another supported
+discovery path first.
 
 ### Login with secret key instead
 
@@ -104,11 +107,15 @@ adding it leaves your current Home, sidebar groups, and other saved credentials 
 ### Restore a new browser or desktop
 
 1. On the new browser/computer, open **Restore account**
-2. Choose **Login with secret key instead**
-3. Enter the recovery key you previously saved
+2. If Happier shows a saved, verified Home, keep the requester QR open and scan it from a device already enrolled in that Home
+3. Otherwise, choose **Login with secret key instead** and enter the recovery key you previously saved
 
 If you are using a phone as the new device, Happier usually opens the supported direct Home QR
 scanner first instead.
+
+The requester-displayed QR uses the same short lifetime, Home identity binding, requester-key
+binding, sealed credential response, and non-focusing adoption as the phone-scans-computer flow.
+It does not add a comparison code or another approval prompt.
 
 ### Connect a terminal
 
@@ -172,7 +179,8 @@ If you operate the server yourself, set `HAPPIER_PUBLIC_SERVER_URL` to the ingre
 Use this quick rule:
 
 - **I want my phone to sign in to my existing account** → **Add your phone**
-- **I want a new browser/computer/device to join an existing account** → **Restore account**
+- **I want a saved, verified Home to add this browser/computer** → **Restore account**, then scan its QR from a device already enrolled in that Home
+- **This device does not know my Home yet** → use **Login with secret key instead** or a temporary link from that Home
 - **I want the CLI/terminal to connect** → **Scan QR to connect terminal**
 - **I cannot scan right now** → **Enter URL manually** or **Login with secret key instead**
 

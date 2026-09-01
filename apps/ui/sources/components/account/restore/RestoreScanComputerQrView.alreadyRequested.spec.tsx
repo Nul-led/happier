@@ -118,6 +118,7 @@ vi.mock('@/auth/pairing/pairingUrl', () => ({
         invite: {
             v: 2,
             intent: 'home_device',
+            direction: 'trusted_home_displays',
             pairId: 'pair_123',
             home: {
                 v: 1,
