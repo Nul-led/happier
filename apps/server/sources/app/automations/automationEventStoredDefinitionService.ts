@@ -167,8 +167,8 @@ function eventDefinitionWhere(params: Readonly<{
 /**
  * The Event catalog owns retirement truth; a provider may only present a
  * bounded persisted checkpoint identity and later apply its incumbent row CAS.
- * A disabled Automation/trigger retains continuity. A retired trigger remains
- * retained exactly while one historical Run still names that trigger ID.
+ * A disabled Automation/trigger retains continuity. Deleted/absent triggers
+ * retire independently of immutable historical Run causes.
  */
 function shouldRetireCheckpoint(params: Readonly<{
     candidate: AutomationEventCheckpointRetirementCandidateV1;
@@ -187,22 +187,23 @@ function shouldRetireCheckpoint(params: Readonly<{
         observationTransport: string | null;
         automation: Readonly<{ enabled: boolean; deletedAt: Date | null }>;
     }> | undefined;
-    hasRetainedRun: boolean;
 }>): boolean {
     const { trigger, candidate } = params;
-    if (trigger === undefined) return !params.hasRetainedRun;
+    if (trigger === undefined) return true;
     if (trigger.deletedAt !== null || trigger.automation.deletedAt !== null) {
-        return !params.hasRetainedRun;
+        return true;
     }
+    const identityMatches = trigger.automationId === candidate.automationId
+        && trigger.revision === candidate.triggerRevision
+        && trigger.kind === "pluginEvent"
+        && trigger.eventPluginId === params.caller.pluginId
+        && trigger.eventLocalId === candidate.eventRef.localId
+        && trigger.sourceSelectorId === candidate.sourceSelectorId
+        && trigger.sourceContractVersion === candidate.sourceContractVersion
+        && trigger.observationTransport === "checkpointedPull";
+    if (!identityMatches) return true;
     if (!trigger.automation.enabled || !trigger.enabled) return false;
-    return trigger.automationId !== candidate.automationId
-        || trigger.revision !== candidate.triggerRevision
-        || trigger.kind !== "pluginEvent"
-        || trigger.eventPluginId !== params.caller.pluginId
-        || trigger.eventLocalId !== candidate.eventRef.localId
-        || trigger.sourceSelectorId !== candidate.sourceSelectorId
-        || trigger.sourceContractVersion !== candidate.sourceContractVersion
-        || trigger.observationTransport !== "checkpointedPull";
+    return false;
 }
 
 async function classifyCheckpointRetirementsTx(params: Readonly<{
@@ -235,18 +236,10 @@ async function classifyCheckpointRetirementsTx(params: Readonly<{
         },
     });
     const triggersById = new Map(triggers.map((trigger) => [trigger.id, trigger]));
-    const retainedRunTriggerIds = new Set((await params.tx.automationRun.findMany({
-        where: {
-            accountId: params.accountId,
-            triggerId: { in: params.candidates.map((candidate) => candidate.triggerId) },
-        },
-        select: { triggerId: true },
-    })).flatMap((run) => run.triggerId === null ? [] : [run.triggerId]));
     return params.candidates.filter((candidate) => shouldRetireCheckpoint({
         candidate,
         caller: params.caller,
         trigger: triggersById.get(candidate.triggerId),
-        hasRetainedRun: retainedRunTriggerIds.has(candidate.triggerId),
     }));
 }
 

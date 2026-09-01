@@ -478,7 +478,10 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             const token = await auth.createToken(
                 newAccount.id,
                 undefined,
-                { kind: "account", authority: "present_user" },
+                {
+                    kind: "account",
+                    authority: "present_user",
+                },
             );
             return reply.send({ success: true, token });
         }
@@ -587,8 +590,11 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                   {
                     kind: "account_directory",
                     authority: "present_user",
-                }
-                : { kind: "account", authority: "present_user" },
+                  }
+                : {
+                    kind: "account",
+                    authority: "present_user",
+                },
         );
         return reply.send({ success: true, token });
     });

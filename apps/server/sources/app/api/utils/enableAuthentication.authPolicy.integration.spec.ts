@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
+import * as privacyKit from "privacy-kit";
 
 import { db } from "@/storage/db";
 import { auth } from "@/app/auth/auth";
@@ -105,16 +106,28 @@ describe("enableAuthentication (auth policy) (integration)", () => {
         });
     });
 
-    it("projects the terminal-session credential kind from verified token extras", async () => {
+    it("projects kind, authority, and explicit legacy provenance onto the request", async () => {
         const account = await db.account.create({ data: { publicKey: "pk_terminal_kind" } });
-        const accountToken = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
+        const accountToken = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
         const terminalToken = await auth.createToken(account.id, { session: "terminal-auth-request" }, { kind: "terminal", authority: "account_automation" });
+        const legacyGenerator = await privacyKit.createPersistentTokenGenerator({
+            service: "handy",
+            seed: process.env.HANDY_MASTER_SECRET!,
+        });
+        const legacyToken = await legacyGenerator.new({
+            user: account.id,
+            extras: { tokenEpoch: 0 },
+        });
 
         const app = Fastify({ logger: false }) as any;
         enableAuthentication(app);
         app.get("/credential-kind", { preHandler: app.authenticate }, async (request: any) => ({
             credentialKind: request.authTokenKind,
             authority: request.authAuthority,
+            legacy: request.authTokenLegacy,
         }));
         await app.ready();
         try {
@@ -127,6 +140,7 @@ describe("enableAuthentication (auth policy) (integration)", () => {
             expect(accountResponse.json()).toEqual({
                 credentialKind: "account",
                 authority: "present_user",
+                legacy: false,
             });
 
             const terminalResponse = await app.inject({
@@ -138,6 +152,19 @@ describe("enableAuthentication (auth policy) (integration)", () => {
             expect(terminalResponse.json()).toEqual({
                 credentialKind: "terminal",
                 authority: "account_automation",
+                legacy: false,
+            });
+
+            const legacyResponse = await app.inject({
+                method: "GET",
+                url: "/credential-kind",
+                headers: { authorization: `Bearer ${legacyToken}` },
+            });
+            expect(legacyResponse.statusCode).toBe(200);
+            expect(legacyResponse.json()).toEqual({
+                credentialKind: "account",
+                authority: "present_user",
+                legacy: true,
             });
         } finally {
             await app.close();

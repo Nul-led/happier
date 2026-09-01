@@ -69,7 +69,11 @@ type DecodedAuthToken = Readonly<{
     legacy: boolean;
 }>;
 
-export type { AuthTokenAuthority, AuthTokenKind, AuthTokenProvenance } from "@happier-dev/protocol";
+export type {
+    AuthTokenAuthority,
+    AuthTokenKind,
+    AuthTokenProvenance,
+} from "@happier-dev/protocol";
 
 /** Backward-compatible server spelling retained for existing request callers. */
 export type AuthAuthority = AuthTokenAuthority;
@@ -360,6 +364,38 @@ class AuthModule {
         return this.createTokenWithEpoch(userId, account.tokenEpoch, extras, options);
     }
 
+    /**
+     * Server-internal Personal Home readiness proof. The transient token string is
+     * never returned: this owner mints and verifies one ordinary present-user
+     * token using the loaded Home secret, then exposes only typed facts.
+     */
+    async attestPresentUserTokenRoundTrip(): Promise<Readonly<{
+        authenticated: true;
+    }>> {
+        const account = await db.account.findFirst({
+            orderBy: { id: "asc" },
+            select: { id: true },
+        });
+        if (!account) {
+            throw new Error("Personal Home readiness requires an initialized Account");
+        }
+        const token = await this.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
+        const verified = await this.verifyToken(token);
+        if (
+            !verified
+            || verified.userId !== account.id
+            || verified.authTokenKind !== "account"
+            || verified.authority !== "present_user"
+            || verified.legacy
+        ) {
+            throw new Error("Personal Home authentication readiness attestation failed");
+        }
+        return { authenticated: true };
+    }
+
     /** Account-auth completion uses the same serializable transaction for the
      * epoch read and the sealed-result CAS. The raw token remains transaction-local. */
     async createTokenInTx(
@@ -541,7 +577,7 @@ class AuthModule {
      */
     async verifyLegacyHomeToken(token: string): Promise<VerifiedAuthToken | null> {
         const verified = await this.verifyTokenInternal(token, { allowLegacyHome: true });
-        if (!verified || verified.authTokenKind === "account_directory" || verified.authTokenKind === "api_token") {
+        if (!verified || !verified.legacy || verified.authTokenKind !== "account") {
             return null;
         }
         return verified;

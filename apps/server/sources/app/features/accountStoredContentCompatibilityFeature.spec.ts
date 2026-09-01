@@ -9,7 +9,7 @@ describe('account stored-content compatibility payload', () => {
                 accountStoredContentCompatibility: {
                     v: 1,
                     minimumProtocolVersion: 2,
-                    currentProtocolVersion: 3,
+                    currentProtocolVersion: 4,
                     declarationTransport: 'http-header-and-socket-auth-v1',
                 },
             },

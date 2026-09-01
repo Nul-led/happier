@@ -6,11 +6,14 @@
 export {
     HomeConnectionDescriptorV1Schema,
     AccountDirectoryHomePutRequestV1Schema as AccountDirectoryHomePutRequestSchema,
+    AccountDirectoryHomePublishRequestV2Schema,
+    AccountDirectoryHomeWriteRequestSchema,
     AccountDirectoryPreferredHomePatchRequestV1Schema as AccountDirectoryPreferredRequestSchema,
     AccountDirectoryLinkPutRequestV1Schema as AccountDirectoryLinkPutRequestSchema,
     HomeLoginAssertionRequestV1Schema as HomeLoginAssertionRequestSchema,
     HomeLoginAssertionV1Schema,
     HomeLoginRedemptionRequestV1Schema,
+    HomeLoginCredentialPayloadV1Schema,
     HomeLoginRedemptionResponseV1Schema,
     HomeLoginRedemptionResultV1Schema,
     AccountDirectoryMeResponseV1Schema as AccountDirectoryMeResponseSchema,
@@ -31,6 +34,8 @@ export {
 export type {
     HomeConnectionDescriptorV1,
     AccountDirectoryHomePutRequestV1 as AccountDirectoryHomePutRequest,
+    AccountDirectoryHomePublishRequestV2,
+    AccountDirectoryHomeWriteRequest,
     AccountDirectoryPreferredHomePatchRequestV1 as AccountDirectoryPreferredRequest,
     AccountDirectoryLinkPutRequestV1 as AccountDirectoryLinkPutRequest,
     HomeLoginAssertionRequestV1 as HomeLoginAssertionRequest,

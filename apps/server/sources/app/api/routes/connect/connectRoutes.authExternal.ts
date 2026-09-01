@@ -30,7 +30,7 @@ import {
 } from "@/app/encryption/accountEncryptionMode";
 import {
     normalizeHttpUrl,
-    resolveConfiguredCanonicalServerUrl,
+    resolveConfiguredPublicServerUrl,
 } from "@/app/serverUrls/effectiveServerUrls";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 
@@ -200,8 +200,8 @@ export function connectAuthExternalRoutes(app: Fastify) {
             const requestedEndpointUrl = normalizeHttpUrl(
                 request.query.endpointUrl ?? "",
             );
-            const canonicalServerUrl =
-                resolveConfiguredCanonicalServerUrl(process.env);
+            const publicServerUrl =
+                resolveConfiguredPublicServerUrl(process.env);
             const requestedServerIdentityId = String(
                 request.query.endpointServerIdentityId ?? "",
             ).trim();
@@ -209,8 +209,8 @@ export function connectAuthExternalRoutes(app: Fastify) {
                 await getOrCreateServerIdentityId(process.env);
             if (
                 !requestedEndpointUrl
-                || !canonicalServerUrl
-                || requestedEndpointUrl !== canonicalServerUrl
+                || !publicServerUrl
+                || requestedEndpointUrl !== publicServerUrl
                 || !requestedServerIdentityId
                 || requestedServerIdentityId !== actualServerIdentityId
             ) {
@@ -219,7 +219,7 @@ export function connectAuthExternalRoutes(app: Fastify) {
                     .send({ error: "invalid-account-directory-target" });
             }
             accountDirectoryTarget = {
-                endpointUrl: canonicalServerUrl,
+                endpointUrl: publicServerUrl,
                 endpointServerIdentityId: actualServerIdentityId,
                 expiresAt: new Date(
                     Date.now()

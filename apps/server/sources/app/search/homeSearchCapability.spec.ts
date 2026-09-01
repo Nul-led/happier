@@ -11,7 +11,7 @@ describe('Home search capability', () => {
         expect(resolveHomeSearchCapability({ storagePolicy: 'e2ee', indexReady: true }))
             .toEqual({ enabled: false, provider: 'daemon', reason: 'non_plain_home' });
         expect(resolveHomeSearchCapability({ storagePolicy: 'plaintext_only', indexReady: false }))
-            .toEqual({ enabled: false, provider: null, reason: 'index_unavailable' });
+            .toEqual({ enabled: false, provider: 'home', reason: 'index_unavailable' });
     });
 
     it('does not advertise ready while initial reconciliation is still pending', () => {

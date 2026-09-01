@@ -501,7 +501,7 @@ describe("Automation Event CRUD database contract", () => {
         expect(await readEventCatalogRevision(e2ee.id)).toBeNull();
     });
 
-    it("advances the Event catalog only when the final retained Run releases a deleted Event Automation", async () => {
+    it("does not advance the Event catalog when final Run retention physically deletes an already-deleted Event Automation", async () => {
         const account = await seedEventWriterAccount();
         const created = await createAutomation({
             accountId: account.id,
@@ -564,7 +564,7 @@ describe("Automation Event CRUD database contract", () => {
             accountId: account.id,
             limit: 1,
         }))).resolves.toBe(1);
-        expect(await readEventCatalogRevision(account.id)).toBe(3n);
+        expect(await readEventCatalogRevision(account.id)).toBe(2n);
         await expect(db.automation.findUnique({ where: { id: created.id } })).resolves.toBeNull();
 
         await expect(inTx(async (tx) => await finalizeDeletedAutomationsWithoutRetainedRunsTx({
@@ -572,7 +572,7 @@ describe("Automation Event CRUD database contract", () => {
             accountId: account.id,
             limit: 1,
         }))).resolves.toBe(0);
-        expect(await readEventCatalogRevision(account.id)).toBe(3n);
+        expect(await readEventCatalogRevision(account.id)).toBe(2n);
     });
 
     it("keeps multiple Event trigger rows independently identifiable and resumable", async () => {
@@ -648,4 +648,5 @@ describe("Automation Event CRUD database contract", () => {
             select: { seq: true },
         })).toEqual({ seq: resumeSeq + 2 });
     });
+
 });

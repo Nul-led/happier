@@ -9,7 +9,9 @@ export const automationTriggerSelect = {
     observationTransport: true, webhookEndpointId: true, observationStartsAt: true,
     watcherMachineId: true, watcherMachineInstallationId: true, watcherPluginId: true,
     watcherMaterializationId: true, definitionEnvelope: true,
-    sessionLifecycleEvent: true, sourceSessionId: true, sourceTurnId: true,
+    sessionLifecycleEventsJson: true, sessionLifecyclePolicyKind: true,
+    sessionLifecycleMatchCount: true, remainingOccurrences: true,
+    sourceSessionId: true, sourceTurnId: true,
     createdAt: true, updatedAt: true,
 } satisfies Prisma.AutomationTriggerSelect;
 
@@ -26,7 +28,9 @@ export const automationTriggerListItemSelect = {
     observationTransport: true, webhookEndpointId: true, observationStartsAt: true,
     watcherMachineId: true, watcherMachineInstallationId: true, watcherPluginId: true,
     watcherMaterializationId: true,
-    sessionLifecycleEvent: true, sourceSessionId: true, sourceTurnId: true,
+    sessionLifecycleEventsJson: true, sessionLifecyclePolicyKind: true,
+    sessionLifecycleMatchCount: true, remainingOccurrences: true,
+    sourceSessionId: true, sourceTurnId: true,
     createdAt: true, updatedAt: true,
 } satisfies Prisma.AutomationTriggerSelect;
 
@@ -65,6 +69,8 @@ export const automationRunItemSelect = {
     causeKind: true, causeTriggerKind: true, causeTriggerRevision: true, causeOccurredAt: true,
     causeEventPluginId: true, causeEventLocalId: true, causeScheduledFor: true,
     causeSessionLifecycleEvent: true, causeSourceSessionId: true, causeSourceTurnId: true,
+    causeSessionLifecycleRequestId: true, causeSessionLifecycleRequestKind: true,
+    causeSessionLifecyclePolicyKind: true, causeSessionLifecycleConfiguredCount: true,
     occurrenceKey: true, legacyManualIdempotencyKey: true,
     occurrenceEvidenceEqualityTag: true, causeSourceSelectorId: true,
     triggerEvidenceEnvelope: true, executionInputEnvelope: true,
@@ -98,6 +104,8 @@ export const automationRunV3ListItemSelect = {
     causeKind: true, causeTriggerKind: true, causeTriggerRevision: true, causeOccurredAt: true,
     causeEventPluginId: true, causeEventLocalId: true, causeScheduledFor: true,
     causeSessionLifecycleEvent: true, causeSourceSessionId: true, causeSourceTurnId: true,
+    causeSessionLifecycleRequestId: true, causeSessionLifecycleRequestKind: true,
+    causeSessionLifecyclePolicyKind: true, causeSessionLifecycleConfiguredCount: true,
     occurrenceKey: true, causeSourceSelectorId: true,
     executionDispatchState: true, executionAttempt: true,
     errorCode: true,

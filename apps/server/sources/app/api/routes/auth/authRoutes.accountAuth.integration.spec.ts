@@ -86,6 +86,7 @@ async function createDirectQrPairing(params: Readonly<{
             accountId: params.accountId,
             secretHash: "direct-qr-secret-hash",
             requestedPublicKey: params.publicKeyBase64,
+            requestedBindingProof: "direct-qr-binding-proof",
             requestedAt: new Date(),
             expiresAt: new Date(Date.now() + 60_000),
             flow: "direct_qr",

@@ -67,9 +67,28 @@ export type AutomationTriggerKind = (typeof AutomationTriggerKind)[keyof typeof 
 
 export const AutomationSessionLifecycleEvent = {
     parentTurnCompleted: "parentTurnCompleted",
+    parentTurnFailed: "parentTurnFailed",
+    parentTurnCancelled: "parentTurnCancelled",
+    userActionRequired: "userActionRequired",
 } as const;
 
 export type AutomationSessionLifecycleEvent = (typeof AutomationSessionLifecycleEvent)[keyof typeof AutomationSessionLifecycleEvent];
+
+export const AutomationSessionLifecyclePolicyKind = {
+    currentTurn: "currentTurn",
+    firstMatch: "firstMatch",
+    nextMatches: "nextMatches",
+    everyMatch: "everyMatch",
+} as const;
+
+export type AutomationSessionLifecyclePolicyKind = (typeof AutomationSessionLifecyclePolicyKind)[keyof typeof AutomationSessionLifecyclePolicyKind];
+
+export const AutomationSessionLifecycleRequestKind = {
+    permission: "permission",
+    user_action: "user_action",
+} as const;
+
+export type AutomationSessionLifecycleRequestKind = (typeof AutomationSessionLifecycleRequestKind)[keyof typeof AutomationSessionLifecycleRequestKind];
 
 export const AutomationObservationTransport = {
     checkpointedPull: "checkpointedPull",

@@ -201,6 +201,89 @@ describe("automationCrudService (integration)", () => {
         expect(scheduled.triggers[0]!.id).not.toBe(scheduled.triggers[1]!.id);
     });
 
+    it("advances Event catalog truth when an already-disabled trigger or Automation is deleted", async () => {
+        const account = await db.account.create({
+            data: { encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const createDisabledDefinition = async (name: string) => await createAutomation({
+            accountId: account.id,
+            input: {
+                automationId: randomUUID(),
+                name,
+                enabled: false,
+                executionRecipe: currentRecipe(1),
+                assignments: [],
+                triggers: [],
+            },
+        });
+        const triggerDeletion = await createDisabledDefinition("disabled trigger deletion");
+        const trigger = await seedPluginEventTriggerWithStatus(triggerDeletion.id, "disabled-trigger");
+        await db.automationTrigger.update({
+            where: { id: trigger.id },
+            data: { enabled: false },
+        });
+        const automationDeletion = await createDisabledDefinition("disabled Automation deletion");
+        const secondTrigger = await seedPluginEventTriggerWithStatus(
+            automationDeletion.id,
+            "disabled-automation",
+        );
+        await db.automationTrigger.update({
+            where: { id: secondTrigger.id },
+            data: { enabled: false },
+        });
+        const reconciliationDeletion = await createDisabledDefinition("disabled reconciliation deletion");
+        const thirdTrigger = await seedPluginEventTriggerWithStatus(
+            reconciliationDeletion.id,
+            "disabled-reconciliation",
+        );
+        await db.automationTrigger.update({
+            where: { id: thirdTrigger.id },
+            data: { enabled: false },
+        });
+
+        await deleteAutomationTrigger({
+            accountId: account.id,
+            automationId: triggerDeletion.id,
+            triggerId: trigger.id,
+            expectedRevision: trigger.revision,
+        });
+        await expect(db.automationEventCatalogState.findUniqueOrThrow({
+            where: { accountId: account.id },
+            select: { eventSourceDefinitionsRevision: true },
+        })).resolves.toEqual({ eventSourceDefinitionsRevision: 1n });
+
+        await expect(deleteAutomation({
+            accountId: account.id,
+            automationId: automationDeletion.id,
+        })).resolves.toBe(true);
+        await expect(db.automationEventCatalogState.findUniqueOrThrow({
+            where: { accountId: account.id },
+            select: { eventSourceDefinitionsRevision: true },
+        })).resolves.toEqual({ eventSourceDefinitionsRevision: 2n });
+
+        await reconcileAutomationDefinition({
+            accountId: account.id,
+            automationId: reconciliationDeletion.id,
+            input: {
+                expectedTemplateVersion: reconciliationDeletion.templateVersion,
+                name: reconciliationDeletion.name,
+                description: reconciliationDeletion.description,
+                enabled: false,
+                assignments: [],
+                triggers: [],
+                removedTriggers: [{
+                    triggerId: AutomationTriggerIdSchema.parse(thirdTrigger.id),
+                    expectedRevision: thirdTrigger.revision,
+                }],
+            },
+        });
+        await expect(db.automationEventCatalogState.findUniqueOrThrow({
+            where: { accountId: account.id },
+            select: { eventSourceDefinitionsRevision: true },
+        })).resolves.toEqual({ eventSourceDefinitionsRevision: 3n });
+    });
+
     it("pages the ordinary V3 definition order by stable updatedAt/id keyset", async () => {
         const account = await db.account.create({
             data: { encryptionMode: "plain" },

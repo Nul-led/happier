@@ -13,8 +13,16 @@ type AuthenticatedRouteRequest = Readonly<{
 /** Restricted kinds never gain ordinary Home transport capabilities. */
 export function isRestrictedAuthTokenKind(
     kind: unknown,
-): kind is "api_token" | "account_directory" {
-    return kind === "api_token" || kind === "account_directory";
+): boolean {
+    switch (kind) {
+        case "account":
+        case "terminal":
+            return false;
+        case "api_token":
+        case "account_directory":
+        default:
+            return true;
+    }
 }
 
 /**
@@ -25,15 +33,16 @@ export function isRestrictedAuthTokenKind(
 export function isRestrictedAuthTokenDeniedForRoute(
     request: AuthenticatedRouteRequest,
 ): boolean {
-    if (request.routeOptions?.config?.allowAccountDirectoryToken === true) {
-        return request.authTokenKind !== "account"
-            && request.authTokenKind !== "account_directory";
+    switch (request.authTokenKind) {
+        case "account":
+            return false;
+        case "terminal":
+            return request.routeOptions?.config?.allowAccountDirectoryToken === true;
+        case "api_token":
+            return request.routeOptions?.config?.allowApiToken !== true;
+        case "account_directory":
+            return request.routeOptions?.config?.allowAccountDirectoryToken !== true;
+        default:
+            return true;
     }
-    if (request.authTokenKind === "api_token") {
-        return request.routeOptions?.config?.allowApiToken !== true;
-    }
-    if (request.authTokenKind === "account_directory") {
-        return request.routeOptions?.config?.allowAccountDirectoryToken !== true;
-    }
-    return false;
 }

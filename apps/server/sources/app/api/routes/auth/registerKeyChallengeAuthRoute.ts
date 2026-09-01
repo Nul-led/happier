@@ -11,6 +11,7 @@ import { enforceLoginEligibility } from "@/app/auth/enforceLoginEligibility";
 import { type Fastify } from "../../types";
 import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import {
+    AUTH_KEY_CHALLENGE_V2_ERROR_CODES,
     canonicalizeKeyChallengeV2AudienceOrigin,
     createKeyChallengeV2SigningInput,
     KeyChallengeAuthRequestSchema,
@@ -35,10 +36,10 @@ import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity
 const KEY_CHALLENGE_V2_TTL_MS = 5 * 60_000;
 const ACCOUNT_DIRECTORY_CHALLENGE_ID_PREFIX = "account_directory:";
 const KeyChallengeV2UnavailableResponseSchema = z.object({
-    error: z.literal("key_challenge_v2_unavailable"),
+    error: z.literal(AUTH_KEY_CHALLENGE_V2_ERROR_CODES.unavailable),
 });
 const KeyChallengeV2RequiredResponseSchema = z.object({
-    error: z.literal("key_challenge_v2_required"),
+    error: z.literal(AUTH_KEY_CHALLENGE_V2_ERROR_CODES.required),
 });
 const KeyChallengeAuthResponseSchemas: Record<number, z.ZodTypeAny> = {
     426: KeyChallengeV2RequiredResponseSchema,
@@ -127,7 +128,7 @@ function registerKeyChallengeAuthRoutesForPurpose(
     }, async (request, reply) => {
         const audienceOrigin = resolveStableKeyChallengeV2AudienceOrigin(process.env);
         if (!audienceOrigin) {
-            return reply.code(503).send({ error: "key_challenge_v2_unavailable" });
+            return reply.code(503).send({ error: AUTH_KEY_CHALLENGE_V2_ERROR_CODES.unavailable });
         }
 
         const issuedAt = new Date();
@@ -162,7 +163,7 @@ function registerKeyChallengeAuthRoutesForPurpose(
             },
         });
         if (!challenge.audienceServerIdentityId) {
-            return reply.code(503).send({ error: "key_challenge_v2_unavailable" });
+            return reply.code(503).send({ error: AUTH_KEY_CHALLENGE_V2_ERROR_CODES.unavailable });
         }
         return reply.send({
             challengeId: challenge.id,
@@ -188,7 +189,7 @@ function registerKeyChallengeAuthRoutesForPurpose(
         const authRequest = request.body;
         const isV2AuthRequest = isKeyChallengeV2AuthRequest(authRequest);
         if (!isV2AuthRequest && purpose.tokenKind === "account_directory") {
-            return reply.code(426).send({ error: "key_challenge_v2_required" });
+            return reply.code(426).send({ error: AUTH_KEY_CHALLENGE_V2_ERROR_CODES.required });
         }
         const tweetnacl = (await import("tweetnacl")).default;
         if (String(authRequest.publicKey).length > 512) {
@@ -274,7 +275,7 @@ function registerKeyChallengeAuthRoutesForPurpose(
             // Remove only after that release frontier no longer needs v1; clients do not
             // advertise their challenge version. Return the typed update requirement here then.
             if (purpose.requireKeyChallengeV2) {
-                return reply.code(426).send({ error: "key_challenge_v2_required" });
+                return reply.code(426).send({ error: AUTH_KEY_CHALLENGE_V2_ERROR_CODES.required });
             }
             if (String(authRequest.challenge).length > 4096) {
                 return reply.code(401).send({ error: 'Invalid signature' });
@@ -413,7 +414,10 @@ function registerKeyChallengeAuthRoutesForPurpose(
                 token: await auth.createToken(
                     expectedAccount.id,
                     undefined,
-                    { kind: purpose.tokenKind, authority: "present_user" },
+                    {
+                        kind: purpose.tokenKind,
+                        authority: "present_user",
+                    },
                 ),
             });
         }
@@ -563,7 +567,10 @@ function registerKeyChallengeAuthRoutesForPurpose(
             token: await auth.createToken(
                 user.id,
                 undefined,
-                { kind: purpose.tokenKind, authority: "present_user" },
+                {
+                    kind: purpose.tokenKind,
+                    authority: "present_user",
+                },
             )
         });
     });

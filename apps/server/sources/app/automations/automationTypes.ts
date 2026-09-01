@@ -245,7 +245,10 @@ export type AutomationTriggerItem = Readonly<{
      * reads; the list-specific read intentionally never loads it.
      */
     definitionEnvelope?: string | null;
-    sessionLifecycleEvent: 'parentTurnCompleted' | null;
+    sessionLifecycleEventsJson: string | null;
+    sessionLifecyclePolicyKind: 'currentTurn' | 'firstMatch' | 'nextMatches' | 'everyMatch' | null;
+    sessionLifecycleMatchCount: number | null;
+    remainingOccurrences: number | null;
     sourceSessionId: string | null;
     sourceTurnId: string | null;
     createdAt: Date;
@@ -273,9 +276,18 @@ export type AutomationRunItem = Readonly<{
     causeEventPluginId: string | null;
     causeEventLocalId: string | null;
     causeScheduledFor: Date | null;
-    causeSessionLifecycleEvent: 'parentTurnCompleted' | null;
+    causeSessionLifecycleEvent:
+        | 'parentTurnCompleted'
+        | 'parentTurnFailed'
+        | 'parentTurnCancelled'
+        | 'userActionRequired'
+        | null;
     causeSourceSessionId: string | null;
     causeSourceTurnId: string | null;
+    causeSessionLifecycleRequestId: string | null;
+    causeSessionLifecycleRequestKind: 'permission' | 'user_action' | null;
+    causeSessionLifecyclePolicyKind: 'currentTurn' | 'firstMatch' | 'nextMatches' | 'everyMatch' | null;
+    causeSessionLifecycleConfiguredCount: number | null;
     occurrenceKey: string | null;
     legacyManualIdempotencyKey: string | null;
     occurrenceEvidenceEqualityTag: string | null;

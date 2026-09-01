@@ -202,6 +202,12 @@ const migrationPaths = [
     "prisma/mysql/migrations/20260816231000_add_event_automations_v1/migration.sql",
 ] as const;
 
+const historyIndexMigrationPaths = [
+    "prisma/migrations/20260831120000_add_automation_run_history_index/migration.sql",
+    "prisma/sqlite/migrations/20260831120000_add_automation_run_history_index/migration.sql",
+    "prisma/mysql/migrations/20260831120000_add_automation_run_history_index/migration.sql",
+] as const;
+
 describe("Automation trigger-set persistence contract", () => {
     it.each(schemaPaths)("uses one trigger child and immutable Run-cause owner in %s", async (schemaPath) => {
         const schema = await read(schemaPath);
@@ -261,6 +267,9 @@ describe("Automation trigger-set persistence contract", () => {
         expect(trigger).not.toMatch(/^\s*runs\s+AutomationRun\[\]\s*$/m);
         expect(run).not.toMatch(/^\s*trigger\s+AutomationTrigger\??\s+@relation\(/m);
         expect(run).toContain("@@index([triggerId, state])");
+        expect(run).toContain(schemaPath === "prisma/schema.prisma"
+            ? '@@index([automationId, createdAt(sort: Desc), id(sort: Desc)], map: "AutomationRun_automationId_createdAt_id_idx")'
+            : '@@index([automationId, createdAt, id], map: "AutomationRun_automationId_createdAt_id_idx")');
         // The reply-handoff worker discovers unresolved delivery attention
         // through this indexed pair; every dialect schema declares it.
         expect(run).toContain("@@index([replyHandoffState, replyHandoffDueAt])");
@@ -282,6 +291,12 @@ describe("Automation trigger-set persistence contract", () => {
         expect(sourceStatus).toMatch(/^\s*reporterImmutableGenerationId\s+String(?:\s+@db\.VarChar\(256\))?\s*$/m);
         expect(sourceStatus).not.toMatch(/^\s*automationId\s+/m);
         expect(catalogStatus).toMatch(/^\s*reporterImmutableGenerationId\s+String(?:\s+@db\.VarChar\(256\))?\s*$/m);
+    });
+
+    it.each(historyIndexMigrationPaths)("adds one provider-native Run-history index in %s", async (migrationPath) => {
+        const migration = await read(migrationPath);
+        expect(migration.match(/AutomationRun_automationId_createdAt_id_idx/g)).toHaveLength(1);
+        expect(migration).toMatch(/AutomationRun["`]?\s*\(["`]automationId["`],\s*["`]createdAt["`] DESC,\s*["`]id["`] DESC\)/);
     });
 
     it.each(migrationPaths)("encodes the same physical trigger/cause arms in %s", async (migrationPath) => {

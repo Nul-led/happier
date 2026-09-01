@@ -57,6 +57,7 @@ import { resolveHomeSearchDbPath } from "@/app/search/homeSearchDb";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { db } from "@/storage/db";
 import { createV2SessionListVisibilityWhere } from "./routes/session/v2SessionListRows";
+import { registerIrohRelayAdmissionRoutes } from "@/app/iroh/irohRelayAdmissionRoutes";
 
 export function resolveApiListenHost(env: Record<string, string | undefined>): string {
     const host = (env.HAPPIER_SERVER_HOST ?? env.HAPPY_SERVER_HOST ?? '').toString().trim();
@@ -144,6 +145,7 @@ export function registerApiRoutes(typed: Fastify, params: Readonly<{
     });
     registerExternalActionRoutes(typed);
     registerReviewCommentRoutes(typed);
+    registerIrohRelayAdmissionRoutes(typed);
 }
 
 export async function startApi() {

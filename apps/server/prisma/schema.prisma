@@ -1218,6 +1218,21 @@ enum AutomationTriggerKind {
 
 enum AutomationSessionLifecycleEvent {
     parentTurnCompleted
+    parentTurnFailed
+    parentTurnCancelled
+    userActionRequired
+}
+
+enum AutomationSessionLifecyclePolicyKind {
+    currentTurn
+    firstMatch
+    nextMatches
+    everyMatch
+}
+
+enum AutomationSessionLifecycleRequestKind {
+    permission
+    user_action
 }
 
 enum AutomationObservationTransport {
@@ -1312,7 +1327,10 @@ model AutomationTrigger {
     watcherPluginId              String?
     watcherMaterializationId     String?
     definitionEnvelope           String?
-    sessionLifecycleEvent        AutomationSessionLifecycleEvent?
+    sessionLifecycleEventsJson  String?
+    sessionLifecyclePolicyKind  AutomationSessionLifecyclePolicyKind?
+    sessionLifecycleMatchCount  Int?
+    remainingOccurrences        Int?
     sourceSessionId              String?
     sourceTurnId                 String?
     createdAt                    DateTime @default(now())
@@ -1360,6 +1378,10 @@ model AutomationRun {
     causeSessionLifecycleEvent AutomationSessionLifecycleEvent?
     causeSourceSessionId String?
     causeSourceTurnId String?
+    causeSessionLifecycleRequestId String?
+    causeSessionLifecycleRequestKind AutomationSessionLifecycleRequestKind?
+    causeSessionLifecyclePolicyKind AutomationSessionLifecyclePolicyKind?
+    causeSessionLifecycleConfiguredCount Int?
     occurrenceKey      String?
     legacyManualIdempotencyKey String? @map("idempotencyKey")
     occurrenceEvidenceEqualityTag String?
@@ -1408,6 +1430,7 @@ model AutomationRun {
     @@index([accountId, state, dueAt])
     @@index([accountId, causeKind, state])
     @@index([automationId, dueAt])
+    @@index([automationId, createdAt(sort: Desc), id(sort: Desc)], map: "AutomationRun_automationId_createdAt_id_idx")
     @@index([claimedByMachineId, leaseExpiresAt])
     @@index([state, finishedAt])
     @@index([state, dueAt])

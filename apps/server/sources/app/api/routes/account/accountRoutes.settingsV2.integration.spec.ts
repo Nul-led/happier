@@ -1,6 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ACCOUNT_SETTINGS_MAX_ENCRYPTED_CIPHERTEXT_UTF8_BYTES } from "@happier-dev/protocol";
+import {
+    ACCOUNT_SETTINGS_MAX_ENCRYPTED_CIPHERTEXT_UTF8_BYTES,
+    ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
+} from "@happier-dev/protocol";
 
 import {
     acquireAccountEncryptionTransitionFenceInTx,
@@ -11,6 +14,7 @@ import { inTx } from "@/storage/inTx";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { withAuthenticatedTestApp } from "../../testkit/sqliteFastify";
+import { currentAccountStoredContentCompatibilityHeaders } from "../../testkit/accountStoredContentCompatibility";
 import { accountRoutes } from "./accountRoutes";
 
 function deferred(): Readonly<{
@@ -92,6 +96,7 @@ describe("accountRoutes (/v2/account/settings) (integration)", () => {
                     headers: {
                         "content-type": "application/json",
                         "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
                     },
                     payload: {
                         content: { t: "encrypted", c: "old-mode-ciphertext" },
@@ -162,6 +167,7 @@ describe("accountRoutes (/v2/account/settings) (integration)", () => {
                     headers: {
                         "content-type": "application/json",
                         "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
                     },
                     payload: {
                         content: {
@@ -188,6 +194,61 @@ describe("accountRoutes (/v2/account/settings) (integration)", () => {
             settings: account.settings,
             settingsVersion: account.settingsVersion,
             updatedAt: account.updatedAt,
+        });
+        await expect(db.accountSettingsSnapshot.count({
+            where: { accountId: account.id },
+        })).resolves.toBe(0);
+        await expect(db.accountChange.count({
+            where: { accountId: account.id },
+        })).resolves.toBe(0);
+    });
+
+    it("rejects a malformed stored-content declaration before replacing Settings", async () => {
+        const account = await db.account.create({
+            data: {
+                ...createSignedAccountContentBinding(),
+                encryptionMode: "e2ee",
+                settings: "retained-ciphertext",
+                settingsVersion: 7,
+            },
+            select: { id: true },
+        });
+
+        await withAuthenticatedTestApp(
+            (app) => accountRoutes(app as any),
+            async (app) => {
+                const response = await app.inject({
+                    method: "POST",
+                    url: "/v2/account/settings",
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        [ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER]: "not-a-version",
+                    },
+                    payload: {
+                        content: { t: "encrypted", c: "replacement-ciphertext" },
+                        expectedVersion: 7,
+                    },
+                });
+
+                expect(response.statusCode).toBe(426);
+                expect(response.json()).toEqual({
+                    error: "client-upgrade-required",
+                    requirement: {
+                        v: 1,
+                        kind: "account-stored-content",
+                        minimumProtocolVersion: 4,
+                    },
+                });
+            },
+        );
+
+        await expect(db.account.findUniqueOrThrow({
+            where: { id: account.id },
+            select: { settings: true, settingsVersion: true },
+        })).resolves.toEqual({
+            settings: "retained-ciphertext",
+            settingsVersion: 7,
         });
         await expect(db.accountSettingsSnapshot.count({
             where: { accountId: account.id },
@@ -299,7 +360,11 @@ describe("accountRoutes (/v2/account/settings) (integration)", () => {
                 const res = await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: {
                         content: { t: "plain", v: { schemaVersion: 2 } },
                         expectedVersion: 3,
@@ -345,7 +410,11 @@ describe("accountRoutes (/v2/account/settings) (integration)", () => {
                 const res = await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: {
                         content: { t: "plain", v: { schemaVersion: 2 } },
                         expectedVersion: 2,
@@ -387,7 +456,11 @@ describe("accountRoutes (/v2/account/settings) (integration)", () => {
                 const res = await app.inject({
                     method: "POST",
                     url: "/v1/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { settings: "ciphertext", expectedVersion: 0 },
                 });
 
@@ -420,7 +493,11 @@ describe("accountRoutes (/v2/account/settings) (integration)", () => {
                 const res = await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { content: { t: "encrypted", c: "ciphertext" }, expectedVersion: 0 },
                 });
 
@@ -466,7 +543,11 @@ describe("accountRoutes (/v2/account/settings) (integration)", () => {
                 const postResponse = await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { content: { t: "plain", v: {} }, expectedVersion: 1 },
                 });
 

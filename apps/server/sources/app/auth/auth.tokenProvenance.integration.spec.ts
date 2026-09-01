@@ -71,57 +71,42 @@ describe("auth token provenance (integration)", () => {
         }
     });
 
-    it("signs and projects the closed present-user authentication method without inferring it from token kind", async () => {
+    it("self-attests the restored Home signing secret without exporting the temporary token", async () => {
+        const account = await db.account.create({
+            data: { publicKey: "auth-personal-home-readiness" },
+            select: { id: true },
+        });
+
+        await expect(auth.attestPresentUserTokenRoundTrip()).resolves.toEqual({
+            authenticated: true,
+        });
+
+        await db.account.deleteMany();
+        await expect(auth.attestPresentUserTokenRoundTrip()).rejects.toThrow(
+            "initialized Account",
+        );
+    });
+
+    it("keeps signed provenance limited to version, kind, and authority", async () => {
         const account = await db.account.create({
             data: { publicKey: "auth-provenance-authentication-methods" },
             select: { id: true },
         });
-        const methods = [
-            "key_challenge_v1",
-            "key_challenge_v2",
-            "oauth_provider",
-            "trusted_pairing",
-            "mtls",
-        ] as const;
-
-        for (const authenticationMethod of methods) {
-            const token = await auth.createToken(account.id, undefined, {
-                kind: "account",
-                authority: "present_user",
-                authenticationMethod,
-            } as Parameters<typeof auth.createToken>[2]);
-            expect(decodeJwtPayload(token)).toMatchObject({
-                provenance: {
-                    v: 1,
-                    kind: "account",
-                    authority: "present_user",
-                    authenticationMethod,
-                },
-            });
-            await expect(auth.verifyToken(token)).resolves.toMatchObject({
-                userId: account.id,
-                authTokenKind: "account",
-                authority: "present_user",
-                authenticationMethod,
-                legacy: false,
-            });
-        }
-
-        const unmarkedCurrentToken = await auth.createToken(account.id, undefined, {
+        const token = await auth.createToken(account.id, undefined, {
             kind: "account",
             authority: "present_user",
         });
-        expect(decodeJwtPayload(unmarkedCurrentToken)).toMatchObject({
-            provenance: {
-                v: 1,
-                kind: "account",
-                authority: "present_user",
-            },
+        expect(decodeJwtPayload(token).provenance).toEqual({
+            v: 1,
+            kind: "account",
+            authority: "present_user",
         });
-        await expect(auth.verifyToken(unmarkedCurrentToken)).resolves.toMatchObject({
-            authenticationMethod: undefined,
+        await expect(auth.verifyToken(token)).resolves.toEqual(expect.objectContaining({
+            userId: account.id,
+            authTokenKind: "account",
+            authority: "present_user",
             legacy: false,
-        });
+        }));
     });
 
     it("requires an explicit complete provenance decision and rejects non-canonical pairings at mint time", async () => {
@@ -176,6 +161,7 @@ describe("auth token provenance (integration)", () => {
             { tokenEpoch: 0, provenance: { v: 2, kind: "account", authority: "present_user" } },
             { tokenEpoch: 0, provenance: { v: 1, kind: "unknown", authority: "present_user" } },
             { tokenEpoch: 0, provenance: { v: 1, kind: "account" } },
+            { tokenEpoch: 0, provenance: { v: 1, kind: "account", authority: "present_user", mintOrigin: "unexpected" } },
             { tokenEpoch: 0, provenance: "not-a-provenance-marker" },
             { tokenEpoch: 0, provenance: null },
             // Semantically invalid pairings fail closed even though both fields
@@ -228,6 +214,11 @@ describe("auth token provenance (integration)", () => {
             kind: "account_directory",
             authority: "present_user",
         });
+        const currentHomeToken = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
+        await expect(auth.verifyLegacyHomeToken(currentHomeToken)).resolves.toBeNull();
         await expect(auth.verifyLegacyHomeToken(directoryToken)).resolves.toBeNull();
         await expect(auth.verifyTokenForRoute(directoryToken)).resolves.toMatchObject({
             userId: account.id,
@@ -236,7 +227,7 @@ describe("auth token provenance (integration)", () => {
         });
     });
 
-    it("rechecks token epoch for a cached Directory projection", async () => {
+    it("rejects a cached Directory projection specifically when its epoch becomes stale", async () => {
         const account = await db.account.create({
             data: { publicKey: "auth-provenance-directory-epoch" },
             select: { id: true },
@@ -255,6 +246,15 @@ describe("auth token provenance (integration)", () => {
         await db.account.update({
             where: { id: account.id },
             data: { tokenEpoch: { increment: 1 } },
+        });
+
+        const currentToken = await auth.createToken(account.id, undefined, {
+            kind: "account_directory",
+            authority: "present_user",
+        });
+        await expect(auth.verifyToken(currentToken)).resolves.toMatchObject({
+            userId: account.id,
+            authTokenKind: "account_directory",
         });
 
         await expect(auth.verifyToken(token)).resolves.toBeNull();

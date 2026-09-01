@@ -141,7 +141,12 @@ const RETENTION_DOMAIN_DEFINITIONS = Object.freeze({
     publicShareAccessLogs: { id: 'publicShareAccessLogs', policyConfig: ageConfig('PUBLIC_SHARE_ACCESS_LOGS'), createRule: createPublicShareAccessLogRetentionRule },
     terminalAuthRequests: { id: 'terminalAuthRequests', policyConfig: ageConfig('TERMINAL_AUTH_REQUESTS'), createRule: createTerminalAuthRequestRetentionRule },
     accountAuthRequests: { id: 'accountAuthRequests', policyConfig: ageConfig('ACCOUNT_AUTH_REQUESTS'), createRule: createAccountAuthRequestRetentionRule },
-    authPairingSessions: { id: 'authPairingSessions', policyConfig: ageConfig('AUTH_PAIRING_SESSIONS'), createRule: createAuthPairingSessionRetentionRule },
+    authPairingSessions: {
+        id: 'authPairingSessions',
+        policyConfig: ageConfig('AUTH_PAIRING_SESSIONS'),
+        runsWhenGlobalPolicyIsDisabled: true,
+        createRule: createAuthPairingSessionRetentionRule,
+    },
     repeatKeys: {
         id: 'repeatKeys',
         policyConfig: ageConfig('REPEAT_KEYS'),

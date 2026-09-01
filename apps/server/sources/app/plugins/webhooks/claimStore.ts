@@ -849,9 +849,11 @@ export async function ageOverduePluginWebhookDeliveriesV1(params: Readonly<{
         where: {
             state: "queued",
             payloadBytes: { gt: 0n },
-            nextAttemptAt: { lte: now },
             OR: [
-                { offlineSinceAt: { lte: offlineDeadline } },
+                {
+                    nextAttemptAt: { lte: now },
+                    offlineSinceAt: { lte: offlineDeadline },
+                },
                 { metadataDeleteAt: { lte: now } },
             ],
         },
@@ -869,6 +871,7 @@ export async function ageOverduePluginWebhookDeliveriesV1(params: Readonly<{
     });
     let deadLettered = 0;
     for (const candidate of candidates) {
+        const retentionExpired = candidate.metadataDeleteAt.getTime() <= now.getTime();
         const transitioned = await inTx(async (tx) => {
             const updated = await tx.pluginWebhookDelivery.updateMany({
                 where: {
@@ -876,7 +879,7 @@ export async function ageOverduePluginWebhookDeliveriesV1(params: Readonly<{
                     revision: candidate.revision,
                     state: "queued",
                     payloadBytes: { gt: 0n },
-                    nextAttemptAt: { lte: now },
+                    ...(!retentionExpired ? { nextAttemptAt: { lte: now } } : {}),
                     metadataDeleteAt: candidate.metadataDeleteAt,
                 },
                 data: deadLetterMutation(

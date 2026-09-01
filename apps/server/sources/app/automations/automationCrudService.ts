@@ -107,6 +107,10 @@ import {
     validateSessionLifecycleTriggerRegistrationTx,
 } from "./automationSessionLifecycleRegistration";
 import {
+    automationSessionLifecycleConfigurationsEqual,
+    encodeAutomationSessionLifecycleConfiguration,
+} from "./automationSessionLifecycleConfigurationCodec";
+import {
     AUTOMATION_RUN_REPLY_HANDOFF_TERMINAL_STATES,
     AUTOMATION_RUN_TERMINAL_STATES,
     isAutomationCurrentPatchInput,
@@ -876,9 +880,7 @@ function automationTriggerMatchesCreateInput(params: Readonly<{
         return hasSameAutomationScheduleFields(existing, schedule);
     }
     if (requested.trigger.kind === "sessionLifecycle") {
-        return existing.sessionLifecycleEvent === requested.trigger.event
-            && existing.sourceSessionId === requested.trigger.scope.sourceSessionId
-            && existing.sourceTurnId === requested.trigger.scope.sourceTurnId;
+        return automationSessionLifecycleConfigurationsEqual(existing, requested.trigger);
     }
     if (
         existing.eventPluginId !== requested.trigger.eventRef.pluginId
@@ -3360,44 +3362,6 @@ export function automationRunCustodyTerminalWhere() {
     };
 }
 
-/**
- * Releasing a Run can change checkpoint-retirement truth only for a tombstoned
- * Event trigger in a still-live Automation. A deleted parent is finalized by
- * finalizeDeletedAutomationsWithoutRetainedRunsTx, which advances the catalog
- * once for that separate physical-deletion transition.
- */
-export async function advanceAutomationEventCatalogForReleasedRetiredRunsTx(params: Readonly<{
-    tx: Tx;
-    accountId: string;
-    releasedRunTriggerIds: readonly string[];
-}>): Promise<void> {
-    const triggerIds = [...new Set(params.releasedRunTriggerIds)];
-    if (triggerIds.length === 0) return;
-    const retiredEventTriggers = await params.tx.automationTrigger.findMany({
-        where: {
-            id: { in: triggerIds },
-            kind: "pluginEvent",
-            deletedAt: { not: null },
-            automation: { accountId: params.accountId, deletedAt: null },
-        },
-        select: { id: true },
-    });
-    if (retiredEventTriggers.length === 0) return;
-    const remainingTriggerIds = new Set((await params.tx.automationRun.findMany({
-        where: {
-            accountId: params.accountId,
-            triggerId: { in: retiredEventTriggers.map((trigger) => trigger.id) },
-        },
-        select: { triggerId: true },
-    })).flatMap((run) => run.triggerId === null ? [] : [run.triggerId]));
-    if (retiredEventTriggers.every((trigger) => remainingTriggerIds.has(trigger.id))) return;
-    await ensureAutomationEventCatalogStateTx({
-        tx: params.tx,
-        accountId: params.accountId,
-        projectionChanged: true,
-    });
-}
-
 export type ClearAutomationRunHistoryResult =
     | Readonly<{ status: "not_found" }>
     | Readonly<{ status: "cleared"; clearedRuns: number }>;
@@ -3426,14 +3390,6 @@ export async function clearAutomationRunHistory(params: {
         if (!automation) {
             return { status: "not_found" };
         }
-        const candidates = await tx.automationRun.findMany({
-            where: {
-                accountId: params.accountId,
-                automationId: automation.id,
-                ...automationRunCustodyTerminalWhere(),
-            },
-            select: { triggerId: true },
-        });
         const cleared = await tx.automationRun.deleteMany({
             where: {
                 accountId: params.accountId,
@@ -3442,13 +3398,6 @@ export async function clearAutomationRunHistory(params: {
             },
         });
         if (cleared.count > 0) {
-            await advanceAutomationEventCatalogForReleasedRetiredRunsTx({
-                tx,
-                accountId: params.accountId,
-                releasedRunTriggerIds: candidates.flatMap((candidate) => (
-                    candidate.triggerId === null ? [] : [candidate.triggerId]
-                )),
-            });
             const cursor = await markAutomationChangedTx(tx, {
                 accountId: params.accountId,
                 automationId: automation.id,
@@ -3532,7 +3481,10 @@ const AUTOMATION_TRIGGER_PRIVATE_FIELDS_CLEARED = {
     watcherPluginId: null,
     watcherMaterializationId: null,
     definitionEnvelope: null,
-    sessionLifecycleEvent: null,
+    sessionLifecycleEventsJson: null,
+    sessionLifecyclePolicyKind: null,
+    sessionLifecycleMatchCount: null,
+    remainingOccurrences: null,
     sourceSessionId: null,
     sourceTurnId: null,
 } as const;
@@ -3630,10 +3582,8 @@ async function normalizeAutomationTriggerWriteTx(params: Readonly<{
     if (params.input.kind === "sessionLifecycle") {
         const automationExistingSessionId =
             readAutomationExistingSessionTargetId(params.automation);
-        const retainsExactRegistration = params.existing?.kind === "sessionLifecycle"
-            && params.existing.sessionLifecycleEvent === params.input.event
-            && params.existing.sourceSessionId === params.input.scope.sourceSessionId
-            && params.existing.sourceTurnId === params.input.scope.sourceTurnId;
+        const retainsRegistration = params.existing?.kind === "sessionLifecycle"
+            && automationSessionLifecycleConfigurationsEqual(params.existing, params.input);
         // Source/target inequality is a property of the effective recipe, not
         // of registration freshness: every normalized lifecycle write re-proves
         // it (and target-ID presence) against the current execution target, so
@@ -3644,10 +3594,9 @@ async function normalizeAutomationTriggerWriteTx(params: Readonly<{
         validateSessionLifecycleExecutionTargetInequality({
             automationTargetType: params.automation.targetType,
             automationExistingSessionId,
-            sourceSessionId: params.input.scope.sourceSessionId,
+            sourceSessionId: params.input.sourceSessionId,
         });
-        const mustRegister = !retainsExactRegistration
-            || (params.existing?.enabled === false && params.input.enabled);
+        const mustRegister = !retainsRegistration;
         const lifecycle = mustRegister
             ? await validateSessionLifecycleTriggerRegistrationTx({
                 tx: params.tx,
@@ -3656,19 +3605,20 @@ async function normalizeAutomationTriggerWriteTx(params: Readonly<{
                 automationExistingSessionId,
                 input: params.input,
             })
-            : {
-                sessionLifecycleEvent: params.input.event,
-                sourceSessionId: params.input.scope.sourceSessionId,
-                sourceTurnId: params.input.scope.sourceTurnId,
-            };
+            : params.input;
+        const encoded = encodeAutomationSessionLifecycleConfiguration(lifecycle);
         return {
             isEvent: false,
             data: {
                 ...common,
                 kind: "sessionLifecycle",
-                sessionLifecycleEvent: lifecycle.sessionLifecycleEvent,
-                sourceSessionId: lifecycle.sourceSessionId,
-                sourceTurnId: lifecycle.sourceTurnId,
+                ...encoded,
+                // Pause/resume and unrelated editor saves preserve runtime
+                // consumption; semantic definition edits initialize a fresh
+                // policy budget.
+                remainingOccurrences: retainsRegistration
+                    ? params.existing?.remainingOccurrences ?? encoded.remainingOccurrences
+                    : encoded.remainingOccurrences,
             },
         };
     }
@@ -4600,7 +4550,9 @@ export async function reconcileAutomationDefinition(params: Readonly<{
             });
             if (deleted.count !== 1) throw new AutomationTriggerMutationConflictError();
             if (trigger.kind === "pluginEvent") {
-                eventProjectionChanged ||= existing.enabled && trigger.enabled;
+                // Removed Event triggers change checkpoint-retirement truth
+                // even when the definition or trigger was already paused.
+                eventProjectionChanged = true;
                 changedEventTriggerIds.add(trigger.id);
             }
         }
@@ -5196,7 +5148,11 @@ export async function deleteAutomationTrigger(params: Readonly<{
             await ensureAutomationEventCatalogStateTx({
                 tx,
                 accountId: params.accountId,
-                projectionChanged: automation.enabled && existing.enabled,
+                // A disabled Event trigger still owns checkpoint continuity.
+                // Deletion changes its retirement classification even though
+                // it was absent from active admission, so the provider must
+                // observe a new catalog revision and reclassify it.
+                projectionChanged: true,
             });
             await deleteSupersededAutomationEventSourceStatusTx({
                 tx,
@@ -5274,7 +5230,11 @@ export async function deleteAutomation(params: {
             await ensureAutomationEventCatalogStateTx({
                 tx,
                 accountId: params.accountId,
-                projectionChanged: existing.enabled,
+                // Definition deletion changes checkpoint-retirement truth even
+                // when the Automation was already paused. The same catalog
+                // owner tells providers to reclassify; no deletion watcher or
+                // provider-specific invalidation path is needed.
+                projectionChanged: true,
             });
         }
         // Source status is current projection state, not history. Delete every
@@ -5344,14 +5304,7 @@ export async function finalizeDeletedAutomationsWithoutRetainedRunsTx(params: Re
         },
         orderBy: { deletedAt: "asc" },
         take: params.limit,
-        select: {
-            id: true,
-            triggers: {
-                where: { kind: "pluginEvent" },
-                select: { id: true },
-                take: 1,
-            },
-        },
+        select: { id: true },
     });
     if (candidates.length === 0) return 0;
     const deleted = await params.tx.automation.deleteMany({
@@ -5362,16 +5315,6 @@ export async function finalizeDeletedAutomationsWithoutRetainedRunsTx(params: Re
             runs: { none: {} },
         },
     });
-    if (deleted.count > 0 && candidates.some((candidate) => candidate.triggers.length > 0)) {
-        // A soft-deleted Event Automation retains checkpoint custody while a
-        // historical Run still names its trigger. Its final physical deletion
-        // is the exact retirement transition, so watchers must re-adopt.
-        await ensureAutomationEventCatalogStateTx({
-            tx: params.tx,
-            accountId: params.accountId,
-            projectionChanged: true,
-        });
-    }
     return deleted.count;
 }
 
@@ -5523,6 +5466,15 @@ export async function listAutomationRuns(params: AutomationRunListParams | Autom
             nextCursor: hasNext ? rawWindow[rawWindow.length - 1]?.id ?? null : null,
         };
     }
+
+    const automationExists = await db.automation.findFirst({
+        where: {
+            id: params.automationId,
+            accountId: params.accountId,
+        },
+        select: { id: true },
+    });
+    if (!automationExists) return null;
 
     const rows = await db.automationRun.findMany({
         where: {

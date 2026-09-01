@@ -391,7 +391,7 @@ describe("review comment durable storage", () => {
         expect(retry.dispatchToken).not.toBe(first.dispatchToken);
     });
 
-    it("keeps an uncertain effect and its unattempted suffix reconciliation-only", async () => {
+    it("keeps an uncertain suffix held until tokenless reconciliation proves no effect", async () => {
         const account = await db.account.create({
             data: {
                 id: "account-review-comment-publication-uncertain",
@@ -480,6 +480,41 @@ describe("review comment durable storage", () => {
                     { outcome: { kind: "uncertain" } },
                     { outcome: { kind: "skippedPriorFailure" } },
                 ],
+            },
+        });
+
+        const reconciled = await operations.claimPublicationDispatch({
+            ...request,
+            input: {
+                ...request.input,
+                settlement: {
+                    dispatchToken: null,
+                    result: {
+                        publicationPlanId: first.publicationPlanId,
+                        entries: [
+                            { ...first.entries[0]!, outcome: { kind: "published" as const, externalRef: "native-1" } },
+                            { ...first.entries[1]!, outcome: { kind: "failed" as const, code: "gitlab-pending-draft" } },
+                            { ...first.entries[2]!, outcome: { kind: "skippedPriorFailure" as const } },
+                        ],
+                        verdict: { kind: "notRequested" as const },
+                    },
+                },
+            },
+        });
+        expect(reconciled).toMatchObject({
+            priorResult: {
+                entries: [
+                    { outcome: { kind: "published", externalRef: "native-1" } },
+                    { outcome: { kind: "failed", code: "gitlab-pending-draft" } },
+                    { outcome: { kind: "skippedPriorFailure" } },
+                ],
+            },
+        });
+        await expect(operations.claimPublicationDispatch(request)).resolves.toMatchObject({
+            disposition: "dispatch",
+            instructions: {
+                entries: ["confirmed", "dispatch", "dispatch"],
+                verdict: null,
             },
         });
     });

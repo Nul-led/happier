@@ -18,6 +18,11 @@ describe('writeStartupReceiptFromEnvironment', () => {
                 server: {
                     address: () => ({ address: '::ffff:127.0.0.1', family: 'IPv6', port: 43123 }),
                 },
+            }, {
+                authenticated: true,
+                homeServerIdentityId: 'srv_home_readiness',
+                accountCount: 2,
+                sessionCount: 3,
             })).resolves.toBe(true);
 
             await expect(readFile(receiptPath, 'utf8').then(JSON.parse)).resolves.toEqual({
@@ -25,6 +30,12 @@ describe('writeStartupReceiptFromEnvironment', () => {
                 pid: process.pid,
                 host: '127.0.0.1',
                 port: 43123,
+                personalHomeReadiness: {
+                    authenticated: true,
+                    homeServerIdentityId: 'srv_home_readiness',
+                    accountCount: 2,
+                    sessionCount: 3,
+                },
             });
         } finally {
             await rm(root, { recursive: true, force: true });

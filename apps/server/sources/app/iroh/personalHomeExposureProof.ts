@@ -3,11 +3,10 @@ import { resolveConfiguredCanonicalServerUrl } from '@/app/serverUrls/effectiveS
 import type { BoundServerListener } from '@/app/runtime/startupReceipt';
 
 const PERSONAL_HOME_LOOPBACK_HOST = '127.0.0.1';
-const DEFAULT_API_PORT = 3005;
 
 function readExpectedApiPort(env: NodeJS.ProcessEnv): number | null {
     const raw = String(env.PORT ?? '').trim();
-    if (!raw) return DEFAULT_API_PORT;
+    if (!raw) return null;
     if (!/^\d+$/u.test(raw)) return null;
     const port = Number(raw);
     return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;

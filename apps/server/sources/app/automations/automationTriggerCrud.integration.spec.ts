@@ -1007,6 +1007,44 @@ describe("automation trigger-set CRUD", () => {
         }
     });
 
+    it("distinguishes a missing Automation from retained history for a soft-deleted Automation", async () => {
+        const account = await db.account.create({
+            data: { id: `account-${randomUUID()}`, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const automation = await createAutomation({
+            accountId: account.id,
+            input: {
+                automationId: randomUUID(),
+                name: "Retained deleted history",
+                enabled: true,
+                executionRecipe: executionRecipe(1),
+                assignments: [{ machineId: await seedExecutionMachine(account.id) }],
+                triggers: [],
+            },
+        });
+        const run = await runAutomationNow({ accountId: account.id, automationId: automation.id });
+        expect(run).not.toBeNull();
+
+        await expect(listAutomationRuns({
+            accountId: account.id,
+            automationId: "automation-that-never-existed",
+            limit: 20,
+        })).resolves.toBeNull();
+
+        await db.automation.update({
+            where: { id: automation.id },
+            data: { enabled: false, deletedAt: new Date() },
+        });
+        await expect(listAutomationRuns({
+            accountId: account.id,
+            automationId: automation.id,
+            limit: 20,
+        })).resolves.toMatchObject({
+            runs: [expect.objectContaining({ id: run!.id })],
+        });
+    });
+
     it("bounds V2 history to one raw Run window and advances with that raw cursor", async () => {
         const account = await db.account.create({
             data: { id: `account-${randomUUID()}`, encryptionMode: "plain" },

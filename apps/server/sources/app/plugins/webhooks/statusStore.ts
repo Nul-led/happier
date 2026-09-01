@@ -7,7 +7,7 @@ import {
 
 import { resolveCurrentClaimablePluginMachineMaterializationTx } from "@/app/plugins/availability/operations";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
-import { resolveConfiguredCanonicalServerUrl } from "@/app/serverUrls/effectiveServerUrls";
+import { resolveConfiguredPublicServerUrl } from "@/app/serverUrls/effectiveServerUrls";
 import { inTx } from "@/storage/inTx";
 
 import { projectPluginWebhookEndpointReadinessV1 } from "./endpointReadiness";
@@ -18,7 +18,7 @@ export async function readPluginWebhookAccountStatusV1(params: Readonly<{
     input: PluginWebhookAccountStatusRequestV1;
 }>): Promise<PluginWebhookAccountStatusResultV1> {
     const serverIdentityId = await getOrCreateServerIdentityId(process.env);
-    const publicBaseUrl = resolveConfiguredCanonicalServerUrl(process.env);
+    const publicBaseUrl = resolveConfiguredPublicServerUrl(process.env);
     if (!publicBaseUrl) throw new Error("Plugin webhook public URL is unavailable");
     return await inTx(async (tx) => {
         const rows = await tx.pluginWebhookEndpoint.findMany({

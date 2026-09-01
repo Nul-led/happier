@@ -109,11 +109,14 @@ describe("mintDirectRouteGrantV1", () => {
             },
             endpointFingerprint: "b".repeat(64),
             iroh: {
-                sourceMachineId: "machine_source",
-                targetMachineId: "machine_target",
-                sourceEndpointId: "a".repeat(64),
-                targetEndpointId: "b".repeat(64),
-                role: "initiator",
+                initiator: {
+                    kind: "account_client",
+                    endpointId: "a".repeat(64),
+                },
+                target: {
+                    machineId: "machine_target",
+                    endpointId: "b".repeat(64),
+                },
                 operationKind: "file_transfer",
             },
             ephemeralPublicKeyBase64Url: toBase64Url(ephemeralKeyPair.publicKey),
@@ -126,11 +129,14 @@ describe("mintDirectRouteGrantV1", () => {
         expect(minted).toEqual(expect.objectContaining({ ok: true }));
         if (!minted.ok) throw new Error("expected grant");
         expect(minted.grant.payload.iroh).toEqual({
-            sourceMachineId: "machine_source",
-            targetMachineId: "machine_target",
-            sourceEndpointId: "a".repeat(64),
-            targetEndpointId: "b".repeat(64),
-            role: "initiator",
+            initiator: {
+                kind: "account_client",
+                endpointId: "a".repeat(64),
+            },
+            target: {
+                machineId: "machine_target",
+                endpointId: "b".repeat(64),
+            },
             operationKind: "file_transfer",
         });
         expect(tweetnacl.sign.detached.verify(
@@ -160,6 +166,39 @@ describe("mintDirectRouteGrantV1", () => {
         })).toEqual({
             ok: false,
             reasonCode: "iroh_requires_v2",
+            receipt: "peer.route_grant.rejected",
+        });
+    });
+
+    it("rejects an Account-client workspace-sync V2 grant at the canonical mint boundary", () => {
+        expect(mintDirectRouteGrantV2({
+            accountId: "account_1",
+            machineId: "machine_1",
+            flowKind: "machine_rpc",
+            routeKind: "iroh_peer",
+            scope: {
+                kind: "machine_rpc",
+                rpcScopeId: "workspace_sync_1",
+                allowedMethods: ["daemon.memory.status"],
+                maxCalls: 1,
+                maxIdleMs: 1_000,
+            },
+            endpointFingerprint: "b".repeat(64),
+            iroh: {
+                initiator: { kind: "account_client", endpointId: "a".repeat(64) },
+                target: { machineId: "machine_1", endpointId: "b".repeat(64) },
+                operationKind: "workspace_sync",
+            },
+            ephemeralPublicKeyBase64Url: toBase64Url(
+                tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(8)).publicKey,
+            ),
+            nowMs: 1_000,
+            ttlMs: 600_000,
+            serverGateEnabled: true,
+            signingKey: { keyId: "key_1", secretKey: keyPair.secretKey },
+        })).toEqual({
+            ok: false,
+            reasonCode: "invalid_scope",
             receipt: "peer.route_grant.rejected",
         });
     });
@@ -200,11 +239,15 @@ describe("mintDirectRouteGrantV1", () => {
             routeKind: "iroh_peer",
             endpointFingerprint: "b".repeat(64),
             iroh: {
-                sourceMachineId: "machine_source",
-                targetMachineId: "machine_1",
-                sourceEndpointId: "a".repeat(64),
-                targetEndpointId: "b".repeat(64),
-                role: "initiator",
+                initiator: {
+                    kind: "machine",
+                    machineId: "machine_source",
+                    endpointId: "a".repeat(64),
+                },
+                target: {
+                    machineId: "machine_1",
+                    endpointId: "b".repeat(64),
+                },
                 operationKind: "file_transfer",
             },
             ephemeralPublicKeyBase64Url: toBase64Url(

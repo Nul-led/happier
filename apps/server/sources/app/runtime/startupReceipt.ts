@@ -1,6 +1,7 @@
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { dirname, isAbsolute } from 'node:path';
+import type { PersonalHomeAuthenticatedReadiness } from '@happier-dev/cli-common/firstPartyRuntime';
 
 export const SERVER_STARTUP_RECEIPT_PATH_ENV = 'HAPPIER_SERVER_STARTUP_RECEIPT_PATH';
 export const SERVER_STARTUP_RECEIPT_NONCE_ENV = 'HAPPIER_SERVER_STARTUP_RECEIPT_NONCE';
@@ -29,6 +30,7 @@ export function resolveBoundServerListener(owner: TcpServerAddressOwner | null |
 export async function writeStartupReceiptFromEnvironment(
     env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
     listenerOwner: TcpServerAddressOwner | null | undefined,
+    personalHomeReadiness?: PersonalHomeAuthenticatedReadiness | null,
 ): Promise<boolean> {
     const receiptPath = String(env[SERVER_STARTUP_RECEIPT_PATH_ENV] ?? '').trim();
     const nonce = String(env[SERVER_STARTUP_RECEIPT_NONCE_ENV] ?? '').trim();
@@ -45,6 +47,7 @@ export async function writeStartupReceiptFromEnvironment(
         pid: process.pid,
         host: listener.host,
         port: listener.port,
+        ...(personalHomeReadiness ? { personalHomeReadiness } : {}),
     })}\n`, {
         encoding: 'utf8',
         mode: 0o600,

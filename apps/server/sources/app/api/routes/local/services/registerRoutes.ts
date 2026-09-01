@@ -16,7 +16,7 @@ import {
 } from "@/app/share/accessControl";
 import {
     normalizeHttpUrl,
-    resolveConfiguredCanonicalServerUrl,
+    resolveConfiguredPublicServerUrl,
 } from "@/app/serverUrls/effectiveServerUrls";
 import {
     createLocalServicePreviewRuntime,
@@ -97,7 +97,7 @@ function firstNonEmpty(...values: readonly (string | undefined)[]): string | nul
 }
 
 function resolvePublicBaseUrl(env: NodeJS.ProcessEnv): string | null {
-    return resolveConfiguredCanonicalServerUrl(env) ?? normalizeHttpUrl(String(env.PUBLIC_URL ?? ""));
+    return resolveConfiguredPublicServerUrl(env) ?? normalizeHttpUrl(String(env.PUBLIC_URL ?? ""));
 }
 
 function isHttpsUrl(value: string | null): boolean {

@@ -5,6 +5,7 @@ import {
     createReplyStub,
     getRouteHandler,
 } from "../../testkit/routeHarness";
+import { evaluateAccountStoredContentCompatibility } from "@/app/clientCompatibility/accountStoredContentCompatibility";
 
 const state = vi.hoisted(() => ({
     tx: undefined as any,
@@ -66,6 +67,17 @@ function settingsPayloadReadOrder(tx: ReturnType<typeof createTx>): number {
     return tx.account.findUnique.mock.invocationCallOrder[index]!;
 }
 
+function storedContentCompatibility(protocolVersion: number | null) {
+    return evaluateAccountStoredContentCompatibility(
+        protocolVersion === null
+            ? { status: "missing" }
+            : {
+                status: "valid",
+                declaration: { v: 1, protocolVersion },
+            },
+    );
+}
+
 describe("Account Settings writer admission", () => {
     beforeEach(() => {
         state.tx = createTx();
@@ -84,6 +96,7 @@ describe("Account Settings writer admission", () => {
             // 403 and the fence-ordering assertions below never reach the handler.
             authAuthority: "present_user",
             authTokenKind: "account",
+            accountStoredContentCompatibility: storedContentCompatibility(4),
             body: { settings: "ciphertext", expectedVersion: 0 },
         }, reply);
 
@@ -103,6 +116,7 @@ describe("Account Settings writer admission", () => {
             userId: "account-1",
             authAuthority: "present_user",
             authTokenKind: "account",
+            accountStoredContentCompatibility: storedContentCompatibility(4),
             body: { content: null, expectedVersion: 0 },
         }, reply);
 
@@ -110,6 +124,57 @@ describe("Account Settings writer admission", () => {
         expect(admissionCallOrder(state.tx)).toBeLessThan(
             settingsPayloadReadOrder(state.tx),
         );
+    });
+
+    it.each([
+        {
+            label: "the released 0.2 writer without a declaration",
+            protocolVersion: null,
+        },
+        {
+            label: "a V3 writer without profile-preserving semantics",
+            protocolVersion: 3,
+        },
+    ])("rejects $label before either Settings write route opens a transaction", async ({ protocolVersion }) => {
+        for (const route of [
+            {
+                path: "/v1/account/settings",
+                body: { settings: "ciphertext", expectedVersion: 0 },
+            },
+            {
+                path: "/v2/account/settings",
+                body: { content: null, expectedVersion: 0 },
+            },
+        ]) {
+            state.tx = createTx();
+            const app = createFakeRouteApp();
+            registerAccountSettingsRoutes(app as any);
+            const write = getRouteHandler(app, "POST", route.path);
+            const reply = createReplyStub();
+
+            await write({
+                userId: "account-1",
+                authAuthority: "present_user",
+                authTokenKind: "account",
+                accountStoredContentCompatibility:
+                    storedContentCompatibility(protocolVersion),
+                body: route.body,
+            }, reply);
+
+            expect(reply.statusCode, route.path).toBe(426);
+            expect(reply.send, route.path).toHaveBeenCalledWith({
+                error: "client-upgrade-required",
+                requirement: {
+                    v: 1,
+                    kind: "account-stored-content",
+                    minimumProtocolVersion: 4,
+                },
+            });
+            expect(state.tx.$executeRawUnsafe, route.path).not.toHaveBeenCalled();
+            expect(state.tx.$queryRawUnsafe, route.path).not.toHaveBeenCalled();
+            expect(state.tx.account.findUnique, route.path).not.toHaveBeenCalled();
+            expect(state.tx.account.updateMany, route.path).not.toHaveBeenCalled();
+        }
     });
 
     it("rejects the retired Settings-history restore before it opens the selected snapshot", async () => {

@@ -4,7 +4,7 @@ import * as privacyKit from "privacy-kit";
 import { verifyHomeQrRendezvousSecretV2 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
-import { inTx } from "@/storage/inTx";
+import { isPrismaUniqueConstraintError } from "@/storage/prisma";
 import { createServerFeatureGatedRouteApp } from "@/app/features/catalog/serverFeatureGate";
 import { readCachedServerIdentityIdForHotPath } from "@/app/serverIdentity/serverIdentity";
 import { PresentUserRequiredResponseSchema, requirePresentUser } from "@/app/api/utils/requirePresentUser";
@@ -16,8 +16,8 @@ import {
     pairingAuthRateLimitStartPerUser,
     pairingAuthRateLimitStatusPerUser,
 } from "./pairingAuthRateLimits";
+import { cleanupExpiredAuthPairingSessions } from "@/app/retention/rules/authPairingSessionRetentionRule";
 
-const EXPIRED_PAIRING_CLEANUP_BATCH_SIZE = 100;
 const BASE64URL_32_BYTES_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 
 function decodeCanonicalBase64Url32(value: string): Uint8Array<ArrayBuffer> | null {
@@ -37,19 +37,6 @@ function sanitizeDeviceLabel(raw: unknown): string | null {
     return trimmed ? trimmed.slice(0, 120) : null;
 }
 
-async function cleanupExpiredDirectQrPairings(now: Date): Promise<void> {
-    const expiredRows = await db.authPairingSession.findMany({
-        where: { flow: "direct_qr", expiresAt: { lte: now } },
-        orderBy: { expiresAt: "asc" },
-        take: EXPIRED_PAIRING_CLEANUP_BATCH_SIZE,
-        select: { id: true },
-    });
-    if (expiredRows.length === 0) return;
-    await db.authPairingSession.deleteMany({
-        where: { id: { in: expiredRows.map((row) => row.id) }, flow: "direct_qr" },
-    });
-}
-
 const canonicalBase64Url32 = z.string().refine((value) => decodeCanonicalBase64Url32(value) !== null);
 const notFound = z.object({ error: z.literal("not_found") }).strict();
 const serverIdentityUnavailable = z.object({ error: z.literal("server_identity_unavailable") }).strict();
@@ -58,8 +45,25 @@ export function registerPairingAuthRoutes(app: Fastify): void {
     const gated = createServerFeatureGatedRouteApp(app, "auth.pairing.desktopQrMobileScan");
     const policy = resolvePairingAuthPolicyFromEnv(process.env);
 
-    const startBody = z.object({ secretHash: canonicalBase64Url32 }).strict();
+    const forwardStartBody = z.object({
+        direction: z.literal("trusted_home_displays"),
+        secretHash: canonicalBase64Url32,
+    }).strict();
+    const reverseStartBody = z.object({
+        direction: z.literal("requester_displays"),
+        secretHash: canonicalBase64Url32,
+        pairId: canonicalBase64Url32,
+        expiresAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    }).strict();
+    const startBody = z.union([forwardStartBody, reverseStartBody]);
     const startResponse = z.object({ pairId: z.string(), expiresAt: z.string() }).strict();
+    const invalidProposedExpiry = z.object({ error: z.literal("invalid_proposed_expiry") }).strict();
+    const requestValidationError = z.object({
+        statusCode: z.literal(400),
+        error: z.string().min(1),
+        message: z.string().min(1),
+    }).passthrough();
+    const pairIdConflict = z.object({ error: z.literal("pair_id_conflict") }).strict();
     gated.post(
         "/v1/auth/pairing/start",
         {
@@ -67,12 +71,57 @@ export function registerPairingAuthRoutes(app: Fastify): void {
             preHandler: [app.authenticate, requirePresentUser],
             schema: {
                 body: startBody,
-                response: { 200: startResponse, 403: PresentUserRequiredResponseSchema },
+                response: {
+                    200: startResponse,
+                    400: z.union([invalidProposedExpiry, requestValidationError]),
+                    403: PresentUserRequiredResponseSchema,
+                    409: pairIdConflict,
+                },
             },
         },
         async (request, reply) => {
             const now = new Date();
-            await cleanupExpiredDirectQrPairings(now).catch(() => {});
+            await cleanupExpiredAuthPairingSessions({ now, flow: "direct_qr" }).catch(() => {});
+
+            if (request.body.direction === "requester_displays") {
+                const expiresAtMs = request.body.expiresAtMs;
+                if (expiresAtMs <= now.getTime() || expiresAtMs > now.getTime() + policy.ttlMs) {
+                    return reply.code(400).send({ error: "invalid_proposed_expiry" });
+                }
+
+                const pairId = request.body.pairId;
+                const secretHash = request.body.secretHash;
+                const expiresAt = new Date(expiresAtMs);
+                try {
+                    const row = await db.authPairingSession.create({
+                        data: {
+                            id: pairId,
+                            accountId: request.userId,
+                            secretHash,
+                            expiresAt,
+                            flow: "direct_qr",
+                        },
+                        select: { id: true, expiresAt: true },
+                    });
+                    return reply.send({ pairId: row.id, expiresAt: row.expiresAt.toISOString() });
+                } catch (error) {
+                    if (!isPrismaUniqueConstraintError(error)) throw error;
+                }
+
+                const existing = await db.authPairingSession.findUnique({
+                    where: { id: pairId },
+                    select: { accountId: true, secretHash: true, expiresAt: true, flow: true },
+                });
+                if (
+                    existing?.accountId === request.userId
+                    && existing.flow === "direct_qr"
+                    && existing.secretHash === secretHash
+                    && existing.expiresAt.getTime() === expiresAtMs
+                ) {
+                    return reply.send({ pairId, expiresAt: existing.expiresAt.toISOString() });
+                }
+                return reply.code(409).send({ error: "pair_id_conflict" });
+            }
 
             const expiresAt = new Date(now.getTime() + policy.ttlMs);
             const row = await db.authPairingSession.create({
@@ -318,9 +367,48 @@ export function registerPairingAuthRoutes(app: Fastify): void {
                 return reply.code(404).send({ error: "not_found" });
             }
             const intent = request.body.intent;
+            let current = await db.authPairingSession.findFirst({
+                where: {
+                    id: pairId,
+                    accountId: request.userId,
+                    flow: "direct_qr",
+                    expiresAt: { gt: now },
+                },
+                select: {
+                    approvalStatus: true,
+                    requestedPublicKey: true,
+                    requestedBindingProof: true,
+                },
+            });
+            if (!current) {
+                await db.authPairingSession.deleteMany({
+                    where: { id: pairId, accountId: request.userId, flow: "direct_qr", expiresAt: { lte: now } },
+                }).catch(() => {});
+                return reply.code(404).send({ error: "not_found" });
+            }
+            if (current.approvalStatus === "rejected") return reply.send({ success: true });
+            if (current.approvalStatus === "approved") {
+                return reply.code(409).send({ error: "already_decided" });
+            }
 
-            const outcome = await inTx(async (tx) => {
-                let row = await tx.authPairingSession.findFirst({
+            if (intent === "cancel") {
+                const cancelled = await db.authPairingSession.deleteMany({
+                    where: {
+                        id: pairId,
+                        accountId: request.userId,
+                        flow: "direct_qr",
+                        expiresAt: { gt: now },
+                        approvalStatus: null,
+                        requestedPublicKey: null,
+                        requestedBindingProof: null,
+                    },
+                });
+                if (cancelled.count === 1) return reply.send({ success: true });
+
+                // The requester may have installed its bound tuple after the
+                // preflight read but before this delete. Re-read that exact row
+                // before deciding whether cancellation must become rejection.
+                current = await db.authPairingSession.findFirst({
                     where: {
                         id: pairId,
                         accountId: request.userId,
@@ -328,76 +416,38 @@ export function registerPairingAuthRoutes(app: Fastify): void {
                         expiresAt: { gt: now },
                     },
                     select: {
-                        id: true,
+                        approvalStatus: true,
                         requestedPublicKey: true,
                         requestedBindingProof: true,
-                        approvalStatus: true,
                     },
                 });
-                if (!row) return "not_found" as const;
-                if (row.approvalStatus === "rejected") return "success" as const;
-                if (row.approvalStatus === "approved") return "already_decided" as const;
-                if (
-                    intent === "cancel"
-                    && row.requestedPublicKey === null
-                    && row.requestedBindingProof === null
-                ) {
-                    const deleted = await tx.authPairingSession.deleteMany({
-                        where: {
-                            id: row.id,
-                            accountId: request.userId,
-                            flow: "direct_qr",
-                            expiresAt: { gt: now },
-                            approvalStatus: null,
-                            requestedPublicKey: null,
-                            requestedBindingProof: null,
-                        },
-                    });
-                    if (deleted.count === 1) return "success" as const;
-                    row = await tx.authPairingSession.findFirst({
-                        where: {
-                            id: pairId,
-                            accountId: request.userId,
-                            flow: "direct_qr",
-                            expiresAt: { gt: now },
-                        },
-                        select: {
-                            id: true,
-                            requestedPublicKey: true,
-                            requestedBindingProof: true,
-                            approvalStatus: true,
-                        },
-                    });
-                    if (!row) return "not_found" as const;
-                    if (row.approvalStatus === "rejected") return "success" as const;
-                    if (row.approvalStatus === "approved") return "already_decided" as const;
+                if (!current) return reply.code(404).send({ error: "not_found" });
+                if (current.approvalStatus === "rejected") return reply.send({ success: true });
+                if (current.approvalStatus === "approved") {
+                    return reply.code(409).send({ error: "already_decided" });
                 }
-                if (row.requestedPublicKey === null || row.requestedBindingProof === null) return "not_found" as const;
-                const rejected = await tx.authPairingSession.updateMany({
-                    where: {
-                        id: row.id,
-                        approvalStatus: null,
-                        requestedPublicKey: row.requestedPublicKey,
-                        requestedBindingProof: row.requestedBindingProof,
-                    },
-                    data: { approvalStatus: "rejected", decidedAt: now },
-                });
-                if (rejected.count === 1) return "success" as const;
-                const raced = await tx.authPairingSession.findUnique({
-                    where: { id: row.id },
-                    select: { approvalStatus: true },
-                });
-                if (raced?.approvalStatus === "rejected") return "success" as const;
-                return raced?.approvalStatus === "approved" ? "already_decided" as const : "not_found" as const;
-            });
-            if (outcome === "success") return reply.send({ success: true });
-            if (outcome === "already_decided") {
-                return reply.code(409).send({ error: "already_decided" });
             }
-            await db.authPairingSession.deleteMany({
-                where: { id: pairId, accountId: request.userId, flow: "direct_qr", expiresAt: { lte: now } },
-            }).catch(() => {});
-            return reply.code(404).send({ error: "not_found" });
+            if (current.requestedPublicKey === null || current.requestedBindingProof === null) {
+                return reply.code(404).send({ error: "not_found" });
+            }
+
+            // Decide through a write-first compare-and-set. This makes the database
+            // serialize rejection against account-response completion without first
+            // pinning a stale read snapshot.
+            const rejected = await db.authPairingSession.updateMany({
+                where: {
+                    id: pairId,
+                    accountId: request.userId,
+                    flow: "direct_qr",
+                    expiresAt: { gt: now },
+                    approvalStatus: null,
+                    requestedPublicKey: { not: null },
+                    requestedBindingProof: { not: null },
+                },
+                data: { approvalStatus: "rejected", decidedAt: now },
+            });
+            if (rejected.count === 1) return reply.send({ success: true });
+            return reply.code(409).send({ error: "already_decided" });
         },
     );
 }

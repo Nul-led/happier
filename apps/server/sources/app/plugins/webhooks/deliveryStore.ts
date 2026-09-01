@@ -14,7 +14,7 @@ import {
 import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/accountEncryptionTransition";
 import { resolveCurrentClaimablePluginMachineMaterializationTx } from "@/app/plugins/availability/operations";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
-import { db, isPrismaErrorCode } from "@/storage/db";
+import { isPrismaErrorCode } from "@/storage/db";
 import { afterTx, inTx } from "@/storage/inTx";
 
 import {
@@ -217,6 +217,45 @@ function accountEncryptionMatches(params: Readonly<{
         && params.expectedContentKeyFingerprint === params.actualContentKeyFingerprint;
 }
 
+async function confirmPluginWebhookEndpointForAuthenticatedDeliveryInTx(
+    tx: Pick<Prisma.TransactionClient, "pluginWebhookEndpoint">,
+    params: Readonly<{
+        endpointId: string;
+        providerConfirmedAt: Date | null;
+        currentCredentialVersionId: string | null;
+        authenticatedCredentialVersionId: string;
+        now: Date;
+    }>,
+): Promise<void> {
+    if (
+        params.providerConfirmedAt !== null
+        || params.currentCredentialVersionId !== params.authenticatedCredentialVersionId
+    ) return;
+    await tx.pluginWebhookEndpoint.updateMany({
+        where: { id: params.endpointId, providerConfirmedAt: null },
+        data: { providerConfirmedAt: params.now },
+    });
+}
+
+function isPluginWebhookCredentialAcceptedAt(params: Readonly<{
+    currentCredentialVersionId: string | null;
+    previousCredential: Readonly<{
+        credentialVersionId: string;
+        state: string;
+        acceptUntil: Date | null;
+    }> | null;
+    authenticatedCredentialVersionId: string;
+    now: Date;
+}>): boolean {
+    return params.currentCredentialVersionId === params.authenticatedCredentialVersionId
+        || (
+            params.previousCredential?.credentialVersionId === params.authenticatedCredentialVersionId
+            && params.previousCredential.state === "previous"
+            && params.previousCredential.acceptUntil !== null
+            && params.previousCredential.acceptUntil.getTime() > params.now.getTime()
+        );
+}
+
 export async function admitPluginWebhookDeliveryV1(params: Readonly<{
     endpointId: string;
     expectedEndpointRevision: number;
@@ -249,20 +288,8 @@ export async function admitPluginWebhookDeliveryV1(params: Readonly<{
             params.deadlineAtMs,
         );
     const serverIdentityId = await getOrCreateServerIdentityId(process.env);
-    const preexisting = await db.pluginWebhookDelivery.findUnique({
-        where: { deliveryIdentityDigest: params.deliveryIdentityDigest },
-        select: { id: true },
-    });
-    if (preexisting) return { kind: "duplicate", deliveryId: preexisting.id };
-
     try {
         return await inTx(async (tx) => {
-            const duplicate = await tx.pluginWebhookDelivery.findUnique({
-                where: { deliveryIdentityDigest: params.deliveryIdentityDigest },
-                select: { id: true },
-            });
-            if (duplicate) return { kind: "duplicate", deliveryId: duplicate.id };
-
             const endpoint = await tx.pluginWebhookEndpoint.findFirst({
                 where: {
                     id: params.endpointId,
@@ -324,18 +351,29 @@ export async function admitPluginWebhookDeliveryV1(params: Readonly<{
             // Verification streams the request before this transaction. Recheck
             // the exact credential membership at durable admission so retiring
             // a credential cannot race an already verified request into custody.
-            const previousCredential = endpoint.route.previousCredential;
-            const credentialStillAccepted = (
-                endpoint.route.currentCredential?.credentialVersionId === params.credentialVersionId
-                || (
-                    previousCredential?.credentialVersionId === params.credentialVersionId
-                    && previousCredential.state === "previous"
-                    && previousCredential.acceptUntil !== null
-                    && previousCredential.acceptUntil.getTime() > now.getTime()
-                )
-            );
+            const credentialStillAccepted = isPluginWebhookCredentialAcceptedAt({
+                currentCredentialVersionId: endpoint.route.currentCredential?.credentialVersionId ?? null,
+                previousCredential: endpoint.route.previousCredential,
+                authenticatedCredentialVersionId: params.credentialVersionId,
+                now,
+            });
             if (!credentialStillAccepted) {
                 return { kind: "endpointUnavailable" };
+            }
+
+            const duplicate = await tx.pluginWebhookDelivery.findUnique({
+                where: { deliveryIdentityDigest: params.deliveryIdentityDigest },
+                select: { id: true },
+            });
+            if (duplicate) {
+                await confirmPluginWebhookEndpointForAuthenticatedDeliveryInTx(tx, {
+                    endpointId: endpoint.id,
+                    providerConfirmedAt: endpoint.providerConfirmedAt,
+                    currentCredentialVersionId: endpoint.route.currentCredential?.credentialVersionId ?? null,
+                    authenticatedCredentialVersionId: params.credentialVersionId,
+                    now,
+                });
+                return { kind: "duplicate", deliveryId: duplicate.id };
             }
 
         const fence = await acquireAccountEncryptionTransitionFenceInTx(tx, endpoint.accountId);
@@ -483,15 +521,13 @@ export async function admitPluginWebhookDeliveryV1(params: Readonly<{
         // does one still signed with a superseded secret inside the rotation
         // overlap: it says nothing about the credential the provider now has
         // to be reconfigured with.
-        if (
-            endpoint.providerConfirmedAt === null
-            && endpoint.route.currentCredential?.credentialVersionId === params.credentialVersionId
-        ) {
-            await tx.pluginWebhookEndpoint.updateMany({
-                where: { id: endpoint.id, providerConfirmedAt: null },
-                data: { providerConfirmedAt: now },
-            });
-        }
+        await confirmPluginWebhookEndpointForAuthenticatedDeliveryInTx(tx, {
+            endpointId: endpoint.id,
+            providerConfirmedAt: endpoint.providerConfirmedAt,
+            currentCredentialVersionId: endpoint.route.currentCredential?.credentialVersionId ?? null,
+            authenticatedCredentialVersionId: params.credentialVersionId,
+            now,
+        });
         const accountId = endpoint.accountId;
         const targetMachineId = endpoint.targetMachineId;
         const accountChangeCursor = await markPluginWebhookAccountChangedInTxV1(tx, {
@@ -513,9 +549,50 @@ export async function admitPluginWebhookDeliveryV1(params: Readonly<{
             : { deadlineAtMs: transactionDeadlineAtMs });
     } catch (error) {
         if (!isPrismaErrorCode(error, "P2002")) throw error;
-        const duplicate = await db.pluginWebhookDelivery.findUnique({
-            where: { deliveryIdentityDigest: params.deliveryIdentityDigest },
-            select: { id: true },
+        const duplicate = await inTx(async (tx) => {
+            const endpoint = await tx.pluginWebhookEndpoint.findFirst({
+                where: {
+                    id: params.endpointId,
+                    routeId: params.routeId,
+                    revision: params.expectedEndpointRevision,
+                    enabled: true,
+                    revokedAt: null,
+                    releasedAt: null,
+                    route: { enabled: true, revokedAt: null, verifierKind: params.verifierKind },
+                },
+                select: {
+                    id: true,
+                    providerConfirmedAt: true,
+                    route: {
+                        select: {
+                            currentCredential: { select: { credentialVersionId: true } },
+                            previousCredential: {
+                                select: { credentialVersionId: true, state: true, acceptUntil: true },
+                            },
+                        },
+                    },
+                },
+            });
+            if (!endpoint) return null;
+            if (!isPluginWebhookCredentialAcceptedAt({
+                currentCredentialVersionId: endpoint.route.currentCredential?.credentialVersionId ?? null,
+                previousCredential: endpoint.route.previousCredential,
+                authenticatedCredentialVersionId: params.credentialVersionId,
+                now,
+            })) return null;
+            const row = await tx.pluginWebhookDelivery.findUnique({
+                where: { deliveryIdentityDigest: params.deliveryIdentityDigest },
+                select: { id: true },
+            });
+            if (!row) return null;
+            await confirmPluginWebhookEndpointForAuthenticatedDeliveryInTx(tx, {
+                endpointId: endpoint.id,
+                providerConfirmedAt: endpoint.providerConfirmedAt,
+                currentCredentialVersionId: endpoint.route.currentCredential?.credentialVersionId ?? null,
+                authenticatedCredentialVersionId: params.credentialVersionId,
+                now,
+            });
+            return row;
         });
         if (!duplicate) throw error;
         return { kind: "duplicate", deliveryId: duplicate.id };

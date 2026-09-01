@@ -3,7 +3,6 @@ import type { Prisma } from '@prisma/client';
 import { markAccountChanged } from '@/app/changes/markAccountChanged';
 import { acquireAccountEncryptionTransitionFenceInTx } from '@/app/encryption/accountEncryptionTransition';
 import {
-    advanceAutomationEventCatalogForReleasedRetiredRunsTx,
     automationRunCustodyTerminalWhere,
     finalizeDeletedAutomationsWithoutRetainedRunsTx,
 } from '@/app/automations/automationCrudService';
@@ -23,7 +22,6 @@ const automationRunRetentionCandidateSelect = {
     id: true,
     accountId: true,
     automationId: true,
-    triggerId: true,
     finishedAt: true,
     revision: true,
     automation: {
@@ -128,11 +126,6 @@ async function deleteAutomationRunHistory(
             },
         });
         if (deleted.count !== 1) return false;
-        await advanceAutomationEventCatalogForReleasedRetiredRunsTx({
-            tx,
-            accountId: current.accountId,
-            releasedRunTriggerIds: current.triggerId === null ? [] : [current.triggerId],
-        });
         const cursor = await markAccountChanged(tx, {
             accountId: current.accountId,
             kind: 'automation',

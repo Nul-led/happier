@@ -206,6 +206,10 @@ type StoredPackageAssetArtifactRow = Readonly<{
     seq: number;
 }>;
 
+type StoredUiArtifactLinkWithArtifactRow = StoredUiArtifactLinkRow & Readonly<{
+    artifact: StoredPackageAssetArtifactRow;
+}>;
+
 type StoredPackageAssetLinkRow = Readonly<{
     accountId: string;
     pluginId: string;
@@ -494,6 +498,20 @@ function storedArtifactMatchesEnvelope(input: Readonly<{
         );
 }
 
+function isExactStoredUiArtifactRejoin(input: Readonly<{
+    accountId: string;
+    artifactId: string;
+    link: StoredUiArtifactLinkWithArtifactRow;
+    envelope: Readonly<{ header: Uint8Array; body: Uint8Array; dataEncryptionKey: Uint8Array }>;
+}>): boolean {
+    return input.link.artifactId === input.artifactId
+        && storedArtifactMatchesEnvelope({
+            accountId: input.accountId,
+            artifact: input.link.artifact,
+            envelope: input.envelope,
+        });
+}
+
 function isExactPlainPackageAssetArchive(input: Readonly<{
     descriptor: PluginReleaseFactsV1["packageAssetArchive"];
     envelope: Readonly<{
@@ -605,7 +623,7 @@ async function resolveStoredSlotLinkTx(
     tx: Tx,
     releaseId: string,
     slot: PluginUiReleaseSlotV1,
-): Promise<StoredUiArtifactLinkRow | null> {
+): Promise<StoredUiArtifactLinkWithArtifactRow | null> {
     return await tx.accountPluginUiArtifact.findUnique({
         where: {
             releaseId_contributionId_tier_platform: {
@@ -625,6 +643,18 @@ async function resolveStoredSlotLinkTx(
                     accountId: true,
                     pluginId: true,
                     version: true,
+                },
+            },
+            artifact: {
+                select: {
+                    id: true,
+                    accountId: true,
+                    header: true,
+                    headerVersion: true,
+                    body: true,
+                    bodyVersion: true,
+                    dataEncryptionKey: true,
+                    seq: true,
                 },
             },
         },
@@ -1710,6 +1740,18 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                         "plugin_release_content_conflict",
                     );
                 }
+                if (
+                    !isExactStoredUiArtifactRejoin({
+                        accountId: params.accountId,
+                        artifactId: input.artifactId,
+                        link: existingLink,
+                        envelope: artifact,
+                    })
+                ) {
+                    throw new PluginAvailabilityOperationError(
+                        "plugin_ui_artifact_conflict",
+                    );
+                }
                 return { outcome: "rejoined", link: linkFromRow(existingLink) };
             }
 
@@ -1794,7 +1836,18 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                 release.id,
                 input.slot,
             );
-            if (!existingLink || !isStoredLinkForDeclaredSlot(existingLink, input.slot)) {
+            // Recovery is the same exact rejoin contract as the ordinary
+            // occupied-slot path; a uniqueness race grants no weaker retry.
+            if (
+                !existingLink
+                || !isStoredLinkForDeclaredSlot(existingLink, input.slot)
+                || !isExactStoredUiArtifactRejoin({
+                    accountId: params.accountId,
+                    artifactId: input.artifactId,
+                    link: existingLink,
+                    envelope: artifact,
+                })
+            ) {
                 throw new PluginAvailabilityOperationError(
                     "plugin_ui_artifact_conflict",
                 );

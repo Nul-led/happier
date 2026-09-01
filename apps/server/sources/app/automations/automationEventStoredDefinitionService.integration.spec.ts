@@ -601,6 +601,14 @@ describe("Automation Event stored-definition projection", () => {
                 sourceSelectorId: sourceSelector(5),
                 sourceContractVersion: 1,
             },
+            {
+                automationId: "automation-0004",
+                triggerId: triggerId(4),
+                triggerRevision: 4,
+                eventRef,
+                sourceSelectorId: sourceSelector(94),
+                sourceContractVersion: 1,
+            },
         ] as const;
         await db.automation.update({
             where: { id: "automation-0001" },
@@ -657,7 +665,14 @@ describe("Automation Event stored-definition projection", () => {
                 release: { pluginId: PLUGIN_ID, version: PLUGIN_VERSION },
                 archiveDigestSha256: `sha256:${"a".repeat(64)}`,
             },
-            checkpointRetirements: [candidates[0], candidates[1], candidates[2], candidates[3]],
+            checkpointRetirements: [
+                candidates[0],
+                candidates[1],
+                candidates[2],
+                candidates[3],
+                candidates[5],
+                candidates[6],
+            ],
         });
 
         await db.automationEventCatalogState.update({

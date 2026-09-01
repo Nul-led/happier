@@ -113,10 +113,10 @@ function normalizeHostForComparison(raw: string): Readonly<{ hostname: string; p
     }
 }
 
-export async function resolveCachedCanonicalPublicServerUrl(
+export async function resolveCachedPublicServerUrl(
     env: NodeJS.ProcessEnv,
 ): Promise<string | null> {
-    const explicit = readCanonicalPublicServerUrlFromEnv(env);
+    const explicit = readPublicServerUrlFromEnv(env);
     if (explicit && !isEnvPublicServerUrlInferred(env)) return explicit;
 
     const now = Date.now();
@@ -132,9 +132,16 @@ export async function resolveCachedCanonicalPublicServerUrl(
 
     cache.inflight = (async () => {
         try {
+            // A previously inferred ingress is a cache result, not explicit
+            // operator configuration. Re-probe against an environment without
+            // that stale result so relay/Tailscale owners can observe changes,
+            // while preserving the last-known ingress if re-probing fails.
+            const inferenceEnv = isEnvPublicServerUrlInferred(env)
+                ? { ...env, HAPPIER_PUBLIC_SERVER_URL: "" }
+                : env;
             const relayAccessCandidate = inferRelayAccess
-                ? await resolveRelayAccessConfiguredCanonicalPublicServerUrl(env, {
-                    upstreamUrl: resolveInternalServerUrl(env),
+                ? await resolveRelayAccessConfiguredCanonicalPublicServerUrl(inferenceEnv, {
+                    upstreamUrl: resolveInternalServerUrl(inferenceEnv),
                 })
                 : null;
             if (relayAccessCandidate) {
@@ -143,9 +150,10 @@ export async function resolveCachedCanonicalPublicServerUrl(
                 return relayAccessCandidate;
             }
             const inferred =
-                (await inferAndApplyTailscaleServePublicServerUrl(env))
-                ?? (await inferAndApplyTailscaleFunnelPublicServerUrl(env));
+                (await inferAndApplyTailscaleServePublicServerUrl(inferenceEnv))
+                ?? (await inferAndApplyTailscaleFunnelPublicServerUrl(inferenceEnv));
             if (inferred) {
+                env.HAPPIER_PUBLIC_SERVER_URL = inferred;
                 env[INFERRED_ENV_FLAG] = "1";
             }
         } finally {
@@ -166,7 +174,7 @@ export async function resolveCachedCanonicalPublicServerUrl(
     }
 }
 
-export function readCanonicalPublicServerUrlFromEnv(env: NodeJS.ProcessEnv): string | null {
+export function readPublicServerUrlFromEnv(env: NodeJS.ProcessEnv): string | null {
     return normalizeHttpUrl(env.HAPPIER_PUBLIC_SERVER_URL);
 }
 
@@ -178,7 +186,7 @@ export function resetPublicServerUrlInferenceCacheForTests(): void {
     cache.inflight = null;
 }
 
-export function isRequestOnCanonicalPublicServerUrl(params: Readonly<{
+export function isRequestOnPublicServerUrl(params: Readonly<{
     request: Readonly<{ headers: Record<string, unknown>; hostname?: unknown; protocol?: unknown }>;
     canonicalPublicServerUrl: string | null;
 }>): boolean {

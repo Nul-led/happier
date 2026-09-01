@@ -291,6 +291,27 @@ describe("local services server feature resolver", () => {
         expect(payload.capabilities.localServices.publicPreview.disabledReasons).toContain("dns_tls_unavailable");
     });
 
+    it("does not treat canonical Home identity as public exposure ingress", () => {
+        const payload = resolveServerFeaturePayload({
+            NODE_ENV: "production",
+            HAPPIER_CANONICAL_SERVER_URL: "https://identity.example.test",
+            HAPPIER_FEATURE_LOCAL_SERVICES_PREVIEW__ENABLED: "1",
+            HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__ENABLED: "1",
+            HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__ALLOWED_MODES: "secret_link",
+            HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__MAX_TTL_MS: "300000",
+            HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__HOST_ORIGIN_BASE_DOMAIN: "preview.example.test",
+            HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__AUDIT_SINK: "jsonl_file",
+            HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__AUDIT_LOG_PATH: "/var/log/happier/public-preview-audit.jsonl",
+            HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__RATE_LIMIT_PROFILE_IDS: "default",
+            HAPPIER_FEATURE_LOCAL_SERVICES_PUBLIC_PREVIEW__RATE_LIMIT_CHECKER: "fixed_window",
+            HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__ENABLED: "1",
+            HAPPIER_FEATURE_MACHINES_TUNNEL_ALLOWED_PORTS: "5173",
+        } as NodeJS.ProcessEnv, serverFeatureRegistry);
+
+        expect(readServerEnabledBit(payload, "localServices.publicPreview")).toBe(false);
+        expect(payload.capabilities.localServices.publicPreview.disabledReasons).toContain("dns_tls_unavailable");
+    });
+
     it.each([
         {
             // OE-4: `…__AUDIT_REQUIRED` is gone; a durable audit sink is unconditional, so the

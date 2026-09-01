@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-    isRequestOnCanonicalPublicServerUrl,
-    resolveCachedCanonicalPublicServerUrl,
-    readCanonicalPublicServerUrlFromEnv,
+    isRequestOnPublicServerUrl,
+    resolveCachedPublicServerUrl,
+    readPublicServerUrlFromEnv,
     resetPublicServerUrlInferenceCacheForTests,
 } from "./publicServerUrlInference";
 
@@ -21,7 +21,7 @@ describe("publicServerUrlInference", () => {
         resetPublicServerUrlInferenceCacheForTests();
     });
 
-    describe("resolveCachedCanonicalPublicServerUrl", () => {
+    describe("resolveCachedPublicServerUrl", () => {
         it("infers the canonical public URL from the persisted relay access config (cloudflareNamed)", async () => {
             const { mkdtemp, writeFile, rm, mkdir } = await import("node:fs/promises");
             const { tmpdir } = await import("node:os");
@@ -43,7 +43,7 @@ describe("publicServerUrlInference", () => {
                     HAPPIER_TAILSCALE_INFER_PUBLIC_URL: "0",
                 } as NodeJS.ProcessEnv;
                 resetPublicServerUrlInferenceCacheForTests();
-                const resolved = await resolveCachedCanonicalPublicServerUrl(env);
+                const resolved = await resolveCachedPublicServerUrl(env);
                 expect(resolved).toBe("https://relay.example.test");
             } finally {
                 process.env.HOME = previousHome;
@@ -73,7 +73,7 @@ describe("publicServerUrlInference", () => {
                     HAPPIER_RELAY_ACCESS_INFER_PUBLIC_URL: "0",
                 } as NodeJS.ProcessEnv;
                 resetPublicServerUrlInferenceCacheForTests();
-                const resolved = await resolveCachedCanonicalPublicServerUrl(env);
+                const resolved = await resolveCachedPublicServerUrl(env);
                 expect(resolved).toBeNull();
             } finally {
                 process.env.HOME = previousHome;
@@ -131,7 +131,7 @@ describe("publicServerUrlInference", () => {
                     HAPPIER_RELAY_ACCESS_INFER_PUBLIC_URL: "1",
                 } as NodeJS.ProcessEnv;
                 resetPublicServerUrlInferenceCacheForTests();
-                const resolved = await resolveCachedCanonicalPublicServerUrl(env);
+                const resolved = await resolveCachedPublicServerUrl(env);
                 expect(resolved).toBe("https://funnel.example.test");
             } finally {
                 process.env.HOME = previousHome;
@@ -157,7 +157,7 @@ describe("publicServerUrlInference", () => {
             } as NodeJS.ProcessEnv;
 
             resetPublicServerUrlInferenceCacheForTests();
-            const resolved = await resolveCachedCanonicalPublicServerUrl(env);
+            const resolved = await resolveCachedPublicServerUrl(env);
 
             expect(resolved).toBe("https://funnel.example.test");
             expect(inferAndApplyTailscaleServePublicServerUrl).toHaveBeenCalledTimes(1);
@@ -183,7 +183,7 @@ describe("publicServerUrlInference", () => {
                 } as NodeJS.ProcessEnv;
 
                 resetPublicServerUrlInferenceCacheForTests();
-                const resolved1 = await resolveCachedCanonicalPublicServerUrl(env);
+                const resolved1 = await resolveCachedPublicServerUrl(env);
                 expect(resolved1).toBeNull();
 
                 await mkdir(accessDir, { recursive: true });
@@ -193,7 +193,7 @@ describe("publicServerUrlInference", () => {
                     "utf8",
                 );
 
-                const resolved2 = await resolveCachedCanonicalPublicServerUrl(env);
+                const resolved2 = await resolveCachedPublicServerUrl(env);
                 expect(resolved2).toBe("https://relay.example.test");
             } finally {
                 process.env.HOME = previousHome;
@@ -218,7 +218,7 @@ describe("publicServerUrlInference", () => {
                 } as NodeJS.ProcessEnv;
 
                 resetPublicServerUrlInferenceCacheForTests();
-                const resolved1 = await resolveCachedCanonicalPublicServerUrl(env);
+                const resolved1 = await resolveCachedPublicServerUrl(env);
                 expect(resolved1).toBeNull();
 
                 await mkdir(accessDir, { recursive: true });
@@ -228,7 +228,7 @@ describe("publicServerUrlInference", () => {
                     "utf8",
                 );
 
-                const resolved2 = await resolveCachedCanonicalPublicServerUrl(env);
+                const resolved2 = await resolveCachedPublicServerUrl(env);
                 expect(resolved2).toBe("https://relay.example.test");
             } finally {
                 await rm(happyHomeDir, { recursive: true, force: true });
@@ -260,11 +260,11 @@ describe("publicServerUrlInference", () => {
                 const env = {
                     HOME: homeDir,
                     HAPPIER_TAILSCALE_INFER_PUBLIC_URL: "0",
-                    HAPPIER_PUBLIC_SERVER_URL_INFER_TTL_MS: "10",
+                    HAPPIER_PUBLIC_SERVER_URL_INFER_TTL_MS: "1000",
                 } as NodeJS.ProcessEnv;
 
                 resetPublicServerUrlInferenceCacheForTests();
-                const resolved1 = await resolveCachedCanonicalPublicServerUrl(env);
+                const resolved1 = await resolveCachedPublicServerUrl(env);
                 expect(resolved1).toBe("https://relay1.example.test");
 
                 await writeFile(
@@ -273,8 +273,8 @@ describe("publicServerUrlInference", () => {
                     "utf8",
                 );
 
-                vi.setSystemTime(new Date(now.getTime() + 25));
-                const resolved2 = await resolveCachedCanonicalPublicServerUrl(env);
+                vi.setSystemTime(new Date(now.getTime() + 1_025));
+                const resolved2 = await resolveCachedPublicServerUrl(env);
                 expect(resolved2).toBe("https://relay2.example.test");
             } finally {
                 vi.useRealTimers();
@@ -284,25 +284,25 @@ describe("publicServerUrlInference", () => {
         });
     });
 
-    describe("readCanonicalPublicServerUrlFromEnv", () => {
+    describe("readPublicServerUrlFromEnv", () => {
         it("normalizes and strips userinfo/query/hash/trailing slash", () => {
             const env = {
                 HAPPIER_PUBLIC_SERVER_URL: "https://user:pass@stack.example.test/?q=1#frag",
             } as NodeJS.ProcessEnv;
 
-            expect(readCanonicalPublicServerUrlFromEnv(env)).toBe("https://stack.example.test");
+            expect(readPublicServerUrlFromEnv(env)).toBe("https://stack.example.test");
         });
 
         it("returns null when url is missing or invalid", () => {
-            expect(readCanonicalPublicServerUrlFromEnv({} as NodeJS.ProcessEnv)).toBeNull();
-            expect(readCanonicalPublicServerUrlFromEnv({ HAPPIER_PUBLIC_SERVER_URL: "not-a-url" } as NodeJS.ProcessEnv)).toBeNull();
+            expect(readPublicServerUrlFromEnv({} as NodeJS.ProcessEnv)).toBeNull();
+            expect(readPublicServerUrlFromEnv({ HAPPIER_PUBLIC_SERVER_URL: "not-a-url" } as NodeJS.ProcessEnv)).toBeNull();
         });
     });
 
-    describe("isRequestOnCanonicalPublicServerUrl", () => {
+    describe("isRequestOnPublicServerUrl", () => {
         it("matches on host + protocol using direct request fields", () => {
             expect(
-                isRequestOnCanonicalPublicServerUrl({
+                isRequestOnPublicServerUrl({
                     canonicalPublicServerUrl: "https://public.example.test",
                     request: {
                         headers: {},
@@ -315,7 +315,7 @@ describe("publicServerUrlInference", () => {
 
         it("matches using x-forwarded-proto + x-forwarded-host when request fields are missing", () => {
             expect(
-                isRequestOnCanonicalPublicServerUrl({
+                isRequestOnPublicServerUrl({
                     canonicalPublicServerUrl: "https://public.example.test",
                     request: {
                         headers: {
@@ -329,7 +329,7 @@ describe("publicServerUrlInference", () => {
 
         it("prefers x-forwarded-host over host and uses first forwarded entry", () => {
             expect(
-                isRequestOnCanonicalPublicServerUrl({
+                isRequestOnPublicServerUrl({
                     canonicalPublicServerUrl: "https://public.example.test",
                     request: {
                         headers: {
@@ -344,7 +344,7 @@ describe("publicServerUrlInference", () => {
 
         it("returns false when hostname mismatches", () => {
             expect(
-                isRequestOnCanonicalPublicServerUrl({
+                isRequestOnPublicServerUrl({
                     canonicalPublicServerUrl: "https://public.example.test",
                     request: {
                         headers: { host: "other.example.test" },

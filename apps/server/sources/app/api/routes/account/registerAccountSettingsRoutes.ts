@@ -13,8 +13,12 @@ import {
     AccountSettingsV2UpdateRequestAdmissionSchema,
     AccountSettingsV2UpdateRequestSchema,
     AccountSettingsV2UpdateResponseSchema,
+    AccountStoredContentUpgradeRequiredV1Schema,
     type AccountSettingsStoredContentEnvelope,
 } from "@happier-dev/protocol";
+import {
+    enforceProfilePreservingSettingsWriterCompatibilityForHttpRequest,
+} from "@/app/clientCompatibility/accountStoredContentCompatibility";
 import { recordAccountSettingsSnapshotsForWrite } from "@/app/accountSettings/accountSettingsHistoryRepository";
 import {
     deriveAccountEncryptionCurrentnessFromRow,
@@ -115,6 +119,7 @@ export function registerAccountSettingsRoutes(app: Fastify): void {
                 })]),
                 400: z.object({ error: z.literal("plain_account_requires_settings_v2") }),
                 403: PresentUserRequiredResponseSchema,
+                426: AccountStoredContentUpgradeRequiredV1Schema,
                 503: AccountSettingsStorageUnavailableResponseSchema,
                 500: z.object({
                     success: z.literal(false),
@@ -124,6 +129,11 @@ export function registerAccountSettingsRoutes(app: Fastify): void {
         },
         preHandler: [app.authenticate, requirePresentUser]
     }, async (request, reply) => {
+        if (!await enforceProfilePreservingSettingsWriterCompatibilityForHttpRequest(
+            request,
+            reply,
+        )) return;
+
         const userId = request.userId;
         const { settings, expectedVersion } = request.body;
 
@@ -323,11 +333,17 @@ export function registerAccountSettingsRoutes(app: Fastify): void {
                 200: AccountSettingsV2UpdateResponseSchema,
                 400: z.object({ error: z.literal("invalid-params") }),
                 403: PresentUserRequiredResponseSchema,
+                426: AccountStoredContentUpgradeRequiredV1Schema,
                 503: AccountSettingsStorageUnavailableResponseSchema,
                 500: z.object({ error: z.literal("internal") }),
             },
         },
     }, async (request, reply) => {
+        if (!await enforceProfilePreservingSettingsWriterCompatibilityForHttpRequest(
+            request,
+            reply,
+        )) return;
+
         const userId = request.userId;
         const parsedRequest = AccountSettingsV2UpdateRequestSchema.safeParse(request.body);
         if (!parsedRequest.success) {

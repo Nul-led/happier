@@ -344,7 +344,10 @@ export function registerAccountAuthRoutes(app: Fastify): void {
                 tx,
                 request.userId,
                 undefined,
-                { kind: "account", authority: "present_user" },
+                {
+                    kind: "account",
+                    authority: "present_user",
+                },
             );
             const tokenEncrypted = privacyKit.encodeBase64(new Uint8Array(sealBoxBundle({
                 plaintext: new TextEncoder().encode(token),

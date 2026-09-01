@@ -80,7 +80,7 @@ export type MintDirectRouteGrantV1Input = Readonly<{
 }>;
 
 export type MintDirectRouteGrantV2Input = MintDirectRouteGrantV1Input & Readonly<{
-    /** Required for `iroh_peer` grants: the signed machine/1 endpoint-role relationship. */
+    /** Required for `iroh_peer` grants: the signed machine/1 initiator/target relationship. */
     iroh?: IrohPeerRouteBindingV2;
     ephemeralPublicKeyBase64Url: string;
 }>;

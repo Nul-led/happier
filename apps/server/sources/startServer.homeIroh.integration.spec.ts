@@ -81,8 +81,9 @@ describe("startServer managed Home Iroh composition", () => {
     it.each(["all", "api"] as const)("composes the Home Iroh endpoint from the actual bound API port for the light flavor with role %s once anonymous signup is explicitly disabled", async (role) => {
         await startServerHarness.start("light", {
             SERVER_ROLE: role,
+            PORT: "3005",
             HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
-            HAPPIER_PUBLIC_SERVER_URL: "http://127.0.0.1:3005",
+            HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:3005",
             AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
         });
 
@@ -97,8 +98,9 @@ describe("startServer managed Home Iroh composition", () => {
     it("keeps HTTP startup available and starts no Iroh endpoint when the canonical closure proof fails", async () => {
         await startServerHarness.start("light", {
             SERVER_ROLE: "all",
+            PORT: "3005",
             HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
-            HAPPIER_PUBLIC_SERVER_URL: "http://127.0.0.1:3005",
+            HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:3005",
             AUTH_ANONYMOUS_SIGNUP_ENABLED: "1",
         });
 
@@ -112,7 +114,30 @@ describe("startServer managed Home Iroh composition", () => {
             SERVER_ROLE: "all",
             PORT: "43123",
             HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
-            HAPPIER_PUBLIC_SERVER_URL: "http://127.0.0.1:43123",
+            HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:43123",
+            AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
+        });
+
+        expect(ensureHomeIrohEndpoint).not.toHaveBeenCalled();
+    });
+
+    it("starts no Iroh endpoint when the managed port is absent instead of assuming the default", async () => {
+        await startServerHarness.start("light", {
+            SERVER_ROLE: "all",
+            HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
+            HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:3005",
+            AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
+        });
+
+        expect(ensureHomeIrohEndpoint).not.toHaveBeenCalled();
+    });
+
+    it("starts no Iroh endpoint when the managed port is malformed", async () => {
+        await startServerHarness.start("light", {
+            SERVER_ROLE: "all",
+            PORT: "not-a-port",
+            HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
+            HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:3005",
             AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
         });
 
@@ -199,8 +224,9 @@ describe("startServer managed Home Iroh composition", () => {
 
         await startServerHarness.start("light", {
             SERVER_ROLE: "all",
+            PORT: "3005",
             HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
-            HAPPIER_PUBLIC_SERVER_URL: "http://127.0.0.1:3005",
+            HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:3005",
             AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
         });
 
@@ -220,8 +246,9 @@ describe("startServer managed Home Iroh composition", () => {
 
         await startServerHarness.start("light", {
             SERVER_ROLE: "all",
+            PORT: "3005",
             HAPPIER_MANAGED_RELAY_PURPOSE: "personal-home",
-            HAPPIER_PUBLIC_SERVER_URL: "http://127.0.0.1:3005",
+            HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:3005",
             AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
             HAPPIER_IROH_RELAY_POLICY: "automatic",
             HAPPIER_IROH_RELAY_URLS: "https://relay.example.test",

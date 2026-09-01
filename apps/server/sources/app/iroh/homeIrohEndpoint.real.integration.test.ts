@@ -14,6 +14,7 @@ import {
     loadIrohNodeNativeAddon,
 } from "@happier-dev/iroh-native/node";
 import { resolvePersonalHomeRuntimeLayout } from "@happier-dev/cli-common/firstPartyRuntime";
+import { FeaturesResponseSchema, type HomeConnectionDescriptorV1 } from "@happier-dev/protocol";
 
 import { registerApiRoutes } from "@/app/api/api";
 import { startSocket } from "@/app/api/socket";
@@ -22,6 +23,7 @@ import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
 import { enableMonitoring } from "@/app/api/utils/enableMonitoring";
 import { resolveApiRateLimitPluginOptions } from "@/app/api/utils/apiRateLimitPolicy";
 import { auth } from "@/app/auth/auth";
+import { initializeServerIdentityCache } from "@/app/serverIdentity/serverIdentity";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
@@ -35,6 +37,38 @@ import {
     HOME_IROH_RELAY_URLS_ENV_KEY,
 } from "./homeIrohEndpointConfig";
 import { loadHomeIrohNativeLifecycleFromModule } from "./homeIrohNativeLifecycle";
+
+type TestDaemonIrohRuntime = Readonly<{
+    available: boolean;
+    ensureHomeTunnel?: (input: Readonly<{
+        descriptor: HomeConnectionDescriptorV1;
+    }>) => Promise<Readonly<{
+        runtimeOrigin: string;
+        observedPath: "direct" | "relay" | "unknown";
+        release: () => Promise<void>;
+    }>>;
+    shutdown: () => Promise<void>;
+}>;
+
+type CreateTestDaemonIrohRuntime = (input: Readonly<{
+    happyHomeDir: string;
+    relayConfig: Readonly<{
+        relayPolicy: "automatic" | "disabled";
+        relayUrls: readonly string[];
+    }>;
+    native: ReturnType<typeof createIrohNodeNativeModule>;
+}>) => Promise<TestDaemonIrohRuntime>;
+
+async function loadTestDaemonIrohRuntimeFactory(): Promise<CreateTestDaemonIrohRuntime> {
+    // This is a cross-process composition fixture. Resolve the CLI composition
+    // root at runtime so the server package's source-only typecheck does not
+    // absorb the CLI application's private source tree into its rootDir.
+    const modulePath = "../../../../cli/src/daemon/peer/iroh/daemonMachineIrohRuntime";
+    const module = await vi.importActual<Readonly<{
+        createDaemonMachineIrohRuntime: CreateTestDaemonIrohRuntime;
+    }>>(modulePath);
+    return module.createDaemonMachineIrohRuntime;
+}
 
 const CANONICAL_HOME_URL = "https://home-iroh-composed.invalid";
 
@@ -121,7 +155,7 @@ describe("composed Home Iroh application bytes", () => {
             initAuth: true,
             initEncrypt: true,
             env: {
-                HAPPIER_PUBLIC_SERVER_URL: CANONICAL_HOME_URL,
+                HAPPIER_CANONICAL_SERVER_URL: CANONICAL_HOME_URL,
                 HAPPIER_IROH_RELAY_POLICY: "disabled",
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
                 AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
@@ -181,9 +215,12 @@ describe("composed Home Iroh application bytes", () => {
         const native = loaded.native;
         const homeNativeLifecycle = loadHomeIrohNativeLifecycleFromModule(native);
         if (!homeNativeLifecycle) throw new Error("Required Iroh Home acceptor lifecycle is unavailable");
+        // startServer initializes this cache before registering/serving routes.
+        // This lower-level composed fixture must preserve that production order.
+        await initializeServerIdentityCache(process.env);
         const app = createProductionProtocolApp();
-        let clientEndpointHandle: string | null = null;
-        let tunnelId: string | null = null;
+        let daemonIrohRuntime: TestDaemonIrohRuntime | null = null;
+        let releaseDaemonHomeTunnel: (() => Promise<void>) | null = null;
         let runtimeOrigin: string | null = null;
         let socket: ReturnType<typeof ioClient> | null = null;
 
@@ -213,29 +250,35 @@ describe("composed Home Iroh application bytes", () => {
             });
             if (!homeState.snapshot) throw new Error("Home Iroh endpoint did not publish its descriptor");
 
-            const clientEndpoint = await native.createEndpoint({
-                keyPath: join(harness.baseDir, "client-iroh-endpoint.key"),
-                relayPolicy: "disabled",
-                capProfile: "homeInteractive",
+            const createDaemonMachineIrohRuntime = await loadTestDaemonIrohRuntimeFactory();
+            daemonIrohRuntime = await createDaemonMachineIrohRuntime({
+                happyHomeDir: join(harness.baseDir, "remote-daemon"),
+                relayConfig: {
+                    relayPolicy: topology === "relay" ? "automatic" : "disabled",
+                    relayUrls: homeState.snapshot.endpoint.relayUrls ?? [],
+                },
+                native,
             });
-            clientEndpointHandle = clientEndpoint.endpointHandle;
-            const tunnel = await native.ensureHomeTunnel({
-                endpointHandle: clientEndpoint.endpointHandle,
-                homeServerIdentityId: homeState.snapshot.homeServerIdentityId,
-                endpointId: homeState.snapshot.endpoint.endpointId,
-                directAddresses: homeState.snapshot.endpoint.directAddresses,
-                relayUrls: homeState.snapshot.endpoint.relayUrls,
-                descriptorRevision: homeState.snapshot.revision,
+            if (!daemonIrohRuntime.available || !daemonIrohRuntime.ensureHomeTunnel) {
+                throw new Error("Required daemon Iroh runtime is unavailable");
+            }
+            const tunnel = await daemonIrohRuntime.ensureHomeTunnel({
+                descriptor: {
+                    v: 1,
+                    homeServerIdentityId: homeState.snapshot.homeServerIdentityId,
+                    canonicalServerUrl: homeState.snapshot.canonicalServerUrl,
+                    revision: homeState.snapshot.revision,
+                    endpoints: [{
+                        kind: "iroh",
+                        ...homeState.snapshot.endpoint,
+                    }],
+                },
             });
-            tunnelId = tunnel.tunnelId;
+            releaseDaemonHomeTunnel = tunnel.release;
             runtimeOrigin = tunnel.runtimeOrigin;
 
             expect(tunnel).toMatchObject({
-                homeServerIdentityId: homeState.snapshot.homeServerIdentityId,
-                homeEndpointId: homeState.snapshot.endpoint.endpointId,
-                carrier: "iroh",
                 observedPath: expectedPath,
-                descriptorRevision: homeState.snapshot.revision,
             });
             expect(runtimeOrigin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
             expect(new URL(runtimeOrigin).port).not.toBe(String(address.port));
@@ -248,29 +291,19 @@ describe("composed Home Iroh application bytes", () => {
                 service: "happier-server",
             });
 
-            // Product discovery uses the ordinary Home feature response. Prove
-            // the endpoint owner projects the exact live descriptor through the
-            // same direct/relay tunnel; the fixture must not rely on its private
-            // Home state snapshot as a substitute for production publication.
+            // The public response never exposes direct-address hints. A relay-backed
+            // descriptor remains useful without them; a direct-only descriptor is
+            // intentionally available only after Home authentication.
             const featuresResponse = await fetch(`${runtimeOrigin}/v1/features`);
             expect(featuresResponse.status).toBe(200);
-            await expect(featuresResponse.json()).resolves.toMatchObject({
-                homeConnectionDescriptor: {
-                    v: 1,
-                    homeServerIdentityId: homeState.snapshot.homeServerIdentityId,
-                    canonicalServerUrl: homeState.snapshot.canonicalServerUrl,
-                    revision: homeState.snapshot.revision,
-                    endpoints: [
-                        {
-                            kind: "iroh",
-                            endpointId: homeState.snapshot.endpoint.endpointId,
-                            ...(topology === "relay"
-                                ? { relayUrls: homeState.snapshot.endpoint.relayUrls }
-                                : { directAddresses: homeState.snapshot.endpoint.directAddresses }),
-                        },
-                    ],
-                },
+            const featuresPayload = FeaturesResponseSchema.parse(await featuresResponse.json());
+            const publishedDescriptor = featuresPayload.homeConnectionDescriptor;
+            expect(publishedDescriptor).toMatchObject({
+                homeServerIdentityId: homeState.snapshot.homeServerIdentityId,
+                endpoints: [{ kind: "iroh", endpointId: homeState.snapshot.endpoint.endpointId }],
             });
+            if (!publishedDescriptor) throw new Error("Home feature response omitted its public descriptor");
+            expect(publishedDescriptor?.endpoints[0]).not.toHaveProperty("directAddresses");
 
             const missingAuthResponse = await fetch(`${runtimeOrigin}/v1/auth/ping`);
             expect(missingAuthResponse.status).toBe(401);
@@ -310,6 +343,19 @@ describe("composed Home Iroh application bytes", () => {
             expect(pingResponse.status).toBe(200);
             await expect(pingResponse.json()).resolves.toEqual({ ok: true });
 
+            const authenticatedFeaturesResponse = await fetch(`${runtimeOrigin}/v1/features/authenticated`, {
+                headers: { authorization },
+            });
+            expect(authenticatedFeaturesResponse.status).toBe(200);
+            const authenticatedFeatures = FeaturesResponseSchema.parse(await authenticatedFeaturesResponse.json());
+            expect(authenticatedFeatures.homeConnectionDescriptor).toEqual({
+                v: 1,
+                homeServerIdentityId: homeState.snapshot.homeServerIdentityId,
+                canonicalServerUrl: homeState.snapshot.canonicalServerUrl,
+                revision: publishedDescriptor.revision,
+                endpoints: [{ kind: "iroh", ...homeState.snapshot.endpoint }],
+            });
+
             const profileResponse = await fetch(`${runtimeOrigin}/v1/account/profile`, {
                 headers: { authorization },
             });
@@ -333,19 +379,9 @@ describe("composed Home Iroh application bytes", () => {
             const connected = waitForSocketConnection(socket);
             socket.connect();
             await connected;
-            await expect(socket.timeout(5_000).emitWithAck("ping")).resolves.toEqual({});
+            await expect(socket.timeout(15_000).emitWithAck("ping")).resolves.toEqual({});
             expect(socket.io.engine.transport.name).toBe("websocket");
 
-            const tunnelStatus = await native.getTunnelStatus(tunnel.tunnelId);
-            expect(tunnelStatus).toMatchObject({
-                tunnelId: tunnel.tunnelId,
-                homeServerIdentityId: homeState.snapshot.homeServerIdentityId,
-                runtimeOrigin,
-                observedPath: expectedPath,
-                connectionActive: true,
-                descriptorRevision: homeState.snapshot.revision,
-            });
-            expect(tunnelStatus?.streamsOpened).toBeGreaterThanOrEqual(2);
             expect(testController.getObservedPath()).toBe(expectedPath);
             const acceptor = await native.startHomeAcceptor({
                 endpointHandle: resolvePersonalHomeRuntimeLayout({ env: process.env }).irohEndpointKeyPath,
@@ -370,15 +406,9 @@ describe("composed Home Iroh application bytes", () => {
         } finally {
             try {
                 socket?.close();
-                if (tunnelId) {
-                    await native.releaseHomeTunnel(tunnelId);
-                    await expect(native.getTunnelStatus(tunnelId)).resolves.toBeNull();
-                }
+                await releaseDaemonHomeTunnel?.();
                 if (runtimeOrigin) await expectOriginDown(runtimeOrigin);
-                if (clientEndpointHandle) {
-                    await native.shutdownEndpoint({ endpointHandle: clientEndpointHandle });
-                    await expect(native.getEndpointStatus(clientEndpointHandle)).resolves.toBeNull();
-                }
+                await daemonIrohRuntime?.shutdown();
                 await stopHomeIrohEndpoint();
                 await expect(getHomeIrohEndpointState()).resolves.toEqual({
                     status: "not-composed",

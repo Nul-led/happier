@@ -1,9 +1,9 @@
 import { markSessionParticipantsChanged, type SessionParticipantCursor } from "@/app/session/changeTracking/markSessionParticipantsChanged";
 import { observeCreateSessionMessageStage } from "@/app/monitoring/metrics/sessionWriteMetrics";
 import { db } from "@/storage/db";
-import { inTx, type Tx } from "@/storage/inTx";
+import { afterTx, inTx, type Tx } from "@/storage/inTx";
 import { isPrismaErrorCode } from "@/storage/prisma";
-import { log } from "@/utils/logging/log";
+import { log, warn } from "@/utils/logging/log";
 import type { Prisma } from "@prisma/client";
 import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import {
@@ -3439,13 +3439,30 @@ async function applySessionTurnMutationWithOwnerAccessInTx(params: {
         }
 
         if (currentTurn?.status === "in_progress" && appliedTurn.status === "completed") {
-            await admitCompletedParentTurnAutomationRunsTx({
+            const lifecycleAdmissions = await admitCompletedParentTurnAutomationRunsTx({
                 tx,
                 accountId: writeAuthority.accountId,
                 sourceSessionId: params.turnMutation.sessionId,
                 sourceTurnId: targetTurnId,
                 occurredAt: params.turnMutation.observedAt,
             });
+            for (const admission of lifecycleAdmissions) {
+                if (admission.result.kind !== "ineligible") continue;
+                afterTx(tx, () => {
+                    warn(
+                        {
+                            module: "session-write",
+                            event: "automation_exact_turn_admission_ineligible",
+                            reason: admission.result.reason,
+                            triggerId: admission.triggerId,
+                            accountId: writeAuthority.accountId,
+                            sourceSessionId: params.turnMutation.sessionId,
+                            sourceTurnId: targetTurnId,
+                        },
+                        "Exact-turn Automation admission was ineligible after Session completion",
+                    );
+                });
+            }
         }
 
         const nextLatestTurnId = params.turnMutation.action === "begin" ? targetTurnId : session.latestTurnId ?? targetTurnId;

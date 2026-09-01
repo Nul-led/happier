@@ -85,7 +85,7 @@ describe('Home search lifecycle', () => {
             .toMatchObject({ ok: true, hits: [expect.objectContaining({ sessionId: 's-1', homeServerIdentityId: 'srv_test' })] });
 
         await lifecycle.stop();
-        expect(lifecycle.capability()).toEqual({ enabled: false, provider: null, reason: 'index_unavailable' });
+        expect(lifecycle.capability()).toEqual({ enabled: false, provider: 'home', reason: 'index_unavailable' });
         expect(lifecycle.search({ v: 1, query: 'lifecycle', scope: { type: 'global' }, mode: 'auto' }))
             .toMatchObject({ ok: false, errorCode: 'memory_index_missing' });
         await expect(lifecycle.stop()).resolves.toBeUndefined();
@@ -120,7 +120,7 @@ describe('Home search lifecycle', () => {
         expect(lifecycle.capability()).toEqual({ enabled: false, provider: 'home', reason: 'indexing' });
         lifecycle.start();
         await lifecycle.whenReady();
-        expect(lifecycle.capability()).toEqual({ enabled: false, provider: null, reason: 'index_unavailable' });
+        expect(lifecycle.capability()).toEqual({ enabled: false, provider: 'home', reason: 'index_unavailable' });
         expect(lifecycle.search({ v: 1, query: 'x', scope: { type: 'global' }, mode: 'auto' }))
             .toMatchObject({ ok: false, errorCode: 'memory_index_missing' });
         await lifecycle.stop();
@@ -168,7 +168,7 @@ describe('Home search lifecycle', () => {
             homeServerIdentityId: 'srv_test',
             storagePolicy: 'plaintext_only',
             readCanonicalMessagesPage: reader(() => [
-                { id: 'm-1', sessionId: 's-1', seq: 1, createdAtMs: 1, content: { t: 'plain', v: { content: { type: 'text', text: 'schema projection rebuilt' } } } },
+                { id: 'm-1', sessionId: 's-1', seq: 1, createdAtMs: 1, content: { t: 'plain', v: { role: 'assistant', content: { type: 'text', text: 'schema projection rebuilt' } } } },
             ]),
         });
 
@@ -189,7 +189,7 @@ describe('Home search lifecycle', () => {
             homeServerIdentityId: 'srv_test',
             storagePolicy: 'plaintext_only',
             readCanonicalMessagesPage: reader(() => [
-                { id: 'm-1', sessionId: 's-1', seq: 1, createdAtMs: 1, content: { t: 'plain', v: { content: { type: 'text', text: 'recovered projection' } } } },
+                { id: 'm-1', sessionId: 's-1', seq: 1, createdAtMs: 1, content: { t: 'plain', v: { role: 'assistant', content: { type: 'text', text: 'recovered projection' } } } },
             ]),
             openDb: async (params) => {
                 const db = await openHomeSearchDb(params);
@@ -215,7 +215,7 @@ describe('Home search lifecycle', () => {
             homeServerIdentityId: 'srv_test',
             storagePolicy: 'plaintext_only',
             readCanonicalMessagesPage: reader(() => [
-                { id: 'm-1', sessionId: 's-1', seq: 1, createdAtMs: 1, content: { t: 'plain', v: { content: { type: 'text', text: 'query recovery' } } } },
+                { id: 'm-1', sessionId: 's-1', seq: 1, createdAtMs: 1, content: { t: 'plain', v: { role: 'assistant', content: { type: 'text', text: 'query recovery' } } } },
             ]),
             openDb: async (params) => {
                 const db = await openHomeSearchDb(params);
@@ -228,7 +228,7 @@ describe('Home search lifecycle', () => {
         await lifecycle.whenReady();
         expect(lifecycle.search({ v: 1, query: 'query', scope: { type: 'global' }, mode: 'auto' }))
             .toMatchObject({ ok: false, errorCode: 'memory_failed' });
-        expect(lifecycle.capability()).toEqual({ enabled: false, provider: null, reason: 'index_unavailable' });
+        expect(lifecycle.capability()).toEqual({ enabled: false, provider: 'home', reason: 'index_unavailable' });
         await vi.waitFor(() => expect(lifecycle.capability()).toEqual({ enabled: true, provider: 'home' }));
         expect(opens).toBe(2);
         expect(lifecycle.search({ v: 1, query: 'query', scope: { type: 'global' }, mode: 'auto' }))

@@ -1,5 +1,9 @@
 import { db } from "@/storage/db";
 import type { Tx } from "@/storage/inTx";
+import {
+    readMachineIrohEndpointAuthorityV1,
+    type MachineIrohEndpointAuthorityV1,
+} from "@happier-dev/protocol";
 
 export type MachineAvailabilityState = "available" | "revoked" | "replaced" | "missing";
 
@@ -21,6 +25,31 @@ export async function readMachineAvailabilityState(params: Readonly<{
         select: { revokedAt: true, replacedByMachineId: true },
     });
     return classifyMachineAvailabilityState(machine);
+}
+
+/**
+ * Reads the sole server-visible current daemon Iroh identity. The authenticated
+ * Machine socket replaces this complete projection and the server assigns its
+ * monotonic revision; encrypted daemonState is deliberately not consulted.
+ */
+export async function readAvailableMachineIrohEndpointAuthority(params: Readonly<{
+    accountId: string;
+    machineId: string;
+}>): Promise<MachineIrohEndpointAuthorityV1 | null> {
+    const machine = await db.machine.findFirst({
+        where: { accountId: params.accountId, id: params.machineId },
+        select: {
+            revokedAt: true,
+            replacedByMachineId: true,
+            operationProtocolCapabilities: true,
+            operationProtocolCapabilitiesRevision: true,
+        },
+    });
+    if (classifyMachineAvailabilityState(machine) !== "available" || machine === null) return null;
+    return readMachineIrohEndpointAuthorityV1({
+        capabilities: machine.operationProtocolCapabilities,
+        revision: machine.operationProtocolCapabilitiesRevision,
+    });
 }
 
 /** Transaction-bound form for domain consumers that must share one DB snapshot. */

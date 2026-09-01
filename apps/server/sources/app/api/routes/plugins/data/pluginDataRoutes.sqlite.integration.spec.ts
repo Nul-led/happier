@@ -3009,6 +3009,9 @@ describe("plugin collection UI query route", () => {
             schemaVersion: ref.schemaVersion,
             contractDigest: ref.contractDigest,
         };
+        await expect(db.pluginCollectionIndexEntry.count({
+            where: { indexState: { accountId, pluginId: PLUGIN_ID, collectionId: COLLECTION_ID } },
+        })).resolves.toBeGreaterThan(0);
 
         await expect(mutatePluginCollection({
             accountId,
@@ -3093,6 +3096,9 @@ describe("plugin collection UI query route", () => {
                 collectionId: ref.collectionId,
                 rowId: "task-after-conflict",
             },
+        })).resolves.toBe(0);
+        await expect(db.pluginCollectionIndexEntry.count({
+            where: { indexState: { accountId, pluginId: PLUGIN_ID, collectionId: COLLECTION_ID } },
         })).resolves.toBe(0);
         await expect(db.accountChange.count({ where: { accountId } })).resolves.toBe(1);
     });
@@ -3249,6 +3255,353 @@ describe("plugin collection UI query route", () => {
         await expect(db.accountChange.count({
             where: { accountId },
         })).resolves.toBe(1);
+    });
+
+    it("physically forgets an exact live retention row and advances its absence epoch", async () => {
+        const accountId = "account-collection-forget-live";
+        const { ref } = await seedCurrentCollectionAccount({
+            accountId,
+            rows: [{
+                rowId: "task-forget-live",
+                status: "closed",
+                title: "Forget live retention row",
+                revision: 3,
+            }],
+        });
+        const writerContext = {
+            schemaVersion: ref.schemaVersion,
+            contractDigest: ref.contractDigest,
+        };
+
+        let observedAbsenceEpoch = -1;
+        await withPluginDataApp(async (app) => {
+            const snapshotResponse = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/get",
+                headers: {
+                    "content-type": "application/json",
+                    "x-test-user-id": accountId,
+                    ...V3_HEADERS,
+                },
+                payload: {
+                    pluginId: PLUGIN_ID,
+                    collectionId: COLLECTION_ID,
+                    rowId: "task-forget-live",
+                },
+            });
+            const snapshot = PluginCollectionGetResultV1Schema.parse(snapshotResponse.json());
+            expect(snapshot.row?.revision).toBe(3);
+            observedAbsenceEpoch = snapshot.absenceEpoch;
+
+            const forgetResponse = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/forget",
+                headers: {
+                    "content-type": "application/json",
+                    "x-test-user-id": accountId,
+                    ...V3_HEADERS,
+                },
+                payload: {
+                    pluginId: PLUGIN_ID,
+                    collectionId: COLLECTION_ID,
+                    writerContext,
+                    rowId: "task-forget-live",
+                    expectedRevision: 3,
+                    expectedAbsenceEpoch: observedAbsenceEpoch,
+                },
+            });
+            expect(forgetResponse.statusCode).toBe(200);
+            expect(forgetResponse.json()).toEqual({ status: "forgotten" });
+        });
+
+        await expect(db.pluginCollectionRow.count({
+            where: {
+                accountId,
+                pluginId: PLUGIN_ID,
+                collectionId: COLLECTION_ID,
+                rowId: "task-forget-live",
+            },
+        })).resolves.toBe(0);
+        await expect(db.accountChange.findFirstOrThrow({
+            where: {
+                accountId,
+                kind: "pluginDomain",
+                entityId: `pluginDomain/${PLUGIN_ID}/data-collection/${COLLECTION_ID}`,
+            },
+            select: { hint: true },
+        })).resolves.toEqual({
+            hint: {
+                pluginDomain: "dataCollection",
+                pluginId: PLUGIN_ID,
+                collectionId: COLLECTION_ID,
+                contractDigest: ref.contractDigest,
+                revision: 4,
+                full: true,
+            },
+        });
+        await expect(mutatePluginCollection({
+            accountId,
+            request: {
+                pluginId: ref.pluginId,
+                collectionId: ref.collectionId,
+                writerContext,
+                operations: [{
+                    kind: "put",
+                    rowId: "task-forget-live",
+                    expectedRevision: "absent",
+                    expectedAbsenceEpoch: observedAbsenceEpoch,
+                    content: { t: "plain", v: { privateNote: "stale" } },
+                    projection: { status: "open", title: "Stale recreation" },
+                }],
+            },
+        })).resolves.toEqual({
+            status: "conflict",
+            conflicts: [{ rowId: "task-forget-live", revision: null, deleted: false }],
+        });
+
+        const currentAbsenceEpoch = await db.pluginCollectionAbsenceEpoch.findUniqueOrThrow({
+            where: {
+                accountId_pluginId_collectionId: {
+                    accountId,
+                    pluginId: ref.pluginId,
+                    collectionId: ref.collectionId,
+                },
+            },
+            select: { epoch: true },
+        });
+        await expect(mutatePluginCollection({
+            accountId,
+            request: {
+                pluginId: ref.pluginId,
+                collectionId: ref.collectionId,
+                writerContext,
+                operations: [{
+                    kind: "put",
+                    rowId: "task-forget-live",
+                    expectedRevision: "absent",
+                    expectedAbsenceEpoch: currentAbsenceEpoch.epoch,
+                    content: { t: "plain", v: { privateNote: "fresh" } },
+                    projection: { status: "open", title: "Fresh recreation" },
+                }],
+            },
+        })).resolves.toMatchObject({ status: "updated" });
+
+        await withPluginDataApp(async (app) => {
+            const staleForget = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/forget",
+                headers: {
+                    "content-type": "application/json",
+                    "x-test-user-id": accountId,
+                    ...V3_HEADERS,
+                },
+                payload: {
+                    pluginId: PLUGIN_ID,
+                    collectionId: COLLECTION_ID,
+                    writerContext,
+                    rowId: "task-forget-live",
+                    expectedRevision: 3,
+                    expectedAbsenceEpoch: currentAbsenceEpoch.epoch,
+                },
+            });
+            expect(staleForget.statusCode).toBe(200);
+            expect(staleForget.json()).toEqual({ status: "conflict" });
+        });
+        await expect(db.pluginCollectionRow.findUniqueOrThrow({
+            where: {
+                accountId_pluginId_collectionId_rowId: {
+                    accountId,
+                    pluginId: ref.pluginId,
+                    collectionId: ref.collectionId,
+                    rowId: "task-forget-live",
+                },
+            },
+            select: { revision: true, deletedAt: true },
+        })).resolves.toEqual({
+            revision: currentAbsenceEpoch.epoch + 1,
+            deletedAt: null,
+        });
+    });
+
+    it("leaves an exact live row untouched when the forget absence epoch is stale", async () => {
+        const accountId = "account-collection-forget-live-stale-epoch";
+        const { ref } = await seedCurrentCollectionAccount({
+            accountId,
+            rows: [{
+                rowId: "task-forget-live-stale-epoch",
+                status: "closed",
+                title: "Keep live retention row",
+                revision: 3,
+            }],
+        });
+
+        await withPluginDataApp(async (app) => {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/forget",
+                headers: {
+                    "content-type": "application/json",
+                    "x-test-user-id": accountId,
+                    ...V3_HEADERS,
+                },
+                payload: {
+                    pluginId: ref.pluginId,
+                    collectionId: ref.collectionId,
+                    writerContext: {
+                        schemaVersion: ref.schemaVersion,
+                        contractDigest: ref.contractDigest,
+                    },
+                    rowId: "task-forget-live-stale-epoch",
+                    expectedRevision: 3,
+                    expectedAbsenceEpoch: 1,
+                },
+            });
+            expect(response.statusCode).toBe(200);
+            expect(response.json()).toEqual({ status: "conflict" });
+        });
+
+        await expect(db.pluginCollectionRow.findUniqueOrThrow({
+            where: {
+                accountId_pluginId_collectionId_rowId: {
+                    accountId,
+                    pluginId: ref.pluginId,
+                    collectionId: ref.collectionId,
+                    rowId: "task-forget-live-stale-epoch",
+                },
+            },
+            select: { revision: true, deletedAt: true },
+        })).resolves.toEqual({ revision: 3, deletedAt: null });
+        await expect(db.accountChange.count({ where: { accountId } })).resolves.toBe(0);
+    });
+
+    it("applies canonical relation cleanup before atomically forgetting an exact live row", async () => {
+        const accountId = "account-collection-forget-live-relations";
+        const { projectRef, taskRef } = await seedReadyNullifyRelationCollectionAccount(accountId);
+        let observedAbsenceEpoch = -1;
+
+        await withPluginDataApp(async (app) => {
+            const headers = {
+                "content-type": "application/json",
+                "x-test-user-id": accountId,
+                ...V3_HEADERS,
+            };
+            await expect(app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/mutate",
+                headers,
+                payload: {
+                    pluginId: NULLIFY_RELATION_COLLECTION_MANIFEST.id,
+                    collectionId: "projects",
+                    writerContext: {
+                        schemaVersion: projectRef.schemaVersion,
+                        contractDigest: projectRef.contractDigest,
+                    },
+                    operations: [{
+                        kind: "put",
+                        rowId: "project-a",
+                        expectedRevision: "absent",
+                        expectedAbsenceEpoch: 0,
+                        content: { t: "plain", v: {} },
+                        projection: { id: "project-a", title: "Project A" },
+                    }],
+                },
+            })).resolves.toMatchObject({ statusCode: 200 });
+            await expect(app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/mutate",
+                headers,
+                payload: {
+                    pluginId: NULLIFY_RELATION_COLLECTION_MANIFEST.id,
+                    collectionId: "tasks",
+                    writerContext: {
+                        schemaVersion: taskRef.schemaVersion,
+                        contractDigest: taskRef.contractDigest,
+                    },
+                    operations: [{
+                        kind: "put",
+                        rowId: "task-a",
+                        expectedRevision: "absent",
+                        expectedAbsenceEpoch: 0,
+                        content: { t: "plain", v: {} },
+                        projection: { id: "task-a", title: "Task A", "project-id": "project-a" },
+                    }],
+                },
+            })).resolves.toMatchObject({ statusCode: 200 });
+
+            const snapshotResponse = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/get",
+                headers,
+                payload: {
+                    pluginId: NULLIFY_RELATION_COLLECTION_MANIFEST.id,
+                    collectionId: "projects",
+                    rowId: "project-a",
+                },
+            });
+            const snapshot = PluginCollectionGetResultV1Schema.parse(snapshotResponse.json());
+            expect(snapshot.row?.revision).toBe(1);
+            observedAbsenceEpoch = snapshot.absenceEpoch;
+
+            const forgotten = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/forget",
+                headers,
+                payload: {
+                    pluginId: NULLIFY_RELATION_COLLECTION_MANIFEST.id,
+                    collectionId: "projects",
+                    writerContext: {
+                        schemaVersion: projectRef.schemaVersion,
+                        contractDigest: projectRef.contractDigest,
+                    },
+                    rowId: "project-a",
+                    expectedRevision: 1,
+                    expectedAbsenceEpoch: observedAbsenceEpoch,
+                },
+            });
+            expect(forgotten.statusCode).toBe(200);
+            expect(forgotten.json()).toEqual({ status: "forgotten" });
+        });
+
+        await expect(db.pluginCollectionRow.count({
+            where: {
+                accountId,
+                pluginId: NULLIFY_RELATION_COLLECTION_MANIFEST.id,
+                collectionId: "projects",
+                rowId: "project-a",
+            },
+        })).resolves.toBe(0);
+        await expect(db.pluginCollectionRow.findUniqueOrThrow({
+            where: {
+                accountId_pluginId_collectionId_rowId: {
+                    accountId,
+                    pluginId: NULLIFY_RELATION_COLLECTION_MANIFEST.id,
+                    collectionId: "tasks",
+                    rowId: "task-a",
+                },
+            },
+            select: {
+                revision: true,
+                projections: {
+                    orderBy: { fieldId: "asc" },
+                    select: { typedEncodedValue: true, rowRevision: true },
+                },
+            },
+        })).resolves.toEqual({
+            revision: 2,
+            projections: [
+                { typedEncodedValue: "\"task-a\"", rowRevision: 2 },
+                { typedEncodedValue: "null", rowRevision: 2 },
+                { typedEncodedValue: "\"Task A\"", rowRevision: 2 },
+            ],
+        });
+        await expect(db.pluginCollectionRelation.count({
+            where: {
+                accountId,
+                sourceCollectionId: "tasks",
+                sourceRowId: "task-a",
+                deletedAt: null,
+            },
+        })).resolves.toBe(0);
     });
 
     it("rejects a stale absent writer after physical forget and accepts a fresh observed epoch", async () => {

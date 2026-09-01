@@ -13,12 +13,15 @@ describe("startServerMocks", () => {
 
         dbMocks.getDbProviderFromEnv.mockImplementation(() => "mysql");
         dbMocks.initDbMysql.mockResolvedValue(undefined);
+        dbMocks.accountCount.mockResolvedValue(4);
 
         expect(dbMocks.getDbProviderFromEnv({}, "sqlite")).toBe("mysql");
+        await expect(dbMocks.module.db.account.count()).resolves.toBe(4);
 
         dbMocks.reset();
 
         expect(dbMocks.getDbProviderFromEnv({}, "sqlite")).toBe("sqlite");
+        await expect(dbMocks.module.db.account.count()).resolves.toBe(0);
         await expect(dbMocks.module.initDbMysql()).resolves.toBeUndefined();
     });
 

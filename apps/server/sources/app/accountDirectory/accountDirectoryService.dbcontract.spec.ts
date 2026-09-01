@@ -12,6 +12,7 @@ import {
     deleteAccountDirectoryLink,
     deleteAccountHomeDirectoryEntry,
     listAccountHomeDirectory,
+    publishAccountHomeDirectoryDescriptor,
     redeemHomeLoginAssertion,
     setPreferredAccountHome,
     upsertAccountDirectoryLink,
@@ -172,6 +173,37 @@ describe("Account Directory database contract", () => {
             label: "Account A Home Updated",
             connectionDescriptor: descriptor(homeA),
         });
+        const movedCanonicalServerUrl = `https://moved-${homeA}.example.test`;
+        const published = await publishAccountHomeDirectoryDescriptor({
+            accountId: accountA.id,
+            homeServerIdentityId: homeA,
+            label: "Account A Home Moved",
+            minimumOuterRevisionExclusive: 1,
+            canonicalServerUrl: movedCanonicalServerUrl,
+            endpoints: [{ kind: "https", url: movedCanonicalServerUrl }],
+        });
+        expect(published.connectionDescriptor.revision).toBe(2);
+
+        const stale = await upsertAccountHomeDirectoryEntry({
+            accountId: accountA.id,
+            homeServerIdentityId: homeA,
+            label: "Stale Account A Home",
+            connectionDescriptor: descriptor(homeA),
+        });
+        expect(stale).toMatchObject({
+            label: "Account A Home Moved",
+            connectionDescriptor: { revision: 2, canonicalServerUrl: movedCanonicalServerUrl },
+        });
+        await expect(upsertAccountHomeDirectoryEntry({
+            accountId: accountA.id,
+            homeServerIdentityId: homeA,
+            label: "Conflicting Account A Home",
+            connectionDescriptor: {
+                ...published.connectionDescriptor,
+                canonicalServerUrl: `https://conflict-${homeA}.example.test`,
+                endpoints: [{ kind: "https", url: `https://conflict-${homeA}.example.test` }],
+            },
+        })).rejects.toMatchObject({ code: "descriptor_revision_conflict" });
 
         expect(firstA.preferred).toBe(true);
         await expect(db.accountHomeDirectoryEntry.count({
@@ -184,7 +216,7 @@ describe("Account Directory database contract", () => {
         ]);
         expect(directoryA).toMatchObject({
             preferredHomeServerIdentityId: homeA,
-            homes: [{ homeServerIdentityId: homeA, label: "Account A Home Updated", preferred: true }],
+            homes: [{ homeServerIdentityId: homeA, label: "Account A Home Moved", preferred: true, connectionDescriptor: { revision: 2 } }],
         });
         expect(directoryB).toMatchObject({
             preferredHomeServerIdentityId: homeB,
@@ -545,6 +577,149 @@ describe("Account Directory database contract", () => {
             await expect(db.authPairingSession.findUnique({ where: { id: approvalId } })).resolves.toBeNull();
         } finally {
             await db.account.delete({ where: { id: account.id }, select: { id: true } });
+        }
+    });
+
+    mysqlIt("treats Home, issuer, subject, and approval identities as exact bytes", async () => {
+        const accountA = await db.account.create({
+            data: { publicKey: uniqueValue("account-directory-mysql-exact-a") },
+            select: { id: true },
+        });
+        const accountB = await db.account.create({
+            data: { publicKey: uniqueValue("account-directory-mysql-exact-b") },
+            select: { id: true },
+        });
+        const suffix = randomUUID().replace(/-/gu, "").slice(0, 20);
+        const homeLower = `srv_home_${suffix}a`;
+        const homeUpper = `srv_home_${suffix}A`;
+        const issuerLower = `srv_issuer_${suffix}a`;
+        const issuerUpper = `srv_issuer_${suffix}A`;
+        const issuerSubjectId = `subject-${suffix}`;
+        const subjectIssuer = `srv_subject_${suffix}`;
+        const subjectLower = `subject-${suffix}a`;
+        const subjectUpper = `subject-${suffix}A`;
+        const key = signingKey(35);
+
+        try {
+            await upsertAccountHomeDirectoryEntry({
+                accountId: accountA.id,
+                homeServerIdentityId: homeLower,
+                label: "Lower-case Home identity",
+                connectionDescriptor: descriptor(homeLower),
+            });
+            await upsertAccountHomeDirectoryEntry({
+                accountId: accountA.id,
+                homeServerIdentityId: homeUpper,
+                label: "Upper-case Home identity",
+                connectionDescriptor: descriptor(homeUpper),
+            });
+            await expect(db.accountHomeDirectoryEntry.count({ where: { accountId: accountA.id } }))
+                .resolves.toBe(2);
+
+            await setPreferredAccountHome({ accountId: accountA.id, homeServerIdentityId: homeUpper });
+            await deleteAccountHomeDirectoryEntry({ accountId: accountA.id, homeServerIdentityId: homeLower });
+            await expect(db.account.findUniqueOrThrow({
+                where: { id: accountA.id },
+                select: { preferredHomeServerIdentityId: true },
+            })).resolves.toEqual({ preferredHomeServerIdentityId: homeUpper });
+
+            for (const issuerServerIdentityId of [issuerLower, issuerUpper]) {
+                await upsertAccountDirectoryLink({
+                    accountId: accountA.id,
+                    issuerServerIdentityId,
+                    issuerSubjectId,
+                    issuerSigningKeyId: key.id,
+                    issuerSigningPublicKeyBase64Url: key.publicKeyBase64Url,
+                });
+            }
+            await expect(db.accountDirectoryLink.count({
+                where: { accountId: accountA.id, issuerSubjectId },
+            })).resolves.toBe(2);
+
+            const [lowerApproval, upperApproval] = await Promise.all([
+                db.authPairingSession.create({
+                    data: {
+                        accountId: accountA.id,
+                        secretHash: uniqueValue("lower-approval-secret"),
+                        expiresAt: new Date(Date.now() + 60_000),
+                        flow: "account_assertion",
+                        requesterIssuerServerIdentityId: issuerLower,
+                        requesterIssuerSubjectId: issuerSubjectId,
+                    },
+                    select: { id: true },
+                }),
+                db.authPairingSession.create({
+                    data: {
+                        accountId: accountA.id,
+                        secretHash: uniqueValue("upper-approval-secret"),
+                        expiresAt: new Date(Date.now() + 60_000),
+                        flow: "account_assertion",
+                        requesterIssuerServerIdentityId: issuerUpper,
+                        requesterIssuerSubjectId: issuerSubjectId,
+                    },
+                    select: { id: true },
+                }),
+            ]);
+            await deleteAccountDirectoryLink({
+                accountId: accountA.id,
+                issuerServerIdentityId: issuerLower,
+            });
+            await expect(db.authPairingSession.findMany({
+                where: { id: { in: [lowerApproval.id, upperApproval.id] } },
+                orderBy: { id: "asc" },
+                select: { id: true },
+            })).resolves.toEqual([{ id: upperApproval.id }]);
+            await expect(db.accountDirectoryLink.count({
+                where: { accountId: accountA.id, issuerServerIdentityId: issuerUpper },
+            })).resolves.toBe(1);
+
+            await upsertAccountDirectoryLink({
+                accountId: accountA.id,
+                issuerServerIdentityId: subjectIssuer,
+                issuerSubjectId: subjectLower,
+                issuerSigningKeyId: key.id,
+                issuerSigningPublicKeyBase64Url: key.publicKeyBase64Url,
+            });
+            await upsertAccountDirectoryLink({
+                accountId: accountB.id,
+                issuerServerIdentityId: subjectIssuer,
+                issuerSubjectId: subjectUpper,
+                issuerSigningKeyId: key.id,
+                issuerSigningPublicKeyBase64Url: key.publicKeyBase64Url,
+            });
+            const subjectLinks = await db.accountDirectoryLink.findMany({
+                where: { issuerServerIdentityId: subjectIssuer },
+                select: { issuerSubjectId: true },
+            });
+            expect(subjectLinks).toHaveLength(2);
+            expect(subjectLinks).toEqual(expect.arrayContaining([
+                { issuerSubjectId: subjectLower },
+                { issuerSubjectId: subjectUpper },
+            ]));
+
+            await Promise.all([subjectLower, subjectUpper].map((requesterIssuerSubjectId) => (
+                db.authPairingSession.create({
+                    data: {
+                        accountId: accountA.id,
+                        secretHash: uniqueValue("subject-approval-secret"),
+                        expiresAt: new Date(Date.now() + 60_000),
+                        flow: "account_assertion",
+                        requesterIssuerServerIdentityId: subjectIssuer,
+                        requesterIssuerSubjectId,
+                    },
+                    select: { id: true },
+                })
+            )));
+            await expect(db.authPairingSession.count({
+                where: {
+                    accountId: accountA.id,
+                    flow: "account_assertion",
+                    requesterIssuerServerIdentityId: subjectIssuer,
+                    requesterIssuerSubjectId: subjectLower,
+                },
+            })).resolves.toBe(1);
+        } finally {
+            await db.account.deleteMany({ where: { id: { in: [accountA.id, accountB.id] } } });
         }
     });
 

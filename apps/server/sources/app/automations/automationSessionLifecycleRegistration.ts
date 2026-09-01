@@ -1,5 +1,6 @@
 import type {
     AutomationSessionLifecycleRegistrationErrorCode,
+    AutomationSessionLifecycleTrigger,
     AutomationSessionLifecycleTriggerInput,
 } from "@happier-dev/protocol";
 
@@ -19,11 +20,7 @@ export class AutomationSessionLifecycleRegistrationValidationError
     }
 }
 
-export type ValidatedSessionLifecycleTriggerRegistration = Readonly<{
-    sessionLifecycleEvent: "parentTurnCompleted";
-    sourceSessionId: string;
-    sourceTurnId: string;
-}>;
+export type ValidatedSessionLifecycleTriggerRegistration = AutomationSessionLifecycleTrigger;
 
 export function validateSessionLifecycleExecutionTargetInequality(params: Readonly<{
     automationTargetType: "new_session" | "existing_session" | "execution_run";
@@ -46,7 +43,7 @@ export function validateSessionLifecycleExecutionTargetInequality(params: Readon
     }
 }
 
-/** Exact same-Account/current/in-progress registration witness. */
+/** Same-Account source witness, plus exact current-turn eligibility where selected. */
 export async function validateSessionLifecycleTriggerRegistrationTx(params: Readonly<{
     tx: Tx;
     accountId: string;
@@ -54,8 +51,7 @@ export async function validateSessionLifecycleTriggerRegistrationTx(params: Read
     automationExistingSessionId?: string | null;
     input: AutomationSessionLifecycleTriggerInput;
 }>): Promise<ValidatedSessionLifecycleTriggerRegistration> {
-    const sourceSessionId = params.input.scope.sourceSessionId;
-    const sourceTurnId = params.input.scope.sourceTurnId;
+    const sourceSessionId = params.input.sourceSessionId;
     const sourceSession = await params.tx.session.findFirst({
         where: { id: sourceSessionId, accountId: params.accountId },
         select: { latestTurnId: true },
@@ -66,6 +62,20 @@ export async function validateSessionLifecycleTriggerRegistrationTx(params: Read
             "Session lifecycle source Session is unavailable",
         );
     }
+    validateSessionLifecycleExecutionTargetInequality({
+        automationTargetType: params.automationTargetType,
+        automationExistingSessionId: params.automationExistingSessionId,
+        sourceSessionId,
+    });
+    if (params.input.policy.kind !== "currentTurn") {
+        return {
+            kind: "sessionLifecycle",
+            sourceSessionId,
+            events: params.input.events,
+            policy: params.input.policy,
+        };
+    }
+    const sourceTurnId = params.input.policy.sourceTurnId;
     if (sourceSession.latestTurnId !== sourceTurnId) {
         throw new AutomationSessionLifecycleRegistrationValidationError(
             "sourceTurnNotCurrent",
@@ -95,14 +105,10 @@ export async function validateSessionLifecycleTriggerRegistrationTx(params: Read
             "Session lifecycle source turn is no longer eligible for completion admission",
         );
     }
-    validateSessionLifecycleExecutionTargetInequality({
-        automationTargetType: params.automationTargetType,
-        automationExistingSessionId: params.automationExistingSessionId,
-        sourceSessionId,
-    });
     return {
-        sessionLifecycleEvent: params.input.event,
+        kind: "sessionLifecycle",
         sourceSessionId,
-        sourceTurnId,
+        events: params.input.events,
+        policy: params.input.policy,
     };
 }

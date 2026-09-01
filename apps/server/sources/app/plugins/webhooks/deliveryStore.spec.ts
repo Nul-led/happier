@@ -231,6 +231,27 @@ describe("plugin webhook delivery store exact-target admission", () => {
         expect(mocks.tx.pluginWebhookEndpoint.updateMany).not.toHaveBeenCalled();
     });
 
+    it("restores provider confirmation from an authenticated duplicate after credential rotation", async () => {
+        mocks.delivery.findUnique.mockResolvedValue({ id: "delivery-existing" });
+
+        await expect(admitPluginWebhookDeliveryV1({
+            endpointId: "endpoint-1",
+            expectedEndpointRevision: 2,
+            routeId: "route-1",
+            verifierKind: "github_hmac_sha256_v1",
+            credentialVersionId: "credential-1",
+            deliveryIdentityDigest: "a".repeat(64),
+            stored: plainStoredEnvelope(),
+            now: new Date("2026-08-10T00:00:00.000Z"),
+        })).resolves.toEqual({ kind: "duplicate", deliveryId: "delivery-existing" });
+
+        expect(mocks.tx.pluginWebhookEndpoint.updateMany).toHaveBeenCalledWith({
+            where: { id: "endpoint-1", providerConfirmedAt: null },
+            data: { providerConfirmedAt: new Date("2026-08-10T00:00:00.000Z") },
+        });
+        expect(mocks.delivery.create).not.toHaveBeenCalled();
+    });
+
     it("confirms only a delivery verified under the route's current credential", async () => {
         // A rotation cleared the confirmation and the provider has not been
         // reconfigured yet, so this delivery still carries the superseded

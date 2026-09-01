@@ -45,15 +45,13 @@ describe('Home search FTS5 owner', () => {
         }
     }, 60_000);
 
-    it('indexes Unicode and code identifiers, returns snippets, and persists watermarks', async () => {
+    it('indexes Unicode and code identifiers and returns snippets across reopen', async () => {
         const root = await mkdtemp(join(tmpdir(), 'happier-home-search-'));
         const db = await openHomeSearchDb({ dbPath: join(root, 'derived', 'search.sqlite') });
         db.upsert({
             id: 'm-1', sessionId: 's-1', seq: 3, createdAtMs: 1_000, role: 'agent',
             text: 'Réponse — 東京 API_KEY_42',
         });
-        db.setWatermark('s-1', 3);
-        expect(db.getWatermark('s-1')).toBe(3);
         expect(db.search({ query: '東京' })).toEqual([
             expect.objectContaining({ sessionId: 's-1', seqFrom: 3, snippet: expect.stringContaining('東京') }),
         ]);
@@ -62,7 +60,6 @@ describe('Home search FTS5 owner', () => {
         db.close();
         expect((await readFile(join(root, 'derived', 'search.sqlite'))).byteLength).toBeGreaterThan(0);
         const reopened = await openHomeSearchDb({ dbPath: join(root, 'derived', 'search.sqlite') });
-        expect(reopened.getWatermark('s-1')).toBe(3);
         expect(reopened.search({ query: '東京' })).toHaveLength(1);
         reopened.close();
     });

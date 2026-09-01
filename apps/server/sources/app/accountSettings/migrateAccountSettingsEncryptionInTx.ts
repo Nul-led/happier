@@ -9,8 +9,6 @@ import {
 } from "@/app/encryption/accountSettingsStorage";
 import type { Tx } from "@/storage/inTx";
 
-import { recordAccountSettingsSnapshotsForWrite } from "./accountSettingsHistoryRepository";
-
 export type AccountSettingsEncryptionMigrationResult =
     | Readonly<{ status: "applied"; settingsVersion: number }>
     | Readonly<{
@@ -161,22 +159,6 @@ export async function migrateAccountSettingsEncryptionInTx(params: Readonly<{
         },
     });
     if (updated.count !== 1) return { status: "inventory_changed" };
-
-    await recordAccountSettingsSnapshotsForWrite({
-        tx: params.tx,
-        previous: {
-            accountId: params.accountId,
-            version: params.expectedSettingsVersion,
-            settingsDbValue: current.settings,
-            encryptionMode: params.fromMode,
-        },
-        next: {
-            accountId: params.accountId,
-            version: nextVersion,
-            settingsDbValue: nextSettings,
-            encryptionMode: params.toMode,
-        },
-    });
 
     return { status: "applied", settingsVersion: nextVersion };
 }

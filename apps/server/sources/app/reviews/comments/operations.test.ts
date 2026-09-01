@@ -304,6 +304,119 @@ describe("review comment operations", () => {
         });
     });
 
+    it("releases an uncertain effect only after tokenless reconciliation proves failure", async () => {
+        const { operations } = createHarness();
+        const created = await operations.create({
+            accountId: "account-1",
+            actor: { kind: "user", userId: "user-1" },
+            grants: [],
+            input: {
+                projectId: "project-1",
+                anchor: { kind: "line", filePath: "src/example.ts", line: 3 },
+                snapshot: textSnapshot(["return value.name;"]),
+                body: "Null-check this value.",
+                authorIntent: "open",
+                clientMutationId: "mutation-publication-tokenless-reconciliation",
+            },
+        });
+        const request = {
+            accountId: "account-1",
+            actor: { kind: "user", userId: "user-1" } as const,
+            input: {
+                target: {
+                    providerId: "gitlab",
+                    configuredAccountId: "gitlab-account-1",
+                    entryRef: {
+                        sourceId: "gitlab",
+                        kindId: "merge-request",
+                        collisionScope: "gitlab:project-1",
+                        entryId: "42",
+                    },
+                    subtarget: null,
+                },
+                baseRevision: "base-1",
+                headRevision: "head-1",
+                entries: [{
+                    happierCommentId: created.comment.id,
+                    expectedServerRevision: created.comment.serverRevision,
+                    anchor: created.comment.anchor,
+                    snapshot: textSnapshot(["return value.name;"]),
+                    body: "Null-check this value.",
+                }],
+                verdict: null,
+            },
+        };
+        const first = await operations.claimPublicationDispatch(request);
+        const entry = first.entries[0]!;
+
+        const activeReconciliation = await operations.claimPublicationDispatch({
+            ...request,
+            input: {
+                ...request.input,
+                settlement: {
+                    dispatchToken: null,
+                    result: {
+                        publicationPlanId: first.publicationPlanId,
+                        entries: [{ ...entry, outcome: { kind: "failed" as const, code: "gitlab-pending-draft" } }],
+                        verdict: { kind: "notRequested" as const },
+                    },
+                },
+            },
+        });
+        expect(activeReconciliation).toMatchObject({
+            disposition: "reconcile",
+            instructions: { entries: ["reconcile"] },
+            priorResult: { entries: [{ outcome: { kind: "uncertain" } }] },
+        });
+        await expect(operations.claimPublicationDispatch(request)).resolves.toMatchObject({
+            disposition: "reconcile",
+            instructions: { entries: ["reconcile"] },
+        });
+
+        await operations.claimPublicationDispatch({
+            ...request,
+            input: {
+                ...request.input,
+                settlement: {
+                    dispatchToken: first.dispatchToken,
+                    result: {
+                        publicationPlanId: first.publicationPlanId,
+                        entries: [{ ...entry, outcome: { kind: "uncertain" as const } }],
+                        verdict: { kind: "notRequested" as const },
+                    },
+                },
+            },
+        });
+        const reconciled = await operations.claimPublicationDispatch(request);
+        expect(reconciled).toMatchObject({
+            disposition: "reconcile",
+            dispatchToken: null,
+            instructions: { entries: ["reconcile"] },
+        });
+
+        const settled = await operations.claimPublicationDispatch({
+            ...request,
+            input: {
+                ...request.input,
+                settlement: {
+                    dispatchToken: null,
+                    result: {
+                        publicationPlanId: first.publicationPlanId,
+                        entries: [{ ...entry, outcome: { kind: "failed" as const, code: "gitlab-pending-draft" } }],
+                        verdict: { kind: "notRequested" as const },
+                    },
+                },
+            },
+        });
+        expect(settled).toMatchObject({
+            priorResult: { entries: [{ outcome: { kind: "failed", code: "gitlab-pending-draft" } }] },
+        });
+        await expect(operations.claimPublicationDispatch(request)).resolves.toMatchObject({
+            disposition: "dispatch",
+            instructions: { entries: ["dispatch"] },
+        });
+    });
+
     it("allows only one provider dispatch for simultaneous verdict-only publication requests", async () => {
         const { operations } = createHarness();
         const request = {

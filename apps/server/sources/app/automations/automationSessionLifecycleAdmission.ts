@@ -36,7 +36,11 @@ export async function admitCompletedParentTurnAutomationRunsTx(params: Readonly<
             // trigger set visible at this transaction's serialization point.
             enabled: true,
             deletedAt: null,
-            automation: { enabled: true, deletedAt: null },
+            automation: {
+                accountId: params.accountId,
+                enabled: true,
+                deletedAt: null,
+            },
         },
         orderBy: { id: "asc" },
         select: { id: true, automationId: true, revision: true },

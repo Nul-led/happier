@@ -38,14 +38,16 @@ export type HomeSearchDb = Readonly<{
     removeSession(sessionId: string): void;
     clear(): void;
     count(): number;
-    setWatermark(sessionId: string, seq: number): void;
-    getWatermark(sessionId: string): number;
     search(input: Readonly<{ query: string; sessionId?: string; sessionIds?: readonly string[]; maxResults?: number }>): HomeSearchHit[];
     close(): void;
 }>;
 
-function normalizeText(value: string): string {
-    return String(value ?? '').replace(/\u0000/gu, '').normalize('NFKC').trim();
+function sanitizeStoredText(value: string): string {
+    return String(value ?? '').replace(/\u0000/gu, '').trim();
+}
+
+function normalizeFtsText(value: string): string {
+    return sanitizeStoredText(value).normalize('NFKC');
 }
 
 // Unicode61 has no word segmentation for scripts written without inter-word spaces, so a
@@ -66,7 +68,7 @@ function segmentCjkRuns(value: string): string {
 function buildFtsQuery(value: string): Readonly<{ match: string; snippetTerms: string[] }> {
     const matchParts: string[] = [];
     const snippetTerms: string[] = [];
-    for (const rawTerm of normalizeText(value).replace(/"/gu, ' ').split(/\s+/u)) {
+    for (const rawTerm of normalizeFtsText(value).replace(/"/gu, ' ').split(/\s+/u)) {
         const prefix = rawTerm.endsWith('*');
         const displayTerm = rawTerm.replace(/\*+$/u, '');
         if (!displayTerm) continue;
@@ -205,16 +207,12 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
     `);
     const deleteSessionMessages = db.prepare('DELETE FROM home_search_messages WHERE session_id = ?');
     const deleteSessionFts = db.prepare('DELETE FROM home_search_fts WHERE session_id = ?');
-    const deleteMeta = db.prepare('DELETE FROM home_search_meta WHERE key = ?');
     const countMessages = db.prepare('SELECT count(*) AS count FROM home_search_messages');
-    const setMeta = db.prepare(`INSERT INTO home_search_meta(key, value) VALUES (?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
-    const getMeta = db.prepare('SELECT value FROM home_search_meta WHERE key = ?');
 
     const result: HomeSearchDb = {
         path,
         upsert(message) {
-            const text = normalizeText(message.text);
+            const text = sanitizeStoredText(message.text);
             if (!message.id || !message.sessionId || !text) return;
             db.exec('BEGIN IMMEDIATE');
             try {
@@ -234,7 +232,7 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
                     message.seq,
                     message.createdAtMs,
                     message.role ?? null,
-                    segmentCjkRuns(text),
+                    segmentCjkRuns(normalizeFtsText(text)),
                 );
                 db.exec('COMMIT');
             } catch (error) {
@@ -258,7 +256,6 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
             try {
                 deleteSessionMessages.run(sessionId);
                 deleteSessionFts.run(sessionId);
-                deleteMeta.run(`watermark:${sessionId}`);
                 db.exec('COMMIT');
             } catch (error) {
                 db.exec('ROLLBACK');
@@ -268,7 +265,7 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
         clear() {
             db.exec('BEGIN IMMEDIATE');
             try {
-                db.exec('DELETE FROM home_search_messages; DELETE FROM home_search_fts; DELETE FROM home_search_meta WHERE key LIKE \'watermark:%\';');
+                db.exec('DELETE FROM home_search_messages; DELETE FROM home_search_fts;');
                 db.exec('COMMIT');
             } catch (error) {
                 db.exec('ROLLBACK');
@@ -278,14 +275,6 @@ export async function openHomeSearchDb(params: Readonly<{ dbPath?: string; dataD
         count() {
             const row = countMessages.get() as { count?: number } | undefined;
             return Number(row?.count ?? 0);
-        },
-        setWatermark(sessionId, seq) {
-            setMeta.run(`watermark:${sessionId}`, String(Math.max(0, Math.trunc(seq))));
-        },
-        getWatermark(sessionId) {
-            const row = getMeta.get(`watermark:${sessionId}`) as { value?: string } | undefined;
-            const value = Number(row?.value);
-            return Number.isSafeInteger(value) && value >= 0 ? value : 0;
         },
         search(input) {
             const parsedQuery = buildFtsQuery(input.query);

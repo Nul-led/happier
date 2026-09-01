@@ -35,6 +35,7 @@ type VerifiedTokenProvenance = Readonly<{
     extras?: unknown;
     authTokenKind?: unknown;
     authority?: unknown;
+    legacy: boolean;
     apiTokenPrincipal?: VerifiedApiTokenPrincipal;
 }>;
 
@@ -134,6 +135,7 @@ export function enableAuthentication(app: Fastify) {
             request.userId = verified.userId;
             request.authTokenKind = tokenKind;
             request.authAuthority = authority;
+            request.authTokenLegacy = verified.legacy;
             const apiTokenPrincipal = resolveVerifiedApiTokenPrincipal(verified, tokenKind);
             if (tokenKind === "api_token" && !apiTokenPrincipal) {
                 return sendInvalidConnectionCredentialFailure(request, reply);

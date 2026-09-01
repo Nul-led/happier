@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ACCOUNT_SETTINGS_MAX_ENCRYPTED_CIPHERTEXT_UTF8_BYTES } from "@happier-dev/protocol";
+import { currentAccountStoredContentCompatibilityHeaders } from "../../testkit/accountStoredContentCompatibility";
 import { createFakeRouteApp, getRouteEntry } from "../../testkit/routeHarness";
 import { createAuthenticatedTestApp } from "../../testkit/sqliteFastify";
 import { registerAccountSettingsRoutes } from "./registerAccountSettingsRoutes";
@@ -34,6 +35,7 @@ describe("Account Settings V2 request body limit", () => {
                 headers: {
                     "content-type": "application/json",
                     "x-test-user-id": "account-1",
+                    ...currentAccountStoredContentCompatibilityHeaders,
                 },
                 // Whitespace is not part of the parsed ciphertext. Its byte
                 // count must still be bounded before JSON/schema processing.
@@ -75,6 +77,7 @@ describe("Account Settings V1 request body limit", () => {
                 headers: {
                     "content-type": "application/json",
                     "x-test-user-id": "account-1",
+                    ...currentAccountStoredContentCompatibilityHeaders,
                 },
                 payload: `{"settings":"${"x".repeat(
                     ACCOUNT_SETTINGS_MAX_ENCRYPTED_CIPHERTEXT_UTF8_BYTES * 2,
@@ -91,6 +94,7 @@ describe("Account Settings V1 request body limit", () => {
                 headers: {
                     "content-type": "application/json",
                     "x-test-user-id": "account-1",
+                    ...currentAccountStoredContentCompatibilityHeaders,
                 },
                 payload: `{"settings":"${"x".repeat(
                     ACCOUNT_SETTINGS_MAX_ENCRYPTED_CIPHERTEXT_UTF8_BYTES,

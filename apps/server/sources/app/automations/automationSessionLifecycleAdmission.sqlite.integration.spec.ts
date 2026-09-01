@@ -6,9 +6,11 @@ import {
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { applySessionTurnMutation } from "@/app/session/sessionWriteService";
 import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
+import { admitCompletedParentTurnAutomationRunsTx } from "./automationSessionLifecycleAdmission";
 
 function failRunCreate(automationId: string) {
     const mutable = db as any;
@@ -162,6 +164,24 @@ describe("Session lifecycle Automation admission on SQLite", () => {
             mutation: { v: 1, sessionId: current.sessionId, mutationId: `replay-${current.suffix}`, action: "complete", turnId: current.turnId, observedAt: completedAt + 1 },
         })).resolves.toMatchObject({ ok: true, didApply: false });
         await expect(db.automationRun.count({ where: { triggerId: { in: [first.id, second.id] } } })).resolves.toBe(2);
+    });
+
+    it("selects exact-turn candidates from the settled Session Account only", async () => {
+        const current = await source();
+        const foreign = await source();
+        await trigger({
+            ...foreign,
+            sessionId: current.sessionId,
+            turnId: current.turnId,
+        });
+
+        await expect(inTx(async (tx) => await admitCompletedParentTurnAutomationRunsTx({
+            tx,
+            accountId: current.accountId,
+            sourceSessionId: current.sessionId,
+            sourceTurnId: current.turnId,
+            occurredAt: Date.now(),
+        }))).resolves.toEqual([]);
     });
 
     it("fans out more than the portable SQL bind ceiling of exact-turn matches in the settlement transaction", async () => {

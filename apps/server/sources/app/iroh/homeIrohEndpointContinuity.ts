@@ -9,7 +9,10 @@ import { dirname, join } from 'node:path';
  *
  * Purpose: detect endpoint-key loss and identity drift, and keep the
  * descriptor revision positive-monotonic across restarts when the endpoint
- * id, relay URLs, or direct addresses change. This is deliberately not a
+ * id, relay URLs, or direct addresses change. Relocation staging may seed
+ * this public continuity above the source descriptor revision, but the Lane
+ * 02 publisher remains the owner that composes and publishes the outer Home
+ * descriptor. This is deliberately not a
  * database/table/registry and carries no credentials — every field is public
  * descriptor metadata.
  */

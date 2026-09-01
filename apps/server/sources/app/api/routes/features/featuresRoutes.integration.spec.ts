@@ -6,7 +6,7 @@ import type { HomeIrohEndpointState } from "@/app/iroh/homeIrohEndpoint";
 import { createEnvReset } from "../../testkit/env";
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
 import {
-    resolveCachedCanonicalPublicServerUrl,
+    resolveCachedPublicServerUrl,
     resetPublicServerUrlInferenceCacheForTests,
 } from "@/app/integrations/publicUrl/publicServerUrlInference";
 
@@ -18,6 +18,7 @@ const resetEnv = createEnvReset({
     HAPPIER_HOME_DIR: undefined,
     HAPPIER_STACK_CLI_HOME_DIR: undefined,
     HAPPY_HOME_DIR: undefined,
+    HAPPIER_CANONICAL_SERVER_URL: undefined,
     HAPPIER_PUBLIC_SERVER_URL: undefined,
     HAPPIER_PUBLIC_SERVER_URL_INFER_TTL_MS: undefined,
     HAPPIER_PUBLIC_SERVER_URL_INFERRED: undefined,
@@ -184,8 +185,14 @@ describe("featuresRoutes", () => {
             failureReason: null,
         });
 
-        it("publishes the exact canonical descriptor for an active endpoint state", async () => {
-            const { payload, reply } = await getFeaturesPayload({}, undefined, undefined, activeState);
+        it("publishes a public-safe canonical descriptor without private direct-address hints", async () => {
+            resetEnv({ HAPPIER_SERVER_IDENTITY_ID: "srv_routeIrohHome" });
+            const { payload, reply } = await getFeaturesPayload(
+                { headers: { authorization: "Bearer ignored-on-public-projection" } },
+                undefined,
+                undefined,
+                activeState,
+            );
 
             // Exact shape: only the canonical wire fields, no runtime handles,
             // acceptor ports, keys, or failure detail.
@@ -198,9 +205,10 @@ describe("featuresRoutes", () => {
                     kind: "iroh",
                     endpointId: "a".repeat(64),
                     relayUrls: ["https://relay.example.test"],
-                    directAddresses: ["192.168.1.10:4242"],
                 }],
             });
+            expect(payload.homeConnectionDescriptor.endpoints[0]).not.toHaveProperty("directAddresses");
+            expect(activeSnapshot.endpoint.directAddresses).toEqual(["192.168.1.10:4242"]);
             expect(Object.keys(payload.homeConnectionDescriptor).sort()).toEqual([
                 "canonicalServerUrl",
                 "endpoints",
@@ -209,6 +217,69 @@ describe("featuresRoutes", () => {
                 "v",
             ]);
             expect(reply.headers["Cache-Control"]).toBe("no-store");
+        });
+
+        it("publishes the full identity-bound descriptor only from the authenticated features route", async () => {
+            resetEnv({ HAPPIER_SERVER_IDENTITY_ID: "srv_routeIrohHome" });
+            const { featuresRoutes } = await import("./featuresRoutes");
+            const route = createRouteTestBuilder({
+                method: "GET",
+                path: "/v1/features/authenticated",
+                registerRoutes(app) {
+                    app.authenticate.mockImplementation(async (request: any) => {
+                        request.userId = "account_1";
+                        request.authTokenKind = "account";
+                    });
+                    featuresRoutes(app as any, { resolveHomeIrohEndpointState: activeState });
+                },
+            });
+
+            const { response, reply } = await route.invoke({
+                headers: { authorization: "Bearer trusted-home-token" },
+            });
+
+            expect(response).toMatchObject({
+                capabilities: {
+                    serverIdentity: { serverIdentityId: "srv_routeIrohHome" },
+                },
+                homeConnectionDescriptor: {
+                    v: 1,
+                    homeServerIdentityId: "srv_routeIrohHome",
+                    revision: 7,
+                    endpoints: [{
+                        kind: "iroh",
+                        endpointId: "a".repeat(64),
+                        directAddresses: ["192.168.1.10:4242"],
+                    }],
+                },
+            });
+            expect(route.app.authenticate).toHaveBeenCalledTimes(1);
+            expect(reply.headers["Cache-Control"]).toBe("no-store");
+        });
+
+        it("omits an authenticated descriptor whose Home identity differs from the server identity", async () => {
+            resetEnv({ HAPPIER_SERVER_IDENTITY_ID: "srv_differentHome" });
+            const { featuresRoutes } = await import("./featuresRoutes");
+            const route = createRouteTestBuilder({
+                method: "GET",
+                path: "/v1/features/authenticated",
+                registerRoutes(app) {
+                    app.authenticate.mockImplementation(async (request: any) => {
+                        request.userId = "account_1";
+                        request.authTokenKind = "account";
+                    });
+                    featuresRoutes(app as any, {
+                        resolveHomeIrohEndpointState: activeState,
+                    });
+                },
+            });
+
+            const { response } = await route.invoke({
+                headers: { authorization: "Bearer trusted-home-token" },
+            });
+
+            expect((response as any).capabilities.serverIdentity.serverIdentityId).toBe("srv_differentHome");
+            expect(response).not.toHaveProperty("homeConnectionDescriptor");
         });
 
         it("omits the descriptor for not-composed, unavailable, and failed states", async () => {
@@ -220,6 +291,32 @@ describe("featuresRoutes", () => {
                 const { payload } = await getFeaturesPayload({}, undefined, undefined, () => state);
                 expect(payload).not.toHaveProperty("homeConnectionDescriptor");
             }
+        });
+
+        it("publishes canonical identity with only the configured HTTPS public ingress endpoint", async () => {
+            resetEnv({
+                HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:43123",
+                HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test/",
+            });
+
+            const { payload } = await getFeaturesPayload(
+                {},
+                {
+                    getOrCreateServerIdentityId: async () => "srv_publicHttpsHome",
+                    readPinnedServerIdentityId: () => "srv_publicHttpsHome",
+                    readCachedServerIdentityIdForHotPath: () => "srv_publicHttpsHome",
+                },
+                undefined,
+                () => ({ status: "not-composed", snapshot: null, failureReason: null }),
+            );
+
+            expect(payload.homeConnectionDescriptor).toEqual({
+                v: 1,
+                homeServerIdentityId: "srv_publicHttpsHome",
+                canonicalServerUrl: "http://127.0.0.1:43123",
+                revision: 1,
+                endpoints: [{ kind: "https", url: "https://home.example.test" }],
+            });
         });
 
         it("reads endpoint state at request time and never serves a stale descriptor", async () => {
@@ -733,16 +830,17 @@ describe("featuresRoutes", () => {
     describe("server url capabilities", () => {
         it("exposes canonicalServerUrl + webappUrl when configured via env", async () => {
             resetEnv({
+                HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:43123/",
                 HAPPIER_PUBLIC_SERVER_URL: "https://stack.example.test/",
                 HAPPIER_WEBAPP_URL: "https://ui.example.test/",
             });
 
             const { payload } = await getFeaturesPayload();
-            expect(payload.capabilities.server.canonicalServerUrl).toBe("https://stack.example.test");
+            expect(payload.capabilities.server.canonicalServerUrl).toBe("http://127.0.0.1:43123");
             expect(payload.capabilities.server.webappUrl).toBe("https://ui.example.test");
         });
 
-        it("infers canonicalServerUrl via relay access tailscaleFunnel when the current port matches", async () => {
+        it("never promotes inferred public ingress to canonicalServerUrl", async () => {
             const { chmod, mkdir, mkdtemp, rm, writeFile } = await import("node:fs/promises");
             const { tmpdir } = await import("node:os");
             const { join } = await import("node:path");
@@ -795,10 +893,11 @@ describe("featuresRoutes", () => {
                     PORT: "3005",
                 });
 
-                await resolveCachedCanonicalPublicServerUrl(process.env);
+                await resolveCachedPublicServerUrl(process.env);
 
                 const { payload } = await getFeaturesPayload();
-                expect(payload.capabilities.server.canonicalServerUrl).toBe("https://my-machine.tailnet.ts.net");
+                expect(process.env.HAPPIER_PUBLIC_SERVER_URL).toBe("https://my-machine.tailnet.ts.net");
+                expect(payload.capabilities.server.canonicalServerUrl).toBeUndefined();
             } finally {
                 await rm(homeDir, { recursive: true, force: true });
                 await rm(binDir, { recursive: true, force: true });
@@ -858,8 +957,9 @@ describe("featuresRoutes", () => {
             expect(payload.capabilities.server.webappUrl).toBe("https://ui.example.test");
         });
 
-        it("derives webappUrl from canonicalServerUrl when the server is serving UI at root", async () => {
+        it("derives webappUrl from public ingress when the server is serving UI at root", async () => {
             resetEnv({
+                HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:43123/",
                 HAPPIER_PUBLIC_SERVER_URL: "https://stack.example.test/",
                 HAPPIER_WEBAPP_URL: undefined,
                 HAPPIER_SERVER_UI_DIR: "/tmp/ui",
@@ -867,12 +967,13 @@ describe("featuresRoutes", () => {
             });
 
             const { payload } = await getFeaturesPayload();
-            expect(payload.capabilities.server.canonicalServerUrl).toBe("https://stack.example.test");
+            expect(payload.capabilities.server.canonicalServerUrl).toBe("http://127.0.0.1:43123");
             expect(payload.capabilities.server.webappUrl).toBe("https://stack.example.test");
         });
 
-        it("derives webappUrl from canonicalServerUrl plus the UI prefix when the server is serving UI below root", async () => {
+        it("derives webappUrl from public ingress plus the UI prefix when the server is serving UI below root", async () => {
             resetEnv({
+                HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:43123/",
                 HAPPIER_PUBLIC_SERVER_URL: "https://stack.example.test/base/",
                 HAPPIER_WEBAPP_URL: undefined,
                 HAPPIER_SERVER_UI_DIR: "/tmp/ui",
@@ -880,18 +981,19 @@ describe("featuresRoutes", () => {
             });
 
             const { payload } = await getFeaturesPayload();
-            expect(payload.capabilities.server.canonicalServerUrl).toBe("https://stack.example.test/base");
+            expect(payload.capabilities.server.canonicalServerUrl).toBe("http://127.0.0.1:43123");
             expect(payload.capabilities.server.webappUrl).toBe("https://stack.example.test/base/ui");
         });
 
         it("strips userinfo/query/hash from advertised urls", async () => {
             resetEnv({
+                HAPPIER_CANONICAL_SERVER_URL: "https://canonical:secret@identity.example.test/?q=1#frag",
                 HAPPIER_PUBLIC_SERVER_URL: "https://user:pass@stack.example.test/?q=1#frag",
                 HAPPIER_WEBAPP_URL: "https://user:pass@ui.example.test/app/?q=1#frag",
             });
 
             const { payload } = await getFeaturesPayload();
-            expect(payload.capabilities.server.canonicalServerUrl).toBe("https://stack.example.test");
+            expect(payload.capabilities.server.canonicalServerUrl).toBe("https://identity.example.test");
             expect(payload.capabilities.server.webappUrl).toBe("https://ui.example.test/app");
         });
 

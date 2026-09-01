@@ -344,6 +344,7 @@ function mergePublicationResult(params: Readonly<{
     previous: ReviewCommentPublicationResultV1 | null;
     candidate: ReviewCommentPublicationResultV1;
     mayRelease: boolean;
+    mayResolveUncertainFailure: boolean;
 }>): ReviewCommentPublicationResultV1 {
     const previous = params.previous;
     const entries = params.candidate.entries.map((candidate, index) => {
@@ -358,6 +359,11 @@ function mergePublicationResult(params: Readonly<{
             return prior;
         }
         if (params.mayRelease || candidate.outcome.kind === "published") return candidate;
+        if (params.mayResolveUncertainFailure
+            && prior?.outcome.kind === "uncertain"
+            && candidate.outcome.kind === "failed") {
+            return candidate;
+        }
         if (prior !== undefined) return prior;
         return { ...candidate, outcome: { kind: "uncertain" as const } };
     });
@@ -380,6 +386,10 @@ function mergePublicationResult(params: Readonly<{
             }
             verdict = prior;
         } else if (params.mayRelease || params.candidate.verdict.outcome.kind === "published") {
+            verdict = params.candidate.verdict;
+        } else if (params.mayResolveUncertainFailure
+            && prior?.outcome.kind === "uncertain"
+            && params.candidate.verdict.outcome.kind === "failed") {
             verdict = params.candidate.verdict;
         } else if (prior !== null) {
             verdict = prior;
@@ -717,6 +727,7 @@ export function createInMemoryReviewCommentStore(): ReviewCommentStore {
                 if (params.settlement !== undefined) {
                     const lifecycle = first.lifecycle;
                     const mayRelease = params.settlement.dispatchToken !== null;
+                    const mayResolveUncertainFailure = !mayRelease && lifecycle?.dispatchToken === null;
                     if (mayRelease && lifecycle?.dispatchToken !== params.settlement.dispatchToken) {
                         throw new ReviewCommentOperationError(
                             "review_comment_idempotency_conflict",
@@ -731,6 +742,7 @@ export function createInMemoryReviewCommentStore(): ReviewCommentStore {
                             previous: lifecycle?.result ?? null,
                             candidate: params.settlement.result,
                             mayRelease,
+                            mayResolveUncertainFailure,
                         }),
                     };
                     const settled = { publicationPlanId: params.publicationPlanId, lifecycle: merged };
@@ -1106,6 +1118,7 @@ export function createSqlReviewCommentStore(): ReviewCommentStore {
                 }
                 if (options.settlement !== undefined) {
                     const mayRelease = options.settlement.dispatchToken !== null;
+                    const mayResolveUncertainFailure = !mayRelease && first.lifecycle?.dispatchToken === null;
                     if (mayRelease && first.lifecycle?.dispatchToken !== options.settlement.dispatchToken) {
                         throw new ReviewCommentOperationError(
                             "review_comment_idempotency_conflict",
@@ -1120,6 +1133,7 @@ export function createSqlReviewCommentStore(): ReviewCommentStore {
                             previous: first.lifecycle?.result ?? null,
                             candidate: options.settlement.result,
                             mayRelease,
+                            mayResolveUncertainFailure,
                         }),
                     };
                     const storedClaim = stringifyJson({

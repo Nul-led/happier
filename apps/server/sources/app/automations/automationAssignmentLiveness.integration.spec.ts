@@ -14,6 +14,7 @@ import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 import { runAutomationNow } from "./automationCrudService";
+import { claimAutomationRun } from "./automationClaimService";
 import { admitAutomationRunTx } from "./automationRunAdmissionService";
 import { admitDueAutomationScheduleTriggerTx } from "./automationRunQueueService";
 import { admitCompletedParentTurnAutomationRunsTx } from "./automationSessionLifecycleAdmission";
@@ -437,6 +438,103 @@ describe("automation assignment liveness (integration)", () => {
             { machineId: replacedMachineId },
             { machineId: availableMachineId },
         ]);
+    });
+
+    it("preserves one exact-turn occurrence across reversible replacement and claims it after undo", async () => {
+        const accountId = await createAccount();
+        const suffix = randomUUID();
+        const replacedMachineId = `execution-replaced-${suffix}`;
+        const replacementMachineId = `execution-replacement-${suffix}`;
+        const sourceSessionId = `session-${suffix}`;
+        const sourceTurnId = `turn-${suffix}`;
+        await db.machine.createMany({
+            data: [{
+                id: replacedMachineId,
+                accountId,
+                metadata: "{}",
+                replacedByMachineId: replacementMachineId,
+                replacedAt: new Date(),
+            }, {
+                id: replacementMachineId,
+                accountId,
+                metadata: "{}",
+            }],
+        });
+        await db.session.create({
+            data: {
+                id: sourceSessionId,
+                tag: `replacement-exact-turn-${suffix}`,
+                accountId,
+                encryptionMode: "plain",
+                metadata: "{}",
+                latestTurnId: sourceTurnId,
+                latestTurnStatus: "completed",
+            },
+        });
+        await db.sessionTurn.create({
+            data: {
+                sessionId: sourceSessionId,
+                turnId: sourceTurnId,
+                status: "completed",
+                startedAt: 1n,
+                updatedAt: 1n,
+            },
+        });
+        const automationId = `automation-${suffix}`;
+        const triggerId = AutomationTriggerIdSchema.parse(randomUUID());
+        await db.automation.create({
+            data: {
+                id: automationId,
+                accountId,
+                name: "Exact turn waits for replacement undo",
+                enabled: true,
+                targetType: "new_session",
+                templateCiphertext: storedRecipe(1),
+                templateVersion: 1,
+                assignments: { create: { machineId: replacedMachineId, enabled: true } },
+                triggers: {
+                    create: {
+                        id: triggerId,
+                        kind: "sessionLifecycle",
+                        enabled: true,
+                        revision: 0,
+                        sessionLifecycleEvent: "parentTurnCompleted",
+                        sourceSessionId,
+                        sourceTurnId,
+                    },
+                },
+            },
+        });
+
+        const [admission] = await inTx(async (tx) => await admitCompletedParentTurnAutomationRunsTx({
+            tx,
+            accountId,
+            sourceSessionId,
+            sourceTurnId,
+            occurredAt: Date.now(),
+        }));
+        expect(admission?.result).toMatchObject({ kind: "admitted", run: { state: "queued" } });
+        const runId = admission?.result.kind === "admitted" ? admission.result.run.id : null;
+        expect(runId).not.toBeNull();
+        await expect(db.automationRunAssignment.findMany({
+            where: { runId: runId! },
+            select: { machineId: true },
+        })).resolves.toEqual([{ machineId: replacedMachineId }]);
+        await expect(claimAutomationRun({
+            accountId,
+            machineId: replacedMachineId,
+            leaseDurationMs: 30_000,
+        })).resolves.toMatchObject({ run: null });
+
+        await db.machine.update({
+            where: { id: replacedMachineId },
+            data: { replacedByMachineId: null, replacedAt: null },
+        });
+        await expect(claimAutomationRun({
+            accountId,
+            machineId: replacedMachineId,
+            leaseDurationMs: 30_000,
+        })).resolves.toMatchObject({ run: { id: runId, state: "claimed" } });
     });
 
     it("does not admit a Run when every configured assignment is currently unavailable", async () => {

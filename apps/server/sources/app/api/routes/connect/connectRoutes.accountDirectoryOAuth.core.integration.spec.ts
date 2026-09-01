@@ -20,6 +20,7 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 const DIRECTORY_PROOF = "directory-proof-secret";
 const DIRECTORY_PROOF_HASH = createHash("sha256").update(DIRECTORY_PROOF, "utf8").digest("hex");
 const SERVING_ENDPOINT_URL = "https://accounts.example.test";
+const CANONICAL_SERVER_URL = "https://accounts.internal.example.test";
 
 function createTestApp() {
     const app = Fastify({ logger: false });
@@ -48,6 +49,7 @@ function applyDirectoryOAuthEnv(
     overrides: Record<string, string | undefined> = {},
 ): void {
     harness.resetEnv({
+        HAPPIER_CANONICAL_SERVER_URL: CANONICAL_SERVER_URL,
         HAPPIER_PUBLIC_SERVER_URL: SERVING_ENDPOINT_URL,
         GITHUB_CLIENT_ID: "gh_client",
         GITHUB_CLIENT_SECRET: "gh_secret",

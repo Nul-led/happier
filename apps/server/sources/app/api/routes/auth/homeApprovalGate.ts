@@ -1,13 +1,20 @@
 import { randomBytes } from "node:crypto";
-import { HomeDeviceApprovalListV1Schema } from "@happier-dev/protocol";
+import {
+    HOME_LOGIN_APPROVALS_HTTP_PATH_V1,
+    HOME_LOGIN_APPROVAL_DECISION_HTTP_PATH_V1,
+    HomeDeviceApprovalDecisionRequestV1Schema,
+    HomeDeviceApprovalDecisionResponseV1Schema,
+    HomeDeviceApprovalListV1Schema,
+} from "@happier-dev/protocol";
 import { z } from "zod";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import type { Fastify } from "../../types";
-import { requirePresentUser } from "@/app/api/utils/requirePresentUser";
+import { requirePresentUser, PresentUserRequiredResponseSchema } from "@/app/api/utils/requirePresentUser";
 import { resolvePairingAuthPolicyFromEnv } from "./pairingAuthPolicy";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { recordAuthEnrollmentOutcome } from "@/app/monitoring/metrics/authMetrics";
+import { cleanupExpiredAuthPairingSessions } from "@/app/retention/rules/authPairingSessionRetentionRule";
 
 export type HomeApprovalGate = {
     evaluate(input: {
@@ -21,15 +28,13 @@ export type HomeApprovalGate = {
     }): Promise<
         | { kind: "allowed"; approvedRequest?: { approvalId: string; bindingProof: string } }
         | { kind: "approval_required"; request: { approvalId: string; deviceLabel: string | null; expiresAtMs: number } }
-        | { kind: "rejected" | "expired" | "already_decided" }
+        | { kind: "rejected" | "expired" | "invalid" }
     >;
 };
 
 function approvalEnabled(env: NodeJS.ProcessEnv): boolean {
     return env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED === "1";
 }
-
-const EXPIRED_ASSERTION_CLEANUP_LIMIT = 32;
 
 /** Home-local approval gate. It stores pending state in the existing pairing-session owner. */
 export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): HomeApprovalGate {
@@ -41,20 +46,16 @@ export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): Ho
             if (input.approvalId) {
                 const row = await db.authPairingSession.findUnique({ where: { id: input.approvalId } });
                 if (!row) {
-                    recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "rejected" });
-                    return { kind: "rejected" };
+                    recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "wrong_target" });
+                    return { kind: "invalid" };
                 }
                 if (row.accountId !== input.accountId) {
                     recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "wrong_target" });
-                    return { kind: "rejected" };
+                    return { kind: "invalid" };
                 }
                 if (row.flow !== "account_assertion") {
                     recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "wrong_binding" });
-                    return { kind: "rejected" };
-                }
-                if (row.expiresAt <= now) {
-                    recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "expired" });
-                    return { kind: "expired" };
+                    return { kind: "invalid" };
                 }
                 if (
                     row.requestedPublicKey !== input.requesterBoxPublicKeyBase64
@@ -63,7 +64,11 @@ export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): Ho
                     || row.requesterIssuerSubjectId !== input.issuerSubjectId
                 ) {
                     recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "wrong_binding" });
-                    return { kind: "rejected" };
+                    return { kind: "invalid" };
+                }
+                if (row.expiresAt <= now) {
+                    recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "expired" });
+                    return { kind: "expired" };
                 }
                 if (row.approvalStatus === "pending") {
                     return {
@@ -80,8 +85,8 @@ export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): Ho
                     return { kind: "rejected" };
                 }
                 if (row.approvalStatus !== "approved") {
-                    recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "rejected" });
-                    return { kind: "rejected" };
+                    recordAuthEnrollmentOutcome({ flow: "home_approval", outcome: "wrong_binding" });
+                    return { kind: "invalid" };
                 }
                 return {
                     kind: "allowed",
@@ -92,23 +97,12 @@ export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): Ho
                 };
             }
 
+            await cleanupExpiredAuthPairingSessions({
+                now,
+                accountId: input.accountId,
+                flow: "account_assertion",
+            }).catch(() => {});
             return inTx(async (tx) => {
-                const expired = await tx.authPairingSession.findMany({
-                    where: {
-                        accountId: input.accountId,
-                        flow: "account_assertion",
-                        expiresAt: { lt: now },
-                    },
-                    orderBy: { expiresAt: "asc" },
-                    take: EXPIRED_ASSERTION_CLEANUP_LIMIT,
-                    select: { id: true },
-                });
-                if (expired.length > 0) {
-                    await tx.authPairingSession.deleteMany({
-                        where: { id: { in: expired.map((row) => row.id) } },
-                    });
-                }
-
                 const existing = await tx.authPairingSession.findFirst({
                     where: {
                         accountId: input.accountId,
@@ -164,17 +158,13 @@ export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): Ho
 }
 
 const ApprovalIdParamsSchema = z.object({ approvalId: z.string().trim().min(1).max(256) }).strict();
-const ApprovalDecisionRequestSchema = z.object({ decision: z.enum(["approve", "reject"]) }).strict();
-const ApprovalDecisionResponseSchema = z.object({
-    status: z.enum(["approved", "rejected", "already_decided"]),
-}).strict();
 const ApprovalNotFoundResponseSchema = z.object({ error: z.literal("not_found") }).strict();
 /** Authenticated Home-owner approval handlers for the existing pairing owner. */
 export function registerHomeLoginApprovalRoutes(app: Fastify): void {
-    app.get("/v1/auth/home-login/approvals", {
+    app.get(HOME_LOGIN_APPROVALS_HTTP_PATH_V1, {
         config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.homeApproval.list") },
         preHandler: [app.authenticate, requirePresentUser],
-        schema: { response: { 200: HomeDeviceApprovalListV1Schema } },
+        schema: { response: { 200: HomeDeviceApprovalListV1Schema, 403: PresentUserRequiredResponseSchema } },
     }, async (request, reply) => {
         const now = new Date();
         const rows = await db.authPairingSession.findMany({
@@ -210,13 +200,13 @@ export function registerHomeLoginApprovalRoutes(app: Fastify): void {
             }];
         }));
     });
-    app.post("/v1/auth/home-login/approvals/:approvalId/decision", {
+    app.post(HOME_LOGIN_APPROVAL_DECISION_HTTP_PATH_V1, {
         config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "auth.homeApproval.decision") },
         preHandler: [app.authenticate, requirePresentUser],
         schema: {
             params: ApprovalIdParamsSchema,
-            body: ApprovalDecisionRequestSchema,
-            response: { 200: ApprovalDecisionResponseSchema, 404: ApprovalNotFoundResponseSchema },
+            body: HomeDeviceApprovalDecisionRequestV1Schema,
+            response: { 200: HomeDeviceApprovalDecisionResponseV1Schema, 403: PresentUserRequiredResponseSchema, 404: ApprovalNotFoundResponseSchema },
         },
     }, async (request, reply) => {
         const approvalId = request.params.approvalId;

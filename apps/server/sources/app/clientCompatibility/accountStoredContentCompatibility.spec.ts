@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
     buildAccountStoredContentUpgradeRequired,
+    buildProfilePreservingSettingsWriterUpgradeRequired,
     CURRENT_ACCOUNT_STORED_CONTENT_REQUIREMENTS,
     evaluateAccountStoredContentCompatibility,
 } from './accountStoredContentCompatibility';
@@ -61,10 +62,10 @@ describe('account-stored-content compatibility', () => {
         });
     });
 
-    it('uses a separate strict account-stored-content upgrade requirement', () => {
+    it('advertises the cumulative V4 contract while retaining the V2 base requirement', () => {
         expect(CURRENT_ACCOUNT_STORED_CONTENT_REQUIREMENTS).toMatchObject({
             minimumProtocolVersion: 2,
-            currentProtocolVersion: 3,
+            currentProtocolVersion: 4,
         });
         expect(buildAccountStoredContentUpgradeRequired()).toEqual({
             error: 'client-upgrade-required',
@@ -72,6 +73,14 @@ describe('account-stored-content compatibility', () => {
                 v: 1,
                 kind: 'account-stored-content',
                 minimumProtocolVersion: 2,
+            },
+        });
+        expect(buildProfilePreservingSettingsWriterUpgradeRequired()).toEqual({
+            error: 'client-upgrade-required',
+            requirement: {
+                v: 1,
+                kind: 'account-stored-content',
+                minimumProtocolVersion: 4,
             },
         });
     });

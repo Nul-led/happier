@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { withAuthenticatedTestApp } from "../../testkit/sqliteFastify";
+import { currentAccountStoredContentCompatibilityHeaders } from "../../testkit/accountStoredContentCompatibility";
 import { accountRoutes } from "./accountRoutes";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 
@@ -50,7 +51,11 @@ describe("accountRoutes (/v2/account/settings/history) (integration)", () => {
                 const update = await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { content: encryptedContent("ciphertext-new"), expectedVersion: 4 },
                 });
                 expect(update.statusCode).toBe(200);
@@ -91,7 +96,11 @@ describe("accountRoutes (/v2/account/settings/history) (integration)", () => {
                 const update = await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { content: encryptedContent("ciphertext-wrong"), expectedVersion: 6 },
                 });
                 expect(update.statusCode).toBe(200);
@@ -125,7 +134,11 @@ describe("accountRoutes (/v2/account/settings/history) (integration)", () => {
                 const update = await app.inject({
                     method: "POST",
                     url: "/v1/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { settings: "v1-new", expectedVersion: 1 },
                 });
                 expect(update.statusCode).toBe(200);
@@ -166,7 +179,11 @@ describe("accountRoutes (/v2/account/settings/history) (integration)", () => {
                     const update = await app.inject({
                         method: "POST",
                         url: "/v2/account/settings",
-                        headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                        headers: {
+                            "content-type": "application/json",
+                            "x-test-user-id": account.id,
+                            ...currentAccountStoredContentCompatibilityHeaders,
+                        },
                         payload: { content: encryptedContent(`ciphertext-${version + 1}`), expectedVersion: version },
                     });
                     expect(update.statusCode).toBe(200);
@@ -202,7 +219,11 @@ describe("accountRoutes (/v2/account/settings/history) (integration)", () => {
                 const update = await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { content: encryptedContent("disabled-new"), expectedVersion: 0 },
                 });
                 expect(update.statusCode).toBe(200);
@@ -236,7 +257,11 @@ describe("accountRoutes (/v2/account/settings/history) (integration)", () => {
                 await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { content: encryptedContent("detail-new"), expectedVersion: 10 },
                 });
 
@@ -436,7 +461,11 @@ describe("accountRoutes (/v2/account/settings/history) (integration)", () => {
                 await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { content: encryptedContent("restore-new"), expectedVersion: 1 },
                 });
 
@@ -478,7 +507,11 @@ describe("accountRoutes (/v2/account/settings/history) (integration)", () => {
                 await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { content: encryptedContent("restore-missing-echo-new"), expectedVersion: 1 },
                 });
 
@@ -520,7 +553,11 @@ describe("accountRoutes (/v2/account/settings/history) (integration)", () => {
                 await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { content: encryptedContent("restore-validated-new"), expectedVersion: 1 },
                 });
 
@@ -562,7 +599,11 @@ describe("accountRoutes (/v2/account/settings/history) (integration)", () => {
                 await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { content: encryptedContent("restore-mode-new"), expectedVersion: 1 },
                 });
 
@@ -608,7 +649,11 @@ describe("accountRoutes (/v2/account/settings/history) (integration)", () => {
                 await app.inject({
                     method: "POST",
                     url: "/v2/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { content: encryptedContent("restore-cas-new"), expectedVersion: 1 },
                 });
 

@@ -5,8 +5,10 @@ import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
 import {
     computeHomeQrBindingProofV2,
+    createHomeQrReverseInviteV2,
     deriveHomeQrRendezvousSecretV2,
     deriveHomeQrRendezvousVerifierV2,
+    verifyHomeQrBindingProofV2,
 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
@@ -74,6 +76,7 @@ function createV2RequestPayload(input: {
             homeServerIdentityId: localHomeServerIdentityId,
             requesterPublicKey: input.publicKeyRaw,
             expiresAtMs: input.expiresAtMs,
+            direction: "trusted_home_displays",
         }),
         homeServerIdentityId: localHomeServerIdentityId,
         expiresAtMs: input.expiresAtMs,
@@ -118,19 +121,35 @@ describe("authRoutes (pairing auth) (integration)", () => {
         const unauthenticated = await app.inject({
             method: "POST",
             url: "/v1/auth/pairing/start",
-            payload: { secretHash: randomBase64Url32Bytes() },
+            payload: { direction: "trusted_home_displays", secretHash: randomBase64Url32Bytes() },
         });
         expect(unauthenticated.statusCode).toBe(401);
 
         const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}` }, select: { id: true } });
         const token = await createPresentUserToken(account.id);
+        const valid = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { direction: "trusted_home_displays", secretHash: randomBase64Url32Bytes() },
+        });
+        expect(valid.statusCode).toBe(200);
+
         const malformed = await app.inject({
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash: "not-a-32-byte-verifier" },
+            payload: { direction: "trusted_home_displays", secretHash: "not-a-32-byte-verifier" },
         });
         expect(malformed.statusCode).toBe(400);
+
+        const missingDirection = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { secretHash: randomBase64Url32Bytes() },
+        });
+        expect(missingDirection.statusCode).toBe(400);
     });
 
     it("keeps independently issued direct-QR invitations live for the same account", async () => {
@@ -147,13 +166,13 @@ describe("authRoutes (pairing auth) (integration)", () => {
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash: createQrPairingMaterial().rendezvousVerifier },
+            payload: { direction: "trusted_home_displays", secretHash: createQrPairingMaterial().rendezvousVerifier },
         });
         const second = await app.inject({
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash: createQrPairingMaterial().rendezvousVerifier },
+            payload: { direction: "trusted_home_displays", secretHash: createQrPairingMaterial().rendezvousVerifier },
         });
         expect(first.statusCode).toBe(200);
         expect(second.statusCode).toBe(200);
@@ -192,7 +211,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
                 method: "POST",
                 url: "/v1/auth/pairing/start",
                 headers: { authorization: `Bearer ${token}` },
-                payload: { secretHash: createQrPairingMaterial().rendezvousVerifier },
+                payload: { direction: "trusted_home_displays", secretHash: createQrPairingMaterial().rendezvousVerifier },
             });
             expect(response.statusCode).toBe(403);
             expect(response.json()).toEqual({ error: "present_user_required" });
@@ -202,7 +221,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${presentUserToken}` },
-            payload: { secretHash: createQrPairingMaterial().rendezvousVerifier },
+            payload: { direction: "trusted_home_displays", secretHash: createQrPairingMaterial().rendezvousVerifier },
         });
         expect(start.statusCode).toBe(200);
         const pairId = String(start.json().pairId);
@@ -271,7 +290,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash: material.rendezvousVerifier },
+            payload: { direction: "trusted_home_displays", secretHash: material.rendezvousVerifier },
         });
         expect(startRes.statusCode).toBe(200);
         const pairId = String(startRes.json().pairId);
@@ -371,7 +390,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash: material.rendezvousVerifier },
+            payload: { direction: "trusted_home_displays", secretHash: material.rendezvousVerifier },
         });
         const pairId = String(startRes.json().pairId);
         const expiresAtMs = Date.parse(String(startRes.json().expiresAt));
@@ -471,7 +490,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash: createQrPairingMaterial().rendezvousVerifier },
+            payload: { direction: "trusted_home_displays", secretHash: createQrPairingMaterial().rendezvousVerifier },
         });
         expect(startRes.statusCode).toBe(200);
         expect(await db.authPairingSession.findUnique({ where: { id: expiredDirect.id } })).toBeNull();
@@ -489,7 +508,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash: material.rendezvousVerifier },
+            payload: { direction: "trusted_home_displays", secretHash: material.rendezvousVerifier },
         });
         const pairId = String(startRes.json().pairId);
         const expiresAtMs = Date.parse(String(startRes.json().expiresAt));
@@ -524,7 +543,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash: createQrPairingMaterial().rendezvousVerifier },
+            payload: { direction: "trusted_home_displays", secretHash: createQrPairingMaterial().rendezvousVerifier },
         });
         const pairId = String(startRes.json().pairId);
         const [resA, resB] = await Promise.all([
@@ -568,7 +587,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
     it("atomically rejects a requested direct-QR row through the existing consume owner", async () => {
         const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-reject` }, select: { id: true } });
         const token = await createPresentUserToken(account.id);
-        const requestedPublicKey = privacyKit.encodeBase64(tweetnacl.box.keyPair().publicKey);
+        const requestedPublicKey = privacyKit.encodeBase64(new Uint8Array(tweetnacl.box.keyPair().publicKey));
         const row = await db.authPairingSession.create({
             data: {
                 accountId: account.id,
@@ -605,7 +624,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
             data: {
                 accountId: account.id,
                 secretHash: randomBase64Url32Bytes(),
-                requestedPublicKey: privacyKit.encodeBase64(tweetnacl.box.keyPair().publicKey),
+                requestedPublicKey: privacyKit.encodeBase64(new Uint8Array(tweetnacl.box.keyPair().publicKey)),
                 requestedBindingProof: randomBase64Url32Bytes(),
                 requestedAt: new Date(),
                 expiresAt: new Date(Date.now() + 120_000),
@@ -687,7 +706,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
             data: {
                 accountId: account.id,
                 secretHash: randomBase64Url32Bytes(),
-                requestedPublicKey: privacyKit.encodeBase64(tweetnacl.box.keyPair().publicKey),
+                requestedPublicKey: privacyKit.encodeBase64(new Uint8Array(tweetnacl.box.keyPair().publicKey)),
                 requestedBindingProof: randomBase64Url32Bytes(),
                 requestedAt: new Date(),
                 expiresAt: new Date(Date.now() + 120_000),
@@ -733,7 +752,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash: material.rendezvousVerifier },
+            payload: { direction: "trusted_home_displays", secretHash: material.rendezvousVerifier },
         });
         const pairId = String(started.json().pairId);
         const expiresAtMs = Date.parse(String(started.json().expiresAt));
@@ -779,5 +798,248 @@ describe("authRoutes (pairing auth) (integration)", () => {
         } else {
             expect(pairing).toBeNull();
         }
+    });
+
+    it("accepts the A6 requester-displayed proposed tuple with exact expiry, idempotent retries, typed conflicts, and present-user authority", async () => {
+        process.env.AUTH_PAIRING_TTL_SECONDS = "600";
+        const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-reverse-start` }, select: { id: true } });
+        const other = await db.account.create({ data: { publicKey: `pk-${Date.now()}-reverse-start-other` }, select: { id: true } });
+        const token = await createPresentUserToken(account.id);
+        const otherToken = await createPresentUserToken(other.id);
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const reverse = createHomeQrReverseInviteV2({
+            home: {
+                v: 1,
+                homeServerIdentityId: localHomeServerIdentityId,
+                canonicalServerUrl: "https://home.example",
+                revision: 1,
+                endpoints: [{ kind: "https", url: "https://home.example" }],
+            },
+            nowMs: Date.now(),
+            ttlMs: 45_000,
+        });
+        const proposedPairId = reverse.invite.pairId;
+        const proposedExpiresAtMs = reverse.invite.expiresAtMs;
+        const proposedTuple = {
+            direction: "requester_displays" as const,
+            secretHash: Buffer.from(deriveHomeQrRendezvousVerifierV2(reverse.qrSecret)).toString("base64url"),
+            pairId: proposedPairId,
+            expiresAtMs: proposedExpiresAtMs,
+        };
+
+        // A proposed tuple requires a full present-user Home credential, exactly
+        // like the forward start.
+        const unauthenticated = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            payload: proposedTuple,
+        });
+        expect(unauthenticated.statusCode).toBe(401);
+        const [directoryToken, terminalToken, apiToken] = await Promise.all([
+            auth.createToken(account.id, undefined, { kind: "account_directory", authority: "present_user" }),
+            auth.createToken(account.id, { session: "reverse-start-terminal" }, { kind: "terminal", authority: "account_automation" }),
+            auth.createApiToken({ accountId: account.id, label: "Reverse start PAT" }),
+        ]);
+        for (const restricted of [directoryToken, terminalToken, apiToken.token]) {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/auth/pairing/start",
+                headers: { authorization: `Bearer ${restricted}` },
+                payload: proposedTuple,
+            });
+            expect(response.statusCode).toBe(403);
+            expect(response.json()).toEqual({ error: "present_user_required" });
+        }
+
+        // The exact proposed expiry is honored, never rewritten.
+        const start = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: proposedTuple,
+        });
+        expect(start.statusCode).toBe(200);
+        expect(start.json()).toEqual({
+            pairId: proposedPairId,
+            expiresAt: new Date(proposedExpiresAtMs).toISOString(),
+        });
+
+        // An exact retry (same account, pair ID, verifier, expiry) is idempotent.
+        const retry = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: proposedTuple,
+        });
+        expect(retry.statusCode).toBe(200);
+        expect(retry.json()).toEqual(start.json());
+        expect(await db.authPairingSession.findMany({ where: { id: proposedPairId } })).toHaveLength(1);
+
+        // Any other tuple shape for the same pair ID is a typed conflict.
+        for (const mismatch of [
+            { ...proposedTuple, secretHash: createQrPairingMaterial().rendezvousVerifier },
+            { ...proposedTuple, expiresAtMs: proposedExpiresAtMs + 1 },
+        ]) {
+            const sameAccount = await app.inject({
+                method: "POST",
+                url: "/v1/auth/pairing/start",
+                headers: { authorization: `Bearer ${token}` },
+                payload: mismatch,
+            });
+            expect(sameAccount.statusCode).toBe(409);
+            expect(sameAccount.json()).toEqual({ error: "pair_id_conflict" });
+        }
+        const otherAccount = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${otherToken}` },
+            payload: proposedTuple,
+        });
+        expect(otherAccount.statusCode).toBe(409);
+        expect(otherAccount.json()).toEqual({ error: "pair_id_conflict" });
+        expect(await db.authPairingSession.findMany({ where: { id: proposedPairId } })).toHaveLength(1);
+
+        // Reverse input is strict: the discriminator, canonical 32-byte pair ID,
+        // and canonical 32-byte verifier are all mandatory.
+        for (const invalid of [
+            { ...proposedTuple, direction: undefined },
+            { ...proposedTuple, pairId: "not-a-canonical-32-byte-id" },
+            { ...proposedTuple, secretHash: "not-a-canonical-32-byte-verifier" },
+        ]) {
+            const rejected = await app.inject({
+                method: "POST",
+                url: "/v1/auth/pairing/start",
+                headers: { authorization: `Bearer ${token}` },
+                payload: invalid,
+            });
+            expect(rejected.statusCode).toBe(400);
+        }
+
+        // Already-expired proposals and proposals beyond the existing
+        // 600-second policy ceiling are rejected before any row exists.
+        for (const invalid of [
+            {
+                ...proposedTuple,
+                pairId: randomBase64Url32Bytes(),
+                expiresAtMs: Date.now() - 1,
+            },
+            {
+                ...proposedTuple,
+                pairId: randomBase64Url32Bytes(),
+                expiresAtMs: Date.now() + 601_000,
+            },
+        ]) {
+            const rejected = await app.inject({
+                method: "POST",
+                url: "/v1/auth/pairing/start",
+                headers: { authorization: `Bearer ${token}` },
+                payload: invalid,
+            });
+            expect(rejected.statusCode).toBe(400);
+            expect(rejected.json()).toEqual({ error: "invalid_proposed_expiry" });
+        }
+        expect(await db.authPairingSession.findMany({ where: { accountId: account.id } })).toHaveLength(1);
+
+        // The released forward start body remains strict and server-owned.
+        const forward = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: { direction: "trusted_home_displays", secretHash: createQrPairingMaterial().rendezvousVerifier },
+        });
+        expect(forward.statusCode).toBe(200);
+        expect(forward.json().pairId).not.toBe(proposedPairId);
+        expect(Date.parse(String(forward.json().expiresAt))).toBeGreaterThan(Date.now());
+
+        await app.close();
+    });
+
+    it("carries a requester-displayed pairing through the existing routes with a direction-bound proof", async () => {
+        const account = await db.account.create({ data: { publicKey: `pk-${Date.now()}-reverse-e2e` }, select: { id: true } });
+        const token = await createPresentUserToken(account.id);
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        const reverse = createHomeQrReverseInviteV2({
+            home: {
+                v: 1,
+                homeServerIdentityId: localHomeServerIdentityId,
+                canonicalServerUrl: "https://home.example",
+                revision: 1,
+                endpoints: [{ kind: "https", url: "https://home.example" }],
+            },
+            nowMs: Date.now(),
+            ttlMs: 60_000,
+        });
+        const qrSecret = reverse.qrSecret;
+        const requesterPublicKey = new Uint8Array(reverse.requesterPublicKey);
+
+        // The enrolled scanner authenticates the existing start route with the
+        // requester's proposed tuple from the displayed invite.
+        const start = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/start",
+            headers: { authorization: `Bearer ${token}` },
+            payload: {
+                direction: reverse.invite.direction,
+                secretHash: Buffer.from(deriveHomeQrRendezvousVerifierV2(qrSecret)).toString("base64url"),
+                pairId: reverse.invite.pairId,
+                expiresAtMs: reverse.invite.expiresAtMs,
+            },
+        });
+        expect(start.statusCode).toBe(200);
+        expect(start.json().pairId).toBe(reverse.invite.pairId);
+
+        // The requester itself holds the QR secret and installs its own bound
+        // tuple through the existing unauthenticated request route.
+        const requestRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/pairing/request",
+            payload: {
+                pairId: reverse.invite.pairId,
+                secret: Buffer.from(deriveHomeQrRendezvousSecretV2(qrSecret)).toString("base64url"),
+                publicKey: privacyKit.encodeBase64(requesterPublicKey),
+                bindingProof: computeHomeQrBindingProofV2({
+                    qrSecret,
+                    pairId: reverse.invite.pairId,
+                    homeServerIdentityId: localHomeServerIdentityId,
+                    requesterPublicKey,
+                    expiresAtMs: reverse.invite.expiresAtMs,
+                    direction: "requester_displays",
+                }),
+                homeServerIdentityId: localHomeServerIdentityId,
+                expiresAtMs: reverse.invite.expiresAtMs,
+            },
+        });
+        expect(requestRes.statusCode).toBe(200);
+        expect(requestRes.json()).toEqual({ state: "requested" });
+
+        // The scanner polls the existing status route and verifies the stored
+        // proof only against the requester-displayed direction.
+        const statusRes = await app.inject({
+            method: "GET",
+            url: `/v1/auth/pairing/status?pairId=${encodeURIComponent(reverse.invite.pairId)}`,
+            headers: { authorization: `Bearer ${token}` },
+        });
+        expect(statusRes.statusCode).toBe(200);
+        const status = statusRes.json();
+        expect(status.state).toBe("requested");
+        expect(status.requestedPublicKey).toBe(privacyKit.encodeBase64(requesterPublicKey));
+        const verifyParams = {
+            qrSecret,
+            pairId: reverse.invite.pairId,
+            homeServerIdentityId: localHomeServerIdentityId,
+            requesterPublicKey,
+            expiresAtMs: reverse.invite.expiresAtMs,
+        };
+        expect(verifyHomeQrBindingProofV2({ ...verifyParams, direction: "requester_displays" }, status.bindingProof)).toBe(true);
+        // The forward direction can never verify a requester-displayed proof.
+        expect(verifyHomeQrBindingProofV2({ ...verifyParams, direction: "trusted_home_displays" }, status.bindingProof)).toBe(false);
+
+        await app.close();
     });
 });

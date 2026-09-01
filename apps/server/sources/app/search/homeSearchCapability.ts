@@ -39,6 +39,6 @@ export function resolveHomeSearchCapability(input: Readonly<{
         return { enabled: false, provider: 'daemon', reason: 'non_plain_home' };
     }
     if (input.indexing) return { enabled: false, provider: 'home', reason: 'indexing' };
-    if (!input.indexReady) return { enabled: false, provider: null, reason: 'index_unavailable' };
+    if (!input.indexReady) return { enabled: false, provider: 'home', reason: 'index_unavailable' };
     return { enabled: true, provider: 'home' };
 }

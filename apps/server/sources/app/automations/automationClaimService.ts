@@ -125,12 +125,25 @@ function projectAutomationV3ClaimReceiptResult(
 }
 
 /**
- * The receipt is the one idempotency owner for a signed claim. Persist the
- * exact bounded V3 wire projection selected for that response rather than the
- * broad internal Run row or a pointer back to mutable Run state.
+ * The receipt is the one idempotency owner for a signed claim. It stores the
+ * bounded V3 wire projection selected for that response rather than the broad
+ * internal Run row or a pointer back to mutable Run state — except the private
+ * Run recipe envelope. Those bytes are owned by the AutomationRun row, which
+ * the Account encryption transition rewrites in place; a receipt copy would
+ * sit outside that transition census and resurface mode-stale private content
+ * on replay. Replay therefore re-reads the envelope from the Run row and
+ * validates it under the current Account content witness instead.
  */
 function serializeAutomationClaimReceiptResultV2(result: AutomationClaimResult): string {
-    return JSON.stringify(projectAutomationV3ClaimReceiptResult(result));
+    const projected = projectAutomationV3ClaimReceiptResult(result);
+    if (projected.run === null) return JSON.stringify(projected);
+    return JSON.stringify({
+        ...projected,
+        run: {
+            ...projected.run,
+            executionInputEnvelope: null,
+        },
+    });
 }
 
 function parseAutomationClaimReceiptResultV2(
@@ -434,11 +447,12 @@ async function projectClaimedRunWithTriggerCurrentness(
 /**
  * Rejoins the already-committed effect of the same signed claim request without
  * mutating anything: no attempt increment, no lease extension, no re-emitted
- * transition. The replay validates the frozen recipe under the committed
- * post-claim witness persisted beside the claim, so a retried request receives
- * exactly the response the original claim committed — never a freshly minted
- * Account sequence. A receipt without that committed witness is stale and
- * fails closed as the same no-Run shape.
+ * transition. The replay validates the Run's canonical recipe envelope, re-read
+ * from its transition-managed row, under the current Account witness, so a
+ * retried request receives the same committed claim effect — same Run and
+ * attempt — without resurfacing a mode-stale recipe or Account witness. A
+ * receipt without its committed witness is stale and fails closed as the same
+ * no-Run shape.
  */
 async function resolveClaimReceiptTx(params: Readonly<{
     tx: Tx;
@@ -504,37 +518,45 @@ async function resolveClaimReceiptTx(params: Readonly<{
             || run.cause.triggerKind !== params.expectedTriggerKind
         ))
     ) return { run: null, accountCurrentness: null };
-    // A newer lease attempt supersedes the old claim authority. Read only that
-    // currentness fact from the live row; every response field still comes
-    // from the frozen receipt so normal state/revision/settlement changes
-    // cannot rewrite the result of the original signed request.
+    // A newer lease attempt supersedes the old claim authority. Read only the
+    // attempt and the canonical recipe envelope from the live row; every other
+    // response field still comes from the frozen receipt so normal
+    // state/revision/settlement changes cannot rewrite the result of the
+    // original signed request. The envelope is not stored in the receipt (its
+    // canonical owner is the transition-managed Run row), so replay validates
+    // the live bytes under the current Account witness instead of resurfacing
+    // stale private content or delaying this claimed attempt until lease expiry.
     const currentAttempt = await params.tx.automationRun.findFirst({
         where: {
             id: run.id,
             accountId: params.accountId,
         },
-        select: { attempt: true },
+        select: { attempt: true, executionInputEnvelope: true },
     });
     if (!currentAttempt || currentAttempt.attempt !== receipt.claimedAttempt) {
         return { run: null, accountCurrentness: null };
     }
-    if (
-        !hasClaimableFrozenRecipe({
-            executionInputEnvelope: run.executionInputEnvelope,
-            retainedV2OriginKind: run.cause.kind === "manual"
-                ? "manual"
-                : run.cause.kind === "trigger" && run.cause.triggerKind === "schedule"
-                    ? "scheduled"
-                    : undefined,
-            accountCurrentness: committedWitness,
-        })
-    ) {
-        return { run: null, accountCurrentness: null };
-    }
+    const retainedV2OriginKind = run.cause.kind === "manual"
+        ? "manual" as const
+        : run.cause.kind === "trigger" && run.cause.triggerKind === "schedule"
+            ? "scheduled" as const
+            : undefined;
+    const replayWitness = await fetchAutomationAccountCurrentnessWitnessTx(
+        params.tx,
+        params.accountId,
+    );
+    if (!replayWitness || !hasClaimableFrozenRecipe({
+        executionInputEnvelope: currentAttempt.executionInputEnvelope,
+        retainedV2OriginKind,
+        accountCurrentness: replayWitness,
+    })) return { run: null, accountCurrentness: null };
     return {
         run: null,
-        accountCurrentness: committedWitness,
-        receiptReplay: { run, automation },
+        accountCurrentness: replayWitness,
+        receiptReplay: {
+            run: { ...run, executionInputEnvelope: currentAttempt.executionInputEnvelope },
+            automation,
+        },
     };
 }
 

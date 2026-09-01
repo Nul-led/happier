@@ -4,7 +4,7 @@ import {
     ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION,
     ACCOUNT_STORED_CONTENT_ACCOUNT_ENCRYPTION_TRANSITION_PROTOCOL_VERSION,
     ACCOUNT_STORED_CONTENT_SESSION_ACCESS_WITNESS_PROTOCOL_VERSION,
-    CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+    ACCOUNT_STORED_CONTENT_PROFILE_PRESERVING_SETTINGS_WRITER_PROTOCOL_VERSION,
     ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
     parseAccountStoredContentCompatibilityHttpHeadersV1,
     parseAccountStoredContentCompatibilitySocketAuthV1,
@@ -19,12 +19,13 @@ import type { Socket } from 'socket.io';
 export const CURRENT_ACCOUNT_STORED_CONTENT_REQUIREMENTS:
     AccountStoredContentCompatibilityServerRequirementsV1 = Object.freeze({
         v: 1,
-        // V3 adds the closed pluginDomain projection; V4 is an advertised
-        // optional changes-page field. V2 remains sufficient for every
-        // incumbent stored-content operation.
+        // V3 adds the closed pluginDomain projection. V4 is the current
+        // cumulative declaration for the additive changes witness and the
+        // profile-preserving Account Settings writer. V2 remains sufficient
+        // for incumbent stored-content operations that do not require either.
         minimumProtocolVersion: ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
         currentProtocolVersion:
-            CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+            ACCOUNT_STORED_CONTENT_PROFILE_PRESERVING_SETTINGS_WRITER_PROTOCOL_VERSION,
         declarationTransport: 'http-header-and-socket-auth-v1',
     });
 
@@ -79,6 +80,19 @@ export function buildPluginDataAccountStoredContentUpgradeRequired():
             kind: 'account-stored-content',
             minimumProtocolVersion:
                 ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION,
+        },
+    };
+}
+
+export function buildProfilePreservingSettingsWriterUpgradeRequired():
+    AccountStoredContentUpgradeRequiredV1 {
+    return {
+        error: CLIENT_UPGRADE_REQUIRED_ERROR_CODE,
+        requirement: {
+            v: 1,
+            kind: 'account-stored-content',
+            minimumProtocolVersion:
+                ACCOUNT_STORED_CONTENT_PROFILE_PRESERVING_SETTINGS_WRITER_PROTOCOL_VERSION,
         },
     };
 }
@@ -181,6 +195,30 @@ export async function enforceCurrentAccountStoredContentCompatibilityForHttpRequ
         await reply.code(CLIENT_UPGRADE_REQUIRED_HTTP_STATUS).send(
             evaluation.upgradeRequired
             ?? buildAccountStoredContentUpgradeRequired(),
+        );
+    }
+    return !reply.sent;
+}
+
+/**
+ * Account Settings replacement is opaque to the server, so admission cannot
+ * inspect whether one request contains Profile V2 rows. The writer declaration
+ * is consequently enforced for every V1/V2 Settings replacement while reads
+ * and unrelated stored-content operations remain available to older clients.
+ */
+export async function enforceProfilePreservingSettingsWriterCompatibilityForHttpRequest(
+    request: FastifyRequest,
+    reply: FastifyReply,
+): Promise<boolean> {
+    const evaluation =
+        readAccountStoredContentCompatibilityForHttpRequest(request);
+    const supportsProfilePreservingWriter =
+        evaluation.declaration !== null
+        && evaluation.declaration.protocolVersion
+            >= ACCOUNT_STORED_CONTENT_PROFILE_PRESERVING_SETTINGS_WRITER_PROTOCOL_VERSION;
+    if (!supportsProfilePreservingWriter) {
+        await reply.code(CLIENT_UPGRADE_REQUIRED_HTTP_STATUS).send(
+            buildProfilePreservingSettingsWriterUpgradeRequired(),
         );
     }
     return !reply.sent;

@@ -1,3 +1,5 @@
+import { projectTranscriptBodySearchableText } from '@happier-dev/protocol';
+
 import type { HomeSearchDb, HomeSearchMessage } from './homeSearchDb';
 
 export type HomeSearchCanonicalMessage = Readonly<{
@@ -15,23 +17,10 @@ export type HomeSearchCanonicalPageReader = (input: Readonly<{ afterId?: string;
     nextAfterId?: string;
 }>>;
 
-function readPlainEnvelopeValue(content: unknown): string {
-    if (typeof content === 'string') return content;
-    if (!content || typeof content !== 'object') return '';
-    const value = content as Record<string, unknown>;
-    if (typeof value.text === 'string') return value.text;
-    if (typeof value.message === 'string') return value.message;
-    if (value.message && typeof value.message === 'object') return readPlainEnvelopeValue(value.message);
-    if (Array.isArray(value.content)) return value.content.map(readPlainEnvelopeValue).filter(Boolean).join('\n');
-    if (value.content && typeof value.content === 'object') return readPlainEnvelopeValue(value.content);
-    if (value.data && typeof value.data === 'object') return readPlainEnvelopeValue(value.data);
-    return '';
-}
-
 function readSearchableText(content: unknown): string {
     if (!content || typeof content !== 'object') return '';
     const envelope = content as Record<string, unknown>;
-    return envelope.t === 'plain' ? readPlainEnvelopeValue(envelope.v) : '';
+    return envelope.t === 'plain' ? projectTranscriptBodySearchableText(envelope.v) : '';
 }
 
 function toIndexedMessage(message: HomeSearchCanonicalMessage): HomeSearchMessage {
@@ -93,7 +82,6 @@ export function createHomeSearchIndexer(params: Readonly<{
         const indexed = toIndexedMessage(mutation.message);
         if (indexed.text.trim()) params.db.upsert(indexed);
         else params.db.remove(indexed.id);
-        params.db.setWatermark(indexed.sessionId, indexed.seq);
     };
     const enqueue = (mutation: QueuedMutation) => {
         if (stopped) return;
@@ -115,7 +103,6 @@ export function createHomeSearchIndexer(params: Readonly<{
         params.db.clear();
         let indexed = 0;
         let afterId: string | undefined;
-        const watermarks = new Map<string, number>();
         do {
             const page = await params.readCanonicalMessagesPage({ afterId, limit: RECONCILE_PAGE_SIZE });
             for (const row of page.messages) {
@@ -124,12 +111,10 @@ export function createHomeSearchIndexer(params: Readonly<{
                     params.db.upsert(message);
                     indexed += 1;
                 }
-                watermarks.set(row.sessionId, Math.max(watermarks.get(row.sessionId) ?? 0, row.seq));
             }
             if (page.nextAfterId && page.nextAfterId === afterId) throw new Error('Canonical transcript pagination did not advance');
             afterId = page.nextAfterId;
         } while (afterId);
-        for (const [sessionId, seq] of watermarks) params.db.setWatermark(sessionId, seq);
         return { indexed, removed: Math.max(0, previousCount - indexed) };
     };
 

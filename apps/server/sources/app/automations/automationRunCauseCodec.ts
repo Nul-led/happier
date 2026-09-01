@@ -17,6 +17,10 @@ export type CauseRow = Pick<AutomationRunItem,
     | "causeSessionLifecycleEvent"
     | "causeSourceSessionId"
     | "causeSourceTurnId"
+    | "causeSessionLifecycleRequestId"
+    | "causeSessionLifecycleRequestKind"
+    | "causeSessionLifecyclePolicyKind"
+    | "causeSessionLifecycleConfiguredCount"
     | "occurrenceKey"
     | "causeSourceSelectorId"
     | "createdAt"
@@ -71,13 +75,43 @@ export function decodeAutomationRunCause(row: CauseRow): AutomationRunCause {
         });
     }
     if (row.causeTriggerKind === "sessionLifecycle") {
+        const policyKind = required(
+            row.causeSessionLifecyclePolicyKind,
+            "causeSessionLifecyclePolicyKind",
+        );
+        const policy = policyKind === "nextMatches"
+            ? {
+                kind: policyKind,
+                count: required(
+                    row.causeSessionLifecycleConfiguredCount,
+                    "causeSessionLifecycleConfiguredCount",
+                ),
+            } as const
+            : { kind: policyKind } as const;
+        const event = required(
+            row.causeSessionLifecycleEvent,
+            "causeSessionLifecycleEvent",
+        );
         return AutomationRunCauseSchema.parse({
             ...common,
             triggerKind: "sessionLifecycle",
             evidence: {
-                event: required(row.causeSessionLifecycleEvent, "causeSessionLifecycleEvent"),
+                event,
                 sourceSessionId: required(row.causeSourceSessionId, "causeSourceSessionId"),
                 sourceTurnId: required(row.causeSourceTurnId, "causeSourceTurnId"),
+                ...(event === "userActionRequired"
+                    ? {
+                        requestId: required(
+                            row.causeSessionLifecycleRequestId,
+                            "causeSessionLifecycleRequestId",
+                        ),
+                        requestKind: required(
+                            row.causeSessionLifecycleRequestKind,
+                            "causeSessionLifecycleRequestKind",
+                        ),
+                    }
+                    : {}),
+                policy,
             },
         });
     }
@@ -113,6 +147,10 @@ export function encodeAutomationRunCause(causeInput: AutomationRunCause) {
             causeSessionLifecycleEvent: null,
             causeSourceSessionId: null,
             causeSourceTurnId: null,
+            causeSessionLifecycleRequestId: null,
+            causeSessionLifecycleRequestKind: null,
+            causeSessionLifecyclePolicyKind: null,
+            causeSessionLifecycleConfiguredCount: null,
             occurrenceKey: null,
             causeSourceSelectorId: null,
         };
@@ -130,6 +168,10 @@ export function encodeAutomationRunCause(causeInput: AutomationRunCause) {
             causeSessionLifecycleEvent: null,
             causeSourceSessionId: null,
             causeSourceTurnId: null,
+            causeSessionLifecycleRequestId: null,
+            causeSessionLifecycleRequestKind: null,
+            causeSessionLifecyclePolicyKind: null,
+            causeSessionLifecycleConfiguredCount: null,
             occurrenceKey: cause.occurrenceKey,
             causeSourceSelectorId: null,
         };
@@ -155,6 +197,21 @@ export function encodeAutomationRunCause(causeInput: AutomationRunCause) {
             : null,
         causeSourceTurnId: cause.triggerKind === "sessionLifecycle"
             ? cause.evidence.sourceTurnId
+            : null,
+        causeSessionLifecycleRequestId: cause.triggerKind === "sessionLifecycle"
+            && cause.evidence.event === "userActionRequired"
+            ? cause.evidence.requestId
+            : null,
+        causeSessionLifecycleRequestKind: cause.triggerKind === "sessionLifecycle"
+            && cause.evidence.event === "userActionRequired"
+            ? cause.evidence.requestKind
+            : null,
+        causeSessionLifecyclePolicyKind: cause.triggerKind === "sessionLifecycle"
+            ? cause.evidence.policy.kind
+            : null,
+        causeSessionLifecycleConfiguredCount: cause.triggerKind === "sessionLifecycle"
+            && cause.evidence.policy.kind === "nextMatches"
+            ? cause.evidence.policy.count
             : null,
         occurrenceKey: cause.occurrenceKey,
         causeSourceSelectorId: cause.triggerKind === "pluginEvent"

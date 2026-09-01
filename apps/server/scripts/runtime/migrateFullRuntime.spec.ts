@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { runFullRuntimeMigration } from './migrateFullRuntime';
+import { isFullRuntimeMigrationApplied, runFullRuntimeMigration } from './migrateFullRuntime';
 
 const tempRoots: string[] = [];
 
@@ -100,5 +100,48 @@ describe('runFullRuntimeMigration', () => {
             processBoundary: { spawn() { spawned = true; return { status: 0, signal: null }; } },
         })).rejects.toThrow(message);
         expect(spawned).toBe(false);
+    });
+});
+
+describe('isFullRuntimeMigrationApplied', () => {
+    it('reads the existing Prisma ledger completion fields for the exact migration', async () => {
+        const queries: string[] = [];
+        let disconnected = 0;
+        const applied = await isFullRuntimeMigrationApplied({
+            env: { HAPPIER_DB_PROVIDER: 'sqlite', DATABASE_URL: 'file:/data/home.sqlite' },
+            migrationName: '20260725100000_activate_qualified_connected_accounts_v4',
+            createClient: async () => ({
+                $connect: async () => undefined,
+                $disconnect: async () => { disconnected += 1; },
+                $queryRawUnsafe: async (query: string) => {
+                    queries.push(query);
+                    return [{ migration_name: '20260725100000_activate_qualified_connected_accounts_v4' }];
+                },
+            }),
+        });
+
+        expect(applied).toBe(true);
+        expect(disconnected).toBe(1);
+        expect(queries[0]).toContain("migration_name = '20260725100000_activate_qualified_connected_accounts_v4'");
+        expect(queries[0]).toContain('finished_at IS NOT NULL');
+        expect(queries[0]).toContain('rolled_back_at IS NULL');
+    });
+
+    it('treats an absent migration ledger as pre-boundary but propagates other database failures', async () => {
+        const createClient = async (message: string) => ({
+            $connect: async () => undefined,
+            $disconnect: async () => undefined,
+            $queryRawUnsafe: async () => { throw new Error(message); },
+        });
+        await expect(isFullRuntimeMigrationApplied({
+            env: { HAPPIER_DB_PROVIDER: 'postgres', DATABASE_URL: 'postgresql://db/home' },
+            migrationName: '20260725100000_activate_qualified_connected_accounts_v4',
+            createClient: async () => await createClient('relation _prisma_migrations does not exist'),
+        })).resolves.toBe(false);
+        await expect(isFullRuntimeMigrationApplied({
+            env: { HAPPIER_DB_PROVIDER: 'postgres', DATABASE_URL: 'postgresql://db/home' },
+            migrationName: '20260725100000_activate_qualified_connected_accounts_v4',
+            createClient: async () => await createClient('connection refused'),
+        })).rejects.toThrow(/connection refused/);
     });
 });

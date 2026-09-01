@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Fastify } from "@/app/api/types";
+import { registerHomeLoginApprovalRoutes } from "@/app/api/routes/auth/homeApprovalGate";
 import { PresentUserRequiredResponseSchema } from "@/app/api/utils/requirePresentUser";
 import { registerAccountDirectoryLinkRoutes } from "./accountDirectoryRoutes";
 
@@ -25,6 +26,12 @@ function captureRegistrations(register: (app: Fastify) => void): RecordedRoute[]
         delete(path: string, opts: { schema?: { response?: Record<string, unknown> } }) {
             registrations.push({ method: "DELETE", path, opts });
         },
+        get(path: string, opts: { schema?: { response?: Record<string, unknown> } }) {
+            registrations.push({ method: "GET", path, opts });
+        },
+        post(path: string, opts: { schema?: { response?: Record<string, unknown> } }) {
+            registrations.push({ method: "POST", path, opts });
+        },
     } as unknown as Fastify;
     register(fakeApp);
     return registrations.map(({ method, path, opts }) => ({
@@ -36,11 +43,16 @@ function captureRegistrations(register: (app: Fastify) => void): RecordedRoute[]
 
 describe("Account Directory route response contracts", () => {
     it("declares the canonical present-user 403 response schema on the Home link routes", () => {
-        const linkRoutes = captureRegistrations(registerAccountDirectoryLinkRoutes)
-            .filter((route) => route.path.includes("/v1/account/directory-links/"));
+        const linkRoutes = [
+            ...captureRegistrations(registerAccountDirectoryLinkRoutes),
+            ...captureRegistrations(registerHomeLoginApprovalRoutes),
+        ].filter((route) => route.path.includes("/v1/account/directory-links/")
+            || route.path.includes("/v1/auth/home-login/approvals"));
 
         expect(linkRoutes.map((route) => `${route.method} ${route.path}`).sort()).toEqual([
             "DELETE /v1/account/directory-links/:issuerServerIdentityId",
+            "GET /v1/auth/home-login/approvals",
+            "POST /v1/auth/home-login/approvals/:approvalId/decision",
             "PUT /v1/account/directory-links/:issuerServerIdentityId",
         ]);
         for (const route of linkRoutes) {

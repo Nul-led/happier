@@ -79,8 +79,19 @@ function hostedTranscriptPublication(accountId = "u1") {
 const hasCurrentSessionScopedMachineAccessInTx = vi.fn(async () => true);
 vi.mock("@/app/api/socket/sessionScopedBinding", () => ({ hasCurrentSessionScopedMachineAccessInTx }));
 
+const afterTxCallbacks = vi.hoisted(() => [] as Array<() => void>);
+const afterTx = vi.hoisted(() => vi.fn((_tx: unknown, callback: () => void) => {
+    afterTxCallbacks.push(callback);
+}));
 vi.mock("@/storage/inTx", () => ({
     inTx: async <T>(fn: (tx: SessionWriteTxMock) => T | Promise<T>) => await fn(transactionQueue.shift() ?? currentTx),
+    afterTx: (...args: unknown[]) => afterTx(...args),
+}));
+
+const warn = vi.hoisted(() => vi.fn());
+vi.mock("@/utils/logging/log", () => ({
+    log: vi.fn(),
+    warn: (...args: unknown[]) => warn(...args),
 }));
 
 const acquireAccountEncryptionTransitionFenceInTx = vi.fn<
@@ -169,6 +180,9 @@ describe("sessionWriteService", () => {
         acquireAccountEncryptionTransitionFenceInTx.mockResolvedValue({ status: "ready" });
         admitCompletedParentTurnAutomationRunsTx.mockReset();
         admitCompletedParentTurnAutomationRunsTx.mockResolvedValue([]);
+        afterTx.mockClear();
+        afterTxCallbacks.splice(0);
+        warn.mockReset();
         dbMocks.reset();
         storagePolicyEnv.restore();
         transactionQueue = [];
@@ -4806,7 +4820,7 @@ describe("sessionWriteService", () => {
             });
         });
 
-        it("clears legacy thinking state when materializing a terminal turn", async () => {
+        it("materializes a terminal turn and defers exact-turn ineligible diagnostics without suppressing siblings", async () => {
             expect(typeof applySessionTurnMutation).toBe("function");
             currentTx.session.findUnique
                 .mockResolvedValueOnce({
@@ -4858,6 +4872,10 @@ describe("sessionWriteService", () => {
             currentTx.session.update.mockResolvedValue({});
             getSessionParticipantUserIds.mockResolvedValue(["u1"]);
             markAccountChanged.mockResolvedValueOnce(102);
+            admitCompletedParentTurnAutomationRunsTx.mockResolvedValue([
+                { triggerId: "trigger-admitted", result: { kind: "admitted", run: { id: "run-1" } } },
+                { triggerId: "trigger-ineligible", result: { kind: "ineligible", reason: "definitionInvalid" } },
+            ]);
 
             await applySessionTurnMutation({
                 actorUserId: "u1",
@@ -4894,6 +4912,23 @@ describe("sessionWriteService", () => {
             expect(
                 acquireAccountEncryptionTransitionFenceInTx.mock.invocationCallOrder[0]!,
             ).toBeLessThan(currentTx.sessionTurn.update.mock.invocationCallOrder[0]!);
+            expect(warn).not.toHaveBeenCalled();
+            expect(afterTxCallbacks).toHaveLength(1);
+
+            afterTxCallbacks[0]!();
+            expect(warn).toHaveBeenCalledOnce();
+            expect(warn).toHaveBeenCalledWith(
+                {
+                    module: "session-write",
+                    event: "automation_exact_turn_admission_ineligible",
+                    reason: "definitionInvalid",
+                    triggerId: "trigger-ineligible",
+                    accountId: "u1",
+                    sourceSessionId: "s1",
+                    sourceTurnId: "turn-1",
+                },
+                "Exact-turn Automation admission was ineligible after Session completion",
+            );
         });
 
         it("does not let stale in-progress evidence overwrite a terminal turn", async () => {

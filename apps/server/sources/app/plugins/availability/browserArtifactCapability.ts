@@ -11,7 +11,7 @@ import { decodeBase64, encodeBase64 } from "privacy-kit";
 import { z } from "zod";
 
 import {
-    resolveConfiguredCanonicalServerUrl,
+    resolveConfiguredPublicServerUrl,
     resolveEffectiveWebappUrl,
 } from "@/app/serverUrls/effectiveServerUrls";
 
@@ -118,7 +118,7 @@ function readEffectiveWebappOrigin(env: NodeJS.ProcessEnv): string | null {
 }
 
 function readConfiguredPublicServerOrigin(env: NodeJS.ProcessEnv): string | null {
-    return readOriginFromUrl(resolveConfiguredCanonicalServerUrl(env));
+    return readOriginFromUrl(resolveConfiguredPublicServerUrl(env));
 }
 
 /**

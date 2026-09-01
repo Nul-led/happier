@@ -10,6 +10,11 @@ import {
 import {
     runSessionSystemRecordMigrationDeployment,
 } from '../../sources/app/session/systemRecords/sessionSystemRecordMigrationDeployment';
+import {
+    createDbMaintenanceClient,
+    type DbProvider,
+    type PrismaClientType,
+} from '../../sources/storage/db';
 
 export interface FullRuntimeMigrationProcessBoundary {
     spawn(command: string, args: string[], options: {
@@ -26,6 +31,15 @@ interface FullRuntimeMigrationOptions {
     pgliteBoundary?: FullRuntimePgliteBoundary;
 }
 
+type MigrationLedgerClient = Pick<PrismaClientType, '$connect' | '$disconnect' | '$queryRawUnsafe'>;
+
+interface FullRuntimeMigrationLedgerCheckOptions {
+    env: NodeJS.ProcessEnv;
+    migrationName: string;
+    createClient?: (provider: DbProvider, databaseUrl?: string) => Promise<MigrationLedgerClient>;
+    pgliteBoundary?: FullRuntimePgliteBoundary;
+}
+
 export interface FullRuntimePgliteBoundary {
     open(env: NodeJS.ProcessEnv): Promise<Readonly<{
         databaseUrl: string;
@@ -33,12 +47,68 @@ export interface FullRuntimePgliteBoundary {
     }>>;
 }
 
-function normalizeProvider(env: NodeJS.ProcessEnv): 'postgres' | 'mysql' | 'pglite' {
+function normalizeProvider(env: NodeJS.ProcessEnv): DbProvider {
     const rawProvider = String(env.HAPPIER_DB_PROVIDER ?? env.HAPPY_DB_PROVIDER ?? '').trim().toLowerCase();
     if (rawProvider === 'postgres' || rawProvider === 'postgresql') return 'postgres';
     if (rawProvider === 'mysql') return 'mysql';
     if (rawProvider === 'pglite') return 'pglite';
+    if (rawProvider === 'sqlite') return 'sqlite';
     throw new Error(`[happier-server-migrate] unsupported database provider: ${rawProvider || '<empty>'}`);
+}
+
+function isMissingMigrationLedger(error: unknown): boolean {
+    const message = String((error as { message?: unknown })?.message ?? error ?? '').toLowerCase();
+    return message.includes('no such table')
+        || message.includes('does not exist')
+        || message.includes("doesn't exist")
+        || message.includes('unknown table');
+}
+
+function assertMigrationName(value: string): string {
+    const migrationName = String(value ?? '').trim();
+    if (!/^\d{14}_[a-z0-9_]+$/.test(migrationName)) {
+        throw new Error(`[happier-server-migrate] invalid Prisma migration name: ${migrationName || '<empty>'}`);
+    }
+    return migrationName;
+}
+
+export async function isFullRuntimeMigrationApplied({
+    env,
+    migrationName: rawMigrationName,
+    createClient = createDbMaintenanceClient,
+    pgliteBoundary = defaultPgliteBoundary,
+}: FullRuntimeMigrationLedgerCheckOptions): Promise<boolean> {
+    const provider = normalizeProvider(env);
+    const migrationName = assertMigrationName(rawMigrationName);
+    const configuredDatabaseUrl = String(env.DATABASE_URL ?? '').trim();
+    if (provider !== 'pglite' && !configuredDatabaseUrl) {
+        throw new Error('[happier-server-migrate] DATABASE_URL is required');
+    }
+    const pgliteSession = provider === 'pglite' ? await pgliteBoundary.open(env) : null;
+    const databaseUrl = pgliteSession?.databaseUrl ?? configuredDatabaseUrl;
+    const client = await createClient(provider, databaseUrl);
+    let failed = false;
+    try {
+        await client.$connect();
+        const rows = await client.$queryRawUnsafe<Array<{ migration_name?: unknown }>>(
+            'SELECT migration_name FROM _prisma_migrations '
+            + `WHERE migration_name = '${migrationName}' `
+            + 'AND finished_at IS NOT NULL AND rolled_back_at IS NULL',
+        );
+        return rows.some((row) => row.migration_name === migrationName);
+    } catch (error) {
+        if (isMissingMigrationLedger(error)) return false;
+        failed = true;
+        throw error;
+    } finally {
+        try {
+            await client.$disconnect();
+        } catch (error) {
+            if (!failed) throw error;
+        } finally {
+            await pgliteSession?.close();
+        }
+    }
 }
 
 function resolveQueryEngineFileName(platform: NodeJS.Platform, arch: string): string {
@@ -85,6 +155,9 @@ export async function runFullRuntimeMigration({
     pgliteBoundary = defaultPgliteBoundary,
 }: FullRuntimeMigrationOptions): Promise<number> {
     const provider = normalizeProvider(env);
+    if (provider === 'sqlite') {
+        throw new Error('[happier-server-migrate] unsupported database provider: sqlite');
+    }
     const configuredDatabaseUrl = String(env.DATABASE_URL ?? '').trim();
     if (provider !== 'pglite' && !configuredDatabaseUrl) {
         throw new Error('[happier-server-migrate] DATABASE_URL is required');
@@ -167,7 +240,15 @@ export async function runFullRuntimeMigration({
 
 const isMain = (import.meta as ImportMeta & { main?: boolean }).main === true;
 if (isMain) {
-    runFullRuntimeMigration({ executablePath: process.execPath, env: process.env })
+    const migrationCheckPrefix = '--is-migration-applied=';
+    const migrationCheckArg = process.argv.slice(2).find((arg) => arg.startsWith(migrationCheckPrefix));
+    const operation = migrationCheckArg
+        ? isFullRuntimeMigrationApplied({
+            env: process.env,
+            migrationName: migrationCheckArg.slice(migrationCheckPrefix.length),
+        }).then((applied) => applied ? 0 : 3)
+        : runFullRuntimeMigration({ executablePath: process.execPath, env: process.env });
+    operation
         .then((code) => { process.exitCode = code; })
         .catch((error: unknown) => {
             console.error(error instanceof Error ? error.message : String(error));

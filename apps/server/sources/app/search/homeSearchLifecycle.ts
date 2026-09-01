@@ -170,7 +170,7 @@ export function startHomeSearchLifecycle(params: Readonly<{
         capability() {
             if (!plainHome) return resolveHomeSearchCapability({ storagePolicy: params.storagePolicy, indexReady: false });
             if (stopped || failed || rebuildPromise) {
-                return { enabled: false, provider: null, reason: 'index_unavailable' };
+                return { enabled: false, provider: 'home', reason: 'index_unavailable' };
             }
             return resolveHomeSearchCapability({
                 storagePolicy: params.storagePolicy,

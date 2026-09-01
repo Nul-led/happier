@@ -60,7 +60,7 @@ async function loadOwnerModule() {
 
 function envFor(dataDir: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     return {
-        HAPPIER_PUBLIC_SERVER_URL: CANONICAL_SERVER_URL,
+        HAPPIER_CANONICAL_SERVER_URL: CANONICAL_SERVER_URL,
         HAPPIER_SERVER_LIGHT_DATA_DIR: dataDir,
         ...extra,
     };
@@ -163,6 +163,57 @@ describe('home Iroh endpoint composition', () => {
         }
     });
 
+    it('materializes a fresh relocation endpoint above the source revision without starting Home ingress', async () => {
+        const owner = await loadOwnerModule();
+        const native = createNativeFake({
+            createEndpoint: vi.fn(async (request: { keyPath: string; relayPolicy: string; relayUrls: readonly string[] }) => {
+                await mkdir(join(dataDir, 'runtime', 'iroh'), { recursive: true });
+                await writeFile(request.keyPath, Buffer.alloc(32, 9));
+                return {
+                    endpointHandle: request.keyPath,
+                    endpointId: VALID_ENDPOINT_ID,
+                    relayMode: request.relayPolicy === 'disabled' ? 'disabled' : 'custom',
+                    capProfile: 'homeInteractive',
+                    relayUrls: [...request.relayUrls],
+                };
+            }),
+        });
+
+        const result = await owner.materializeHomeIrohEndpointDescriptor({
+            env: envFor(dataDir),
+            sourceDescriptorRevision: 7,
+            native,
+        });
+
+        expect(result).toEqual({
+            status: 'ready',
+            minimumOuterRevisionExclusive: 7,
+            endpoint: parseIrohEndpointDescriptorV1({
+                endpointId: VALID_ENDPOINT_ID,
+                directAddresses: [...DEFAULT_DIRECT_ADDRESSES],
+            }),
+        });
+        expect(native.startHomeAcceptor).not.toHaveBeenCalled();
+        expect(native.shutdownEndpoint).toHaveBeenCalledWith({ endpointHandle: keyPathFor(dataDir) });
+
+        const repeated = await owner.materializeHomeIrohEndpointDescriptor({
+            env: envFor(dataDir),
+            sourceDescriptorRevision: 7,
+            native,
+        });
+        expect(repeated).toEqual(result);
+        expect(native.startHomeAcceptor).not.toHaveBeenCalled();
+        expect(native.shutdownEndpoint).toHaveBeenCalledTimes(2);
+
+        const continuity = JSON.parse(await readFile(continuityPathFor(dataDir), 'utf-8')) as Record<string, unknown>;
+        expect(continuity.revision).toBe(8);
+
+        const active = await owner.ensureHomeIrohEndpoint({ env: envFor(dataDir), apiPort: API_PORT, native });
+        expect(active.status).toBe('active');
+        expect(active.snapshot?.revision).toBe(8);
+        expect(native.startHomeAcceptor).toHaveBeenCalledTimes(1);
+    });
+
     it('reuses the one active lifecycle for a repeated compatible ensure without binding duplicates', async () => {
         const owner = await loadOwnerModule();
         const native = createNativeFake();
@@ -235,14 +286,14 @@ describe('home Iroh endpoint composition', () => {
         expect(state.snapshot).toBeNull();
     });
 
-    it('fails closed on a malformed operator relay URL before touching the native transport', async () => {
+    it('keeps relay query credentials out of the native transport and published descriptor', async () => {
         const owner = await loadOwnerModule();
         const native = createNativeFake();
 
         const state = await owner.ensureHomeIrohEndpoint({
             env: envFor(dataDir, {
                 HAPPIER_IROH_RELAY_POLICY: 'automatic',
-                HAPPIER_IROH_RELAY_URLS: 'https://user:pass@relay.example.test',
+                HAPPIER_IROH_RELAY_URLS: 'https://relay.example.test?token=shared-secret',
             }),
             apiPort: API_PORT,
             native,
@@ -252,11 +303,11 @@ describe('home Iroh endpoint composition', () => {
         expect(native.createEndpoint).not.toHaveBeenCalled();
     });
 
-    it('requires the stable canonical Home auth audience from HAPPIER_PUBLIC_SERVER_URL', async () => {
+    it('requires the stable canonical Home auth audience from HAPPIER_CANONICAL_SERVER_URL', async () => {
         const owner = await loadOwnerModule();
         const native = createNativeFake();
         const env = envFor(dataDir);
-        delete env.HAPPIER_PUBLIC_SERVER_URL;
+        delete env.HAPPIER_CANONICAL_SERVER_URL;
 
         const state = await owner.ensureHomeIrohEndpoint({ env, apiPort: API_PORT, native });
 
@@ -357,7 +408,7 @@ describe('home Iroh endpoint composition', () => {
         const nextCanonicalServerUrl = 'https://moved-home.example.test';
 
         const state = await owner.ensureHomeIrohEndpoint({
-            env: envFor(dataDir, { HAPPIER_PUBLIC_SERVER_URL: nextCanonicalServerUrl }),
+            env: envFor(dataDir, { HAPPIER_CANONICAL_SERVER_URL: nextCanonicalServerUrl }),
             apiPort: API_PORT,
             native,
         });

@@ -3368,7 +3368,7 @@ describe("Automation Event admission", () => {
         });
     });
 
-    it("blocks every net-new Event candidate when the complete request would exceed capacity", async () => {
+    it("admits net-new Event candidates in request order until capacity is exhausted", async () => {
         await seed();
         await db.automationTrigger.create({
             data: {
@@ -3425,11 +3425,11 @@ describe("Automation Event admission", () => {
         });
 
         expect(result.results).toEqual([
-            { kind: "blocked", reason: "capacity", checkpointSafe: false },
+            { kind: "admitted", runId: expect.any(String), checkpointSafe: true },
             { kind: "blocked", reason: "capacity", checkpointSafe: false },
         ]);
         await expect(db.automationRun.count({ where: { accountId: ACCOUNT_ID } }))
-            .resolves.toBe(MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT - 1);
+            .resolves.toBe(MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT);
     });
 
     it("rejects a payload outside the current Event schema before creating a Run", async () => {

@@ -93,7 +93,7 @@ export function installStartServerCommonWiringMocks(): void {
     startPresenceRedisWorker: vi.fn(() => ({ stop: vi.fn(async () => {}) })),
   }))
   vi.mock('@/app/integrations/publicUrl/publicServerUrlInference', () => ({
-    resolveCachedCanonicalPublicServerUrl: vi.fn(async () => null),
+    resolveCachedPublicServerUrl: vi.fn(async () => null),
   }))
 }
 
@@ -126,6 +126,7 @@ export function createStartServerDbMocks(options: StartServerDbMockOptions = {})
   const simpleCacheFindUnique = vi.fn()
   const simpleCacheCreate = vi.fn()
   const simpleCacheUpsert = vi.fn()
+  const accountCount = vi.fn()
   const isPrismaErrorCode = vi.fn((error: unknown, code: string) => {
     return !!error && typeof error === 'object' && (error as { code?: unknown }).code === code
   })
@@ -150,6 +151,7 @@ export function createStartServerDbMocks(options: StartServerDbMockOptions = {})
     simpleCacheFindUnique.mockReset().mockResolvedValue(null)
     simpleCacheCreate.mockReset().mockImplementation(async (args: any) => ({ value: args?.data?.value }))
     simpleCacheUpsert.mockReset().mockImplementation(async (args: any) => ({ value: args?.create?.value ?? args?.update?.value }))
+    accountCount.mockReset().mockResolvedValue(0)
     isPrismaErrorCode.mockClear()
   }
 
@@ -165,6 +167,9 @@ export function createStartServerDbMocks(options: StartServerDbMockOptions = {})
           findUnique: (...args: any[]) => simpleCacheFindUnique(...args),
           create: (...args: any[]) => simpleCacheCreate(...args),
           upsert: (...args: any[]) => simpleCacheUpsert(...args),
+        },
+        account: {
+          count: (...args: any[]) => accountCount(...args),
         },
       },
       getDbProviderFromEnv: (...args: Parameters<StartServerDbProviderReader>) => getDbProviderFromEnv(...args),
@@ -184,6 +189,7 @@ export function createStartServerDbMocks(options: StartServerDbMockOptions = {})
     simpleCacheFindUnique,
     simpleCacheCreate,
     simpleCacheUpsert,
+    accountCount,
     initDbPostgres,
     initDbPglite,
     initDbMysql,

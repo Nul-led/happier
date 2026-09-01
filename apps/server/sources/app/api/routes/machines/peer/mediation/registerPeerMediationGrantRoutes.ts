@@ -17,6 +17,7 @@ import {
     type FeatureId,
     type DirectRouteGrantScopeV1,
     type IrohPeerRouteBindingV2,
+    type MachineIrohEndpointAuthorityV1,
     type LiveStreamGrantScopeV1,
     type MachineLiveStreamCapsV1,
     type PeerFlowKindV1,
@@ -24,6 +25,7 @@ import {
 
 import { readMachineLiveStreamFeatureEnv, readMachineTunnelFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import {
+    readAvailableMachineIrohEndpointAuthority,
     readMachineAvailabilityState,
     type MachineAvailabilityState,
 } from "@/app/machines/machineStateGuards";
@@ -70,10 +72,16 @@ export type PeerMediationMachineOwnershipReader = (params: Readonly<{
     machineId: string;
 }>) => Promise<MachineAvailabilityState>;
 
+export type PeerMediationMachineIrohEndpointAuthorityReader = (params: Readonly<{
+    accountId: string;
+    machineId: string;
+}>) => Promise<MachineIrohEndpointAuthorityV1 | null>;
+
 export type RegisterPeerMediationGrantRoutesOptions = Readonly<{
     env?: NodeJS.ProcessEnv;
     nowMs?: () => number;
     readMachineOwnershipState?: PeerMediationMachineOwnershipReader;
+    readMachineIrohEndpointAuthority?: PeerMediationMachineIrohEndpointAuthorityReader;
     verifyViewerSocketOwnership?: PeerMediationViewerSocketOwnershipVerifier;
 }>;
 
@@ -106,7 +114,7 @@ const LoopbackPeerMediationGrantRequestSchema = z.object({
 
 // Native machine/1 grants use the same signed grant authority as loopback
 // mediation, but are admitted only for the endpoint-bound Iroh route. The
-// machine/1 binding (both machines, both endpoint ids, orientation, operation
+// machine/1 binding (initiator, target, both endpoint ids, operation
 // kind) is required here; the payload-level invariants (target aliases, flow
 // compatibility) are owned by the protocol grant schema and enforced at mint.
 const LiveStreamServerRelayAuthorizationRequestSchema = z.object({
@@ -267,6 +275,8 @@ export function registerPeerMediationGrantRoutes(
     const env = options.env ?? process.env;
     const nowMs = options.nowMs ?? Date.now;
     const readMachineOwnershipState = options.readMachineOwnershipState ?? readMachineAvailabilityState;
+    const readMachineIrohEndpointAuthority =
+        options.readMachineIrohEndpointAuthority ?? readAvailableMachineIrohEndpointAuthority;
     const verifyViewerSocketOwnership =
         options.verifyViewerSocketOwnership ?? app.verifyPeerMediationViewerSocketOwnership;
 
@@ -306,6 +316,42 @@ export function registerPeerMediationGrantRoutes(
             reasonCode,
             receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
         };
+    }
+
+    async function rejectUnlessIrohMachineEndpointsCurrent(
+        accountId: string,
+        binding: IrohPeerRouteBindingV2,
+    ): Promise<{ ok: false; reasonCode: string; receipt: string } | null> {
+        const machineEndpoints = [
+            { machineId: binding.target.machineId, endpointId: binding.target.endpointId },
+            ...(binding.initiator.kind === "machine"
+                ? [{
+                    machineId: binding.initiator.machineId,
+                    endpointId: binding.initiator.endpointId,
+                }]
+                : []),
+        ];
+        for (const expected of machineEndpoints) {
+            const authority = await readMachineIrohEndpointAuthority({
+                accountId,
+                machineId: expected.machineId,
+            });
+            if (!authority) {
+                return {
+                    ok: false,
+                    reasonCode: "machine_iroh_endpoint_unavailable",
+                    receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
+                };
+            }
+            if (authority.endpointId !== expected.endpointId) {
+                return {
+                    ok: false,
+                    reasonCode: "machine_iroh_endpoint_mismatch",
+                    receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
+                };
+            }
+        }
+        return null;
     }
 
     app.post("/v1/machines/peer/mediation/route-grants", {
@@ -498,9 +544,18 @@ export function registerPeerMediationGrantRoutes(
             : undefined;
         const directOwnershipRejection = await rejectUnlessMachinesOwned(accountId, [
             parsed.data.machineId,
-            ...(irohBinding ? [irohBinding.sourceMachineId, irohBinding.targetMachineId] : []),
+            ...(irohBinding?.initiator.kind === "machine"
+                ? [irohBinding.initiator.machineId]
+                : []),
         ]);
         if (directOwnershipRejection) return directOwnershipRejection;
+        if (irohBinding) {
+            const endpointAuthorityRejection = await rejectUnlessIrohMachineEndpointsCurrent(
+                accountId,
+                irohBinding,
+            );
+            if (endpointAuthorityRejection) return endpointAuthorityRejection;
+        }
 
         const directGrantInput = {
             accountId,

@@ -9,6 +9,7 @@ import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 import { accountRoutes } from "./accountRoutes";
+import { currentAccountStoredContentCompatibilityHeaders } from "../../testkit/accountStoredContentCompatibility";
 
 function createTestApp() {
     const app = Fastify({ logger: false });
@@ -77,6 +78,7 @@ describe("accountRoutes (direct-route auth authority) (integration)", () => {
                 headers: {
                     authorization: `Bearer ${signedToken}`,
                     "content-type": "application/json",
+                    ...currentAccountStoredContentCompatibilityHeaders,
                 },
                 payload: {
                     content: { t: "plain", v: { schemaVersion: 2 } },
@@ -92,6 +94,7 @@ describe("accountRoutes (direct-route auth authority) (integration)", () => {
                 headers: {
                     authorization: `Bearer ${pat.token}`,
                     "content-type": "application/json",
+                    ...currentAccountStoredContentCompatibilityHeaders,
                 },
                 payload: {
                     content: { t: "plain", v: { schemaVersion: 3 } },

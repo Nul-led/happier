@@ -7,6 +7,7 @@ import {
   applyLightDefaultEnv,
   applyPackagedLightRuntimeSqliteDefaults,
   ensureHandyMasterSecret,
+  loadExistingHandyMasterSecret,
   resolveLightDataDir,
   resolveLightDatabaseDir,
   resolveLightFilesDir,
@@ -242,6 +243,26 @@ describe("light env helpers", () => {
         await readFile(join(dir, "handy-master-secret.txt"), "utf-8")
       ).trim();
       expect(onDisk).toBe(first);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads an existing master secret for stopped attestation without creating one", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "happier-light-existing-secret-"));
+    try {
+      const env: NodeJS.ProcessEnv = {};
+
+      await expect(loadExistingHandyMasterSecret(env, { dataDir: dir })).rejects.toThrow(
+        /does not exist/u,
+      );
+      await expect(readFile(join(dir, "handy-master-secret.txt"), "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+
+      await writeFile(join(dir, "handy-master-secret.txt"), "restored-secret\n", { mode: 0o600 });
+      await loadExistingHandyMasterSecret(env, { dataDir: dir });
+      expect(env.HANDY_MASTER_SECRET).toBe("restored-secret");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -33,6 +33,16 @@ const baseBody = {
     },
 } as const;
 
+const currentIrohEndpointByMachineId = new Map([
+    ["machine_1", "b".repeat(64)],
+    ["machine_source", "a".repeat(64)],
+]);
+
+async function readCurrentMachineIrohEndpointAuthority({ machineId }: Readonly<{ machineId: string }>) {
+    const endpointId = currentIrohEndpointByMachineId.get(machineId);
+    return endpointId ? { endpointId, revision: 1 } : null;
+}
+
 function createRoute() {
     const keyPair = tweetnacl.sign.keyPair();
     return createRouteTestBuilder({
@@ -48,6 +58,7 @@ function createRoute() {
             },
             nowMs: () => 1_000,
             readMachineOwnershipState: async () => "available",
+            readMachineIrohEndpointAuthority: readCurrentMachineIrohEndpointAuthority,
         }),
     });
 }
@@ -71,6 +82,31 @@ function createRouteWithOwnership(
             },
             nowMs: () => 1_000,
             readMachineOwnershipState,
+            readMachineIrohEndpointAuthority: readCurrentMachineIrohEndpointAuthority,
+        }),
+    });
+}
+
+function createRouteWithIrohEndpointAuthority(
+    readMachineIrohEndpointAuthority: (params: Readonly<{ accountId: string; machineId: string }>) => Promise<
+        Readonly<{ endpointId: string; revision: number }> | null
+    >,
+) {
+    const keyPair = tweetnacl.sign.keyPair();
+    return createRouteTestBuilder({
+        method: "POST",
+        path: "/v1/machines/peer/mediation/route-grants",
+        defaultRequest: { body: baseBody },
+        registerRoutes: (app) => registerPeerMediationGrantRoutes(app, {
+            env: {
+                [FEATURE_ENV_KEYS.machinesTransferDirectPeerEnabled]: "true",
+                HAPPIER_FEATURE_MACHINES_RPC_DIRECT_PEER__ENABLED: "true",
+                [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningKeyId]: "grant-key-1",
+                [FEATURE_ENV_KEYS.peerMediationRouteGrantSigningPrivateKey]: toBase64Url(keyPair.secretKey),
+            },
+            nowMs: () => 1_000,
+            readMachineOwnershipState: async () => "available",
+            readMachineIrohEndpointAuthority,
         }),
     });
 }
@@ -150,11 +186,14 @@ describe("registerPeerMediationGrantRoutes", () => {
             maxBytes: 1024,
         },
         iroh: {
-            sourceMachineId: "machine_client",
-            targetMachineId: "machine_1",
-            sourceEndpointId: "a".repeat(64),
-            targetEndpointId: "b".repeat(64),
-            role: "initiator",
+            initiator: {
+                kind: "account_client",
+                endpointId: "a".repeat(64),
+            },
+            target: {
+                machineId: "machine_1",
+                endpointId: "b".repeat(64),
+            },
             operationKind: "file_transfer",
         },
     } as const;
@@ -205,6 +244,81 @@ describe("registerPeerMediationGrantRoutes", () => {
         });
     });
 
+    it("rejects arbitrary and stale target EndpointIds that are not the synchronized Machine authority", async () => {
+        const route = createRouteWithIrohEndpointAuthority(async ({ machineId }) =>
+            machineId === "machine_1"
+                ? { endpointId: "c".repeat(64), revision: 9 }
+                : null);
+
+        const { response } = await route.invoke({
+            userId: "account_1",
+            body: { ...irohBodyV2 },
+        });
+
+        expect(response).toMatchObject({
+            ok: false,
+            reasonCode: "machine_iroh_endpoint_mismatch",
+            receipt: "peer.route_grant.rejected",
+        });
+    });
+
+    it("rejects a Machine-role initiator whose EndpointId belongs to the wrong Machine", async () => {
+        const route = createRouteWithIrohEndpointAuthority(async ({ machineId }) => {
+            if (machineId === "machine_1") return { endpointId: "b".repeat(64), revision: 9 };
+            if (machineId === "machine_source") return { endpointId: "c".repeat(64), revision: 4 };
+            return null;
+        });
+
+        const { response } = await route.invoke({
+            userId: "account_1",
+            body: {
+                ...irohBodyV2,
+                iroh: {
+                    ...irohBody.iroh,
+                    initiator: {
+                        kind: "machine",
+                        machineId: "machine_source",
+                        endpointId: "a".repeat(64),
+                    },
+                },
+            },
+        });
+
+        expect(response).toMatchObject({
+            ok: false,
+            reasonCode: "machine_iroh_endpoint_mismatch",
+            receipt: "peer.route_grant.rejected",
+        });
+    });
+
+    it("fails closed when a Machine-role Iroh endpoint authority is absent", async () => {
+        const route = createRouteWithIrohEndpointAuthority(async ({ machineId }) =>
+            machineId === "machine_1"
+                ? { endpointId: "b".repeat(64), revision: 9 }
+                : null);
+
+        const { response } = await route.invoke({
+            userId: "account_1",
+            body: {
+                ...irohBodyV2,
+                iroh: {
+                    ...irohBody.iroh,
+                    initiator: {
+                        kind: "machine",
+                        machineId: "machine_source",
+                        endpointId: "a".repeat(64),
+                    },
+                },
+            },
+        });
+
+        expect(response).toMatchObject({
+            ok: false,
+            reasonCode: "machine_iroh_endpoint_unavailable",
+            receipt: "peer.route_grant.rejected",
+        });
+    });
+
     it("rejects an iroh machine grant request without the machine/1 binding", async () => {
         const route = createRoute();
         const { iroh: _omitted, ...bodyWithoutBinding } = irohBodyV2;
@@ -221,19 +335,22 @@ describe("registerPeerMediationGrantRoutes", () => {
         });
     });
 
-    it("verifies account ownership of both source and target machines before minting an iroh grant", async () => {
-        const sourceMissing = createRouteWithOwnership(async ({ machineId }) =>
-            machineId === "machine_client" ? "missing" : "available");
-        const { response: sourceResponse } = await sourceMissing.invoke({
+    it("uses Home authentication as Account-client authority and verifies only the target Machine", async () => {
+        const checkedMachineIds: string[] = [];
+        const route = createRouteWithOwnership(async ({ machineId }) => {
+            checkedMachineIds.push(machineId);
+            return "available";
+        });
+        const { response } = await route.invoke({
             userId: "account_1",
             body: { ...irohBodyV2 },
         });
-        expect(sourceResponse).toMatchObject({
-            ok: false,
-            reasonCode: "machine_not_owned",
-            receipt: "peer.route_grant.rejected",
-        });
 
+        expect(response).toMatchObject({ ok: true });
+        expect(checkedMachineIds).toEqual(["machine_1"]);
+    });
+
+    it("rejects an unavailable target Machine for Account-client and Machine initiators", async () => {
         const targetRevoked = createRouteWithOwnership(async ({ machineId }) =>
             machineId === "machine_1" ? "revoked" : "available");
         const { response: targetResponse } = await targetRevoked.invoke({
@@ -245,6 +362,28 @@ describe("registerPeerMediationGrantRoutes", () => {
             reasonCode: "machine_revoked",
             receipt: "peer.route_grant.rejected",
         });
+
+        const machineInitiated = createRouteWithOwnership(async ({ machineId }) =>
+            machineId === "machine_source" ? "missing" : "available");
+        const { response: sourceResponse } = await machineInitiated.invoke({
+            userId: "account_1",
+            body: {
+                ...irohBodyV2,
+                iroh: {
+                    ...irohBody.iroh,
+                    initiator: {
+                        kind: "machine",
+                        machineId: "machine_source",
+                        endpointId: "a".repeat(64),
+                    },
+                },
+            },
+        });
+        expect(sourceResponse).toMatchObject({
+            ok: false,
+            reasonCode: "machine_not_owned",
+            receipt: "peer.route_grant.rejected",
+        });
     });
 
     it("rejects an iroh grant whose alias fields disagree with the binding target", async () => {
@@ -254,7 +393,10 @@ describe("registerPeerMediationGrantRoutes", () => {
             body: {
                 ...irohBodyV2,
                 machineId: "machine_2",
-                iroh: { ...irohBody.iroh, targetMachineId: "machine_1" },
+                iroh: {
+                    ...irohBody.iroh,
+                    target: { ...irohBody.iroh.target, machineId: "machine_1" },
+                },
             },
         });
 

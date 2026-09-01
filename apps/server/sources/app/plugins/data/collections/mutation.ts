@@ -2027,10 +2027,12 @@ export async function mutatePluginCollection(input: Readonly<{
 }
 
 /**
- * Host-private, exact-CAS physical reclamation. Logical delete intentionally
+ * Host-private, exact-CAS physical reclamation. Ordinary logical delete
  * remains the public Collection mutation; this path is for a retention owner
- * that has already proven its row unreachable. Advancing the one Collection
- * absence epoch and deleting the tombstone share this transaction.
+ * that has already proven an exact live row or tombstone unreachable.
+ * Advancing the one Collection absence epoch and deleting that row share this
+ * transaction, so a crash cannot strand an undiscoverable tombstone between
+ * two retention operations.
  */
 export async function forgetPluginCollection(input: Readonly<{
     accountId: string;
@@ -2060,17 +2062,16 @@ export async function forgetPluginCollection(input: Readonly<{
             },
             select: { id: true, revision: true, deletedAt: true },
         });
-        // Forget is idempotent for the exact historical identity. No row, or
-        // a row whose monotonic revision has moved on, means that identity is
-        // already physically absent. Never let a response-loss retry touch the
-        // newer row. An exact live revision, however, was not logically
-        // deleted and cannot be forgotten.
-        if (!row || row.revision !== request.expectedRevision) {
+        // A missing row is the response-loss/idempotent replay result. A newer
+        // live or recreated identity is an exact-CAS conflict and remains
+        // untouched.
+        if (!row) {
             return PluginCollectionForgetResultV1Schema.parse({ status: "forgotten" });
         }
-        if (row.deletedAt === null) {
+        if (row.revision !== request.expectedRevision) {
             return PluginCollectionForgetResultV1Schema.parse({ status: "conflict" });
         }
+        const retiredRevision = row.deletedAt === null ? row.revision + 1 : row.revision;
         const epoch = await tx.pluginCollectionAbsenceEpoch.upsert({
             where: { accountId_pluginId_collectionId: {
                 accountId: input.accountId,
@@ -2086,12 +2087,35 @@ export async function forgetPluginCollection(input: Readonly<{
             update: {},
             select: { id: true, epoch: true },
         });
-        const nextEpoch = Math.max(epoch.epoch, row.revision) + 1;
+        const nextEpoch = Math.max(epoch.epoch, retiredRevision) + 1;
         const advanced = await tx.pluginCollectionAbsenceEpoch.updateMany({
             where: { id: epoch.id, epoch: request.expectedAbsenceEpoch },
             data: { epoch: nextEpoch },
         });
         if (advanced.count !== 1) return PluginCollectionForgetResultV1Schema.parse({ status: "conflict" });
+        if (row.deletedAt === null) {
+            const deleted = await mutatePluginCollectionInTx({
+                tx,
+                accountId: input.accountId,
+                deployment: readPluginsFeatureEnv(process.env).collectionLimits,
+                request: {
+                    pluginId: request.pluginId,
+                    collectionId: request.collectionId,
+                    writerContext: request.writerContext,
+                    operations: [{
+                        kind: "delete",
+                        rowId: request.rowId,
+                        expectedRevision: request.expectedRevision,
+                    }],
+                },
+            });
+            if (deleted.status !== "updated" || deleted.results.length !== 1) {
+                throw new PluginCollectionMutationOperationError("collection_contract_inconsistent");
+            }
+            if (deleted.results[0]!.revision !== retiredRevision) {
+                throw new PluginCollectionMutationOperationError("collection_contract_inconsistent");
+            }
+        }
         await tx.pluginCollectionRow.delete({ where: { id: row.id } });
         await markAccountChanged(tx, {
             accountId: input.accountId,
@@ -2101,7 +2125,7 @@ export async function forgetPluginCollection(input: Readonly<{
                 pluginId: resolved.contract.pluginId,
                 collectionId: resolved.contract.collectionId,
                 contractDigest: resolved.contract.contractDigest,
-                revision: request.expectedRevision,
+                revision: retiredRevision,
                 full: true,
             }),
             hint: {
@@ -2109,7 +2133,7 @@ export async function forgetPluginCollection(input: Readonly<{
                 pluginId: resolved.contract.pluginId,
                 collectionId: resolved.contract.collectionId,
                 contractDigest: resolved.contract.contractDigest,
-                revision: request.expectedRevision,
+                revision: retiredRevision,
                 full: true,
             },
         });

@@ -240,4 +240,16 @@ describe("browser Artifact capability", () => {
             HAPPIER_WEBAPP_URL: config.embeddingOrigin,
         })).toBeNull();
     });
+
+    it("does not treat canonical Home identity as the public API origin", () => {
+        expect(resolveBrowserArtifactCapabilityConfig({
+            HANDY_MASTER_SECRET: config.signingSecret,
+            HAPPIER_PLUGIN_UI_ARTIFACT_BROWSER_ORIGIN: "https://identity.happier.test",
+            HAPPIER_CANONICAL_SERVER_URL: "https://identity.happier.test",
+            HAPPIER_WEBAPP_URL: config.embeddingOrigin,
+        })).toMatchObject({
+            artifactOrigin: "https://identity.happier.test",
+            embeddingOrigin: config.embeddingOrigin,
+        });
+    });
 });

@@ -737,7 +737,7 @@ describe("Channels first-party provider Automation Event composition", () => {
                         eventLocalId: scenario.eventLocalId,
                         sourceSelectorId: SOURCE_SELECTOR_ID,
                         sourceContractVersion: 1,
-                        observationTransport: "checkpointedPull",
+                        observationTransport: scenario.connectionTransport.kind,
                         watcherMachineId: MACHINE_ID,
                         watcherMachineInstallationId: MACHINE_INSTALLATION_ID,
                         watcherPluginId: scenario.pluginId,
@@ -807,7 +807,7 @@ describe("Channels first-party provider Automation Event composition", () => {
                     credentials,
                     caller: materialization,
                     immutableGenerationId: PROVIDER_GENERATION,
-                    transport: { kind: "checkpointedPull" },
+                    transport: scenario.connectionTransport,
                     generationSignal: new AbortController().signal,
                     isGenerationCurrent: () => true,
                     revalidateCallerMaterialization: async () => true,
@@ -840,7 +840,11 @@ describe("Channels first-party provider Automation Event composition", () => {
                     revalidateCallerMaterialization: async () => true,
                     revalidateCallerImmutableGeneration: async () => true,
                     resolveAccountId: async () => ACCOUNT_ID,
-                    resolveAdoptedDefinitionSet: () => adoptedSet,
+                    resolveAdoptedDefinitionSet: (
+                        _caller: unknown,
+                        _generation: string,
+                        transport: Readonly<{ kind: string }>,
+                    ) => transport.kind === scenario.connectionTransport.kind ? adoptedSet : null,
                     transport: {
                         execute: async (actionId: string, request: unknown) => {
                             if (!(actionId in AutomationEventActionHttpRequestSchemasV1)) {
@@ -1133,7 +1137,7 @@ describe("Channels first-party provider Automation Event composition", () => {
             eventLocalId: scenario.eventLocalId,
             sourceSelectorId: SOURCE_SELECTOR_ID,
             sourceContractVersion: 1,
-            observationTransport: "checkpointedPull" as const,
+            observationTransport: scenario.connectionTransport.kind,
             watcherMachineId: MACHINE_ID,
             watcherMachineInstallationId: MACHINE_INSTALLATION_ID,
             watcherPluginId: scenario.pluginId,
@@ -1379,7 +1383,11 @@ describe("Channels first-party provider Automation Event composition", () => {
                 revalidateCallerMaterialization: async () => true,
                 revalidateCallerImmutableGeneration: async () => true,
                 resolveAccountId: async () => ACCOUNT_ID,
-                resolveAdoptedDefinitionSet: () => adoptedSet,
+                resolveAdoptedDefinitionSet: (
+                    _caller: unknown,
+                    _generation: string,
+                    transport: Readonly<{ kind: string }>,
+                ) => transport.kind === "checkpointedPull" ? adoptedSet : null,
                 transport: {
                     execute: async (actionId: string, request: unknown) => {
                         if (!(actionId in AutomationEventActionHttpRequestSchemasV1)) {
@@ -2152,7 +2160,7 @@ describe("Channels first-party provider Automation Event composition", () => {
                 credentials,
                 caller: materialization,
                 immutableGenerationId: PROVIDER_GENERATION,
-                transport: { kind: "checkpointedPull" },
+                transport: { kind: "socket" },
                 generationSignal: new AbortController().signal,
                 isGenerationCurrent: () => true,
                 revalidateCallerMaterialization: async () => true,
@@ -2182,7 +2190,11 @@ describe("Channels first-party provider Automation Event composition", () => {
                 revalidateCallerMaterialization: async () => true,
                 revalidateCallerImmutableGeneration: async () => true,
                 resolveAccountId: async () => ACCOUNT_ID,
-                resolveAdoptedDefinitionSet: () => adoptedSet,
+                resolveAdoptedDefinitionSet: (
+                    _caller: unknown,
+                    _generation: string,
+                    transport: Readonly<{ kind: string }>,
+                ) => transport.kind === "socket" ? adoptedSet : null,
                 transport: {
                     execute: async (actionId: string, request: unknown) => {
                         if (!(actionId in AutomationEventActionHttpRequestSchemasV1)) {

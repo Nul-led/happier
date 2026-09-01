@@ -42,6 +42,7 @@ const mocks = vi.hoisted(() => ({
     txLinkUpdate: vi.fn(),
     txLinkDeleteMany: vi.fn(),
     txPairingSessionDeleteMany: vi.fn(),
+    txPairingSessionFindFirst: vi.fn(),
     getOrCreateServerIdentityId: vi.fn(),
     readCachedServerIdentityIdForHotPath: vi.fn(),
 }));
@@ -78,7 +79,10 @@ vi.mock("@/storage/inTx", () => ({
             update: mocks.txLinkUpdate,
             deleteMany: mocks.txLinkDeleteMany,
         },
-        authPairingSession: { deleteMany: mocks.txPairingSessionDeleteMany },
+        authPairingSession: {
+            deleteMany: mocks.txPairingSessionDeleteMany,
+            findFirst: mocks.txPairingSessionFindFirst,
+        },
     }),
 }));
 
@@ -96,6 +100,17 @@ function descriptor(homeServerIdentityId: string): Row {
         canonicalServerUrl: `https://${homeServerIdentityId}.example.test`,
         revision: 1,
         endpoints: [{ kind: "https", url: `https://${homeServerIdentityId}.example.test` }],
+    };
+}
+
+function descriptorAtRevision(homeServerIdentityId: string, revision: number, canonicalServerUrl?: string): Row {
+    const url = canonicalServerUrl ?? `https://${homeServerIdentityId}.example.test`;
+    return {
+        v: 1,
+        homeServerIdentityId,
+        canonicalServerUrl: url,
+        revision,
+        endpoints: [{ kind: "https", url }],
     };
 }
 
@@ -226,6 +241,70 @@ describe("Account Directory service", () => {
             expect(mocks.txAccountUpdateMany).not.toHaveBeenCalled();
             expect(result.label).toBe("Home A renamed");
             expect(result.preferred).toBe(false);
+        });
+
+        it("returns the current entry without mutation when a descriptor revision regresses", async () => {
+            const { upsertAccountHomeDirectoryEntry } = await import("./accountDirectoryService");
+            state.preferredHomeServerIdentityId = "srv_home_a";
+            const current = entryRow("srv_home_a", {
+                label: "Current Home",
+                connectionDescriptor: descriptorAtRevision("srv_home_a", 5),
+            });
+            mocks.txEntryFindUnique.mockResolvedValue(current);
+
+            const result = await upsertAccountHomeDirectoryEntry({
+                accountId: "account-1",
+                homeServerIdentityId: "srv_home_a",
+                label: "Stale Home",
+                connectionDescriptor: descriptorAtRevision("srv_home_a", 4),
+            });
+
+            expect(mocks.txEntryUpdate).not.toHaveBeenCalled();
+            expect(result).toMatchObject({ label: "Current Home", connectionDescriptor: { revision: 5 } });
+        });
+
+        it("rejects an equal-revision descriptor conflict without mutation", async () => {
+            const { upsertAccountHomeDirectoryEntry } = await import("./accountDirectoryService");
+            mocks.txEntryFindUnique.mockResolvedValue(entryRow("srv_home_a", {
+                connectionDescriptor: descriptorAtRevision("srv_home_a", 5),
+            }));
+
+            await expect(upsertAccountHomeDirectoryEntry({
+                accountId: "account-1",
+                homeServerIdentityId: "srv_home_a",
+                label: "Conflicting Home",
+                connectionDescriptor: descriptorAtRevision("srv_home_a", 5, "https://replacement.example.test"),
+            })).rejects.toMatchObject({ code: "descriptor_revision_conflict" });
+            expect(mocks.txEntryUpdate).not.toHaveBeenCalled();
+        });
+
+        it("composes and publishes the next outer descriptor revision for relocation", async () => {
+            const { publishAccountHomeDirectoryDescriptor } = await import("./accountDirectoryService");
+            const current = entryRow("srv_home_a", {
+                connectionDescriptor: descriptorAtRevision("srv_home_a", 7),
+            });
+            mocks.txEntryFindUnique.mockResolvedValue(current);
+            mocks.txEntryUpdate.mockImplementation(async (args: FindArgs) => ({
+                ...current,
+                ...(args.data as Row),
+            }));
+
+            const result = await publishAccountHomeDirectoryDescriptor({
+                accountId: "account-1",
+                homeServerIdentityId: "srv_home_a",
+                label: "Moved Home",
+                minimumOuterRevisionExclusive: 7,
+                canonicalServerUrl: "https://destination.example.test",
+                endpoints: [{ kind: "https", url: "https://destination.example.test" }],
+            });
+
+            expect(result.connectionDescriptor).toEqual({
+                v: 1,
+                homeServerIdentityId: "srv_home_a",
+                canonicalServerUrl: "https://destination.example.test",
+                revision: 8,
+                endpoints: [{ kind: "https", url: "https://destination.example.test" }],
+            });
         });
 
         it("creates a new identity beyond the former 256-Home boundary without a count query", async () => {
@@ -618,6 +697,13 @@ describe("Account Directory service", () => {
 
     describe("Home login assertion redemption", () => {
         const nowMs = 1_700_000_000_001;
+        const homeDescriptor = {
+            v: 1 as const,
+            homeServerIdentityId: "srv_home",
+            canonicalServerUrl: "https://home.test",
+            revision: 1,
+            endpoints: [{ kind: "https" as const, url: "https://home.test" }],
+        };
 
         function signedAssertion(overrides: Partial<Omit<HomeLoginAssertionV1, "signatureBase64Url">> = {}, seed = 4): Row {
             const keyPair = signingKeyPair(seed);
@@ -638,13 +724,13 @@ describe("Account Directory service", () => {
         }
 
         const allowedGate = { evaluate: async () => ({ kind: "allowed" as const }) };
-
         it("resolves the Home identity through the read-only lookup and never creates one", async () => {
             const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
             mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
 
             const result = await redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
+                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken: async () => "home-token",
@@ -734,6 +820,7 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
+                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate,
                 issueHomeToken,
@@ -765,6 +852,7 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
+                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
@@ -795,6 +883,7 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
+                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
@@ -810,6 +899,7 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
+                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
@@ -826,6 +916,7 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
+                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
@@ -844,6 +935,7 @@ describe("Account Directory service", () => {
                 assertion: signedAssertion({
                     clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(clientBoxKeyPair.publicKey)),
                 }),
+                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
@@ -864,11 +956,82 @@ describe("Account Directory service", () => {
             const sealed = decodeBase64((result as { sealedHomeTokenBase64Url: string }).sealedHomeTokenBase64Url, "base64url");
             const opened = openBoxBundle({ bundle: sealed, recipientSecretKeyOrSeed: clientBoxKeyPair.secretKey });
             const plaintext = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(opened as Uint8Array)) as unknown;
-            expect(plaintext).toEqual({ token: "ordinary-home-local-token" });
-            expect(Object.keys(plaintext as Record<string, unknown>)).toEqual(["token"]);
+            expect(plaintext).toEqual({
+                v: 1,
+                credentials: { token: "ordinary-home-local-token" },
+                connectionDescriptor: homeDescriptor,
+            });
+            expect(Object.keys(plaintext as Record<string, unknown>).sort()).toEqual([
+                "connectionDescriptor",
+                "credentials",
+                "v",
+            ]);
             expect((result as { expiresAtMs: number }).expiresAtMs).toBe(1_700_000_180_000);
             // A different client key cannot open the sealed token.
             expect(openBoxBundle({ bundle: sealed, recipientSecretKeyOrSeed: otherBoxKeyPair.secretKey })).toBeNull();
+        });
+
+        it("maps an explicit trusted-device rejection to the distinct public approval_rejected error", async () => {
+            const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
+            mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
+            const issueHomeToken = vi.fn(async () => "must-never-issue");
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: signedAssertion(),
+                nowMs,
+                homeApprovalGate: { evaluate: async () => ({ kind: "rejected" as const }) },
+                issueHomeToken,
+            })).rejects.toMatchObject({ code: "approval_rejected" });
+            expect(issueHomeToken).not.toHaveBeenCalled();
+        });
+
+        it("maps an expired pending approval to the distinct public approval_expired error", async () => {
+            const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
+            mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
+            const issueHomeToken = vi.fn(async () => "must-never-issue");
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: signedAssertion(),
+                nowMs,
+                homeApprovalGate: { evaluate: async () => ({ kind: "expired" as const }) },
+                issueHomeToken,
+            })).rejects.toMatchObject({ code: "approval_expired" });
+            expect(issueHomeToken).not.toHaveBeenCalled();
+        });
+
+        it("maps an invalid pending approval to the distinct public approval_invalid error", async () => {
+            const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
+            mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
+            const issueHomeToken = vi.fn(async () => "must-never-issue");
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: signedAssertion(),
+                nowMs,
+                homeApprovalGate: { evaluate: async () => ({ kind: "invalid" as const }) },
+                issueHomeToken,
+            })).rejects.toMatchObject({ code: "approval_invalid" });
+            expect(issueHomeToken).not.toHaveBeenCalled();
+        });
+
+        it("maps transaction-time relinking after approval to approval_invalid", async () => {
+            const { redeemHomeLoginAssertion } = await import("./accountDirectoryService");
+            mocks.dbLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(4)));
+            mocks.txLinkFindUnique.mockResolvedValue(linkRowFor(signingKeyPair(5)));
+            const issueHomeToken = vi.fn(async () => "must-never-issue");
+
+            await expect(redeemHomeLoginAssertion({
+                assertion: signedAssertion(),
+                connectionDescriptor: homeDescriptor,
+                nowMs,
+                homeApprovalGate: {
+                    evaluate: async () => ({
+                        kind: "allowed" as const,
+                        approvedRequest: { approvalId: "approval-1", bindingProof: "approved-binding" },
+                    }),
+                },
+                issueHomeToken,
+            })).rejects.toMatchObject({ code: "approval_invalid" });
+            expect(issueHomeToken).not.toHaveBeenCalled();
         });
 
         it("rejects a Home token that exceeds the canonical ordinary-token boundary", async () => {
@@ -877,6 +1040,7 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
+                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken: async () => "t".repeat(4_097),

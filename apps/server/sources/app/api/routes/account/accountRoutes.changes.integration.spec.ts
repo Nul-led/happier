@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { withAuthenticatedTestApp } from "../../testkit/sqliteFastify";
+import { currentAccountStoredContentCompatibilityHeaders } from "../../testkit/accountStoredContentCompatibility";
 import { accountRoutes } from "./accountRoutes";
 
 const { emitUpdate, buildUpdateAccountUpdate, buildAccountSettingsChangedUpdate, randomKeyNaked, markAccountChanged } = vi.hoisted(() => ({
@@ -76,7 +77,11 @@ describe("accountRoutes (AccountChange integration)", () => {
                 const res = await app.inject({
                     method: "POST",
                     url: "/v1/account/settings",
-                    headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": account.id,
+                        ...currentAccountStoredContentCompatibilityHeaders,
+                    },
                     payload: { settings: "new", expectedVersion: 1 },
                 });
 

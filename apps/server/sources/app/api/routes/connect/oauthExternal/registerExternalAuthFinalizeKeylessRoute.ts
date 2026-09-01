@@ -184,8 +184,11 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
                       {
                         kind: "account_directory",
                         authority: "present_user",
-                    }
-                    : { kind: "account", authority: "present_user" },
+                      }
+                    : {
+                        kind: "account",
+                        authority: "present_user",
+                    },
             );
             return reply.send({ success: true, token });
         }
@@ -269,7 +272,10 @@ export function registerExternalAuthFinalizeKeylessRoute(app: Fastify) {
         const token = await auth.createToken(
             account.id,
             undefined,
-            { kind: "account", authority: "present_user" },
+            {
+                kind: "account",
+                authority: "present_user",
+            },
         );
         return reply.send({ success: true, token });
     });

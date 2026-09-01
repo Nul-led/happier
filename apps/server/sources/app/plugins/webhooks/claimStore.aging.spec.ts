@@ -36,6 +36,26 @@ describe("plugin webhook overdue queue aging", () => {
         mocks.updateMany.mockResolvedValue({ count: 1 });
     });
 
+    it("selects retention-expired payloads independently of their retry schedule", async () => {
+        const now = new Date("2026-08-10T00:00:00.000Z");
+        mocks.findMany.mockResolvedValue([]);
+
+        await ageOverduePluginWebhookDeliveriesV1({ now });
+
+        expect(mocks.findMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({
+                OR: [
+                    {
+                        nextAttemptAt: { lte: now },
+                        offlineSinceAt: { lte: new Date("2026-08-03T00:00:00.000Z") },
+                    },
+                    { metadataDeleteAt: { lte: now } },
+                ],
+            }),
+        }));
+        expect(mocks.findMany.mock.calls[0]?.[0]?.where).not.toHaveProperty("nextAttemptAt");
+    });
+
     it("ages only work whose exact target was already proven offline", async () => {
         const now = new Date("2026-08-10T00:00:00.000Z");
         mocks.findMany.mockResolvedValue([
@@ -56,9 +76,11 @@ describe("plugin webhook overdue queue aging", () => {
         expect(mocks.findMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 state: "queued",
-                nextAttemptAt: { lte: now },
                 OR: [
-                    { offlineSinceAt: { lte: new Date("2026-08-03T00:00:00.000Z") } },
+                    {
+                        nextAttemptAt: { lte: now },
+                        offlineSinceAt: { lte: new Date("2026-08-03T00:00:00.000Z") },
+                    },
                     { metadataDeleteAt: { lte: now } },
                 ],
             }),
@@ -93,7 +115,6 @@ describe("plugin webhook overdue queue aging", () => {
         expect(mocks.findMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 state: "queued",
-                nextAttemptAt: { lte: now },
                 OR: expect.arrayContaining([{ metadataDeleteAt: { lte: now } }]),
             }),
         }));
@@ -109,5 +130,6 @@ describe("plugin webhook overdue queue aging", () => {
                 revision: { increment: 1 },
             }),
         }));
+        expect(mocks.updateMany.mock.calls[0]?.[0]?.where).not.toHaveProperty("nextAttemptAt");
     });
 });

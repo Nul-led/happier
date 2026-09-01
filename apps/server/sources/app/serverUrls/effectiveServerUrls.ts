@@ -38,6 +38,19 @@ function appendUiPrefix(baseUrl: string, prefix: string): string {
 }
 
 export function resolveConfiguredCanonicalServerUrl(env: NodeJS.ProcessEnv): string | undefined {
+    const configured = normalizeHttpUrl(String(env.HAPPIER_CANONICAL_SERVER_URL ?? ""));
+    if (configured) return configured;
+
+    // Bounded 0.3 transition: historical deployments used the explicitly
+    // configured public URL as both profile identity and ingress. Inference
+    // marks its writes so mutable ingress can never establish auth identity.
+    if (String(env.HAPPIER_PUBLIC_SERVER_URL_INFERRED ?? "").trim() === "1") {
+        return undefined;
+    }
+    return resolveConfiguredPublicServerUrl(env);
+}
+
+export function resolveConfiguredPublicServerUrl(env: NodeJS.ProcessEnv): string | undefined {
     return normalizeHttpUrl(String(env.HAPPIER_PUBLIC_SERVER_URL ?? "")) ?? undefined;
 }
 
@@ -46,11 +59,11 @@ export function resolveExplicitWebappUrl(env: NodeJS.ProcessEnv): string | undef
 }
 
 export function resolveDerivedLocalUiWebappUrl(env: NodeJS.ProcessEnv): string | undefined {
-    const canonicalServerUrl = resolveConfiguredCanonicalServerUrl(env);
-    if (!canonicalServerUrl) return undefined;
+    const publicServerUrl = resolveConfiguredPublicServerUrl(env);
+    if (!publicServerUrl) return undefined;
     const uiConfig = resolveUiConfig(env);
     if (!uiConfig.dir) return undefined;
-    return appendUiPrefix(canonicalServerUrl, uiConfig.prefix);
+    return appendUiPrefix(publicServerUrl, uiConfig.prefix);
 }
 
 export function resolveEffectiveWebappUrl(env: NodeJS.ProcessEnv): string | undefined {

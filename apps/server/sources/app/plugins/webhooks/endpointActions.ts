@@ -18,7 +18,7 @@ import {
 } from "@happier-dev/protocol";
 
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
-import { resolveConfiguredCanonicalServerUrl } from "@/app/serverUrls/effectiveServerUrls";
+import { resolveConfiguredPublicServerUrl } from "@/app/serverUrls/effectiveServerUrls";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 
@@ -275,7 +275,7 @@ export function createPluginWebhookEndpointActionsV1(options: Readonly<{
     const store = createPluginWebhookEndpointStoreV1({
         resolveTarget: resolveCurrentWebhookTargetV1,
         resolveContribution: resolveCurrentWebhookContributionV1,
-        resolvePublicBaseUrl: () => resolveConfiguredCanonicalServerUrl(process.env) ?? null,
+        resolvePublicBaseUrl: () => resolveConfiguredPublicServerUrl(process.env) ?? null,
         ...(options.authorizeSharedInstallation
             ? { authorizeSharedInstallation: options.authorizeSharedInstallation }
             : {}),

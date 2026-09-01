@@ -37,6 +37,8 @@ declare module 'fastify' {
         authTokenKind?: "account" | "account_directory" | "terminal" | "api_token";
         /** Server-stamped authority for Action ingress; never caller-provided input. */
         authAuthority?: "present_user" | "account_automation";
+        /** Explicit compatibility provenance; missing never means current. */
+        authTokenLegacy?: boolean;
         /** Request-local verified provenance for an admitted PAT; never a raw bearer. */
         apiTokenPrincipal?: VerifiedApiTokenPrincipal;
         startTime?: number;

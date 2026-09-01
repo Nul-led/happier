@@ -463,7 +463,10 @@ export function registerMtlsAuthRoutes(app: Fastify): void {
             const token = await auth.createToken(
                 account.accountId,
                 undefined,
-                { kind: "account", authority: "present_user" },
+                {
+                    kind: "account",
+                    authority: "present_user",
+                },
             );
             return reply.send({ success: true, token });
         },
@@ -511,7 +514,10 @@ export function registerMtlsAuthRoutes(app: Fastify): void {
             const token = await auth.createToken(
                 verified.userId,
                 undefined,
-                { kind: "account", authority: "present_user" },
+                {
+                    kind: "account",
+                    authority: "present_user",
+                },
             );
             return reply.send({ success: true, token });
         },

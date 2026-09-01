@@ -10,9 +10,10 @@ import { applySqliteMigrations } from "../prismaMigrations";
 
 const serverRoot = join(import.meta.dirname, "..", "..");
 const sqliteMigrationsRoot = join(serverRoot, "prisma", "sqlite", "migrations");
-const predecessorLastMigrationId = "20260723220000_add_connected_service_auth_group_runtime_state_revision";
 const quotaDropId = "20260630223000_drop_service_account_quota_snapshots";
-const quotaCreateId = "20260216143000_connected_services_quota_snapshots";
+const releasedPredecessorLastId = "20260326130000_add_pending_queue_seq";
+const currentPredecessorLastId = "20260723220000_add_connected_service_auth_group_runtime_state_revision";
+type PredecessorFrontier = "released-v0.2.1" | "current-0.2";
 
 async function copyMigration(sourceId: string, targetRoot: string): Promise<void> {
     const targetDir = join(targetRoot, sourceId);
@@ -31,12 +32,19 @@ async function listCurrentMigrationIds(): Promise<string[]> {
         .sort((left, right) => left.localeCompare(right));
 }
 
-async function prepareCompletePredecessorLedger(migrationsDir: string): Promise<string[]> {
+async function preparePredecessorLedger(
+    migrationsDir: string,
+    frontier: PredecessorFrontier,
+): Promise<string[]> {
+    const lastMigrationId = frontier === "released-v0.2.1"
+        ? releasedPredecessorLastId
+        : currentPredecessorLastId;
     const predecessorMigrationIds = (await listCurrentMigrationIds())
-        .filter((id) => id <= predecessorLastMigrationId);
+        .filter((id) => id <= lastMigrationId);
     for (const id of predecessorMigrationIds) {
         await copyMigration(id, migrationsDir);
     }
+    if (frontier === "released-v0.2.1") return predecessorMigrationIds;
 
     const quotaDropDir = join(migrationsDir, quotaDropId);
     await mkdir(quotaDropDir, { recursive: true });
@@ -48,19 +56,24 @@ async function prepareCompletePredecessorLedger(migrationsDir: string): Promise<
     return [...predecessorMigrationIds, quotaDropId].sort((left, right) => left.localeCompare(right));
 }
 
-async function appendCurrentMigrations(migrationsDir: string): Promise<string[]> {
-    const currentMigrationIds = (await listCurrentMigrationIds())
-        .filter((id) => id > predecessorLastMigrationId);
+async function appendCurrentMigrations(
+    migrationsDir: string,
+    frontier: PredecessorFrontier,
+): Promise<string[]> {
+    await rm(join(migrationsDir, quotaDropId), { recursive: true, force: true });
+    const currentMigrationIds = await listCurrentMigrationIds();
     for (const id of currentMigrationIds) {
         await copyMigration(id, migrationsDir);
     }
-    return currentMigrationIds;
+    const lastMigrationId = frontier === "released-v0.2.1"
+        ? releasedPredecessorLastId
+        : currentPredecessorLastId;
+    return currentMigrationIds.filter((id) => id > lastMigrationId);
 }
 
 async function seedReleasedQuotaRow(databasePath: string): Promise<void> {
     const database = new DatabaseSync(databasePath);
     try {
-        database.exec(await readFile(join(sqliteMigrationsRoot, quotaCreateId, "migration.sql"), "utf8"));
         database.prepare('INSERT INTO "Account" ("id", "publicKey", "updatedAt") VALUES (?, ?, CURRENT_TIMESTAMP)')
             .run("preserved-quota-account", "preserved-quota-public-key");
         database.prepare(`
@@ -90,7 +103,7 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
         await Promise.all(temporaryPaths.splice(0).map((path) => rm(path, { recursive: true, force: true })));
     });
 
-    async function createPredecessorDatabase(): Promise<Readonly<{
+    async function createPredecessorDatabase(frontier: PredecessorFrontier): Promise<Readonly<{
         databasePath: string;
         migrationsDir: string;
     }>> {
@@ -99,16 +112,17 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
         temporaryPaths.push(migrationsDir, dataDir);
         const databasePath = join(dataDir, "lineage.sqlite");
 
-        const predecessorMigrationIds = await prepareCompletePredecessorLedger(migrationsDir);
+        const predecessorMigrationIds = await preparePredecessorLedger(migrationsDir, frontier);
         const predecessorResult = await applySqliteMigrations({ databasePath, migrationsDir });
         expect(predecessorResult.applied).toEqual(predecessorMigrationIds);
 
         const predecessor = new DatabaseSync(databasePath);
         try {
-            expect(
+            const quotaTable =
                 predecessor.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
-                    .get("ServiceAccountQuotaSnapshot"),
-            ).toBeUndefined();
+                    .get("ServiceAccountQuotaSnapshot");
+            if (frontier === "current-0.2") expect(quotaTable).toBeUndefined();
+            else expect(quotaTable).toEqual({ name: "ServiceAccountQuotaSnapshot" });
         } finally {
             predecessor.close();
         }
@@ -116,9 +130,9 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
         return { databasePath, migrationsDir };
     }
 
-    it("recreates released quota storage after the complete predecessor DROP and deploys current migrations twice", async () => {
-        const { databasePath, migrationsDir } = await createPredecessorDatabase();
-        const currentMigrationIds = await appendCurrentMigrations(migrationsDir);
+    it("recreates quota storage after the current 0.2 DROP and deploys current migrations twice", async () => {
+        const { databasePath, migrationsDir } = await createPredecessorDatabase("current-0.2");
+        const currentMigrationIds = await appendCurrentMigrations(migrationsDir, "current-0.2");
 
         await expect(applySqliteMigrations({ databasePath, migrationsDir })).resolves.toEqual({
             applied: currentMigrationIds,
@@ -174,10 +188,10 @@ describe("SQLite 0.2 migration lineage before Account Directory", () => {
         }
     });
 
-    it("preserves an already-present released quota table and its rows", async () => {
-        const { databasePath, migrationsDir } = await createPredecessorDatabase();
+    it("preserves the released 0.2.1 quota table and its rows across two current deploys", async () => {
+        const { databasePath, migrationsDir } = await createPredecessorDatabase("released-v0.2.1");
         await seedReleasedQuotaRow(databasePath);
-        await appendCurrentMigrations(migrationsDir);
+        await appendCurrentMigrations(migrationsDir, "released-v0.2.1");
 
         await applySqliteMigrations({ databasePath, migrationsDir });
         await expect(applySqliteMigrations({ databasePath, migrationsDir })).resolves.toEqual({ applied: [] });

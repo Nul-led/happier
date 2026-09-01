@@ -38,6 +38,7 @@ import type {
     AutomationTargetType,
     AutomationTriggerItem,
 } from "./automationTypes";
+import { decodeAutomationSessionLifecycleConfiguration } from "./automationSessionLifecycleConfigurationCodec";
 import { isTerminalAutomationRunState } from "./automationTypes";
 import {
     assertAutomationTemplateEnvelopeForAccountMode,
@@ -200,15 +201,11 @@ function triggerProjection(
         };
     }
     if (trigger.kind === "sessionLifecycle") {
+        const lifecycle = decodeAutomationSessionLifecycleConfiguration(trigger);
         return {
             ...common, kind: "sessionLifecycle" as const,
-            event: required(trigger.sessionLifecycleEvent, "sessionLifecycleEvent"),
-            scope: {
-                kind: "exactTurn" as const,
-                sourceSessionId: required(trigger.sourceSessionId, "sourceSessionId"),
-                sourceTurnId: required(trigger.sourceTurnId, "sourceTurnId"),
-            },
-            consumption: "once" as const,
+            ...lifecycle.definition,
+            remainingOccurrences: lifecycle.remainingOccurrences,
             status: required(lifecycleStatuses.get(trigger.id), "sessionLifecycle status"),
             ...(includeDefinition ? { triggerDefinitionEnvelope: null } : {}),
         };

@@ -619,6 +619,11 @@ describe("automationClaimService (integration)", () => {
         expect(persistedResult.run).not.toHaveProperty("replyContextEnvelope");
         expect(persistedResult.run).not.toHaveProperty("errorMessage");
         expect(persistedResult.automation).not.toHaveProperty("templateCiphertext");
+        // The receipt copy must not retain the private mode-correct recipe
+        // envelope: the AutomationRun row is its canonical, transition-managed
+        // owner, and a frozen copy would sit outside the Account encryption
+        // transition census.
+        expect(persistedResult.run).toMatchObject({ executionInputEnvelope: null });
     });
 
     it("replays an empty signed V3 claim without claiming work that appeared later", async () => {
@@ -702,7 +707,7 @@ describe("automationClaimService (integration)", () => {
     });
 
     it.each(["plain", "e2ee"] as const)(
-        "replays a claimed V3 receipt with its committed post-claim %s witness exactly",
+        "replays a claimed V3 receipt with the current %s witness and the same claim effect",
         async (encryptionMode) => {
         const machineId = `machine-witness-replay-${encryptionMode}`;
         const machineInstallationId = `installation-witness-replay-${encryptionMode}`;
@@ -746,9 +751,15 @@ describe("automationClaimService (integration)", () => {
         expect(first.accountCurrentness).toBeTruthy();
 
         // An unrelated Account write advances the global change sequence after
-        // the claim committed. The retried request must still receive the exact
-        // committed post-claim witness, never a freshly minted one.
+        // the claim committed. The retried request keeps the exact Run/attempt
+        // effect but returns the current Account witness paired with the
+        // canonical Run envelope.
         await db.account.update({ where: { id: accountId }, data: { seq: { increment: 1 } } });
+        const currentAccount = await db.account.findUniqueOrThrow({
+            where: { id: accountId },
+            select: automationAccountCurrentnessSelect,
+        });
+        const currentWitness = deriveAutomationAccountCurrentnessWitness(currentAccount);
 
         const witnessReplay = await claimAutomationRun({
             accountId,
@@ -756,8 +767,164 @@ describe("automationClaimService (integration)", () => {
             leaseDurationMs: 30_000,
             claimRequest,
         });
-        expect(toAutomationV3WorkerClaimResponse(witnessReplay))
-            .toEqual(toAutomationV3WorkerClaimResponse(first));
+        expect(toAutomationV3WorkerClaimResponse(witnessReplay)).toEqual({
+            ...toAutomationV3WorkerClaimResponse(first),
+            accountCurrentness: currentWitness,
+        });
+    });
+
+    it("keeps the receipt free of the private recipe envelope and replays its canonical mode-transitioned recipe", async () => {
+        const machineId = "machine-receipt-recipe-owner";
+        const machineInstallationId = "installation-receipt-recipe-owner";
+        const { accountId } = await createAccountWithMachine(machineId, "plain");
+        await db.machine.update({
+            where: { id: machineId },
+            data: { installationId: machineInstallationId },
+        });
+        const automation = await createAutomationWithAssignments({
+            accountId,
+            machineIds: [machineId],
+            name: "Receipt recipe owner",
+        });
+        const queued = await db.automationRun.create({
+            data: {
+                automationId: automation.id,
+                ...scheduleRunCause(automation.triggerId),
+                accountId,
+                state: "queued",
+                scheduledAt: new Date(Date.now() - 30_000),
+                dueAt: new Date(Date.now() - 20_000),
+                executionInputEnvelope: strictPlainRecipeForAssignments([machineId]),
+                assignments: frozenRunAssignments([machineId]),
+            },
+            select: { id: true },
+        });
+        const claimRequest = {
+            machineInstallationId,
+            nonce: "signed-receipt-recipe-nonce-1",
+            expiresAt: new Date(Date.now() + 300_000),
+        };
+        const first = await claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+            claimRequest,
+        });
+        expect(first.run).toMatchObject({ id: queued.id });
+
+        // The receipt must not retain the private mode-correct recipe envelope.
+        // The AutomationRun row is its canonical owner and the Account
+        // encryption transition rewrites it there in place; a receipt copy sits
+        // outside that transition census.
+        const persistedReceipt = await db.automationWorkerClaimReceipt.findFirstOrThrow({
+            where: { accountId, machineId },
+            select: { claimResultJson: true },
+        });
+        const persistedResult = JSON.parse(persistedReceipt.claimResultJson) as {
+            run: { executionInputEnvelope: string | null } | null;
+        };
+        expect(persistedResult.run?.executionInputEnvelope ?? null).toBeNull();
+
+        // Reproduce exactly what the Account transition owner rewrites in
+        // place: the Account mode and the Run's canonical recipe bytes move to
+        // E2EE together.
+        await db.account.update({
+            where: { id: accountId },
+            data: { encryptionMode: "e2ee", seq: { increment: 1 } },
+        });
+        const transitionedRecipe = strictE2eeRecipeForAssignments([machineId]);
+        await db.automationRun.update({
+            where: { id: queued.id },
+            data: { executionInputEnvelope: transitionedRecipe },
+        });
+
+        const accountAfterTransition = await db.account.findUniqueOrThrow({
+            where: { id: accountId },
+            select: automationAccountCurrentnessSelect,
+        });
+        const transitionedWitness = deriveAutomationAccountCurrentnessWitness(accountAfterTransition);
+
+        // The replayed signed request must not resurface mode-stale recipe
+        // bytes under the committed plain witness. It rejoins the same claim
+        // attempt with the transition-managed Run envelope and current mode
+        // witness instead of waiting for lease expiry.
+        const transitionedReplay = await claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+            claimRequest,
+        });
+        expect(toAutomationV3WorkerClaimResponse(transitionedReplay)).toMatchObject({
+            run: {
+                id: queued.id,
+                attempt: 1,
+                executionInputEnvelope: transitionedRecipe,
+            },
+            accountCurrentness: transitionedWitness,
+        });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: queued.id },
+            select: { state: true, attempt: true },
+        })).resolves.toEqual({ state: "claimed", attempt: 1 });
+
+        await db.account.update({
+            where: { id: accountId },
+            data: { encryptionMode: "plain", seq: { increment: 1 } },
+        });
+        const transitionedBackRecipe = strictPlainRecipeForAssignments([machineId]);
+        await db.automationRun.update({
+            where: { id: queued.id },
+            data: { executionInputEnvelope: transitionedBackRecipe },
+        });
+        const accountAfterReverseTransition = await db.account.findUniqueOrThrow({
+            where: { id: accountId },
+            select: automationAccountCurrentnessSelect,
+        });
+        const transitionedBackWitness = deriveAutomationAccountCurrentnessWitness(
+            accountAfterReverseTransition,
+        );
+        const transitionedBackReplay = await claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+            claimRequest,
+        });
+        expect(toAutomationV3WorkerClaimResponse(transitionedBackReplay)).toMatchObject({
+            run: {
+                id: queued.id,
+                attempt: 1,
+                executionInputEnvelope: transitionedBackRecipe,
+            },
+            accountCurrentness: transitionedBackWitness,
+        });
+
+        const later = await db.automationRun.create({
+            data: {
+                automationId: automation.id,
+                ...scheduleRunCause(automation.triggerId),
+                accountId,
+                state: "queued",
+                scheduledAt: new Date(Date.now() - 10_000),
+                dueAt: new Date(Date.now() - 5_000),
+                executionInputEnvelope: transitionedBackRecipe,
+                assignments: frozenRunAssignments([machineId]),
+            },
+            select: { id: true },
+        });
+        const replayAfterLaterWork = await claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+            claimRequest,
+        });
+        expect(toAutomationV3WorkerClaimResponse(replayAfterLaterWork)).toMatchObject({
+            run: { id: queued.id, attempt: 1, executionInputEnvelope: transitionedBackRecipe },
+            accountCurrentness: transitionedBackWitness,
+        });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: later.id },
+            select: { state: true, attempt: true },
+        })).resolves.toEqual({ state: "queued", attempt: 0 });
     });
 
     it("claims a released-V2 run queued behind current strict-recipe runs", async () => {

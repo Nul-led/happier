@@ -111,6 +111,26 @@ export type EnsureHomeIrohEndpointParams = Readonly<{
     native?: HomeIrohNativeLifecycle | null;
 }>;
 
+export type MaterializeHomeIrohEndpointDescriptorParams = Readonly<{
+    env: NodeJS.ProcessEnv;
+    /** Public outer descriptor revision currently owned by the source Home. */
+    sourceDescriptorRevision: number;
+    /** Test-only native lifecycle boundary; production resolves the packaged binding. */
+    native?: HomeIrohNativeLifecycle | null;
+}>;
+
+export type HomeIrohEndpointMaterializationResult =
+    | Readonly<{
+        status: 'ready';
+        /** Lane 02 must assign the outer descriptor a strictly greater revision. */
+        minimumOuterRevisionExclusive: number;
+        endpoint: IrohEndpointDescriptorV1;
+    }>
+    | Readonly<{
+        status: 'unavailable' | 'failed';
+        failureReason: HomeIrohEndpointFailureReason | null;
+    }>;
+
 /**
  * Idempotently composes the managed Home Iroh endpoint. Repeated compatible
  * calls reuse the one active endpoint handle and acceptor; incompatible
@@ -127,6 +147,70 @@ export async function ensureHomeIrohEndpoint(params: EnsureHomeIrohEndpointParam
             ensureInFlight = null;
         });
     return await ensureInFlight;
+}
+
+/**
+ * Materializes the destination's fresh persistent endpoint identity and public
+ * endpoint subdescriptor without starting a Home acceptor. Relocation calls
+ * this only while the destination service is stopped and quarantined. The
+ * source's public revision is retained solely as a lower bound; this owner
+ * neither composes nor publishes the outer HomeConnectionDescriptorV1.
+ */
+export async function materializeHomeIrohEndpointDescriptor(
+    params: MaterializeHomeIrohEndpointDescriptorParams,
+): Promise<HomeIrohEndpointMaterializationResult> {
+    if (!Number.isSafeInteger(params.sourceDescriptorRevision)
+        || params.sourceDescriptorRevision < 1
+        || params.sourceDescriptorRevision >= Number.MAX_SAFE_INTEGER) {
+        return { status: 'failed', failureReason: 'descriptor_invalid' };
+    }
+    if (activeState) {
+        return { status: 'failed', failureReason: 'endpoint_config_conflict' };
+    }
+
+    const native = params.native !== undefined ? params.native : loadHomeIrohNativeLifecycle();
+    let config: HomeIrohEndpointEnvConfig;
+    try {
+        config = readHomeIrohEndpointConfigFromEnv(params.env);
+    } catch (error) {
+        const state = failed('invalid_iroh_config', error);
+        return { status: 'failed', failureReason: state.failureReason };
+    }
+    const canonicalServerUrl = resolveConfiguredCanonicalServerUrl(params.env);
+    if (!canonicalServerUrl) {
+        const state = failed('canonical_server_url_missing');
+        return { status: 'failed', failureReason: state.failureReason };
+    }
+    const keyPath = resolvePersonalHomeRuntimeLayout({ env: params.env }).irohEndpointKeyPath;
+    const provisioned = await provisionHomeIrohEndpoint({
+        env: params.env,
+        native,
+        config,
+        canonicalServerUrl,
+        keyPath,
+        revisionFloor: params.sourceDescriptorRevision,
+    });
+    if (provisioned.kind === 'terminal') {
+        return {
+            status: provisioned.state.status === 'unavailable' ? 'unavailable' : 'failed',
+            failureReason: provisioned.state.failureReason,
+        };
+    }
+
+    try {
+        await provisioned.native.shutdownEndpoint({ endpointHandle: provisioned.endpointHandle });
+    } catch (error) {
+        const state = failed('native_error', error);
+        return { status: 'failed', failureReason: state.failureReason };
+    }
+    return {
+        status: 'ready',
+        minimumOuterRevisionExclusive: Math.max(
+            params.sourceDescriptorRevision,
+            provisioned.revision - 1,
+        ),
+        endpoint: provisioned.endpoint,
+    };
 }
 
 /** Current carrier-neutral endpoint state for descriptor consumers. */
@@ -207,6 +291,144 @@ function sameStrings(a: readonly string[], b: readonly string[]): boolean {
     return a.length === b.length && a.every((entry, index) => entry === b[index]);
 }
 
+type ProvisionedHomeIrohEndpoint = Readonly<{
+    kind: 'ready';
+    native: HomeIrohNativeLifecycle;
+    endpointHandle: string;
+    homeServerIdentityId: string;
+    endpoint: IrohEndpointDescriptorV1;
+    revision: number;
+}>;
+
+type ProvisionHomeIrohEndpointResult =
+    | ProvisionedHomeIrohEndpoint
+    | Readonly<{ kind: 'terminal'; state: HomeIrohEndpointState }>;
+
+async function provisionHomeIrohEndpoint(params: Readonly<{
+    env: NodeJS.ProcessEnv;
+    native: HomeIrohNativeLifecycle | null;
+    config: HomeIrohEndpointEnvConfig;
+    canonicalServerUrl: string;
+    keyPath: string;
+    revisionFloor: number;
+}>): Promise<ProvisionHomeIrohEndpointResult> {
+    let homeServerIdentityId: string;
+    try {
+        homeServerIdentityId = await getOrCreateServerIdentityId(params.env);
+    } catch (error) {
+        return { kind: 'terminal', state: failed('server_identity_unavailable', error) };
+    }
+
+    const continuityPath = resolveHomeIrohEndpointContinuityPath(params.keyPath);
+    const continuityResult = await readHomeIrohEndpointContinuity(continuityPath);
+    if (continuityResult.state === 'unreadable') {
+        return { kind: 'terminal', state: failed('continuity_metadata_unreadable') };
+    }
+    const continuity = continuityResult.state === 'present' ? continuityResult.continuity : null;
+    if (continuity && continuity.homeServerIdentityId !== homeServerIdentityId) {
+        return { kind: 'terminal', state: failed('home_identity_drift') };
+    }
+
+    const keyExists = await stat(params.keyPath)
+        .then(
+            () => true,
+            (error: unknown) => {
+                if ((error as { code?: unknown })?.code === 'ENOENT') return false;
+                throw error;
+            },
+        )
+        .catch(() => null);
+    if (keyExists === null) {
+        return { kind: 'terminal', state: failed('endpoint_key_unavailable') };
+    }
+    if (continuity && !keyExists) {
+        return { kind: 'terminal', state: failed('endpoint_key_lost') };
+    }
+
+    if (!params.native) {
+        log(
+            { module: 'iroh', level: 'warn' },
+            'Native Iroh transport is unavailable on this target; the Home remains reachable on its ordinary HTTPS listener.',
+        );
+        return {
+            kind: 'terminal',
+            state: { status: 'unavailable', snapshot: null, failureReason: null },
+        };
+    }
+
+    let created: { endpointHandle: string; endpointId: string };
+    try {
+        const endpointHandle = await params.native.createEndpoint({
+            keyPath: params.keyPath,
+            relayPolicy: params.config.relayPolicy,
+            relayUrls: params.config.relayUrls,
+            capProfile: 'homeInteractive',
+        });
+        created = { endpointHandle: endpointHandle.endpointHandle, endpointId: endpointHandle.endpointId };
+    } catch (error) {
+        return { kind: 'terminal', state: failed(classifyNativeError(error), error) };
+    }
+
+    const endpointStatus = await params.native.getEndpointStatus({ endpointHandle: created.endpointHandle }).catch(() => null);
+    if (!endpointStatus || !endpointStatus.active || endpointStatus.endpointId !== created.endpointId) {
+        await cleanupNativeLifecycle(params.native, created.endpointHandle);
+        return { kind: 'terminal', state: failed('endpoint_not_active') };
+    }
+    if (continuity && continuity.endpointId !== created.endpointId) {
+        await cleanupNativeLifecycle(params.native, created.endpointHandle);
+        return { kind: 'terminal', state: failed('endpoint_identity_drift') };
+    }
+
+    const directAddresses = [...new Set(endpointStatus.directAddresses.map((entry) => entry.trim()).filter((entry) => entry.length > 0))]
+        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const relayUrls = [...params.config.relayUrls];
+    let endpoint: IrohEndpointDescriptorV1;
+    try {
+        endpoint = parseIrohEndpointDescriptorV1({
+            endpointId: created.endpointId,
+            ...(relayUrls.length > 0 ? { relayUrls } : {}),
+            ...(directAddresses.length > 0 ? { directAddresses } : {}),
+        });
+    } catch (error) {
+        await cleanupNativeLifecycle(params.native, created.endpointHandle);
+        return { kind: 'terminal', state: failed('descriptor_invalid', error) };
+    }
+
+    const unchanged = continuity !== null
+        && continuity.homeServerIdentityId === homeServerIdentityId
+        && continuity.canonicalServerUrl === params.canonicalServerUrl
+        && continuity.endpointId === created.endpointId
+        && sameStrings(continuity.relayUrls, relayUrls)
+        && sameStrings(continuity.directAddresses, directAddresses);
+    const revision = unchanged && continuity && continuity.revision > params.revisionFloor
+        ? continuity.revision
+        : Math.max(continuity?.revision ?? 0, params.revisionFloor) + 1;
+
+    try {
+        await writeHomeIrohEndpointContinuity(continuityPath, {
+            v: 1,
+            homeServerIdentityId,
+            canonicalServerUrl: params.canonicalServerUrl,
+            endpointId: created.endpointId,
+            relayUrls,
+            directAddresses,
+            revision,
+        });
+    } catch (error) {
+        await cleanupNativeLifecycle(params.native, created.endpointHandle);
+        return { kind: 'terminal', state: failed('continuity_write_failed', error) };
+    }
+
+    return {
+        kind: 'ready',
+        native: params.native,
+        endpointHandle: created.endpointHandle,
+        homeServerIdentityId,
+        endpoint,
+        revision,
+    };
+}
+
 async function runEnsure(params: EnsureHomeIrohEndpointParams): Promise<HomeIrohEndpointState> {
     const env = params.env;
     const native = params.native !== undefined ? params.native : loadHomeIrohNativeLifecycle();
@@ -220,8 +442,9 @@ async function runEnsure(params: EnsureHomeIrohEndpointParams): Promise<HomeIroh
         return failed('invalid_iroh_config', error);
     }
 
-    // (2) The stable canonical Home auth audience. This is HAPPIER_PUBLIC_SERVER_URL
-    // only — never PUBLIC_URL, the loopback listener, or a client runtime origin.
+    // (2) The stable canonical Home auth audience. This is configured through
+    // HAPPIER_CANONICAL_SERVER_URL, with a bounded explicit legacy public-URL
+    // fallback — never PUBLIC_URL, the loopback listener, or a client runtime origin.
     const canonicalServerUrl = resolveConfiguredCanonicalServerUrl(env);
     if (!canonicalServerUrl) {
         return failed('canonical_server_url_missing');
@@ -243,143 +466,25 @@ async function runEnsure(params: EnsureHomeIrohEndpointParams): Promise<HomeIroh
         return activeState.state;
     }
 
-    // (5) Home identity comes from the existing server identity owner; the
-    // Iroh EndpointId is separate transport identity from the native endpoint.
-    let homeServerIdentityId: string;
-    try {
-        homeServerIdentityId = await getOrCreateServerIdentityId(env);
-    } catch (error) {
-        return failed('server_identity_unavailable', error);
-    }
-
-    // (6) Continuity metadata and key-loss detection, before any native call.
-    const continuityPath = resolveHomeIrohEndpointContinuityPath(keyPath);
-    const continuityResult = await readHomeIrohEndpointContinuity(continuityPath);
-    if (continuityResult.state === 'unreadable') {
-        return failed('continuity_metadata_unreadable');
-    }
-    const continuity = continuityResult.state === 'present' ? continuityResult.continuity : null;
-
-    // The persisted descriptor belongs to one stable Home identity. Reusing
-    // its endpoint continuity under a different Home would make transport
-    // identity appear to authorize a different application identity; require
-    // explicit reprovisioning instead.
-    if (continuity && continuity.homeServerIdentityId !== homeServerIdentityId) {
-        return failed('home_identity_drift');
-    }
-
-    const keyExists = await stat(keyPath)
-        .then(
-            () => true,
-            (error: unknown) => {
-                if ((error as { code?: unknown })?.code === 'ENOENT') return false;
-                throw error;
-            },
-        )
-        .catch(() => null);
-    if (keyExists === null) {
-        return failed('endpoint_key_unavailable');
-    }
-    // A previously provisioned Home whose endpoint key is gone must never
-    // silently rotate; explicit operator re-provisioning is required.
-    if (continuity && !keyExists) {
-        return failed('endpoint_key_lost');
-    }
-
-    // (7) Native carrier availability. Relay policy and URLs configure Iroh
-    // when present; they are not an implicit required-mode switch. Keep the
-    // ordinary Home server runnable and publish no descriptor when the
-    // optional addon is absent.
-    if (!native) {
-        log(
-            { module: 'iroh', level: 'warn' },
-            'Native Iroh transport is unavailable on this target; the Home remains reachable on its ordinary HTTPS listener.',
-        );
-        return { status: 'unavailable', snapshot: null, failureReason: null };
-    }
-
-    // (8) One persistent endpoint keyed by the canonical managed layout path.
-    // A missing key is created by the native store on first provisioning; a
-    // corrupt key fails closed and is never rotated.
-    let created: { endpointHandle: string; endpointId: string };
-    try {
-        const endpointHandle = await native.createEndpoint({
-            keyPath,
-            relayPolicy: config.relayPolicy,
-            relayUrls: config.relayUrls,
-            capProfile: 'homeInteractive',
-        });
-        created = { endpointHandle: endpointHandle.endpointHandle, endpointId: endpointHandle.endpointId };
-    } catch (error) {
-        return failed(classifyNativeError(error), error);
-    }
-
-    // (9) The endpoint must report active status; direct addresses come from
-    // the native endpoint only.
-    const endpointStatus = await native.getEndpointStatus({ endpointHandle: created.endpointHandle }).catch(() => null);
-    if (!endpointStatus || !endpointStatus.active || endpointStatus.endpointId !== created.endpointId) {
-        await cleanupNativeLifecycle(native, created.endpointHandle);
-        return failed('endpoint_not_active');
-    }
-
-    // (10) Identity drift: the same key must always produce the same
-    // EndpointId as the persisted continuity metadata.
-    if (continuity && continuity.endpointId !== created.endpointId) {
-        await cleanupNativeLifecycle(native, created.endpointHandle);
-        return failed('endpoint_identity_drift');
-    }
-
-    // (11) Normalize deterministically, then parse through the protocol-owned
-    // Iroh parser before the acceptor binds or anything is published.
-    const directAddresses = [...new Set(endpointStatus.directAddresses.map((entry) => entry.trim()).filter((entry) => entry.length > 0))]
-        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    const relayUrls = [...config.relayUrls];
-    let endpoint: IrohEndpointDescriptorV1;
-    try {
-        endpoint = parseIrohEndpointDescriptorV1({
-            endpointId: created.endpointId,
-            ...(relayUrls.length > 0 ? { relayUrls } : {}),
-            ...(directAddresses.length > 0 ? { directAddresses } : {}),
-        });
-    } catch (error) {
-        await cleanupNativeLifecycle(native, created.endpointHandle);
-        return failed('descriptor_invalid', error);
-    }
+    const provisioned = await provisionHomeIrohEndpoint({
+        env,
+        native,
+        config,
+        canonicalServerUrl,
+        keyPath,
+        revisionFloor: 0,
+    });
+    if (provisioned.kind === 'terminal') return provisioned.state;
 
     // (12) One acceptor, fixed to the loopback target and the bound API port.
-    const acceptor = await native.startHomeAcceptor({
-        endpointHandle: created.endpointHandle,
+    const acceptor = await provisioned.native.startHomeAcceptor({
+        endpointHandle: provisioned.endpointHandle,
         targetHost: HOME_IROH_ACCEPTOR_TARGET_HOST,
         targetPort: apiPort,
     }).catch(() => null);
     if (!acceptor || !acceptor.status.running) {
-        await cleanupNativeLifecycle(native, created.endpointHandle);
+        await cleanupNativeLifecycle(provisioned.native, provisioned.endpointHandle);
         return failed('acceptor_not_running');
-    }
-
-    // (13) Positive monotonic descriptor revision across restarts.
-    const unchanged = continuity !== null
-        && continuity.homeServerIdentityId === homeServerIdentityId
-        && continuity.canonicalServerUrl === canonicalServerUrl
-        && continuity.endpointId === created.endpointId
-        && sameStrings(continuity.relayUrls, relayUrls)
-        && sameStrings(continuity.directAddresses, directAddresses);
-    const revision = unchanged && continuity ? continuity.revision : (continuity?.revision ?? 0) + 1;
-
-    // (14) Durable continuity before publication.
-    try {
-        await writeHomeIrohEndpointContinuity(continuityPath, {
-            v: 1,
-            homeServerIdentityId,
-            canonicalServerUrl,
-            endpointId: created.endpointId,
-            relayUrls,
-            directAddresses,
-            revision,
-        });
-    } catch (error) {
-        await cleanupNativeLifecycle(native, created.endpointHandle);
-        return failed('continuity_write_failed', error);
     }
 
     // (15) Publish readiness only after the endpoint is active and the fixed
@@ -387,16 +492,25 @@ async function runEnsure(params: EnsureHomeIrohEndpointParams): Promise<HomeIroh
     const state: HomeIrohEndpointState = {
         status: 'active',
         snapshot: {
-            homeServerIdentityId,
+            homeServerIdentityId: provisioned.homeServerIdentityId,
             canonicalServerUrl,
-            revision,
-            endpoint,
+            revision: provisioned.revision,
+            endpoint: provisioned.endpoint,
         },
         failureReason: null,
     };
-    activeState = { state, endpointHandle: created.endpointHandle, native, configKey };
+    activeState = {
+        state,
+        endpointHandle: provisioned.endpointHandle,
+        native: provisioned.native,
+        configKey,
+    };
     log(
-        { module: 'iroh', endpointId: created.endpointId, revision },
+        {
+            module: 'iroh',
+            endpointId: provisioned.endpoint.endpointId,
+            revision: provisioned.revision,
+        },
         `Home Iroh endpoint active; acceptor targeting ${HOME_IROH_ACCEPTOR_TARGET_HOST}:${apiPort}`,
     );
     return state;

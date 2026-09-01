@@ -199,12 +199,12 @@ describe("Home login approval (gate + routes) (integration)", () => {
             expect(decision.request.approvalId).not.toBe(expired.id);
         });
 
-        it("cleans up expired assertion-flow rows opportunistically", async () => {
+        it("opportunistically removes an expired assertion request before creating its replacement", async () => {
             const account = await ensurePrimaryAccount();
-            await createAssertionRow({ expiresAt: new Date(Date.now() - 5_000) });
+            const expired = await createAssertionRow({ expiresAt: new Date(Date.now() - 5_000) });
             const gate = createHomeApprovalGate(APPROVAL_ENV);
             await gate.evaluate({ accountId: account.id, ...baseRowFacts });
-            expect(await db.authPairingSession.count({ where: { expiresAt: { lt: new Date() } } })).toBe(0);
+            await expect(db.authPairingSession.findUnique({ where: { id: expired.id } })).resolves.toBeNull();
         });
     });
 
@@ -228,34 +228,45 @@ describe("Home login approval (gate + routes) (integration)", () => {
             const account = await ensurePrimaryAccount();
             const row = await createAssertionRow({ approvalStatus: "approved", decidedAt: new Date() });
             const gate = createHomeApprovalGate(APPROVAL_ENV);
-            await expect(gate.evaluate({ accountId: account.id, ...baseRowFacts, approvalId: row.id })).resolves.toEqual({ kind: "allowed" });
+            await expect(gate.evaluate({ accountId: account.id, ...baseRowFacts, approvalId: row.id })).resolves.toEqual({
+                kind: "allowed",
+                approvedRequest: { approvalId: row.id, bindingProof: baseRowFacts.approvalBindingProof },
+            });
 
             await expect(gate.evaluate({
                 accountId: account.id,
                 ...baseRowFacts,
                 requesterBoxPublicKeyBase64: "attacker-key-base64",
                 approvalId: row.id,
-            })).resolves.toEqual({ kind: "rejected" });
+            })).resolves.toEqual({ kind: "invalid" });
 
             await expect(gate.evaluate({
                 accountId: account.id,
                 ...baseRowFacts,
                 issuerSubjectId: "other-subject",
                 approvalId: row.id,
-            })).resolves.toEqual({ kind: "rejected" });
+            })).resolves.toEqual({ kind: "invalid" });
 
             await expect(gate.evaluate({
                 accountId: account.id,
                 ...baseRowFacts,
                 issuerServerIdentityId: "srv_other_issuer",
                 approvalId: row.id,
-            })).resolves.toEqual({ kind: "rejected" });
+            })).resolves.toEqual({ kind: "invalid" });
 
             const otherAccount = await db.account.create({ data: { publicKey: "pk-other" }, select: { id: true } });
-            await expect(gate.evaluate({ accountId: otherAccount.id, ...baseRowFacts, approvalId: row.id })).resolves.toEqual({ kind: "rejected" });
+            await expect(gate.evaluate({ accountId: otherAccount.id, ...baseRowFacts, approvalId: row.id })).resolves.toEqual({ kind: "invalid" });
         });
 
-        it("returns typed rejections for rejected, expired, foreign-flow, and unknown-state rows", async () => {
+        it("never returns the decision-command already_decided outcome from the evaluator", async () => {
+            const account = await ensurePrimaryAccount();
+            const row = await createAssertionRow({ approvalStatus: "approved", decidedAt: new Date() });
+            const gate = createHomeApprovalGate(APPROVAL_ENV);
+            const decision = await gate.evaluate({ accountId: account.id, ...baseRowFacts, approvalId: row.id });
+            expect(JSON.stringify(decision)).not.toContain("already_decided");
+        });
+
+        it("maps explicit rejection to rejected and identity/binding/currentness failures to invalid", async () => {
             const account = await ensurePrimaryAccount();
             const gate = createHomeApprovalGate(APPROVAL_ENV);
 
@@ -264,14 +275,20 @@ describe("Home login approval (gate + routes) (integration)", () => {
 
             const expiredApproved = await createAssertionRow({ approvalStatus: "approved", decidedAt: new Date(), expiresAt: new Date(Date.now() - 1_000) });
             await expect(gate.evaluate({ accountId: account.id, ...baseRowFacts, approvalId: expiredApproved.id })).resolves.toEqual({ kind: "expired" });
+            await expect(gate.evaluate({
+                accountId: account.id,
+                ...baseRowFacts,
+                requesterBoxPublicKeyBase64: "wrong-key",
+                approvalId: expiredApproved.id,
+            })).resolves.toEqual({ kind: "invalid" });
 
             const directQr = await createAssertionRow({ flow: "direct_qr", requesterIssuerServerIdentityId: null, requesterIssuerSubjectId: null });
-            await expect(gate.evaluate({ accountId: account.id, ...baseRowFacts, approvalId: directQr.id })).resolves.toEqual({ kind: "rejected" });
+            await expect(gate.evaluate({ accountId: account.id, ...baseRowFacts, approvalId: directQr.id })).resolves.toEqual({ kind: "invalid" });
 
             const unknownState = await createAssertionRow({ approvalStatus: "corrupted" });
-            await expect(gate.evaluate({ accountId: account.id, ...baseRowFacts, approvalId: unknownState.id })).resolves.toEqual({ kind: "rejected" });
+            await expect(gate.evaluate({ accountId: account.id, ...baseRowFacts, approvalId: unknownState.id })).resolves.toEqual({ kind: "invalid" });
 
-            await expect(gate.evaluate({ accountId: account.id, ...baseRowFacts, approvalId: "missing-id" })).resolves.toEqual({ kind: "rejected" });
+            await expect(gate.evaluate({ accountId: account.id, ...baseRowFacts, approvalId: "missing-id" })).resolves.toEqual({ kind: "invalid" });
         });
     });
 

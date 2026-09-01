@@ -244,15 +244,23 @@ function prepareAutomationRunAdmission(params: Readonly<{
     const automation = params.automationsById.get(params.request.automationId);
     if (!automation) return { kind: "ineligible", reason: "automationNotFound" };
     if (!automation.enabled) return { kind: "ineligible", reason: "automationDisabled" };
-    // Defense in depth for the assignment-liveness invariant: the select only
-    // loads enabled assignments, so an empty list means every execution
-    // assignment is disabled or absent. The cause is irrelevant — an empty
-    // frozen assignment snapshot is permanently unclaimable for schedule,
-    // pluginEvent, exact-turn, manual, and Conversation alike. Rejoin above
-    // keeps already-admitted Runs on their immutable snapshots. Definition
-    // writers enforce the same invariant transactionally; this only catches
-    // corrupted or raced legacy state without creating an unclaimable Run.
-    if (automation.assignments.length === 0) {
+    const assignmentMayBeFrozen = (assignment: AutomationAdmissionDefinition["assignments"][number]): boolean => {
+        const availability = classifyMachineAvailabilityState(assignment.machine);
+        return availability === "available"
+            || (cause.kind === "trigger"
+                && cause.triggerKind === "sessionLifecycle"
+                && availability === "replaced");
+    };
+    const admissionAutomation: AutomationAdmissionDefinition = {
+        ...automation,
+        assignments: automation.assignments.filter(assignmentMayBeFrozen),
+    };
+    // The select loads only enabled assignments. Replayable causes freeze only
+    // presently available machines; the one-shot exact-turn cause may retain a
+    // reversibly replaced machine so undo can make the already-admitted Run
+    // claimable. An empty post-policy snapshot is permanently unclaimable.
+    // Rejoin above keeps already-admitted Runs on their immutable snapshots.
+    if (admissionAutomation.assignments.length === 0) {
         return { kind: "ineligible", reason: "noEnabledAssignment" };
     }
     if (cause.kind === "trigger") {
@@ -288,7 +296,7 @@ function prepareAutomationRunAdmission(params: Readonly<{
         const frozen = serializeAutomationRunExecutionRecipeV1({
             ...definition.recipe,
             triggerEvidence,
-            assignmentMachineIds: automation.assignments.map((assignment) => assignment.machineId),
+            assignmentMachineIds: admissionAutomation.assignments.map((assignment) => assignment.machineId),
         });
         if (frozen.kind !== "available") return { kind: "ineligible", reason: "definitionInvalid" };
         executionInputEnvelope = frozen.serialized;
@@ -320,7 +328,7 @@ function prepareAutomationRunAdmission(params: Readonly<{
             request: params.request,
             cause,
             executionInputEnvelope,
-            automation,
+            automation: admissionAutomation,
         },
     };
 }
@@ -483,17 +491,18 @@ export async function admitAutomationRunsTx(params: Readonly<{
             select: automationAdmissionTriggerSelect,
         })))).flat();
     // Definition assignments are mutable configuration and intentionally
-    // survive reversible machine replacement. Admission freezes only the
-    // currently available configured subset through the canonical machine
-    // availability classifier. Rejoin was resolved before this mutable check,
-    // so an already-admitted Run keeps its exact immutable snapshot.
+    // survive reversible machine replacement. Account ownership and permanent
+    // revocation are cause-independent. The preparation owner below applies
+    // the cause-specific availability rule: replayable causes freeze only
+    // available machines, while non-replayable exact-turn occurrences also
+    // preserve reversibly replaced machines for natural claim after undo.
     const automationsById = new Map(automations.map((automation) => [
         automation.id,
         {
             ...automation,
             assignments: automation.assignments.filter((assignment) => (
                 assignment.machine.accountId === params.accountId
-                && classifyMachineAvailabilityState(assignment.machine) === "available"
+                && classifyMachineAvailabilityState(assignment.machine) !== "revoked"
             )),
         },
     ]));
@@ -527,8 +536,6 @@ export async function admitAutomationRunsTx(params: Readonly<{
             MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT - occupied,
         );
     }
-    const capacityBatchExceedsCapacity = netNewCapacityAdmissions.length > remainingCapacity;
-
     const results: AutomationRunAdmissionResult[] = [];
     for (const result of prepared) {
         if (result.kind !== "prepared") {
@@ -536,15 +543,19 @@ export async function admitAutomationRunsTx(params: Readonly<{
             continue;
         }
         const consumesCapacity = consumesEventConversationCapacity(result.admission.cause);
-        if (consumesCapacity && capacityBatchExceedsCapacity) {
+        if (consumesCapacity && remainingCapacity === 0) {
             results.push({ kind: "ineligible", reason: "capacity" });
             continue;
         }
-        results.push(await insertPreparedAutomationRunTx({
+        const inserted = await insertPreparedAutomationRunTx({
             tx: params.tx,
             accountId: params.accountId,
             admission: result.admission,
-        }));
+        });
+        results.push(inserted);
+        if (consumesCapacity && inserted.kind === "admitted") {
+            remainingCapacity -= 1;
+        }
     }
     return results;
 }

@@ -48,7 +48,7 @@ import { getRedisClient } from '@/storage/redis/redis';
 import { shouldConsumePresenceFromRedis, shouldEnableLocalPresenceDbFlush } from '@/app/presence/presenceMode';
 import { startPresenceRedisWorker } from '@/app/presence/presenceRedisQueue';
 import { initializeServerSentry } from '@/app/monitoring/sentry';
-import { resolveCachedCanonicalPublicServerUrl } from '@/app/integrations/publicUrl/publicServerUrlInference';
+import { resolveCachedPublicServerUrl } from '@/app/integrations/publicUrl/publicServerUrlInference';
 import { startRetentionWorker } from '@/app/retention/runtime/startRetentionWorker';
 import { startPluginWebhookCredentialRetirementWorker } from '@/app/plugins/webhooks/credentialRetirementWorker';
 import { startVoiceProviderIdentityBackfillWorker } from '@/app/voice/providerIdentityBackfill/worker';
@@ -63,6 +63,7 @@ import {
     stopHomeIrohEndpoint,
 } from '@/app/iroh/homeIrohEndpoint';
 import { verifyPersonalHomeExposureProof } from '@/app/iroh/personalHomeExposureProof';
+import { createPersonalHomeAuthenticatedReadiness } from '@/app/runtime/personalHomeReadiness';
 
 export type ServerFlavor = 'full' | 'light';
 export type ServerRole = 'all' | 'api' | 'worker';
@@ -384,7 +385,7 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
         if (role === 'all' || role === 'api') {
             // Best-effort: infer a canonical public URL so capabilities.server can advertise it.
             // This is cached and single-flight so startup does not spawn redundant inference processes.
-            void resolveCachedCanonicalPublicServerUrl(process.env).catch(() => null);
+            void resolveCachedPublicServerUrl(process.env).catch(() => null);
             const api = await startApi();
             apiListenerOwner = api;
             const listener = resolveBoundServerListener(api);
@@ -447,7 +448,11 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
         // Ready
         //
 
-        await writeStartupReceiptFromEnvironment(process.env, apiListenerOwner);
+        const personalHomeReadiness = flavor === 'light'
+            && process.env.HAPPIER_MANAGED_RELAY_PURPOSE === 'personal-home'
+            ? await createPersonalHomeAuthenticatedReadiness(process.env)
+            : null;
+        await writeStartupReceiptFromEnvironment(process.env, apiListenerOwner, personalHomeReadiness);
         log('Ready');
         startupCompleted = true;
         await awaitShutdown();

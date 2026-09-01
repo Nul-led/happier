@@ -177,3 +177,27 @@ export async function ensureHandyMasterSecret(env: LightEnv, opts?: { dataDir?: 
     }
     env.HANDY_MASTER_SECRET = existing;
 }
+
+/** Loads the already-restored canonical secret without creating replacement
+ * authority. Stopped verification uses this instead of ordinary startup so a
+ * missing archive secret fails closed. */
+export async function loadExistingHandyMasterSecret(
+    env: LightEnv,
+    opts?: { dataDir?: string; homedir?: string },
+): Promise<void> {
+    const dataDir = opts?.dataDir ?? resolveLightDataDir(env, { homedir: opts?.homedir });
+    const secretPath = join(dataDir, 'handy-master-secret.txt');
+    let existing: string;
+    try {
+        existing = (await readFile(secretPath, 'utf-8')).trim();
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            throw new Error(`Existing handy-master-secret.txt does not exist: ${secretPath}`);
+        }
+        throw error;
+    }
+    if (!existing) {
+        throw new Error(`handy-master-secret.txt exists but is empty: ${secretPath}`);
+    }
+    env.HANDY_MASTER_SECRET = existing;
+}

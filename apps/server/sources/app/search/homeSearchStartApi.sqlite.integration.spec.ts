@@ -360,7 +360,7 @@ describe('startApi Home search production composition', () => {
             await vi.waitFor(async () => {
                 const features = await app.inject({ method: 'GET', url: '/v1/features' });
                 expect(features.json()).toMatchObject({
-                    capabilities: { homeSearch: { enabled: false, provider: null, reason: 'index_unavailable' } },
+                    capabilities: { homeSearch: { enabled: false, provider: 'home', reason: 'index_unavailable' } },
                 });
             });
 

@@ -8,6 +8,7 @@ export type AccountDirectoryErrorCode =
     | "not_found"
     | "preferred_home_not_found"
     | "directory_link_conflict"
+    | "descriptor_revision_conflict"
     | "invalid_assertion"
     | "assertion_expired"
     | "assertion_clock_skew"
@@ -17,13 +18,17 @@ export type AccountDirectoryErrorCode =
     | "directory_link_not_found"
     | "invalid_subject"
     | "home_redemption_unavailable"
-    | "home_unavailable";
+    | "home_unavailable"
+    | "approval_rejected"
+    | "approval_expired"
+    | "approval_invalid";
 
 const STATUS_BY_CODE = {
     invalid_request: 400,
     not_found: 404,
     preferred_home_not_found: 404,
     directory_link_conflict: 409,
+    descriptor_revision_conflict: 409,
     invalid_assertion: 401,
     assertion_expired: 401,
     assertion_clock_skew: 401,
@@ -34,6 +39,9 @@ const STATUS_BY_CODE = {
     invalid_subject: 401,
     home_redemption_unavailable: 503,
     home_unavailable: 401,
+    approval_rejected: 401,
+    approval_expired: 401,
+    approval_invalid: 401,
 } as const satisfies Record<AccountDirectoryErrorCode, number>;
 
 export class AccountDirectoryError extends Error {
@@ -61,6 +69,7 @@ export const ACCOUNT_DIRECTORY_PROTOCOL_ERROR_BY_CODE: Readonly<
     not_found: ACCOUNT_DIRECTORY_ERROR_CODES_V1.directoryUnavailable,
     preferred_home_not_found: ACCOUNT_DIRECTORY_ERROR_CODES_V1.directoryUnavailable,
     directory_link_conflict: ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidRequest,
+    descriptor_revision_conflict: ACCOUNT_DIRECTORY_ERROR_CODES_V1.descriptorRevisionConflict,
     invalid_assertion: ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidAssertionSignature,
     assertion_expired: ACCOUNT_DIRECTORY_ERROR_CODES_V1.assertionExpired,
     assertion_clock_skew: ACCOUNT_DIRECTORY_ERROR_CODES_V1.assertionClockSkew,
@@ -71,6 +80,9 @@ export const ACCOUNT_DIRECTORY_PROTOCOL_ERROR_BY_CODE: Readonly<
     invalid_subject: ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidSubject,
     home_redemption_unavailable: ACCOUNT_DIRECTORY_ERROR_CODES_V1.homeUnavailable,
     home_unavailable: ACCOUNT_DIRECTORY_ERROR_CODES_V1.homeUnavailable,
+    approval_rejected: ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalRejected,
+    approval_expired: ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalExpired,
+    approval_invalid: ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalInvalid,
 };
 
 /**

@@ -26,6 +26,8 @@ describe("Account Directory domain error mapping", () => {
             .toEqual({ statusCode: 401, body: { error: "directory_link_not_found" } });
         expect(accountDirectoryProtocolErrorResponse(new AccountDirectoryError("invalid_subject")))
             .toEqual({ statusCode: 401, body: { error: "invalid_subject" } });
+        expect(accountDirectoryProtocolErrorResponse(new AccountDirectoryError("approval_invalid")))
+            .toEqual({ statusCode: 401, body: { error: "approval_invalid" } });
         // A route may narrow only the status code; the body stays canonical.
         expect(accountDirectoryProtocolErrorResponse(new AccountDirectoryError("invalid_client_key", "Invalid client public key", 400)))
             .toEqual({ statusCode: 400, body: { error: "invalid_client_key" } });

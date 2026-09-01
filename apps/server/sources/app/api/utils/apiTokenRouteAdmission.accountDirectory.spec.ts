@@ -66,6 +66,9 @@ describe("Account Directory central route admission", () => {
         expect(isRestrictedAuthTokenKind("account_directory")).toBe(true);
         expect(isRestrictedAuthTokenKind("api_token")).toBe(true);
         expect(isRestrictedAuthTokenKind("account")).toBe(false);
+        expect(isRestrictedAuthTokenKind("terminal")).toBe(false);
+        expect(isRestrictedAuthTokenKind("future_kind")).toBe(true);
+        expect(isRestrictedAuthTokenKind(undefined)).toBe(true);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "account_directory",
             routeOptions: { config: {} },
@@ -81,6 +84,14 @@ describe("Account Directory central route admission", () => {
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: undefined,
             routeOptions: { config: { allowAccountDirectoryToken: true } },
+        })).toBe(true);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "future_kind",
+            routeOptions: { config: {} },
+        })).toBe(true);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: undefined,
+            routeOptions: { config: {} },
         })).toBe(true);
     });
 });

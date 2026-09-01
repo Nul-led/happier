@@ -254,6 +254,19 @@ describe("plugin webhook Account status projection", () => {
         }
     }
 
+    it("does not format a public webhook URL from canonical Home identity", async () => {
+        harness?.resetEnv({
+            HAPPIER_SERVER_IDENTITY_ID: SERVER_IDENTITY_ID,
+            HAPPIER_CANONICAL_SERVER_URL: "http://127.0.0.1:43123",
+            HAPPIER_PUBLIC_SERVER_URL: undefined,
+        });
+
+        await expect(readPluginWebhookAccountStatusV1({
+            accountId: ACCOUNT_ID,
+            input: { pageSize: 20 },
+        })).rejects.toThrow("Plugin webhook public URL is unavailable");
+    });
+
     it("reports an endpoint no verified delivery has confirmed as not yet ready", async () => {
         // Same current target and live route as the ready case below: the only
         // difference is that no verified provider delivery ever arrived.

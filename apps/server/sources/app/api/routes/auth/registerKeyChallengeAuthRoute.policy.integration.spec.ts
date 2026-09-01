@@ -27,7 +27,8 @@ describe("key-challenge v2 policy and stable audience (integration)", () => {
             initAuth: false,
             env: {
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
-                HAPPIER_PUBLIC_SERVER_URL: "https://stable.example.test/base",
+                HAPPIER_CANONICAL_SERVER_URL: "https://stable.example.test/base",
+                HAPPIER_PUBLIC_SERVER_URL: "https://public.example.test/edge",
                 HAPPIER_SERVER_IDENTITY_ID: "stable-policy-server",
             },
         });
@@ -35,7 +36,8 @@ describe("key-challenge v2 policy and stable audience (integration)", () => {
 
     afterEach(() => {
         harness.resetEnv({
-            HAPPIER_PUBLIC_SERVER_URL: "https://stable.example.test/base",
+            HAPPIER_CANONICAL_SERVER_URL: "https://stable.example.test/base",
+            HAPPIER_PUBLIC_SERVER_URL: "https://public.example.test/edge",
             HAPPIER_SERVER_IDENTITY_ID: "stable-policy-server",
         });
     });
@@ -68,8 +70,8 @@ describe("key-challenge v2 policy and stable audience (integration)", () => {
 
     it("ignores runtime/public URL candidates when resolving the stable audience", () => {
         const env = {
-            HAPPIER_PUBLIC_SERVER_URL: "https://stable.example.test/base",
-            HAPPIER_PUBLIC_INGRESS_URL: "https://public.example.test/edge",
+            HAPPIER_CANONICAL_SERVER_URL: "https://stable.example.test/base",
+            HAPPIER_PUBLIC_SERVER_URL: "https://public.example.test/edge",
             HAPPIER_RUNTIME_ORIGIN: "http://127.0.0.1:44001",
         } as NodeJS.ProcessEnv;
         expect(resolveStableKeyChallengeV2AudienceOrigin(env)).toBe("https://stable.example.test");

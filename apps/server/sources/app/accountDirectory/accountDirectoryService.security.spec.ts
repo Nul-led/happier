@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
+import { decodeBase64, openBoxBundle } from "@happier-dev/protocol";
 
 const { createToken, linkFindUnique, linkFindFirst } = vi.hoisted(() => ({
     createToken: vi.fn(),
@@ -35,13 +36,14 @@ describe("Account Directory Home redemption security", () => {
 
     it("never issues an Account token from the Account Service redemption path", async () => {
         const keyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(4));
+        const requesterBoxKeyPair = tweetnacl.box.keyPair();
         const assertion = {
             v: 1 as const,
             purpose: "happier.home-login" as const,
             issuerServerIdentityId: "srv_account",
             issuerSubjectId: "account-1",
             audienceHomeServerIdentityId: "srv_home",
-            clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(32).fill(1)),
+            clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(requesterBoxKeyPair.publicKey)),
             issuedAtMs: 1_700_000_000_000,
             expiresAtMs: 1_700_000_180_000,
             keyId: createHash("sha256").update(keyPair.publicKey).digest("hex"),
@@ -79,6 +81,13 @@ describe("Account Directory Home redemption security", () => {
 
         const authorized = await redeemHomeLoginAssertion({
             assertion: signed,
+            connectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: "srv_home",
+                canonicalServerUrl: "https://home.test",
+                revision: 1,
+                endpoints: [{ kind: "https", url: "https://home.test" }],
+            },
             nowMs: assertion.issuedAtMs + 1,
             homeApprovalGate: { evaluate: async () => ({ kind: "allowed" as const }) },
             issueHomeToken: async () => "home-local-token",
@@ -95,6 +104,23 @@ describe("Account Directory Home redemption security", () => {
         expect(authorized).not.toHaveProperty("outcome");
         expect(authorized).toHaveProperty("sealedHomeTokenBase64Url");
         expect(JSON.stringify(authorized)).not.toContain("home-local-token");
+        if (!("sealedHomeTokenBase64Url" in authorized)) throw new Error("expected authorized redemption");
+        const opened = openBoxBundle({
+            bundle: decodeBase64(authorized.sealedHomeTokenBase64Url, "base64url"),
+            recipientSecretKeyOrSeed: requesterBoxKeyPair.secretKey,
+        });
+        if (!opened) throw new Error("expected coupled Home credential payload");
+        expect(JSON.parse(new TextDecoder().decode(opened))).toEqual({
+            v: 1,
+            credentials: { token: "home-local-token" },
+            connectionDescriptor: {
+                v: 1,
+                homeServerIdentityId: "srv_home",
+                canonicalServerUrl: "https://home.test",
+                revision: 1,
+                endpoints: [{ kind: "https", url: "https://home.test" }],
+            },
+        });
 
         const forged = { ...signed, issuerSubjectId: "attacker" };
         await expect(redeemHomeLoginAssertion({ assertion: forged, nowMs: assertion.issuedAtMs + 1, homeApprovalGate: { evaluate: async () => ({ kind: "allowed" as const }) }, issueHomeToken: async () => "bad" })).rejects.toMatchObject({ code: "invalid_subject" });

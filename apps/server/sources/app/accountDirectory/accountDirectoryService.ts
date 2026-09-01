@@ -10,10 +10,12 @@ import {
     AccountDirectoryLinkPutRequestSchema,
     AccountDirectoryMeResponseSchema,
     AccountDirectoryHomePutRequestSchema,
+    AccountDirectoryHomePublishRequestV2Schema,
     AccountDirectoryHomePutResponseV1Schema,
     AccountDirectoryHomesResponseV1Schema,
     HomeConnectionDescriptorV1Schema,
     HomeLoginAssertionV1Schema,
+    HomeLoginCredentialPayloadV1Schema,
     HomeLoginRedemptionResultV1Schema,
     HomeLoginRedemptionResponseV1Schema,
     type AccountDirectoryMeResponseV1,
@@ -27,7 +29,6 @@ import {
 } from "./accountDirectorySigner";
 import {
     ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES,
-    ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES,
     computeCanonicalDomainSeparatedDigest,
     createHomeLoginAssertionSigningBytesV1,
     decodeBase64,
@@ -118,6 +119,10 @@ function mapHomeRow(row: HomeDirectoryEntryRow, preferredHomeServerIdentityId: s
     return parsed.data;
 }
 
+function descriptorsEqual(left: HomeConnectionDescriptorV1, right: HomeConnectionDescriptorV1): boolean {
+    return JSON.stringify(left) === JSON.stringify(right);
+}
+
 export async function readAccountDirectoryMe(accountId: string): Promise<AccountDirectoryMeResponseV1> {
     const user = await db.account.findUnique({
         where: { id: accountId },
@@ -190,14 +195,37 @@ export async function upsertAccountHomeDirectoryEntry(params: Readonly<{
         };
         const existing = await tx.accountHomeDirectoryEntry.findUnique({
             where,
-            select: { homeServerIdentityId: true },
+            select: HOME_DIRECTORY_ENTRY_SELECT,
         });
-        const row = existing
-            ? await tx.accountHomeDirectoryEntry.update({ where, data, select: HOME_DIRECTORY_ENTRY_SELECT })
-            : await tx.accountHomeDirectoryEntry.create({
+        let row: HomeDirectoryEntryRow;
+        if (!existing) {
+            row = await tx.accountHomeDirectoryEntry.create({
                 data: { accountId: params.accountId, homeServerIdentityId: params.homeServerIdentityId, ...data },
                 select: HOME_DIRECTORY_ENTRY_SELECT,
             });
+        } else {
+            const currentDescriptor = mapDescriptor(existing.connectionDescriptor);
+            const nextDescriptor = body.connectionDescriptor;
+            if (nextDescriptor.revision < currentDescriptor.revision) {
+                row = existing;
+            } else if (nextDescriptor.revision === currentDescriptor.revision) {
+                if (!descriptorsEqual(nextDescriptor, currentDescriptor)) {
+                    throw new AccountDirectoryError(
+                        "descriptor_revision_conflict",
+                        "Home descriptor revision conflicts with the current descriptor",
+                    );
+                }
+                row = body.label === existing.label
+                    ? existing
+                    : await tx.accountHomeDirectoryEntry.update({
+                        where,
+                        data: { label: body.label },
+                        select: HOME_DIRECTORY_ENTRY_SELECT,
+                    });
+            } else {
+                row = await tx.accountHomeDirectoryEntry.update({ where, data, select: HOME_DIRECTORY_ENTRY_SELECT });
+            }
+        }
         let preferredHomeServerIdentityId = account.preferredHomeServerIdentityId ?? null;
         if (preferredHomeServerIdentityId === null) {
             const preferred = await tx.account.updateMany({
@@ -214,6 +242,35 @@ export async function upsertAccountHomeDirectoryEntry(params: Readonly<{
             }
         }
         return mapHomeRow(row, preferredHomeServerIdentityId);
+    });
+}
+
+export async function publishAccountHomeDirectoryDescriptor(params: Readonly<{
+    accountId: string;
+    homeServerIdentityId: string;
+    label: string;
+    minimumOuterRevisionExclusive: number;
+    canonicalServerUrl: string;
+    endpoints: unknown;
+}>): Promise<ReturnType<typeof mapHomeRow>> {
+    const body = AccountDirectoryHomePublishRequestV2Schema.parse({
+        v: 2,
+        label: params.label,
+        minimumOuterRevisionExclusive: params.minimumOuterRevisionExclusive,
+        canonicalServerUrl: params.canonicalServerUrl,
+        endpoints: params.endpoints,
+    });
+    return await upsertAccountHomeDirectoryEntry({
+        accountId: params.accountId,
+        homeServerIdentityId: params.homeServerIdentityId,
+        label: body.label,
+        connectionDescriptor: {
+            v: 1,
+            homeServerIdentityId: params.homeServerIdentityId,
+            canonicalServerUrl: body.canonicalServerUrl,
+            revision: body.minimumOuterRevisionExclusive + 1,
+            endpoints: body.endpoints,
+        },
     });
 }
 
@@ -397,6 +454,8 @@ function validateAssertionAgainstLink(
 
 export async function redeemHomeLoginAssertion(params: Readonly<{
     assertion: unknown;
+    /** Descriptor selected by the redeeming Home's canonical publication owner. */
+    connectionDescriptor?: unknown;
     env?: NodeJS.ProcessEnv;
     nowMs?: number;
     approvalId?: string;
@@ -412,7 +471,7 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
     }>) => Promise<
         | { kind: "allowed"; approvedRequest?: { approvalId: string; bindingProof: string } }
         | { kind: "approval_required"; request: { approvalId: string; deviceLabel: string | null; expiresAtMs: number } }
-        | { kind: "rejected" | "expired" | "already_decided" }
+        | { kind: "rejected" | "expired" | "invalid" }
     > };
     issueHomeToken?: (tx: Tx, accountId: string) => Promise<string>;
 }>): Promise<HomeLoginRedemptionResultV1> {
@@ -465,7 +524,24 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
             expiresAtMs: Math.min(decision.request.expiresAtMs, assertion.expiresAtMs),
         });
     }
-    if (decision.kind !== "allowed") throw new AccountDirectoryError("home_unavailable", "Home approval rejected or expired");
+    if (decision.kind !== "allowed") {
+        const code = decision.kind === "rejected"
+            ? "approval_rejected"
+            : decision.kind === "expired"
+                ? "approval_expired"
+                : "approval_invalid";
+        throw new AccountDirectoryError(code);
+    }
+    const connectionDescriptor = HomeConnectionDescriptorV1Schema.safeParse(params.connectionDescriptor);
+    if (
+        !connectionDescriptor.success
+        || connectionDescriptor.data.homeServerIdentityId !== currentServerIdentityId
+    ) {
+        throw new AccountDirectoryError(
+            "home_redemption_unavailable",
+            "Home connection descriptor is unavailable or does not match this Home",
+        );
+    }
     const issueHomeToken = params.issueHomeToken;
     if (!issueHomeToken) throw new AccountDirectoryError("home_redemption_unavailable", "Home token issuer is unavailable");
     const issuedAtMs = params.nowMs ?? Date.now();
@@ -475,6 +551,9 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
             select: ACCOUNT_DIRECTORY_LINK_SELECT,
         });
         if (!currentLink) {
+            if (decision.approvedRequest) {
+                throw new AccountDirectoryError("approval_invalid", "Home approval no longer matches a current directory link");
+            }
             const currentIssuerLink = await tx.accountDirectoryLink.findFirst({
                 where: { issuerServerIdentityId: assertion.issuerServerIdentityId },
                 select: { issuerSubjectId: true },
@@ -482,13 +561,22 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
             throw new AccountDirectoryError(currentIssuerLink ? "invalid_subject" : "directory_link_not_found");
         }
         if (currentLink.accountId !== link.accountId) {
-            throw new AccountDirectoryError("assertion_issuer_untrusted");
+            throw new AccountDirectoryError(
+                decision.approvedRequest ? "approval_invalid" : "assertion_issuer_untrusted",
+            );
         }
-        validateAssertionAgainstLink(assertion, currentLink, params.nowMs);
+        try {
+            validateAssertionAgainstLink(assertion, currentLink, params.nowMs);
+        } catch (error) {
+            if (decision.approvedRequest) {
+                throw new AccountDirectoryError("approval_invalid", "Home approval no longer matches the current directory link");
+            }
+            throw error;
+        }
         if (decision.approvedRequest) {
             const currentBindingProof = createHomeLoginApprovalBindingProof(assertion, currentLink);
             if (currentBindingProof !== decision.approvedRequest.bindingProof) {
-                throw new AccountDirectoryError("home_unavailable", "Home approval no longer matches the current directory link");
+                throw new AccountDirectoryError("approval_invalid", "Home approval no longer matches the current directory link");
             }
             const currentApproval = await tx.authPairingSession.findFirst({
                 where: {
@@ -502,20 +590,22 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
                 select: { id: true },
             });
             if (!currentApproval) {
-                throw new AccountDirectoryError("home_unavailable", "Home approval is no longer current");
+                throw new AccountDirectoryError("approval_invalid", "Home approval is no longer current");
             }
         }
         return issueHomeToken(tx, currentLink.accountId);
     });
-    const tokenUtf8Bytes = new TextEncoder().encode(token);
-    const credentialPlaintext = new TextEncoder().encode(JSON.stringify({ token }));
-    if (
-        !token
-        || token.trim() !== token
-        || tokenUtf8Bytes.byteLength > ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES
-        || credentialPlaintext.byteLength > ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES
-    ) {
+    const credentialPayload = HomeLoginCredentialPayloadV1Schema.safeParse({
+        v: 1,
+        credentials: { token },
+        connectionDescriptor: connectionDescriptor.data,
+    });
+    if (!credentialPayload.success) {
         throw new AccountDirectoryError("home_redemption_unavailable", "Home token issuer returned invalid credentials");
+    }
+    const credentialPlaintext = new TextEncoder().encode(JSON.stringify(credentialPayload.data));
+    if (credentialPlaintext.byteLength > ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES) {
+        throw new AccountDirectoryError("home_redemption_unavailable", "Home credential payload exceeds its plaintext bound");
     }
     return HomeLoginRedemptionResponseV1Schema.parse({
         v: 1,

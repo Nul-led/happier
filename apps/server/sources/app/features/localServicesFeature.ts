@@ -6,11 +6,11 @@ import {
 } from "./catalog/readFeatureEnv";
 import {
     normalizeHttpUrl,
-    resolveConfiguredCanonicalServerUrl,
+    resolveConfiguredPublicServerUrl,
 } from "@/app/serverUrls/effectiveServerUrls";
 
 function resolvePublicBaseUrl(env: NodeJS.ProcessEnv): string | null {
-    return resolveConfiguredCanonicalServerUrl(env) ?? normalizeHttpUrl(String(env.PUBLIC_URL ?? ""));
+    return resolveConfiguredPublicServerUrl(env) ?? normalizeHttpUrl(String(env.PUBLIC_URL ?? ""));
 }
 
 function isHttpsUrl(value: string | null): boolean {
