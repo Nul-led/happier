@@ -75,8 +75,6 @@ export const ACCOUNT_DIRECTORY_MAX_URL_UTF8_BYTES = 512;
 /** Existing ordinary Home-token boundary shared with direct enrollment. */
 export const ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES = 4_096;
 const UTF8_ENCODER = new TextEncoder();
-const IROH_ENDPOINT_ID_MAX_ENCODING_UTF8_BYTES = 64;
-const IROH_DIRECT_ADDRESS_MAX_UTF8_BYTES = 47;
 /**
  * JSON.stringify escape worst case: a raw byte can expand to a six-byte
  * `\uXXXX` escape. Token and URL strings are admitted as arbitrary bounded
@@ -84,41 +82,17 @@ const IROH_DIRECT_ADDRESS_MAX_UTF8_BYTES = 47;
  */
 const JSON_STRING_ESCAPE_MAX_BYTES_PER_UTF8_BYTE = 6;
 
-const HOME_LOGIN_CREDENTIAL_SERIALIZATION_OVERHEAD_BYTES = UTF8_ENCODER.encode(JSON.stringify({
-  v: 1,
-  credentials: { token: '' },
-  connectionDescriptor: {
-    v: 1,
-    homeServerIdentityId: '',
-    canonicalServerUrl: '',
-    revision: Number.MAX_SAFE_INTEGER,
-    endpoints: Array.from({ length: ACCOUNT_DIRECTORY_MAX_ENDPOINTS }, () => ({
-      kind: 'iroh',
-      endpointId: '',
-      relayUrls: Array.from({ length: ACCOUNT_DIRECTORY_MAX_RELAY_URLS }, () => ''),
-      directAddresses: Array.from({ length: ACCOUNT_DIRECTORY_MAX_DIRECT_ADDRESSES }, () => ''),
-    })),
-  },
-})).byteLength;
-
-const HOME_LOGIN_CREDENTIAL_MAX_STRING_BYTES =
-  ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES
-  + ACCOUNT_DIRECTORY_MAX_ID_UTF8_BYTES
-  + ACCOUNT_DIRECTORY_MAX_URL_UTF8_BYTES
-  + ACCOUNT_DIRECTORY_MAX_ENDPOINTS * (
-    IROH_ENDPOINT_ID_MAX_ENCODING_UTF8_BYTES
-    + ACCOUNT_DIRECTORY_MAX_RELAY_URLS * ACCOUNT_DIRECTORY_MAX_URL_UTF8_BYTES
-    + ACCOUNT_DIRECTORY_MAX_DIRECT_ADDRESSES * IROH_DIRECT_ADDRESS_MAX_UTF8_BYTES
-  );
+const HOME_LOGIN_CREDENTIAL_SERIALIZATION_OVERHEAD_BYTES = UTF8_ENCODER.encode(
+  JSON.stringify({ token: '' }),
+).byteLength;
 
 /**
- * Conservative compositional bound for the strict redemption-coupled plaintext.
- * It admits every independently valid token and descriptor, including the JSON
- * string escape worst case, without inventing a second smaller client limit.
+ * Conservative bound for the locked strict `{ token }` plaintext, including
+ * JSON string escaping. It is a malformed-input allocation boundary, not a quota.
  */
 export const ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES =
   HOME_LOGIN_CREDENTIAL_SERIALIZATION_OVERHEAD_BYTES
-  + JSON_STRING_ESCAPE_MAX_BYTES_PER_UTF8_BYTE * HOME_LOGIN_CREDENTIAL_MAX_STRING_BYTES;
+  + JSON_STRING_ESCAPE_MAX_BYTES_PER_UTF8_BYTE * ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES;
 /**
  * Maximum decoded box-bundle bytes. This protects response parsing/allocation;
  * encoded base64url length is derived by `strictEncodedBytes`, not a second limit.
@@ -247,13 +221,9 @@ const HomeLoginTokenV1Schema = z.string().trim().min(1).max(ACCOUNT_DIRECTORY_MA
     }
   });
 
-/** Exact strict redemption-coupled sealed plaintext. Legacy token-only forms fail closed. */
+/** Exact strict sealed plaintext. Descriptor and legacy credential envelopes fail closed. */
 export const HomeLoginCredentialPayloadV1Schema = z.object({
-  v: z.literal(1),
-  credentials: z.object({
-    token: HomeLoginTokenV1Schema,
-  }).strict(),
-  connectionDescriptor: HomeConnectionDescriptorV1Schema,
+  token: HomeLoginTokenV1Schema,
 }).strict().superRefine((value, context) => {
   if (UTF8_ENCODER.encode(JSON.stringify(value)).byteLength > ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: 'Home credential payload exceeds its plaintext byte limit' });

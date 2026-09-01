@@ -269,19 +269,16 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
         input.clientSecretKey,
     );
     if (!payload) return { kind: 'failed' };
-    if (payload.connectionDescriptor.homeServerIdentityId !== targetIdentity) {
-        return { kind: 'failed' };
-    }
     if (isCancelled(cancellationState)) return { kind: 'cancelled' };
 
     try {
         await adoptHomeProfileWithCredentials({
-            descriptor: payload.connectionDescriptor,
+            descriptor,
             source: 'account-directory',
             preserveUserLabel: true,
             suggestedName: input.home.label,
-            descriptorAuthority: 'redemption_coupled',
-            credentials: payload.credentials,
+            descriptorAuthority: 'advisory',
+            credentials: { token: payload.token },
             shouldCancel: () => isCancelled(cancellationState),
         });
     } catch (error) {

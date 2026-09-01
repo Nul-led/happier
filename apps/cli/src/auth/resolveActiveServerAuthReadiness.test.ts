@@ -58,7 +58,10 @@ describe('resolveActiveServerAuthReadiness', () => {
   it('distinguishes missing, rejected, and server-confirmed readiness facts', async () => {
     const missing = await resolveActiveServerAuthReadiness({
       readCredentialsFn: async () => null,
-      readSettingsFn: async () => ({ machineId: null }) as Awaited<ReturnType<typeof import('@/persistence').readSettings>>,
+      readSettingsFn: async () => ({
+        schemaVersion: 6,
+        onboardingCompleted: false,
+      }),
     });
     expect(missing).toMatchObject({
       credentialState: 'missing',
