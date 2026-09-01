@@ -75,6 +75,9 @@ List every version that remains readable in `readableSchemaVersions`, including
 the current version, so the host can verify that exact chain.
 The callback receives the already-admitted source row and returns the target
 row. It does not select an Account, Collection, storage writer, or retry loop.
+The host may invoke it more than once while preparing or retrying a candidate,
+until that exact staged output is accepted. Keep the callback pure and
+idempotent, and do not perform external writes or other side effects from it.
 
 ## Writing more rows than one batch carries
 
@@ -92,6 +95,10 @@ const measurement = await collection.measureBatch(operations);
 `limits()` reports what is actually in force — the deployment's published policy
 narrowed by your collection's admitted quota — and says through `basis` whether
 the deployment published it or the platform default is being assumed.
+`maxRows` and `maxCollectionEncodedBytes` are this Collection's effective
+ceilings. `maxAccountRows` and `maxAccountBytes` are the separate aggregate
+ceilings shared by all Collections in the Account; neither pair substitutes for
+the other.
 `measureBatch()` reports what those operations cost on the wire, measured
 through the same seal-and-serialize path `batch` uses, so the private envelope
 is accounted for on an end-to-end-encrypted Account without you modelling it.

@@ -72,20 +72,32 @@ declaration, and the compatibility-fenced Session layout-1 path. Feature configu
 or schema/source presence alone is not proof that the complete token-only onboarding
 flow has passed its mixed-version, persistence, composed, and platform checks.
 
-The server's current advertised stored-content implementation is protocol `3`,
+The server's current advertised stored-content implementation is protocol `4`,
 while protocol `2` remains the minimum compatibility floor for incumbent
-stored-content operations. Current callers independently advertise optional
-response-field support at protocol `4`, with
+stored-content operations. Current callers advertise the cumulative V4 contract,
+which covers both the optional Session-access response witness and Account Settings
+writers that preserve complete raw Profile rows, with
 `x-happier-account-stored-content-protocol: 4` on HTTP and
 `accountStoredContentCompatibility:{v:1,protocolVersion:4}` in Socket.IO auth.
-A V3 server remains usable and omits the additive V4 Session-access witness.
-Clients first discover this capability through a header-free `/v1/features` request
-and only use the HTTP declaration transport after the server advertises it. Missing or
-malformed declarations identify legacy callers; they do not reject the connection.
+A current client remains usable with a V3 server; a server without the additive
+V4 capability omits the Session-access witness but can still accept the client's
+opaque Settings writes.
+The `/v1/features` discovery request remains header-free. Before discovery, current
+clients send their implicit cumulative V4 declaration on ordinary requests so a cold
+Settings restore is identified as profile-preserving; explicit operation declarations
+remain unavailable until the server advertises support. Missing or malformed
+declarations identify legacy callers; they do not reject the connection.
 Operations that must read or write the current stored-content representation return a
 typed `client-upgrade-required` result to a legacy caller, while operations that remain
 safe without interpreting that representation continue to work. There is no operator
 `observe`/`required` activation mode for account stored content.
+
+Both `/v1/account/settings` and `/v2/account/settings` require the V4 writer
+declaration before replacing the shared Settings document. The server does not inspect
+the opaque body for Profile fields: released 0.2 writers normalize whole Profile rows
+through an older closed schema and can erase V2 fields even during an otherwise
+unrelated Settings write. Reads and unrelated operations remain available, and no
+parallel Profile representation or dual writer is maintained.
 
 The settled source boundary is green for genuine token-only OAuth/mTLS, the E2EE-only
 Account cipher, corrupt local-key handling, the single UI Settings normalizer, Memory

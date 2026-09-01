@@ -232,21 +232,11 @@ export const SECURITY_KEYS: ReadonlyArray<string> = [
     'It also means the loss case is real and worth stating once: if every signed-in device is gone and the secret key is gone with them, the encrypted sessions cannot be recovered by us or by anyone. A relay that could hand them back would be a relay that could read them.',
 ];
 
-/**
- * Pairing. The most interesting verified detail on the page: the relay is a
- * courier for the handoff and not a party to it.
- */
+/** Pairing: direct QR possession and optional Home-owned approval are distinct. */
 export const SECURITY_PAIRING: ReadonlyArray<string> = [
-    // WHAT THE QR CODE IS, RATHER THAN WHAT IT IS NOT. This sentence used to
-    // read "The QR code is not the credential — the shipped documentation says
-    // so in those words", which did both defects at once: it defined the thing
-    // by negation, and it cited our own source material in the copy. The
-    // anchor is docs features/device-linking-and-restore.mdx, "Approval and
-    // safety checks": "The QR code itself is not the final credential." What
-    // the reader needs is what scanning it actually does, which is raise a
-    // request that a signed-in device has to approve.
-    'Adding a device is the moment key material moves, so it is the moment worth understanding. Scanning the QR code raises a request, and that is all it does: the approval happens on a device that is already signed in, and when both screens show a short confirmation code you are meant to compare them before approving.',
-    'What the approval actually does is seal the content key to the public key of the device that asked, in an envelope carrying an ephemeral sender key and a fresh nonce. That envelope travels through the relay like everything else does. Connecting a terminal adds one more binding on top: the payload is authenticated against a pairing secret that travelled in the QR code, not through the server, so a relay that swapped the payload could not produce a matching tag.',
+    'A direct Home QR code and its hidden copyable link are short-lived bearer capabilities. The deliberate scan authorizes the first valid request bound to that QR, the exact Home, the joining device’s temporary public key and the expiry. A signed-in client verifies that binding and completes the request automatically; there is no comparison code or second direct-QR approval. Anyone with the complete live QR or link could race the intended device before it expires, so keep it private and replace an exposed invite after it expires.',
+    'The QR does not carry the final Home credential. After verification, the Home seals typed token-only or data-key material to the joining device’s public key, so changing the target or requester key breaks the binding. Connecting a terminal adds another authenticated binding to the pairing secret carried in its QR, so a relay that swaps the payload cannot produce a matching tag.',
+    'Account Service enrollment has a separate optional safeguard. When a Home requires existing-device approval, a device already signed in to that Home makes one explicit Approve or Reject decision. The Account Service can identify the requester and issue a short-lived assertion, but it cannot approve the request or mint the final Home credential.',
 ];
 
 /**

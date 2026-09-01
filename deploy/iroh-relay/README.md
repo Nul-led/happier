@@ -1,34 +1,57 @@
-# Happier Iroh relay
+# Happier managed Iroh relay
 
-Release gate: **blocked**. This directory retains the pinned candidate and its
-security configuration for follow-up validation, but it must not be advertised
-or deployed. The Compose service is behind the deliberately non-default
-`lane06-relay-gate-blocked` profile.
+This directory builds the stock `iroh-relay` 1.1.0 process and configures the
+first supported managed profile: open forwarding plus QUIC address
+discovery (QAD). In pinned 1.1.0, QAD depends on the forwarding server's TLS
+configuration, so the earlier forwarding-disabled candidate is not runnable.
 
-The exact `iroh-relay` 1.1.0 runtime fails to bind its QAD listener with
-`TLS not configured` when `enable_relay=false`. In this release, QAD obtains
-its TLS server configuration from the forwarding relay server configuration,
-which is absent when forwarding is disabled. Enabling forwarding would violate
-the approved first-deployment contract, so it is not an acceptable workaround.
-The gate remains blocked until a newly pinned upstream release can prove
-rendezvous/address discovery with forwarding disabled.
+The relay remains a separate stateless process. It does not receive Happier
+database access, application secrets, payload inspection, or operation-level
+accounting. The managed profile accepts every EndpointId authenticated by Iroh;
+that grants relay transport only. Existing Home authentication and machine
+grants remain mandatory at the application endpoints.
 
-The intended deployment remains a separate stateless relay artifact. The first
-profile is holepunch-only; forwarding mode requires an explicit later operator
-rollout and separate forced-relay, capacity, and cost evidence.
+## Build and run
 
-The image builds the crates.io `iroh-relay` 1.1.0 package with its published lockfile. Upstream's
-official container workflow publishes release images to Docker Hub, but no 1.1.0 image exists;
-using the latest 1.0 image would mix relay wire-protocol release lines with Happier's pinned Iroh
-1.1.0 native core. Both build and runtime base images are therefore digest-pinned, and the relay
-binary is invoked with the 1.1.0 `--config-path` interface.
+The repository's existing Docker publisher builds and publishes
+`deploy/iroh-relay/Dockerfile` as `happierdev/iroh-relay` and
+`ghcr.io/happier-dev/iroh-relay`, including BuildKit SBOM and provenance
+attestations. Record the produced digest,
+then set `HAPPIER_IROH_RELAY_IMAGE` to the immutable
+`registry/repository@sha256:digest` reference. Compose intentionally refuses a
+mutable default tag.
 
-The Compose service has no persistent data or application-server mounts. It only publishes the
-Iroh UDP listener and reads the checked-in configuration. `enable_relay=false` keeps packet
-forwarding disabled while `enable_quic_addr_discovery=true` retains rendezvous/address discovery.
-For a future gate rerun, provision the operator-managed certificate and key as
-`certs/default.crt` and `certs/default.key`; these are mounted read-only and are not relay state.
-The holepunch-only profile uses unprivileged internal ports and runs as uid/gid 65532 with all
-Linux capabilities dropped.
-Do not treat client-observed relay bytes as proof that forwarding is disabled; that property is
-validated against the pinned relay process and deployment configuration.
+Provision the relay certificate chain and private key as
+`certs/default.crt` and `certs/default.key`. They are persistent
+operator-managed TLS material mounted read-only. Configure:
+
+- `HAPPIER_IROH_RELAY_RX_BYTES_PER_SECOND` and
+  `HAPPIER_IROH_RELAY_RX_MAX_BURST_BYTES`: positive upstream token-bucket
+  values derived from the deployed link and instance capacity.
+
+Private/self-hosted operators may enable the stock HTTP admission callback by
+setting all three of these values together:
+
+- `HAPPIER_IROH_RELAY_ADMISSION_URL`: an HTTPS callback URL without query,
+  fragment, userinfo, or credentials;
+- `HAPPIER_IROH_RELAY_ADMISSION_TOKEN`: the callback's service credential; and
+- `HAPPIER_IROH_RELAY_PRIVATE_ALLOWLIST_COMPLETE=true`: an explicit assertion
+  that the callback owns a complete allowlist of every EndpointId this private
+  relay must admit.
+
+The upstream relay sends the authenticated identity in
+`X-Iroh-Endpoint-Id`. Do not enable this private mode from a partial Happier
+Home or Machine registry: the callback cannot infer application roles and a
+partial list would deny legitimate clients. The managed profile leaves all
+three values unset. A public-client shared token is intentionally unsupported.
+
+The image generates its runtime TOML in the memory-only `/tmp` mount. It
+publishes the standard relay ports (TCP 80/443 and UDP 7842). Upstream
+aggregate metrics listen on container port 9090, which Compose deliberately
+does not publish; connect a private existing metrics network/collector when
+operational monitoring is configured.
+
+The runtime image includes the upstream license declaration and the
+BSD-3-Clause notice for the Tailscale-derived portions of the relay. The
+publisher-owned SBOM records the full compiled dependency graph; no separate
+relay publication pipeline or in-container image self-digest check exists.

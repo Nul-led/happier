@@ -4,7 +4,9 @@ How Happier decides whether bytes between a device and a machine travel directly
 server, and who owns each step. This page is the internal counterpart to the operator guide at
 `apps/docs/content/docs/self-hosting/local-service-previews.mdx`.
 
-**Status of this page.** Every claim below was checked against implementing code on 2026-08-23.
+**Status of this page.** The Iroh machine-carrier contract was refreshed against the current 0.3
+development source on 2026-09-01. The remaining peer-mediation claims below were checked against
+implementing code on 2026-08-23.
 Where the `PMS-1 … PMS-9` specification packets
 (`.project/plans/runtime-unification-v2/stages/stage-A/`) describe behaviour the code does not
 implement, this page documents the code and says so. The packets are the design authority; they are
@@ -13,6 +15,25 @@ not evidence that anything runs.
 Citations name a **file and a symbol**, not a line number. This corridor is under active change and
 line-anchored citations in an earlier revision of this page were stale within hours; a symbol
 survives the next refactor and a wrong one is caught by a search that returns nothing.
+
+## Home connectivity over Iroh
+
+Native clients and daemons may reach a loopback-only Personal Home through
+`happier/home-tunnel/1`. The Home process owns one persistent Iroh endpoint and a fixed loopback
+HTTP/Socket.IO destination. The client-side lifecycle publishes an ephemeral `runtimeOrigin` only
+after the ordinary Home identity and authenticated ping probes succeed; the canonical Home URL
+continues to own credential scope, auth audience, profile identity, and reachability identity.
+
+The public `/v1/features` projection publishes the current Home Iroh descriptor without private
+direct-address hints. A trusted established-profile refresh reconciles newer observations through
+the existing profile owner while retaining private hints learned through authenticated Directory
+or QR corridors. It rejects an identity mismatch or an equal-revision conflict instead of creating
+a second descriptor authority.
+
+Transport selection is automatic. Direct-versus-relay path facts remain native diagnostics and do
+not rebuild Home HTTP/Socket.IO clients or appear in routine connection labels. Standard HTTPS
+remains available where independently trusted; identity, authentication, integrity, ALPN, preamble,
+and stale-target failures remain fail-closed.
 
 ## 1. The model
 
@@ -30,7 +51,7 @@ The five moving parts and their canonical owners:
 | --- | --- |
 | Route decision (pure fold of feature bits, account preferences, daemon policy, grant state → a route or a typed refusal) | `packages/peer-mediation/src/route/**`, `.../flows/**` |
 | Route grants (Ed25519, bound to account + machine + flow + route + destination + expiry) | `packages/protocol/src/machines/peer/mediation/**`; minted at `apps/server/sources/app/machines/peer/mediation/**` |
-| `iroh_peer` machine/1 grant binding (source/target machine + EndpointId, initiator/acceptor role, operation kind; payload `machineId`/`endpointFingerprint` are enforced aliases of the binding's target) | `IrohPeerRouteBindingV1Schema` in `packages/protocol/src/machines/peer/mediation/directRouteGrantV1.ts`; verified at `apps/cli/src/daemon/peer/mediation/verifyDirectRouteGrantV1.ts` (`DirectRouteGrantExpectedBinding.iroh` is required for `iroh_peer`). `server_relay` is never grantable or verifiable at this endpoint ingress |
+| `iroh_peer` machine/1 grant binding (a machine or authenticated Account client initiator EndpointId, one target Machine + EndpointId, operation flow and bounded scope) | `IrohPeerInitiatorV2Schema`, `IrohPeerTargetV2Schema`, and `SignedDirectRouteGrantV2Schema` in `packages/protocol/src/machines/peer/mediation/directRouteGrantV2.ts`; minted by `mintDirectRouteGrantV2` and verified by `verifyDirectRouteGrantV2`. The authenticated Iroh transport EndpointId and ephemeral proof are checked before fixed-target ingress. The older V1 grant remains only for the separate negotiated legacy peer-mediation routes; it cannot authorize `happier/machine/1` |
 | Direct transport (daemon loopback HTTP server, grant + nonce on every operation) | `apps/cli/src/daemon/peer/mediation/**` |
 | Relay transport (framed envelopes over the existing Socket.IO connection) | `apps/server/sources/app/api/socket/peer/mediation/**` |
 | Observability (sequenced ring buffer of flow lifecycle events, with metadata redaction) | **One** engine: `createPeerMediationObservabilityFlowStore` in `packages/protocol/src/machines/peer/mediation/observability/`. The daemon and server modules named `observability/store.ts` are ~50-line bindings that only adapt their own call signature to it (DEC-8) — they are not second owners. The UI keeps its own read-side store for subscriptions and selectors. |

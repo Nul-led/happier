@@ -70,7 +70,7 @@ opened, a pull request being opened, and a pull request being merged. Polling
 and webhook delivery normalize into those same event identities, so changing
 the observation transport does not change what the Automation means.
 
-An event trigger is observed in one of two ways, and the difference matters
+An event trigger is observed in one of three ways, and the difference matters
 operationally:
 
 - **Checkpointed pull** — a watcher materialized on a specific machine polls
@@ -83,6 +83,10 @@ operationally:
   Delivery does not depend on one of your machines being awake, and the
   endpoint records the moment observation started so earlier events are not
   replayed at you.
+- **Live socket** — a provider connection such as Discord Gateway observes
+  events while its machine is connected. Happier resumes the provider session
+  when the provider permits it; if that session cannot be resumed, the trigger
+  reports a history gap instead of pretending the missed interval was observed.
 
 #### Setting up durable push
 

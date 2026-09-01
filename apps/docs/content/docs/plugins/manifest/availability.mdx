@@ -10,20 +10,23 @@ manifest schema accepts are not yet wired end to end. `capability-matrix.json` i
 projection of it — so it cannot disagree with the artifact the rest of the
 corridor cites.
 
-**Available in Developer Preview** means the current Preview lifecycle has a
-maintained proving consumer through that path. **Deferred** means it is not
-supported or advertised for ordinary author use; do not rely on it; consult its
-unblock condition.
+**Available in Developer Preview** means the applicable realm has a complete
+current producer, registration/projection path, and lifecycle. A maintained
+consumer is useful evidence, but it is not required for an implemented
+capability to exist. **Deferred** means the lifecycle is incomplete in that
+realm and is not supported or advertised for ordinary author use; do not rely
+on it; consult its unblock condition.
 
 Product availability is distinct from source API availability, source consumer,
 loaded-platform proof, and release availability. The evidence fields record
 only what the matrix has established: a source declaration or consumer does not
-by itself prove that the current platform loaded it or that it was published.
+by itself prove that the current platform loaded it or that it was published,
+and the absence of a consumer does not make a complete lifecycle unavailable.
 Likewise, `not-recorded` does not infer the opposite state.
 
 At the time this page was generated: **37 of 45 contribution families**,
-**13 of 19 services**, **9 of 13 host-access capabilities**
-and **44 of 45 SDK entrypoints** are available.
+**12 of 19 services**, **9 of 13 host-access capabilities**
+and **45 of 46 SDK entrypoints** are available.
 
 ## Evidence recorded by the capability matrix
 
@@ -31,75 +34,75 @@ and **44 of 45 SDK entrypoints** are available.
 
 | Name | Availability | Source API | Source consumer | Loaded-platform proof | Release availability |
 | --- | --- | --- | --- | --- | --- |
-| `accountCollections` | `available` | `present` | `packages/plugins/channels/src/manifest.ts` | `not-recorded` | `not-published` |
-| `actions` | `available` | `present` | `packages/plugins/channels/src/manifest.ts` | `not-recorded` | `not-published` |
-| `agents` | `available` | `present` | `packages/plugins/claude/src/manifest.ts` | `not-recorded` | `not-published` |
-| `backgroundServices` | `available` | `present` | `packages/plugins/channels/src/manifest.ts` | `not-recorded` | `not-published` |
-| `browserActions` | `available` | `present` | `packages/plugin-sdk/examples/action-contract-producer/src/index.ts` | `not-recorded` | `not-published` |
-| `browserTargets` | `available` | `present` | `packages/plugin-sdk/examples/action-contract-producer/src/index.ts` | `not-recorded` | `not-published` |
+| `accountCollections` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `actions` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `agents` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `backgroundServices` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `browserActions` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `browserTargets` | `available` | `present` | — | `not-recorded` | `not-published` |
 | `commands` | `deferred` | `present` | — | `not-recorded` | `not-published` |
-| `composerAttachments` | `available` | `present` | `packages/plugins/triage/src/manifest.ts` | `not-recorded` | `not-published` |
-| `composerControls` | `available` | `present` | `packages/plugins/triage/src/manifest.ts` | `not-recorded` | `not-published` |
-| `composerReferences` | `available` | `present` | `packages/plugin-ui/fixtures/external-authoring/src/index.ts` | `not-recorded` | `not-published` |
-| `composerRegions` | `available` | `present` | `packages/plugin-ui/fixtures/external-authoring/src/index.ts` | `not-recorded` | `not-published` |
-| `connectedAccountDescriptors` | `available` | `present` | `packages/plugins/gemini/src/manifest.ts` | `not-recorded` | `not-published` |
+| `composerAttachments` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `composerControls` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `composerReferences` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `composerRegions` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `connectedAccountDescriptors` | `available` | `present` | — | `not-recorded` | `not-published` |
 | `daemonDatabases` | `deferred` | `present` | — | `not-recorded` | `not-published` |
-| `events` | `available` | `present` | `packages/plugins/scm-github/src/manifest.ts` | `not-recorded` | `not-published` |
-| `executionRunProfiles` | `available` | `present` | `packages/plugins/review-deepsec/src/manifest.ts` | `not-recorded` | `not-published` |
-| `hooks` | `available` | `present` | `packages/plugins/gemini/src/manifest.ts` | `not-recorded` | `not-published` |
-| `managedDependencies` | `available` | `present` | `packages/plugins/codex/src/manifest.ts` | `not-recorded` | `not-published` |
-| `mcp.discoverySources` | `available` | `present` | `packages/plugins/opencode/src/manifest.ts` | `not-recorded` | `not-published` |
+| `events` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `executionRunProfiles` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `hooks` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `managedDependencies` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `mcp.discoverySources` | `available` | `present` | — | `not-recorded` | `not-published` |
 | `mcp.servers` | `deferred` | `present` | — | `not-recorded` | `not-published` |
 | `notificationChannels` | `deferred` | `present` | — | `not-recorded` | `not-published` |
 | `notifications` | `deferred` | `present` | — | `not-recorded` | `not-published` |
 | `openableContentViewers` | `deferred` | `present` | — | `not-recorded` | `not-published` |
-| `pluginContributionPoints` | `available` | `present` | `packages/plugin-sdk/fixtures/external-targeted-packages/target/src/index.ts` | `not-recorded` | `not-published` |
-| `promptAssets` | `available` | `present` | `packages/plugins/review-deepsec/src/manifest.ts` | `not-recorded` | `not-published` |
-| `providers` | `available` | `present` | `packages/plugins/openai-models/src/manifest.ts` | `not-recorded` | `not-published` |
-| `requestInterceptors` | `available` | `present` | `packages/plugin-sdk/examples/action-contract-producer/src/index.ts` | `not-recorded` | `not-published` |
-| `resources` | `available` | `present` | `packages/plugins/channels/src/manifest.ts` | `not-recorded` | `not-published` |
-| `scmBackends` | `available` | `present` | `packages/plugins/scm-git/src/manifest.ts` | `not-recorded` | `not-published` |
-| `scmHostingProviders` | `available` | `present` | `packages/plugins/scm-github/src/manifest.ts` | `not-recorded` | `not-published` |
-| `sessionHeaderActions` | `available` | `present` | `packages/plugins/channels/src/manifest.ts` | `not-recorded` | `not-published` |
-| `sessionInfoSections` | `available` | `present` | `packages/plugins/channels/src/manifest.ts` | `not-recorded` | `not-published` |
-| `settings` | `available` | `present` | `packages/plugins/inspector/src/manifest.ts` | `not-recorded` | `not-published` |
-| `settings.fields` | `available` | `present` | `packages/plugins/inspector/src/manifest.ts` | `not-recorded` | `not-published` |
-| `systemTools` | `available` | `present` | `packages/plugins/antigravity/src/manifest.ts` | `not-recorded` | `not-published` |
-| `targetedPluginContributions` | `available` | `present` | `packages/plugin-sdk/fixtures/external-targeted-packages/contributor/src/index.ts` | `not-recorded` | `not-published` |
+| `pluginContributionPoints` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `promptAssets` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `providers` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `requestInterceptors` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `resources` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `scmBackends` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `scmHostingProviders` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `sessionHeaderActions` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `sessionInfoSections` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `settings` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `settings.fields` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `systemTools` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `targetedPluginContributions` | `available` | `present` | — | `not-recorded` | `not-published` |
 | `tools` | `deferred` | `present` | — | `not-recorded` | `not-published` |
-| `transcriptActivities` | `available` | `present` | `packages/plugins/channels/src/manifest.ts` | `not-recorded` | `not-published` |
-| `ui.renderers` | `available` | `present` | `packages/plugins/inspector/src/manifest.ts` | `not-recorded` | `not-published` |
-| `ui.settingsGroups` | `available` | `present` | `packages/plugins/channels/src/manifest.ts` | `not-recorded` | `not-published` |
-| `ui.settingsPages` | `available` | `present` | `packages/plugins/channels/src/manifest.ts` | `not-recorded` | `not-published` |
-| `ui.translations` | `available` | `present` | `packages/plugins/inspector/src/manifest.ts` | `not-recorded` | `not-published` |
-| `ui.views` | `available` | `present` | `packages/plugins/inspector/src/manifest.ts` | `not-recorded` | `not-published` |
+| `transcriptActivities` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `ui.renderers` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `ui.settingsGroups` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `ui.settingsPages` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `ui.translations` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `ui.views` | `available` | `present` | — | `not-recorded` | `not-published` |
 | `voiceModelPacks` | `deferred` | `present` | — | `not-recorded` | `not-published` |
-| `voiceProviders` | `available` | `present` | `packages/plugins/openai/src/manifest.ts` | `not-recorded` | `not-published` |
-| `webhooks` | `available` | `present` | `packages/plugins/scm-github/src/manifest.ts` | `not-recorded` | `not-published` |
+| `voiceProviders` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `webhooks` | `available` | `present` | — | `not-recorded` | `not-published` |
 
 ### Service evidence
 
 | Name | Availability | Source API | Source consumer | Loaded-platform proof | Release availability |
 | --- | --- | --- | --- | --- | --- |
-| `actions` | `available` | `present` | `packages/plugins/channels/src/ingress.ts` | `not-recorded` | `not-published` |
-| `composerContent` | `available` | `present` | `packages/tests/fixtures/plugin-platform/composer-external-dogfood/src/index.mjs` | `not-recorded` | `not-published` |
-| `connectedAccounts` | `available` | `present` | `packages/plugins/channel-discord/src/discordActions.ts` | `not-recorded` | `not-published` |
+| `actions` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `composerContent` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `connectedAccounts` | `available` | `present` | — | `not-recorded` | `not-published` |
 | `events` | `deferred` | `present` | — | `not-recorded` | `not-published` |
-| `exec` | `available` | `present` | `packages/plugins/review-coderabbit/src/agent/reviews/nativeRun.ts` | `not-recorded` | `not-published` |
+| `exec` | `available` | `present` | — | `not-recorded` | `not-published` |
 | `fs` | `deferred` | `present` | — | `not-recorded` | `not-published` |
-| `http` | `available` | `present` | `packages/plugins/channel-telegram/src/channelActions.ts` | `not-recorded` | `not-published` |
-| `interactions` | `available` | `present` | `packages/plugins/cursor/src/agent/acp/extensions/handlers.ts` | `not-recorded` | `not-published` |
-| `logger` | `available` | `present` | `packages/plugins/pi/src/agent/runtime/engine.ts` | `not-recorded` | `not-published` |
-| `managedServices` | `available` | `present` | `packages/plugins/opencode/src/agent/runtime/server/runtimeContext.ts` | `not-recorded` | `not-published` |
-| `mcp` | `available` | `present` | `packages/plugins/antigravity/src/agent/runtime/nativeSession.ts` | `not-recorded` | `not-published` |
+| `http` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `interactions` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `logger` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `managedServices` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `mcp` | `deferred` | `present` | — | `not-recorded` | `not-published` |
 | `notifications` | `deferred` | `present` | — | `not-recorded` | `not-published` |
 | `providers` | `deferred` | `present` | — | `not-recorded` | `not-published` |
 | `resources` | `deferred` | `present` | — | `not-recorded` | `not-published` |
 | `secrets` | `deferred` | `present` | — | `not-recorded` | `not-published` |
-| `sessions` | `available` | `present` | `packages/plugins/channels/src/ingress.ts` | `not-recorded` | `not-published` |
-| `settings` | `available` | `present` | `packages/plugins/cursor/src/agent/acp/connection.ts` | `not-recorded` | `not-published` |
-| `storage` | `available` | `present` | `packages/plugins/channels/src/requiredAccountStorage.ts` | `not-recorded` | `not-published` |
-| `targetedContributions` | `available` | `present` | `packages/plugins/channels/src/ingress.ts` | `not-recorded` | `not-published` |
+| `sessions` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `settings` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `storage` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `targetedContributions` | `available` | `present` | — | `not-recorded` | `not-published` |
 
 ### Host-access evidence
 
@@ -107,67 +110,68 @@ and **44 of 45 SDK entrypoints** are available.
 | --- | --- | --- | --- | --- | --- |
 | `browser` | `deferred` | `present` | — | `not-recorded` | `not-published` |
 | `clipboard` | `deferred` | `present` | — | `not-recorded` | `not-published` |
-| `connectedAccounts` | `available` | `present` | `packages/plugins/posthog/src/manifest.ts` | `not-recorded` | `not-published` |
-| `environment` | `available` | `present` | `packages/plugins/review-deepsec/src/manifest.ts` | `not-recorded` | `not-published` |
+| `connectedAccounts` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `environment` | `available` | `present` | — | `not-recorded` | `not-published` |
 | `externalLinks` | `deferred` | `present` | — | `not-recorded` | `not-published` |
-| `filesystem` | `available` | `present` | `packages/plugins/opencode/src/manifest.ts` | `not-recorded` | `not-published` |
+| `filesystem` | `available` | `present` | — | `not-recorded` | `not-published` |
 | `mcp` | `deferred` | `present` | — | `not-recorded` | `not-published` |
-| `network` | `available` | `present` | `packages/plugin-sdk/examples/public-authoring/definition.ts` | `not-recorded` | `not-published` |
-| `network.client` | `available` | `present` | `packages/tests/fixtures/plugin-platform/out-of-tree-channel-socket-provider/src/index.mjs` | `not-recorded` | `not-published` |
-| `process` | `available` | `present` | `packages/plugins/opencode/src/manifest.ts` | `not-recorded` | `not-published` |
-| `sessions` | `available` | `present` | `packages/plugins/claude/src/manifest.ts` | `not-recorded` | `not-published` |
-| `storage.account` | `available` | `present` | `packages/plugins/channels/src/manifest.ts` | `not-recorded` | `not-published` |
-| `terminal` | `available` | `present` | `packages/plugins/claude/src/manifest.ts` | `not-recorded` | `not-published` |
+| `network` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `network.client` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `process` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `sessions` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `storage.account` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `terminal` | `available` | `present` | — | `not-recorded` | `not-published` |
 
 ### SDK entrypoint evidence
 
 | Name | Availability | Source API | Source consumer | Loaded-platform proof | Release availability |
 | --- | --- | --- | --- | --- | --- |
-| `.` | `available` | `present` | `packages/plugins/channels/src/manifest.ts` | `not-recorded` | `not-published` |
-| `./actions` | `available` | `present` | `packages/plugins/inspector/src/manifest.ts` | `not-recorded` | `not-published` |
-| `./agents` | `available` | `present` | `packages/plugins/gemini/src/manifest.ts` | `not-recorded` | `not-published` |
-| `./agents/runtime` | `available` | `present` | `packages/plugins/kiro/src/agent/acp/runtimeDefinition.ts` | `not-recorded` | `not-published` |
-| `./async` | `available` | `present` | `packages/plugins/pi/src/agent/runtime/rpc/operations.ts` | `not-recorded` | `not-published` |
-| `./automations` | `available` | `present` | `packages/plugins/channels/src/automationResultDelivery.ts` | `not-recorded` | `not-published` |
-| `./background-services` | `available` | `present` | `packages/plugin-sdk/examples/advanced-package-root/background/refreshCatalog.ts` | `not-recorded` | `not-published` |
-| `./browser` | `available` | `present` | `packages/plugin-sdk/examples/action-contract-producer/src/index.ts` | `not-recorded` | `not-published` |
-| `./collections` | `available` | `present` | `packages/plugins/channels/src/collections.ts` | `not-recorded` | `not-published` |
-| `./connected-accounts` | `available` | `present` | `packages/plugins/gemini/src/connectedAccounts/runtime.ts` | `not-recorded` | `not-published` |
-| `./contributions` | `available` | `present` | `packages/tests/fixtures/plugin-platform/packed-targeted-contribution-projection/public-protocol.ts` | `not-recorded` | `not-published` |
-| `./events` | `available` | `present` | `packages/plugins/scm-github/src/githubAutomationEventActions.ts` | `not-recorded` | `not-published` |
-| `./exec` | `available` | `present` | `packages/plugins/antigravity/src/agent/cliPrint/nativeExec.ts` | `not-recorded` | `not-published` |
-| `./exec/protocol-clients` | `available` | `present` | `packages/plugins/antigravity/src/agent/localharness/client/handshake.ts` | `not-recorded` | `not-published` |
-| `./fs` | `available` | `present` | `packages/plugins/antigravity/src/agent/cliPrint/observation.ts` | `not-recorded` | `not-published` |
-| `./hooks` | `available` | `present` | `packages/plugins/kimi/src/manifest.ts` | `not-recorded` | `not-published` |
-| `./http` | `available` | `present` | `packages/plugins/opencode/src/agent/runtime/server/transport.ts` | `not-recorded` | `not-published` |
-| `./interactions` | `available` | `present` | `packages/plugins/antigravity/src/agent/runtime/nativeSession.ts` | `not-recorded` | `not-published` |
-| `./managed-services` | `available` | `present` | `packages/plugins/ollama/src/provider/publicManagedRuntime.ts` | `not-recorded` | `not-published` |
-| `./manifest` | `available` | `present` | `packages/plugins/channels/src/manifest.ts` | `not-recorded` | `not-published` |
-| `./mcp` | `available` | `present` | `packages/plugins/opencode/src/manifest.ts` | `not-recorded` | `not-published` |
+| `.` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./actions` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./agents` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./agents/runtime` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./async` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./automations` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./background-services` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./browser` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./collections` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./connected-accounts` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./contributions` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./events` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./exec` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./exec/protocol-clients` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./first-party/connected-accounts` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./fs` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./hooks` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./http` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./interactions` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./managed-services` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./manifest` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./mcp` | `available` | `present` | — | `not-recorded` | `not-published` |
 | `./notifications` | `deferred` | `present` | — | `not-recorded` | `not-published` |
-| `./protocol` | `available` | `present` | `packages/plugins/channels/src/bindingTransition.ts` | `not-recorded` | `not-published` |
-| `./providers` | `available` | `present` | `packages/plugins/openai-compat/src/voice/speech.ts` | `not-recorded` | `not-published` |
-| `./resources` | `available` | `present` | `packages/plugins/gemini/src/agent/promptAssets/descriptors.ts` | `not-recorded` | `not-published` |
-| `./reviews` | `available` | `present` | `packages/plugins/review-deepsec/src/agent/reviews/findings.ts` | `not-recorded` | `not-published` |
-| `./scm` | `available` | `present` | `packages/plugins/scm-gitlab/src/pullRequests/gitlabCliAdapter.ts` | `not-recorded` | `not-published` |
-| `./scm/backend` | `available` | `present` | `packages/plugins/scm-git/src/capabilities.ts` | `not-recorded` | `not-published` |
-| `./scm/hosting` | `available` | `present` | `packages/plugins/scm-gitlab/src/pullRequests/gitlabCliAdapter.ts` | `not-recorded` | `not-published` |
-| `./secrets` | `available` | `present` | `packages/plugins/elevenlabs/src/protocol/voice/index.ts` | `not-recorded` | `not-published` |
-| `./sessions` | `available` | `present` | `packages/plugins/gemini/src/agent/acp/toolNames.ts` | `not-recorded` | `not-published` |
-| `./sessions/external` | `available` | `present` | `packages/plugins/antigravity/src/agent/cliPrint/observation.ts` | `not-recorded` | `not-published` |
-| `./sessions/file-stores` | `available` | `present` | `packages/plugins/antigravity/src/agent/cliPrint/conversationStore.ts` | `not-recorded` | `not-published` |
-| `./sessions/subagents` | `available` | `present` | `packages/plugins/claude/src/agent/workflowRecords/correlation.ts` | `not-recorded` | `not-published` |
-| `./sessions/work-state` | `available` | `present` | `packages/plugins/cursor/src/agent/acp/workState/normalize.ts` | `not-recorded` | `not-published` |
-| `./settings` | `available` | `present` | `packages/plugins/antigravity/src/agentSettings/definition.ts` | `not-recorded` | `not-published` |
-| `./storage` | `available` | `present` | `packages/plugins/claude/src/agent/runtime/terminal/unified/terminalOriginLocalIds.ts` | `not-recorded` | `not-published` |
-| `./testing` | `available` | `present` | `packages/plugins/channels/src/activate.test.ts` | `not-recorded` | `not-published` |
-| `./ui` | `available` | `present` | `packages/plugins/inspector/src/ui/renderSurface.tsx` | `not-recorded` | `not-published` |
-| `./ui/build` | `available` | `present` | `packages/plugins/inspector/happier-plugin-ui.config.mjs` | `not-recorded` | `not-published` |
-| `./ui/client` | `available` | `present` | `packages/plugin-sdk/examples/public-authoring/ui/reviewPanel.web.tsx` | `not-recorded` | `not-published` |
-| `./voice` | `available` | `present` | `packages/plugins/openai-compat/src/voice/speech.ts` | `not-recorded` | `not-published` |
-| `./voice/client` | `available` | `present` | `packages/plugins/openai/src/ui/voice/protocol.ts` | `not-recorded` | `not-published` |
-| `./voice/speech` | `available` | `present` | `packages/plugins/openai-compat/src/voice/speech.ts` | `not-recorded` | `not-published` |
-| `./webhooks` | `available` | `present` | `packages/plugins/scm-github/src/webhookAction.ts` | `not-recorded` | `not-published` |
+| `./protocol` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./providers` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./resources` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./reviews` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./scm` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./scm/backend` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./scm/hosting` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./secrets` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./sessions` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./sessions/external` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./sessions/file-stores` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./sessions/subagents` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./sessions/work-state` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./settings` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./storage` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./testing` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./ui` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./ui/build` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./ui/client` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./voice` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./voice/client` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./voice/speech` | `available` | `present` | — | `not-recorded` | `not-published` |
+| `./webhooks` | `available` | `present` | — | `not-recorded` | `not-published` |
 
 ## Contribution families available in Developer Preview
 
@@ -240,7 +244,6 @@ Reached through `context.services` inside a plugin invocation.
 | `context.services.interactions` | `InteractionsService` | `./interactions` | invocation-scoped |
 | `context.services.logger` | `LoggerService` | `.` | invocation-scoped |
 | `context.services.managedServices` | `ManagedServices` | `./managed-services` | invocation-scoped |
-| `context.services.mcp` | `McpService` | `./mcp` | invocation-scoped |
 | `context.services.sessions` | `SessionsService` | `./sessions` | invocation-scoped |
 | `context.services.settings` | `SettingsService` | `./settings` | invocation-scoped |
 | `context.services.storage` | `StorageService` | `./storage` | invocation-scoped |
@@ -252,6 +255,7 @@ Reached through `context.services` inside a plugin invocation.
 | --- | --- |
 | `events` | A maintained external development-source plugin proves the EventsService through the current loaded development stack: lifecycle, real invocation, and replacement, disable, and uninstall currentness. |
 | `fs` | A maintained external development-source plugin proves the FileSystemService through the current loaded development stack: lifecycle, real invocation, and replacement, disable, and uninstall currentness. |
+| `mcp` | A maintained external development-source plugin proves the root MCP service through the current loaded development stack: lifecycle, real invocation, and replacement, disable, and uninstall currentness. |
 | `notifications` | A maintained external development-source plugin proves the NotificationsService through the current loaded development stack: lifecycle, real invocation, and replacement, disable, and uninstall currentness. |
 | `providers` | A maintained external development-source plugin proves the ProvidersService through the current loaded development stack: lifecycle, real invocation, and replacement, disable, and uninstall currentness. |
 | `resources` | A maintained external development-source plugin proves the ResourcesService through the current loaded development stack: lifecycle, real invocation, and replacement, disable, and uninstall currentness. |

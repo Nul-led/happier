@@ -5,20 +5,20 @@ description: Minimal production-oriented server configuration and the env vars t
 
 This page is a “getting started” guide for self-hosting `apps/server`. For the full reference, see [Deployment → Environment variables](/self-hosting/env).
 
-## 1) Pick a canonical/share URL (recommended)
+## 1) Set stable identity and reachable ingress
 
-Set a canonical URL that works from your phone/browser. This is what clients embed in QR/deep links and what the server advertises via `GET /v1/features`.
+Set `HAPPIER_CANONICAL_SERVER_URL` to the stable identity and authentication audience for this server. For a normal public deployment, set `HAPPIER_PUBLIC_SERVER_URL` to the HTTPS ingress that phones, browsers, OAuth providers, and webhooks can reach. The two values are often identical, but they have different jobs.
 
 Recommended options:
 
 - **Tailscale Serve (recommended for most self-hosts):** gives you an `https://*.ts.net` URL without opening ports.
   - Recommended:
-    - **Leave it unset (simplest):** if `tailscale serve` is enabled on the *same machine/container host* as `apps/server`, the server will best-effort infer the `https://*.ts.net` URL at boot and advertise it to clients.
+    - **Leave public ingress unset:** if `tailscale serve` is enabled on the *same machine/container host* as `apps/server`, the server can best-effort infer the `https://*.ts.net` ingress URL at boot. Still set a stable `HAPPIER_CANONICAL_SERVER_URL`; inference never chooses authentication identity.
   - Otherwise:
-    - **Set it explicitly:** `HAPPIER_PUBLIC_SERVER_URL=https://<machine>.<tailnet>.ts.net`
+    - **Set both explicitly:** `HAPPIER_CANONICAL_SERVER_URL=https://<machine>.<tailnet>.ts.net` and `HAPPIER_PUBLIC_SERVER_URL=https://<machine>.<tailnet>.ts.net`
       - You usually need this if Tailscale/Serve is managed from a different machine, or the `tailscale` CLI is not available in the server runtime environment.
 - **Your own domain (reverse proxy):** terminate TLS on Caddy/Nginx/Traefik and proxy to the server.
-  - Set: `HAPPIER_PUBLIC_SERVER_URL=https://api.example.com`
+  - Set: `HAPPIER_CANONICAL_SERVER_URL=https://api.example.com` and `HAPPIER_PUBLIC_SERVER_URL=https://api.example.com`
 
 If you self-host the web UI (or you use OAuth providers and need a non-hosted return URL), also set:
 
@@ -61,6 +61,8 @@ See: [Deployment → Environment variables → Networking / reverse proxy](/self
 ## 4) Optional: Tailscale Serve inference
 
 If you use `tailscale serve` and you did not explicitly set `HAPPIER_PUBLIC_SERVER_URL`, the server can best-effort infer the `https://*.ts.net` URL at boot.
+
+This inferred value is public ingress metadata only. It does not replace `HAPPIER_CANONICAL_SERVER_URL`.
 
 - `HAPPIER_TAILSCALE_INFER_PUBLIC_URL=0` to disable (default is enabled)
 

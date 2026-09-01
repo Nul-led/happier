@@ -123,15 +123,18 @@ manifest schema accepts are not yet wired end to end. \`capability-matrix.json\`
 projection of it — so it cannot disagree with the artifact the rest of the
 corridor cites.
 
-**Available in Developer Preview** means the current Preview lifecycle has a
-maintained proving consumer through that path. **Deferred** means it is not
-supported or advertised for ordinary author use; do not rely on it; consult its
-unblock condition.
+**Available in Developer Preview** means the applicable realm has a complete
+current producer, registration/projection path, and lifecycle. A maintained
+consumer is useful evidence, but it is not required for an implemented
+capability to exist. **Deferred** means the lifecycle is incomplete in that
+realm and is not supported or advertised for ordinary author use; do not rely
+on it; consult its unblock condition.
 
 Product availability is distinct from source API availability, source consumer,
 loaded-platform proof, and release availability. The evidence fields record
 only what the matrix has established: a source declaration or consumer does not
-by itself prove that the current platform loaded it or that it was published.
+by itself prove that the current platform loaded it or that it was published,
+and the absence of a consumer does not make a complete lifecycle unavailable.
 Likewise, \`not-recorded\` does not infer the opposite state.
 
 At the time this page was generated: **${families.available.length} of ${m.manifestFamilies.length} contribution families**,

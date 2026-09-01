@@ -1,13 +1,22 @@
-# Pinned Iroh relay configuration: holepunch-only default.
-enable_relay = false
+# Pinned stock Iroh forwarding + QUIC address discovery configuration.
+enable_relay = true
 enable_quic_addr_discovery = true
-http_bind_addr = "[::]:8080"
-enable_metrics = false
+http_bind_addr = "[::]:80"
+enable_metrics = true
+metrics_bind_addr = "[::]:9090"
+
+# The shared managed profile admits every cryptographically authenticated Iroh
+# EndpointId. Happier application endpoints still enforce Home credentials and
+# machine grants. configure-and-run.sh replaces this line only for an explicitly
+# configured private callback backed by a complete operator allowlist.
+access = "everyone"
+
+[limits.client.rx]
+bytes_per_second = __HAPPIER_IROH_RELAY_RX_BYTES_PER_SECOND__
+max_burst_bytes = __HAPPIER_IROH_RELAY_RX_MAX_BURST_BYTES__
 
 [tls]
-https_bind_addr = "[::]:8443"
+https_bind_addr = "[::]:443"
 quic_bind_addr = "[::]:7842"
 cert_mode = "Manual"
 cert_dir = "/etc/iroh/certs"
-
-# forwarding mode is an explicit operational rollout: enable_relay = true

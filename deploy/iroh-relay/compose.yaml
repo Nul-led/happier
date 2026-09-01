@@ -1,25 +1,26 @@
 services:
   iroh-relay:
-    # Upstream 1.1.0 cannot currently start QAD with forwarding disabled; keep
-    # this candidate out of every default Compose deployment until that exact
-    # runtime gate passes with a replacement pinned release.
-    profiles:
-      - lane06-relay-gate-blocked
-    image: happier/iroh-relay:holepunch-only
-    build:
-      context: .
+    image: "${HAPPIER_IROH_RELAY_IMAGE:?Set HAPPIER_IROH_RELAY_IMAGE to registry/repository@sha256:digest}"
     read_only: true
     restart: unless-stopped
     cap_drop:
       - ALL
+    cap_add:
+      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
+    environment:
+      HAPPIER_IROH_RELAY_ADMISSION_URL: "${HAPPIER_IROH_RELAY_ADMISSION_URL:-}"
+      IROH_RELAY_HTTP_BEARER_TOKEN: "${HAPPIER_IROH_RELAY_ADMISSION_TOKEN:-}"
+      HAPPIER_IROH_RELAY_PRIVATE_ALLOWLIST_COMPLETE: "${HAPPIER_IROH_RELAY_PRIVATE_ALLOWLIST_COMPLETE:-}"
+      HAPPIER_IROH_RELAY_RX_BYTES_PER_SECOND: "${HAPPIER_IROH_RELAY_RX_BYTES_PER_SECOND:?Set from measured relay capacity}"
+      HAPPIER_IROH_RELAY_RX_MAX_BURST_BYTES: "${HAPPIER_IROH_RELAY_RX_MAX_BURST_BYTES:?Set from measured relay capacity}"
     ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
       - "7842:7842/udp"
     volumes:
       - ./relay.toml:/etc/iroh/relay.toml:ro
       - ./certs:/etc/iroh/certs:ro
-    # The relay profile is intentionally stateless: no database, key, or
-    # application-server volume is mounted. Runtime scratch is memory-only.
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m

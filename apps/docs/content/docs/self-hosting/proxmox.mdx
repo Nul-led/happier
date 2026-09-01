@@ -75,7 +75,8 @@ For remote access (phone / outside your LAN), the web UI requires **HTTPS** (sec
 If you use a reverse proxy, the Proxmox installer will ask you for your public HTTPS URL and persist it in:
 
 - Default (recommended installers): `/etc/happier/server.env` as:
-  - `HAPPIER_PUBLIC_SERVER_URL=https://<your-domain>` (canonical/share URL used in QR/deep links)
+  - `HAPPIER_CANONICAL_SERVER_URL=https://<your-domain>` (stable Home identity and auth audience)
+  - `HAPPIER_PUBLIC_SERVER_URL=https://<your-domain>` (reachable ingress used in QR/deep links)
   - `HAPPIER_WEBAPP_URL=https://<your-domain>` (when you serve the web UI from the container)
 - From-source installs (`HAPPIER_PVE_INSTALL_METHOD=from_source`): `/home/happier/.happier/stacks/main/env`
 
@@ -94,10 +95,10 @@ Make sure your proxy supports **WebSockets** and forwards the usual â€œreal URLâ
 - `X-Forwarded-Host`
 - `X-Forwarded-For`
 
-Also make sure the stack knows its public URL (for correct deep links/QR codes):
+Also make sure the stack knows both its stable identity and public ingress:
 
-- Default (recommended installers): `HAPPIER_PUBLIC_SERVER_URL=https://<your-domain>` in `/etc/happier/server.env`
-- From-source installs: `HAPPIER_PUBLIC_SERVER_URL=https://<your-domain>` in `/home/happier/.happier/stacks/main/env`
+- Default (recommended installers): set both `HAPPIER_CANONICAL_SERVER_URL=https://<your-domain>` and `HAPPIER_PUBLIC_SERVER_URL=https://<your-domain>` in `/etc/happier/server.env`
+- From-source installs: set both variables in `/home/happier/.happier/stacks/main/env`
 
 Then restart:
 

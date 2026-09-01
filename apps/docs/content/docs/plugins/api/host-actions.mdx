@@ -3570,20 +3570,6 @@ No field hints are published. Use the typed input accepted by `execute`.
 - `decision` (select, required): Decision
 - `scope` (select, required): Scope
 
-## `session.permission_mode.set`
-
-**Set session permission mode** — Update the permission intent (read_only/workspace_write/etc) for the specified session.
-
-- Safety: `safe`; side effect: not classified.
-- Approval: `none` result; `deferred` flow.
-- Caller authority: `account_automation` — automation callers (including trusted plugins and API Tokens) are admitted.
-- Also surfaced on: `ui`, `agent`, `mcp`, `cli`, `rpc`, `api`.
-
-### Input guidance
-
-- `sessionId` (text, required): Session id
-- `permissionMode` (text, required): Permission mode
-
 ## `session.restore`
 
 **Restore checkpoint** — Restore a selected session checkpoint source.

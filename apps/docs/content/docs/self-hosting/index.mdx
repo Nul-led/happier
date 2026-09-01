@@ -13,7 +13,8 @@ Your clients and machines then point at your URL — say `https://api.example.co
 Most production self-hosts need at least:
 
 - `HANDY_MASTER_SECRET` — required.
-- `HAPPIER_PUBLIC_SERVER_URL` — used in QR codes and deep links, so get it right early.
+- `HAPPIER_CANONICAL_SERVER_URL` — stable server identity and authentication audience.
+- `HAPPIER_PUBLIC_SERVER_URL` — optional reachable ingress used by QR/deep links and public callbacks.
 - `HAPPIER_WEBAPP_URL` — when you host the web client yourself, or use OAuth return-to.
 - the env for your chosen storage backend (`DATABASE_URL`, `S3_*`, and so on).
 
