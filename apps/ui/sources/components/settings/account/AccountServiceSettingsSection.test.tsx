@@ -545,7 +545,7 @@ describe('AccountServiceSettingsSection', () => {
         credentialGetMock.mockImplementationOnce(() => new Promise((resolve) => {
             resolveCredentials = resolve;
         }));
-        act(() => {
+        await act(async () => {
             endpointState.endpoint = {
                 url: 'https://accounts.example.test',
                 serverIdentityId: 'directory-2',
@@ -553,6 +553,7 @@ describe('AccountServiceSettingsSection', () => {
                 source: 'user',
             };
             for (const listener of endpointState.listeners) listener();
+            await Promise.resolve();
         });
 
         expect(screen.findByTestId('settings-account-service-home-home-a')).toBeNull();
@@ -1596,7 +1597,7 @@ describe('AccountServiceSettingsSection', () => {
         const screen = await renderScreen(<AccountServiceSettingsSection />);
         await vi.waitFor(() => expect(refreshMock).toHaveBeenCalledOnce());
 
-        act(() => {
+        await act(async () => {
             endpointState.endpoint = {
                 url: 'https://accounts.example.test',
                 serverIdentityId: 'directory-2',
@@ -1604,6 +1605,7 @@ describe('AccountServiceSettingsSection', () => {
                 source: 'user',
             };
             for (const listener of endpointState.listeners) listener();
+            await Promise.resolve();
         });
         await vi.waitFor(() => expect(cancelPendingPreferredHomeEnrollmentMock).toHaveBeenCalled());
         await act(async () => resolveRefresh?.(session.snapshot));
@@ -1636,9 +1638,7 @@ describe('AccountServiceSettingsSection', () => {
                 resolve(value);
             };
         }));
-        act(() => {
-            screen.pressByTestId('settings-account-service-home-home-a-set-preferred');
-        });
+        await screen.pressByTestIdAsync('settings-account-service-home-home-a-set-preferred');
         await vi.waitFor(() => expect(enrollMock).toHaveBeenCalled());
 
         await screen.pressByTestIdAsync('settings-account-service-disconnect');

@@ -2101,6 +2101,10 @@ class Sync {
             this.profileSync.awaitQueue({ timeoutMs: initialAwaitTimeoutMs }),
             this.purchasesSync.awaitQueue({ timeoutMs: initialAwaitTimeoutMs }),
         ]);
+        fireAndForget(
+            refreshAuthenticatedServerFeaturesSnapshot({ credentials, force: true }),
+            { tag: 'Sync.refreshAuthenticatedServerFeatures.create' },
+        );
     }
 
     async restore(credentials: AuthCredentials, encryption: Encryption | null) {
@@ -2126,6 +2130,10 @@ class Sync {
         this.syncJsThreadLagTelemetryRuntime();
         await this.#init();
         this.drainArchivedSessionsFetchPendingUntilReady();
+        fireAndForget(
+            refreshAuthenticatedServerFeaturesSnapshot({ credentials, force: true }),
+            { tag: 'Sync.refreshAuthenticatedServerFeatures.restore' },
+        );
     }
 
     private scheduleWarmCachesHydrationForActiveServerBoot(): void {
@@ -2447,10 +2455,6 @@ class Sync {
         this.resetServerScopedRuntimeState();
         apiSocket.initialize({ endpoint: getActiveServerSnapshot().serverUrl, token: credentials.token }, encryption);
         await this.restore(credentials, encryption);
-        fireAndForget(
-            refreshAuthenticatedServerFeaturesSnapshot({ credentials, force: true }),
-            { tag: 'Sync.refreshAuthenticatedServerFeatures.switchServer' },
-        );
     }
 
     public disconnectServer(): void {
@@ -9819,8 +9823,4 @@ async function syncInit(credentials: AuthCredentials, restore: boolean) {
     } else {
         await sync.create(credentials, encryption);
     }
-    fireAndForget(
-        refreshAuthenticatedServerFeaturesSnapshot({ credentials, force: true }),
-        { tag: 'Sync.refreshAuthenticatedServerFeatures.init' },
-    );
 }
