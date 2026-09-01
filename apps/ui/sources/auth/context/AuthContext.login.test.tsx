@@ -81,6 +81,9 @@ vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
 
 vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
     switchConnectionToActiveServer: switchConnectionToActiveServerSpy,
+    getAppliedActiveServerId: () => activeServerSnapshotState.serverId,
+    subscribeAppliedActiveServer: () => () => {},
+    subscribeApplyingActiveServer: () => () => {},
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
@@ -587,7 +590,7 @@ describe('AuthContext.login', () => {
         });
         const { accountDirectoryCredentialStorage } = await import('@/auth/accountDirectory/accountDirectoryCredentialStorage');
         await accountDirectoryCredentialStorage.set(
-            { endpoint: 'https://accounts.example.test' },
+            { endpoint: 'https://accounts.example.test', serverIdentityId: 'account-service-a' },
             { token: 'account-service-token' },
         );
 
@@ -617,7 +620,7 @@ describe('AuthContext.login', () => {
                 { serverId: 'srv_logout_home_b' },
             )).resolves.toMatchObject({ token: buildTokenWithSub('home-b') });
             await expect(accountDirectoryCredentialStorage.get(
-                { endpoint: 'https://accounts.example.test' },
+                { endpoint: 'https://accounts.example.test', serverIdentityId: 'account-service-a' },
             )).resolves.toMatchObject({ token: 'account-service-token' });
         } finally {
             await screen.unmount();
@@ -660,9 +663,13 @@ describe('AuthContext.login', () => {
             children: React.createElement(React.Fragment, null),
         }));
         let logoutPromise: Promise<unknown> | undefined;
+        let logoutSettled = false;
         try {
             await act(async () => {
-                logoutPromise = getCurrentAuth()?.logout();
+                logoutPromise = getCurrentAuth()?.logout().then((result) => {
+                    logoutSettled = true;
+                    return result;
+                });
                 if (!logoutPromise) throw new Error('Expected current auth logout');
                 await vi.waitFor(() => expect(fetchSpy.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(true));
             });
@@ -675,6 +682,7 @@ describe('AuthContext.login', () => {
                 isAuthenticated: false,
                 credentials: null,
             }));
+            await vi.waitFor(() => expect(logoutSettled).toBe(true));
         } finally {
             releaseCleanup();
             await act(async () => {
@@ -721,7 +729,7 @@ describe('AuthContext.login', () => {
         });
         const { accountDirectoryCredentialStorage } = await import('@/auth/accountDirectory/accountDirectoryCredentialStorage');
         await accountDirectoryCredentialStorage.set(
-            { endpoint: 'https://accounts.example.test' },
+            { endpoint: 'https://accounts.example.test', serverIdentityId: 'account-service-a' },
             { token: 'account-service-token' },
         );
 
@@ -769,7 +777,7 @@ describe('AuthContext.login', () => {
                 { serverId: 'srv_logout_home_b' },
             )).resolves.toEqual(homeBCredentials);
             await expect(accountDirectoryCredentialStorage.get(
-                { endpoint: 'https://accounts.example.test' },
+                { endpoint: 'https://accounts.example.test', serverIdentityId: 'account-service-a' },
             )).resolves.toMatchObject({ token: 'account-service-token' });
             const deletedUrls = fetchSpy.mock.calls
                 .filter(([, init]) => init?.method === 'DELETE')
@@ -822,6 +830,7 @@ describe('AuthContext.login', () => {
         };
         await accountDirectoryCredentialStorage.set(directoryTarget, { token: 'account-service-token' });
         await TokenStorage.setPendingAccountDirectoryAuth({
+            credentialTarget: 'account_directory',
             ...directoryTarget,
             provider: 'github',
             purpose: 'account_directory',
@@ -913,9 +922,13 @@ describe('AuthContext.login', () => {
             children: React.createElement(React.Fragment, null),
         }));
         let logoutPromise: Promise<unknown> | undefined;
+        let logoutSettled = false;
         try {
             await act(async () => {
-                logoutPromise = getCurrentAuth()?.logout({ scope: 'all-credentials' });
+                logoutPromise = getCurrentAuth()?.logout({ scope: 'all-credentials' }).then((result) => {
+                    logoutSettled = true;
+                    return result;
+                });
                 if (!logoutPromise) throw new Error('Expected current auth logout');
                 await vi.waitFor(() => expect(fetchSpy.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(true));
             });
@@ -939,6 +952,7 @@ describe('AuthContext.login', () => {
                 isAuthenticated: false,
                 credentials: null,
             }));
+            await vi.waitFor(() => expect(logoutSettled).toBe(true));
         } finally {
             releaseCleanup();
             await act(async () => {

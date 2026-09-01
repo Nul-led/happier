@@ -52,7 +52,7 @@ vi.mock('@/sync/api/account/apiPairingAuth', () => ({
 
 vi.mock('@/auth/flows/qrStart', () => ({
     generateAuthKeyPair: () => ({ publicKey: new Uint8Array([1]), secretKey: new Uint8Array([2]) }),
-    authQRStart: vi.fn(async () => true),
+    authQRStart: vi.fn(async () => ({ ok: true })),
 }));
 
 vi.mock('@/auth/flows/qrWait', () => ({

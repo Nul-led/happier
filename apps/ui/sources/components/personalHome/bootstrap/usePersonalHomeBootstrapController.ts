@@ -9,7 +9,10 @@ import type {
     PersonalHomeFacts,
 } from './personalHomeBootstrapTypes';
 
-export type PersonalHomeBootstrapOperationRunner = (facts: PersonalHomeFacts) => Promise<void>;
+export type PersonalHomeBootstrapOperationRunner = (
+    facts: PersonalHomeFacts,
+    context?: Readonly<{ trigger: 'automatic' | 'retry' | 'manual' }>,
+) => Promise<void>;
 
 export type PersonalHomeBootstrapControllerOptions = Readonly<{
     readFacts: () => Promise<PersonalHomeFacts>;
@@ -29,12 +32,6 @@ export type PersonalHomeBootstrapController = Readonly<{
     execute: (runner: PersonalHomeBootstrapOperationRunner) => Promise<boolean>;
 }>;
 
-const EMPTY_ROWS = [
-    { id: 'home' as const, status: 'pending' as const },
-    { id: 'app' as const, status: 'pending' as const },
-    { id: 'computer' as const, status: 'pending' as const },
-] as const;
-
 function checkingSnapshot(): PersonalHomeBootstrapSnapshot {
     return {
         shouldGateShell: true,
@@ -42,19 +39,14 @@ function checkingSnapshot(): PersonalHomeBootstrapSnapshot {
         daemonReady: false,
         phase: 'checking',
         daemonState: 'not-started',
-        rows: EMPTY_ROWS,
         action: 'none',
     };
 }
 
 function operationForSnapshot(snapshot: PersonalHomeBootstrapSnapshot): PersonalHomeBootstrapOperation | null {
     switch (snapshot.phase) {
-        case 'preparing-home':
-            return 'prepare-home';
-        case 'connecting-app':
-            return 'connect-app';
-        case 'closing-signup':
-            return 'close-signup';
+        case 'ensuring-home':
+            return 'ensure-home-ready';
         case 'preparing-computer':
             return 'prepare-computer';
         default:
@@ -139,10 +131,6 @@ export function usePersonalHomeBootstrapController(
         setRefreshVersion((value) => value + 1);
     }, []);
 
-    const retry = React.useCallback(() => {
-        refresh();
-    }, [refresh]);
-
     React.useEffect(() => {
         if (!enabled) return;
         let cancelled = false;
@@ -175,6 +163,7 @@ export function usePersonalHomeBootstrapController(
 
     const execute = React.useCallback(async (
         runner: PersonalHomeBootstrapOperationRunner,
+        context: Readonly<{ trigger: 'automatic' | 'retry' | 'manual' }> = { trigger: 'manual' },
     ): Promise<boolean> => {
         if (!enabled || !facts || operationInFlightRef.current) return false;
         const startedFromExistingRuntimeDecision = derivedSnapshot.action === 'choose-existing-runtime';
@@ -183,7 +172,7 @@ export function usePersonalHomeBootstrapController(
 
         let operationError: Error | null = null;
         try {
-            await runner(facts);
+            await runner(facts, context);
         } catch (cause: unknown) {
             const nextError = cause instanceof Error ? cause : new Error(String(cause));
             const code = 'code' in nextError && typeof (nextError as { code?: unknown }).code === 'string'
@@ -217,6 +206,25 @@ export function usePersonalHomeBootstrapController(
         return operationError == null;
     }, [derivedSnapshot.action, enabled, facts, options.readFacts]);
 
+    const retry = React.useCallback(() => {
+        if (snapshot.action === 'choose-existing-runtime') return;
+        if (snapshot.action === 'retry') {
+            // Home verification/profile adoption remains the canonical bootstrap operation even
+            // after the live endpoint is usable. Only a durable completed profile makes a
+            // post-ready failure a computer/daemon recovery.
+            const operation: PersonalHomeBootstrapOperation = snapshot.homeReady
+                && facts?.completedPersonalHomeProfile
+                ? 'prepare-computer'
+                : 'ensure-home-ready';
+            const runner = options.operations?.[operation];
+            if (runner && facts) {
+                void execute(runner, { trigger: 'retry' });
+                return;
+            }
+        }
+        refresh();
+    }, [execute, facts, options.operations, refresh, snapshot.action, snapshot.homeReady]);
+
     React.useEffect(() => {
         if (!enabled || !facts || !hasAuthoritativeFacts || error || isChecking || isOperating) return;
         const operation = operationForSnapshot(snapshot);
@@ -235,7 +243,7 @@ export function usePersonalHomeBootstrapController(
         const operationKey = `${operation}:${facts.relayRuntime?.status ?? ''}:${facts.localHomeIdentity ?? ''}:${facts.localHomeAuth}:${facts.anonymousSignup}:${facts.daemon?.machineId ?? ''}`;
         if (operationKeyRef.current === operationKey) return;
         operationKeyRef.current = operationKey;
-        void execute(runner);
+        void execute(runner, { trigger: 'automatic' });
     }, [enabled, error, execute, facts, hasAuthoritativeFacts, isChecking, isOperating, options.operations, snapshot]);
 
     return {

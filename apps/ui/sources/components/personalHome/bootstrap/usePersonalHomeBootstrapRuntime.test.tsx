@@ -25,16 +25,25 @@ const harness = vi.hoisted(() => {
     let segments: readonly string[] = ['(app)', 'index'];
     const taskCalls: Array<{ kind: string; options: Record<string, unknown> }> = [];
     let failNextRelayTask: string | null = null;
+    let failRelayTaskOnOccurrence: Readonly<{ kind: string; occurrence: number }> | null = null;
+    const relayTaskOccurrences = new Map<string, number>();
+    let statusAvailable = true;
     const routerPush = vi.fn();
     const useLocalRelayRuntimeControl = vi.fn(() => ({
         activeTaskSnapshot: null,
         isUnavailable: false,
         lastErrorMessage: null,
-        status: statusData(),
+        status: statusAvailable ? statusData() : null,
         runTaskAndWait: async (kind: string, options: Record<string, unknown> = {}) => {
             taskCalls.push({ kind, options });
-            if (failNextRelayTask === kind) {
+            const occurrence = (relayTaskOccurrences.get(kind) ?? 0) + 1;
+            relayTaskOccurrences.set(kind, occurrence);
+            if (
+                failNextRelayTask === kind
+                || (failRelayTaskOnOccurrence?.kind === kind && failRelayTaskOnOccurrence.occurrence === occurrence)
+            ) {
                 failNextRelayTask = null;
+                failRelayTaskOnOccurrence = null;
                 return {
                     protocolVersion: 1,
                     taskId: `task-${taskCalls.length}`,
@@ -45,6 +54,7 @@ const harness = vi.hoisted(() => {
             if (kind === 'relay.runtime.installOrUpdate.v1') {
                 runtime.installed = true;
                 runtime.healthy = true;
+                runtime.dataPresent = true;
                 runtime.purpose = options.purpose as typeof runtime.purpose;
                 runtime.signupEnabled = options.anonymousSignupEnabled !== false;
             } else if (kind === 'relay.runtime.start.v1' || kind === 'relay.runtime.restart.v1') {
@@ -136,6 +146,12 @@ const harness = vi.hoisted(() => {
         setFailNextRelayTask(next: string | null) {
             failNextRelayTask = next;
         },
+        failRelayTaskOnOccurrence(kind: string, occurrence: number) {
+            failRelayTaskOnOccurrence = { kind, occurrence };
+        },
+        setStatusAvailable(next: boolean) {
+            statusAvailable = next;
+        },
         routerPush,
         useLocalRelayRuntimeControl,
         useLocalDaemonControl,
@@ -180,6 +196,9 @@ const harness = vi.hoisted(() => {
             segments = ['(app)', 'index'];
             taskCalls.length = 0;
             failNextRelayTask = null;
+            failRelayTaskOnOccurrence = null;
+            relayTaskOccurrences.clear();
+            statusAvailable = true;
             pendingSeedStore.clear();
             lastPersistedSeed = null;
             authCallSecrets.length = 0;
@@ -329,14 +348,14 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
         const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
 
-        await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+        await hook.getCurrent().operations['ensure-home-ready']?.(initialFacts);
 
         expect(harness.taskCalls.map((call) => call.kind)).toEqual([
             'relay.runtime.status.v1',
             'relay.runtime.installOrUpdate.v1',
-            'relay.runtime.start.v1',
+            'relay.runtime.status.v1',
             'relay.runtime.installOrUpdate.v1',
-            'relay.runtime.restart.v1',
+            'relay.runtime.status.v1',
             'relay.runtime.status.v1',
         ]);
         expect(harness.runtime.signupEnabled).toBe(false);
@@ -357,9 +376,45 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
             serverUrl: harness.canonicalServerUrl,
             canonicalServerUrl: harness.canonicalServerUrl,
             serverIdentityId: 'srv_home_b_identity',
+            personalHomeBootstrapCompleted: true,
         }));
         expect(profiles.getActiveServerSnapshot().serverId).toBe(focusedHome.id);
         expect(harness.focusedAuthGetToken).not.toHaveBeenCalled();
+    });
+
+    it('resumes with the URL-scoped seed when the first post-install readback fails after creating Home data', async () => {
+        const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
+        let hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+        // The first status read is preflight. Fail the post-install readback, after the one
+        // runtime mutation has created meaningful Home data, to prove that seed custody was
+        // established before the mutation without relying on the retired start task.
+        harness.failRelayTaskOnOccurrence('relay.runtime.status.v1', 2);
+
+        await expect(hook.getCurrent().operations['ensure-home-ready']?.(initialFacts)).rejects.toThrow(
+            'transient relay task failure',
+        );
+
+        expect(harness.taskCalls.map((call) => call.kind)).toEqual([
+            'relay.runtime.status.v1',
+            'relay.runtime.installOrUpdate.v1',
+            'relay.runtime.status.v1',
+        ]);
+        expect(harness.pendingSeedStore()).toEqual([
+            expect.objectContaining({ key: `${harness.canonicalServerUrl}|` }),
+        ]);
+        expect(harness.pendingSeedStore()[0]?.seed).toHaveLength(32);
+        const seedAfterFailure = harness.pendingSeedStore()[0]!.seed;
+        expect(harness.runtime.installed).toBe(true);
+        expect(harness.runtime.dataPresent).toBe(true);
+        expect(harness.authCallSecrets()).toEqual([]);
+
+        await hook.unmount();
+        hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
+        await hook.getCurrent().operations['ensure-home-ready']?.(initialFacts);
+        expect(harness.authCallSecrets()).toHaveLength(1);
+        expect([...harness.authCallSecrets()[0]!]).toEqual([...seedAfterFailure]);
+        expect(harness.pendingSeedStore()).toEqual([]);
+        await hook.unmount();
     });
 
     it('activates the adopted first local Home only when the existing selection remains implicit', async () => {
@@ -372,7 +427,7 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
 
             const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
             const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
-            await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+            await hook.getCurrent().operations['ensure-home-ready']?.(initialFacts);
 
             const selected = profiles.getActiveServerSnapshot();
             expect(selected).toMatchObject({ isSelectionExplicit: false });
@@ -430,12 +485,6 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
 
     it("recovers a valid plaintext generic Home in place through 'Use this local Home' without routing", async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        const focusedHome = profiles.upsertServerProfile({
-            serverUrl: 'https://home-a.example',
-            name: 'Focused Home A',
-            source: 'manual',
-        });
-        profiles.setActiveServerId(focusedHome.id);
         harness.runtime.installed = true;
         harness.runtime.healthy = true;
         harness.runtime.purpose = { kind: 'generic' };
@@ -456,9 +505,9 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         expect(harness.taskCalls.map((call) => call.kind)).toEqual([
             'relay.runtime.status.v1',
             'relay.runtime.installOrUpdate.v1',
-            'relay.runtime.start.v1',
+            'relay.runtime.status.v1',
             'relay.runtime.installOrUpdate.v1',
-            'relay.runtime.restart.v1',
+            'relay.runtime.status.v1',
             'relay.runtime.status.v1',
         ]);
         expect(harness.runtime.purpose).toEqual({ kind: 'personal-home', canonicalServerUrl: harness.canonicalServerUrl });
@@ -474,7 +523,6 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
             canonicalServerUrl: harness.canonicalServerUrl,
             serverIdentityId: 'srv_home_b_identity',
         }));
-        expect(profiles.getActiveServerSnapshot().serverId).toBe(focusedHome.id);
         // In-place recovery: no route is pushed.
         expect(harness.routerPush).not.toHaveBeenCalled();
         expect(screen.findByTestId('normal-shell')).not.toBeNull();
@@ -700,12 +748,17 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
         expect(harness.useLocalDaemonControl).not.toHaveBeenCalled();
     });
 
-    it('releases a durable returning Personal Home synchronously while the existing recovery owner runs inside the shell', async () => {
+    it('releases a durable returning Personal Home without misclassifying an unverified Home as computer recovery', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
-        profiles.upsertServerProfile({
+        const profile = profiles.upsertServerProfile({
             serverUrl: harness.canonicalServerUrl,
             name: 'Personal Home',
             source: 'desktop-personal-home',
+        });
+        profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_home_b_identity');
+        profiles.markServerProfilePersonalHomeBootstrapCompleted({
+            profileId: profile.id,
+            serverIdentityId: 'srv_home_b_identity',
         });
 
         const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
@@ -722,10 +775,47 @@ describe('usePersonalHomeBootstrapRuntime production composition', () => {
 
         await flushHookEffects({ cycles: 6, turns: 4 });
 
-        // Background daemon/account recovery can fail without replacing the already-released
-        // shell with first-run setup.
+        // The completed receipt releases the shell, but missing authenticated Home readback must
+        // not start daemon setup or mislabel the Home outage as computer recovery.
         expect(screen.findByTestId('normal-shell')).not.toBeNull();
         expect(screen.findByTestId('personal-home-setup-surface')).toBeNull();
-        expect(screen.findByTestId('personal-home-recovery-strip')).not.toBeNull();
+        expect(screen.findByTestId('personal-home-recovery-strip')).toBeNull();
+    });
+
+    it('uses durable completion only to release the shell while runtime status has no canonical origin', async () => {
+        harness.runtime.installed = true;
+        harness.runtime.healthy = true;
+        harness.setStatusAvailable(false);
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const profile = profiles.upsertServerProfile({
+            serverUrl: harness.canonicalServerUrl,
+            name: 'Personal Home',
+            source: 'desktop-personal-home',
+        });
+        profiles.setServerProfileIdentityForUrl(profile.serverUrl, 'srv_home_b_identity');
+        profiles.markServerProfilePersonalHomeBootstrapCompleted({
+            profileId: profile.id,
+            serverIdentityId: 'srv_home_b_identity',
+        });
+        const features = await import('@/sync/api/capabilities/serverFeaturesClient');
+        const tokenStorage = await import('@/auth/storage/tokenStorage');
+        vi.mocked(features.probeServerFeaturesAtUrl).mockClear();
+        vi.mocked(tokenStorage.TokenStorage.getCredentialsForServerUrl).mockClear();
+
+        const { PersonalHomeBootstrapRuntimeMount } = await import('./usePersonalHomeBootstrapRuntime');
+        const screen = await renderScreen(
+            <PersonalHomeBootstrapRuntimeMount>
+                <div data-testid="normal-shell" />
+            </PersonalHomeBootstrapRuntimeMount>,
+        );
+
+        expect(screen.findByTestId('normal-shell')).not.toBeNull();
+        expect(screen.findByTestId('personal-home-setup-surface')).toBeNull();
+
+        await flushHookEffects({ cycles: 6, turns: 4 });
+
+        expect(features.probeServerFeaturesAtUrl).not.toHaveBeenCalled();
+        expect(tokenStorage.TokenStorage.getCredentialsForServerUrl).not.toHaveBeenCalled();
+        expect(harness.taskCalls).toHaveLength(0);
     });
 });

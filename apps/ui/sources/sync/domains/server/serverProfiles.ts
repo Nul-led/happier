@@ -1,13 +1,14 @@
 import { MMKV } from 'react-native-mmkv';
 import {
     HomeConnectionDescriptorV1Schema,
+    mergePublicIrohEndpointObservation,
     normalizeServerIdentityIdCapability,
     parseIrohEndpointDescriptorV1,
     type HomeConnectionDescriptorV1,
     type IrohEndpointDescriptorV1,
 } from '@happier-dev/protocol';
-import type { IrohObservedPath, IrohRelayPolicy } from '@happier-dev/iroh-native';
 import { readStorageScopeFromEnv, scopedStorageId } from '@/utils/system/storageScope';
+import { normalizeAccountDirectoryEndpoint } from '@/sync/domains/accountDirectory/accountDirectoryEndpoint';
 import { isStackContext } from './serverContext';
 import { canonicalizeServerUrl, createServerUrlComparableKey } from './url/serverUrlCanonical';
 import { sanitizeServerUrlForShareableLink } from './url/shareableServerUrl';
@@ -57,6 +58,17 @@ export type ServerProfile = Readonly<{
     irohEndpoint?: IrohEndpointDescriptorV1;
     /** Monotonic revision of the last adopted connection descriptor. */
     connectionDescriptorRevision?: number;
+    /**
+     * This device completed and verified managed Personal Home bootstrap for this exact Home
+     * identity. It is deliberately separate from mutable adoption provenance and live health.
+     */
+    personalHomeBootstrapCompleted?: true;
+    /**
+     * Single descriptor-provenance marker: present only on advisory-only Directory
+     * placeholders whose connection facts were never established by a Home/user
+     * authority. Absent means established.
+     */
+    descriptorProvenance?: 'advisory-only';
 }>;
 
 export type PortableServerIdentityProfileResolution =
@@ -83,10 +95,6 @@ export type ActiveServerSnapshot = Readonly<{
     activeLocalRelayUrl?: string | null;
     runtimeOrigin?: string;
     carrier?: 'https' | 'iroh';
-    /** Native-observed selected Iroh path; never inferred from descriptor or policy. */
-    irohObservedPath?: IrohObservedPath;
-    /** Effective local mode applied to the currently published Iroh lease. */
-    irohRelayPolicy?: IrohRelayPolicy;
     connectionDescriptorRevision?: number;
     isSelectionExplicit?: boolean;
     generation: number;
@@ -137,8 +145,6 @@ let activeRuntimeOriginLease: Readonly<{
     leaseId: string;
     runtimeOrigin: string;
     carrier: 'https' | 'iroh';
-    irohObservedPath?: IrohObservedPath;
-    irohRelayPolicy?: IrohRelayPolicy;
 }> | null = null;
 const runtimeOriginListeners = new Set<(snapshot: ActiveServerSnapshot) => void>();
 
@@ -147,13 +153,30 @@ const serverProfilesListeners = new Set<(generation: number) => void>();
 const homeViewStateListeners = new Set<() => void>();
 let webPersistedStateObserverInstalled = false;
 
+function notifyIndependentListeners<TArgs extends readonly unknown[]>(
+    listeners: ReadonlySet<(...args: TArgs) => void>,
+    args: TArgs,
+    eventName: string,
+): void {
+    for (const listener of listeners) {
+        try {
+            listener(...args);
+        } catch (error) {
+            // Persistence/state mutation is already committed before notification.
+            // One observer must neither reclassify that commit as a failure nor
+            // prevent independent observers from seeing the same publication.
+            console.error(`[serverProfiles] ${eventName} observer failed`, error);
+        }
+    }
+}
+
 function emitServerProfilesChanged(): void {
     serverProfilesGeneration += 1;
-    for (const listener of serverProfilesListeners) listener(serverProfilesGeneration);
+    notifyIndependentListeners(serverProfilesListeners, [serverProfilesGeneration], 'profiles_changed');
 }
 
 function emitHomeViewStateChanged(): void {
-    for (const listener of homeViewStateListeners) listener();
+    notifyIndependentListeners(homeViewStateListeners, [], 'home_view_changed');
 }
 
 function ensureWebPersistedStateObserver(): void {
@@ -179,7 +202,7 @@ function ensureWebPersistedStateObserver(): void {
         }
         if (!previousState || JSON.stringify(previousState.accountServiceEndpoint) !== JSON.stringify(nextState.accountServiceEndpoint)) {
             const endpoint = nextState.accountServiceEndpoint ?? null;
-            for (const listener of accountServiceEndpointListeners) listener(endpoint);
+            notifyIndependentListeners(accountServiceEndpointListeners, [endpoint], 'account_service_endpoint_changed');
         }
         if (
             !previousState
@@ -267,7 +290,7 @@ function storageId(): string {
 
 type PersistedStateStorage = Readonly<{
     getString: (key: string) => string | undefined;
-    set: (key: string, value: string) => void;
+    set: (key: string, value: string) => boolean;
 }>;
 
 let persistedStateStorage: PersistedStateStorage | null = null;
@@ -300,12 +323,17 @@ function createWebPersistedStateStorage(): PersistedStateStorage {
         },
         set: (key: string, value: string) => {
             const resolvedKey = resolveKey(key);
+            if (!storage) {
+                fallback.set(resolvedKey, value);
+                return true;
+            }
             try {
-                storage?.setItem(resolvedKey, value);
+                storage.setItem(resolvedKey, value);
             } catch {
-                // ignore
+                return false;
             }
             fallback.set(resolvedKey, value);
+            return true;
         },
     };
 }
@@ -314,7 +342,14 @@ function createNativePersistedStateStorage(): PersistedStateStorage {
     const storage = new MMKV({ id: storageId() });
     return {
         getString: (key: string) => storage.getString(key),
-        set: (key: string, value: string) => storage.set(key, value),
+        set: (key: string, value: string) => {
+            try {
+                storage.set(key, value);
+                return true;
+            } catch {
+                return false;
+            }
+        },
     };
 }
 
@@ -343,6 +378,7 @@ function createInMemoryPersistedStateStorage(seed: string | undefined): Persiste
         getString: (key: string) => values.get(key),
         set: (key: string, value: string) => {
             values.set(key, value);
+            return true;
         },
     };
 }
@@ -550,20 +586,28 @@ function parseProfile(id: string, value: unknown): ServerProfile | null {
     const serverUrl = normalizeUrl(String(record.serverUrl ?? ''));
     if (!sid || !name || !serverUrl) return null;
 
-    const rawSource = String(record.source ?? '').trim().toLowerCase();
+    const rawSource = typeof record.source === 'string' ? record.source : '';
+    const normalizedSource = rawSource.trim().toLowerCase();
     const source: ServerProfileSource | undefined =
-        rawSource === 'manual'
-            || rawSource === 'url'
-            || rawSource === 'stack-env'
-            || rawSource === 'notification'
-            || rawSource === 'preconfigured'
-            || rawSource === 'qr'
-            || rawSource === 'account-directory'
-            || rawSource === 'desktop-personal-home'
-            || rawSource === 'legacy'
-            ? rawSource
-            : rawSource ? 'legacy' : undefined;
-    const legacySource = source === 'legacy' && rawSource ? rawSource : undefined;
+        normalizedSource === 'manual'
+            || normalizedSource === 'url'
+            || normalizedSource === 'stack-env'
+            || normalizedSource === 'notification'
+            || normalizedSource === 'preconfigured'
+            || normalizedSource === 'qr'
+            || normalizedSource === 'account-directory'
+            || normalizedSource === 'desktop-personal-home'
+            || normalizedSource === 'legacy'
+            ? normalizedSource
+            : normalizedSource ? 'legacy' : undefined;
+    const legacySource = source === 'legacy' && normalizedSource !== 'legacy' ? rawSource : undefined;
+    // `desktop-personal-home` was the previous durable completion receipt.  Read it
+    // once into the identity-bound scalar so later adoption may freely update source.
+    const serverIdentityId = normalizeServerIdentityId(record.serverIdentityId);
+    const personalHomeBootstrapCompleted = serverIdentityId
+        && (record.personalHomeBootstrapCompleted === true || source === 'desktop-personal-home')
+        ? true as const
+        : undefined;
 
     const canonicalServerUrl = typeof record.canonicalServerUrl === 'string'
         ? normalizeUrl(record.canonicalServerUrl) : '';
@@ -583,6 +627,10 @@ function parseProfile(id: string, value: unknown): ServerProfile | null {
         && record.connectionDescriptorRevision > 0
         ? record.connectionDescriptorRevision
         : undefined;
+    // Tolerant, additive provenance read: unknown values are dropped, never trusted.
+    const descriptorProvenance = record.descriptorProvenance === 'advisory-only'
+        ? 'advisory-only' as const
+        : undefined;
 
     return {
         id: sid,
@@ -592,14 +640,15 @@ function parseProfile(id: string, value: unknown): ServerProfile | null {
         ...(publicServerUrl !== undefined ? { publicServerUrl } : {}),
         ...(irohEndpoint ? { irohEndpoint } : {}),
         ...(connectionDescriptorRevision !== undefined ? { connectionDescriptorRevision } : {}),
+        ...(descriptorProvenance ? { descriptorProvenance } : {}),
         ...(typeof record.shareableServerUrl === 'string'
             ? { shareableServerUrl: sanitizeServerUrlForShareableLink(record.shareableServerUrl) }
             : {}),
         ...(typeof record.shareableServerUrlValidatedAgainstServerUrl === 'string'
             ? { shareableServerUrlValidatedAgainstServerUrl: normalizeUrl(String(record.shareableServerUrlValidatedAgainstServerUrl)) }
             : {}),
-        ...(normalizeServerIdentityId(record.serverIdentityId)
-            ? { serverIdentityId: normalizeServerIdentityId(record.serverIdentityId) }
+        ...(serverIdentityId
+            ? { serverIdentityId }
             : {}),
         ...(Array.isArray(record.legacyServerIds)
             ? { legacyServerIds: uniqueServerIds(record.legacyServerIds).filter((legacyId) => legacyId !== sid) }
@@ -609,6 +658,7 @@ function parseProfile(id: string, value: unknown): ServerProfile | null {
         lastUsedAt: Number(record.lastUsedAt ?? 0) || 0,
         source,
         ...(legacySource ? { legacySource } : {}),
+        ...(personalHomeBootstrapCompleted ? { personalHomeBootstrapCompleted } : {}),
     };
 }
 
@@ -679,13 +729,37 @@ function mergeProfileIdentityMetadata(
     };
 }
 
-function preserveDurablePersonalHomeClassification(
+export function isServerProfilePersonalHomeBootstrapCompleted(
+    profile: ServerProfile | null | undefined,
+): profile is ServerProfile & Readonly<{
+    serverIdentityId: string;
+    personalHomeBootstrapCompleted: true;
+}> {
+    return profile?.personalHomeBootstrapCompleted === true
+        && normalizeServerIdentityId(profile.serverIdentityId) != null;
+}
+
+function personalHomeBootstrapCompletionForIdentity(
     profiles: readonly ServerProfile[],
-    fallback: ServerProfile['source'],
-): ServerProfile['source'] {
-    return profiles.some((profile) => profile.source === 'desktop-personal-home')
-        ? 'desktop-personal-home'
-        : fallback;
+    identityRaw: string | null | undefined,
+): true | undefined {
+    const identity = normalizeServerIdentityId(identityRaw);
+    if (!identity) return undefined;
+    return profiles.some((profile) => (
+        profile.serverIdentityId === identity
+        && profile.personalHomeBootstrapCompleted === true
+    )) ? true : undefined;
+}
+
+/**
+ * Returns this device's one managed Personal Home completion profile. Multiple
+ * identity-bound receipts are ambiguous rather than a basis for readiness or controls.
+ */
+export function findPersonalHomeBootstrapCompletedProfile(
+    profiles: readonly ServerProfile[],
+): ServerProfile | null {
+    const completed = profiles.filter(isServerProfilePersonalHomeBootstrapCompleted);
+    return completed.length === 1 ? completed[0]! : null;
 }
 
 /**
@@ -801,7 +875,9 @@ function dedupeEquivalentProfiles(params: Readonly<{
         next[merged.id] = {
             ...merged,
             ...identityMetadata,
-            source: preserveDurablePersonalHomeClassification(group, merged.source),
+            ...(personalHomeBootstrapCompletionForIdentity(group, identityMetadata.serverIdentityId)
+                ? { personalHomeBootstrapCompleted: true as const }
+                : {}),
         };
 
         for (const current of group) {
@@ -878,7 +954,9 @@ function dedupeIdentityProfiles(params: Readonly<{
         next[merged.id] = {
             ...merged,
             ...identityMetadata,
-            source: preserveDurablePersonalHomeClassification(group, merged.source),
+            ...(personalHomeBootstrapCompletionForIdentity(group, identityMetadata.serverIdentityId)
+                ? { personalHomeBootstrapCompleted: true as const }
+                : {}),
         };
     }
 
@@ -894,12 +972,11 @@ let persistedStateParseCache: { raw: string; state: Required<PersistedServerStat
 function parseAccountServiceEndpoint(value: unknown): AccountServiceEndpointV1 | null {
     if (!value || typeof value !== 'object') return null;
     const record = value as Record<string, unknown>;
-    const url = typeof record.url === 'string' ? normalizeUrl(record.url) : '';
+    const url = typeof record.url === 'string'
+        ? normalizeAccountDirectoryEndpoint(record.url)
+        : null;
     const source = record.source;
     if (!url || source !== 'default' && source !== 'configured' && source !== 'user') return null;
-    let parsed: URL;
-    try { parsed = new URL(url); } catch { return null; }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
     const identity = normalizeServerIdentityId(record.serverIdentityId);
     if (Object.prototype.hasOwnProperty.call(record, 'serverIdentityId') && !identity) return null;
     return {
@@ -923,6 +1000,72 @@ function parseHomeViewState(value: unknown): HomeViewStateV1 | null {
         groups: normalizeStoredServerSelectionGroups(record.groups).map((group) => ({ ...group })),
         activeTargetKind: kind,
         activeTargetId: id,
+    };
+}
+
+function normalizeHomeViewStateAgainstProfiles(
+    state: HomeViewStateV1,
+    servers: Readonly<Record<string, ServerProfile>>,
+    activeServerId: string,
+): HomeViewStateV1 {
+    const scopeIdByAlias = new Map<string, string>();
+    const availableScopeIds = new Set<string>();
+    for (const profile of Object.values(servers)) {
+        const scopeId = resolveServerProfileScopeId(profile);
+        if (!scopeId) continue;
+        availableScopeIds.add(scopeId);
+        scopeIdByAlias.set(profile.id, scopeId);
+        scopeIdByAlias.set(scopeId, scopeId);
+        for (const legacyId of profile.legacyServerIds ?? []) {
+            const normalizedLegacyId = normalizeServerId(legacyId);
+            if (normalizedLegacyId) scopeIdByAlias.set(normalizedLegacyId, scopeId);
+        }
+    }
+
+    const groups = state.groups
+        .map((group) => {
+            const seen = new Set<string>();
+            const serverIds: string[] = [];
+            for (const rawId of group.serverIds) {
+                const id = normalizeServerId(rawId);
+                if (!id) continue;
+                const mapped = scopeIdByAlias.get(id) ?? id;
+                if (!availableScopeIds.has(mapped)) continue;
+                if (seen.has(mapped)) continue;
+                seen.add(mapped);
+                serverIds.push(mapped);
+            }
+            return serverIds.length === group.serverIds.length
+                && serverIds.every((id, index) => id === group.serverIds[index])
+                ? group
+                : { ...group, serverIds };
+        })
+        .filter((group) => group.serverIds.length > 0);
+
+    const targetId = state.activeTargetId ? normalizeServerId(state.activeTargetId) : null;
+    let activeTargetKind = state.activeTargetKind;
+    let activeTargetId = targetId;
+    let targetIsValid = activeTargetKind === null && activeTargetId === null;
+    if (activeTargetKind === 'server' && activeTargetId) {
+        const mapped = scopeIdByAlias.get(activeTargetId) ?? activeTargetId;
+        targetIsValid = availableScopeIds.has(mapped);
+        activeTargetId = mapped;
+    } else if (activeTargetKind === 'group' && activeTargetId) {
+        targetIsValid = groups.some((group) => group.id === activeTargetId && group.serverIds.length > 0);
+    }
+
+    if (!targetIsValid) {
+        const focused = activeServerId ? servers[activeServerId] : null;
+        const fallbackId = focused ? resolveServerProfileScopeId(focused) : null;
+        activeTargetKind = fallbackId ? 'server' : null;
+        activeTargetId = fallbackId;
+    }
+
+    return {
+        version: 1,
+        groups,
+        activeTargetKind,
+        activeTargetId,
     };
 }
 
@@ -992,10 +1135,19 @@ function readPersistedState(
         const parsed = JSON.parse(raw) as PersistedServerState;
         const serversRaw = parsed?.servers && typeof parsed.servers === 'object' ? parsed.servers : {};
         const servers: Record<string, ServerProfile> = {};
+        let needsPersonalHomeBootstrapCompletionMigration = false;
         for (const [id, value] of Object.entries(serversRaw)) {
             const profile = parseProfile(id, value);
             if (!profile) continue;
             servers[profile.id] = profile;
+            if (
+                profile.personalHomeBootstrapCompleted === true
+                && value
+                && typeof value === 'object'
+                && (value as Record<string, unknown>).personalHomeBootstrapCompleted !== true
+            ) {
+                needsPersonalHomeBootstrapCompletionMigration = true;
+            }
         }
         const desiredActive = normalizeServerId(parsed.activeServerId);
         const activeServerIdIsExplicit = parsed.activeServerIdIsExplicit === true;
@@ -1029,7 +1181,12 @@ function readPersistedState(
         }
         for (const [from, to] of deduped.idRewrite) combinedIdRewrite.set(from, to);
         addProfileScopeIdentityRewrites(combinedIdRewrite, deduped.servers);
-        const parsedHomeViewState = rewriteHomeViewStateIdentity(parseHomeViewState(parsed.homeViewState), combinedIdRewrite);
+        const rewrittenHomeViewState = rewriteHomeViewStateIdentity(parseHomeViewState(parsed.homeViewState), combinedIdRewrite);
+        const parsedHomeViewState = rewrittenHomeViewState
+            ? normalizeHomeViewStateAgainstProfiles(rewrittenHomeViewState, deduped.servers, activeServerId)
+            : null;
+        const needsHomeViewCanonicalizationWrite = rewrittenHomeViewState !== null
+            && JSON.stringify(rewrittenHomeViewState) !== JSON.stringify(parsedHomeViewState);
 
         // The initialization marker separates the legacy pre-marker world (missing/invalid
         // payload still permits the one-time scoped migration) from the initialized world
@@ -1062,7 +1219,13 @@ function readPersistedState(
             homeViewStateInitialized,
         };
 
-        if (dedupedIdentity.changed || deduped.changed || needsHomeViewInitializationWrite) {
+        if (
+            dedupedIdentity.changed
+            || deduped.changed
+            || needsHomeViewInitializationWrite
+            || needsHomeViewCanonicalizationWrite
+            || needsPersonalHomeBootstrapCompletionMigration
+        ) {
             if (options.persistCanonicalization !== false) {
                 writePersistedState(state);
             }
@@ -1093,7 +1256,9 @@ function writePersistedState(state: Required<PersistedServerState>): void {
         const { legacySource, ...persisted } = profile;
         return [id, { ...persisted, source: legacySource }];
     }));
-    getPersistedStateStorage().set(STATE_KEY, JSON.stringify({ ...state, servers }));
+    if (!getPersistedStateStorage().set(STATE_KEY, JSON.stringify({ ...state, servers }))) {
+        throw new Error('Failed to persist Home profiles');
+    }
     // Invalidate rather than prime: the next read re-parses so the parse path stays the
     // single canonicalization owner for cached state shapes.
     persistedStateParseCache = null;
@@ -1103,10 +1268,15 @@ export function loadHomeViewState(): HomeViewStateV1 | null {
     return readPersistedState().homeViewState;
 }
 
+/**
+ * Returns the effective Home view for this runtime. Group definitions always come
+ * from device-global state; only the active target may be overridden by a web tab.
+ */
 export function saveHomeViewState(state: HomeViewStateV1): void {
     const current = readPersistedState();
-    const normalized = parseHomeViewState(state);
-    if (!normalized) throw new Error('invalid Home view state');
+    const parsed = parseHomeViewState(state);
+    if (!parsed) throw new Error('invalid Home view state');
+    const normalized = normalizeHomeViewStateAgainstProfiles(parsed, current.servers, current.activeServerId);
     if (JSON.stringify(current.homeViewState) === JSON.stringify(normalized) && current.homeViewStateInitialized) return;
     // Any save is itself initialization evidence: write the marker so the legacy
     // one-time scoped migration can never re-run over this store.
@@ -1127,6 +1297,10 @@ export function updateHomeViewState(
     return loadHomeViewState() ?? current;
 }
 
+/**
+ * Updates global group definitions while applying the active target at the
+ * requested platform scope. A tab-scoped update never rewrites the device default.
+ */
 export function subscribeHomeViewState(listener: () => void): () => void {
     homeViewStateListeners.add(listener);
     ensureWebPersistedStateObserver();
@@ -1139,7 +1313,8 @@ export function subscribeHomeViewState(listener: () => void): () => void {
 export function migrateHomeViewStateFromSettings(settings: Readonly<Record<string, unknown>>): HomeViewStateV1 | null {
     const existing = loadHomeViewState();
     if (existing) return existing;
-    const state: HomeViewStateV1 = {
+    const current = readPersistedState();
+    const state = normalizeHomeViewStateAgainstProfiles({
         version: 1,
         groups: normalizeStoredServerSelectionGroups(settings.serverSelectionGroups),
         activeTargetKind:
@@ -1148,7 +1323,7 @@ export function migrateHomeViewStateFromSettings(settings: Readonly<Record<strin
         activeTargetId:
             typeof settings.serverSelectionActiveTargetId === 'string' && settings.serverSelectionActiveTargetId.trim()
                 ? settings.serverSelectionActiveTargetId.trim() : null,
-    };
+    }, current.servers, current.activeServerId);
     saveHomeViewState(state);
     return state;
 }
@@ -1236,8 +1411,6 @@ function buildActiveSnapshotFromState(state: Required<PersistedServerState>): Ac
             ...(runtimeLease ? {
                 runtimeOrigin: runtimeLease.runtimeOrigin,
                 carrier: runtimeLease.carrier,
-                ...(runtimeLease.irohObservedPath ? { irohObservedPath: runtimeLease.irohObservedPath } : {}),
-                ...(runtimeLease.irohRelayPolicy ? { irohRelayPolicy: runtimeLease.irohRelayPolicy } : {}),
             } : {}),
             generation: activeServerGeneration,
         };
@@ -1268,8 +1441,6 @@ export function publishActiveServerRuntimeOrigin(params: Readonly<{
     leaseId: string;
     runtimeOrigin: string;
     carrier: 'https' | 'iroh';
-    irohObservedPath?: IrohObservedPath;
-    irohRelayPolicy?: IrohRelayPolicy;
 }>): boolean {
     const runtimeOrigin = params.runtimeOrigin.trim();
     const leaseId = params.leaseId.trim();
@@ -1282,17 +1453,11 @@ export function publishActiveServerRuntimeOrigin(params: Readonly<{
         leaseId,
         runtimeOrigin,
         carrier: params.carrier,
-        ...(params.carrier === 'iroh' && params.irohObservedPath
-            ? { irohObservedPath: params.irohObservedPath }
-            : {}),
-        ...(params.carrier === 'iroh' && params.irohRelayPolicy
-            ? { irohRelayPolicy: params.irohRelayPolicy }
-            : {}),
     };
     activeServerSnapshotCache = null;
     const snapshot = getActiveServerSnapshot();
-    for (const listener of activeServerListeners) listener(snapshot);
-    for (const listener of runtimeOriginListeners) listener(snapshot);
+    notifyIndependentListeners(activeServerListeners, [snapshot], 'active_server_changed');
+    notifyIndependentListeners(runtimeOriginListeners, [snapshot], 'runtime_origin_changed');
     return true;
 }
 
@@ -1312,8 +1477,8 @@ export function releaseActiveServerRuntimeOrigin(params: Readonly<{
     activeRuntimeOriginLease = null;
     activeServerSnapshotCache = null;
     const snapshot = getActiveServerSnapshot();
-    for (const listener of activeServerListeners) listener(snapshot);
-    for (const listener of runtimeOriginListeners) listener(snapshot);
+    notifyIndependentListeners(activeServerListeners, [snapshot], 'active_server_changed');
+    notifyIndependentListeners(runtimeOriginListeners, [snapshot], 'runtime_origin_changed');
     return true;
 }
 
@@ -1333,8 +1498,6 @@ function getStableActiveServerSnapshot(next: ActiveServerSnapshot): ActiveServer
         && (cached.activeLocalRelayUrl ?? null) === (next.activeLocalRelayUrl ?? null)
         && (cached.runtimeOrigin ?? null) === (next.runtimeOrigin ?? null)
         && (cached.carrier ?? null) === (next.carrier ?? null)
-        && (cached.irohObservedPath ?? null) === (next.irohObservedPath ?? null)
-        && (cached.irohRelayPolicy ?? null) === (next.irohRelayPolicy ?? null)
         && (cached.connectionDescriptorRevision ?? null) === (next.connectionDescriptorRevision ?? null)
         && (cached.isSelectionExplicit ?? null) === (next.isSelectionExplicit ?? null)
         && cached.generation === next.generation
@@ -1389,7 +1552,7 @@ function emitActiveServerChanged(
         next = getActiveServerSnapshot();
     }
     const emitted: ActiveServerSnapshot = getStableActiveServerSnapshot({ ...next, generation: activeServerGeneration });
-    for (const listener of activeServerListeners) listener(emitted);
+    notifyIndependentListeners(activeServerListeners, [emitted], 'active_server_changed');
 }
 
 export function listServerProfiles(): ServerProfile[] {
@@ -1425,14 +1588,14 @@ export function setAccountServiceEndpoint(endpoint: AccountServiceEndpointV1): v
     if (!parsed) throw new Error('Invalid Account Service endpoint');
     const state = readPersistedState();
     writePersistedState({ ...state, accountServiceEndpoint: parsed });
-    for (const listener of accountServiceEndpointListeners) listener(parsed);
+    notifyIndependentListeners(accountServiceEndpointListeners, [parsed], 'account_service_endpoint_changed');
 }
 
 export function resetAccountServiceToDefault(): void {
     const state = readPersistedState();
     const endpoint: AccountServiceEndpointV1 = { url: HAPPIER_CLOUD_SERVER_URL, source: 'default', displayName: 'Happier Cloud' };
     writePersistedState({ ...state, accountServiceEndpoint: endpoint });
-    for (const listener of accountServiceEndpointListeners) listener(endpoint);
+    notifyIndependentListeners(accountServiceEndpointListeners, [endpoint], 'account_service_endpoint_changed');
 }
 
 /**
@@ -1479,17 +1642,184 @@ export function buildHomeConnectionDescriptorForProfile(profile: ServerProfile):
     };
 }
 
+/**
+ * Explicit descriptor provenance states at this canonical profile owner. Callers must
+ * declare authority here rather than inferring it from descriptor revision or source name.
+ */
+export type HomeProfileDescriptorAuthority =
+    | 'advisory'
+    | 'redemption_coupled'
+    | 'current_connection_observation';
+
 type HomeProfileAdoptionParams = Readonly<{
     descriptor: HomeConnectionDescriptorV1 | LegacyManualHomeDescriptor;
     source: ServerProfileSource;
     preserveUserLabel?: boolean;
+    preserveProfileSource?: boolean;
+    descriptorAuthority?: HomeProfileDescriptorAuthority;
     suggestedName?: string;
 }>;
 
 export type HomeProfileAdoptionPreflight = Readonly<{
     canonicalServerUrl: string;
     serverIdentityId: string | null;
+    /**
+     * Advisory discovery may authenticate a signed-out Home, but it must not replace
+     * an established credential. The credential composition checks the established
+     * slot and writes only when that slot is empty.
+     */
+    credentialWrite: 'required' | 'preserveExisting';
 }>;
+
+export type HomeConnectionDescriptorReconciliationResult =
+    | Readonly<{ kind: 'applied' | 'unchanged' | 'stale'; profile: ServerProfile }>
+    | Readonly<{
+        kind: 'conflict';
+        code: 'invalid_descriptor' | 'identity_mismatch' | 'profile_missing' | 'equal_revision_conflict';
+        profile: ServerProfile | null;
+    }>;
+
+export type HomeProfileAdoptionConflictCode = 'equal_revision_conflict' | 'redemption_authority_conflict';
+
+export class HomeProfileAdoptionConflictError extends Error {
+    readonly code: HomeProfileAdoptionConflictCode;
+
+    constructor(code: HomeProfileAdoptionConflictCode) {
+        super('Home connection descriptor conflicts with the persisted revision');
+        this.name = 'HomeProfileAdoptionConflictError';
+        this.code = code;
+    }
+}
+
+function descriptorSnapshotFacts(descriptor: HomeConnectionDescriptorV1): Readonly<{
+    homeServerIdentityId: string;
+    canonicalServerUrl: string;
+    publicServerUrl: string | null;
+    irohEndpoint: IrohEndpointDescriptorV1 | null;
+}> {
+    const httpsEndpoint = descriptor.endpoints.find((endpoint) => endpoint.kind === 'https');
+    const irohEndpoint = descriptor.endpoints.find(
+        (endpoint): endpoint is Extract<HomeConnectionDescriptorV1['endpoints'][number], { kind: 'iroh' }> => endpoint.kind === 'iroh',
+    );
+    return {
+        homeServerIdentityId: normalizeServerIdentityId(descriptor.homeServerIdentityId) ?? '',
+        canonicalServerUrl: normalizeUrl(descriptor.canonicalServerUrl),
+        publicServerUrl: httpsEndpoint ? normalizeUrl(httpsEndpoint.url) : null,
+        irohEndpoint: irohEndpoint
+            ? parseIrohEndpointDescriptorV1({
+                endpointId: irohEndpoint.endpointId,
+                ...(irohEndpoint.relayUrls ? { relayUrls: [...irohEndpoint.relayUrls] } : {}),
+                ...(irohEndpoint.directAddresses ? { directAddresses: [...irohEndpoint.directAddresses] } : {}),
+            })
+            : null,
+    };
+}
+
+function descriptorSnapshotMatchesProfile(
+    descriptor: HomeConnectionDescriptorV1,
+    profile: ServerProfile,
+): boolean {
+    const incoming = descriptorSnapshotFacts(descriptor);
+    return incoming.homeServerIdentityId === (normalizeServerIdentityId(profile.serverIdentityId) ?? '')
+        && incoming.canonicalServerUrl === normalizeUrl(profile.canonicalServerUrl ?? profile.serverUrl)
+        && incoming.publicServerUrl === (profile.publicServerUrl ?? null)
+        && JSON.stringify(incoming.irohEndpoint) === JSON.stringify(profile.irohEndpoint ?? null);
+}
+
+type DescriptorRevisionAdjudication =
+    | 'apply'
+    | 'unchanged'
+    | 'stale'
+    | 'equal_revision_conflict';
+
+function adjudicateDescriptorRevision(
+    descriptor: HomeConnectionDescriptorV1,
+    profile: ServerProfile,
+): DescriptorRevisionAdjudication {
+    const currentRevision = profile.connectionDescriptorRevision;
+    if (currentRevision === undefined || descriptor.revision > currentRevision) return 'apply';
+    if (descriptor.revision < currentRevision) return 'stale';
+    return descriptorSnapshotMatchesProfile(descriptor, profile)
+        ? 'unchanged'
+        : 'equal_revision_conflict';
+}
+
+function mergePublicDescriptorObservation(
+    descriptor: HomeConnectionDescriptorV1,
+    profile: ServerProfile,
+): HomeConnectionDescriptorV1 {
+    const observedEntry = descriptor.endpoints.find((endpoint) => endpoint.kind === 'iroh') ?? null;
+    const observed = observedEntry ? {
+        endpointId: observedEntry.endpointId,
+        ...(observedEntry.relayUrls ? { relayUrls: observedEntry.relayUrls } : {}),
+        ...(observedEntry.directAddresses ? { directAddresses: observedEntry.directAddresses } : {}),
+    } : null;
+    const merged = mergePublicIrohEndpointObservation(profile.irohEndpoint ?? null, observed);
+    const endpoints: HomeConnectionDescriptorV1['endpoints'][number][] = descriptor.endpoints
+        .filter((endpoint) => endpoint.kind !== 'iroh');
+    if (merged) {
+        endpoints.push({
+            kind: 'iroh',
+            ...merged,
+        });
+    }
+    return { ...descriptor, endpoints };
+}
+
+/**
+ * Reconciles the exact descriptor published by a Home after the ordinary
+ * feature probe has established that Home's server identity. Profile storage,
+ * focus, grouping, labels, and runtime invalidation remain owned here; callers
+ * only supply the observed identity and snapshot.
+ */
+export async function reconcileServerProfileHomeConnectionDescriptor(params: Readonly<{
+    serverUrl: string;
+    observedServerIdentityId: string;
+    descriptor: HomeConnectionDescriptorV1;
+    observation?: 'exact' | 'public';
+}>): Promise<HomeConnectionDescriptorReconciliationResult> {
+    const parsed = HomeConnectionDescriptorV1Schema.safeParse(params.descriptor);
+    const observedIdentity = normalizeServerIdentityId(params.observedServerIdentityId);
+    const state = readPersistedState();
+    const profile = findProfileByEquivalentUrl(state.servers, normalizeUrl(params.serverUrl))
+        ?? (observedIdentity ? findProfileByServerIdentifier(state.servers, observedIdentity) : null);
+    if (!parsed.success) {
+        return { kind: 'conflict', code: 'invalid_descriptor', profile };
+    }
+    let descriptor = parsed.data;
+    if (!observedIdentity || descriptor.homeServerIdentityId !== observedIdentity) {
+        return { kind: 'conflict', code: 'identity_mismatch', profile };
+    }
+    if (!profile) {
+        return { kind: 'conflict', code: 'profile_missing', profile: null };
+    }
+    if (profile.serverIdentityId !== observedIdentity) {
+        return { kind: 'conflict', code: 'identity_mismatch', profile };
+    }
+    if (params.observation === 'public') {
+        descriptor = mergePublicDescriptorObservation(descriptor, profile);
+    }
+
+    // Observation authority establishes an advisory-only placeholder wholesale; the
+    // Directory-authored revision can never make the Home's own descriptor stale.
+    if (profile.descriptorProvenance !== 'advisory-only') {
+        const adjudication = adjudicateDescriptorRevision(descriptor, profile);
+        if (adjudication === 'stale') return { kind: 'stale', profile };
+        if (adjudication === 'unchanged') return { kind: 'unchanged', profile };
+        if (adjudication === 'equal_revision_conflict') {
+            return { kind: 'conflict', code: 'equal_revision_conflict', profile };
+        }
+    }
+
+    const updated = await adoptHomeProfile({
+        descriptor,
+        source: profile.source ?? 'manual',
+        preserveUserLabel: true,
+        preserveProfileSource: true,
+        descriptorAuthority: 'current_connection_observation',
+    });
+    return { kind: 'applied', profile: updated };
+}
 
 type ResolvedHomeProfileAdoption = Readonly<{
     descriptor: HomeConnectionDescriptorV1 | LegacyManualHomeDescriptor;
@@ -1497,6 +1827,7 @@ type ResolvedHomeProfileAdoption = Readonly<{
     serverIdentityId: string | null;
     state: Required<PersistedServerState>;
     existing: ServerProfile | null;
+    descriptorAdjudication: DescriptorRevisionAdjudication | null;
 }>;
 
 function resolveHomeProfileAdoption(
@@ -1533,12 +1864,46 @@ function resolveHomeProfileAdoption(
         (profile.serverIdentityId && profile.serverIdentityId !== identity)
         || (byIdentity.length === 1 && profile.id !== byIdentity[0]!.id)
     ))) throw new Error('Home identity conflicts with URL');
+    const existing = byIdentity[0] ?? byUrl;
+    const parsedCanonicalDescriptor = HomeConnectionDescriptorV1Schema.safeParse(descriptor);
+    let descriptorAdjudication: DescriptorRevisionAdjudication | null;
+    if (parsedCanonicalDescriptor.success && existing) {
+        if (params.descriptorAuthority === 'advisory') {
+            // Advisory Directory data never retargets an existing Home profile.
+            descriptorAdjudication = 'unchanged';
+        } else if (
+            params.descriptorAuthority === 'redemption_coupled'
+            && existing.descriptorProvenance !== 'advisory-only'
+        ) {
+            // Coupling prevents token/route splicing but is not an independent
+            // Home identity proof. It is idempotent for an established exact
+            // descriptor and can never retarget established routing facts.
+            if (!descriptorSnapshotMatchesProfile(parsedCanonicalDescriptor.data, existing)) {
+                throw new HomeProfileAdoptionConflictError('redemption_authority_conflict');
+            }
+            descriptorAdjudication = 'unchanged';
+        } else if (existing.descriptorProvenance === 'advisory-only') {
+            // Any Home/user authority outranks advisory-authored placeholder facts: a
+            // Directory revision can never block the authority that establishes the Home.
+            descriptorAdjudication = 'apply';
+        } else {
+            // current_connection_observation and the established default retain the
+            // existing revision-adjudicated reconciliation authority.
+            descriptorAdjudication = adjudicateDescriptorRevision(parsedCanonicalDescriptor.data, existing);
+        }
+    } else {
+        descriptorAdjudication = parsedCanonicalDescriptor.success ? 'apply' : null;
+    }
+    if (descriptorAdjudication === 'equal_revision_conflict') {
+        throw new HomeProfileAdoptionConflictError('equal_revision_conflict');
+    }
     return {
         descriptor,
         canonicalServerUrl: url,
         serverIdentityId: identity,
         state,
-        existing: byIdentity[0] ?? byUrl,
+        existing,
+        descriptorAdjudication,
     };
 }
 
@@ -1553,9 +1918,22 @@ export function preflightHomeProfileAdoption(
     const resolved = resolveHomeProfileAdoption(params, {
         persistCanonicalization: false,
     });
+    const existingEstablished = resolved.existing !== null
+        && resolved.existing.descriptorProvenance !== 'advisory-only';
+    const preserveExisting = existingEstablished
+        && (
+            params.descriptorAuthority === 'advisory'
+            || params.descriptorAuthority === 'redemption_coupled'
+        );
+    const existingServerUrl = resolved.existing
+        ? normalizeUrl(resolved.existing.canonicalServerUrl ?? resolved.existing.serverUrl)
+        : resolved.canonicalServerUrl;
     return {
-        canonicalServerUrl: resolved.canonicalServerUrl,
+        canonicalServerUrl: resolved.existing?.descriptorProvenance === 'advisory-only'
+            ? existingServerUrl
+            : (preserveExisting ? existingServerUrl : resolved.canonicalServerUrl),
         serverIdentityId: resolved.serverIdentityId,
+        credentialWrite: preserveExisting ? 'preserveExisting' : 'required',
     };
 }
 
@@ -1566,6 +1944,7 @@ export async function adoptHomeProfile(params: HomeProfileAdoptionParams): Promi
         serverIdentityId: identity,
         state,
         existing,
+        descriptorAdjudication,
     } = resolveHomeProfileAdoption(params);
     const displayNameRaw = ('displayName' in descriptor ? descriptor.displayName : undefined)
         ?? params.suggestedName;
@@ -1608,14 +1987,20 @@ export async function adoptHomeProfile(params: HomeProfileAdoptionParams): Promi
         && descriptor.revision > 0
         ? descriptor.revision
         : undefined;
+    if (descriptorAdjudication === 'unchanged' || descriptorAdjudication === 'stale') {
+        return profile;
+    }
     // Revisioned descriptor snapshots are monotonic at this single writer. Only
     // a strictly newer generation may replace snapshot-owned identity/transport
     // facts; equal is idempotent and lower is stale. Revision-less manual/legacy
     // adoption retains its established classification behavior but has no
     // authority over persisted revisioned transport facts.
     const acceptsDescriptorSnapshot = descriptorRevision === undefined
-        || profile.connectionDescriptorRevision === undefined
-        || descriptorRevision > profile.connectionDescriptorRevision;
+        || descriptorAdjudication === 'apply'
+        || (descriptorAdjudication === null && (
+            profile.connectionDescriptorRevision === undefined
+            || descriptorRevision > profile.connectionDescriptorRevision
+        ));
     const transportFacts = descriptorRevision === undefined || !acceptsDescriptorSnapshot
         ? {}
         : {
@@ -1641,13 +2026,16 @@ export async function adoptHomeProfile(params: HomeProfileAdoptionParams): Promi
                 : {};
     const updated: ServerProfile = {
         ...profile,
-        // Personal Home source is the durable first-run completion classification.
-        // Later QR/Directory/manual descriptor refreshes may update connection facts,
-        // but must not reopen Desktop bootstrap by relabelling the profile.
+        // Adoption source is mutable provenance. Durable managed-Home readiness lives
+        // on the identity-bound completion scalar preserved by the profile itself.
         ...(acceptsDescriptorSnapshot
             ? {
-                source: preserveDurablePersonalHomeClassification([profile], params.source),
-                legacySource: undefined,
+                source: profile.legacySource
+                    ? 'legacy'
+                    : params.preserveProfileSource
+                        ? profile.source
+                        : params.source,
+                legacySource: profile.legacySource,
                 ...(existing ? { serverUrl: url } : {}),
                 ...((!existing || !params.preserveUserLabel) && displayName
                     ? { name: displayName }
@@ -1658,6 +2046,11 @@ export async function adoptHomeProfile(params: HomeProfileAdoptionParams): Promi
             : {}),
         ...publicEndpointFacts,
         ...transportFacts,
+        // Provenance marker: advisory authority minting a fresh placeholder records it;
+        // any establishing authority (created or upgraded) clears it.
+        descriptorProvenance: params.descriptorAuthority === 'advisory'
+            ? (existing ? profile.descriptorProvenance : 'advisory-only')
+            : undefined,
     };
     if (!existing || JSON.stringify(updated) !== JSON.stringify(profile)) {
         const previousSnapshot = getActiveServerSnapshot();
@@ -1676,6 +2069,39 @@ export function getServerProfileById(idRaw: string): ServerProfile | null {
     const id = normalizeServerId(idRaw);
     if (!id) return null;
     return findProfileByServerIdentifier(readPersistedState().servers, id);
+}
+
+/**
+ * Records that this device completed the verified managed Personal Home bootstrap
+ * for one exact adopted Home identity. This is deliberately not inferred from URL
+ * or mutable adoption provenance.
+ */
+export function markServerProfilePersonalHomeBootstrapCompleted(params: Readonly<{
+    profileId: string;
+    serverIdentityId: string;
+}>): ServerProfile {
+    const profileId = normalizeServerId(params.profileId);
+    const serverIdentityId = normalizeServerIdentityId(params.serverIdentityId);
+    if (!profileId || !serverIdentityId) {
+        throw new Error('Personal Home bootstrap completion requires a profile and Home identity');
+    }
+
+    const state = readPersistedState();
+    const profile = findProfileByServerIdentifier(state.servers, profileId);
+    if (!profile || profile.serverIdentityId !== serverIdentityId) {
+        throw new Error('Personal Home bootstrap completion identity does not match the adopted profile');
+    }
+    if (profile.personalHomeBootstrapCompleted === true) return profile;
+
+    const completed: ServerProfile = { ...profile, personalHomeBootstrapCompleted: true };
+    const previousSnapshot = getActiveServerSnapshot();
+    writePersistedState({
+        ...state,
+        servers: { ...state.servers, [completed.id]: completed },
+    });
+    emitServerProfilesChanged();
+    emitActiveServerChanged(previousSnapshot, { force: true });
+    return completed;
 }
 
 /**
@@ -1800,10 +2226,11 @@ function buildUpsertedServerProfile(
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
         lastUsedAt: existing?.lastUsedAt ?? 0,
-        source: preserveDurablePersonalHomeClassification(
+        source: params.source ?? existingEquivalent?.source ?? existing?.source ?? 'manual',
+        ...(personalHomeBootstrapCompletionForIdentity(
             [existingEquivalent, existing].filter((value): value is ServerProfile => value != null),
-            params.source ?? existingEquivalent?.source ?? existing?.source ?? 'manual',
-        ),
+            existingEquivalent?.serverIdentityId ?? existing?.serverIdentityId,
+        ) ? { personalHomeBootstrapCompleted: true as const } : {}),
         ...(existing?.legacySource ? { legacySource: existing.legacySource } : {}),
     };
 
@@ -1846,6 +2273,9 @@ export function setServerProfileIdentityForUrl(serverUrlRaw: string, identityRaw
 
     const state = readPersistedState();
     const existing = findProfileByEquivalentUrl(state.servers, url);
+    if (existing?.serverIdentityId && existing.serverIdentityId !== serverIdentityId) {
+        return null;
+    }
     const hasCompetingIdentityProfile = Object.values(state.servers).some((profile) => (
         profile.id !== existing?.id
         && (
@@ -1862,6 +2292,7 @@ export function setServerProfileIdentityForUrl(serverUrlRaw: string, identityRaw
     const id = existing?.id ?? createUniqueServerId(state.servers, deriveServerIdFromUrl(url), url);
     const now = nowMs();
     const profile: ServerProfile = {
+        ...(existing ?? {}),
         id,
         name: existing?.name ?? defaultServerNameFromUrl(url) ?? id,
         serverUrl: existing?.serverUrl ?? url,

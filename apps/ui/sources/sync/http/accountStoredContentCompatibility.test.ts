@@ -62,7 +62,7 @@ describe('account-stored-content HTTP compatibility headers', () => {
         expect(resolved.headers.get(ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER)).toBe('3');
     });
 
-    it('advertises the default additive V4 declaration to a V3 base server', async () => {
+    it('advertises the default cumulative V4 declaration to a V3 base server', async () => {
         const compatibility = await loadCompatibility();
         compatibility.recordAccountStoredContentServerRequirements({
             serverUrl: 'https://server.example',
@@ -110,7 +110,22 @@ describe('account-stored-content HTTP compatibility headers', () => {
         });
     });
 
-    it('strips an untrusted raw declaration when no compatible server range is known', async () => {
+    it('keeps an explicit V4 operation declaration unavailable before server discovery', async () => {
+        const compatibility = await loadCompatibility();
+
+        expect(compatibility.resolveAccountStoredContentCompatibilityHeaders(
+            undefined,
+            {
+                serverUrl: 'https://unknown.example',
+                declaration: CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
+            },
+        )).toEqual({
+            status: 'unavailable',
+            reason: 'server-requirements-unavailable',
+        });
+    });
+
+    it('replaces an untrusted raw declaration with cumulative V4 before server discovery', async () => {
         const compatibility = await loadCompatibility();
 
         const headers = compatibility.withCurrentAccountStoredContentCompatibilityHeaders(
@@ -118,6 +133,6 @@ describe('account-stored-content HTTP compatibility headers', () => {
             { serverUrl: 'https://unknown.example' },
         );
 
-        expect(headers.has(ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER)).toBe(false);
+        expect(headers.get(ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER)).toBe('4');
     });
 });

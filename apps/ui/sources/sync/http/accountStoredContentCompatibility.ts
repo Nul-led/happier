@@ -86,10 +86,11 @@ export function recordAccountStoredContentServerRequirements(params: Readonly<{
 
 /**
  * Resolves one declared stored-content protocol against the requirements most
- * recently observed for this server. The implicit default advertises optional
- * additive response support, while an explicit declaration remains an
- * operation requirement. A caller cannot select a protocol by supplying a raw
- * header: this is the single header owner.
+ * recently observed for this server. The implicit default advertises the
+ * cumulative current declaration while retaining the base protocol as its
+ * server requirement; an explicit declaration remains an operation
+ * requirement. A caller cannot select a protocol by supplying a raw header:
+ * this is the single header owner.
  */
 export function resolveAccountStoredContentCompatibilityHeaders(
     input?: HeadersInit,
@@ -103,15 +104,23 @@ export function resolveAccountStoredContentCompatibilityHeaders(
     const requirements = serverUrl
         ? serverRequirementsByUrl.get(serverUrl)
         : undefined;
-    if (!requirements) {
-        return { status: 'unavailable', reason: 'server-requirements-unavailable' };
-    }
-
     const hasExplicitDeclaration = params?.declaration !== undefined;
     const declaration = AccountStoredContentCompatibilityDeclarationV1Schema.parse(
         params?.declaration
         ?? CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION,
     );
+    const declarationHeaders =
+        buildAccountStoredContentCompatibilityHttpHeadersV1(declaration);
+    if (!requirements) {
+        if (hasExplicitDeclaration) {
+            return { status: 'unavailable', reason: 'server-requirements-unavailable' };
+        }
+        for (const [name, value] of Object.entries(declarationHeaders)) {
+            headers.set(name, value);
+        }
+        return { status: 'available', declaration, headers };
+    }
+
     const requiredServerProtocolVersion = hasExplicitDeclaration
         ? declaration.protocolVersion
         : CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION;
@@ -121,10 +130,6 @@ export function resolveAccountStoredContentCompatibilityHeaders(
     if (requirements.minimumProtocolVersion > declaration.protocolVersion) {
         return { status: 'unavailable', reason: 'client-protocol-too-old' };
     }
-    const declarationHeaders =
-        buildAccountStoredContentCompatibilityHttpHeadersV1(
-            declaration,
-        );
     for (const [name, value] of Object.entries(declarationHeaders)) {
         headers.set(name, value);
     }

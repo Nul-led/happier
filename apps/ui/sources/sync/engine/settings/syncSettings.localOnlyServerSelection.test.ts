@@ -68,8 +68,7 @@ function createBaseMockSettings(): Record<string, unknown> {
         },
         sessionHandoffDefaultsV1: {
             v: 1,
-            workspaceTransferEnabled: true,
-            conflictPolicy: 'create_sibling_copy',
+            workspaceSyncMode: 'keep_synced',
             includeIgnoredMode: 'exclude',
             ignoredIncludeGlobs: [],
             directTargetMode: 'keep_direct',

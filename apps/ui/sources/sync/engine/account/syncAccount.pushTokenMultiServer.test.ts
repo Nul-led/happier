@@ -159,7 +159,7 @@ describe('registerPushTokenIfAvailable (multi-server)', () => {
         });
     });
 
-    it('reads each Home setting explicitly and skips only the disabled Home', async () => {
+    it('uses current local consent for the focused Home and explicit settings for other Homes', async () => {
         vi.mocked(Notifications.getPermissionsAsync).mockResolvedValue({ status: PermissionStatus.GRANTED, expires: 'never', granted: true, canAskAgain: false } as never);
         vi.mocked(Notifications.getExpoPushTokenAsync).mockResolvedValue({ type: 'expo', data: 'ExponentPushToken[scoped]' } as never);
         const { upsertServerProfile, setActiveServerId } = serverProfiles;
@@ -177,20 +177,23 @@ describe('registerPushTokenIfAvailable (multi-server)', () => {
             log: { log: vi.fn() },
             getHomeAccountSettings: async (home) => {
                 reads.push(home.serverUrl);
-                return home.serverUrl.includes('home-b')
-                    ? { attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } } }
-                    : {};
+                return {};
             },
+            getAccountSettings: () => ({
+                attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } },
+            }),
         });
 
-        expect(reads.sort()).toEqual(['https://home-a.example.test', 'https://home-b.example.test']);
+        // The focused settings write is local-first and may still be pending its
+        // debounced server flush. A stale live read must not override that intent.
+        expect(reads).toEqual(['https://home-b.example.test']);
         const mutationCalls = runtimeFetchWithServerReachabilityMock.mock.calls
             .filter(([request]) => request.init?.method === 'POST' || request.init?.method === 'DELETE')
             .map(([request]) => ({ method: request.init?.method, url: String(request.url) }))
             .sort((left, right) => left.url.localeCompare(right.url));
         expect(mutationCalls).toEqual([
-            { method: 'POST', url: 'https://home-a.example.test/v1/push-tokens' },
-            { method: 'DELETE', url: 'https://home-b.example.test/v1/push-tokens/ExponentPushToken%5Bscoped%5D' },
+            { method: 'DELETE', url: 'https://home-a.example.test/v1/push-tokens/ExponentPushToken%5Bscoped%5D' },
+            { method: 'POST', url: 'https://home-b.example.test/v1/push-tokens' },
         ]);
     });
 

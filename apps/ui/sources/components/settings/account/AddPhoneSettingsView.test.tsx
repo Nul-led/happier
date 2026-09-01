@@ -75,6 +75,8 @@ vi.mock('@/platform/digest', () => ({
     digest: vi.fn(async () => new Uint8Array(32).fill(1)),
 }));
 
+let activeServerUrl = 'https://stack.example.test';
+let descriptorOverride: import('@happier-dev/protocol').HomeConnectionDescriptorV1 | null = null;
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getActiveServerUrl: () => activeServerUrl,
     getServerProfileById: () => ({
@@ -88,6 +90,7 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
         serverUrl: string;
         serverIdentityId?: string;
     }) => {
+        if (descriptorOverride) return descriptorOverride;
         const canonicalServerUrl = profile.canonicalServerUrl ?? profile.serverUrl;
         const homeServerIdentityId = profile.serverIdentityId;
         if (!homeServerIdentityId || !canonicalServerUrl.startsWith('https://')) return null;
@@ -101,7 +104,6 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     },
 }));
 
-let activeServerUrl = 'https://stack.example.test';
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => ({
         serverId: 'profile-test',
@@ -166,6 +168,7 @@ describe('AddPhoneSettingsView', () => {
         pairingConsumeResponse = { ok: true, status: 200, json: async () => ({ success: true }) };
         serverFetchSpy.mockClear();
         tokenStorageMocks.getCredentialsForServerUrl.mockClear();
+        descriptorOverride = null;
     });
     afterEach(() => {
         clipboardMocks.setStringAsync.mockClear();
@@ -211,11 +214,14 @@ describe('AddPhoneSettingsView', () => {
         const screen = await renderScreen(<AddPhoneSettingsView />);
         await flushHookEffects({ cycles: 1 });
 
-        const qrContainer = screen.findByTestId('add-phone-qr');
-        expect(qrContainer?.findAllByType('QRCode') ?? []).toHaveLength(0);
+        expect(screen.findAllByTestId('add-phone-qr')).toHaveLength(0);
+        expect(screen.findByTestId('add-phone-expired')).toBeTruthy();
 
         const textContent = screen.getTextContent();
         expect(textContent).toContain('connect.pairingQrExpired');
+        expect(textContent).toContain('stack.example.test');
+        expect(screen.findByTestId('add-phone-generate')).toBeTruthy();
+        expect(screen.findByTestId('add-phone-generate')?.props.disabled).toBe(false);
     });
 
     it('does not show a sign-in prompt when the feature is disabled', async () => {
@@ -272,6 +278,7 @@ describe('AddPhoneSettingsView', () => {
             await showLinkButton!.props.action();
         });
         expect(screen.findByTestId('add-phone-pairing-link')).toBeTruthy();
+        expect(screen.getTextContent()).toContain('connect.pairingLinkSecurityWarning');
         const copyLinkButton = screen.findByTestId('add-phone-copy-link');
         expect(copyLinkButton).toBeTruthy();
         await act(async () => {
@@ -285,7 +292,7 @@ describe('AddPhoneSettingsView', () => {
         expect(screen.findByTestId('add-phone-pairing-link-copy-feedback')).toBeTruthy();
     });
 
-    it('approves the captured Home with its target-scoped credential after focus changes', async () => {
+    it('automatically completes the captured Home once with no code or direct-QR decision UI', async () => {
         featureState = 'enabled';
         activeServerUrl = 'https://stack.example.test';
         const requestedPublicKey = new Uint8Array(32).fill(9);
@@ -321,17 +328,17 @@ describe('AddPhoneSettingsView', () => {
         const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
-        await flushHookEffects({ cycles: 2 });
-        expect(screen.findByTestId('add-phone-request-confirm-code')?.props.children).toMatch(/^\d{3} \d{3}$/u);
-        expect(screen.getTextContent()).toContain('connect.confirmCodeComparisonBody');
-        expect(screen.getTextContent()).toContain('connect.expiresAtLabel');
+        await flushHookEffects({ cycles: 4 });
+
+        expect(screen.findByTestId('add-phone-request-confirm-code')).toBeNull();
+        expect(screen.findByTestId('add-phone-approve')).toBeNull();
+        expect(screen.findByTestId('add-phone-reject')).toBeNull();
+        expect(screen.findByTestId('add-phone-complete')).toBeTruthy();
         expect(screen.getTextContent()).toContain('stack.example.test');
-        await flushHookEffects({ cycles: 1 });
-        const approveButton = screen.findByTestId('add-phone-approve');
-        expect(approveButton).toBeTruthy();
-        await act(async () => {
-            await approveButton!.props.action();
-        });
+        expect(screen.getTextContent()).toContain('connect.requestingDeviceLabel');
+        expect(screen.getTextContent()).toContain('Phone');
+        expect(screen.getTextContent()).not.toContain('connect.homeAddedPreservedFocusBody');
+        expect(screen.getTextContent()).not.toContain('common.unavailable');
 
         expect(tokenStorageMocks.getCredentialsForServerUrl).toHaveBeenCalledWith(
             'https://stack.example.test',
@@ -355,152 +362,108 @@ describe('AddPhoneSettingsView', () => {
             (await import('@/encryption/base64')).decodeBase64(approvalBody.response),
         )).toEqual({ type: 'tokenOnly' });
         expect(serverFetchSpy.mock.calls.some((call) => call[0] === '/v1/auth/pairing/consume')).toBe(false);
+        expect(serverFetchSpy.mock.calls.filter((call) => call[0] === '/v1/auth/account/response')).toHaveLength(1);
+        expect(serverFetchSpy.mock.calls.filter((call) => call[0] === '/v1/auth/pairing/start')).toHaveLength(1);
     });
 
-    it('rejects a direct-QR request through the existing pairing finalization route without issuing credentials', async () => {
+    it('shows one create-new-QR recovery after a terminal completion failure', async () => {
         featureState = 'enabled';
         activeServerUrl = 'https://stack.example.test';
         const requestedPublicKey = new Uint8Array(32).fill(9);
         const expiresAt = pairingExpiresAt;
-        const expiresAtMs = Date.parse(expiresAt);
         const { computeHomeQrBindingProofV2 } = await import('@happier-dev/protocol');
         const { encodeBase64 } = await import('@/encryption/base64');
         pairingStatusResponse = {
             ok: true,
             status: 200,
             json: async () => ({
-                state: 'requested',
-                pairId: 'pair_123',
-                expiresAt,
-                requestedPublicKey: encodeBase64(requestedPublicKey),
-                requestedDeviceLabel: 'Phone',
+                state: 'requested', pairId: 'pair_123', expiresAt,
+                requestedPublicKey: encodeBase64(requestedPublicKey), requestedDeviceLabel: null,
                 homeServerIdentityId: 'srv_test',
                 bindingProof: computeHomeQrBindingProofV2({
-                    qrSecret: new Uint8Array(32).fill(7),
-                    pairId: 'pair_123',
-                    homeServerIdentityId: 'srv_test',
-                    requesterPublicKey: requestedPublicKey,
-                    expiresAtMs,
+                    qrSecret: new Uint8Array(32).fill(7), pairId: 'pair_123',
+                    homeServerIdentityId: 'srv_test', requesterPublicKey: requestedPublicKey,
+                    expiresAtMs: Date.parse(expiresAt),
                 }),
             }),
         } as any;
+        accountApprovalResponse = new Response(null, { status: 403 });
         const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
-
         const screen = await renderScreen(<AddPhoneSettingsView />);
-        await flushHookEffects({ cycles: 2 });
-        const rejectButton = screen.findByTestId('add-phone-reject');
-        expect(rejectButton).toBeTruthy();
-        expect(screen.findByTestId('add-phone-generate')?.props.disabled).toBe(true);
-        await act(async () => {
-            await rejectButton!.props.action();
-        });
+        await flushHookEffects({ cycles: 4 });
 
-        expect(serverFetchSpy.mock.calls.some((call) => call[0] === '/v1/auth/account/response')).toBe(false);
-        const rejectionCall = serverFetchSpy.mock.calls.find((call) => call[0] === '/v1/auth/pairing/consume');
-        expect(JSON.parse(String(rejectionCall?.[1]?.body))).toEqual({ pairId: 'pair_123', intent: 'reject' });
-        expect(rejectionCall?.[2]?.requestContext).toMatchObject({
-            endpointUrl: 'https://stack.example.test',
-            serverId: 'profile-test',
-        });
-        expect(rejectionCall?.[2]?.requestContext?.credentials).not.toBeNull();
+        expect(screen.findByTestId('add-phone-invalid-request')).toBeTruthy();
+        expect(screen.findAllByTestId('add-phone-generate')).toHaveLength(1);
+        expect(screen.findByTestId('add-phone-generate')?.props.disabled).toBe(false);
+        expect(screen.findByTestId('add-phone-approve')).toBeNull();
+        expect(screen.findByTestId('add-phone-reject')).toBeNull();
     });
 
-    it('surfaces an approval-won reject conflict without presenting rejection as successful', async () => {
+    it('omits only the QR image and keeps the exact link behind disclosure when the invite exceeds QR capacity', async () => {
         featureState = 'enabled';
         activeServerUrl = 'https://stack.example.test';
-        const requestedPublicKey = new Uint8Array(32).fill(9);
-        const expiresAt = pairingExpiresAt;
-        const expiresAtMs = Date.parse(expiresAt);
-        const { computeHomeQrBindingProofV2 } = await import('@happier-dev/protocol');
-        const { encodeBase64 } = await import('@/encryption/base64');
+        const longRelayUrls = Array.from({ length: 4 }, (_, index) =>
+            `https://relay-${index}.example.test/${'a'.repeat(470)}`,
+        );
+        descriptorOverride = {
+            v: 1,
+            homeServerIdentityId: 'srv_test',
+            canonicalServerUrl: 'https://stack.example.test',
+            revision: 1,
+            endpoints: [
+                {
+                    kind: 'iroh',
+                    endpointId: 'a'.repeat(64),
+                    relayUrls: longRelayUrls,
+                    directAddresses: ['192.0.2.10:443', '192.0.2.11:443'],
+                },
+                { kind: 'https', url: 'https://stack.example.test' },
+            ],
+        };
         pairingStatusResponse = {
             ok: true,
             status: 200,
-            json: async () => ({
-                state: 'requested',
-                pairId: 'pair_123',
-                expiresAt,
-                requestedPublicKey: encodeBase64(requestedPublicKey),
-                requestedDeviceLabel: 'Phone',
-                homeServerIdentityId: 'srv_test',
-                bindingProof: computeHomeQrBindingProofV2({
-                    qrSecret: new Uint8Array(32).fill(7),
-                    pairId: 'pair_123',
-                    homeServerIdentityId: 'srv_test',
-                    requesterPublicKey: requestedPublicKey,
-                    expiresAtMs,
-                }),
-            }),
-        } as any;
-        pairingConsumeResponse = {
-            ok: false,
-            status: 409,
-            json: async () => ({ error: 'already_decided' }),
+            json: async () => ({ state: 'pending', pairId: 'pair_123', expiresAt: pairingExpiresAt }),
         } as any;
         const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
 
         const screen = await renderScreen(<AddPhoneSettingsView />);
         await flushHookEffects({ cycles: 2 });
-        const rejectButton = screen.findByTestId('add-phone-reject');
-        expect(rejectButton).toBeTruthy();
+
+        // Only the QR image is unavailable; the pairing stays live and the
+        // oversized descriptor reaches the invite unchanged.
+        expect(screen.findByTestId('add-phone-qr')?.findAllByType('QRCode')).toHaveLength(0);
+        const textContent = screen.getTextContent();
+        expect(textContent).toContain('connect.pairingQrTooLargeTitle');
+        expect(textContent).toContain('connect.pairingQrTooLargeBody');
+        expect(screen.findByTestId('add-phone-invalid-request')).toBeNull();
+        expect(screen.findByTestId('add-phone-cancel')).toBeTruthy();
+        expect(textContent).toContain('stack.example.test');
+
+        // The exact secret-bearing link stays behind the existing warning/disclosure.
+        expect(screen.findAllByTestId('add-phone-pairing-link')).toHaveLength(0);
+        const showLinkButton = screen.findByTestId('add-phone-show-link');
+        expect(showLinkButton).toBeTruthy();
         await act(async () => {
-            await rejectButton!.props.action();
+            await showLinkButton!.props.action();
         });
-
-        const rejectionCall = serverFetchSpy.mock.calls.find((call) => call[0] === '/v1/auth/pairing/consume');
-        expect(JSON.parse(String(rejectionCall?.[1]?.body))).toEqual({ pairId: 'pair_123', intent: 'reject' });
-        expect(modalMocks.alertAsync).toHaveBeenCalledWith('common.error', 'errors.operationFailed');
-    });
-
-    it('keeps the captured pairing target stable by disabling QR replacement during a decision', async () => {
-        featureState = 'enabled';
-        activeServerUrl = 'https://stack.example.test';
-        const requestedPublicKey = new Uint8Array(32).fill(9);
-        const expiresAt = pairingExpiresAt;
-        const expiresAtMs = Date.parse(expiresAt);
-        const { computeHomeQrBindingProofV2 } = await import('@happier-dev/protocol');
-        const { encodeBase64 } = await import('@/encryption/base64');
-        pairingStatusResponse = {
-            ok: true,
-            status: 200,
-            json: async () => ({
-                state: 'requested',
-                pairId: 'pair_123',
-                expiresAt,
-                requestedPublicKey: encodeBase64(requestedPublicKey),
-                requestedDeviceLabel: 'Phone',
-                homeServerIdentityId: 'srv_test',
-                bindingProof: computeHomeQrBindingProofV2({
-                    qrSecret: new Uint8Array(32).fill(7),
-                    pairId: 'pair_123',
-                    homeServerIdentityId: 'srv_test',
-                    requesterPublicKey: requestedPublicKey,
-                    expiresAtMs,
-                }),
-            }),
-        } as any;
-        let resolveConsume!: (response: any) => void;
-        pairingConsumeResponse = new Promise((resolve) => {
-            resolveConsume = resolve;
-        });
-        const { AddPhoneSettingsView } = await import('./AddPhoneSettingsView');
-
-        const screen = await renderScreen(<AddPhoneSettingsView />);
-        await flushHookEffects({ cycles: 2 });
-        let rejection!: Promise<void>;
-        const rejectButton = screen.findByTestId('add-phone-reject');
-        expect(rejectButton).toBeTruthy();
+        expect(screen.getTextContent()).toContain('connect.pairingLinkSecurityWarning');
+        const copyLinkButton = screen.findByTestId('add-phone-copy-link');
+        expect(copyLinkButton).toBeTruthy();
         await act(async () => {
-            rejection = rejectButton!.props.action();
-            await Promise.resolve();
+            await copyLinkButton!.props.action();
         });
+        expect(clipboardMocks.setStringAsync).toHaveBeenCalledTimes(1);
+        const { parseHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
+        expect(parseHomeQrInviteDeepLink(String(clipboardMocks.setStringAsync.mock.calls[0]?.[0]))?.invite.home)
+            .toEqual(descriptorOverride);
 
-        expect(screen.findByTestId('add-phone-generate')?.props.disabled).toBe(true);
-
-        resolveConsume({ ok: true, status: 200, json: async () => ({ success: true }) });
+        // The live pairing can still be cancelled through the strict decision.
         await act(async () => {
-            await rejection;
+            await screen.findByTestId('add-phone-cancel')!.props.action();
         });
+        const cancellationCall = serverFetchSpy.mock.calls.find((call) => call[0] === '/v1/auth/pairing/consume');
+        expect(JSON.parse(String(cancellationCall?.[1]?.body))).toEqual({ pairId: 'pair_123', intent: 'cancel' });
     });
 
     it('cancels a pending invite through the strict cancellation decision and does not create a successor invite', async () => {

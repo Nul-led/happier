@@ -3,15 +3,12 @@ import { useUnistyles } from 'react-native-unistyles';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { Switch } from '@/components/ui/forms/Switch';
 import { resolveServerProfileScopeId, type ServerProfile } from '@/sync/domains/server/serverProfiles';
 import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import { t } from '@/text';
 import { Icon } from '@/components/ui/icons/Icon';
 
 type ServerGroupsSectionProps = Readonly<{
-    groupSelectionEnabled: boolean;
-    setGroupSelectionEnabled: (value: boolean) => void;
     groupSelectionPresentation: 'grouped' | 'flat-with-badge';
     activeServerGroupId: string | null;
     selectedGroupServerIds: ReadonlySet<string>;
@@ -22,20 +19,13 @@ type ServerGroupsSectionProps = Readonly<{
 
 export function ServerGroupsSection(props: ServerGroupsSectionProps) {
     const { theme } = useUnistyles();
+    if (!props.activeServerGroupId) return null;
 
     return (
         <ItemGroup
             title={t('server.multiServerView.title')}
             footer={t('server.multiServerView.footer')}
         >
-            <Item
-                title={t('server.multiServerView.enableTitle')}
-                subtitle={t('server.multiServerView.enableSubtitle')}
-                icon={<Icon name="stack-simple" size={29} color={theme.colors.text.secondary} />}
-                rightElement={<Switch value={Boolean(props.groupSelectionEnabled)} onValueChange={props.setGroupSelectionEnabled} />}
-                showChevron={false}
-                onPress={() => props.setGroupSelectionEnabled(!props.groupSelectionEnabled)}
-            />
             <Item
                 title={t('server.multiServerView.presentationTitle')}
                 subtitle={
@@ -48,13 +38,13 @@ export function ServerGroupsSection(props: ServerGroupsSectionProps) {
                 showChevron={false}
                 onPress={props.onToggleGroupPresentation}
             />
-            {props.groupSelectionEnabled && props.activeServerGroupId
-                ? props.servers.map((profile) => {
+            {props.servers.map((profile) => {
                     const scopeId = resolveServerProfileScopeId(profile);
                     const selected = props.selectedGroupServerIds.has(scopeId);
                     return (
                         <Item
                             key={`multi-server-${profile.id}`}
+                            testID={`server-group-member-${profile.id}`}
                             title={profile.name}
                             subtitle={toServerUrlDisplay(profile.serverUrl)}
                             icon={<Icon name="hard-drives" size={29} color={theme.colors.text.secondary} />}
@@ -65,12 +55,14 @@ export function ServerGroupsSection(props: ServerGroupsSectionProps) {
                                     color={selected ? theme.colors.status.connected : theme.colors.text.secondary}
                                 />
                             )}
+                            accessibilityRole="checkbox"
+                            webRole="checkbox"
+                            selected={selected}
                             showChevron={false}
                             onPress={() => props.onToggleGroupServer(scopeId)}
                         />
                     );
-                })
-                : null}
+            })}
         </ItemGroup>
     );
 }

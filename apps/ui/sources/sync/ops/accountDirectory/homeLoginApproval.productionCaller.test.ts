@@ -5,7 +5,9 @@ import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { decryptBox, encryptBox } from '@/encryption/libsodium';
 import { HomeLoginRedemptionResultV1Schema } from '@happier-dev/protocol';
 
-const setCredentialsForServerUrlMock = vi.hoisted(() => vi.fn(async () => true));
+const setCredentialsForServerUrlMock = vi.hoisted(() => vi.fn<
+    (...args: unknown[]) => Promise<{ rollback: () => Promise<void> }>
+>(async () => ({ rollback: async () => {} })));
 const endpointFetchMock = vi.hoisted(() => vi.fn());
 vi.mock('@/sync/http/client', () => ({
     createServerFetchAtEndpoint: vi.fn(() => endpointFetchMock),
@@ -17,7 +19,7 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
         ...actual,
         TokenStorage: {
             ...actual.TokenStorage,
-            setCredentialsForServerUrl: (...args: unknown[]) => setCredentialsForServerUrlMock(...args),
+            setCredentialsForServerUrlWithRollback: (...args: unknown[]) => setCredentialsForServerUrlMock(...args),
         },
     };
 });
@@ -33,7 +35,7 @@ describe('Directory enrollment production composition', () => {
         if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
         else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
         setCredentialsForServerUrlMock.mockClear();
-        setCredentialsForServerUrlMock.mockResolvedValue(true);
+        setCredentialsForServerUrlMock.mockResolvedValue({ rollback: async () => {} });
         endpointFetchMock.mockReset();
         vi.resetModules();
     });
@@ -88,14 +90,19 @@ describe('Directory enrollment production composition', () => {
                 };
             }),
         };
+        const coupledPayload = {
+            v: 1 as const,
+            credentials: { token: 'home-b-token' },
+            connectionDescriptor: home.connectionDescriptor,
+        };
         const sealedTokenBase64Url = encodeBase64(
-            encryptBox(new TextEncoder().encode(JSON.stringify({ token: 'home-b-token' })), keyPair.publicKey),
+            encryptBox(new TextEncoder().encode(JSON.stringify(coupledPayload)), keyPair.publicKey),
             'base64url',
         );
         expect(new TextDecoder().decode(decryptBox(
             decodeBase64(sealedTokenBase64Url, 'base64url'),
             keyPair.privateKey,
-        )!)).toBe('{"token":"home-b-token"}');
+        )!)).toBe(JSON.stringify(coupledPayload));
         const authorized = HomeLoginRedemptionResultV1Schema.parse({
             v: 1,
             homeServerIdentityId: 'srv_home_b',
@@ -133,6 +140,7 @@ describe('Directory enrollment production composition', () => {
         })).toEqual({
             canonicalServerUrl: 'https://home-b.test',
             serverIdentityId: 'srv_home_b',
+            credentialWrite: 'required',
         });
         setCredentialsForServerUrlMock.mockImplementationOnce(async () => {
             expect(profiles.listServerProfiles()).toEqual(expect.arrayContaining([
@@ -145,7 +153,7 @@ describe('Directory enrollment production composition', () => {
                 serverId: activeBefore.serverId,
                 serverUrl: activeBefore.serverUrl,
             });
-            return true;
+            return { rollback: async () => {} };
         });
 
         await expect(refreshAccountHomeDirectory(session)).resolves.toMatchObject({ status: 'ready' });
@@ -170,6 +178,13 @@ describe('Directory enrollment production composition', () => {
             { serverId: 'srv_home_b' },
             { token: 'home-b-token' },
         );
+        expect(profiles.listServerProfiles()).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                serverIdentityId: 'srv_home_b',
+                name: 'Home B',
+                canonicalServerUrl: 'https://home-b.test',
+            }),
+        ]));
         expect(profiles.getActiveServerSnapshot()).toMatchObject({
             serverId: activeBefore.serverId,
             serverUrl: activeBefore.serverUrl,

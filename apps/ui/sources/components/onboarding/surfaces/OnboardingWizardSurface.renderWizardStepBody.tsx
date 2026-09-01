@@ -118,6 +118,7 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
     onOpenLostAccess: () => void;
     onOpenSecretKeyLogin: () => void;
     onRestoreBackToAuth: () => void;
+    onRestoreNavigationLockChange: (locked: boolean) => void;
     initialPairingLink: string | null;
     onLostAccessBackToAuth: () => void;
 
@@ -355,6 +356,7 @@ export function renderOnboardingWizardStepBody(params: Readonly<{
                     onBack={params.onRestoreBackToAuth}
                     onOpenSecretKeyLogin={params.onOpenSecretKeyLogin}
                     initialPairingLink={params.initialPairingLink}
+                    onNavigationLockChange={params.onRestoreNavigationLockChange}
                 />
             </View>
         );

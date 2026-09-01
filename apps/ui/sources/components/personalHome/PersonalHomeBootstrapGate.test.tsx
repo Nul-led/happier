@@ -66,6 +66,7 @@ describe('PersonalHomeBootstrapGate', () => {
         const homeReadyFacts: PersonalHomeFacts = {
             ...facts,
             relayRuntime: {
+                relayUrl: 'http://127.0.0.1:3005',
                 installed: true,
                 healthy: true,
                 serviceActive: true,
@@ -137,6 +138,7 @@ describe('PersonalHomeBootstrapGate', () => {
         const verifiedUnadopted: PersonalHomeFacts = {
             ...facts,
             relayRuntime: {
+                relayUrl: 'http://127.0.0.1:3005',
                 installed: true,
                 healthy: true,
                 serviceActive: true,
@@ -149,6 +151,10 @@ describe('PersonalHomeBootstrapGate', () => {
             localHomeAuth: 'present',
             anonymousSignup: 'disabled',
             completedPersonalHomeProfile: null,
+            candidateLocalProfile: {
+                id: 'p1', name: 'Personal Home', serverUrl: 'http://127.0.0.1:3005',
+                serverIdentityId: 'srv_home_b', createdAt: 1, updatedAt: 1, lastUsedAt: 1,
+            },
             daemon: null,
         };
         const adoptedProfile = {
@@ -160,7 +166,7 @@ describe('PersonalHomeBootstrapGate', () => {
         const readFacts = vi.fn(async (): Promise<PersonalHomeFacts> => adopted
             ? { ...verifiedUnadopted, completedPersonalHomeProfile: adoptedProfile }
             : verifiedUnadopted);
-        const connectApp = vi.fn(async () => {
+        const ensureHomeReady = vi.fn(async () => {
             if (failFirst) throw new Error('profile store unavailable');
             adopted = true;
         });
@@ -169,7 +175,7 @@ describe('PersonalHomeBootstrapGate', () => {
                 isDesktopHost
                 isDesktopMainWindow
                 readFacts={readFacts}
-                operations={{ 'connect-app': connectApp }}
+                operations={{ 'ensure-home-ready': ensureHomeReady }}
             >
                 <View testID="normal-shell" />
             </PersonalHomeBootstrapGate>,
@@ -188,8 +194,8 @@ describe('PersonalHomeBootstrapGate', () => {
         await screen.pressByTestIdAsync('personal-home-recovery-retry');
         await flushHookEffects({ cycles: 6, turns: 3 });
 
-        // The retry runs the same canonical connect-app operation, which completes adoption.
-        expect(connectApp).toHaveBeenCalledTimes(2);
+        // The retry runs the same canonical ensure-home-ready operation, which completes adoption.
+        expect(ensureHomeReady).toHaveBeenCalledTimes(2);
         expect(screen.findByTestId('personal-home-recovery-strip')).toBeNull();
         expect(screen.findByTestId('normal-shell')).not.toBeNull();
     });

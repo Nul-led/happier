@@ -83,6 +83,7 @@ export function PersonalHomeBootstrapGate(props: PersonalHomeBootstrapGateProps)
                     <PersonalHomeRecoveryStrip
                         kind={controller.facts?.completedPersonalHomeProfile ? 'computer' : 'profile'}
                         activeTask={controller.facts?.activeTask ?? null}
+                        detail={controller.snapshot.detail}
                         onOpenDetails={props.onOpenDetails}
                         onRetry={controller.retry}
                     />

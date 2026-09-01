@@ -14,14 +14,16 @@ import {
 } from '@happier-dev/protocol';
 
 const endpointFetchMock = vi.hoisted(() => vi.fn());
-const createServerFetchAtEndpointMock = vi.hoisted(() => vi.fn(() => endpointFetchMock));
+const createServerFetchAtEndpointMock = vi.hoisted(() => vi.fn<
+    (input: unknown) => typeof endpointFetchMock
+>(() => endpointFetchMock));
 const irohReleaseMock = vi.hoisted(() => vi.fn(async () => {}));
 const acquireIrohHomeRuntimeOriginMock = vi.hoisted(() => vi.fn<(input: unknown) => Promise<unknown>>(async () => {
     throw new Error('native unavailable');
 }));
 
 vi.mock('@/sync/http/client', () => ({
-    createServerFetchAtEndpoint: (...args: unknown[]) => createServerFetchAtEndpointMock(...args),
+    createServerFetchAtEndpoint: (input: unknown) => createServerFetchAtEndpointMock(input),
     serverFetch: vi.fn(),
 }));
 
@@ -29,10 +31,12 @@ vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
     acquireIrohHomeRuntimeOrigin: (input: unknown) => acquireIrohHomeRuntimeOriginMock(input),
 }));
 
-const setCredentialsForServerUrlMock = vi.hoisted(() => vi.fn(async () => ({
-    rollback: vi.fn(async () => {}),
-})));
-const getCredentialsForServerUrlMock = vi.hoisted(() => vi.fn(async () => ({ token: 'home-a-full-credential' })));
+const setCredentialsForServerUrlMock = vi.hoisted(() => vi.fn<
+    (...args: unknown[]) => Promise<false | { rollback: () => Promise<void> }>
+>(async () => ({ rollback: async () => {} })));
+const getCredentialsForServerUrlMock = vi.hoisted(() => vi.fn<
+    (...args: unknown[]) => Promise<{ token: string }>
+>(async () => ({ token: 'home-a-full-credential' })));
 
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/auth/storage/tokenStorage')>();
@@ -46,15 +50,27 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     };
 });
 
-const adoptHomeProfileMock = vi.hoisted(() => vi.fn(async () => ({
+const adoptHomeProfileMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<{
+    id: string;
+    serverUrl: string;
+    serverIdentityId: string;
+}>>(async () => ({
     id: 'profile-b',
     serverUrl: 'https://home-b.test',
     serverIdentityId: 'srv_home_b',
 })));
-const preflightHomeProfileAdoptionMock = vi.hoisted(() => vi.fn(() => ({
-    canonicalServerUrl: 'https://home-b.test',
-    serverIdentityId: 'srv_home_b',
-})));
+const preflightHomeProfileAdoptionMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => {
+    canonicalServerUrl: string;
+    serverIdentityId: string;
+}>((...args: unknown[]) => {
+    const adoption = (args[0] ?? {}) as {
+        descriptor?: { canonicalServerUrl?: string; homeServerIdentityId?: string };
+    };
+    return {
+        canonicalServerUrl: adoption.descriptor?.canonicalServerUrl ?? 'https://home-b.test',
+        serverIdentityId: adoption.descriptor?.homeServerIdentityId ?? 'srv_home_b',
+    };
+}));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     adoptHomeProfile: (...args: unknown[]) => adoptHomeProfileMock(...args),
@@ -80,9 +96,21 @@ function json(status: number, payload: unknown): Response {
     });
 }
 
-function sealCredentials(token: string, recipientPublicKey: Uint8Array): string {
+function sealCredentialPayload(
+    token: string,
+    recipientPublicKey: Uint8Array,
+    connectionDescriptor = HOME_B.connectionDescriptor,
+): string {
+    const payload = {
+        v: 1,
+        credentials: { token },
+        connectionDescriptor,
+    };
     return encodeBase64(
-        encryptBox(new TextEncoder().encode(JSON.stringify({ token })), recipientPublicKey),
+        encryptBox(
+            new TextEncoder().encode(JSON.stringify(payload)),
+            recipientPublicKey,
+        ),
         'base64url',
     );
 }
@@ -98,7 +126,9 @@ function sealLegacyCredentialPayload(payload: unknown, recipientPublicKey: Uint8
 }
 
 const HOME_B: AccountDirectoryHomeEntryV1 = {
+    v: 1,
     homeServerIdentityId: 'srv_home_b',
+    canonicalServerUrl: 'https://home-b.test',
     label: 'Home B',
     preferred: false,
     connectionDescriptor: {
@@ -108,6 +138,8 @@ const HOME_B: AccountDirectoryHomeEntryV1 = {
         revision: 1,
         endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
     },
+    createdAtMs: 1_700_000_000_000,
+    updatedAtMs: 1_700_000_000_001,
 };
 
 const ASSERTION: HomeLoginAssertionV1 = {
@@ -139,6 +171,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         adoptHomeProfileMock.mockClear();
         preflightHomeProfileAdoptionMock.mockClear();
         directoryCredentialStorageMock.get.mockClear();
+        directoryCredentialStorageMock.remove.mockClear();
         irohReleaseMock.mockClear();
         acquireIrohHomeRuntimeOriginMock.mockReset();
         acquireIrohHomeRuntimeOriginMock.mockRejectedValue(new Error('native unavailable'));
@@ -146,7 +179,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
 
     it('preserves the same assertion and approval id in an explicit resume operation', async () => {
         const keyPair = sodium.crypto_box_keypair();
-        const sealedToken = sealCredentials('home-b-session-token', keyPair.publicKey);
+        const sealedToken = sealCredentialPayload('home-b-session-token', keyPair.publicKey);
         endpointFetchMock
             .mockResolvedValueOnce(json(202, {
                 v: 1,
@@ -183,8 +216,10 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         expect(firstBody.assertion).toEqual(secondBody.assertion);
         expect(secondBody.approvalId).toBe('approval-1');
         expect(adoptHomeProfileMock).toHaveBeenCalledWith(expect.objectContaining({
+            descriptor: HOME_B.connectionDescriptor,
             source: 'account-directory',
             preserveUserLabel: true,
+            descriptorAuthority: 'redemption_coupled',
         }));
         expect(setCredentialsForServerUrlMock).toHaveBeenCalledWith(
             'https://home-b.test',
@@ -193,9 +228,100 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         );
     });
 
+    it('uses the Home-coupled descriptor after redeeming through a different advisory route', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        const advisoryHome = {
+            ...HOME_B,
+            canonicalServerUrl: 'https://directory-advisory-route.test',
+            connectionDescriptor: {
+                ...HOME_B.connectionDescriptor,
+                canonicalServerUrl: 'https://directory-advisory-route.test',
+                revision: 99,
+                endpoints: [{ kind: 'https' as const, url: 'https://directory-advisory-route.test' }],
+            },
+        };
+        const homeSelectedDescriptor = {
+            ...HOME_B.connectionDescriptor,
+            canonicalServerUrl: 'https://home-selected-route.test',
+            revision: 7,
+            endpoints: [{ kind: 'https' as const, url: 'https://home-selected-route.test' }],
+        };
+        endpointFetchMock.mockResolvedValueOnce(json(200, {
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            sealedHomeTokenBase64Url: sealCredentialPayload(
+                'home-selected-token',
+                keyPair.publicKey,
+                homeSelectedDescriptor,
+            ),
+            issuedAtMs: Date.now() - 500,
+            expiresAtMs: Date.now() + 120_000,
+        }));
+
+        await expect(continueHomeLoginEnrollment({
+            home: advisoryHome,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+        })).resolves.toEqual({ kind: 'enrolled', homeServerIdentityId: 'srv_home_b' });
+
+        expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith(expect.objectContaining({
+            endpointUrl: 'https://directory-advisory-route.test',
+        }));
+        expect(preflightHomeProfileAdoptionMock).toHaveBeenCalledWith(expect.objectContaining({
+            descriptor: homeSelectedDescriptor,
+            descriptorAuthority: 'redemption_coupled',
+        }));
+        expect(setCredentialsForServerUrlMock).toHaveBeenCalledWith(
+            'https://home-selected-route.test',
+            { serverId: 'srv_home_b' },
+            { token: 'home-selected-token' },
+        );
+        expect(adoptHomeProfileMock).toHaveBeenCalledWith(expect.objectContaining({
+            descriptor: homeSelectedDescriptor,
+            descriptorAuthority: 'redemption_coupled',
+        }));
+    });
+
+    it('keeps a Home approval continuation resumable after its initiating screen unmounts', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        let initiatingScreenCancelled = false;
+        endpointFetchMock
+            .mockResolvedValueOnce(json(202, {
+                v: 1,
+                outcome: 'approval_required',
+                homeServerIdentityId: 'srv_home_b',
+                approvalId: 'approval-screen-transition',
+                deviceLabel: null,
+                expiresAtMs: Date.now() + 60_000,
+            }))
+            .mockResolvedValueOnce(json(200, {
+                v: 1,
+                homeServerIdentityId: 'srv_home_b',
+                sealedHomeTokenBase64Url: sealCredentialPayload('home-b-screen-transition-token', keyPair.publicKey),
+                issuedAtMs: Date.now() - 500,
+                expiresAtMs: Date.now() + 120_000,
+            }));
+
+        const pending = await continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+            shouldCancel: () => initiatingScreenCancelled,
+        });
+        expect(pending.kind).toBe('approval_required');
+        if (pending.kind !== 'approval_required') return;
+
+        initiatingScreenCancelled = true;
+        await expect(pending.resume()).resolves.toEqual({
+            kind: 'enrolled',
+            homeServerIdentityId: 'srv_home_b',
+        });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(2);
+    });
+
     it('closes each pure-Iroh redemption transport and reacquires one for approval resume', async () => {
         const keyPair = sodium.crypto_box_keypair();
-        const sealedToken = sealCredentials('home-b-iroh-token', keyPair.publicKey);
+        const sealedToken = sealCredentialPayload('home-b-iroh-token', keyPair.publicKey);
         acquireIrohHomeRuntimeOriginMock.mockResolvedValue({
             leaseId: 'lease-home-b',
             runtimeOrigin: 'http://127.0.0.1:45991',
@@ -247,6 +373,47 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         });
         expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(2);
         expect(irohReleaseMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('releases a transport acquired after the enrollment attempt was cancelled', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        let cancelled = false;
+        const acquisition = {
+            finish: null as ((lease: {
+                leaseId: string;
+                runtimeOrigin: string;
+                release: typeof irohReleaseMock;
+            }) => void) | null,
+        };
+        acquireIrohHomeRuntimeOriginMock.mockImplementationOnce(async () => await new Promise((resolve) => {
+            acquisition.finish = resolve;
+        }));
+
+        const resultPromise = continueHomeLoginEnrollment({
+            home: {
+                ...HOME_B,
+                connectionDescriptor: {
+                    ...HOME_B.connectionDescriptor,
+                    canonicalServerUrl: 'http://localhost:3010',
+                    endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+                },
+            },
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+            shouldCancel: () => cancelled,
+        });
+
+        await vi.waitFor(() => expect(acquisition.finish).not.toBeNull());
+        cancelled = true;
+        acquisition.finish?.({
+            leaseId: 'lease-cancelled-after-acquire',
+            runtimeOrigin: 'http://127.0.0.1:45991',
+            release: irohReleaseMock,
+        });
+
+        await expect(resultPromise).resolves.toEqual({ kind: 'cancelled' });
+        expect(irohReleaseMock).toHaveBeenCalledTimes(1);
+        expect(endpointFetchMock).not.toHaveBeenCalled();
     });
 
     it('releases a retained pure-Iroh approval lease when the continuation is cancelled', async () => {
@@ -323,7 +490,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         endpointFetchMock.mockResolvedValueOnce(json(200, {
             v: 1,
             homeServerIdentityId: 'srv_home_b',
-            sealedHomeTokenBase64Url: sealCredentials('home-b-session-token', keyPair.publicKey),
+            sealedHomeTokenBase64Url: sealCredentialPayload('home-b-session-token', keyPair.publicKey),
             issuedAtMs: Date.now() - 500,
             expiresAtMs: Date.now() + 120_000,
         }));
@@ -337,6 +504,35 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
 
         expect(result).toEqual({ kind: 'failed' });
         expect(adoptHomeProfileMock).not.toHaveBeenCalled();
+    });
+
+    it('preserves target and rollback uncertainty for a partial credential/adoption commit', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        endpointFetchMock.mockResolvedValueOnce(json(200, {
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            sealedHomeTokenBase64Url: sealCredentialPayload('partially-stored-token', keyPair.publicKey),
+            issuedAtMs: Date.now() - 500,
+            expiresAtMs: Date.now() + 120_000,
+        }));
+        adoptHomeProfileMock.mockRejectedValueOnce(new Error('profile adoption failed'));
+        setCredentialsForServerUrlMock.mockResolvedValueOnce({
+            rollback: async () => false,
+        } as never);
+
+        const result = await continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+        });
+
+        expect(result).toEqual({
+            kind: 'partial_commit',
+            homeServerIdentityId: 'srv_home_b',
+            canonicalServerUrl: 'https://home-b.test',
+            rollbackOutcome: { kind: 'not_applied', reason: 'ownership_changed' },
+        });
+        expect(result).not.toEqual({ kind: 'failed' });
     });
 
     it('never sends Account Service credentials and never stores a token while approval is still pending', async () => {
@@ -373,7 +569,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         endpointFetchMock.mockResolvedValueOnce(json(200, {
             v: 1,
             homeServerIdentityId: 'srv_home_other',
-            sealedHomeTokenBase64Url: sealCredentials('other-home-token', keyPair.publicKey),
+            sealedHomeTokenBase64Url: sealCredentialPayload('other-home-token', keyPair.publicKey),
             issuedAtMs: Date.now() - 500,
             expiresAtMs: Date.now() + 120_000,
         }));
@@ -396,7 +592,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         endpointFetchMock.mockResolvedValueOnce(json(200, {
             v: 1,
             homeServerIdentityId: 'srv_home_b',
-            sealedHomeTokenBase64Url: sealCredentials('token-for-someone-else', otherKey.publicKey),
+            sealedHomeTokenBase64Url: sealCredentialPayload('token-for-someone-else', otherKey.publicKey),
             issuedAtMs: Date.now() - 500,
             expiresAtMs: Date.now() + 120_000,
         }));
@@ -447,7 +643,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             .mockResolvedValueOnce(json(200, {
                 v: 1,
                 homeServerIdentityId: 'srv_home_b',
-                sealedHomeTokenBase64Url: sealCredentials('home-b-after-retry', keyPair.publicKey),
+                sealedHomeTokenBase64Url: sealCredentialPayload('home-b-after-retry', keyPair.publicKey),
                 issuedAtMs: Date.now() - 500,
                 expiresAtMs: Date.now() + 120_000,
             }));
@@ -496,7 +692,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             .mockResolvedValueOnce(json(200, {
                 v: 1,
                 homeServerIdentityId: 'srv_home_b',
-                sealedHomeTokenBase64Url: sealCredentials('must-not-be-consumed', keyPair.publicKey),
+                sealedHomeTokenBase64Url: sealCredentialPayload('must-not-be-consumed', keyPair.publicKey),
                 issuedAtMs: Date.now() - 500,
                 expiresAtMs: Date.now() + 120_000,
             }));
@@ -514,6 +710,29 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         expect(adoptHomeProfileMock).not.toHaveBeenCalled();
     });
 
+    it.each([
+        ['approval_expired', 'expired'],
+        ['approval_invalid', 'failed'],
+    ] as const)('maps terminal %s without retry or credential mutation', async (error, kind) => {
+        const keyPair = sodium.crypto_box_keypair();
+        endpointFetchMock
+            .mockResolvedValueOnce(json(401, { error }))
+            .mockResolvedValueOnce(json(200, { unexpected: true }));
+
+        const result = await continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+            approvalId: 'approval-terminal',
+        });
+
+        expect(result).toEqual({ kind });
+        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+        expect(adoptHomeProfileMock).not.toHaveBeenCalled();
+        expect(directoryCredentialStorageMock.remove).not.toHaveBeenCalled();
+    });
+
     it('does not classify an arbitrary error containing expired as protocol expiry', async () => {
         const keyPair = sodium.crypto_box_keypair();
         endpointFetchMock.mockResolvedValueOnce(json(401, { error: 'attacker_controlled_expired' }));
@@ -524,14 +743,14 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             assertion: ASSERTION,
         });
 
-        expect(result).toEqual({ kind: 'rejected' });
+        expect(result).toEqual({ kind: 'failed' });
         expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
         expect(adoptHomeProfileMock).not.toHaveBeenCalled();
     });
 
     it('resumes a preferred-directory enrollment that returned approval_required', async () => {
         const keyPair = sodium.crypto_box_keypair();
-        const sealedToken = sealCredentials('home-b-resumed-token', keyPair.publicKey);
+        const sealedToken = sealCredentialPayload('home-b-resumed-token', keyPair.publicKey);
         vi.spyOn(sodium, 'crypto_box_keypair').mockReturnValueOnce(keyPair);
 
         // Assertion request against the Account Service endpoint.
@@ -547,17 +766,19 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         }));
 
         const sessionSnapshot = {
+            serviceKey: 'https://directory.test\u0000srv_dir_1',
+            supportsHomeEnrollment: true,
             snapshot: {
                 endpoint: 'https://directory.test',
                 status: 'ready' as const,
-                account: null,
                 homes: [HOME_B],
                 preferredHomeServerIdentityId: 'srv_home_b',
                 refreshedAtMs: Date.now(),
                 error: null,
+                reconciliation: { kind: 'not_run' },
             },
             requestLoginAssertion: async (homeServerIdentityId: string, clientBoxPublicKeyBase64: string) => (
-                await createAccountDirectoryClient({ endpoint: 'https://directory.test' }).requestLoginAssertion(
+                await createAccountDirectoryClient({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }).requestLoginAssertion(
                     homeServerIdentityId,
                     { clientBoxPublicKeyBase64 },
                 )
@@ -669,7 +890,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             .mockResolvedValueOnce(json(200, {
                 v: 1,
                 homeServerIdentityId: 'srv_home_b',
-                sealedHomeTokenBase64Url: sealCredentials('home-b-after-transport-retry', keyPair.publicKey),
+                sealedHomeTokenBase64Url: sealCredentialPayload('home-b-after-transport-retry', keyPair.publicKey),
                 issuedAtMs: Date.now() - 500,
                 expiresAtMs: Date.now() + 120_000,
             }));
@@ -735,6 +956,31 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
     });
 
+    it('fails closed on a legacy credential wrapper with zero credential write or profile mutation', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        endpointFetchMock.mockResolvedValueOnce(json(200, {
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            sealedHomeTokenBase64Url: sealLegacyCredentialPayload(
+                { credentials: { token: 'legacy-wrapped-token' } },
+                keyPair.publicKey,
+            ),
+            issuedAtMs: Date.now() - 500,
+            expiresAtMs: Date.now() + 120_000,
+        }));
+
+        const result = await continueHomeLoginEnrollment({
+            home: HOME_B,
+            clientSecretKey: keyPair.privateKey,
+            assertion: ASSERTION,
+        });
+
+        expect(result).toEqual({ kind: 'failed' });
+        expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
+        expect(adoptHomeProfileMock).not.toHaveBeenCalled();
+        expect(preflightHomeProfileAdoptionMock).not.toHaveBeenCalled();
+    });
+
     it('rejects an unbound legacy credential envelope before persistence', async () => {
         const keyPair = sodium.crypto_box_keypair();
         endpointFetchMock.mockResolvedValueOnce(json(200, {
@@ -761,11 +1007,20 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
 
     it.each([
         ['data-key credentials', {
-            token: 'forged-home-token',
-            encryption: { publicKey: 'forged-public-key', machineKey: 'forged-machine-key' },
+            v: 1,
+            credentials: {
+                token: 'forged-home-token',
+                encryption: { publicKey: 'forged-public-key', machineKey: 'forged-machine-key' },
+            },
+            connectionDescriptor: HOME_B.connectionDescriptor,
         }],
-        ['an unknown field', { token: 'forged-home-token', futureAuthority: true }],
-    ])('rejects sealed %s at the token-only redemption boundary', async (_label, payload) => {
+        ['an unknown field', {
+            v: 1,
+            credentials: { token: 'forged-home-token' },
+            connectionDescriptor: HOME_B.connectionDescriptor,
+            futureAuthority: true,
+        }],
+    ])('rejects sealed %s at the coupled redemption boundary', async (_label, payload) => {
         const keyPair = sodium.crypto_box_keypair();
         endpointFetchMock.mockResolvedValueOnce(json(200, {
             v: 1,
@@ -810,7 +1065,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         expect(setCredentialsForServerUrlMock).not.toHaveBeenCalled();
     });
 
-    it('fails closed when decrypted token-only credential plaintext exceeds the protocol bound', async () => {
+    it('fails closed when decrypted credential plaintext exceeds the protocol bound', async () => {
         const keyPair = sodium.crypto_box_keypair();
         endpointFetchMock.mockResolvedValueOnce(json(200, {
             v: 1,

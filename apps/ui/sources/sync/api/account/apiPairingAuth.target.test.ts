@@ -161,7 +161,7 @@ describe('pairing auth client explicit target', () => {
         });
     });
 
-    it('reports malformed start/status JSON as an http_error outcome instead of throwing', async () => {
+    it('distinguishes malformed status JSON from a transient Home HTTP failure', async () => {
         const malformed = new Response('not-json{', {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -177,7 +177,7 @@ describe('pairing auth client explicit target', () => {
         });
         await expect(pairingStatus({ pairId: 'pair-x' }, await target('https://home-a.test', 'profile-a'))).resolves.toEqual({
             ok: false,
-            reason: 'http_error',
+            reason: 'invalid_response',
             status: 502,
         });
     });

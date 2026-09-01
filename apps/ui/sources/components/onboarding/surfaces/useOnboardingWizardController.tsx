@@ -96,6 +96,7 @@ export type OnboardingWizardController = Readonly<{
     contentTransitionDirection: StepTransitionDirection;
     showBack: boolean;
     showSkip: boolean | undefined;
+    navigationLocked: boolean;
     onBack: (() => void) | null;
     onSkip: (() => Promise<void> | void) | null;
     onPrimary: (() => Promise<void> | void) | null;
@@ -275,6 +276,10 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
     }, [dispatch]);
 
     const stepId = state.currentStepId;
+    const [restoreNavigationLocked, setRestoreNavigationLocked] = React.useState(false);
+    React.useEffect(() => {
+        if (stepId !== 'auth_restore') setRestoreNavigationLocked(false);
+    }, [stepId]);
     const {
         activePrimaryOverride,
         activeBackOverride,
@@ -1170,11 +1175,11 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         activeSkipOverride,
     ]);
 
-    const skipDisabled = activeSkipOverride?.disabled ?? (
+    const skipDisabled = restoreNavigationLocked || (activeSkipOverride?.disabled ?? (
         showSkip && stepId === 'welcome'
             ? primaryDisabled
             : false
-    );
+    ));
 
     const onPrimary =
         activePrimaryOverride
@@ -1400,6 +1405,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
             dispatch({ type: 'wizard/setParsedScanPayload', parsedScanPayload: null });
             dispatch({ type: 'wizard/back' });
         },
+        onRestoreNavigationLockChange: setRestoreNavigationLocked,
         onLostAccessBackToAuth: () => dispatch({ type: 'wizard/back' }),
         onHostRelayLocalAdvance: () => dispatch({ type: 'wizard/goToStep', stepId: 'relay_access' }),
         onRelayAccessAdvance: handleRelayAccessAdvance,
@@ -1417,6 +1423,7 @@ export function useOnboardingWizardController(props: OnboardingWizardSurfaceProp
         contentTransitionDirection,
         showBack: Boolean(resolvedOnBack),
         showSkip: activeSkipOverride ? !activeSkipOverride.hidden : undefined,
+        navigationLocked: restoreNavigationLocked,
         onBack: resolvedOnBack,
         onSkip: onSkip ?? null,
         onPrimary: onPrimary ?? null,

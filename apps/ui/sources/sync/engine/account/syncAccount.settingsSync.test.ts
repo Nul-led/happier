@@ -4,6 +4,13 @@ import { profileDefaults } from '@/sync/domains/profiles/profile';
 import { createAccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 import { sealAccountScopedBlobCiphertext } from '@happier-dev/protocol';
 
+const pushAccessMocks = vi.hoisted(() => ({
+    readPushPermission: vi.fn(async () => ({
+        ok: true as const,
+        permission: { granted: false, status: 'denied' as const, canAskAgain: true },
+    })),
+}));
+
 vi.mock('expo-constants', () => ({
     default: {},
 }));
@@ -12,6 +19,16 @@ vi.mock('expo-notifications', () => ({
     getPermissionsAsync: vi.fn(),
     requestPermissionsAsync: vi.fn(),
     getExpoPushTokenAsync: vi.fn(),
+}));
+
+vi.mock('@/config', () => ({
+    config: { enableDevPushTokenRegistration: true },
+}));
+
+vi.mock('@/activity/notifications/permission/pushNotificationAccess', () => ({
+    readPushPermission: pushAccessMocks.readPushPermission,
+    readExpoPushToken: vi.fn(),
+    subscribeExpoPushTokenChanges: vi.fn(async () => null),
 }));
 
 vi.mock('@/sync/encryption/secretSettings', async (importOriginal) => {
@@ -36,6 +53,7 @@ const settingsState: { current: Record<string, unknown> } = {
 
 describe('handleUpdateAccountSocketUpdate settings merge', () => {
     beforeEach(() => {
+        pushAccessMocks.readPushPermission.mockClear();
         settingsState.current = {
             lastUsedAgent: 'codex',
             serverSelectionGroups: [
@@ -44,6 +62,43 @@ describe('handleUpdateAccountSocketUpdate settings merge', () => {
             serverSelectionActiveTargetKind: 'group',
             serverSelectionActiveTargetId: 'grp-dev',
         };
+    });
+
+    it('schedules the canonical device reconciliation when a socket update changes Expo push consent', async () => {
+        const {
+            handleUpdateAccountSocketUpdate,
+            startPushTokenReconciliation,
+            stopPushTokenReconciliation,
+        } = await import('./syncAccount');
+        settingsState.current = {
+            attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } },
+        };
+
+        startPushTokenReconciliation();
+        try {
+            await handleUpdateAccountSocketUpdate({
+                accountUpdate: {
+                    settingsV2: {
+                        content: {
+                            t: 'plain',
+                            v: { attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: true } } } },
+                        },
+                        version: 4,
+                    },
+                },
+                updateCreatedAt: 123,
+                currentProfile: { ...profileDefaults },
+                encryption: null,
+                applyProfile: vi.fn(),
+                applySettings: vi.fn(),
+                getLocalSettings: () => settingsState.current,
+                log: { log: vi.fn() },
+            });
+
+            await vi.waitFor(() => expect(pushAccessMocks.readPushPermission).toHaveBeenCalledTimes(1));
+        } finally {
+            stopPushTokenReconciliation();
+        }
     });
 
     it('preserves local server-selection keys when applying account socket settings updates', async () => {

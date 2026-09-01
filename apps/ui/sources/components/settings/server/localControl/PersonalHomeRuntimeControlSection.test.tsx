@@ -77,6 +77,10 @@ vi.mock('@/components/ui/lists/Item', () => ({
     },
 }));
 
+vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => ({
+    DropdownMenu: (props: Record<string, unknown>) => React.createElement('DropdownMenu', props),
+}));
+
 vi.mock('@/components/ui/text/Text', () => ({
     Text: (props: Record<string, unknown> & { children?: React.ReactNode }) =>
         React.createElement('Text', props, props.children),
@@ -104,7 +108,9 @@ function createScriptedRunnerHarness() {
             async subscribe(taskId, listenerSet) {
                 listeners.set(taskId, listenerSet);
                 if (taskId.endsWith('relay.runtime.status.v1')) {
-                    listenerSet.onResult({ protocolVersion: 1, taskId, ok: true, data: { installed: true, version: '1', relayUrl: 'http://127.0.0.1:43123', healthy: true, purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' }, anonymousSignupEnabled: false, service: { active: true, enabled: true } } });
+                    queueMicrotask(() => {
+                        listenerSet.onResult({ protocolVersion: 1, taskId, ok: true, data: { installed: true, dataPresent: true, version: '1', relayUrl: 'http://127.0.0.1:43123', healthy: true, purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' }, anonymousSignupEnabled: false, service: { active: true, enabled: true } } });
+                    });
                 }
                 return () => {
                     listeners.delete(taskId);
@@ -137,7 +143,24 @@ function createScriptedRunnerHarness() {
             type: 'prompt',
             stepId: 'personal_home.confirm_erase',
             message: 'Confirm permanent deletion of these Personal Home paths.',
-            data: { kind: 'personal_home.confirm_erase.v1', paths, estimatedBytes },
+            data: {
+                kind: 'personal_home.confirm_erase.v1',
+                canonicalServerUrl: 'http://127.0.0.1:43123',
+                homeServerIdentityId: 'home-identity-1',
+                paths,
+                estimatedBytes,
+            },
+        });
+    }
+    function emitRelocationPrompt(taskId: string, kind: string, data: Record<string, unknown>): void {
+        listeners.get(taskId)?.onEvent({
+            protocolVersion: 1,
+            taskId,
+            tsMs: startedTaskIds.length * 10,
+            type: 'prompt',
+            stepId: 'personal_home.relocation',
+            message: 'Publish relocation destination.',
+            data: { kind, ...data },
         });
     }
     function specByKind(kind: string): ScriptedSpec | undefined {
@@ -146,7 +169,7 @@ function createScriptedRunnerHarness() {
     function taskIdByKind(kind: string): string | undefined {
         return startedTaskIds.find((taskId) => taskId.endsWith(kind));
     }
-    return { runner, startedSpecs, startedTaskIds, startMock, respondMock, resolveResult, emitProgress, emitErasePrompt, specByKind, taskIdByKind };
+    return { runner, startedSpecs, startedTaskIds, startMock, respondMock, resolveResult, emitProgress, emitErasePrompt, emitRelocationPrompt, specByKind, taskIdByKind };
 }
 
 const INSPECT_RESULT_DATA = {
@@ -191,7 +214,10 @@ const BACKUP_RESULT_DATA = {
     },
 };
 
-async function resolveInitialInspectionWith(harness: ReturnType<typeof createScriptedRunnerHarness>, inspection: typeof INSPECT_RESULT_DATA): Promise<void> {
+async function resolveInitialInspectionWith(
+    harness: ReturnType<typeof createScriptedRunnerHarness>,
+    inspection: typeof INSPECT_RESULT_DATA & Record<string, unknown>,
+): Promise<void> {
     const taskId = harness.taskIdByKind('relay.runtime.personal_home.inspect.v1');
     if (!taskId) throw new Error('inspect task was not started');
     await renderer.act(async () => {
@@ -222,6 +248,12 @@ function promptRef() {
     return prompt;
 }
 
+function alertRef() {
+    const alert = modalMockRef.current?.spies.alert;
+    if (!alert) throw new Error('modal mock was not installed');
+    return alert;
+}
+
 async function resolveInitialInspection(harness: ReturnType<typeof createScriptedRunnerHarness>): Promise<void> {
     const taskId = harness.taskIdByKind('relay.runtime.personal_home.inspect.v1');
     if (!taskId) throw new Error('inspect task was not started');
@@ -240,12 +272,16 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
         confirmRef().mockResolvedValue(false);
         promptRef().mockReset();
         promptRef().mockResolvedValue(null);
+        alertRef().mockReset();
     });
 
     it('composes the canonical runtime owner once and presents inspect facts from the inspect task', async () => {
         const harness = createScriptedRunnerHarness();
         const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
-        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
+        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, {
+            runner: harness.runner,
+            homeLabel: 'My Personal Home',
+        }));
 
         // Exactly one status task for the composed runtime owner (not one per section).
         expect(harness.startedSpecs.filter((spec) => spec.kind === 'relay.runtime.status.v1')).toHaveLength(1);
@@ -258,7 +294,10 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
             harness.resolveResult(inspectTaskId!, true, INSPECT_RESULT_DATA);
         });
 
-        expect(screen.findByTestId('settings.personalHomeRuntime.identity')?.props.subtitle).toBe('home-identity-1');
+        expect(screen.findByTestId('settings.personalHomeRuntime.home')?.props.subtitle).toBe('My Personal Home');
+        expect(screen.findByTestId('settings.personalHomeRuntime.home')?.props.subtitle).not.toContain('home-identity-1');
+        await screen.pressByTestIdAsync('settings.personalHomeRuntime.homeDetails');
+        expect(alertRef().mock.calls.at(-1)?.[1]).toContain('home-identity-1');
         expect(screen.findByTestId('settings.personalHomeRuntime.storage')?.props.subtitle).toBe('4.8 MB');
         expect(screen.findByTestId('settings.personalHomeRuntime.backupsCount')?.props.title).toBe('Backup archives');
         expect(screen.findByTestId('settings.personalHomeRuntime.backupsCount')?.props.subtitle).toBe('2');
@@ -277,39 +316,27 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
 
         const groups = screen.findAllByType('Group' as any);
         expect(groups.map((group) => group.props.title)).toEqual([
-            'settings.localRelayRuntime.title',
-            'Overview',
-            'Backups',
-            'Storage & Relocation',
-            'Remove Personal Home',
+            'Personal Home',
+            'Protection',
+            'Advanced',
+            'Delete Home Data',
         ]);
     });
 
-    it('declining the plaintext backup disclosure starts no task', async () => {
+    it('starts Back Up Now immediately in the canonical directory without a modal or path prompt', async () => {
         const harness = createScriptedRunnerHarness();
         const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
         const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
 
         await screen.pressByTestIdAsync('settings.personalHomeRuntime.backup');
 
-        expect(confirmRef().mock.calls.length).toBeGreaterThan(0);
+        expect(confirmRef()).not.toHaveBeenCalled();
         expect(promptRef()).not.toHaveBeenCalled();
-        expect(harness.startedSpecs.every((spec) => spec.kind !== 'relay.runtime.personal_home.backup.v1')).toBe(true);
-    });
-
-    it('accepting the disclosure starts the exact backup kind through the shared runner and consumes the verified result', async () => {
-        const harness = createScriptedRunnerHarness();
-        const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
-        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
-
-        confirmRef().mockResolvedValue(true);
-        promptRef().mockResolvedValue('');
-
-        await screen.pressByTestIdAsync('settings.personalHomeRuntime.backup');
-
         const backupSpec = harness.specByKind('relay.runtime.personal_home.backup.v1');
         expect(backupSpec?.params).toEqual({
             target: { kind: 'local' },
+            channel: 'stable',
+            mode: 'user',
             purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
         });
 
@@ -319,38 +346,37 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
 
         const backupResult = screen.findByTestId('settings.personalHomeRuntime.backupResult');
         if (!backupResult) throw new Error('backup result was not rendered');
-        expect(String(backupResult.props.subtitle)).toContain('/tmp/home-backup.tar');
+        expect(String(backupResult.props.subtitle)).not.toContain('/tmp/home-backup.tar');
+        expect(String(backupResult.props.subtitle)).not.toContain('home-identity-1');
         expect(String(backupResult.props.subtitle)).toContain('8.0 KB');
+        expect(String(backupResult.props.subtitle)).not.toContain('T00:00:00.000Z');
+
+        await screen.pressByTestIdAsync('settings.personalHomeRuntime.backupResultDetails');
+        expect(alertRef().mock.calls.at(-1)?.[1]).toContain('/tmp/home-backup.tar');
+        expect(alertRef().mock.calls.at(-1)?.[1]).toContain('home-identity-1');
     });
 
-    it('cancelling the backup destination prompt starts no backup task', async () => {
+    it('keeps Export Backup separate and passes only the native picker destination to the same owner', async () => {
         const harness = createScriptedRunnerHarness();
+        const selectBackupExportDestination = vi.fn(async () => ' /tmp/chosen.tar ');
         const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
-        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
+        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, {
+            runner: harness.runner,
+            operations: { selectBackupExportDestination },
+        }));
 
-        confirmRef().mockResolvedValue(true);
-        promptRef().mockResolvedValue(null);
+        await screen.pressByTestIdAsync('settings.personalHomeRuntime.exportBackup');
 
-        await screen.pressByTestIdAsync('settings.personalHomeRuntime.backup');
-
-        expect(harness.startedSpecs.every((spec) => spec.kind !== 'relay.runtime.personal_home.backup.v1')).toBe(true);
-    });
-
-    it('passes an optional chosen output path as the only caller-owned backup fact', async () => {
-        const harness = createScriptedRunnerHarness();
-        const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
-        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
-
-        confirmRef().mockResolvedValue(true);
-        promptRef().mockResolvedValue(' /tmp/chosen.tar ');
-
-        await screen.pressByTestIdAsync('settings.personalHomeRuntime.backup');
-
+        expect(selectBackupExportDestination).toHaveBeenCalledTimes(1);
+        expect(confirmRef()).not.toHaveBeenCalled();
+        expect(promptRef()).not.toHaveBeenCalled();
         const backupSpec = harness.specByKind('relay.runtime.personal_home.backup.v1');
         expect(backupSpec?.params.purpose).toEqual({ kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' });
         expect(backupSpec?.params.outputPath).toBe('/tmp/chosen.tar');
         // No transfer/publication callbacks, purpose, or env ride along with the operation spec.
         expect(Object.keys(backupSpec?.params ?? {}).sort()).toEqual([
+            'channel',
+            'mode',
             'outputPath',
             'purpose',
             'target',
@@ -360,9 +386,12 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
     it('verifies and starts restore on the first explicitly confirmed attempt', async () => {
         const harness = createScriptedRunnerHarness();
         const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
-        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
-
-        promptRef().mockResolvedValue('/a.tar');
+        const selectBackupArchive = vi.fn(async () => '/a.tar');
+        const revealBackupOutput = vi.fn(async () => {});
+        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, {
+            runner: harness.runner,
+            operations: { selectBackupArchive, revealBackupOutput },
+        }));
         confirmRef().mockResolvedValue(true);
 
         await screen.pressByTestIdAsync('settings.personalHomeRuntime.restore');
@@ -371,9 +400,20 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
             harness.resolveResult(harness.startedTaskIds.at(-1)!, true, VERIFY_RESULT_DATA);
         });
 
+        const verificationRow = screen.findByTestId('settings.personalHomeRuntime.verifyResult');
+        expect(String(verificationRow?.props.subtitle)).not.toContain('/a.tar');
+        expect(String(verificationRow?.props.subtitle)).not.toContain('home-identity-1');
+        await screen.pressByTestIdAsync('settings.personalHomeRuntime.verifyResultDetails');
+        expect(alertRef().mock.calls.at(-1)?.[1]).toContain('/a.tar');
+        expect(alertRef().mock.calls.at(-1)?.[1]).toContain('home-identity-1');
+
         const verifySpec = harness.specByKind('relay.runtime.personal_home.verify_backup.v1');
+        expect(selectBackupArchive).toHaveBeenCalledTimes(1);
+        expect(promptRef()).not.toHaveBeenCalled();
         expect(verifySpec?.params).toEqual({
             target: { kind: 'local' },
+            channel: 'stable',
+            mode: 'user',
             purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
             archivePath: '/a.tar',
         });
@@ -381,6 +421,8 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
         const restoreSpec = harness.specByKind('relay.runtime.personal_home.restore.v1');
         expect(restoreSpec?.params).toEqual({
             target: { kind: 'local' },
+            channel: 'stable',
+            mode: 'user',
             purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
             archivePath: '/a.tar',
             confirmOverwrite: true,
@@ -389,12 +431,40 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
         expect(kinds.indexOf('relay.runtime.personal_home.verify_backup.v1')).toBeLessThan(kinds.indexOf('relay.runtime.personal_home.restore.v1'));
 
         await renderer.act(async () => {
-            harness.resolveResult(harness.taskIdByKind('relay.runtime.personal_home.restore.v1')!, true, { outcome: 'restored' });
+            harness.resolveResult(harness.taskIdByKind('relay.runtime.personal_home.restore.v1')!, true, {
+                outcome: 'restored',
+                rollbackPaths: ['/private/restore/rollback-home'],
+                recoveryArchive: {
+                    path: '/backups/personal-home-pre-restore.tar',
+                    sha256: 'recovery-sha256',
+                    archiveBytes: 16384,
+                    manifest: {
+                        format: 'happier-personal-home-backup',
+                        version: 1,
+                        createdAt: '2026-01-02T00:00:00.000Z',
+                        homeServerIdentityId: 'home-identity-1',
+                        entries: [],
+                    },
+                },
+            });
         });
         expect(screen.findByTestId('settings.personalHomeRuntime.restoreResult')?.props.subtitle).toBe('Home restored');
+        const recoveryBackup = screen.findByTestId('settings.personalHomeRuntime.restoreRecoveryBackup');
+        expect(recoveryBackup?.props.subtitle).toContain('16.0 KB');
+        expect(recoveryBackup?.props.subtitle).not.toContain('home-identity-1');
+        expect(recoveryBackup?.props.subtitle).not.toContain('/backups/personal-home-pre-restore.tar');
+        expect(recoveryBackup?.props.subtitle).not.toContain('recovery-sha256');
+        expect(screen.findByTestId('settings.personalHomeRuntime.restoreResult')?.props.subtitle).not.toContain('/private/restore/rollback-home');
+
+        await screen.pressByTestIdAsync('settings.personalHomeRuntime.restoreRecoveryBackupDetails');
+        expect(alertRef().mock.calls.at(-1)?.[1]).toContain('/backups/personal-home-pre-restore.tar');
+        expect(alertRef().mock.calls.at(-1)?.[1]).toContain('recovery-sha256');
+
+        await screen.pressByTestIdAsync('settings.personalHomeRuntime.restoreRecoveryBackupReveal');
+        expect(revealBackupOutput).toHaveBeenCalledWith('/backups/personal-home-pre-restore.tar');
     });
 
-    it('shows completed restore rollback and finalization as distinct confirmed actions', async () => {
+    it('keeps completed-restore recovery controls until automatic post-auth finalization is proven', async () => {
         const harness = createScriptedRunnerHarness();
         const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
         const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
@@ -406,14 +476,13 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
         expect(screen.findByTestId('settings.personalHomeRuntime.recoverRestore')).toBeTruthy();
         expect(screen.findByTestId('settings.personalHomeRuntime.finalizeRestore')).toBeTruthy();
 
-        confirmRef().mockResolvedValueOnce(true);
+        await screen.pressByTestIdAsync('settings.personalHomeRuntime.recoverRestore');
+        expect(confirmRef().mock.calls.at(-1)?.[1]).not.toContain('/data/home');
+        expect(confirmRef().mock.calls.at(-1)?.[1]).not.toContain('/data/home.rollback');
+
         await screen.pressByTestIdAsync('settings.personalHomeRuntime.finalizeRestore');
-        expect(confirmRef().mock.calls.at(-1)?.[1]).toContain('/data/home.rollback');
-        expect(harness.specByKind('relay.runtime.personal_home.restore.v1')?.params).toEqual({
-            target: { kind: 'local' },
-            purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
-            action: 'finalize',
-        });
+        expect(confirmRef().mock.calls.at(-1)?.[1]).not.toContain('/data/home');
+        expect(confirmRef().mock.calls.at(-1)?.[1]).not.toContain('/data/home.rollback');
     });
 
     it('starts erase first, confirms its exact owner-held paths through Modal, and responds through the shared runner', async () => {
@@ -421,28 +490,30 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
         const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
         const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
         await screen.pressByTestIdAsync('settings.personalHomeRuntime.eraseData');
-        expect(confirmRef().mock.calls[0]?.[0]).toContain('Back up');
         const declinedTaskId = harness.taskIdByKind('relay.runtime.personal_home.erase.v1')!;
         await renderer.act(async () => {
             harness.emitErasePrompt(declinedTaskId, ['/locked/current.sqlite'], 8192);
         });
         await renderer.act(async () => {});
+        expect(confirmRef().mock.calls.at(-1)?.[1]).toContain('http://127.0.0.1:43123');
+        expect(confirmRef().mock.calls.at(-1)?.[1]).toContain('home-identity-1');
         expect(confirmRef().mock.calls.at(-1)?.[1]).toContain('/locked/current.sqlite');
         expect(confirmRef().mock.calls.at(-1)?.[1]).toContain('8.0 KB');
+        expect(confirmRef()).toHaveBeenCalledTimes(1);
         expect(harness.respondMock).toHaveBeenCalledWith(declinedTaskId, { confirmed: false });
         await renderer.act(async () => {
             harness.resolveResult(declinedTaskId, false, undefined, 'Personal Home data deletion was not explicitly confirmed.');
         });
 
-        confirmRef()
-            .mockResolvedValueOnce(false)
-            .mockResolvedValueOnce(true);
+        confirmRef().mockResolvedValueOnce(true);
         await screen.pressByTestIdAsync('settings.personalHomeRuntime.eraseData');
 
         const eraseSpecs = harness.startedSpecs.filter((spec) => spec.kind === 'relay.runtime.personal_home.erase.v1');
         const eraseSpec = eraseSpecs.at(-1);
         expect(eraseSpec?.params).toEqual({
             target: { kind: 'local' },
+            channel: 'stable',
+            mode: 'user',
             purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
         });
         const confirmedTaskId = harness.startedTaskIds.filter((taskId) => taskId.endsWith('relay.runtime.personal_home.erase.v1')).at(-1)!;
@@ -459,86 +530,6 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
             });
         });
         expect(screen.findByTestId('settings.personalHomeRuntime.eraseResult')?.props.subtitle).toContain('2');
-    });
-
-    it('waits for a chosen verified backup before starting erase', async () => {
-        const harness = createScriptedRunnerHarness();
-        const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
-        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
-        confirmRef()
-            .mockResolvedValueOnce(true)
-            .mockResolvedValueOnce(true);
-        await resolveInitialInspectionWith(harness, INSPECT_RESULT_DATA);
-        promptRef().mockResolvedValue('/safe/home-before-erase.tar');
-
-        await screen.pressByTestIdAsync('settings.personalHomeRuntime.eraseData');
-        expect(harness.specByKind('relay.runtime.personal_home.backup.v1')?.params.outputPath).toBe('/safe/home-before-erase.tar');
-        expect(harness.specByKind('relay.runtime.personal_home.erase.v1')).toBeUndefined();
-
-        await renderer.act(async () => {
-            harness.resolveResult(harness.taskIdByKind('relay.runtime.personal_home.backup.v1')!, true, {
-                ...BACKUP_RESULT_DATA,
-                path: '/safe/home-before-erase.tar',
-            });
-        });
-        expect(harness.specByKind('relay.runtime.personal_home.erase.v1')).toBeTruthy();
-    });
-
-    it('does not erase when the chosen backup lacks verified final facts', async () => {
-        const harness = createScriptedRunnerHarness();
-        const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
-        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
-        confirmRef()
-            .mockResolvedValueOnce(true)
-            .mockResolvedValueOnce(true);
-        await resolveInitialInspectionWith(harness, INSPECT_RESULT_DATA);
-        promptRef().mockResolvedValue('/safe/home-before-erase.tar');
-
-        await screen.pressByTestIdAsync('settings.personalHomeRuntime.eraseData');
-        await renderer.act(async () => {
-            harness.resolveResult(harness.taskIdByKind('relay.runtime.personal_home.backup.v1')!, true, {
-                path: '',
-                manifest: { entries: [] },
-            });
-        });
-
-        expect(harness.specByKind('relay.runtime.personal_home.erase.v1')).toBeUndefined();
-    });
-
-    it('starts neither backup nor erase when the chosen backup destination is cancelled', async () => {
-        const harness = createScriptedRunnerHarness();
-        const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
-        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
-        confirmRef()
-            .mockResolvedValueOnce(true)
-            .mockResolvedValueOnce(true);
-        promptRef().mockResolvedValue(null);
-
-        await screen.pressByTestIdAsync('settings.personalHomeRuntime.eraseData');
-
-        expect(harness.specByKind('relay.runtime.personal_home.backup.v1')).toBeUndefined();
-        expect(harness.specByKind('relay.runtime.personal_home.erase.v1')).toBeUndefined();
-    });
-
-    it('does not erase when the canonical backup owner rejects an unsafe erase-safety destination', async () => {
-        const harness = createScriptedRunnerHarness();
-        const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
-        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
-        await resolveInitialInspectionWith(harness, INSPECT_RESULT_DATA);
-        confirmRef().mockResolvedValueOnce(true);
-        promptRef().mockResolvedValue('/home/.happier/self-host/data/backups/will-be-erased.tar');
-
-        await screen.pressByTestIdAsync('settings.personalHomeRuntime.eraseData');
-        const backupTaskId = harness.taskIdByKind('relay.runtime.personal_home.backup.v1');
-        expect(backupTaskId).toBeTruthy();
-        await renderer.act(async () => {
-            harness.resolveResult(backupTaskId!, false, {
-                message: 'The pre-erase safety backup must be outside Personal Home data.',
-            });
-        });
-
-        expect(harness.specByKind('relay.runtime.personal_home.erase.v1')).toBeUndefined();
-        expect(modalMockRef.current?.spies.alert).toHaveBeenCalled();
     });
 
     it('keeps erase, runtime uninstall, and profile removal as distinct controls that cannot call one another', async () => {
@@ -569,18 +560,208 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
         expect(harness.startedSpecs.filter((spec) => spec.kind === 'relay.runtime.personal_home.erase.v1')).toHaveLength(1);
     });
 
-    it('presents relocation as clearly unavailable and gives it no way to start a task', async () => {
+    it('hides Move Home until a real resolver-backed action exists', async () => {
         const harness = createScriptedRunnerHarness();
         const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
         const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
 
-        const relocate = screen.findByTestId('settings.personalHomeRuntime.relocate');
-        if (!relocate) throw new Error('relocation control was not rendered');
-        expect(relocate.props.disabled).toBe(true);
-        expect(relocate.props.subtitle).toBe('Unavailable until a supported destination can be selected.');
-        // No destination grammar and no transfer/publication callbacks exist in the UI.
-        expect(relocate.props.onPress).toBeUndefined();
+        expect(screen.findByTestId('settings.personalHomeRuntime.relocate')).toBeNull();
         expect(harness.startedSpecs.every((spec) => spec.kind !== 'relay.runtime.personal_home.relocate.v1')).toBe(true);
+    });
+
+    it('starts the resolver-backed SSH relocation task after one source-deactivation confirmation and answers only its bound publication prompt', async () => {
+        const harness = createScriptedRunnerHarness();
+        const respondToPrompt = vi.fn(async () => ({ descriptor: {
+            v: 1,
+            homeServerIdentityId: 'home-identity-1',
+            canonicalServerUrl: 'https://destination.example.test',
+            revision: 2,
+            endpoints: [{ kind: 'https', url: 'https://destination.example.test' }],
+        } }));
+        const prepare = vi.fn(async () => ({
+            spec: {
+                protocolVersion: 1,
+                kind: 'remote.ssh.manageHost.v1',
+                params: {
+                    action: 'personalHome.relocate',
+                    personalHomeRelocation: {
+                        operationId: 'relocation-1',
+                        destinationMachineId: 'managed-host-1',
+                        sourceDescriptorRevision: 1,
+                    },
+                },
+            },
+            respondToPrompt,
+        }));
+        const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
+        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, {
+            runner: harness.runner,
+            operations: {
+                relocation: {
+                    destinations: [{ id: 'managed-host-1', title: 'Home server', subtitle: 'ops@destination.example.test' }],
+                    prepare,
+                },
+            },
+        }));
+        await resolveInitialInspection(harness);
+        await renderer.act(async () => {});
+
+        confirmRef().mockResolvedValueOnce(true);
+        const relocationMenu = screen.findByType('DropdownMenu');
+        await renderer.act(async () => {
+            relocationMenu.props.onSelect('managed-host-1');
+        });
+        await renderer.act(async () => {});
+
+        expect(prepare).toHaveBeenCalledWith('managed-host-1');
+        expect(confirmRef()).toHaveBeenCalledTimes(1);
+        expect(harness.specByKind('remote.ssh.manageHost.v1')?.params).toMatchObject({
+            action: 'personalHome.relocate',
+            personalHomeRelocation: { operationId: 'relocation-1', destinationMachineId: 'managed-host-1' },
+        });
+        expect(harness.startedSpecs.some((spec) => spec.kind === 'relay.runtime.personal_home.relocate.v1')).toBe(false);
+
+        const taskId = harness.taskIdByKind('remote.ssh.manageHost.v1')!;
+        await renderer.act(async () => {
+            harness.emitRelocationPrompt(taskId, 'personal_home.publish_relocation_descriptor.v1', {
+                operationId: 'relocation-1',
+                homeServerIdentityId: 'home-identity-1',
+            });
+        });
+        await renderer.act(async () => {});
+        expect(respondToPrompt).toHaveBeenCalledWith(expect.objectContaining({
+            kind: 'personal_home.publish_relocation_descriptor.v1',
+        }));
+        expect(harness.respondMock).toHaveBeenCalledWith(taskId, expect.objectContaining({ descriptor: expect.any(Object) }));
+    });
+
+    it('surfaces only the coordinator-selected relocation recovery and resumes it through the same remote task owner', async () => {
+        const harness = createScriptedRunnerHarness();
+        const respondToPrompt = vi.fn(async () => ({ descriptor: null }));
+        const prepare = vi.fn(async () => ({
+            spec: {
+                protocolVersion: 1,
+                kind: 'remote.ssh.manageHost.v1',
+                params: { action: 'personalHome.relocate' },
+            },
+            respondToPrompt,
+        }));
+        const prepareRecovery = vi.fn(async (recovery: Readonly<{
+            operationId: string;
+            destinationMachineId: string;
+            sourceDescriptorRevision: number;
+            recoveryAction: 'finish_move' | 'return_to_source';
+        }>) => ({
+            spec: {
+                protocolVersion: 1,
+                kind: 'remote.ssh.manageHost.v1',
+                params: {
+                    action: 'personalHome.relocate',
+                    personalHomeRelocation: recovery,
+                },
+            },
+            respondToPrompt,
+        }));
+        const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
+        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, {
+            runner: harness.runner,
+            operations: {
+                relocation: {
+                    destinations: [{ id: 'managed-host-1', title: 'Home server' }],
+                    prepare,
+                    prepareRecovery,
+                },
+            },
+        }));
+        await resolveInitialInspection(harness);
+        confirmRef().mockResolvedValueOnce(true);
+        await renderer.act(async () => {
+            screen.findByType('DropdownMenu').props.onSelect('managed-host-1');
+        });
+        await renderer.act(async () => {});
+        const taskId = harness.taskIdByKind('remote.ssh.manageHost.v1')!;
+        await renderer.act(async () => {
+            harness.resolveResult(taskId, true, {
+                action: 'personalHome.relocate',
+                personalHome: {
+                    operationId: 'relocation-1',
+                    destinationMachineId: 'managed-host-1',
+                    sourceDescriptorRevision: 1,
+                    status: 'pending',
+                    recoveryAction: 'finish_move',
+                },
+            });
+        });
+
+        const recovery = screen.findByTestId('settings.personalHomeRuntime.recoverRelocation');
+        expect(recovery).toBeTruthy();
+        expect(recovery?.props.title).toBe('Finish Moving');
+        await screen.pressByTestIdAsync('settings.personalHomeRuntime.recoverRelocation');
+        expect(prepareRecovery).toHaveBeenCalledWith({
+            operationId: 'relocation-1',
+            destinationMachineId: 'managed-host-1',
+            sourceDescriptorRevision: 1,
+            recoveryAction: 'finish_move',
+        });
+        expect(harness.startedSpecs.filter((spec) => spec.kind === 'remote.ssh.manageHost.v1')).toHaveLength(2);
+        expect(harness.startedSpecs.at(-1)?.params).toMatchObject({
+            action: 'personalHome.relocate',
+            personalHomeRelocation: {
+                operationId: 'relocation-1',
+                recoveryAction: 'finish_move',
+            },
+        });
+        expect(confirmRef()).toHaveBeenCalledTimes(1);
+    });
+
+    it('derives the two authority-safe recovery actions from durable inspection facts after reopening settings', async () => {
+        const harness = createScriptedRunnerHarness();
+        const prepareRecovery = vi.fn(async (recovery: Readonly<{
+            operationId: string;
+            destinationMachineId: string;
+            sourceDescriptorRevision: number;
+            recoveryAction: 'finish_move' | 'return_to_source';
+        }>) => ({
+            spec: {
+                protocolVersion: 1,
+                kind: 'remote.ssh.manageHost.v1',
+                params: { action: 'personalHome.relocate', personalHomeRelocation: recovery },
+            },
+            respondToPrompt: async () => ({ descriptor: null }),
+        }));
+        const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
+        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, {
+            runner: harness.runner,
+            operations: {
+                relocation: {
+                    destinations: [{ id: 'managed-host-1', title: 'Home server' }],
+                    prepare: async () => { throw new Error('not used'); },
+                    prepareRecovery,
+                },
+            },
+        }));
+        await resolveInitialInspectionWith(harness, {
+            ...INSPECT_RESULT_DATA,
+            relocationRecovery: {
+                status: 'recovery_available',
+                operationId: 'relocation-1',
+                destinationMachineId: 'managed-host-1',
+                sourceDescriptorRevision: 1,
+                primaryAction: 'finish_move',
+                secondaryAction: 'return_to_source',
+            },
+        });
+
+        expect(screen.findByTestId('settings.personalHomeRuntime.recoverRelocation')).toBeTruthy();
+        expect(screen.findByTestId('settings.personalHomeRuntime.recoverRelocationReturn')).toBeTruthy();
+        await screen.pressByTestIdAsync('settings.personalHomeRuntime.recoverRelocationReturn');
+        expect(prepareRecovery).toHaveBeenCalledWith({
+            operationId: 'relocation-1',
+            destinationMachineId: 'managed-host-1',
+            sourceDescriptorRevision: 1,
+            recoveryAction: 'return_to_source',
+        });
+        expect(confirmRef()).not.toHaveBeenCalled();
     });
 
     it('keeps the terminal failed snapshot rendered with truthful stages and announces the failure assertively', async () => {
@@ -588,8 +769,6 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
         const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
         const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
 
-        confirmRef().mockResolvedValue(true);
-        promptRef().mockResolvedValue('');
         await screen.pressByTestIdAsync('settings.personalHomeRuntime.backup');
         const backupTaskId = harness.taskIdByKind('relay.runtime.personal_home.backup.v1')!;
 
@@ -652,19 +831,19 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
 
         expect(harness.startMock).not.toHaveBeenCalled();
         expect(screen.findByTestId('settings.personalHomeRuntime.backup')?.props.disabled).toBe(true);
-        expect(screen.findByTestId('settings.personalHomeRuntime.restore')?.props.disabled).toBe(true);
+        expect(screen.findByTestId('settings.personalHomeRuntime.restore')).toBeNull();
         expect(screen.findByTestId('settings.personalHomeRuntime.eraseData')?.props.disabled).toBe(true);
         expect(screen.findByTestId('settings.personalHomeRuntime.inspect')?.props.disabled).toBe(true);
     });
 
-    it('presents search readiness from the existing production capability source without a second polling owner', async () => {
+    it('shows search readiness only while indexing and hides routine or non-actionable states', async () => {
         const harness = createScriptedRunnerHarness();
         const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
-        const cases: ReadonlyArray<Readonly<{ readiness: HomeMemorySearchReadiness; expected: string }>> = [
-            { readiness: 'ready', expected: 'Search ready' },
+        const cases: ReadonlyArray<Readonly<{ readiness: HomeMemorySearchReadiness; expected: string | null }>> = [
+            { readiness: 'ready', expected: null },
             { readiness: 'indexing', expected: 'Search indexing' },
-            { readiness: 'unavailable', expected: 'Search unavailable' },
-            { readiness: 'unknown', expected: 'Search unknown' },
+            { readiness: 'unavailable', expected: null },
+            { readiness: 'unknown', expected: null },
         ];
         for (const testCase of cases) {
             const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, {
@@ -672,8 +851,7 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
                 searchReadiness: testCase.readiness,
             }));
             const row = screen.findByTestId('settings.personalHomeRuntime.search');
-            if (!row) throw new Error(`search readiness row was not rendered for ${testCase.readiness}`);
-            expect(row.props.subtitle).toBe(testCase.expected);
+            expect(row?.props.subtitle ?? null).toBe(testCase.expected);
         }
     });
 
@@ -687,10 +865,10 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
 
         await resolveInitialInspectionWith(harness, INSPECT_RESULT_DATA);
         const row = screen.findByTestId('settings.personalHomeRuntime.lastBackup');
-        expect(String(row?.props.subtitle)).toContain('2026-02-02');
+        expect(String(row?.props.subtitle)).toContain('2026');
     });
 
-    it('discloses the verified backup result with destination, bytes, identity, timestamp, and a reveal action', async () => {
+    it('keeps verified backup facts calm in the primary row and exposes technical facts through Details', async () => {
         const harness = createScriptedRunnerHarness();
         const revealBackupOutput = vi.fn(async (_path: string) => {});
         const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
@@ -699,30 +877,35 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
             operations: { revealBackupOutput },
         }));
 
-        confirmRef().mockResolvedValue(true);
-        promptRef().mockResolvedValue('');
         await screen.pressByTestIdAsync('settings.personalHomeRuntime.backup');
         await renderer.act(async () => {
             harness.resolveResult(harness.taskIdByKind('relay.runtime.personal_home.backup.v1')!, true, BACKUP_RESULT_DATA);
         });
 
         const resultRow = screen.findByTestId('settings.personalHomeRuntime.backupResult');
-        expect(String(resultRow?.props.subtitle)).toContain('/tmp/home-backup.tar');
+        expect(String(resultRow?.props.subtitle)).not.toContain('/tmp/home-backup.tar');
         expect(String(resultRow?.props.subtitle)).toContain('8.0 KB');
-        expect(String(resultRow?.props.subtitle)).toContain('home-identity-1');
-        expect(String(resultRow?.props.subtitle)).toContain('2026-01-01');
+        expect(String(resultRow?.props.subtitle)).not.toContain('home-identity-1');
+        expect(String(resultRow?.props.subtitle)).toContain('2026');
+        expect(String(resultRow?.props.subtitle)).not.toContain('T00:00:00.000Z');
+
+        await screen.pressByTestIdAsync('settings.personalHomeRuntime.backupResultDetails');
+        expect(alertRef().mock.calls.at(-1)?.[1]).toContain('/tmp/home-backup.tar');
+        expect(alertRef().mock.calls.at(-1)?.[1]).toContain('home-identity-1');
 
         await screen.pressByTestIdAsync('settings.personalHomeRuntime.backupReveal');
         expect(revealBackupOutput).toHaveBeenCalledWith('/tmp/home-backup.tar');
     });
 
-    it('exposes the typed restore recovery outcome and retained rollback paths explicitly', async () => {
+    it('exposes the typed restore recovery outcome without leaking internal rollback paths into primary UI', async () => {
         const harness = createScriptedRunnerHarness();
         const { PersonalHomeRuntimeControlSection } = await import('./PersonalHomeRuntimeControlSection');
-        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
+        const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, {
+            runner: harness.runner,
+            operations: { selectBackupArchive: async () => '/a.tar' },
+        }));
         await resolveInitialInspectionWith(harness, INSPECT_RESULT_DATA);
 
-        promptRef().mockResolvedValue('/a.tar');
         confirmRef().mockResolvedValue(true);
         await screen.pressByTestIdAsync('settings.personalHomeRuntime.restore');
         await renderer.act(async () => {
@@ -740,7 +923,7 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
         const subtitle = String(row?.props.subtitle ?? '');
         expect(subtitle).toContain('Recovery needed');
         expect(subtitle).toContain('health check failed after swap');
-        expect(subtitle).toContain('/home/.happier/self-host/data/.operations/rollback-previous');
+        expect(subtitle).not.toContain('/home/.happier/self-host/data/.operations/rollback-previous');
     });
 
     it('opens the canonical Home data and log locations through the injected production path opener', async () => {
@@ -774,8 +957,6 @@ describe('PersonalHomeRuntimeControlSection Personal Home operations', () => {
 
         for (const testCase of cases) {
             const screen = await renderScreen(React.createElement(PersonalHomeRuntimeControlSection, { runner: harness.runner }));
-            confirmRef().mockResolvedValue(true);
-            promptRef().mockResolvedValue('');
             await screen.pressByTestIdAsync('settings.personalHomeRuntime.backup');
             const backupTaskId = harness.startedTaskIds.filter((taskId) => taskId.endsWith('relay.runtime.personal_home.backup.v1')).at(-1);
             if (!backupTaskId) throw new Error('backup operation task was not started');

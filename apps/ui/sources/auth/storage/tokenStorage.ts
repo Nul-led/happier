@@ -3,12 +3,14 @@ import {
     AccountEncryptionMigrateRequestBindingDigestV1Schema,
 } from '@happier-dev/protocol';
 import { readStorageScopeFromEnv, scopedStorageId } from '@/utils/system/storageScope';
+import { normalizeInternalReturnPath } from '@/utils/path/routeUtils';
 import {
     areServerProfileIdentifiersEquivalent,
     getActiveServerId,
     getActiveServerUrl,
     listServerProfiles,
 } from '@/sync/domains/server/serverProfiles';
+import { normalizeAccountDirectoryEndpoint } from '@/sync/domains/accountDirectory/accountDirectoryEndpoint';
 import { digest } from '@/platform/digest';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import {
@@ -99,8 +101,21 @@ export function subscribeHomeCredentialMutations(
 export type AccountDirectoryCredentialTarget = Readonly<{
     endpoint: string;
     /** Account Service/server identity returned by the OAuth audience. */
-    serverIdentityId?: string | null;
+    serverIdentityId: string;
 }>;
+
+export type AccountDirectoryStorageReadResult<T> =
+    | Readonly<{ kind: 'absent' }>
+    | Readonly<{ kind: 'valid'; value: T }>
+    | Readonly<{ kind: 'corrupt' }>
+    | Readonly<{ kind: 'unavailable' }>;
+
+export class AccountDirectoryStorageReadError extends Error {
+    constructor(readonly reason: 'corrupt' | 'unavailable') {
+        super(`Account Directory secure storage is ${reason}`);
+        this.name = 'AccountDirectoryStorageReadError';
+    }
+}
 
 type PendingExternalServerContext = Readonly<{
     serverId?: string;
@@ -628,9 +643,9 @@ export function parseAuthCredentials(value: unknown): AuthCredentials | null {
 export type PendingAccountDirectoryAuth = Readonly<{
     /** Normalized endpoint; always present on values returned by storage. */
     endpoint: string;
-    serverIdentityId?: string;
+    serverIdentityId: string;
     /** Canonical callback spelling retained for the plan/API boundary. */
-    credentialTarget?: 'account_directory';
+    credentialTarget: 'account_directory';
     provider: string;
     purpose: 'account_directory';
     /** Server-generated post-provider handle; absent before the provider redirect completes. */
@@ -654,8 +669,8 @@ export type PendingAccountDirectoryAuth = Readonly<{
 
 export type PendingAccountDirectoryAuthInput = Readonly<{
     endpoint: string;
-    serverIdentityId?: string | null;
-    credentialTarget?: 'account_directory';
+    serverIdentityId: string;
+    credentialTarget: 'account_directory';
     provider: string;
     purpose: 'account_directory';
     pending?: string;
@@ -672,8 +687,8 @@ export type PendingAccountDirectoryAuthInput = Readonly<{
 
 type NormalizedPendingAccountDirectoryAuth = Readonly<{
     endpoint: string;
-    serverIdentityId?: string;
-    credentialTarget?: 'account_directory';
+    serverIdentityId: string;
+    credentialTarget: 'account_directory';
     provider: string;
     purpose: 'account_directory';
     pending?: string;
@@ -690,7 +705,7 @@ type NormalizedPendingAccountDirectoryAuth = Readonly<{
 
 export type PendingAccountDirectoryAuthTarget = Readonly<{
     endpoint: string;
-    serverIdentityId?: string | null;
+    serverIdentityId: string;
 }>;
 
 export function isLegacyAuthCredentials(credentials: AuthCredentials): credentials is LegacyAuthCredentials {
@@ -772,35 +787,10 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 function isInternalReturnTo(value: unknown): value is string {
-    if (!isNonEmptyString(value)) return false;
-    const trimmed = value.trim();
-    if (!trimmed.startsWith('/')) return false;
-    // Prevent protocol-relative URLs.
-    if (trimmed.startsWith('//')) return false;
-    return true;
+    return normalizeInternalReturnPath(value) !== null;
 }
 
-/** Normalize a URL that is safe to use as an Account Service endpoint identity. */
-export function normalizeAccountDirectoryEndpoint(value: string): string | null {
-    const raw = String(value ?? '').trim();
-    if (!raw) return null;
-    try {
-        const url = new URL(raw);
-        if (
-            (url.protocol !== 'https:' && url.protocol !== 'http:')
-            || url.username
-            || url.password
-            || url.search
-            || url.hash
-        ) {
-            return null;
-        }
-        url.pathname = url.pathname.replace(/\/+$/, '');
-        return url.toString().replace(/\/$/, '');
-    } catch {
-        return null;
-    }
-}
+export { normalizeAccountDirectoryEndpoint } from '@/sync/domains/accountDirectory/accountDirectoryEndpoint';
 
 function normalizeAccountDirectoryIdentity(value: unknown): string | null {
     const identity = String(value ?? '').trim();
@@ -809,18 +799,19 @@ function normalizeAccountDirectoryIdentity(value: unknown): string | null {
 
 function normalizeAccountDirectoryTarget(
     target: AccountDirectoryCredentialTarget,
-): Readonly<{ endpoint: string; serverIdentityId: string | null }> | null {
+): Readonly<{ endpoint: string; serverIdentityId: string }> | null {
     const endpoint = normalizeAccountDirectoryEndpoint(target.endpoint);
-    if (!endpoint) return null;
+    const serverIdentityId = normalizeAccountDirectoryIdentity(target.serverIdentityId);
+    if (!endpoint || !serverIdentityId) return null;
     return {
         endpoint,
-        serverIdentityId: normalizeAccountDirectoryIdentity(target.serverIdentityId),
+        serverIdentityId,
     };
 }
 
 type StoredAccountDirectoryCredentialRecord = Readonly<{
     endpoint: string;
-    serverIdentityId?: string;
+    serverIdentityId: string;
     credentials: TokenOnlyAuthCredentials;
     updatedAt: number;
 }>;
@@ -839,12 +830,7 @@ function isStoredAccountDirectoryCredentialRecord(
     if (!endpoint || !isNonEmptyString((credentials as Record<string, unknown> | null)?.token)) {
         return false;
     }
-    if (
-        identity !== undefined
-        && !isNonEmptyString(identity)
-    ) {
-        return false;
-    }
+    if (!isNonEmptyString(identity)) return false;
     if (
         typeof updatedAt !== 'number'
         || !Number.isFinite(updatedAt)
@@ -854,25 +840,23 @@ function isStoredAccountDirectoryCredentialRecord(
     const credentialKeys = Object.keys(credentials as object);
     if (credentialKeys.some((key) => key !== 'token')) return false;
     const rowKeys = Object.keys(row);
-    const expectedKeys = identity === undefined
-        ? new Set(['endpoint', 'credentials', 'updatedAt'])
-        : new Set(['endpoint', 'serverIdentityId', 'credentials', 'updatedAt']);
+    const expectedKeys = new Set(['endpoint', 'serverIdentityId', 'credentials', 'updatedAt']);
     return rowKeys.length === expectedKeys.size && rowKeys.every((key) => expectedKeys.has(key));
 }
 
-function parseStoredAccountDirectoryCredentialRecords(value: unknown): StoredAccountDirectoryCredentialRecord[] {
-    if (!Array.isArray(value)) return [];
+function parseStoredAccountDirectoryCredentialRecords(value: unknown): StoredAccountDirectoryCredentialRecord[] | null {
+    if (!Array.isArray(value)) return null;
     const records: StoredAccountDirectoryCredentialRecord[] = [];
     for (const candidate of value) {
-        if (!isStoredAccountDirectoryCredentialRecord(candidate)) continue;
+        if (!isStoredAccountDirectoryCredentialRecord(candidate)) return null;
         const row = candidate as Record<string, unknown>;
         const endpoint = normalizeAccountDirectoryEndpoint(String(row.endpoint));
         const identity = normalizeAccountDirectoryIdentity(row.serverIdentityId);
         const credentials = row.credentials as Record<string, unknown>;
-        if (!endpoint || !isNonEmptyString(credentials.token)) continue;
+        if (!endpoint || !identity || !isNonEmptyString(credentials.token)) return null;
         records.push({
             endpoint,
-            ...(identity ? { serverIdentityId: identity } : {}),
+            serverIdentityId: identity,
             credentials: { token: credentials.token },
             updatedAt: Number(row.updatedAt),
         });
@@ -882,21 +866,10 @@ function parseStoredAccountDirectoryCredentialRecords(value: unknown): StoredAcc
 
 function accountDirectoryCredentialRecordMatchesTarget(
     record: StoredAccountDirectoryCredentialRecord,
-    target: Readonly<{ endpoint: string; serverIdentityId: string | null }>,
+    target: Readonly<{ endpoint: string; serverIdentityId: string }>,
 ): boolean {
     return record.endpoint === target.endpoint
-        && (
-            target.serverIdentityId === null
-            || (record.serverIdentityId ?? null) === target.serverIdentityId
-        );
-}
-
-function accountDirectoryCredentialExactKeyMatchesTarget(
-    record: StoredAccountDirectoryCredentialRecord,
-    target: Readonly<{ endpoint: string; serverIdentityId: string | null }>,
-): boolean {
-    return record.endpoint === target.endpoint
-        && (record.serverIdentityId ?? null) === target.serverIdentityId;
+        && record.serverIdentityId === target.serverIdentityId;
 }
 
 type PendingAccountDirectoryAuthStoredRecord = NormalizedPendingAccountDirectoryAuth;
@@ -915,14 +888,14 @@ function isPendingAccountDirectoryAuthRecord(
         !endpoint
         || !isNonEmptyString(row.provider)
         || row.purpose !== 'account_directory'
-        || (row.credentialTarget !== undefined && row.credentialTarget !== 'account_directory')
+        || row.credentialTarget !== 'account_directory'
         || (row.pending !== undefined && !isNonEmptyString(row.pending))
         || !Number.isSafeInteger(row.createdAt)
         || !Number.isSafeInteger(row.expiresAt)
         || Number(row.createdAt) < 0
         || Number(row.expiresAt) <= Number(row.createdAt)
         || (row.mode !== undefined && row.mode !== 'keyed' && row.mode !== 'keyless')
-        || (row.serverIdentityId !== undefined && !isNonEmptyString(row.serverIdentityId))
+        || !isNonEmptyString(row.serverIdentityId)
         || (row.proof !== undefined && !isNonEmptyString(row.proof))
         || (row.secret !== undefined && !isNonEmptyString(row.secret))
         || (row.mode === 'keyless' && row.secret !== undefined)
@@ -941,8 +914,7 @@ function isPendingAccountDirectoryAuthRecord(
     if (
         row.pending === undefined
         && (
-            row.credentialTarget !== 'account_directory'
-            || !isNonEmptyString(identity)
+            !isNonEmptyString(identity)
             || (
                 row.mode === 'keyless'
                     ? !isNonEmptyString(row.proof)
@@ -974,7 +946,7 @@ function isPendingAccountDirectoryAuthRecord(
     ]);
     const keys = Object.keys(row);
     if (!keys.every((key) => allowedKeys.has(key))) return false;
-    return identity === undefined || isNonEmptyString(identity);
+    return isNonEmptyString(identity);
 }
 
 function normalizePendingAccountDirectoryAuth(
@@ -987,14 +959,13 @@ function normalizePendingAccountDirectoryAuth(
     const identity = normalizeAccountDirectoryIdentity(raw.serverIdentityId);
     if (
         !endpoint
+        || !identity
         || (options.includeExpired !== true && Date.now() >= value.expiresAt)
     ) return null;
     return {
         endpoint,
-        ...(identity ? { serverIdentityId: identity } : {}),
-        ...(raw.credentialTarget === 'account_directory'
-            ? { credentialTarget: 'account_directory' as const }
-            : {}),
+        serverIdentityId: identity,
+        credentialTarget: 'account_directory',
         provider: value.provider.trim(),
         purpose: 'account_directory',
         ...(value.pending ? { pending: value.pending.trim() } : {}),
@@ -1003,7 +974,7 @@ function normalizePendingAccountDirectoryAuth(
         ...(value.mode ? { mode: value.mode } : {}),
         ...(value.proof ? { proof: value.proof.trim() } : {}),
         ...(value.secret ? { secret: value.secret.trim() } : {}),
-        ...(value.returnTo ? { returnTo: value.returnTo.trim() } : {}),
+        ...(value.returnTo ? { returnTo: normalizeInternalReturnPath(value.returnTo)! } : {}),
         ...(value.homeServerIdentityId ? { homeServerIdentityId: value.homeServerIdentityId.trim() } : {}),
         ...(value.state ? { state: value.state.trim() } : {}),
         ...(value.nonce ? { nonce: value.nonce.trim() } : {}),
@@ -1015,11 +986,8 @@ function pendingAccountDirectoryAuthMatchesTarget(
     target: Readonly<{ endpoint: string; serverIdentityId: string | null }>,
 ): boolean {
     return normalizeAccountDirectoryEndpoint(value.endpoint) === target.endpoint
-        && (
-            target.serverIdentityId === null
-            || (normalizeAccountDirectoryIdentity(value.serverIdentityId) ?? null)
-                === target.serverIdentityId
-        );
+        && (normalizeAccountDirectoryIdentity(value.serverIdentityId) ?? null)
+            === target.serverIdentityId;
 }
 
 function isPendingExternalAuthRecord(value: unknown): value is PendingExternalAuth {
@@ -1374,15 +1342,22 @@ async function removeStoredValue(key: string, label: string): Promise<boolean> {
     }
 }
 
-async function readAccountDirectoryCredentialRecords(): Promise<StoredAccountDirectoryCredentialRecord[]> {
+function getAccountDirectoryStorageKey(baseKey: string): string {
+    return scopedStorageId(baseKey, readStorageScopeFromEnv());
+}
+
+async function readAccountDirectoryCredentialRecords(): Promise<
+    AccountDirectoryStorageReadResult<readonly StoredAccountDirectoryCredentialRecord[]>
+> {
     try {
         const raw = await readDeviceLocalStorageString(
-            ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY,
+            getAccountDirectoryStorageKey(ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY),
         );
-        if (!raw) return [];
-        return parseStoredAccountDirectoryCredentialRecords(safeParseJson(raw));
+        if (raw === null) return { kind: 'absent' };
+        const parsed = parseStoredAccountDirectoryCredentialRecords(safeParseJson(raw));
+        return parsed ? { kind: 'valid', value: parsed } : { kind: 'corrupt' };
     } catch {
-        return [];
+        return { kind: 'unavailable' };
     }
 }
 
@@ -1392,11 +1367,11 @@ async function writeAccountDirectoryCredentialRecords(
     try {
         if (records.length === 0) {
             await removeDeviceLocalStorageString(
-                ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY,
+                getAccountDirectoryStorageKey(ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY),
             );
         } else {
             await writeDeviceLocalStorageString(
-                ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY,
+                getAccountDirectoryStorageKey(ACCOUNT_DIRECTORY_AUTH_CREDENTIALS_STORAGE_KEY),
                 JSON.stringify(records),
             );
         }
@@ -1406,23 +1381,28 @@ async function writeAccountDirectoryCredentialRecords(
     }
 }
 
-async function readPendingAccountDirectoryAuthRecords(): Promise<NormalizedPendingAccountDirectoryAuth[]> {
+async function readPendingAccountDirectoryAuthRecords(): Promise<
+    AccountDirectoryStorageReadResult<readonly NormalizedPendingAccountDirectoryAuth[]>
+> {
     try {
         const raw = await readDeviceLocalStorageString(
-            PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY,
+            getAccountDirectoryStorageKey(PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY),
         );
-        if (!raw) return [];
+        if (raw === null) return { kind: 'absent' };
         const parsed = safeParseJson(raw);
-        if (!Array.isArray(parsed)) return [];
-        return parsed.flatMap((candidate) => {
-            if (!isPendingAccountDirectoryAuthRecord(candidate)) return [];
+        if (!Array.isArray(parsed)) return { kind: 'corrupt' };
+        const records: NormalizedPendingAccountDirectoryAuth[] = [];
+        for (const candidate of parsed) {
+            if (!isPendingAccountDirectoryAuthRecord(candidate)) return { kind: 'corrupt' };
             const normalized = normalizePendingAccountDirectoryAuth(candidate, {
                 includeExpired: true,
             });
-            return normalized ? [normalized] : [];
-        });
+            if (!normalized) return { kind: 'corrupt' };
+            records.push(normalized);
+        }
+        return { kind: 'valid', value: records };
     } catch {
-        return [];
+        return { kind: 'unavailable' };
     }
 }
 
@@ -1432,11 +1412,11 @@ async function writePendingAccountDirectoryAuthRecords(
     try {
         if (records.length === 0) {
             await removeDeviceLocalStorageString(
-                PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY,
+                getAccountDirectoryStorageKey(PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY),
             );
         } else {
             await writeDeviceLocalStorageString(
-                PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY,
+                getAccountDirectoryStorageKey(PENDING_ACCOUNT_DIRECTORY_AUTH_STORAGE_KEY),
                 JSON.stringify(records),
             );
         }
@@ -1628,45 +1608,44 @@ async function serializePendingExternalAuthMutation<T>(
 }
 
 function parseDirectoryTokenCredentials(value: unknown): TokenOnlyAuthCredentials | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-    const token = (value as Record<string, unknown>).token;
-    return isNonEmptyString(token) ? { token: token.trim() } : null;
+    const parsed = parseAuthCredentials(value);
+    return parsed && isTokenOnlyAuthCredentials(parsed) ? parsed : null;
 }
 
 async function getAccountDirectoryCredentialsForTarget(
     target: AccountDirectoryCredentialTarget,
-): Promise<AuthCredentials | null> {
+): Promise<AccountDirectoryStorageReadResult<TokenOnlyAuthCredentials>> {
     const normalized = normalizeAccountDirectoryTarget(target);
-    if (!normalized) return null;
-    const records = await readAccountDirectoryCredentialRecords();
-    const matches = records
+    if (!normalized) return { kind: 'absent' };
+    const read = await readAccountDirectoryCredentialRecords();
+    if (read.kind !== 'valid') return read.kind === 'absent' ? read : { kind: read.kind };
+    const matches = read.value
         .filter((record) => accountDirectoryCredentialRecordMatchesTarget(record, normalized))
         .sort((left, right) => right.updatedAt - left.updatedAt);
-    const record = normalized.serverIdentityId === null
-        ? matches[0]
-        : matches.find((candidate) => accountDirectoryCredentialExactKeyMatchesTarget(candidate, normalized));
-    return record ? { token: record.credentials.token } : null;
+    const record = matches[0];
+    return record
+        ? { kind: 'valid', value: { token: record.credentials.token } }
+        : { kind: 'absent' };
 }
 
 async function setAccountDirectoryCredentialsForTarget(
     target: AccountDirectoryCredentialTarget,
-    credentials: AuthCredentials,
+    credentials: TokenOnlyAuthCredentials,
 ): Promise<boolean> {
     const normalized = normalizeAccountDirectoryTarget(target);
     const parsedCredentials = parseDirectoryTokenCredentials(credentials);
     if (!normalized || !parsedCredentials) return false;
 
     return await serializePendingExternalAuthMutation(async () => {
-        const records = await readAccountDirectoryCredentialRecords();
-        const next = records.filter((record) => {
-            if (normalized.serverIdentityId === null) {
-                return record.endpoint !== normalized.endpoint;
-            }
-            return !accountDirectoryCredentialExactKeyMatchesTarget(record, normalized);
-        });
+        const read = await readAccountDirectoryCredentialRecords();
+        if (read.kind === 'corrupt' || read.kind === 'unavailable') return false;
+        const records = read.kind === 'valid' ? read.value : [];
+        const next = records.filter(
+            (record) => !accountDirectoryCredentialRecordMatchesTarget(record, normalized),
+        );
         next.push({
             endpoint: normalized.endpoint,
-            ...(normalized.serverIdentityId ? { serverIdentityId: normalized.serverIdentityId } : {}),
+            serverIdentityId: normalized.serverIdentityId,
             credentials: parsedCredentials,
             updatedAt: Date.now(),
         });
@@ -1681,7 +1660,9 @@ async function removeAccountDirectoryCredentialsForTarget(
     const normalized = normalizeAccountDirectoryTarget(target);
     if (!normalized) return false;
     return await serializePendingExternalAuthMutation(async () => {
-        const records = await readAccountDirectoryCredentialRecords();
+        const read = await readAccountDirectoryCredentialRecords();
+        if (read.kind === 'corrupt' || read.kind === 'unavailable') return false;
+        const records = read.kind === 'valid' ? read.value : [];
         const next = records.filter((record) => !accountDirectoryCredentialRecordMatchesTarget(record, normalized));
         if (next.length === records.length) return true;
         return await writeAccountDirectoryCredentialRecords(next);
@@ -1689,9 +1670,23 @@ async function removeAccountDirectoryCredentialsForTarget(
 }
 
 async function clearAccountDirectoryCredentials(): Promise<boolean> {
-    return await serializePendingExternalAuthMutation(
-        async () => await writeAccountDirectoryCredentialRecords([]),
-    );
+    return await serializePendingExternalAuthMutation(async () => {
+        const [credentialRead, pendingRead] = await Promise.all([
+            readAccountDirectoryCredentialRecords(),
+            readPendingAccountDirectoryAuthRecords(),
+        ]);
+        if (
+            credentialRead.kind === 'corrupt'
+            || credentialRead.kind === 'unavailable'
+            || pendingRead.kind === 'corrupt'
+            || pendingRead.kind === 'unavailable'
+        ) return false;
+        const previousCredentials = credentialRead.kind === 'valid' ? credentialRead.value : [];
+        if (!await writeAccountDirectoryCredentialRecords([])) return false;
+        if (await writePendingAccountDirectoryAuthRecords([])) return true;
+        await writeAccountDirectoryCredentialRecords(previousCredentials);
+        return false;
+    });
 }
 
 async function setPendingAccountDirectoryAuthValue(
@@ -1701,7 +1696,9 @@ async function setPendingAccountDirectoryAuthValue(
     if (!normalized) return false;
 
     return await serializePendingExternalAuthMutation(async () => {
-        const records = await readPendingAccountDirectoryAuthRecords();
+        const read = await readPendingAccountDirectoryAuthRecords();
+        if (read.kind === 'corrupt' || read.kind === 'unavailable') return false;
+        const records = read.kind === 'valid' ? read.value : [];
         const next = records.filter((record) => !pendingAccountDirectoryAuthMatchesTarget(record, {
             endpoint: normalized.endpoint,
             serverIdentityId: normalizeAccountDirectoryIdentity(normalized.serverIdentityId),
@@ -1717,7 +1714,11 @@ async function getPendingAccountDirectoryAuthValue(
 ): Promise<PendingAccountDirectoryAuth | null> {
     const normalized = normalizeAccountDirectoryTarget(target);
     if (!normalized) return null;
-    const records = await readPendingAccountDirectoryAuthRecords();
+    const read = await readPendingAccountDirectoryAuthRecords();
+    if (read.kind === 'corrupt' || read.kind === 'unavailable') {
+        throw new AccountDirectoryStorageReadError(read.kind);
+    }
+    const records = read.kind === 'valid' ? read.value : [];
     const matches = records
         .filter((record) => pendingAccountDirectoryAuthMatchesTarget(record, normalized))
         .filter((record) => options.includeExpired === true || Date.now() < record.expiresAt)
@@ -1729,38 +1730,83 @@ async function clearPendingAccountDirectoryAuthValue(
     target?: PendingAccountDirectoryAuthTarget,
 ): Promise<boolean> {
     if (target === undefined) {
-        return await serializePendingExternalAuthMutation(
-            async () => await writePendingAccountDirectoryAuthRecords([]),
-        );
+        return await serializePendingExternalAuthMutation(async () => {
+            const read = await readPendingAccountDirectoryAuthRecords();
+            if (read.kind === 'corrupt' || read.kind === 'unavailable') return false;
+            return await writePendingAccountDirectoryAuthRecords([]);
+        });
     }
     const normalized = normalizeAccountDirectoryTarget(target);
     if (!normalized) return false;
     return await serializePendingExternalAuthMutation(async () => {
-        const records = await readPendingAccountDirectoryAuthRecords();
+        const read = await readPendingAccountDirectoryAuthRecords();
+        if (read.kind === 'corrupt' || read.kind === 'unavailable') return false;
+        const records = read.kind === 'valid' ? read.value : [];
         const next = records.filter((record) => !pendingAccountDirectoryAuthMatchesTarget(record, normalized));
         if (next.length === records.length) return true;
         return await writePendingAccountDirectoryAuthRecords(next);
     });
 }
 
+async function logoutAccountDirectoryTarget(
+    target: AccountDirectoryCredentialTarget,
+): Promise<boolean> {
+    const normalized = normalizeAccountDirectoryTarget(target);
+    if (!normalized) return false;
+    return await serializePendingExternalAuthMutation(async () => {
+        const [credentialRead, pendingRead] = await Promise.all([
+            readAccountDirectoryCredentialRecords(),
+            readPendingAccountDirectoryAuthRecords(),
+        ]);
+        if (
+            credentialRead.kind === 'corrupt'
+            || credentialRead.kind === 'unavailable'
+            || pendingRead.kind === 'corrupt'
+            || pendingRead.kind === 'unavailable'
+        ) return false;
+        const credentials = credentialRead.kind === 'valid' ? credentialRead.value : [];
+        const pending = pendingRead.kind === 'valid' ? pendingRead.value : [];
+        const nextCredentials = credentials.filter(
+            (record) => !accountDirectoryCredentialRecordMatchesTarget(record, normalized),
+        );
+        const nextPending = pending.filter(
+            (record) => !pendingAccountDirectoryAuthMatchesTarget(record, normalized),
+        );
+        if (!await writeAccountDirectoryCredentialRecords(nextCredentials)) return false;
+        if (await writePendingAccountDirectoryAuthRecords(nextPending)) return true;
+        await writeAccountDirectoryCredentialRecords(credentials);
+        return false;
+    });
+}
+
 export interface AccountDirectoryAuthCredentialsFacade {
-    get(target: AccountDirectoryCredentialTarget): Promise<AuthCredentials | null>;
-    set(target: AccountDirectoryCredentialTarget, credentials: AuthCredentials): Promise<boolean>;
+    read(target: AccountDirectoryCredentialTarget): Promise<AccountDirectoryStorageReadResult<TokenOnlyAuthCredentials>>;
+    get(target: AccountDirectoryCredentialTarget): Promise<TokenOnlyAuthCredentials | null>;
+    set(target: AccountDirectoryCredentialTarget, credentials: TokenOnlyAuthCredentials): Promise<boolean>;
     remove(target: AccountDirectoryCredentialTarget): Promise<boolean>;
     clear(): Promise<boolean>;
     logout(target: AccountDirectoryCredentialTarget): Promise<boolean>;
 }
 
 export const accountDirectoryAuthCredentials: AccountDirectoryAuthCredentialsFacade = {
+    async read(
+        target: AccountDirectoryCredentialTarget,
+    ): Promise<AccountDirectoryStorageReadResult<TokenOnlyAuthCredentials>> {
+        return await getAccountDirectoryCredentialsForTarget(target);
+    },
+
     async get(
         target: AccountDirectoryCredentialTarget,
-    ): Promise<AuthCredentials | null> {
-        return await getAccountDirectoryCredentialsForTarget(target);
+    ): Promise<TokenOnlyAuthCredentials | null> {
+        const result = await getAccountDirectoryCredentialsForTarget(target);
+        if (result.kind === 'valid') return result.value;
+        if (result.kind === 'absent') return null;
+        throw new AccountDirectoryStorageReadError(result.kind);
     },
 
     async set(
         target: AccountDirectoryCredentialTarget,
-        credentials: AuthCredentials,
+        credentials: TokenOnlyAuthCredentials,
     ): Promise<boolean> {
         return await setAccountDirectoryCredentialsForTarget(
             target,
@@ -1781,9 +1827,7 @@ export const accountDirectoryAuthCredentials: AccountDirectoryAuthCredentialsFac
     async logout(
         target: AccountDirectoryCredentialTarget,
     ): Promise<boolean> {
-        const removedCredentials = await removeAccountDirectoryCredentialsForTarget(target);
-        const clearedPending = await clearPendingAccountDirectoryAuthValue(target);
-        return removedCredentials && clearedPending;
+        return await logoutAccountDirectoryTarget(target);
     },
 };
 

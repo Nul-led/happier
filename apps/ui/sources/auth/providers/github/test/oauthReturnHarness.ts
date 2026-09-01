@@ -10,6 +10,7 @@ import type {
 import type {
     AuthCredentialLifecycleResult,
 } from '@/auth/context/AuthContext';
+import { setAccountServiceEndpoint } from '@/sync/domains/server/serverProfiles';
 
 export const replaceSpy = vi.fn();
 export const localSearchParamsMock = vi.fn();
@@ -116,6 +117,13 @@ export function setPendingExternalConnectState(next: PendingExternalConnect | nu
 
 export function setPendingAccountDirectoryAuthState(next: PendingAccountDirectoryAuth | null) {
     pendingAccountDirectoryAuthState = next;
+    if (next?.endpoint && next.serverIdentityId) {
+        setAccountServiceEndpoint({
+            url: next.endpoint,
+            serverIdentityId: next.serverIdentityId,
+            source: 'user',
+        });
+    }
 }
 
 export function setStoredCredentialsState(next: AuthCredentials | null) {

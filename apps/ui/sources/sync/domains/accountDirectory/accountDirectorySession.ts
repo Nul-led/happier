@@ -8,6 +8,7 @@ import {
     type AccountDirectoryHomeEntryV1,
     type AccountDirectoryMeResponseV1,
     type HomeConnectionDescriptorV1,
+    type HomeConnectionEndpointV1,
 } from '@/sync/api/accountDirectory/accountDirectoryClient';
 import type { AccountDirectoryCredentialTarget } from '@/auth/storage/tokenStorage';
 import {
@@ -16,20 +17,45 @@ import {
 } from '@/auth/accountDirectory/accountDirectoryCredentialStorage';
 
 export type AccountDirectorySessionStatus = 'idle' | 'loading' | 'ready' | 'stale' | 'unsupported' | 'error';
+export type AccountDirectoryHomeAdoptionTarget = Readonly<{
+    homeServerIdentityId: string;
+    label: string;
+}>;
+export type AccountDirectoryReconciliationResult =
+    | Readonly<{ kind: 'not_run' }>
+    | Readonly<{
+        kind: 'snapshot_unavailable';
+        snapshotStatus: Exclude<AccountDirectorySessionStatus, 'ready'>;
+        error: unknown | null;
+    }>
+    | Readonly<{
+        kind: 'completed' | 'cancelled';
+        adopted: readonly AccountDirectoryHomeAdoptionTarget[];
+        failures: readonly (AccountDirectoryHomeAdoptionTarget & Readonly<{ error: unknown }>)[];
+    }>;
 export type AccountDirectorySessionSnapshot = Readonly<{
     endpoint: string;
     status: AccountDirectorySessionStatus;
-    account: AccountDirectoryMeResponseV1 | null;
     homes: readonly AccountDirectoryHomeEntryV1[];
     preferredHomeServerIdentityId: string | null;
     refreshedAtMs: number | null;
     error: unknown | null;
+    reconciliation: AccountDirectoryReconciliationResult;
 }>;
 
 type SessionOptions = Readonly<{
     client?: AccountDirectoryClient;
     capability: AccountDirectoryCapabilities;
 }>;
+
+export function createAccountDirectoryServiceKey(target: Readonly<{
+    endpoint: string;
+    serverIdentityId?: string | null;
+}>): string {
+    const endpoint = normalizeAccountDirectoryEndpoint(target.endpoint);
+    const serverIdentityId = target.serverIdentityId?.trim() ?? '';
+    return `${endpoint}\u0000${serverIdentityId}`;
+}
 
 export function parseAccountDirectoryCapability(value: unknown): AccountDirectoryCapabilities | null {
     const parsed = AccountDirectoryCapabilitiesSchema.safeParse(value);
@@ -40,11 +66,11 @@ function initialSnapshot(endpoint: string): AccountDirectorySessionSnapshot {
     return {
         endpoint,
         status: 'idle',
-        account: null,
         homes: [],
         preferredHomeServerIdentityId: null,
         refreshedAtMs: null,
         error: null,
+        reconciliation: { kind: 'not_run' },
     };
 }
 
@@ -54,16 +80,15 @@ export class AccountDirectorySession {
     private readonly capability: AccountDirectoryCapabilities | null;
     private snapshotValue: AccountDirectorySessionSnapshot;
     private refreshPromise: Promise<AccountDirectorySessionSnapshot> | null = null;
+    private lifecycleRevision = 0;
     private readonly credentialTarget: AccountDirectoryCredentialTarget;
 
     constructor(target: AccountDirectoryCredentialTarget, options: SessionOptions) {
         const normalized = normalizeAccountDirectoryEndpoint(target.endpoint);
         if (!normalized) throw new Error('Invalid Account Service endpoint');
-        const identityRaw = target.serverIdentityId ?? null;
-        const serverIdentityId = typeof identityRaw === 'string' && identityRaw.trim()
-            ? identityRaw.trim()
-            : null;
-        this.credentialTarget = { endpoint: normalized, ...(serverIdentityId ? { serverIdentityId } : {}) };
+        const serverIdentityId = target.serverIdentityId.trim();
+        if (!serverIdentityId) throw new Error('Account Service identity is required');
+        this.credentialTarget = { endpoint: normalized, serverIdentityId };
         this.snapshotValue = initialSnapshot(normalized);
         this.client = options.client ?? createAccountDirectoryClient(this.credentialTarget);
         this.capability = parseAccountDirectoryCapability(options.capability);
@@ -73,14 +98,21 @@ export class AccountDirectorySession {
         return this.snapshotValue;
     }
 
+    get supportsHomeEnrollment(): boolean {
+        return this.capability?.homeEnrollment === true;
+    }
+
+    get serviceKey(): string {
+        return createAccountDirectoryServiceKey(this.credentialTarget);
+    }
+
     subscribe(listener: (snapshot: AccountDirectorySessionSnapshot) => void): () => void {
         this.listeners.add(listener);
         return () => this.listeners.delete(listener);
     }
 
     async requestLoginAssertion(homeServerIdentityId: string, clientBoxPublicKeyBase64: string) {
-        if (this.capability?.homeEnrollment !== true) {
-            this.update({ ...this.snapshotValue, status: 'unsupported', error: null });
+        if (!this.supportsHomeEnrollment) {
             throw new Error('Account Service Home enrollment is unsupported');
         }
         return await this.client.requestLoginAssertion(homeServerIdentityId, { clientBoxPublicKeyBase64 });
@@ -102,6 +134,34 @@ export class AccountDirectorySession {
             throw new Error('Account Service Home directory is unsupported');
         }
         return await this.client.putHome(home);
+    }
+
+    /**
+     * Publishes relocation endpoint facts through the Account Service's
+     * monotonic V2 owner. Older servers reject this operation; callers must not
+     * fall back to ordinary V1 overwrite semantics.
+     */
+    async publishHomeDescriptor(home: Readonly<{
+        homeServerIdentityId: string;
+        label: string;
+        minimumOuterRevisionExclusive: number;
+        canonicalServerUrl: string;
+        endpoints: readonly HomeConnectionEndpointV1[];
+    }>) {
+        if (this.capability?.homeDirectory !== true) {
+            this.update({ ...this.snapshotValue, status: 'unsupported', error: null });
+            throw new Error('Account Service Home directory is unsupported');
+        }
+        return await this.client.publishHomeDescriptor(home);
+    }
+
+    /** Fresh authoritative readback used to reconcile a lost publication response. */
+    async readHomeDescriptor(homeServerIdentityId: string) {
+        if (this.capability?.homeDirectory !== true) {
+            this.update({ ...this.snapshotValue, status: 'unsupported', error: null });
+            throw new Error('Account Service Home directory is unsupported');
+        }
+        return await this.client.readHomeDescriptor(homeServerIdentityId);
     }
 
     /** Updates only the Account Service recommendation; callers refresh the projection afterwards. */
@@ -127,6 +187,12 @@ export class AccountDirectorySession {
         for (const listener of this.listeners) listener(next);
     }
 
+    /** Publishes the result of reconciling the current Directory snapshot into local Home profiles. */
+    recordReconciliation(result: AccountDirectoryReconciliationResult): AccountDirectorySessionSnapshot {
+        this.update({ ...this.snapshotValue, reconciliation: result });
+        return this.snapshotValue;
+    }
+
     async refresh(): Promise<AccountDirectorySessionSnapshot> {
         if (this.refreshPromise) return await this.refreshPromise;
         if (this.capability?.homeDirectory !== true) {
@@ -134,25 +200,27 @@ export class AccountDirectorySession {
             return this.snapshotValue;
         }
 
+        const lifecycleRevision = this.lifecycleRevision;
+        const isCurrent = () => lifecycleRevision === this.lifecycleRevision;
+        if (!isCurrent()) return this.snapshotValue;
         this.update({ ...this.snapshotValue, status: 'loading', error: null });
         this.refreshPromise = (async () => {
             try {
-                const [account, homes] = await Promise.all([
-                    this.client.getMe(),
-                    this.client.listHomes(),
-                ]);
+                const homes = await this.client.listHomes();
+                if (!isCurrent()) return this.snapshotValue;
                 const next: AccountDirectorySessionSnapshot = {
                     ...this.snapshotValue,
                     status: 'ready',
-                    account,
                     homes: homes.homes,
                     preferredHomeServerIdentityId: homes.preferredHomeServerIdentityId ?? null,
                     refreshedAtMs: Date.now(),
                     error: null,
+                    reconciliation: { kind: 'not_run' },
                 };
                 this.update(next);
                 return next;
             } catch (error) {
+                if (!isCurrent()) return this.snapshotValue;
                 const next: AccountDirectorySessionSnapshot = {
                     ...this.snapshotValue,
                     status: this.snapshotValue.homes.length > 0 ? 'stale' : 'error',
@@ -168,8 +236,9 @@ export class AccountDirectorySession {
     }
 
     async logout(): Promise<boolean> {
+        this.lifecycleRevision += 1;
         const removed = await accountDirectoryCredentialStorage.logout(this.credentialTarget);
-        this.update({ ...this.snapshotValue, account: null, status: 'idle', error: null });
+        this.update(initialSnapshot(this.snapshotValue.endpoint));
         return removed;
     }
 }

@@ -64,9 +64,11 @@ export type PersonalHomeBootstrapSystemTaskDeps = Readonly<{
         /** Retained Home data permits only idempotent reuse of existing pending custody. */
         resumePendingSeedOnly: boolean;
     }>) => Promise<Readonly<{ token: string; secret?: string }>>;
-    hasPendingBootstrapSeed: (input: Readonly<{
+    preparePendingBootstrapSeed: (input: Readonly<{
         serverUrl: string;
-        serverIdentityId: string;
+        serverIdentityId?: string;
+        /** Only a fresh status may create custody; retained data can reuse exact custody only. */
+        allowCreate: boolean;
     }>) => Promise<boolean>;
     persistCredentials: (input: Readonly<{
         serverUrl: string;
@@ -123,11 +125,11 @@ function normalizeUrl(value: unknown): string {
     return String(value ?? '').trim().replace(/\/+$/u, '');
 }
 
-function readRelayStatusData(result: SystemTaskResult, fallbackUrl: string) {
+function readRelayStatusData(result: SystemTaskResult) {
     if (!result.ok) {
         throw new PersonalHomeSystemTaskError(result.error.code, result.error.message);
     }
-    const decoded = readRelayRuntimeStatusData(result, { fallbackRelayUrl: fallbackUrl });
+    const decoded = readRelayRuntimeStatusData(result);
     if (!decoded) {
         throw new PersonalHomeSystemTaskError(
             'invalid_relay_runtime_status',
@@ -210,27 +212,44 @@ async function requirePlainEndpoint(
  */
 export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
     deps: PersonalHomeBootstrapSystemTaskDeps;
-    initialServerUrl: string;
     /** Pass 'use-this-local-home' only from the explicit existing-runtime decision action. */
     existingRuntimeDisposition?: PersonalHomeExistingRuntimeDisposition;
-}>): Promise<PersonalHomeBootstrapResult> {
+    /** Only a deliberate retry may recreate the explicitly erased Personal Home runtime. */
+    allowErasedRuntimeRecreate?: boolean;
+}>): Promise<PersonalHomeBootstrapResult & Readonly<{ profileId: string }>> {
     const initialTask = requireSuccessfulTask(
         await input.deps.runRelayTask('relay.runtime.status.v1', {}),
         'Personal Home runtime status',
     );
-    const initialStatus = readRelayStatusData(initialTask, input.initialServerUrl);
+    const initialStatus = readRelayStatusData(initialTask);
     const persistedPersonalHomeOrigin = initialStatus.purpose?.kind === 'personal-home'
         ? normalizeUrl(initialStatus.purpose.canonicalServerUrl)
         : null;
     const retainedClassifiedPersonalHome = initialStatus.dataPresent
         && !initialStatus.installed
         && persistedPersonalHomeOrigin != null;
-    const selectedPort = requireLoopbackPort(
-        retainedClassifiedPersonalHome ? persistedPersonalHomeOrigin : initialStatus.relayUrl,
-    );
-    const selectedCanonicalServerUrl = `http://127.0.0.1:${selectedPort}`;
+    const selectedCanonicalServerUrl = retainedClassifiedPersonalHome && persistedPersonalHomeOrigin
+        ? persistedPersonalHomeOrigin
+        : initialStatus.relayUrl;
+    const selectedPort = requireLoopbackPort(selectedCanonicalServerUrl);
 
     const existingRuntimeRecovery = input.existingRuntimeDisposition === 'use-this-local-home';
+    // The explicit recovery action has already selected this runtime and must be allowed to
+    // prove its endpoint-bound stored credential before any status ambiguity is interpreted as
+    // an erased fresh Home. It never creates an account, so this cannot reopen signup over
+    // retained data.
+    const erasedPersonalHomeAwaitingRetry = !existingRuntimeRecovery
+        && initialStatus.installed
+        && initialStatus.dataPresent === false
+        && initialStatus.purpose?.kind === 'personal-home'
+        && initialStatus.anonymousSignupEnabled === null;
+
+    if (erasedPersonalHomeAwaitingRetry && input.allowErasedRuntimeRecreate !== true) {
+        throw new PersonalHomeSystemTaskError(
+            'personal_home_erased_retry_required',
+            'Your Personal Home was erased. Try again to create a new one.',
+        );
+    }
 
     // An uninstalled runtime can still have a retained Personal Home database, files, or master
     // secret. Never run the fresh install/account path over that data. Reuse the existing-runtime
@@ -246,6 +265,7 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
     // steps before any reclassification. Every failure below happens before install/update, so an
     // unclassified runtime keeps its current purpose and no account/profile work ever starts.
     let recoveryCredentials: TokenOnlyCredentials | null = null;
+    let existingRuntimePreflightStarted = false;
     if (existingRuntimeRecovery && initialStatus.installed) {
         const classifiedOrigin = initialStatus.purpose?.kind === 'personal-home'
             ? normalizeUrl(initialStatus.purpose.canonicalServerUrl)
@@ -262,6 +282,14 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
                 await input.deps.runRelayTask('relay.runtime.start.v1', {}),
                 'Personal Home runtime start',
             );
+            const startedStatus = readRelayStatusData(requireSuccessfulTask(
+                await input.deps.runRelayTask('relay.runtime.status.v1', {}),
+                'Personal Home runtime status readback',
+            ));
+            if (!startedStatus.installed || !startedStatus.healthy) {
+                throw new Error('Personal Home runtime is not healthy after start.');
+            }
+            existingRuntimePreflightStarted = true;
         }
         const preflightEndpoint = await requirePlainEndpoint(input.deps, selectedCanonicalServerUrl);
         recoveryCredentials = normalizeTokenOnlyCredentials(await input.deps.readCredentials({
@@ -297,7 +325,11 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
         ) {
             throw new PersonalHomeExistingRuntimeConflictError();
         }
-        if (initialStatus.installed && initialStatus.anonymousSignupEnabled === null) {
+        if (
+            initialStatus.installed
+            && initialStatus.anonymousSignupEnabled === null
+            && !erasedPersonalHomeAwaitingRetry
+        ) {
             throw new PersonalHomeExistingRuntimeConflictError();
         }
     }
@@ -311,7 +343,23 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
         && initialStatus.purpose?.kind === 'personal-home'
         && normalizeUrl(initialStatus.purpose.canonicalServerUrl) === selectedCanonicalServerUrl;
     const managedSignupClosureAlreadyLive = classifiedPersonalHomeAtCanonicalOrigin
-        && initialStatus.anonymousSignupEnabled === false;
+        && initialStatus.anonymousSignupEnabled === false
+        && !erasedPersonalHomeAwaitingRetry;
+
+    // A fresh bootstrap must publish account-key custody before install/start can create a
+    // master secret, database, or other meaningful Home data. Retained data never authorizes a
+    // new seed; its exact prior URL/identity-scoped custody is checked only if account creation is
+    // still required after the runtime and identity are readable.
+    if (
+        !existingRuntimeRecovery
+        && initialStatus.dataPresent !== true
+        && !(await input.deps.preparePendingBootstrapSeed({
+            serverUrl: selectedCanonicalServerUrl,
+            allowCreate: true,
+        }))
+    ) {
+        throw new Error('Personal Home seed custody is unavailable.');
+    }
 
     const runConfiguredTask = async (
         kind: Exclude<PersonalHomeBootstrapTaskKind, 'relay.runtime.status.v1'>,
@@ -330,6 +378,29 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
         return { kind: 'personal-home' as const, canonicalServerUrl };
     };
 
+    const readMutationStatus = async (expectedAnonymousSignupEnabled: boolean): Promise<void> => {
+        const task = requireSuccessfulTask(
+            await input.deps.runRelayTask('relay.runtime.status.v1', {}),
+            'Personal Home runtime status readback',
+        );
+        const status = readRelayStatusData(task);
+        if (!status.installed || !status.healthy) {
+            throw new Error('Personal Home runtime is not healthy after install/update.');
+        }
+        if (
+            status.purpose?.kind !== 'personal-home'
+            || normalizeUrl(status.purpose.canonicalServerUrl) !== selectedCanonicalServerUrl
+        ) {
+            throw new Error('Personal Home runtime changed during install/update.');
+        }
+        if (expectedAnonymousSignupEnabled === false && status.anonymousSignupEnabled !== false) {
+            throw new PersonalHomeSignupClosureError();
+        }
+        if (status.anonymousSignupEnabled !== expectedAnonymousSignupEnabled) {
+            throw new Error('Personal Home runtime changed during install/update.');
+        }
+    };
+
     const bootstrapDeps: PersonalHomeBootstrapDeps = {
         bindLoopback: async () => {
             requireLoopbackPort(selectedCanonicalServerUrl);
@@ -343,19 +414,22 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
         ),
         ensureRuntimeStarted: async (desired) => {
             const purpose = purposeForDesiredState(desired);
-            if (classifiedPersonalHomeAtCanonicalOrigin) {
-                if (!initialStatus.healthy) {
+            let mutated = false;
+            if (classifiedPersonalHomeAtCanonicalOrigin && !erasedPersonalHomeAwaitingRetry) {
+                if (!initialStatus.healthy && !existingRuntimePreflightStarted) {
                     // Installed but stopped/unhealthy: the smallest lifecycle action only. A
                     // stopped runtime is never a reason to reinstall or rewrite the managed env.
                     requireSuccessfulTask(
                         await input.deps.runRelayTask('relay.runtime.start.v1', {}),
                         'Personal Home runtime start',
                     );
+                    mutated = true;
                 }
             } else {
                 await runConfiguredTask('relay.runtime.installOrUpdate.v1', desired.anonymousSignupEnabled, purpose);
-                await runConfiguredTask('relay.runtime.start.v1', desired.anonymousSignupEnabled, purpose);
+                mutated = true;
             }
+            if (mutated) await readMutationStatus(desired.anonymousSignupEnabled);
             const endpoint = await requirePlainEndpoint(input.deps, selectedCanonicalServerUrl);
             observedIdentityId = endpoint.serverIdentityId;
         },
@@ -375,13 +449,11 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
             const snapshot = await requirePlainEndpoint(input.deps, endpoint);
             observedIdentityId = snapshot.serverIdentityId;
             const resumePendingSeedOnly = initialStatus.dataPresent === true;
-            if (
-                resumePendingSeedOnly
-                && !(await input.deps.hasPendingBootstrapSeed({
-                    serverUrl: selectedCanonicalServerUrl,
-                    serverIdentityId: snapshot.serverIdentityId,
-                }))
-            ) {
+            if (!(await input.deps.preparePendingBootstrapSeed({
+                serverUrl: selectedCanonicalServerUrl,
+                serverIdentityId: snapshot.serverIdentityId,
+                allowCreate: false,
+            }))) {
                 // Retained Home data may resume only the exact endpoint-and-identity-scoped seed
                 // whose public key can already name a server-committed Account.
                 throw new PersonalHomeCredentialsUnverifiedError();
@@ -423,7 +495,7 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
             }
             const purpose = purposeForDesiredState(desired);
             await runConfiguredTask('relay.runtime.installOrUpdate.v1', desired.anonymousSignupEnabled, purpose);
-            await runConfiguredTask('relay.runtime.restart.v1', desired.anonymousSignupEnabled, purpose);
+            await readMutationStatus(desired.anonymousSignupEnabled);
         },
         readEffectivePolicy: async () => {
             const endpoint = await requirePlainEndpoint(input.deps, selectedCanonicalServerUrl);
@@ -438,7 +510,7 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
                 await input.deps.runRelayTask('relay.runtime.status.v1', {}),
                 'Personal Home runtime status readback',
             );
-            const status = readRelayStatusData(statusTask, selectedCanonicalServerUrl);
+            const status = readRelayStatusData(statusTask);
             if (!status.installed || !status.healthy) {
                 throw new Error('Personal Home runtime is not healthy after restart.');
             }
@@ -486,5 +558,9 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
         },
     };
 
-    return await runPersonalHomeBootstrap(bootstrapDeps);
+    const result = await runPersonalHomeBootstrap(bootstrapDeps);
+    if (!result.profileId) {
+        throw new Error('Personal Home completion did not produce an adopted profile.');
+    }
+    return { ...result, profileId: result.profileId };
 }

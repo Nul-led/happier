@@ -3,8 +3,9 @@ import { Linking } from 'react-native';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderScreen } from '@/dev/testkit';
+import { renderScreen as renderScreenBase } from '@/dev/testkit';
 import { t } from '@/text';
+import type { PreferredDirectoryHomeEnrollmentResult } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
 
 const endpointState = vi.hoisted(() => ({
     endpoint: {
@@ -14,7 +15,7 @@ const endpointState = vi.hoisted(() => ({
     } as {
         url: string;
         serverIdentityId?: string;
-        displayName: string;
+        displayName?: string;
         source: 'user';
     },
     set: vi.fn(),
@@ -23,8 +24,12 @@ const endpointState = vi.hoisted(() => ({
 const credentialGetMock = vi.hoisted(() => vi.fn(
     async (_target?: unknown): Promise<{ token: string } | null> => ({ token: 'directory-token' }),
 ));
-const refreshMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ status: 'ready' })));
-const enrollMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ kind: 'enrolled', homeServerIdentityId: 'home-b' })));
+const refreshMock = vi.hoisted(() => vi.fn<
+    (...args: unknown[]) => Promise<TestDirectorySessionSnapshot>
+>(async () => session.snapshot));
+const enrollMock = vi.hoisted(() => vi.fn<
+    (...args: unknown[]) => Promise<PreferredDirectoryHomeEnrollmentResult>
+>(async () => ({ kind: 'enrolled', homeServerIdentityId: 'home-b' })));
 const logoutMock = vi.hoisted(() => vi.fn(async () => true));
 const startOAuthMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => 'https://oauth.example.test/authorize'));
 const loginWithKeyMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ token: 'restricted-directory-token' })));
@@ -38,16 +43,34 @@ const provisionAuthenticatedHomeLinkMock = vi.hoisted(() => vi.fn(
 const setPreferredHomeMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ v: 1, preferredHomeServerIdentityId: 'home-b' })));
 const deleteHomeMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({ v: 1, deleted: true, homeServerIdentityId: 'home-a', preferredHomeServerIdentityId: 'home-b' })));
 const sessionRefreshMock = vi.hoisted(() => vi.fn());
+type TestDirectorySessionSnapshot = {
+    endpoint: string;
+    status: string;
+    homes: Array<Record<string, unknown>>;
+    preferredHomeServerIdentityId: string | null;
+    refreshedAtMs: number | null;
+    error: unknown;
+    reconciliation?: Readonly<{
+        kind: 'completed' | 'cancelled';
+        adopted: readonly string[];
+        failures: readonly Readonly<{
+            homeServerIdentityId: string;
+            label: string;
+            error: unknown;
+        }>[];
+    }>;
+};
 const session = vi.hoisted(() => ({
+    serviceKey: 'https://accounts.example.test\u0000directory-1',
+    supportsHomeEnrollment: true,
     snapshot: {
         endpoint: 'https://accounts.example.test',
         status: 'idle',
-        account: null,
         homes: [] as Array<Record<string, unknown>>,
         preferredHomeServerIdentityId: null as string | null,
         refreshedAtMs: null as number | null,
         error: null as unknown,
-    },
+    } as TestDirectorySessionSnapshot,
     listeners: new Set<(snapshot: unknown) => void>(),
     subscribe: vi.fn((listener: (snapshot: unknown) => void) => {
         session.listeners.add(listener);
@@ -60,9 +83,13 @@ const session = vi.hoisted(() => ({
 }));
 const createAccountDirectorySessionMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => session));
 const cancelPendingPreferredHomeEnrollmentMock = vi.hoisted(() => vi.fn(async () => {}));
+const resumePendingPreferredHomeEnrollmentMock = vi.hoisted(() => vi.fn<
+    () => Promise<PreferredDirectoryHomeEnrollmentResult | null>
+>(async () => null));
 const pendingEnrollmentState = vi.hoisted(() => ({
     value: null as null | Readonly<{
         kind: 'approval_required';
+        serviceKey: string;
         homeServerIdentityId: string;
         approvalId: string;
         expiresAtMs: number;
@@ -70,6 +97,9 @@ const pendingEnrollmentState = vi.hoisted(() => ({
         cancel: () => Promise<unknown>;
     }>,
     listeners: new Set<() => void>(),
+}));
+const activePollingState = vi.hoisted(() => ({
+    callback: null as null | (() => unknown | Promise<unknown>),
 }));
 
 function publishSessionSnapshot(next: typeof session.snapshot): void {
@@ -140,7 +170,9 @@ vi.mock('@/sync/ops/accountDirectory/refreshAccountHomeDirectory', () => ({
 vi.mock('@/sync/ops/accountDirectory/enrollPreferredDirectoryHome', () => ({
     enrollPreferredDirectoryHome: async (...args: unknown[]) => {
         const result = await enrollMock(...args);
-        pendingEnrollmentState.value = result?.kind === 'approval_required' ? result : null;
+        pendingEnrollmentState.value = result?.kind === 'approval_required'
+            ? { ...result, serviceKey: (args[0] as { serviceKey?: string })?.serviceKey ?? '' }
+            : null;
         for (const listener of pendingEnrollmentState.listeners) listener();
         return result;
     },
@@ -149,12 +181,40 @@ vi.mock('@/sync/ops/accountDirectory/enrollPreferredDirectoryHome', () => ({
         pendingEnrollmentState.value = null;
         for (const listener of pendingEnrollmentState.listeners) listener();
     },
+    resumePendingPreferredHomeEnrollment: async () => {
+        const result = await resumePendingPreferredHomeEnrollmentMock();
+        pendingEnrollmentState.value = result?.kind === 'approval_required'
+            ? {
+                ...result,
+                serviceKey: pendingEnrollmentState.value?.serviceKey ?? '',
+            } as typeof pendingEnrollmentState.value
+            : null;
+        for (const listener of pendingEnrollmentState.listeners) listener();
+        return result;
+    },
     getPendingPreferredHomeEnrollment: () => pendingEnrollmentState.value,
     subscribePendingPreferredHomeEnrollment: (listener: () => void) => {
         pendingEnrollmentState.listeners.add(listener);
         return () => pendingEnrollmentState.listeners.delete(listener);
     },
 }));
+vi.mock('@/sync/ops/accountDirectory/useAccountDirectoryActivePolling', async () => {
+    const React = await import('react');
+    return {
+        useAccountDirectoryActivePolling: (
+            callback: () => unknown | Promise<unknown>,
+            enabled = true,
+        ) => {
+            React.useEffect(() => {
+                if (!enabled) return;
+                activePollingState.callback = callback;
+                return () => {
+                    if (activePollingState.callback === callback) activePollingState.callback = null;
+                };
+            }, [callback, enabled]);
+        },
+    };
+});
 
 const promptMock = vi.hoisted(() => vi.fn(async () => 'https://new-accounts.example.test'));
 const alertAsyncMock = vi.hoisted(() => vi.fn(async () => {}));
@@ -165,6 +225,30 @@ vi.mock('@/modal', async () => {
 });
 
 import { AccountServiceSettingsSection } from './AccountServiceSettingsSection';
+import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
+
+async function renderScreen(...args: Parameters<typeof renderScreenBase>) {
+    const screen = await renderScreenBase(...args);
+    const advanced = screen.findAll((node) => node.props?.testID === 'settings-account-service-advanced')[0];
+    if (advanced) act(() => advanced.props.onExpandedChange(true));
+    return screen;
+}
+
+async function waitForAutomaticHydration(
+    screen: Awaited<ReturnType<typeof renderScreen>>,
+): Promise<void> {
+    await vi.waitFor(() => expect(refreshMock).toHaveBeenCalled());
+    await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull());
+}
+
+function clearAutomaticHydrationCalls(): void {
+    refreshMock.mockClear();
+    enrollMock.mockClear();
+    createAccountDirectorySessionMock.mockClear();
+    sessionRefreshMock.mockClear();
+    endpointState.set.mockClear();
+    probeServerFeaturesAtUrlMock.mockClear();
+}
 
 describe('AccountServiceSettingsSection', () => {
     const supportedCapability = {
@@ -183,8 +267,11 @@ describe('AccountServiceSettingsSection', () => {
         enrollMock.mockReset();
         enrollMock.mockResolvedValue({ kind: 'enrolled', homeServerIdentityId: 'home-b' });
         cancelPendingPreferredHomeEnrollmentMock.mockClear();
+        resumePendingPreferredHomeEnrollmentMock.mockReset();
+        resumePendingPreferredHomeEnrollmentMock.mockResolvedValue(null);
         pendingEnrollmentState.value = null;
         pendingEnrollmentState.listeners.clear();
+        activePollingState.callback = null;
         credentialMutationListeners.clear();
         logoutMock.mockClear();
         createAccountDirectorySessionMock.mockClear();
@@ -203,6 +290,9 @@ describe('AccountServiceSettingsSection', () => {
             serverIdentityId: 'directory-1',
             features: {
                 capabilities: {
+                    server: {
+                        canonicalServerUrl: 'https://canonical-accounts.example.test',
+                    },
                     accountDirectory: supportedCapability,
                     oauth: {
                         providers: {
@@ -212,6 +302,7 @@ describe('AccountServiceSettingsSection', () => {
                         },
                     },
                     auth: {
+                        keyChallenge: { v2: true },
                         methods: [
                             {
                                 id: 'oidc',
@@ -233,6 +324,7 @@ describe('AccountServiceSettingsSection', () => {
         credentialGetMock.mockResolvedValue({ token: 'directory-token' });
         endpointState.endpoint = {
             url: 'https://accounts.example.test',
+            serverIdentityId: 'directory-1',
             displayName: 'Company Account Service',
             source: 'user',
         };
@@ -251,11 +343,12 @@ describe('AccountServiceSettingsSection', () => {
             preferredHomeServerIdentityId: 'home-b',
         });
         session.listeners.clear();
+        session.serviceKey = 'https://accounts.example.test\u0000directory-1';
+        session.supportsHomeEnrollment = true;
         session.subscribe.mockClear();
         session.snapshot = {
             endpoint: 'https://accounts.example.test',
             status: 'idle',
-            account: null,
             homes: [],
             preferredHomeServerIdentityId: null,
             refreshedAtMs: null,
@@ -265,7 +358,6 @@ describe('AccountServiceSettingsSection', () => {
             publishSessionSnapshot({
                 endpoint: 'https://accounts.example.test',
                 status: 'ready',
-                account: null,
                 homes: [
                     {
                         v: 1,
@@ -326,6 +418,123 @@ describe('AccountServiceSettingsSection', () => {
         expect(screen.findByTestId('settings-account-service-refresh')).not.toBeNull();
     });
 
+    it('shows secure custody unavailable instead of disconnected when credential loading fails', async () => {
+        credentialGetMock.mockRejectedValueOnce(new Error('secure storage unavailable'));
+
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+
+        await vi.waitFor(() => {
+            expect(screen.findAllByTestId('settings-account-service-status').find((node) => node.props.detail)?.props.detail)
+                .toBe(t('common.unavailable'));
+        });
+        expect(screen.findByTestId('settings-account-service-login')).toBeNull();
+    });
+
+    it('automatically probes and hydrates the canonical Directory session after connected mount', async () => {
+        endpointState.endpoint = {
+            url: 'https://accounts.example.test',
+            displayName: 'Company Account Service',
+            source: 'user',
+        };
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+
+        await vi.waitFor(() => expect(refreshMock).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull());
+        expect(credentialGetMock).toHaveBeenCalledWith({
+            endpoint: 'https://accounts.example.test',
+            serverIdentityId: 'directory-1',
+        });
+        expect(endpointState.set).toHaveBeenCalledWith(expect.objectContaining({
+            url: 'https://accounts.example.test',
+            serverIdentityId: 'directory-1',
+        }));
+        expect(createAccountDirectorySessionMock).toHaveBeenCalledOnce();
+        expect(enrollMock).toHaveBeenCalledOnce();
+    });
+
+    it('projects one reconciliation failure on its Home row while preserving later successful Homes', async () => {
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-b')).not.toBeNull());
+        act(() => publishSessionSnapshot({
+            ...session.snapshot,
+            reconciliation: {
+                kind: 'completed',
+                adopted: ['home-b'],
+                failures: [{
+                    homeServerIdentityId: 'home-a',
+                    label: 'Home A',
+                    error: new Error('identity conflict'),
+                }],
+            },
+        }));
+        expect(screen.findAllByTestId('settings-account-service-home-home-a')
+            .find((node) => typeof node.props.detail === 'string')?.props.detail)
+            .toContain(t('settingsAccount.accountServiceHomeConnectionFailed'));
+        expect(screen.findAllByTestId('settings-account-service-home-home-b')
+            .find((node) => typeof node.props.detail === 'string')?.props.detail ?? '')
+            .not.toContain(t('settingsAccount.accountServiceHomeConnectionFailed'));
+    });
+
+    it('keeps an OAuth-created pending approval across settings mount, unmount, and remount', async () => {
+        pendingEnrollmentState.value = {
+            kind: 'approval_required',
+            serviceKey: 'https://accounts.example.test\u0000directory-1',
+            homeServerIdentityId: 'home-b',
+            approvalId: 'approval-home-b',
+            expiresAtMs: Date.now() + 60_000,
+            resume: vi.fn(async () => ({ kind: 'approval_required' })),
+            cancel: vi.fn(async () => ({ kind: 'cancelled' })),
+        } as typeof pendingEnrollmentState.value;
+        endpointState.endpoint = {
+            ...endpointState.endpoint,
+            serverIdentityId: 'directory-1',
+        };
+
+        const first = await renderScreen(<AccountServiceSettingsSection />);
+        await vi.waitFor(() => expect(activePollingState.callback).not.toBeNull());
+        act(() => first.tree.unmount());
+        expect(cancelPendingPreferredHomeEnrollmentMock).not.toHaveBeenCalled();
+
+        const second = await renderScreen(<AccountServiceSettingsSection />);
+        await vi.waitFor(() => expect(activePollingState.callback).not.toBeNull());
+        await act(async () => activePollingState.callback?.());
+        expect(resumePendingPreferredHomeEnrollmentMock).toHaveBeenCalledOnce();
+        expect(cancelPendingPreferredHomeEnrollmentMock).not.toHaveBeenCalled();
+        act(() => second.tree.unmount());
+    });
+
+    it('keeps Directory Homes ready and skips preferred enrollment when only Home enrollment is unsupported', async () => {
+        session.supportsHomeEnrollment = false;
+        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
+            status: 'ready',
+            serverIdentityId: 'directory-1',
+            features: {
+                capabilities: {
+                    accountDirectory: { ...supportedCapability, homeEnrollment: false },
+                },
+            },
+        });
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+
+        await vi.waitFor(() => expect(refreshMock).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull());
+        expect(enrollMock).not.toHaveBeenCalled();
+        expect(screen.findByTestId('settings-account-service-directory-unsupported')).toBeNull();
+    });
+
+    it('uses a product-facing endpoint name for the primary group when no display name is stored', async () => {
+        endpointState.endpoint = {
+            url: 'https://accounts.example.test',
+            source: 'user',
+        };
+
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+
+        expect(screen.findAll((node) => node.props?.title === 'accounts.example.test').length).toBeGreaterThan(0);
+        expect(screen.findAll((node) => node.props?.title === 'https://accounts.example.test')).toHaveLength(0);
+    });
+
     it('hides the old service projection synchronously when the endpoint identity changes', async () => {
         const screen = await renderScreen(<AccountServiceSettingsSection />);
         await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-refresh')).not.toBeNull());
@@ -359,9 +568,7 @@ describe('AccountServiceSettingsSection', () => {
         await screen.pressByTestIdAsync('settings-account-service-refresh');
         await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull());
         expect(screen.findByTestId('settings-account-service-home-home-b-preferred')).not.toBeNull();
-        expect(screen.findAllByTestId('settings-account-service-home-home-b')
-            .find((node) => typeof node.props.detail === 'string')?.props.detail)
-            .toContain(t('settingsAccount.accountServiceHomeConnected'));
+        expect(screen.findByTestId('settings-account-service-home-home-b-preferred')).not.toBeNull();
         endpointState.set.mockClear();
         promptMock.mockResolvedValueOnce(null);
 
@@ -370,9 +577,7 @@ describe('AccountServiceSettingsSection', () => {
         expect(endpointState.set).not.toHaveBeenCalled();
         expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull();
         expect(screen.findByTestId('settings-account-service-home-home-b-preferred')).not.toBeNull();
-        expect(screen.findAllByTestId('settings-account-service-home-home-b')
-            .find((node) => typeof node.props.detail === 'string')?.props.detail)
-            .toContain(t('settingsAccount.accountServiceHomeConnected'));
+        expect(screen.findByTestId('settings-account-service-home-home-b-preferred')).not.toBeNull();
     });
 
     it('keeps same-service Homes visible during refresh and localizes pending state to that work', async () => {
@@ -382,9 +587,12 @@ describe('AccountServiceSettingsSection', () => {
         await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull());
 
         let resolveRefresh: ((value: typeof session.snapshot) => void) | null = null;
-        refreshMock.mockImplementationOnce(() => new Promise((resolve) => {
-            resolveRefresh = resolve;
-        }));
+        refreshMock.mockImplementationOnce(() => {
+            publishSessionSnapshot({ ...session.snapshot, status: 'loading', error: null });
+            return new Promise((resolve) => {
+                resolveRefresh = resolve;
+            });
+        });
         const refreshPress = screen.pressByTestIdAsync('settings-account-service-refresh');
 
         await vi.waitFor(() => expect(screen.findAllByTestId('settings-account-service-refresh').some((node) => node.props.loading === true)).toBe(true));
@@ -393,6 +601,31 @@ describe('AccountServiceSettingsSection', () => {
 
         await act(async () => resolveRefresh?.(session.snapshot));
         await refreshPress;
+        expect(createAccountDirectorySessionMock).toHaveBeenCalledOnce();
+    });
+
+    it('renders loading and stale-error state directly from the bound session while preserving its Homes', async () => {
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await screen.pressByTestIdAsync('settings-account-service-refresh');
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull());
+
+        act(() => publishSessionSnapshot({
+            ...session.snapshot,
+            status: 'loading',
+            error: null,
+        }));
+
+        expect(screen.findAllByTestId('settings-account-service-refresh').some((node) => node.props.loading === true)).toBe(true);
+        expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull();
+
+        act(() => publishSessionSnapshot({
+            ...session.snapshot,
+            status: 'stale',
+            error: new Error('offline'),
+        }));
+
+        expect(screen.findByTestId('settings-account-service-directory-unavailable')).not.toBeNull();
+        expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull();
     });
 
     it('uses row-local pending state so another Home action remains available', async () => {
@@ -424,11 +657,14 @@ describe('AccountServiceSettingsSection', () => {
         await unsupportedScreen.pressByTestIdAsync('settings-account-service-refresh');
         expect(unsupportedScreen.findByTestId('settings-account-service-directory-unsupported')).not.toBeNull();
 
-        refreshMock.mockResolvedValueOnce({
-            ...session.snapshot,
-            status: 'ready',
-            homes: [],
-            preferredHomeServerIdentityId: null,
+        refreshMock.mockImplementationOnce(async () => {
+            publishSessionSnapshot({
+                ...session.snapshot,
+                status: 'ready',
+                homes: [],
+                preferredHomeServerIdentityId: null,
+            });
+            return session.snapshot;
         });
         const emptyScreen = await renderScreen(<AccountServiceSettingsSection />);
         await vi.waitFor(() => expect(emptyScreen.findByTestId('settings-account-service-refresh')).not.toBeNull());
@@ -447,18 +683,23 @@ describe('AccountServiceSettingsSection', () => {
 
     it('offers reconnection when the Account Service credential has expired', async () => {
         const expired = Object.assign(new Error('expired'), { status: 401 });
-        refreshMock.mockResolvedValueOnce({
-            ...session.snapshot,
-            status: 'error',
-            error: expired,
+        refreshMock.mockImplementationOnce(async () => {
+            publishSessionSnapshot({
+                ...session.snapshot,
+                status: 'error',
+                error: expired,
+            });
+            return session.snapshot;
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
         await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-refresh')).not.toBeNull());
 
         await screen.pressByTestIdAsync('settings-account-service-refresh');
 
-        expect(screen.findByTestId('settings-account-service-directory-credential-expired')).not.toBeNull();
-        expect(screen.findByTestId('settings-account-service-login')).not.toBeNull();
+        await vi.waitFor(() => {
+            expect(screen.findByTestId('settings-account-service-directory-credential-expired')).not.toBeNull();
+            expect(screen.findByTestId('settings-account-service-login')).not.toBeNull();
+        });
     });
 
     it('keeps Home identity secondary and exposes explicit preferred status and action text', async () => {
@@ -469,11 +710,84 @@ describe('AccountServiceSettingsSection', () => {
         const preferred = screen.findAllByTestId('settings-account-service-home-home-b')
             .find((node) => node.props.title === 'Home B');
         expect(preferred?.props.title).toBe('Home B');
-        expect(preferred?.props.subtitle).toBe('https://home-b.test');
+        expect(preferred?.props.subtitle).toBeUndefined();
         expect(preferred?.props.accessibilityLabel).toContain(t('settingsAccount.accountServicePreferredHome'));
         expect(preferred?.props.rightElement).toBeTruthy();
-        expect(screen.findAllByTestId('settings-account-service-refresh').find((node) => node.props.subtitle)?.props.subtitle)
-            .toBe(t('settingsAccount.accountServiceDiscoveryDescription'));
+        expect(screen.getTextContent()).toContain(t('settingsAccount.accountServiceDiscoveryDescription'));
+    });
+
+    it('keeps at most one common Home action inline and moves destructive actions to overflow', async () => {
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await screen.pressByTestIdAsync('settings-account-service-refresh');
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull());
+
+        const actions = screen.findAllByType(ItemRowActions)
+            .find((node) => node.props.title === 'Home A');
+        expect(actions?.props.compactThreshold).toBe(Number.MAX_SAFE_INTEGER);
+        expect(actions?.props.compactActionIds).toHaveLength(1);
+        expect(actions?.props.compactActionIds).not.toContain('settings-account-service-home-home-a-remove');
+        expect(actions?.props.actions.some((action: { id: string; destructive?: boolean }) => (
+            action.id === 'settings-account-service-home-home-a-remove' && action.destructive === true
+        ))).toBe(true);
+    });
+
+    it('shows canonical service and Home technical facts only inside Advanced', async () => {
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await screen.pressByTestIdAsync('settings-account-service-refresh');
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-b')).not.toBeNull());
+
+        expect(screen.findByTestId('settings-account-service-select')?.props.subtitle)
+            .toBe('https://accounts.example.test');
+        expect(screen.findByTestId('settings-account-service-select')?.props.detail)
+            .toBe('directory-1');
+        expect(screen.findByTestId('settings-account-service-technical-last-refresh')?.props.detail).toBeTruthy();
+        expect(screen.findByTestId('settings-account-service-technical-preferred')?.props.detail).toBe('Home B');
+        expect(screen.findByTestId('settings-account-service-home-home-b')?.props.subtitle).toBeUndefined();
+        expect(screen.findByTestId('settings-account-service-technical-home-home-b')?.props.subtitle)
+            .toContain('https://home-b.test');
+    });
+
+    it('renders local Link actions and Directory state in one coherent Homes surface', async () => {
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        profiles.upsertServerProfile({
+            serverUrl: 'https://coherent-home.example.test',
+            name: 'Coherent Home',
+            source: 'manual',
+        });
+        profiles.setServerProfileIdentityForUrl('https://coherent-home.example.test', 'srv_coherent_home');
+        getCredentialsMock.mockResolvedValue({ token: 'home-a-token' });
+        for (const listener of credentialMutationListeners) listener();
+        refreshMock.mockImplementationOnce(async () => {
+            publishSessionSnapshot({
+                ...session.snapshot,
+                status: 'ready',
+                homes: [{
+                    v: 1,
+                    homeServerIdentityId: 'srv_coherent_home',
+                    canonicalServerUrl: 'https://coherent-home.example.test',
+                    label: 'Coherent Home',
+                    connectionDescriptor: {
+                        v: 1,
+                        homeServerIdentityId: 'srv_coherent_home',
+                        canonicalServerUrl: 'https://coherent-home.example.test',
+                        revision: 1,
+                        endpoints: [{ kind: 'https', url: 'https://coherent-home.example.test' }],
+                    },
+                    createdAtMs: 1,
+                    updatedAtMs: 1,
+                    preferred: true,
+                }],
+                preferredHomeServerIdentityId: 'srv_coherent_home',
+            });
+            return session.snapshot;
+        });
+
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await screen.pressByTestIdAsync('settings-account-service-refresh');
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-srv_coherent_home')).not.toBeNull());
+
+        expect(screen.findByTestId('settings-account-service-home-srv_coherent_home-link')).not.toBeNull();
+        expect(screen.findByTestId('settings-account-service-local-home-srv_coherent_home')).toBeNull();
     });
 
     it('fails closed before restricted OAuth when Account Directory capability is missing', async () => {
@@ -576,6 +890,7 @@ describe('AccountServiceSettingsSection', () => {
         expect(loginWithKeyMock).toHaveBeenCalledWith({
             endpointUrl: 'https://accounts.example.test',
             endpointServerIdentityId: 'directory-1',
+            canonicalServerUrl: 'https://canonical-accounts.example.test',
             secret: expect.any(Uint8Array),
         });
         const loginInput = loginWithKeyMock.mock.calls[0]?.[0] as { secret: Uint8Array } | undefined;
@@ -591,8 +906,12 @@ describe('AccountServiceSettingsSection', () => {
             },
             { capability: supportedCapability },
         );
-        expect(refreshMock).toHaveBeenCalledWith(session);
-        expect(enrollMock).toHaveBeenCalledWith(session);
+        expect(refreshMock).toHaveBeenCalledWith(session, expect.objectContaining({
+            shouldCancel: expect.any(Function),
+        }));
+        expect(enrollMock).toHaveBeenCalledWith(session, expect.objectContaining({
+            shouldCancel: expect.any(Function),
+        }));
         expect(startOAuthMock).not.toHaveBeenCalled();
         expect(openUrl).not.toHaveBeenCalled();
         expect(profiles.getActiveServerSnapshot().serverId).toBe(focusedServerId);
@@ -621,7 +940,108 @@ describe('AccountServiceSettingsSection', () => {
         ).toContain(t('settingsAccount.accountServiceHomeApprovalRequired')));
     });
 
-    it('captures the focused authenticated Home identity into the Directory OAuth start', async () => {
+    it('automatically resumes key-login enrollment after Home approval without a manual Retry action', async () => {
+        credentialGetMock.mockResolvedValueOnce(null);
+        promptMock.mockResolvedValueOnce('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+        enrollMock.mockResolvedValueOnce({
+            kind: 'approval_required',
+            homeServerIdentityId: 'home-b',
+            approvalId: 'approval-home-b',
+            expiresAtMs: Date.now() + 60_000,
+            resume: vi.fn(async () => ({ kind: 'enrolled', homeServerIdentityId: 'home-b' })),
+            cancel: vi.fn(async () => ({ kind: 'cancelled' })),
+        });
+        resumePendingPreferredHomeEnrollmentMock.mockResolvedValueOnce({
+            kind: 'enrolled',
+            homeServerIdentityId: 'home-b',
+        });
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-key-login')).not.toBeNull());
+
+        await screen.pressByTestIdAsync('settings-account-service-key-login');
+        await vi.waitFor(() => expect(activePollingState.callback).not.toBeNull());
+        await act(async () => {
+            activePollingState.callback?.();
+        });
+
+        expect(resumePendingPreferredHomeEnrollmentMock).toHaveBeenCalledOnce();
+        expect(screen.findAllByTestId('settings-account-service-home-home-b')
+            .find((node) => typeof node.props.detail === 'string')?.props.detail ?? '')
+            .not.toContain(t('settingsAccount.accountServiceHomeApprovalRequired'));
+        expect(screen.findByTestId('settings.server.homeEnrollment.pending.retry')).toBeNull();
+    });
+
+    it('reports a transient polling outcome when pending Home enrollment resume fails', async () => {
+        endpointState.endpoint = {
+            ...endpointState.endpoint,
+            serverIdentityId: 'directory-1',
+        };
+        pendingEnrollmentState.value = {
+            kind: 'approval_required',
+            serviceKey: 'https://accounts.example.test\u0000directory-1',
+            homeServerIdentityId: 'home-b',
+            approvalId: 'approval-home-b',
+            expiresAtMs: Date.now() + 60_000,
+            resume: vi.fn(async () => ({ kind: 'approval_required' })),
+            cancel: vi.fn(async () => ({ kind: 'cancelled' })),
+        } as typeof pendingEnrollmentState.value;
+        resumePendingPreferredHomeEnrollmentMock.mockRejectedValueOnce(new Error('transport unavailable'));
+
+        await renderScreen(<AccountServiceSettingsSection />);
+        await vi.waitFor(() => expect(activePollingState.callback).not.toBeNull());
+        let outcome: unknown;
+        await act(async () => {
+            outcome = await activePollingState.callback?.();
+        });
+
+        expect(outcome).toBe('transient');
+    });
+
+    it.each(['failed', 'cancelled', 'rejected'] as const)(
+        'does not project a polling continuation that resolves %s after disconnect into the next connection',
+        async (outcome) => {
+            credentialGetMock.mockResolvedValueOnce(null);
+            promptMock
+                .mockResolvedValueOnce('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA')
+                .mockResolvedValueOnce('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+            enrollMock.mockResolvedValueOnce({
+                kind: 'approval_required',
+                homeServerIdentityId: 'home-b',
+                approvalId: 'approval-home-b',
+                expiresAtMs: Date.now() + 60_000,
+                resume: vi.fn(async () => ({ kind: 'cancelled' })),
+                cancel: vi.fn(async () => ({ kind: 'cancelled' })),
+            });
+            let settleResume: (() => void) | null = null;
+            resumePendingPreferredHomeEnrollmentMock.mockImplementationOnce(() => new Promise((resolve, reject) => {
+                settleResume = () => {
+                    if (outcome === 'rejected') reject(new Error('late rejection'));
+                    else resolve({ kind: outcome, ...(outcome === 'failed' ? { error: new Error('late failure') } : {}) });
+                };
+            }));
+            const screen = await renderScreen(<AccountServiceSettingsSection />);
+            await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-key-login')).not.toBeNull());
+
+            await screen.pressByTestIdAsync('settings-account-service-key-login');
+            await vi.waitFor(() => expect(activePollingState.callback).not.toBeNull());
+            act(() => {
+                void activePollingState.callback?.();
+            });
+            await vi.waitFor(() => expect(resumePendingPreferredHomeEnrollmentMock).toHaveBeenCalledOnce());
+
+            await screen.pressByTestIdAsync('settings-account-service-disconnect');
+            await act(async () => settleResume?.());
+            await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-key-login')).not.toBeNull());
+            await screen.pressByTestIdAsync('settings-account-service-key-login');
+
+            await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-b')).not.toBeNull());
+            expect(screen.findAllByTestId('settings-account-service-home-home-b')
+                .find((node) => typeof node.props.detail === 'string')?.props.detail ?? '')
+                .not.toContain(t('settingsAccount.accountServiceHomeConnectionFailed'));
+        },
+    );
+
+    it('captures explicit Link-this-Home intent into OAuth without inferring it from focus', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const focused = profiles.upsertServerProfile({
             serverUrl: 'https://home-a.test',
@@ -631,7 +1051,7 @@ describe('AccountServiceSettingsSection', () => {
         profiles.setServerProfileIdentityForUrl('https://home-a.test', 'srv_home_a');
         profiles.setActiveServerId(focused.id);
         credentialGetMock.mockResolvedValueOnce(null);
-        getCredentialsMock.mockResolvedValueOnce({ token: 'home-a-token' });
+        getCredentialsMock.mockResolvedValue({ token: 'home-a-token' });
         probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
             status: 'ready',
             serverIdentityId: 'directory-1',
@@ -650,9 +1070,11 @@ describe('AccountServiceSettingsSection', () => {
         });
         const openUrl = vi.spyOn(Linking, 'openURL').mockResolvedValueOnce(undefined);
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-login')).not.toBeNull());
+        await vi.waitFor(() => expect(
+            screen.findByTestId('settings-account-service-local-home-srv_home_a-link'),
+        ).not.toBeNull());
 
-        await screen.pressByTestIdAsync('settings-account-service-login');
+        await screen.pressByTestIdAsync('settings-account-service-local-home-srv_home_a-link');
 
         expect(startOAuthMock).toHaveBeenCalledWith(expect.objectContaining({
             endpointUrl: 'https://accounts.example.test',
@@ -661,7 +1083,7 @@ describe('AccountServiceSettingsSection', () => {
         }));
         expect(getCredentialsMock).toHaveBeenCalledWith(
             'https://home-a.test',
-            { serverId: 'srv_home_a' },
+            expect.objectContaining({ serverId: expect.any(String) }),
         );
         const startInput = startOAuthMock.mock.calls[0]?.[0] as Record<string, unknown>;
         expect(startInput).not.toHaveProperty('credentials');
@@ -669,7 +1091,7 @@ describe('AccountServiceSettingsSection', () => {
         openUrl.mockRestore();
     });
 
-    it('re-provisions the authenticated Home relationship before directory refresh and enrollment', async () => {
+    it('keeps ordinary Refresh read-only while refreshing and enrolling an already-linked preferred Home', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const focused = profiles.upsertServerProfile({
             serverUrl: 'https://home-a.test',
@@ -678,7 +1100,7 @@ describe('AccountServiceSettingsSection', () => {
         });
         profiles.setServerProfileIdentityForUrl('https://home-a.test', 'srv_home_a');
         profiles.setActiveServerId(focused.id);
-        getCredentialsMock.mockResolvedValueOnce({ token: 'home-a-token' });
+        getCredentialsMock.mockResolvedValue({ token: 'home-a-token' });
         probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
             status: 'ready',
             serverIdentityId: 'directory-1',
@@ -696,20 +1118,16 @@ describe('AccountServiceSettingsSection', () => {
             },
             { capability: supportedCapability },
         );
-        expect(provisionAuthenticatedHomeLinkMock).toHaveBeenCalledWith(expect.objectContaining({
-            session,
-            homeServerIdentityId: 'srv_home_a',
-            issuerServerIdentityId: 'directory-1',
-            capability: supportedCapability,
+        expect(provisionAuthenticatedHomeLinkMock).not.toHaveBeenCalled();
+        expect(refreshMock).toHaveBeenCalledWith(session, expect.objectContaining({
+            shouldCancel: expect.any(Function),
         }));
-        const provisionOrder = provisionAuthenticatedHomeLinkMock.mock.invocationCallOrder[0];
-        const refreshOrder = refreshMock.mock.invocationCallOrder[0];
-        expect(provisionOrder).toBeLessThan(refreshOrder);
-        expect(refreshMock).toHaveBeenCalledWith(session);
-        expect(enrollMock).toHaveBeenCalledWith(session);
+        expect(enrollMock).toHaveBeenCalledWith(session, expect.objectContaining({
+            shouldCancel: expect.any(Function),
+        }));
     });
 
-    it('confirms an exact signing-key conflict before explicitly re-linking through the same provision path', async () => {
+    it('confirms an exact signing-key conflict from the explicit Home Link action', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const focused = profiles.upsertServerProfile({
             serverUrl: 'https://home-a.test',
@@ -718,7 +1136,7 @@ describe('AccountServiceSettingsSection', () => {
         });
         profiles.setServerProfileIdentityForUrl('https://home-a.test', 'srv_home_a');
         profiles.setActiveServerId(focused.id);
-        getCredentialsMock.mockResolvedValueOnce({ token: 'home-a-token' });
+        getCredentialsMock.mockResolvedValue({ token: 'home-a-token' });
         provisionAuthenticatedHomeLinkMock
             .mockResolvedValueOnce({ kind: 'relink_required', homeServerIdentityId: 'srv_home_a' })
             .mockResolvedValueOnce({ kind: 'linked', homeServerIdentityId: 'srv_home_a' });
@@ -728,9 +1146,11 @@ describe('AccountServiceSettingsSection', () => {
             features: { capabilities: { accountDirectory: supportedCapability } },
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-refresh')).not.toBeNull());
+        await vi.waitFor(() => expect(
+            screen.findByTestId('settings-account-service-local-home-srv_home_a-link'),
+        ).not.toBeNull());
 
-        await screen.pressByTestIdAsync('settings-account-service-refresh');
+        await screen.pressByTestIdAsync('settings-account-service-local-home-srv_home_a-link');
 
         await vi.waitFor(() => expect(confirmMock).toHaveBeenCalledOnce());
         expect(provisionAuthenticatedHomeLinkMock).toHaveBeenCalledTimes(2);
@@ -742,8 +1162,12 @@ describe('AccountServiceSettingsSection', () => {
             capability: supportedCapability,
             relink: true,
         }));
-        expect(refreshMock).toHaveBeenCalledWith(session);
-        expect(enrollMock).toHaveBeenCalledWith(session);
+        expect(refreshMock).toHaveBeenCalledWith(session, expect.objectContaining({
+            shouldCancel: expect.any(Function),
+        }));
+        expect(enrollMock).toHaveBeenCalledWith(session, expect.objectContaining({
+            shouldCancel: expect.any(Function),
+        }));
     });
 
     it('keeps the pinned Home trust unchanged when explicit re-link confirmation is declined', async () => {
@@ -755,7 +1179,7 @@ describe('AccountServiceSettingsSection', () => {
         });
         profiles.setServerProfileIdentityForUrl('https://home-a.test', 'srv_home_a');
         profiles.setActiveServerId(focused.id);
-        getCredentialsMock.mockResolvedValueOnce({ token: 'home-a-token' });
+        getCredentialsMock.mockResolvedValue({ token: 'home-a-token' });
         provisionAuthenticatedHomeLinkMock.mockResolvedValueOnce({
             kind: 'relink_required',
             homeServerIdentityId: 'srv_home_a',
@@ -767,9 +1191,11 @@ describe('AccountServiceSettingsSection', () => {
             features: { capabilities: { accountDirectory: supportedCapability } },
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-refresh')).not.toBeNull());
+        await vi.waitFor(() => expect(
+            screen.findByTestId('settings-account-service-local-home-srv_home_a-link'),
+        ).not.toBeNull());
 
-        await screen.pressByTestIdAsync('settings-account-service-refresh');
+        await screen.pressByTestIdAsync('settings-account-service-local-home-srv_home_a-link');
 
         await vi.waitFor(() => expect(confirmMock).toHaveBeenCalledOnce());
         expect(provisionAuthenticatedHomeLinkMock).toHaveBeenCalledOnce();
@@ -787,7 +1213,7 @@ describe('AccountServiceSettingsSection', () => {
         });
         profiles.setServerProfileIdentityForUrl('https://home-a.test', 'srv_home_a');
         profiles.setActiveServerId(focused.id);
-        getCredentialsMock.mockResolvedValueOnce({ token: 'home-a-token' });
+        getCredentialsMock.mockResolvedValue({ token: 'home-a-token' });
         provisionAuthenticatedHomeLinkMock.mockResolvedValueOnce({
             kind: 'unavailable',
             reason: 'home_transport_unavailable',
@@ -798,9 +1224,11 @@ describe('AccountServiceSettingsSection', () => {
             features: { capabilities: { accountDirectory: supportedCapability } },
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-refresh')).not.toBeNull());
+        await vi.waitFor(() => expect(
+            screen.findByTestId('settings-account-service-local-home-srv_home_a-link'),
+        ).not.toBeNull());
 
-        await screen.pressByTestIdAsync('settings-account-service-refresh');
+        await screen.pressByTestIdAsync('settings-account-service-local-home-srv_home_a-link');
 
         await vi.waitFor(() => expect(alertAsyncMock).toHaveBeenCalledOnce());
         expect(provisionAuthenticatedHomeLinkMock).toHaveBeenCalledOnce();
@@ -947,8 +1375,12 @@ describe('AccountServiceSettingsSection', () => {
             },
             { capability: supportedCapability },
         );
-        expect(refreshMock).toHaveBeenCalledWith(session);
-        expect(enrollMock).toHaveBeenCalledWith(session);
+        expect(refreshMock).toHaveBeenCalledWith(session, expect.objectContaining({
+            shouldCancel: expect.any(Function),
+        }));
+        expect(enrollMock).toHaveBeenCalledWith(session, expect.objectContaining({
+            shouldCancel: expect.any(Function),
+        }));
     });
 
     it('selects and disconnects only the Account Service endpoint', async () => {
@@ -1094,10 +1526,10 @@ describe('AccountServiceSettingsSection', () => {
         await profiles.adoptHomeProfile({
             descriptor: {
                 v: 1,
-                homeServerIdentityId: 'home-b',
-                canonicalServerUrl: 'https://home-b.test',
+                homeServerIdentityId: 'srv_durable_home_b',
+                canonicalServerUrl: 'https://home-b.example.test',
                 revision: 1,
-                endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+                endpoints: [{ kind: 'https', url: 'https://home-b.example.test' }],
             },
             source: 'account-directory',
             preserveUserLabel: true,
@@ -1105,11 +1537,35 @@ describe('AccountServiceSettingsSection', () => {
         });
         getCredentialsMock.mockResolvedValue({ token: 'durable-home-b-token' });
         enrollMock.mockResolvedValueOnce({ kind: 'failed', error: new Error('late retry failed') });
+        refreshMock.mockImplementationOnce(async () => {
+            publishSessionSnapshot({
+                ...session.snapshot,
+                status: 'ready',
+                homes: [{
+                    v: 1,
+                    homeServerIdentityId: 'srv_durable_home_b',
+                    canonicalServerUrl: 'https://home-b.example.test',
+                    label: 'Home B',
+                    connectionDescriptor: {
+                        v: 1,
+                        homeServerIdentityId: 'srv_durable_home_b',
+                        canonicalServerUrl: 'https://home-b.example.test',
+                        revision: 1,
+                        endpoints: [{ kind: 'https', url: 'https://home-b.example.test' }],
+                    },
+                    createdAtMs: 1,
+                    updatedAtMs: 1,
+                    preferred: true,
+                }],
+                preferredHomeServerIdentityId: 'srv_durable_home_b',
+            });
+            return session.snapshot;
+        });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
 
         await screen.pressByTestIdAsync('settings-account-service-refresh');
 
-        await vi.waitFor(() => expect(screen.findAllByTestId('settings-account-service-home-home-b')
+        await vi.waitFor(() => expect(screen.findAllByTestId('settings-account-service-home-srv_durable_home_b')
             .find((node) => typeof node.props.detail === 'string')?.props.detail)
             .toContain(t('settingsAccount.accountServiceHomeConnected')));
     });
@@ -1124,7 +1580,9 @@ describe('AccountServiceSettingsSection', () => {
         }));
         const screen = await renderScreen(<AccountServiceSettingsSection />);
         await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-refresh')).not.toBeNull());
-        const refreshPress = screen.pressByTestIdAsync('settings-account-service-refresh');
+        act(() => {
+            screen.pressByTestId('settings-account-service-refresh');
+        });
         await vi.waitFor(() => expect(refreshMock).toHaveBeenCalledOnce());
 
         act(() => {
@@ -1138,7 +1596,7 @@ describe('AccountServiceSettingsSection', () => {
         });
         await vi.waitFor(() => expect(cancelPendingPreferredHomeEnrollmentMock).toHaveBeenCalled());
         await act(async () => resolveRefresh?.(session.snapshot));
-        await refreshPress;
+        await vi.waitFor(() => expect(enrollMock).not.toHaveBeenCalled());
 
         expect(enrollMock).not.toHaveBeenCalled();
         expect(screen.findByTestId('settings-account-service-home-home-a')).toBeNull();
@@ -1166,7 +1624,9 @@ describe('AccountServiceSettingsSection', () => {
                 resolve(value);
             };
         }));
-        const preferredPress = screen.pressByTestIdAsync('settings-account-service-home-home-a-set-preferred');
+        act(() => {
+            screen.pressByTestId('settings-account-service-home-home-a-set-preferred');
+        });
         await vi.waitFor(() => expect(enrollMock).toHaveBeenCalled());
 
         await screen.pressByTestIdAsync('settings-account-service-disconnect');
@@ -1178,7 +1638,7 @@ describe('AccountServiceSettingsSection', () => {
             resume: vi.fn(async () => ({ kind: 'cancelled' })),
             cancel: vi.fn(async () => ({ kind: 'cancelled' })),
         }));
-        await preferredPress;
+        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a')).toBeNull());
 
         expect(cancelPendingPreferredHomeEnrollmentMock).toHaveBeenCalled();
         expect(screen.findByTestId('settings-account-service-home-home-a')).toBeNull();

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act } from 'react-test-renderer';
 
 import { flushHookEffects, renderHook, standardCleanup } from '@/dev/testkit';
 import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
@@ -47,7 +48,7 @@ const harness = vi.hoisted(() => {
         serviceActive: false,
         signupEnabled: false,
         purpose: null as PersonalHomePurpose | null,
-        relayUrl: '',
+        relayUrl: CANONICAL_SERVER_URL,
         version: null as string | null,
     };
 
@@ -132,7 +133,9 @@ const harness = vi.hoisted(() => {
         return {
             installed: runtime.installed,
             version: runtime.installed ? runtime.version : null,
-            relayUrl: runtime.installed ? runtime.relayUrl : '',
+            // relay.runtime.status.v1 always owns and reports the planned canonical URL,
+            // including before the runtime is installed.
+            relayUrl: runtime.relayUrl,
             healthy: runtime.installed && runtime.healthy,
             service: {
                 active: runtime.installed ? runtime.serviceActive : null,
@@ -144,7 +147,10 @@ const harness = vi.hoisted(() => {
                 canonicalServerUrl: runtime.purpose.canonicalServerUrl,
             } : {}),
             anonymousSignupEnabled: runtime.purpose?.kind === 'personal-home' ? runtime.signupEnabled : null,
-            dataPresent: serverAccountsBySeedBase64Url.size > 0,
+            // A fresh server-light install creates meaningful master-secret/database state before
+            // account creation, so interruption recovery must not equate data presence with an
+            // already-committed Account.
+            dataPresent: runtime.installed || serverAccountsBySeedBase64Url.size > 0,
         };
     }
 
@@ -458,7 +464,7 @@ const harness = vi.hoisted(() => {
             runtime.serviceActive = false;
             runtime.signupEnabled = false;
             runtime.purpose = null;
-            runtime.relayUrl = '';
+            runtime.relayUrl = CANONICAL_SERVER_URL;
             runtime.version = null;
             daemonRuntime.serviceInstalled = false;
             daemonRuntime.daemonRunning = false;
@@ -702,19 +708,38 @@ const initialFacts: PersonalHomeFacts = {
     activeTask: null,
 };
 
+async function runHookOperation<Result>(operation: (() => Promise<Result>) | undefined): Promise<Result> {
+    if (!operation) throw new Error('Expected the Personal Home hook operation to be available.');
+
+    let operationPromise!: Promise<Result>;
+    await act(async () => {
+        operationPromise = operation();
+        // Attach a rejection handler immediately while the deterministic task timers are drained.
+        // The original promise is still returned below so callers can assert its exact failure.
+        void operationPromise.catch(() => {});
+    });
+    await flushHookEffects({ cycles: 40, turns: 6, runAllTimers: true });
+    return await operationPromise;
+}
+
 describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
     beforeEach(async () => {
+        vi.useFakeTimers();
         harness.reset();
         await resetProfileRegistry();
     });
 
     afterEach(async () => {
-        standardCleanup();
-        await resetProfileRegistry();
-        harness.reset();
+        try {
+            standardCleanup();
+            await resetProfileRegistry();
+        } finally {
+            harness.reset();
+            vi.useRealTimers();
+        }
     });
 
-    it('drives the real relay runtime control and bootstrap helper through the canonical ordered system-task sequence and ends healthy with signup closed', async () => {
+    it('drives the real relay runtime control and bootstrap helper through canonical install/update readbacks and ends healthy with signup closed', async () => {
         // Arrange the unrelated focused Home A through the real profile owner.
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const focusedHome = profiles.upsertServerProfile({
@@ -736,7 +761,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         ]);
 
         harness.markBootstrapStarted();
-        await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+        await runHookOperation(() => hook.getCurrent().operations['ensure-home-ready']!(initialFacts));
         const eventsDuringBootstrap = harness.events();
         await flushHookEffects({ cycles: 8 });
 
@@ -744,27 +769,26 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         const specs = harness.recordedSpecs();
         const bootstrapSpecs = specs.filter((spec) => spec.phase === 'bootstrap');
         expect(bootstrapSpecs[0]?.kind).toBe('relay.runtime.status.v1');
-        expect(harness.resultForTask(bootstrapSpecs[0]!.taskId)).toMatchObject({ installed: false, relayUrl: '' });
+        expect(harness.resultForTask(bootstrapSpecs[0]!.taskId)).toMatchObject({
+            installed: false,
+            relayUrl: harness.CANONICAL_SERVER_URL,
+        });
         const mutations = bootstrapSpecs.filter((spec) => spec.kind !== 'relay.runtime.status.v1');
         expect(mutations.map((spec) => spec.kind)).toEqual([
             'relay.runtime.installOrUpdate.v1',
-            'relay.runtime.start.v1',
             'relay.runtime.installOrUpdate.v1',
-            'relay.runtime.restart.v1',
         ]);
-        const restartSpecIndex = bootstrapSpecs.findIndex((spec) => spec.kind === 'relay.runtime.restart.v1');
+        const closureInstallSpecIndex = bootstrapSpecs.map((spec) => spec.kind).lastIndexOf('relay.runtime.installOrUpdate.v1');
         const readbackIndex = bootstrapSpecs.findIndex((spec, index) => (
-            index > restartSpecIndex && spec.kind === 'relay.runtime.status.v1'
+            index > closureInstallSpecIndex && spec.kind === 'relay.runtime.status.v1'
         ));
-        expect(readbackIndex).toBeGreaterThan(restartSpecIndex);
+        expect(readbackIndex).toBeGreaterThan(closureInstallSpecIndex);
         expect(bootstrapSpecs.slice(readbackIndex).every((spec) => spec.kind === 'relay.runtime.status.v1')).toBe(true);
 
         // 2. Purpose/canonical URL and anonymous signup reached the task specs through the fixed
         //    Personal Home env map (signup enabled during loopback bootstrap, then disabled).
         expect(mutations.map((spec) => spec.params.env)).toMatchObject([
             { AUTH_ANONYMOUS_SIGNUP_ENABLED: '1' },
-            { AUTH_ANONYMOUS_SIGNUP_ENABLED: '1' },
-            { AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
             { AUTH_ANONYMOUS_SIGNUP_ENABLED: '0' },
         ]);
         for (const spec of mutations) {
@@ -777,10 +801,11 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
             expect(spec.params.env).toMatchObject({
                 HAPPIER_SERVER_HOST: '127.0.0.1',
                 PORT: '3005',
-                HAPPIER_PUBLIC_SERVER_URL: harness.CANONICAL_SERVER_URL,
+                HAPPIER_CANONICAL_SERVER_URL: harness.CANONICAL_SERVER_URL,
                 HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
                 HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: 'plain',
             });
+            expect(spec.params.env).not.toHaveProperty('HAPPIER_PUBLIC_SERVER_URL');
         }
         for (const spec of bootstrapSpecs.filter((entry) => entry.kind === 'relay.runtime.status.v1')) {
             expect(spec.params.purpose).toBeUndefined();
@@ -788,7 +813,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         }
 
         // 3. The managed runtime ends installed, healthy, with anonymous signup disabled; the
-        //    post-restart status readback reports the persisted Personal Home purpose.
+        //    post-update status readback reports the persisted Personal Home purpose.
         expect(harness.state()).toMatchObject({ installed: true, healthy: true, signupEnabled: false });
         const readbackData = harness.resultForTask(bootstrapSpecs[readbackIndex]!.taskId);
         expect(readbackData).toMatchObject({
@@ -832,10 +857,10 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         //    after the refusal gate and authenticated access check pass (any earlier failure
         //    rejects the operation and leaves no adopted profile behind).
         const refusalAttemptIndex = eventsDuringBootstrap.indexOf('auth:endpoint-token:signup-closed');
-        const restartResultIndex = eventsDuringBootstrap.indexOf('task:relay.runtime.restart.v1:result');
+        const closureUpdateResultIndex = eventsDuringBootstrap.lastIndexOf('task:relay.runtime.installOrUpdate.v1:result');
         const lastAuthPingIndex = eventsDuringBootstrap.lastIndexOf('auth:ping');
-        expect(restartResultIndex).toBeGreaterThan(-1);
-        expect(refusalAttemptIndex).toBeGreaterThan(restartResultIndex);
+        expect(closureUpdateResultIndex).toBeGreaterThan(-1);
+        expect(refusalAttemptIndex).toBeGreaterThan(closureUpdateResultIndex);
         expect(lastAuthPingIndex).toBeGreaterThan(refusalAttemptIndex);
         expect(eventsDuringBootstrap.filter((entry) => entry === 'auth:endpoint-token:signup-open')).toHaveLength(1);
         const personalHomes = profiles.listServerProfiles().filter((profile) => profile.source === 'desktop-personal-home');
@@ -844,6 +869,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
             serverUrl: harness.CANONICAL_SERVER_URL,
             canonicalServerUrl: harness.CANONICAL_SERVER_URL,
             serverIdentityId: harness.HOME_B_IDENTITY,
+            personalHomeBootstrapCompleted: true,
         });
 
         // 7. The unrelated focused Home A is unchanged and remains the focused Home; the real
@@ -870,6 +896,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         expect(facts.completedPersonalHomeProfile).toMatchObject({
             id: personalHomes[0]!.id,
             source: 'desktop-personal-home',
+            personalHomeBootstrapCompleted: true,
         });
         expect(facts.candidateLocalProfile).toMatchObject({ id: personalHomes[0]!.id });
 
@@ -894,9 +921,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
 
         // --- Post-shell daemon composition: one explicit setup.thisComputer.v1 for B. ---
         harness.markBootstrapStarted();
-        const preparePromise = hook.getCurrent().operations['prepare-computer']?.(facts);
-        await flushHookEffects({ cycles: 40, turns: 6 });
-        await preparePromise;
+        await runHookOperation(() => hook.getCurrent().operations['prepare-computer']!(facts));
 
         // 8. Exactly one explicit setup task, carrying the explicit Home B URLs independent of
         //    the still-focused Home A, with the full configure/auth/pair/install/start/verify scope.
@@ -959,7 +984,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         //     setup task and no second pairing.
         const setupCountBefore = harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1').length;
         const rerunFacts = await hook.getCurrent().readFacts();
-        await hook.getCurrent().operations['prepare-computer']?.(rerunFacts);
+        await runHookOperation(() => hook.getCurrent().operations['prepare-computer']!(rerunFacts));
         await flushHookEffects({ cycles: 10, turns: 4 });
         const setupCountAfter = harness.recordedSpecs().filter((spec) => spec.kind === 'setup.thisComputer.v1').length;
         expect(setupCountAfter).toBe(setupCountBefore);
@@ -1006,7 +1031,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         const { usePersonalHomeBootstrapRuntime } = await import('./usePersonalHomeBootstrapRuntime');
         const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
         harness.markBootstrapStarted();
-        await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+        await runHookOperation(() => hook.getCurrent().operations['ensure-home-ready']!(initialFacts));
         await flushHookEffects({ cycles: 8 });
 
         // The managed daemon reports Home A as its connected Home BEFORE the production facts
@@ -1025,11 +1050,11 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         const { derivePersonalHomeBootstrapSnapshot } = await import('./derivePersonalHomeBootstrapSnapshot');
         expect(derivePersonalHomeBootstrapSnapshot(facts).daemonReady).toBe(false);
         harness.markBootstrapStarted();
-        const preparePromise = hook.getCurrent().operations['prepare-computer']?.(facts);
-        const prepareRejection = expect(preparePromise).rejects.toThrow(
+        const prepareRejection = expect(runHookOperation(
+            () => hook.getCurrent().operations['prepare-computer']!(facts),
+        )).rejects.toThrow(
             /different Home|wrong Home|home-a\.example|connected/i,
         );
-        await flushHookEffects({ cycles: 40, turns: 6 });
         await prepareRejection;
 
         // No Home B adoption of the wrong daemon: the recorded approval answer and setup result
@@ -1085,7 +1110,9 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
         harness.markBootstrapStarted();
 
-        await expect(hook.getCurrent().operations['prepare-home']?.(initialFacts)).rejects.toThrow(
+        await expect(runHookOperation(
+            () => hook.getCurrent().operations['ensure-home-ready']!(initialFacts),
+        )).rejects.toThrow(
             'Home identity conflicts with URL',
         );
         await hook.unmount();
@@ -1105,7 +1132,9 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         // token is persisted. No credential and no adoption receipt may survive.
         harness.markBootstrapStarted();
         harness.setFailCreateAfterCommit(true);
-        await expect(hook.getCurrent().operations['prepare-home']?.(initialFacts)).rejects.toThrow(
+        await expect(runHookOperation(
+            () => hook.getCurrent().operations['ensure-home-ready']!(initialFacts),
+        )).rejects.toThrow(
             /committed the Account/i,
         );
         await flushHookEffects({ cycles: 8 });
@@ -1116,8 +1145,9 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         expect(harness.persistCalls()).toHaveLength(0);
         expect(harness.persistedCredentials()).toBeNull();
         // The pending seed stayed in Home custody across the crash: retry custody for this Home.
-        expect(harness.pendingSeeds()).toHaveLength(1);
-        expect(harness.pendingSeeds()[0]!.seed).toHaveLength(32);
+        expect(harness.pendingSeeds()).toHaveLength(2);
+        expect(harness.pendingSeeds().every(({ seed }) => seed.length === 32)).toBe(true);
+        expect([...harness.pendingSeeds()[0]!.seed]).toEqual([...harness.pendingSeeds()[1]!.seed]);
         const seedAfterCrash = new Uint8Array(harness.pendingSeeds()[0]!.seed);
         await hook.unmount();
 
@@ -1126,7 +1156,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         harness.setFailCreateAfterCommit(false);
         hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
         harness.markBootstrapStarted();
-        await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+        await runHookOperation(() => hook.getCurrent().operations['ensure-home-ready']!(initialFacts));
         await flushHookEffects({ cycles: 8 });
 
         const accountCalls = harness.endpointAuthCalls();
@@ -1169,7 +1199,9 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
 
         harness.markBootstrapStarted();
         harness.setPendingSeedWriteFailure(true);
-        await expect(hook.getCurrent().operations['prepare-home']?.(initialFacts)).rejects.toThrow(
+        await expect(runHookOperation(
+            () => hook.getCurrent().operations['ensure-home-ready']!(initialFacts),
+        )).rejects.toThrow(
             /seed custody is unavailable/i,
         );
 
@@ -1186,7 +1218,9 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
 
         harness.markBootstrapStarted();
         harness.setPendingSeedReadbackFailure(true);
-        await expect(hook.getCurrent().operations['prepare-home']?.(initialFacts)).rejects.toThrow(
+        await expect(runHookOperation(
+            () => hook.getCurrent().operations['ensure-home-ready']!(initialFacts),
+        )).rejects.toThrow(
             /seed could not be verified/i,
         );
 
@@ -1204,19 +1238,22 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         // restart at the authenticated readback (simulated crash between persist and clear).
         harness.markBootstrapStarted();
         harness.probes.setNextAuthPingFailure(1);
-        await expect(hook.getCurrent().operations['prepare-home']?.(initialFacts)).rejects.toThrow();
+        await expect(runHookOperation(
+            () => hook.getCurrent().operations['ensure-home-ready']!(initialFacts),
+        )).rejects.toThrow();
         await flushHookEffects({ cycles: 8 });
 
         expect(harness.serverAccounts().size).toBe(1);
         expect(harness.persistCalls()).toHaveLength(1);
         expect(harness.persistedCredentials()).toEqual({ token: harness.HOME_B_TOKEN });
-        expect(harness.pendingSeeds()).toHaveLength(1);
+        expect(harness.pendingSeeds()).toHaveLength(2);
+        expect([...harness.pendingSeeds()[0]!.seed]).toEqual([...harness.pendingSeeds()[1]!.seed]);
 
         // Retry: the persisted credential is read, verified, and the pending seed is cleared
         // without any second account creation.
         harness.probes.setNextAuthPingFailure(0);
         harness.markBootstrapStarted();
-        await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+        await runHookOperation(() => hook.getCurrent().operations['ensure-home-ready']!(initialFacts));
         await flushHookEffects({ cycles: 8 });
 
         expect(harness.serverAccounts().size).toBe(1);
@@ -1246,7 +1283,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         });
         const hook = await renderHook(() => usePersonalHomeBootstrapRuntime());
         harness.markBootstrapStarted();
-        await hook.getCurrent().operations['prepare-home']?.(initialFacts);
+        await runHookOperation(() => hook.getCurrent().operations['ensure-home-ready']!(initialFacts));
         await flushHookEffects({ cycles: 8 });
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
@@ -1280,7 +1317,7 @@ describe('usePersonalHomeBootstrapRuntime system-task composition', () => {
         });
         harness.markBootstrapStarted();
         const secondHook = await renderHook(() => usePersonalHomeBootstrapRuntime());
-        await secondHook.getCurrent().operations['prepare-home']?.(initialFacts);
+        await runHookOperation(() => secondHook.getCurrent().operations['ensure-home-ready']!(initialFacts));
         await flushHookEffects({ cycles: 8 });
 
         const adoptedAfterMismatch = profiles.listServerProfiles().filter((profile) => profile.source === 'desktop-personal-home');

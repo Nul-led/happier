@@ -4,6 +4,7 @@ import { createServerUrlComparableKey as createProtocolServerUrlComparableKey } 
 import {
     canonicalizeServerUrl,
     createServerUrlComparableKey,
+    resolveIndependentHttpsServerOrigin,
 } from './serverUrlCanonical';
 import { toServerUrlDisplay } from './serverUrlDisplay';
 
@@ -35,6 +36,14 @@ describe('serverUrlCanonical', () => {
     it('rejects non-http protocols', () => {
         expect(canonicalizeServerUrl('ftp://example.com')).toBe('');
         expect(canonicalizeServerUrl('file:///tmp/server')).toBe('');
+    });
+
+    it('normalizes an independent HTTPS fallback while rejecting embedded credentials', () => {
+        expect(resolveIndependentHttpsServerOrigin(
+            '  HTTPS://Public.Example.test:443/api///?token=secret#fragment  ',
+        )).toBe('https://public.example.test/api');
+        expect(resolveIndependentHttpsServerOrigin('https://admin:secret@example.test/api')).toBeNull();
+        expect(resolveIndependentHttpsServerOrigin('http://example.test/api')).toBeNull();
     });
 
     it('normalizes loopback host equivalence for comparable identity keys', () => {

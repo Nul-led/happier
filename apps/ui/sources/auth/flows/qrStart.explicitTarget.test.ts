@@ -58,7 +58,7 @@ describe('authQRStart explicit target', () => {
             generateAuthKeyPair(),
             await enrollmentTarget('https://home-b.test', 'profile-b'),
             { signal: controller.signal },
-        )).resolves.toBe(true);
+        )).resolves.toEqual({ ok: true });
 
         expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith(expect.objectContaining({
             endpointUrl: 'https://home-b.test',
@@ -77,7 +77,11 @@ describe('authQRStart explicit target', () => {
     it('reports failure without retrying through the active-server wrapper', async () => {
         endpointFetchMock.mockRejectedValueOnce(new TypeError('Network request failed'));
 
-        await expect(authQRStart(generateAuthKeyPair(), await enrollmentTarget('https://home-b.test'))).resolves.toBe(false);
+        await expect(authQRStart(generateAuthKeyPair(), await enrollmentTarget('https://home-b.test'))).resolves.toEqual({
+            ok: false,
+            reason: 'transient',
+            status: 0,
+        });
 
         expect(serverFetchMock).not.toHaveBeenCalled();
     });
@@ -93,7 +97,7 @@ describe('authQRStart explicit target', () => {
         });
         if (!pureIroh.ok) throw new Error('Expected pure-Iroh QR transport');
 
-        await expect(authQRStart(generateAuthKeyPair(), pureIroh.transport)).resolves.toBe(true);
+        await expect(authQRStart(generateAuthKeyPair(), pureIroh.transport)).resolves.toEqual({ ok: true });
         expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith(expect.objectContaining({
             endpointUrl: 'http://localhost:3010',
             runtimeOrigin: 'http://127.0.0.1:45992',
@@ -104,7 +108,11 @@ describe('authQRStart explicit target', () => {
     });
 
     it('rejects a target without a usable endpoint URL', async () => {
-        await expect(authQRStart(generateAuthKeyPair(), await enrollmentTarget('   '))).resolves.toBe(false);
+        await expect(authQRStart(generateAuthKeyPair(), await enrollmentTarget('   '))).resolves.toEqual({
+            ok: false,
+            reason: 'invalid_target',
+            status: 0,
+        });
         expect(createServerFetchAtEndpointMock).not.toHaveBeenCalled();
     });
 });

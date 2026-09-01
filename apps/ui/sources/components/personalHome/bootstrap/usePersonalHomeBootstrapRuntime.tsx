@@ -20,8 +20,10 @@ import {
 import { probeAuthenticatedServerAuthPingEndpoint } from '@/sync/api/capabilities/probeAuthenticatedServerAuthPingEndpoint';
 import {
     adoptHomeProfile,
+    findPersonalHomeBootstrapCompletedProfile,
     getServerProfileById,
     listServerProfiles,
+    markServerProfilePersonalHomeBootstrapCompleted,
     preflightHomeProfileAdoption,
     type ServerProfile,
 } from '@/sync/domains/server/serverProfiles';
@@ -47,8 +49,6 @@ import {
     type PersonalHomeEndpointSnapshot,
 } from './runPersonalHomeBootstrapFromSystemTasks';
 import type { PersonalHomeBootstrapOperationRunner } from './usePersonalHomeBootstrapController';
-
-const DEFAULT_PERSONAL_HOME_URL = 'http://127.0.0.1:3005';
 
 export function shouldBypassPersonalHomeBootstrapForSegments(segments: readonly string[]): boolean {
     const normalized = segments.filter((segment) => !(segment.startsWith('(') && segment.endsWith(')')));
@@ -108,6 +108,7 @@ function mapRelayStatus(status: ReturnType<typeof useLocalRelayRuntimeControl>['
                 ? 'healthy'
                 : 'unhealthy';
     return {
+        relayUrl: status.relayUrl,
         installed: status.installed,
         dataPresent: status.dataPresent,
         healthy: status.healthy,
@@ -200,14 +201,10 @@ export type PersonalHomeBootstrapRuntime = Readonly<{
 export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime {
     const relay = useLocalRelayRuntimeControl();
     const daemon = useLocalDaemonControl();
-    const resolveLocalUrl = React.useCallback(() => {
-        const statusUrl = normalizeUrl(relay.status?.relayUrl);
-        if (statusUrl) return statusUrl;
-        const profiles = listServerProfiles();
-        const local = profiles.find((profile) => profile.source === 'desktop-personal-home')
-            ?? profiles.find((profile) => profileMatchesUrl(profile, DEFAULT_PERSONAL_HOME_URL));
-        return normalizeUrl(local?.canonicalServerUrl ?? local?.serverUrl) || DEFAULT_PERSONAL_HOME_URL;
-    }, [relay.status]);
+    const resolveLocalUrl = React.useCallback(
+        () => normalizeUrl(relay.status?.relayUrl),
+        [relay.status?.relayUrl],
+    );
 
     // The existing local-machine setup task is the single daemon-setup owner. Token-only pairing
     // prompts are answered through the explicit Personal Home endpoint with its Home-scoped
@@ -216,8 +213,7 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
     const setupHomeIdentity = React.useMemo(() => {
         if (!setupRelayUrl) return null;
         const profiles = listServerProfiles();
-        const local = profiles.find((profile) => profile.source === 'desktop-personal-home' && profileMatchesUrl(profile, setupRelayUrl))
-            ?? profiles.find((profile) => profileMatchesUrl(profile, setupRelayUrl));
+        const local = profiles.find((profile) => profileMatchesUrl(profile, setupRelayUrl));
         return local?.serverIdentityId?.trim() || null;
     }, [setupRelayUrl]);
     const setupTask = useThisComputerSetupTask({
@@ -236,13 +232,17 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
     const readFacts = React.useCallback(async (): Promise<PersonalHomeFacts> => {
         const profiles = listServerProfiles();
         const localUrl = resolveLocalUrl();
-        const candidate = profiles.find((profile) => profileMatchesUrl(profile, localUrl)) ?? null;
-        const completed = profiles.find((profile) => profile.source === 'desktop-personal-home' && profileMatchesUrl(profile, localUrl)) ?? null;
+        const candidate = localUrl
+            ? profiles.find((profile) => profileMatchesUrl(profile, localUrl)) ?? null
+            : null;
+        let completed = findPersonalHomeBootstrapCompletedProfile(profiles);
         const activeSelection = getActiveServerSnapshot();
         const activeProfile = getServerProfileById(activeSelection.serverId);
         const explicitlySelectedOtherHome = activeSelection.isSelectionExplicit === true
             && activeProfile != null
-            && !profileMatchesUrl(activeProfile, localUrl);
+            && (localUrl
+                ? !profileMatchesUrl(activeProfile, localUrl)
+                : activeProfile.serverIdentityId !== completed?.serverIdentityId);
         const relayRuntime = mapRelayStatus(relay.status, relay.lastErrorMessage);
         let localHomeReachability: PersonalHomeFacts['localHomeReachability'] = 'unknown';
         let localHomeIdentity = candidate?.serverIdentityId ?? null;
@@ -253,7 +253,7 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
                 : 'unknown';
         let localHomeAuth: PersonalHomeFacts['localHomeAuth'] = 'missing';
 
-        if (relayRuntime?.installed || candidate || completed) {
+        if (localUrl && (relayRuntime?.installed || candidate || completed)) {
             const features = await probeServerFeaturesAtUrl({
                 endpointUrl: localUrl,
                 ...(localHomeIdentity ? { serverId: localHomeIdentity } : {}),
@@ -277,6 +277,16 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
                 localHomeAuth = probe.status === 'ready' ? 'present' : probe.status === 'auth_failed' ? 'invalid' : 'unknown';
                 if (probe.status === 'server_unreachable') localHomeReachability = 'unreachable';
             }
+        }
+
+        // A persisted completion fact is bound to an exact Home identity.  A URL match
+        // alone must never let another Home inherit this device's bootstrap readiness.
+        if (
+            completed
+            && localHomeIdentity
+            && completed.serverIdentityId !== localHomeIdentity
+        ) {
+            completed = null;
         }
 
         // Daemon facts are read through the awaited daemon-control owner so they are fresh at
@@ -343,10 +353,11 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
     const runRelayTaskAndWait = relay.runTaskAndWait;
     const runBootstrapWithDisposition = React.useCallback(async (
         existingRuntimeDisposition?: 'use-this-local-home',
+        trigger: 'automatic' | 'retry' | 'manual' = 'manual',
     ): Promise<void> => {
         const result = await runPersonalHomeBootstrapFromSystemTasks({
-            initialServerUrl: resolveLocalUrl(),
             ...(existingRuntimeDisposition ? { existingRuntimeDisposition } : {}),
+            ...(trigger === 'retry' ? { allowErasedRuntimeRecreate: true } : {}),
             deps: {
                 runRelayTask: async (kind, options) => await runRelayTaskAndWait(kind, options),
                 probeEndpoint: probePersonalHomeEndpoint,
@@ -360,30 +371,14 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
                     resumePendingSeedOnly,
                 }) => {
                     const custodyTarget = { serverId: serverIdentityId };
-                    let seed = await TokenStorage.getPendingPersonalHomeBootstrapSeed(
+                    const seed = await TokenStorage.getPendingPersonalHomeBootstrapSeed(
                         canonicalServerUrl,
                         custodyTarget,
                     );
                     if (!seed) {
-                        if (resumePendingSeedOnly) {
-                            throw new Error('Personal Home pending seed custody is unavailable for retained data.');
-                        }
-                        const generatedSeed = await getRandomBytesAsync(32);
-                        if (!(await TokenStorage.setPendingPersonalHomeBootstrapSeed(
-                            canonicalServerUrl,
-                            custodyTarget,
-                            generatedSeed,
-                        ))) {
-                            throw new Error('Personal Home seed custody is unavailable.');
-                        }
-                        const verifiedSeed = await TokenStorage.getPendingPersonalHomeBootstrapSeed(
-                            canonicalServerUrl,
-                            custodyTarget,
-                        );
-                        if (!verifiedSeed || !equalBytes(verifiedSeed, generatedSeed)) {
-                            throw new Error('Personal Home bootstrap seed could not be verified.');
-                        }
-                        seed = verifiedSeed;
+                        throw new Error(resumePendingSeedOnly
+                            ? 'Personal Home pending seed custody is unavailable for retained data.'
+                            : 'Personal Home seed custody is unavailable.');
                     }
                     return await authGetTokenAtEndpoint({
                         endpointUrl: endpoint,
@@ -393,12 +388,48 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
                         requireKeyChallengeV2: true,
                     });
                 },
-                hasPendingBootstrapSeed: async ({ serverUrl, serverIdentityId }) => (
-                    await TokenStorage.getPendingPersonalHomeBootstrapSeed(
-                        serverUrl,
-                        { serverId: serverIdentityId },
-                    )
-                ) !== null,
+                preparePendingBootstrapSeed: async ({ serverUrl, serverIdentityId, allowCreate }) => {
+                    const urlSeed = await TokenStorage.getPendingPersonalHomeBootstrapSeed(serverUrl);
+                    const identitySeed = serverIdentityId
+                        ? await TokenStorage.getPendingPersonalHomeBootstrapSeed(
+                            serverUrl,
+                            { serverId: serverIdentityId },
+                        )
+                        : null;
+                    if (urlSeed && identitySeed && !equalBytes(urlSeed, identitySeed)) return false;
+
+                    let seed = identitySeed ?? urlSeed;
+                    if (!seed) {
+                        if (!allowCreate) return false;
+                        const generatedSeed = await getRandomBytesAsync(32);
+                        if (!(await TokenStorage.setPendingPersonalHomeBootstrapSeed(
+                            serverUrl,
+                            {},
+                            generatedSeed,
+                        ))) return false;
+                        const verifiedSeed = await TokenStorage.getPendingPersonalHomeBootstrapSeed(serverUrl);
+                        if (!verifiedSeed || !equalBytes(verifiedSeed, generatedSeed)) {
+                            throw new Error('Personal Home bootstrap seed could not be verified.');
+                        }
+                        seed = verifiedSeed;
+                    }
+
+                    if (serverIdentityId && !identitySeed) {
+                        if (!(await TokenStorage.setPendingPersonalHomeBootstrapSeed(
+                            serverUrl,
+                            { serverId: serverIdentityId },
+                            seed,
+                        ))) return false;
+                        const promotedSeed = await TokenStorage.getPendingPersonalHomeBootstrapSeed(
+                            serverUrl,
+                            { serverId: serverIdentityId },
+                        );
+                        if (!promotedSeed || !equalBytes(promotedSeed, seed)) {
+                            throw new Error('Personal Home bootstrap seed could not be verified.');
+                        }
+                    }
+                    return true;
+                },
                 persistCredentials: async ({ serverUrl, serverIdentityId, credentials }) => {
                     const target = preflightHomeProfileAdoption({
                         descriptor: {
@@ -429,12 +460,14 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
                 verifyAuthenticatedAccess: async ({ endpoint, token }) => (
                     await probeAuthenticatedServerAuthPingEndpoint({ endpoint, token })
                 ).status === 'ready',
-                clearPendingBootstrapSeed: async ({ serverUrl, serverIdentityId }) => (
-                    await TokenStorage.clearPendingPersonalHomeBootstrapSeed(
+                clearPendingBootstrapSeed: async ({ serverUrl, serverIdentityId }) => {
+                    const identityCleared = await TokenStorage.clearPendingPersonalHomeBootstrapSeed(
                         serverUrl,
                         { serverId: serverIdentityId },
-                    )
-                ),
+                    );
+                    const urlCleared = await TokenStorage.clearPendingPersonalHomeBootstrapSeed(serverUrl);
+                    return identityCleared && urlCleared;
+                },
                 preflightCompletedProfile: ({ canonicalServerUrl, localServerUrl, serverIdentityId, source }) => {
                     preflightHomeProfileAdoption({
                         descriptor: {
@@ -472,22 +505,40 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
                 },
             },
         });
+        const completedProfile = getServerProfileById(result.profileId);
+        const completedIdentity = completedProfile?.serverIdentityId;
+        if (!completedProfile || !completedIdentity) {
+            throw new Error('Verified Personal Home completion did not retain its stable Home identity.');
+        }
+        markServerProfilePersonalHomeBootstrapCompleted({
+            profileId: completedProfile.id,
+            serverIdentityId: completedIdentity,
+        });
         activateServerProfileIfSelectionImplicit(result.profileId);
         // Credential/profile writes are non-focusing. Ask the existing auth owner to re-read the
         // selected Home. The profile owner activates the first local Home only while selection
         // remains implicit; an explicit device or tab selection stays unchanged.
         await getCurrentAuth()?.refreshFromActiveServer();
-    }, [resolveLocalUrl, runRelayTaskAndWait]);
-    const runBootstrap = React.useCallback<PersonalHomeBootstrapOperationRunner>(async () => {
-        await runBootstrapWithDisposition();
+    }, [runRelayTaskAndWait]);
+    const runBootstrap = React.useCallback<PersonalHomeBootstrapOperationRunner>(async (
+        _facts,
+        context: Readonly<{ trigger: 'automatic' | 'retry' | 'manual' }> = { trigger: 'manual' },
+    ) => {
+        await runBootstrapWithDisposition(undefined, context.trigger);
     }, [runBootstrapWithDisposition]);
-    const useExistingRuntime = React.useCallback<PersonalHomeBootstrapOperationRunner>(async () => {
-        await runBootstrapWithDisposition('use-this-local-home');
+    const useExistingRuntime = React.useCallback<PersonalHomeBootstrapOperationRunner>(async (
+        _facts,
+        context: Readonly<{ trigger: 'automatic' | 'retry' | 'manual' }> = { trigger: 'manual' },
+    ) => {
+        await runBootstrapWithDisposition('use-this-local-home', context.trigger);
     }, [runBootstrapWithDisposition]);
 
     const prepareComputer = React.useCallback<PersonalHomeBootstrapOperationRunner>(async (facts) => {
         const runner = getDefaultSystemTaskRunner();
         const localUrl = resolveLocalUrl();
+        if (!localUrl) {
+            throw new Error('Personal Home runtime status did not provide a canonical local origin.');
+        }
         const localUrlKey = createServerUrlComparableKey(localUrl) || normalizeUrl(localUrl);
         const identity = facts.localHomeIdentity
             ?? facts.completedPersonalHomeProfile?.serverIdentityId
@@ -595,9 +646,7 @@ export function usePersonalHomeBootstrapRuntime(): PersonalHomeBootstrapRuntime 
     }, [readDaemonStatus, resolveLocalUrl, startSetupTask]);
 
     const operations = React.useMemo<PersonalHomeBootstrapRuntime['operations']>(() => ({
-        'prepare-home': runBootstrap,
-        'connect-app': runBootstrap,
-        'close-signup': runBootstrap,
+        'ensure-home-ready': runBootstrap,
         'prepare-computer': prepareComputer,
     }), [prepareComputer, runBootstrap]);
 
@@ -672,7 +721,7 @@ function EligibleDesktopPersonalHomeBootstrapRuntime(props: Readonly<{ children:
     const segments = useSegments();
     if (shouldBypassPersonalHomeBootstrapForSegments(segments)) return <>{props.children}</>;
 
-    const completedProfile = listServerProfiles().find((profile) => profile.source === 'desktop-personal-home');
+    const completedProfile = findPersonalHomeBootstrapCompletedProfile(listServerProfiles());
     return (
         <PersonalHomeBootstrapRuntimeInner
             initialFacts={completedProfile ? completedProfileInitialFacts(completedProfile) : undefined}

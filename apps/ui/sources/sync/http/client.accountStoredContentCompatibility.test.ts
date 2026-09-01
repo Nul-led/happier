@@ -10,7 +10,7 @@ describe('serverFetch account-stored-content compatibility', () => {
         vi.restoreAllMocks();
     });
 
-    it('keeps the feature bootstrap header-free, then advertises default V4 support after V3 base support is recorded', async () => {
+    it('keeps the feature bootstrap header-free and advertises cumulative V4 before and after discovery', async () => {
         const runtimeFetch = vi.fn(async (
             _input: RequestInfo | URL,
             _init?: RequestInit,
@@ -50,6 +50,22 @@ describe('serverFetch account-stored-content compatibility', () => {
             withAccountStoredContentCompatibilityRequestDeclaration,
         } = await import('./accountStoredContentCompatibility');
         const { serverFetch } = await import('./client');
+
+        await serverFetch('/v2/account/settings', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'x-happier-account-stored-content-protocol': '3',
+            },
+            body: JSON.stringify({ content: null, expectedVersion: 0 }),
+        }, { retry: 'none' });
+
+        let init = runtimeFetch.mock.calls.at(-1)?.[1] ?? {};
+        let headers = new Headers(init.headers);
+        expect(headers.get('x-happier-account-stored-content-protocol')).toBe(
+            String(CURRENT_ACCOUNT_STORED_CONTENT_COMPATIBILITY_DECLARATION.protocolVersion),
+        );
+
         await serverFetch('/v1/features', {
             headers: {
                 'x-happier-account-stored-content-protocol': '3',
@@ -59,8 +75,8 @@ describe('serverFetch account-stored-content compatibility', () => {
             retry: 'none',
         });
 
-        let init = runtimeFetch.mock.calls.at(-1)?.[1] ?? {};
-        let headers = new Headers(init.headers);
+        init = runtimeFetch.mock.calls.at(-1)?.[1] ?? {};
+        headers = new Headers(init.headers);
         expect(headers.has('x-happier-account-stored-content-protocol')).toBe(false);
 
         recordAccountStoredContentServerRequirements({

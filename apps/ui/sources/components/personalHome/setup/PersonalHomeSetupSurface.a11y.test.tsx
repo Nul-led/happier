@@ -16,11 +16,6 @@ describe('PersonalHomeSetupSurface accessibility', () => {
                     daemonReady: false,
                     phase: 'blocked',
                     daemonState: 'not-started',
-                    rows: [
-                        { id: 'home', status: 'complete' },
-                        { id: 'app', status: 'blocked' },
-                        { id: 'computer', status: 'pending' },
-                    ],
                     action: 'retry',
                     detail: { message: 'Needs attention', retryable: true },
                 }}
@@ -37,33 +32,24 @@ describe('PersonalHomeSetupSurface accessibility', () => {
         expect(screen.findByTestId('personal-home-bootstrap-failure')?.props.accessibilityRole).toBe('alert');
     });
 
-    it('exposes each progress row as one named state without announcing every row update', async () => {
+    it('keeps the single activity treatment decorative while the concise status owns announcements', async () => {
         const screen = await renderScreen(
             <PersonalHomeSetupSurface
                 snapshot={{
                     shouldGateShell: true,
                     homeReady: false,
                     daemonReady: false,
-                    phase: 'preparing-home',
+                    phase: 'ensuring-home',
                     daemonState: 'not-started',
-                    rows: [
-                        { id: 'home', status: 'active' },
-                        { id: 'app', status: 'pending' },
-                        { id: 'computer', status: 'pending' },
-                    ],
                     action: 'none',
                 }}
             />,
         );
 
-        const activeRow = screen.findByTestId('personal-home-bootstrap-row-home');
-        const pendingRow = screen.findByTestId('personal-home-bootstrap-row-app');
-        expect(activeRow?.props.accessible).toBe(true);
-        expect(activeRow?.props.accessibilityState).toEqual({ busy: true });
-        expect(activeRow?.props.accessibilityLabel).toEqual(expect.any(String));
-        expect(pendingRow?.props.accessibilityState).toEqual({ busy: false });
-        expect(pendingRow?.props.accessibilityLabel).not.toBe(activeRow?.props.accessibilityLabel);
-        expect(activeRow?.props.accessibilityLiveRegion).toBeUndefined();
+        const activity = screen.findByTestId('personal-home-bootstrap-activity');
+        expect(activity?.props.accessible).toBe(false);
+        expect(activity?.props.accessibilityLiveRegion).toBeUndefined();
+        expect(screen.findByTestId('personal-home-bootstrap-phase')?.props.accessibilityLiveRegion).toBe('polite');
     });
 
     it('focuses the first recovery action once when setup becomes blocked', async () => {
@@ -72,23 +58,13 @@ describe('PersonalHomeSetupSurface accessibility', () => {
             shouldGateShell: true,
             homeReady: false,
             daemonReady: false,
-            phase: 'preparing-home' as const,
+            phase: 'ensuring-home' as const,
             daemonState: 'not-started' as const,
-            rows: [
-                { id: 'home' as const, status: 'active' as const },
-                { id: 'app' as const, status: 'pending' as const },
-                { id: 'computer' as const, status: 'pending' as const },
-            ],
             action: 'none' as const,
         };
         const blocked = {
             ...preparing,
             phase: 'blocked' as const,
-            rows: [
-                { id: 'home' as const, status: 'complete' as const },
-                { id: 'app' as const, status: 'blocked' as const },
-                { id: 'computer' as const, status: 'pending' as const },
-            ],
             action: 'retry' as const,
             detail: { message: 'Technical detail shown only in diagnostics', retryable: true },
         };

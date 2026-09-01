@@ -63,6 +63,18 @@ vi.mock('@/hooks/server/useFeatureDecision', () => ({
     useFeatureDecision: () => ({ state: 'enabled' }),
 }));
 
+vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
+    probeServerFeaturesAtUrl: async () => ({
+        status: 'ready',
+        serverIdentityId: 'srv_test',
+        features: {
+            features: {
+                auth: { pairing: { desktopQrMobileScan: { enabled: true } } },
+            },
+        },
+    }),
+}));
+
 vi.mock('@/auth/context/AuthContext', () => ({
     useAuth: () => ({ login: vi.fn(async () => {}), refreshFromActiveServer: vi.fn(async () => {}) }),
 }));
@@ -126,7 +138,7 @@ vi.mock('@/sync/api/account/apiPairingAuth', () => ({
 
 vi.mock('@/auth/flows/qrStart', () => ({
     generateAuthKeyPair: () => ({ publicKey: new Uint8Array(32).fill(1), secretKey: new Uint8Array(32).fill(2) }),
-    authQRStart: vi.fn(async () => true),
+    authQRStart: vi.fn(async () => ({ ok: true })),
 }));
 
 vi.mock('@/auth/flows/qrWait', () => ({

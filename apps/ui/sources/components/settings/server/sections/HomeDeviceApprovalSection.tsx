@@ -10,7 +10,6 @@ import {
     type HomeDeviceApprovalTarget,
 } from '@/auth/approval/homeDeviceApprovalClient';
 import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
-import { ENROLLMENT_POLL_IDLE_DELAY_MS } from '@/auth/enrollment/enrollmentPollingBackoff';
 import {
     formatEnrollmentExpiry,
     formatHomeEnrollmentTargetLabel,
@@ -32,7 +31,10 @@ import {
 } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
 import type { HomeLoginContinuationResult } from '@/sync/ops/accountDirectory/homeLoginApproval';
 import { t } from '@/text';
-import { startRuntimeActiveGatedInterval } from '@/utils/runtime/isRuntimeActive';
+import {
+    useAccountDirectoryActivePolling,
+    type AccountDirectoryActivePollingOutcome,
+} from '@/sync/ops/accountDirectory/useAccountDirectoryActivePolling';
 
 type PendingApproval = Readonly<{
     home: ServerProfile;
@@ -135,12 +137,7 @@ async function withHomeApprovalTarget<T>(
     if (!resolution.ok) return unavailable;
     const { transport } = resolution;
     try {
-        return await operation({
-            canonicalServerUrl: descriptor.canonicalServerUrl,
-            runtimeOrigin: transport.runtimeOrigin,
-            serverId: descriptor.homeServerIdentityId,
-            credentials,
-        });
+        return await operation({ transport, credentials });
     } finally {
         await transport.close();
     }
@@ -157,8 +154,7 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
     const mountedRef = React.useRef(false);
     const approvalItemsRef = React.useRef<readonly PendingApproval[]>([]);
     const approvalSnapshotKeyRef = React.useRef<string | null>(null);
-    const approvalRefreshInFlightRef = React.useRef(false);
-    const automaticPollInFlightRef = React.useRef(false);
+    const approvalRefreshPromiseRef = React.useRef<Promise<AccountDirectoryActivePollingOutcome> | null>(null);
     const pendingEnrollment = React.useSyncExternalStore(
         subscribePendingPreferredHomeEnrollment,
         getPendingPreferredHomeEnrollment,
@@ -169,46 +165,55 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
         setAnnouncement((current) => ({ revision: current.revision + 1, text }));
     }, []);
 
-    const load = React.useCallback(async (mode: ApprovalLoadMode = 'interactive') => {
-        if (approvalRefreshInFlightRef.current) return;
-        approvalRefreshInFlightRef.current = true;
-        if (mode === 'interactive' && mountedRef.current) {
-            setState((current) => ({ kind: 'loading', items: current.items }));
-        }
-        try {
-            const results = await Promise.all(homes.map(async (home) => ({
-                home,
-                result: await withHomeApprovalTarget(
+    const load = React.useCallback((mode: ApprovalLoadMode = 'interactive'): Promise<AccountDirectoryActivePollingOutcome> => {
+        const inFlight = approvalRefreshPromiseRef.current;
+        if (inFlight) return inFlight;
+
+        let operation: Promise<AccountDirectoryActivePollingOutcome>;
+        operation = (async () => {
+            if (mode === 'interactive' && mountedRef.current) {
+                setState((current) => ({ kind: 'loading', items: current.items }));
+            }
+            try {
+                const results = await Promise.all(homes.map(async (home) => ({
                     home,
-                    { ok: false, reason: 'request_failed', status: 0 } as const,
-                    listHomeDeviceApprovals,
-                ),
-            })));
-            if (!mountedRef.current) return;
+                    result: await withHomeApprovalTarget(
+                        home,
+                        { ok: false, reason: 'request_failed', status: 0 } as const,
+                        listHomeDeviceApprovals,
+                    ),
+                })));
+                if (!mountedRef.current) return 'success';
 
-            const failed = results.some(({ result }) => !result.ok && result.reason !== 'unauthorized');
-            if (failed && mode === 'poll') return;
+                const failed = results.some(({ result }) => !result.ok && result.reason !== 'unauthorized');
+                if (failed && mode === 'poll') return 'transient';
 
-            const items = results.flatMap(({ home, result }) => result.ok
-                ? result.items.map((approval) => ({ home, approval }))
-                : []);
-            const nextSnapshotKey = approvalSnapshotKey(items);
-            const changed = nextSnapshotKey !== approvalSnapshotKeyRef.current;
-            if (mode === 'poll' && !changed) return;
+                const items = results.flatMap(({ home, result }) => result.ok
+                    ? result.items.map((approval) => ({ home, approval }))
+                    : []);
+                const nextSnapshotKey = approvalSnapshotKey(items);
+                const changed = nextSnapshotKey !== approvalSnapshotKeyRef.current;
+                if (mode === 'poll' && !changed) return 'success';
 
-            approvalItemsRef.current = items;
-            approvalSnapshotKeyRef.current = nextSnapshotKey;
-            setState({ kind: failed ? 'error' : 'ready', items });
-            publishAnnouncement(
-                failed
-                    ? t('approvals.loadError')
-                    : items.length === 0
-                        ? t('inbox.emptyDescription')
-                        : `${t('approvals.title')}: ${items.map(({ home }) => home.name).join(', ')}`,
-            );
-        } finally {
-            approvalRefreshInFlightRef.current = false;
-        }
+                approvalItemsRef.current = items;
+                approvalSnapshotKeyRef.current = failed ? null : nextSnapshotKey;
+                setState({ kind: failed ? 'error' : 'ready', items });
+                publishAnnouncement(
+                    failed
+                        ? t('approvals.loadError')
+                        : items.length === 0
+                            ? t('inbox.emptyDescription')
+                            : `${t('approvals.title')}: ${items.map(({ home }) => home.name).join(', ')}`,
+                );
+                return failed ? 'transient' : 'success';
+            } finally {
+                if (approvalRefreshPromiseRef.current === operation) {
+                    approvalRefreshPromiseRef.current = null;
+                }
+            }
+        })();
+        approvalRefreshPromiseRef.current = operation;
+        return operation;
     }, [homes, publishAnnouncement]);
 
     React.useEffect(() => {
@@ -293,27 +298,21 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
         : '';
     const pendingEnrollmentBusy = busyKeys.includes('pending-enrollment');
 
-    const poll = React.useCallback(async () => {
-        if (automaticPollInFlightRef.current) return;
-        automaticPollInFlightRef.current = true;
+    const poll = React.useCallback(async (): Promise<AccountDirectoryActivePollingOutcome> => {
         try {
-            await load('poll');
-            if (!pendingEnrollment) return;
+            const loadOutcome = await load('poll');
+            if (!pendingEnrollment) return loadOutcome;
             const result = await resumePendingPreferredHomeEnrollment();
-            if (!mountedRef.current || !result || result.kind === 'approval_required') return;
+            if (!mountedRef.current || !result || result.kind === 'approval_required') return loadOutcome;
             publishAnnouncement(pendingEnrollmentResultAnnouncement(pendingEnrollmentName, result));
+            return result.kind === 'transport_unavailable' ? 'transient' : loadOutcome;
         } catch {
             // The visible pending card and manual Retry remain available. The next
             // active-screen cadence tick may retry through the same continuation owner.
-        } finally {
-            automaticPollInFlightRef.current = false;
+            return 'transient';
         }
     }, [load, pendingEnrollment, pendingEnrollmentName, publishAnnouncement]);
-
-    React.useEffect(() => startRuntimeActiveGatedInterval(
-        () => void poll(),
-        ENROLLMENT_POLL_IDLE_DELAY_MS,
-    ), [poll]);
+    useAccountDirectoryActivePolling(poll);
 
     const pendingEnrollmentGroup = pendingEnrollment ? (
         <ItemGroup title={t('common.home')}>
@@ -392,20 +391,11 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
     }
 
     if (state.items.length === 0) {
-        return renderSection(
-            <ItemGroup title={t('approvals.title')}>
-                    <Item
-                        testID="settings.server.homeApprovals.empty"
-                        title={t('inbox.emptyDescription')}
-                        mode="info"
-                        showChevron={false}
-                    />
-            </ItemGroup>,
-        );
+        return renderSection(null);
     }
 
     return renderSection(
-        <>
+        <ItemGroup title={t('approvals.title')}>
             {state.items.map((item) => {
                 const key = `${item.home.id}:${item.approval.approvalId}`;
                 const busy = busyKeys.includes(key);
@@ -415,18 +405,19 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
                 );
                 const approvalExpiresAt = new Date(item.approval.expiresAtMs).toLocaleString();
                 const approvalDetails = [
-                    ...(item.approval.deviceLabel
-                        ? [`${t('connect.deviceLabel')}: ${item.approval.deviceLabel}`]
-                        : []),
+                    item.approval.deviceLabel
+                        ? `${t('connect.deviceLabel')}: ${item.approval.deviceLabel}`
+                        : t('navigation.linkNewDevice'),
                     `${t('connect.requestKeyFingerprintLabel')}: ${requesterFingerprint}`,
                     `${t('connect.expiresAtLabel')}: ${approvalExpiresAt}`,
                 ];
                 return (
-                    <ItemGroup key={key} title={t('approvals.title')}>
+                    <React.Fragment key={key}>
                         <Item
                             testID={`settings.server.homeApprovals.${item.approval.approvalId}`}
                             title={item.home.name}
                             subtitle={approvalDetails.join(' · ')}
+                            accessibilityLabel={`${item.home.name}. ${approvalDetails.join('. ')}`}
                             mode="info"
                             showChevron={false}
                         />
@@ -455,9 +446,9 @@ export function HomeDeviceApprovalSection({ homes }: Readonly<{ homes: readonly 
                             destructive
                             onPress={() => void decide(item, 'reject')}
                         />
-                    </ItemGroup>
+                    </React.Fragment>
                 );
             })}
-        </>,
+        </ItemGroup>,
     );
 }

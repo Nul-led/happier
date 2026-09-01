@@ -17,6 +17,14 @@ export interface QRAuthKeyPair {
     secretKey: Uint8Array;
 }
 
+export type AuthQrStartResult =
+    | Readonly<{ ok: true }>
+    | Readonly<{
+        ok: false;
+        reason: 'cancelled' | 'invalid_target' | 'transient' | 'rejected';
+        status: number;
+    }>;
+
 export function generateAuthKeyPair(): QRAuthKeyPair {
     const secret = getRandomBytes(32);
     const keypair = tweetnacl.box.keyPair.fromSecretKey(secret);
@@ -34,10 +42,12 @@ export async function authQRStart(
     keypair: QRAuthKeyPair,
     target: HomeQrEnrollmentTarget,
     options: Readonly<{ signal?: AbortSignal }> = {},
-): Promise<boolean> {
-    if (options.signal?.aborted) return false;
+): Promise<AuthQrStartResult> {
+    if (options.signal?.aborted) return { ok: false, reason: 'cancelled', status: 0 };
     const endpointUrl = target.endpointUrl.trim().replace(/\/+$/, '');
-    if (!endpointUrl || !/^https?:\/\//i.test(endpointUrl)) return false;
+    if (!endpointUrl || !/^https?:\/\//i.test(endpointUrl)) {
+        return { ok: false, reason: 'invalid_target', status: 0 };
+    }
     try {
         const requestAtEndpoint = target.createRequest({
             ...(target.serverId ? { serverId: target.serverId } : {}),
@@ -57,9 +67,14 @@ export async function authQRStart(
             },
             { includeAuth: false, retry: 'none' },
         );
-        return response.ok;
+        if (response.ok) return { ok: true };
+        if (response.status === 408 || response.status === 429 || response.status >= 500) {
+            return { ok: false, reason: 'transient', status: response.status };
+        }
+        return { ok: false, reason: 'rejected', status: response.status };
     } catch {
-        // The joining device surfaces a typed failure; polling owns transient retries.
-        return false;
+        return options.signal?.aborted
+            ? { ok: false, reason: 'cancelled', status: 0 }
+            : { ok: false, reason: 'transient', status: 0 };
     }
 }

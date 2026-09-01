@@ -113,8 +113,6 @@ function setController(overrides: Partial<any>) {
         onRemoveGroup: vi.fn(),
         onCreateServerGroup: vi.fn(async () => false),
 
-        groupSelectionEnabled: false,
-        setGroupSelectionEnabled: vi.fn(),
         groupSelectionPresentation: 'grouped',
         activeServerGroupId: null,
         selectedGroupServerIds: new Set<string>(),

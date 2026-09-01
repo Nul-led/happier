@@ -53,6 +53,23 @@ export function canonicalizeServerUrl(raw: string): string {
     return writeBoundedCache(canonicalServerUrlCache, key, canonicalizeServerUrlUncached(key));
 }
 
+/**
+ * Resolves a descriptor-provided independent HTTPS ingress. Unlike ordinary
+ * server URL entry, this boundary requires an explicit HTTPS URL and rejects
+ * embedded credentials rather than silently carrying or stripping them.
+ */
+export function resolveIndependentHttpsServerOrigin(raw: string): string | null {
+    const value = String(raw ?? '').trim();
+    if (!value) return null;
+    try {
+        const parsed = new URL(value);
+        if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null;
+    } catch {
+        return null;
+    }
+    return canonicalizeServerUrl(value) || null;
+}
+
 export function createServerUrlComparableKey(raw: string): string {
     const key = String(raw ?? '');
     const cached = readBoundedCache(comparableServerUrlCache, key);

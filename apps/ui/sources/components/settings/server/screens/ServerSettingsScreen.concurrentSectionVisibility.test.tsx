@@ -13,6 +13,9 @@ const desktopHostMock = vi.hoisted(() => ({
     invocations: [] as Array<Readonly<{ command: string; args: Record<string, unknown> | undefined }>>,
     kind: null as 'tauri' | null,
 }));
+const relocationInputs = vi.hoisted(() => ({
+    remoteHosts: [] as unknown[],
+}));
 
 vi.mock('@/utils/platform/desktopHost', () => ({
     desktopHostKind: () => desktopHostMock.kind,
@@ -55,6 +58,9 @@ installSettingsViewCommonModuleMocks({
         const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
         return createExpoRouterMock().module;
     },
+    storage: async () => ({
+        useSetting: () => relocationInputs.remoteHosts,
+    }),
     unistyles: async () => {
         const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
         return createUnistylesMock({
@@ -116,6 +122,13 @@ vi.mock('@/components/settings/server/localControl/LocalRelayAccessControlSectio
 vi.mock('@/components/settings/server/hooks/useServerSettingsScreenController', () => ({
     useServerSettingsScreenController: () => controllerValue,
 }));
+vi.mock('@/hooks/server/useFeatureEnabled', () => ({
+    useFeatureEnabled: () => true,
+}));
+vi.mock('@/sync/api/capabilities/serverFeaturesClient', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/api/capabilities/serverFeaturesClient')>(),
+    probeServerFeaturesAtUrl: async () => ({ status: 'failed' }),
+}));
 
 function setController(overrides: Partial<any>) {
     controllerValue = {
@@ -148,8 +161,6 @@ function setController(overrides: Partial<any>) {
         onRemoveGroup: vi.fn(),
         onCreateServerGroup: vi.fn(async () => false),
 
-        groupSelectionEnabled: false,
-        setGroupSelectionEnabled: vi.fn(),
         groupSelectionPresentation: 'grouped',
         activeServerGroupId: null,
         selectedGroupServerIds: new Set<string>(),
@@ -164,6 +175,7 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
     beforeEach(() => {
         desktopHostMock.kind = null;
         desktopHostMock.invocations.length = 0;
+        relocationInputs.remoteHosts = [];
     });
     it('hides concurrent multi-relay settings when there are no relay groups', async () => {
         setController({ serverGroups: [] });
@@ -177,9 +189,22 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
         expect(screen.findAllByType('ServerGroupsSection' as any)).toHaveLength(0);
     });
 
-    it('shows concurrent multi-relay settings when there is at least one relay group', async () => {
+    it('hides group membership settings while a single Home is selected', async () => {
         setController({
             serverGroups: [{ id: 'grp-one', name: 'Group One', serverIds: ['server-a'], presentation: 'grouped' }],
+            activeServerGroupId: null,
+        });
+
+        const { ServerSettingsScreen } = await import('./ServerSettingsScreen');
+        const screen = await renderScreen(React.createElement(ServerSettingsScreen));
+
+        expect(screen.findAllByType('ServerGroupsSection' as any)).toHaveLength(0);
+    });
+
+    it('shows group membership settings only while a group is selected', async () => {
+        setController({
+            serverGroups: [{ id: 'grp-one', name: 'Group One', serverIds: ['server-a'], presentation: 'grouped' }],
+            activeServerGroupId: 'grp-one',
         });
 
         const { ServerSettingsScreen } = await import('./ServerSettingsScreen');
@@ -253,6 +278,8 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
             name: 'Personal Home',
             url: 'http://127.0.0.1:43123',
             source: 'desktop-personal-home',
+            serverIdentityId: 'srv_personal_home_1',
+            personalHomeBootstrapCompleted: true as const,
         };
         setController({
             relayDriftBanner: null,
@@ -276,6 +303,8 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
         expect(typeof operations.openDataLocation).toBe('function');
         expect(typeof operations.openLogs).toBe('function');
         expect(typeof operations.revealBackupOutput).toBe('function');
+        expect(typeof operations.selectBackupArchive).toBe('function');
+        expect(typeof operations.selectBackupExportDestination).toBe('function');
 
         // Search readiness comes from the existing features/capability runtime for the
         // local Home profile, never from a second polling owner.
@@ -291,6 +320,8 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
         await operations.openDataLocation('/home/.happier/self-host/data');
         await operations.openLogs('/home/.happier/self-host/logs');
         await operations.revealBackupOutput('/mnt/external-backups/personal-home-x.tar');
+        await operations.selectBackupArchive();
+        await operations.selectBackupExportDestination();
         const openCalls = desktopHostMock.invocations.filter((entry) => entry.command === 'system_tasks_open_log_path');
         expect(openCalls.map((entry) => entry.args?.path)).toEqual([
             '/home/.happier/self-host/data',
@@ -300,6 +331,62 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
         expect(revealCalls.map((entry) => entry.args?.path)).toEqual([
             '/mnt/external-backups/personal-home-x.tar',
         ]);
+        expect(desktopHostMock.invocations.filter((entry) => entry.command === 'desktop_pick_personal_home_backup_archive')).toHaveLength(1);
+        expect(desktopHostMock.invocations.filter((entry) => entry.command === 'desktop_save_personal_home_backup_archive')).toHaveLength(1);
+    });
+
+    it('keeps an eligible managed SSH relocation destination available without Account Directory publication', async () => {
+        desktopHostMock.kind = 'tauri';
+        relocationInputs.remoteHosts = [{
+            id: 'managed-host-1',
+            name: 'Home server',
+            ssh: { target: 'ops@destination.example.test', authMode: 'agent' },
+            createdAt: 1,
+            updatedAt: 1,
+            lastUsedAt: null,
+        }];
+        setController({
+            relayDriftBanner: null,
+            servers: [{
+                id: 'home-1',
+                name: 'Personal Home',
+                url: 'http://127.0.0.1:43123',
+                source: 'desktop-personal-home',
+                serverIdentityId: 'srv_personal_home_1',
+                personalHomeBootstrapCompleted: true,
+            }],
+            activeServerId: 'home-1',
+        });
+
+        const { ServerSettingsScreen } = await import('./ServerSettingsScreen');
+        const screen = await renderScreen(React.createElement(ServerSettingsScreen));
+        const section = screen.findAllByType('PersonalHomeRuntimeControlSection' as any)[0];
+
+        expect(section?.props.operations.relocation.destinations).toEqual([{
+            id: 'managed-host-1',
+            title: 'Home server',
+            subtitle: 'ops@destination.example.test',
+        }]);
+    });
+
+    it('does not expose managed Personal Home controls from mutable adoption provenance alone', async () => {
+        desktopHostMock.kind = 'tauri';
+        setController({
+            relayDriftBanner: null,
+            servers: [{
+                id: 'ordinary-home',
+                name: 'Ordinary Home',
+                url: 'https://ordinary.example.test',
+                source: 'desktop-personal-home',
+                serverIdentityId: 'ordinary-home-identity',
+            }],
+            activeServerId: 'ordinary-home',
+        });
+
+        const { ServerSettingsScreen } = await import('./ServerSettingsScreen');
+        const screen = await renderScreen(React.createElement(ServerSettingsScreen));
+
+        expect(screen.findAllByType('PersonalHomeRuntimeControlSection' as any)).toHaveLength(0);
     });
 
     it('finds the managed Personal Home independent of focus and never changes focus', async () => {
@@ -313,6 +400,8 @@ describe('ServerSettingsScreen (concurrent section visibility)', () => {
             name: 'Personal Home',
             url: 'http://127.0.0.1:43123',
             source: 'desktop-personal-home',
+            serverIdentityId: 'srv_personal_home_1',
+            personalHomeBootstrapCompleted: true as const,
         };
         setController({
             relayDriftBanner: null,

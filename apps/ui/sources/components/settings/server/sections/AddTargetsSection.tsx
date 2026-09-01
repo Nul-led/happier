@@ -12,7 +12,7 @@ import type {
     EndpointReachabilityRemediation,
     EndpointReachabilityRemediationAction,
 } from '@/components/serverReachability/remediation';
-import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
+import { resolveServerProfileScopeId, type ServerProfile } from '@/sync/domains/server/serverProfiles';
 import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
 import { Typography } from '@/constants/Typography';
@@ -281,7 +281,7 @@ export function AddTargetsSection(props: AddTargetsSectionProps) {
                                     ? t('server.validating')
                                     : props.autoMode
                                         ? t('server.useThisServer')
-                                        : t('server.addAndUse')}
+                                        : t('common.add')}
                                 size="normal"
                                 action={async () => {
                                     await props.onAddServer();
@@ -326,10 +326,12 @@ export function AddTargetsSection(props: AddTargetsSectionProps) {
 
                     <Text style={styles.labelText}>{t('server.serverGroupServersLabel')}</Text>
                     {props.servers.map((server) => {
-                        const selected = selectedGroupServerIds.includes(server.id);
+                        const scopeId = resolveServerProfileScopeId(server);
+                        const selected = selectedGroupServerIds.includes(scopeId);
                         return (
                             <Item
                                 key={`group-add-${server.id}`}
+                                testID={`server-group-add-member-${server.id}`}
                                 title={server.name}
                                 subtitle={toServerUrlDisplay(server.serverUrl)}
                                 icon={<Icon name="hard-drives" size={16} color={theme.colors.text.secondary} />}
@@ -340,8 +342,11 @@ export function AddTargetsSection(props: AddTargetsSectionProps) {
                                         color={selected ? theme.colors.status.connected : theme.colors.text.secondary}
                                     />
                                 )}
+                                accessibilityRole="checkbox"
+                                webRole="checkbox"
+                                selected={selected}
                                 showChevron={false}
-                                onPress={() => handleToggleGroupServer(server.id)}
+                                onPress={() => handleToggleGroupServer(scopeId)}
                             />
                         );
                     })}

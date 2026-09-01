@@ -1,7 +1,4 @@
-import {
-    resolveServerProfileScopeId,
-    type ServerProfile,
-} from '@/sync/domains/server/serverProfiles';
+import type { ServerProfile } from '@/sync/domains/server/serverProfiles';
 
 import type { RawServerSelectionSettings } from './serverSelectionResolution';
 
@@ -11,10 +8,14 @@ function normalizeId(raw: unknown): string {
     return String(raw ?? '').trim();
 }
 
+function resolveProfileScopeId(profile: ServerProfileScopeIdentity): string {
+    return profile.serverIdentityId ?? profile.id;
+}
+
 function createServerProfileScopeIdAliasMap(profiles: ReadonlyArray<ServerProfileScopeIdentity>): Map<string, string> {
     const aliases = new Map<string, string>();
     for (const profile of profiles) {
-        const scopeId = resolveServerProfileScopeId(profile);
+        const scopeId = resolveProfileScopeId(profile);
         if (!scopeId) continue;
         aliases.set(profile.id, scopeId);
         aliases.set(scopeId, scopeId);
@@ -51,12 +52,21 @@ export function listServerProfileScopeIds(profiles: ReadonlyArray<ServerProfileS
     const seen = new Set<string>();
     const result: string[] = [];
     for (const profile of profiles) {
-        const id = resolveServerProfileScopeId(profile);
+        const id = resolveProfileScopeId(profile);
         if (!id || seen.has(id)) continue;
         seen.add(id);
         result.push(id);
     }
     return result;
+}
+
+export function resolveServerProfileScopeIdForSelectionIdentifier(
+    profiles: ReadonlyArray<ServerProfileScopeIdentity>,
+    idRaw: unknown,
+): string | null {
+    const id = normalizeId(idRaw);
+    if (!id) return null;
+    return createServerProfileScopeIdAliasMap(profiles).get(id) ?? null;
 }
 
 export function normalizeServerSelectionSettingsForProfileScopeIds(

@@ -37,6 +37,7 @@ import {
 import { serverFetch } from '@/sync/http/client';
 import { HappyError } from '@/utils/errors/errors';
 import { parseToken } from '@/utils/auth/parseToken';
+import { normalizeInternalReturnPath } from '@/utils/path/routeUtils';
 import {
     getActiveServerId,
     getActiveServerUrl,
@@ -574,13 +575,7 @@ async function assertProposedCredentialsMatchRequest(
 function resolveFirstKeyReturnTo(
     state: PendingExternalAuth,
 ): string {
-    return (
-        typeof state.returnTo === 'string'
-        && state.returnTo.startsWith('/')
-        && !state.returnTo.startsWith('//')
-    )
-        ? state.returnTo
-        : '/settings/account';
+    return normalizeInternalReturnPath(state.returnTo) ?? '/settings/account';
 }
 
 async function assertCommittedFirstKeyCredentialsMatchCustody(
@@ -1152,12 +1147,7 @@ export async function resumeAccountEncryptionFirstKeyExternalAuth(
         removeFirstKeyMigrationAttempted =
             attemptedState;
         return {
-            returnTo:
-                typeof state.returnTo === 'string'
-                && state.returnTo.startsWith('/')
-                && !state.returnTo.startsWith('//')
-                    ? state.returnTo
-                    : '/settings/account',
+            returnTo: normalizeInternalReturnPath(state.returnTo) ?? '/settings/account',
             migration,
         };
     } finally {

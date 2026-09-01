@@ -1,5 +1,5 @@
 import * as React from 'react';
-import type { SystemTaskResult } from '@happier-dev/protocol';
+import type { SystemTaskResult, SystemTaskSpec } from '@happier-dev/protocol';
 
 import { getDefaultSystemTaskRunner, useSystemTaskSnapshot, waitForSystemTaskResult } from '@/components/systemTasks';
 import type { SystemTaskRunState, SystemTaskRunner } from '@/components/systemTasks/types';
@@ -47,18 +47,88 @@ type PersonalHomeInspection = Readonly<{
     estimatedOwnedBytes: number | null;
     destinationEmpty: boolean;
     restoreRecovery: Readonly<{ status: 'none' | 'rollback_available' | 'finalization_available' | 'ambiguous'; affectedTargets: readonly string[] }>;
+    relocationRecovery: Readonly<{
+        operationId: string;
+        destinationMachineId: string;
+        sourceDescriptorRevision: number;
+        primaryAction: 'finish_move';
+        secondaryAction: 'return_to_source';
+    }> | null;
 }>;
 
 type PersonalHomeVerification = Readonly<{
     archivePath: string;
     identityMatchesCurrentHome: string | null;
     homeServerIdentityId: string | null;
+    format: string | null;
+    version: number | null;
+    createdAt: string | null;
+    archiveBytes: number | null;
 }>;
 
+type PersonalHomeBackupFacts = Readonly<{
+    path: string;
+    bytes: number;
+    sha256: string;
+    homeServerIdentityId: string;
+    createdAt: string;
+    homeNeedsAttention: boolean;
+}>;
+
+type PersonalHomeRecoveryArchive = PersonalHomeBackupFacts & Readonly<{ verified: true }>;
+
 type PersonalHomeLastOperation =
-    | Readonly<{ operation: 'backup'; backup: Readonly<{ path: string; bytes: number; sha256: string; homeServerIdentityId: string; createdAt: string; homeNeedsAttention: boolean }> }>
-    | Readonly<{ operation: 'restore'; restore: Readonly<{ outcome: string; rollbackPaths: readonly string[]; error: string | null }> }>
+    | Readonly<{ operation: 'backup'; backup: PersonalHomeBackupFacts }>
+    | Readonly<{ operation: 'restore'; restore: Readonly<{ outcome: string; recoveryArchive: PersonalHomeRecoveryArchive | null; error: string | null }> }>
     | Readonly<{ operation: 'erase'; erase: Readonly<{ removedPaths: readonly string[]; remainingUnknownPaths: readonly string[]; stoppedRunningHome: boolean }> }>;
+
+function readPersonalHomeBackupFacts(value: unknown): PersonalHomeBackupFacts | null {
+    if (!value || typeof value !== 'object') return null;
+    const data = value as Record<string, unknown>;
+    const manifest = data.manifest && typeof data.manifest === 'object'
+        ? data.manifest as Record<string, unknown>
+        : {};
+    const path = typeof data.path === 'string' ? data.path.trim() : '';
+    const sha256 = typeof data.sha256 === 'string' ? data.sha256.trim() : '';
+    const homeServerIdentityId = typeof manifest.homeServerIdentityId === 'string'
+        ? manifest.homeServerIdentityId.trim()
+        : '';
+    const createdAt = typeof manifest.createdAt === 'string' ? manifest.createdAt.trim() : '';
+    const bytes = typeof data.archiveBytes === 'number'
+        && Number.isSafeInteger(data.archiveBytes)
+        && data.archiveBytes >= 0
+        ? data.archiveBytes
+        : null;
+    if (!path || !sha256 || !homeServerIdentityId || !createdAt || bytes === null) return null;
+    return {
+        path,
+        bytes,
+        sha256,
+        homeServerIdentityId,
+        createdAt,
+        homeNeedsAttention: data.homeNeedsAttention === true,
+    };
+}
+
+function readPersonalHomeRelocationRecovery(value: unknown): PersonalHomeInspection['relocationRecovery'] {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const facts = value as Record<string, unknown>;
+    const operationId = typeof facts.operationId === 'string' ? facts.operationId.trim() : '';
+    const destinationMachineId = typeof facts.destinationMachineId === 'string' ? facts.destinationMachineId.trim() : '';
+    const sourceDescriptorRevision = facts.sourceDescriptorRevision;
+    if (facts.status !== 'recovery_available' || !operationId || !destinationMachineId
+        || !Number.isSafeInteger(sourceDescriptorRevision) || sourceDescriptorRevision < 1) {
+        return null;
+    }
+    if (facts.primaryAction !== 'finish_move' || facts.secondaryAction !== 'return_to_source') return null;
+    return {
+        operationId,
+        destinationMachineId,
+        sourceDescriptorRevision,
+        primaryAction: 'finish_move',
+        secondaryAction: 'return_to_source',
+    };
+}
 
 export async function runRelayRuntimeUninstallTask(runner: SystemTaskRunner): Promise<boolean> {
     const taskId = await runner.start(buildLocalRelayRuntimeSystemTaskSpec('relay.runtime.uninstall.v1'));
@@ -95,7 +165,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
     const [lastVerification, setLastVerification] = React.useState<PersonalHomeVerification | null>(null);
     const [lastOperation, setLastOperation] = React.useState<PersonalHomeLastOperation | null>(null);
     const [operationTaskId, setOperationTaskId] = React.useState<string | null>(null);
-    const [activeOperationKind, setActiveOperationKind] = React.useState<PersonalHomeTaskKind | null>(null);
+    const [activeOperationKind, setActiveOperationKind] = React.useState<string | null>(null);
     const autoRefreshRequestedRef = React.useRef(false);
     const handledActionTaskIdRef = React.useRef<string | null>(null);
 
@@ -251,6 +321,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
         const layout = data?.layout && typeof data.layout === 'object' ? data.layout as Record<string, unknown> : {};
         const restoreRecoveryValue = data?.restoreRecovery && typeof data.restoreRecovery === 'object'
             ? data.restoreRecovery as Record<string, unknown> : {};
+        const relocationRecovery = readPersonalHomeRelocationRecovery(data?.relocationRecovery);
         const restoreRecoveryStatus = restoreRecoveryValue.status === 'rollback_available'
             || restoreRecoveryValue.status === 'finalization_available'
             || restoreRecoveryValue.status === 'ambiguous'
@@ -293,6 +364,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
                 affectedTargets: Array.isArray(restoreRecoveryValue.affectedTargets)
                     ? restoreRecoveryValue.affectedTargets.filter((value): value is string => typeof value === 'string') : [],
             },
+            relocationRecovery,
         };
         setInspection(facts);
         return facts;
@@ -310,32 +382,15 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             return await runAction(kind, taskOptions);
         }, [runAction, startTask]),
         runTaskAndWait,
-        backupPersonalHome: React.useCallback(async (input: Readonly<{ outputPath?: string; intent?: 'standard' | 'erase-safety' }> = {}) => {
+        backupPersonalHome: React.useCallback(async (input: Readonly<{ outputPath?: string }> = {}) => {
             const result = await runPersonalHomeTask('relay.runtime.personal_home.backup.v1', {
                 personalHomeOperation: {
                     ...(input.outputPath?.trim() ? { outputPath: input.outputPath.trim() } : {}),
-                    ...(input.intent ? { intent: input.intent } : {}),
                 },
             });
             if (!result?.ok) return null;
-            const data = result.data as Record<string, unknown> | undefined;
-            const manifest = data?.manifest && typeof data.manifest === 'object' ? data.manifest as Record<string, unknown> : {};
-            const path = typeof data?.path === 'string' ? data.path.trim() : '';
-            const sha256 = typeof data?.sha256 === 'string' ? data.sha256.trim() : '';
-            const homeServerIdentityId = typeof manifest.homeServerIdentityId === 'string' ? manifest.homeServerIdentityId.trim() : '';
-            const createdAt = typeof manifest.createdAt === 'string' ? manifest.createdAt.trim() : '';
-            const bytes = typeof data?.archiveBytes === 'number' && Number.isFinite(data.archiveBytes) && data.archiveBytes >= 0
-                ? data.archiveBytes
-                : null;
-            if (!path || !sha256 || !homeServerIdentityId || !createdAt || bytes === null) return null;
-            const backup = {
-                path,
-                bytes,
-                sha256,
-                homeServerIdentityId,
-                createdAt,
-                homeNeedsAttention: data?.homeNeedsAttention === true,
-            };
+            const backup = readPersonalHomeBackupFacts(result.data);
+            if (!backup) return null;
             setLastOperation({ operation: 'backup', backup });
             refreshAfterMutation();
             return backup;
@@ -354,6 +409,12 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
                 archivePath,
                 identityMatchesCurrentHome: typeof data?.identityMatchesCurrentHome === 'string' ? data.identityMatchesCurrentHome : null,
                 homeServerIdentityId: typeof manifest.homeServerIdentityId === 'string' ? manifest.homeServerIdentityId : null,
+                format: typeof manifest.format === 'string' ? manifest.format : null,
+                version: typeof manifest.version === 'number' && Number.isSafeInteger(manifest.version) ? manifest.version : null,
+                createdAt: typeof manifest.createdAt === 'string' ? manifest.createdAt : null,
+                archiveBytes: typeof data?.archiveBytes === 'number' && Number.isSafeInteger(data.archiveBytes) && data.archiveBytes >= 0
+                    ? data.archiveBytes
+                    : null,
             };
             setLastVerification(verification);
             return verification;
@@ -364,9 +425,10 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             const result = await runPersonalHomeTask('relay.runtime.personal_home.restore.v1', { personalHomeOperation: { archivePath, ...(input.overwriteConfirmed ? { confirmOverwrite: true } : {}) } });
             if (!result?.ok) return null;
             const data = result.data as Record<string, unknown> | undefined;
+            const recoveryArchiveFacts = readPersonalHomeBackupFacts(data?.recoveryArchive);
             const restore = {
                 outcome: typeof data?.outcome === 'string' ? data.outcome : 'restored',
-                rollbackPaths: Array.isArray(data?.rollbackPaths) ? data.rollbackPaths.filter((value): value is string => typeof value === 'string') : [],
+                recoveryArchive: recoveryArchiveFacts ? { ...recoveryArchiveFacts, verified: true as const } : null,
                 error: typeof data?.error === 'string' ? data.error : null,
             };
             setLastOperation({ operation: 'restore', restore });
@@ -381,7 +443,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             const data = result.data as Record<string, unknown> | undefined;
             const restore = {
                 outcome: typeof data?.outcome === 'string' ? data.outcome : 'rolled_back',
-                rollbackPaths: [] as readonly string[],
+                recoveryArchive: null,
                 error: typeof data?.error === 'string' ? data.error : null,
             };
             setLastOperation({ operation: 'restore', restore });
@@ -395,7 +457,7 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             const data = result.data as Record<string, unknown> | undefined;
             const restore = {
                 outcome: typeof data?.outcome === 'string' ? data.outcome : 'finalized',
-                rollbackPaths: [] as readonly string[],
+                recoveryArchive: null,
                 error: typeof data?.error === 'string' ? data.error : null,
             };
             setLastOperation({ operation: 'restore', restore });
@@ -419,6 +481,27 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
             refreshAfterMutation();
             return erase;
         }, [refreshAfterMutation, runPersonalHomeTask]),
+        startExternalOperation: React.useCallback(async (spec: SystemTaskSpec): Promise<string | null> => {
+            if (isUnavailable) return null;
+            try {
+                const taskId = await runner.start(spec);
+                setBridgeUnavailable(false);
+                setLastErrorMessage(null);
+                handledActionTaskIdRef.current = null;
+                setActionTaskId(taskId);
+                setOperationTaskId(taskId);
+                setActiveOperationKind(spec.kind);
+                return taskId;
+            } catch (error) {
+                const message = readSystemTaskStartErrorMessage(error);
+                const unavailable = isSystemTaskBridgeUnavailableError(error);
+                setBridgeUnavailable(unavailable);
+                setLastErrorMessage(unavailable
+                    ? t('settings.systemTaskBridgeUnavailable')
+                    : (message ?? t('settings.systemTaskStartFailed')));
+                return null;
+            }
+        }, [isUnavailable, runner]),
         inspection,
         lastOperation,
         lastVerification,

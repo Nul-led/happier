@@ -1,7 +1,8 @@
 import {
     normalizeAccountDirectoryEndpoint,
+    isTokenOnlyAuthCredentials,
     TokenStorage,
-    type AuthCredentials,
+    type TokenOnlyAuthCredentials,
 } from '@/auth/storage/tokenStorage';
 import { getAuthProvider } from '@/auth/providers/registry';
 import { createServerFetchAtEndpoint } from '@/sync/http/client';
@@ -29,6 +30,7 @@ export type AccountDirectoryOAuthStartInput = Readonly<{
 export type AccountDirectoryKeyLoginInput = Readonly<{
     endpointUrl: string;
     endpointServerIdentityId: string;
+    canonicalServerUrl: string;
     secret: Uint8Array;
 }>;
 
@@ -38,11 +40,12 @@ export type AccountDirectoryKeyLoginInput = Readonly<{
  * adopted.
  */
 export const accountDirectoryAuthClient = {
-    async loginWithKey(input: AccountDirectoryKeyLoginInput): Promise<AuthCredentials> {
+    async loginWithKey(input: AccountDirectoryKeyLoginInput): Promise<TokenOnlyAuthCredentials> {
         const endpointUrl = normalizeAccountDirectoryEndpoint(input.endpointUrl);
         const endpointServerIdentityId = input.endpointServerIdentityId.trim();
-        if (!endpointUrl || !endpointServerIdentityId) {
-            throw new Error('Account Service key login requires a known endpoint identity');
+        const canonicalServerUrl = normalizeAccountDirectoryEndpoint(input.canonicalServerUrl);
+        if (!endpointUrl || !endpointServerIdentityId || !canonicalServerUrl) {
+            throw new Error('Account Service key login requires a known endpoint identity and canonical audience');
         }
         if (!(input.secret instanceof Uint8Array) || input.secret.length !== 32) {
             throw new Error('Account Service key login requires a 32-byte secret');
@@ -50,13 +53,16 @@ export const accountDirectoryAuthClient = {
 
         const credentials = await authGetTokenAtEndpoint({
             endpointUrl,
-            canonicalServerUrl: endpointUrl,
+            canonicalServerUrl,
             serverId: endpointServerIdentityId,
             serverIdentityId: endpointServerIdentityId,
             secret: input.secret,
             requireKeyChallengeV2: true,
             credentialTarget: 'account_directory',
         });
+        if (!isTokenOnlyAuthCredentials(credentials)) {
+            throw new Error('Account Service returned non-Directory credentials');
+        }
         const stored = await TokenStorage.accountDirectoryAuthCredentials.set(
             {
                 endpoint: endpointUrl,

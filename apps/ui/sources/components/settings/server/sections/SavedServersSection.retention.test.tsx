@@ -56,8 +56,8 @@ vi.mock('@/components/ui/lists/ItemRowActions', () => ({
     ItemRowActions: (props: any) => React.createElement('ItemRowActions', props),
 }));
 
-describe('SavedServersSection retention', () => {
-    it('shows finite retention in inactive saved server rows only', async () => {
+describe('SavedServersSection row simplicity', () => {
+    it('keeps retention metadata out of primary Home rows', async () => {
         useServerRetentionPolicies.mockReturnValue({
             'server-a': null,
             'server-b': {
@@ -119,6 +119,7 @@ describe('SavedServersSection retention', () => {
         expect(screen.findByTestId('saved-server-row-server-a')?.props.subtitle)
             .not.toContain('Deletes inactive sessions after 30 days.');
         expect(screen.findByTestId('saved-server-row-server-b')?.props.subtitle)
-            .toContain('Deletes inactive sessions after 30 days.');
+            .not.toContain('Deletes inactive sessions after 30 days.');
+        expect(screen.findByTestId('saved-server-row-server-b')?.props.onPress).toBeUndefined();
     });
 });

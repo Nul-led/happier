@@ -30,11 +30,6 @@ describe('canCancelPersonalHomeOperationProgress', () => {
             { kind: 'relay.runtime.personal_home.erase.v1', stepId: 'personal_home.acquiring_lock', expected: true, because: 'lock acquisition is pre-boundary' },
             { kind: 'relay.runtime.personal_home.erase.v1', stepId: 'personal_home.awaiting_confirmation', expected: true, because: 'explicit confirmation is still cancellable' },
             { kind: 'relay.runtime.personal_home.erase.v1', stepId: 'personal_home.erasing', expected: false, because: 'erasing is the erase irreversible boundary' },
-            // Relocation: deactivating the source Home is the point of no return.
-            { kind: 'relay.runtime.personal_home.relocate.v1', stepId: 'personal_home.preflight', expected: true, because: 'preflight is pre-boundary' },
-            { kind: 'relay.runtime.personal_home.relocate.v1', stepId: 'personal_home.stopping_source', expected: false, because: 'stopping_source is the relocation irreversible boundary' },
-            { kind: 'relay.runtime.personal_home.relocate.v1', stepId: 'personal_home.restoring_destination', expected: false, because: 'destination restore happens after source deactivation' },
-            { kind: 'relay.runtime.personal_home.relocate.v1', stepId: 'personal_home.rolling_back_source', expected: false, because: 'rollback runs after cutover' },
         ];
 
         for (const testCase of cases) {
@@ -56,7 +51,6 @@ describe('canCancelPersonalHomeOperationProgress', () => {
             'relay.runtime.personal_home.backup.v1': 'stopping_home',
             'relay.runtime.personal_home.restore.v1': 'stopping_home',
             'relay.runtime.personal_home.erase.v1': 'erasing',
-            'relay.runtime.personal_home.relocate.v1': 'stopping_source',
         });
     });
 });

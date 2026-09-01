@@ -6,7 +6,6 @@ import { runtimeFetch } from '@/utils/system/runtimeFetch';
 import { createEndpointSupervisedRequest } from '@/sync/runtime/connectivity/createEndpointSupervisedRequest';
 import { getEndpointSupervisorForServer } from '@/sync/runtime/connectivity/endpointSupervisorPool';
 import {
-    peekServerReachabilityToken,
     reportServerUnreachable,
     ServerReachabilityWaitTimeoutError,
     invalidateServerReachabilitySupervisor,
@@ -481,18 +480,9 @@ async function requestAtEndpoint(
         for (let attempt = 0; attempt < 2; attempt += 1) {
             try {
                 if (isActiveOrigin && retryMode !== 'none') {
-                    const reachabilityToken =
-                        peekServerReachabilityToken(
-                            context.endpointUrl,
-                        ) ?? null;
                     const tokenForReachability =
                         usedToken
-                        ?? (
-                            reachabilityToken
-                            === rejectedFirstKeyBearer
-                                ? null
-                                : reachabilityToken
-                        );
+                        ?? null;
                     try {
                         await waitForServerReachable({
                             serverUrl: context.endpointUrl,
@@ -512,7 +502,7 @@ async function requestAtEndpoint(
                                 throw new ServerFetchAbortedForServerSwitchError();
                             }
                             if (didWriteTimeout) {
-                                reportServerUnreachable(context.endpointUrl, error);
+                                reportServerUnreachable(context.endpointUrl, error, tokenForReachability);
                                 throw new ServerFetchWriteTimeoutError();
                             }
                             throw error;
@@ -561,7 +551,7 @@ async function requestAtEndpoint(
                         throw new ServerFetchAbortedForServerSwitchError();
                     }
                     if (didWriteTimeout) {
-                        reportServerUnreachable(context.endpointUrl, error);
+                    reportServerUnreachable(context.endpointUrl, error, usedToken);
                         throw new ServerFetchWriteTimeoutError();
                     }
                     // Caller aborts should not poison reachability state.
@@ -572,7 +562,7 @@ async function requestAtEndpoint(
                     // transport failure which can reset backoff scheduling.
                     throw error;
                 }
-                reportServerUnreachable(context.endpointUrl, error);
+                reportServerUnreachable(context.endpointUrl, error, usedToken);
                 throw error;
             }
 

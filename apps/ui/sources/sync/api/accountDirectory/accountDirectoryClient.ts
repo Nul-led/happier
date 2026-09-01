@@ -1,8 +1,13 @@
 import { z } from 'zod';
 import {
+    ACCOUNT_DIRECTORY_HOMES_HTTP_PATH_V1,
+    ACCOUNT_DIRECTORY_ME_HTTP_PATH_V1,
+    ACCOUNT_DIRECTORY_PREFERRED_HOME_HTTP_PATH_V1,
+    HOME_LOGIN_HTTP_PATH_V1,
     AccountDirectoryHomeDeleteResponseV1Schema,
     AccountDirectoryHomeDeleteRequestV1Schema,
     AccountDirectoryHomePutRequestV1Schema,
+    AccountDirectoryHomePublishRequestV2Schema,
     AccountDirectoryHomePutResponseV1Schema,
     AccountDirectoryHomesResponseV1Schema,
     AccountDirectoryMeResponseV1Schema,
@@ -17,10 +22,14 @@ import {
     HomeLoginAssertionResponseV1Schema,
     HomeLoginRedemptionRequestV1Schema,
     HomeLoginRedemptionResultV1Schema,
+    buildAccountDirectoryHomeHttpPathV1,
+    buildAccountDirectoryHomeLoginAssertionHttpPathV1,
+    buildAccountDirectoryLinkHttpPathV1,
     type AccountDirectoryHomeEntryV1,
     type AccountDirectoryHomesResponseV1,
     type AccountDirectoryMeResponseV1,
     type HomeConnectionDescriptorV1,
+    type HomeConnectionEndpointV1,
     type HomeLoginAssertionV1,
     type HomeLoginRedemptionResponseV1,
     type HomeLoginRedemptionResultV1,
@@ -42,6 +51,7 @@ export type {
     AccountDirectoryHomesResponseV1,
     AccountDirectoryMeResponseV1,
     HomeConnectionDescriptorV1,
+    HomeConnectionEndpointV1,
     HomeLoginAssertionV1,
     HomeLoginRedemptionResponseV1,
     HomeLoginRedemptionResultV1,
@@ -76,14 +86,12 @@ export function isAccountDirectoryRelinkConflict(error: unknown): boolean {
 
 function normalizeTarget(target: AccountDirectoryCredentialTarget): Readonly<{
     endpoint: string;
-    serverIdentityId: string | null;
+    serverIdentityId: string;
 }> {
     const normalized = normalizeAccountDirectoryEndpoint(target.endpoint);
     if (!normalized) throw new Error('Invalid Account Service endpoint');
-    const identityRaw = target.serverIdentityId ?? null;
-    const serverIdentityId = typeof identityRaw === 'string' && identityRaw.trim()
-        ? identityRaw.trim()
-        : null;
+    const serverIdentityId = target.serverIdentityId.trim();
+    if (!serverIdentityId) throw new Error('Account Service identity is required');
     return { endpoint: normalized, serverIdentityId };
 }
 
@@ -101,7 +109,7 @@ export type AccountDirectoryClient = ReturnType<typeof createAccountDirectoryCli
 
 export function createAccountDirectoryClient(target: AccountDirectoryCredentialTarget) {
     const { endpoint: baseUrl, serverIdentityId } = normalizeTarget(target);
-    const credentialTarget = { endpoint: baseUrl, ...(serverIdentityId ? { serverIdentityId } : {}) };
+    const credentialTarget = { endpoint: baseUrl, serverIdentityId };
     const request = async <T>(path: string, init: RequestInit | undefined, schema: z.ZodType<T>): Promise<T> => {
         if (!path.startsWith('/v1/account-directory/')) throw new Error('Account Service path is not an Account Directory route');
         const credentials = await accountDirectoryCredentialStorage.get(credentialTarget);
@@ -109,7 +117,7 @@ export function createAccountDirectoryClient(target: AccountDirectoryCredentialT
         headers.set('Accept', 'application/json');
         const fetchAtEndpoint = createServerFetchAtEndpoint({
             endpointUrl: baseUrl,
-            ...(serverIdentityId ? { serverId: serverIdentityId } : {}),
+            serverId: serverIdentityId,
             credentials,
         });
         const response = await fetchAtEndpoint(path, { ...init, headers }, { includeAuth: Boolean(credentials), retry: 'none' });
@@ -124,15 +132,57 @@ export function createAccountDirectoryClient(target: AccountDirectoryCredentialT
         endpoint: baseUrl,
         serverIdentityId,
         request,
-        getMe: () => request('/v1/account-directory/me', undefined, AccountDirectoryMeResponseV1Schema),
-        listHomes: () => request('/v1/account-directory/homes', undefined, AccountDirectoryHomesResponseV1Schema),
+        getMe: () => request(ACCOUNT_DIRECTORY_ME_HTTP_PATH_V1, undefined, AccountDirectoryMeResponseV1Schema),
+        listHomes: () => request(ACCOUNT_DIRECTORY_HOMES_HTTP_PATH_V1, undefined, AccountDirectoryHomesResponseV1Schema),
         putHome: (home: Readonly<{ homeServerIdentityId: string; label: string; connectionDescriptor: HomeConnectionDescriptorV1 }>) => request(
-            `/v1/account-directory/homes/${encodeURIComponent(home.homeServerIdentityId)}`,
+            buildAccountDirectoryHomeHttpPathV1(home.homeServerIdentityId),
             { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(AccountDirectoryHomePutRequestV1Schema.parse({ v: 1, label: home.label, connectionDescriptor: home.connectionDescriptor })) },
             AccountDirectoryHomePutResponseV1Schema,
         ),
+        publishHomeDescriptor: async (home: Readonly<{
+            homeServerIdentityId: string;
+            label: string;
+            minimumOuterRevisionExclusive: number;
+            canonicalServerUrl: string;
+            endpoints: readonly HomeConnectionEndpointV1[];
+        }>) => {
+            const body = AccountDirectoryHomePublishRequestV2Schema.parse({
+                v: 2,
+                label: home.label,
+                minimumOuterRevisionExclusive: home.minimumOuterRevisionExclusive,
+                canonicalServerUrl: home.canonicalServerUrl,
+                endpoints: home.endpoints,
+            });
+            const entry = await request(
+                buildAccountDirectoryHomeHttpPathV1(home.homeServerIdentityId),
+                { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+                AccountDirectoryHomePutResponseV1Schema,
+            );
+            const expectedDescriptor = HomeConnectionDescriptorV1Schema.parse({
+                v: 1,
+                homeServerIdentityId: home.homeServerIdentityId,
+                canonicalServerUrl: body.canonicalServerUrl,
+                revision: body.minimumOuterRevisionExclusive + 1,
+                endpoints: body.endpoints,
+            });
+            if (entry.connectionDescriptor.revision > expectedDescriptor.revision) {
+                return { kind: 'current' as const, entry };
+            }
+            if (JSON.stringify(entry.connectionDescriptor) !== JSON.stringify(expectedDescriptor)) {
+                throw new AccountDirectoryResponseError('home_descriptor_publication');
+            }
+            return { kind: 'published' as const, entry };
+        },
+        readHomeDescriptor: async (homeServerIdentityId: string) => {
+            const directory = await request(
+                ACCOUNT_DIRECTORY_HOMES_HTTP_PATH_V1,
+                undefined,
+                AccountDirectoryHomesResponseV1Schema,
+            );
+            return directory.homes.find((home) => home.homeServerIdentityId === homeServerIdentityId) ?? null;
+        },
         deleteHome: (homeServerIdentityId: string) => request(
-            `/v1/account-directory/homes/${encodeURIComponent(homeServerIdentityId)}`,
+            buildAccountDirectoryHomeHttpPathV1(homeServerIdentityId),
             {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
@@ -141,12 +191,12 @@ export function createAccountDirectoryClient(target: AccountDirectoryCredentialT
             AccountDirectoryHomeDeleteResponseV1Schema,
         ),
         setPreferredHome: (homeServerIdentityId: string | null) => request(
-            '/v1/account-directory/homes/preferred',
+            ACCOUNT_DIRECTORY_PREFERRED_HOME_HTTP_PATH_V1,
             { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(AccountDirectoryPreferredHomePatchRequestV1Schema.parse({ v: 1, homeServerIdentityId })) },
             AccountDirectoryPreferredHomePatchResponseV1Schema,
         ),
         requestLoginAssertion: (homeServerIdentityId: string, body: Readonly<{ clientBoxPublicKeyBase64: string }>) => request(
-            `/v1/account-directory/homes/${encodeURIComponent(homeServerIdentityId)}/login-assertion`,
+            buildAccountDirectoryHomeLoginAssertionHttpPathV1(homeServerIdentityId),
             { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(HomeLoginAssertionRequestV1Schema.parse({ v: 1, homeServerIdentityId, ...body })) },
             HomeLoginAssertionResponseV1Schema,
         ),
@@ -166,7 +216,7 @@ export async function redeemHomeLoginAssertion(
     const response = await target.createRequest({
         serverId: target.homeServerIdentityId,
         credentials: null,
-    })('/v1/auth/home-login', {
+    })(HOME_LOGIN_HTTP_PATH_V1, {
         method: 'POST',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
@@ -198,7 +248,7 @@ export async function putHomeDirectoryLink(
         ...link,
         relink: options.relink ?? false,
     });
-    const path = `/v1/account/directory-links/${encodeURIComponent(request.issuerServerIdentityId)}`;
+    const path = buildAccountDirectoryLinkHttpPathV1(request.issuerServerIdentityId);
     const response = await target.createRequest({
         serverId: target.homeServerIdentityId,
         credentials: options.credentials,

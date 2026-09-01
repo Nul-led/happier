@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { authAccountApprove } from './accountApprove';
+import { completeAccountAuthRequest } from './accountCompletion';
 import { resolveHomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
 import type { HomeQrEnrollmentTarget } from './qrStart';
 
@@ -22,7 +22,7 @@ const descriptor = {
 };
 let target: HomeQrEnrollmentTarget;
 
-describe('authAccountApprove explicit target', () => {
+describe('completeAccountAuthRequest explicit target', () => {
     beforeAll(async () => {
         const resolution = await resolveHomeEnrollmentTransport(descriptor);
         if (!resolution.ok) throw new Error('Expected test Home transport');
@@ -37,7 +37,7 @@ describe('authAccountApprove explicit target', () => {
     it('sends the strict bound terminal-v3 admission body only to the selected Home', async () => {
         endpointFetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
 
-        await expect(authAccountApprove({
+        await expect(completeAccountAuthRequest({
             token: 'home-b-token',
             target,
             pairId: 'pair-b',
@@ -45,7 +45,7 @@ describe('authAccountApprove explicit target', () => {
             response: new Uint8Array([4, 5, 6]),
             homeServerIdentityId: 'srv_home_b',
             responseKind: 'tokenOnly',
-        })).resolves.toBe('approved');
+        })).resolves.toBe('completed');
 
         expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith(expect.objectContaining({
             endpointUrl: 'https://home-b.test',
@@ -64,8 +64,26 @@ describe('authAccountApprove explicit target', () => {
         expect(serverFetchMock).not.toHaveBeenCalled();
     });
 
+    it('forwards lifecycle cancellation to the authenticated completion request', async () => {
+        endpointFetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
+        const controller = new AbortController();
+
+        await expect(completeAccountAuthRequest({
+            token: 'home-b-token',
+            target,
+            pairId: 'pair-b',
+            publicKey: new Uint8Array(32),
+            response: new Uint8Array([1]),
+            homeServerIdentityId: 'srv_home_b',
+            responseKind: 'tokenOnly',
+            signal: controller.signal,
+        })).resolves.toBe('completed');
+
+        expect((endpointFetchMock.mock.calls[0]?.[1] as RequestInit).signal).toBe(controller.signal);
+    });
+
     it('rejects a mismatched target identity before any request', async () => {
-        await expect(authAccountApprove({
+        await expect(completeAccountAuthRequest({
             token: 'home-b-token',
             target,
             pairId: 'pair-b',
@@ -78,12 +96,12 @@ describe('authAccountApprove explicit target', () => {
         expect(serverFetchMock).not.toHaveBeenCalled();
     });
 
-    it('returns only the typed byte-stable completion replay so the caller can retire rendezvous', async () => {
+    it('treats the typed already-completed replay as successful completion', async () => {
         endpointFetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'already_completed' }), {
             status: 409,
             headers: { 'Content-Type': 'application/json' },
         }));
-        await expect(authAccountApprove({
+        await expect(completeAccountAuthRequest({
             token: 'home-b-token',
             target,
             pairId: 'pair-b',
@@ -97,7 +115,7 @@ describe('authAccountApprove explicit target', () => {
             status: 409,
             headers: { 'Content-Type': 'application/json' },
         }));
-        await expect(authAccountApprove({
+        await expect(completeAccountAuthRequest({
             token: 'home-b-token',
             target,
             pairId: 'pair-b',

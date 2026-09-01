@@ -11,15 +11,24 @@ export type PreferredDirectoryHomeEnrollmentResult =
 export type PendingPreferredHomeEnrollment = Extract<
     HomeLoginContinuationResult,
     { kind: 'approval_required' }
+> & Readonly<{ serviceKey: string }>;
+
+type PreferredDirectoryEnrollmentSession = Pick<
+    AccountDirectorySession,
+    'snapshot' | 'serviceKey' | 'supportsHomeEnrollment' | 'requestLoginAssertion'
 >;
 
 let pendingPreferredHomeEnrollment: PendingPreferredHomeEnrollment | null = null;
-let pendingPreferredHomeResume: Promise<HomeLoginContinuationResult> | null = null;
+let pendingPreferredHomeResume: Readonly<{
+    pending: PendingPreferredHomeEnrollment;
+    promise: Promise<HomeLoginContinuationResult>;
+}> | null = null;
 const pendingListeners = new Set<() => void>();
 
-function publishPending(result: HomeLoginContinuationResult): void {
-    pendingPreferredHomeEnrollment = result.kind === 'approval_required'
-        ? result
+function publishPending(result: HomeLoginContinuationResult, serviceKey?: string): void {
+    const boundServiceKey = serviceKey ?? pendingPreferredHomeEnrollment?.serviceKey ?? null;
+    pendingPreferredHomeEnrollment = result.kind === 'approval_required' && boundServiceKey
+        ? { ...result, serviceKey: boundServiceKey }
         : null;
     for (const listener of pendingListeners) listener();
 }
@@ -40,18 +49,23 @@ export async function cancelPendingPreferredHomeEnrollment(): Promise<void> {
 }
 
 export async function resumePendingPreferredHomeEnrollment(): Promise<HomeLoginContinuationResult | null> {
-    if (pendingPreferredHomeResume) return await pendingPreferredHomeResume;
     const pending = pendingPreferredHomeEnrollment;
     if (!pending) return null;
+    if (pendingPreferredHomeResume?.pending === pending) {
+        return await pendingPreferredHomeResume.promise;
+    }
     const resume = pending.resume().then((result) => {
-        publishPending(result);
+        if (pendingPreferredHomeEnrollment === pending) {
+            publishPending(result, pending.serviceKey);
+        }
         return result;
     });
-    pendingPreferredHomeResume = resume;
+    const inFlight = { pending, promise: resume };
+    pendingPreferredHomeResume = inFlight;
     try {
         return await resume;
     } finally {
-        if (pendingPreferredHomeResume === resume) pendingPreferredHomeResume = null;
+        if (pendingPreferredHomeResume === inFlight) pendingPreferredHomeResume = null;
     }
 }
 
@@ -60,11 +74,14 @@ export async function resumePendingPreferredHomeEnrollment(): Promise<HomeLoginC
  * remains usable after this returns even when its Account Service is later unavailable.
  */
 export async function enrollPreferredDirectoryHome(
-    session: AccountDirectorySession,
+    session: PreferredDirectoryEnrollmentSession,
+    options: Readonly<{ shouldCancel?: () => boolean }> = {},
 ): Promise<PreferredDirectoryHomeEnrollmentResult> {
+    if (options.shouldCancel?.()) return { kind: 'cancelled' };
     const snapshot = session.snapshot;
     if (snapshot.status === 'unsupported') return { kind: 'unavailable', reason: 'unsupported' };
     if (snapshot.status !== 'ready') return { kind: 'unavailable', reason: 'directory_not_ready' };
+    if (!session.supportsHomeEnrollment) return { kind: 'unavailable', reason: 'unsupported' };
 
     const preferredIdentity = snapshot.preferredHomeServerIdentityId
         ?? snapshot.homes.find((entry) => entry.preferred === true)?.homeServerIdentityId
@@ -74,6 +91,7 @@ export async function enrollPreferredDirectoryHome(
     if (!entry) return { kind: 'unavailable', reason: 'no_preferred_home' };
 
     await cancelPendingPreferredHomeEnrollment();
+    if (options.shouldCancel?.()) return { kind: 'cancelled' };
     try {
         const keyPair = sodium.crypto_box_keypair();
         const assertion = await session.requestLoginAssertion(entry.homeServerIdentityId,
@@ -81,6 +99,7 @@ export async function enrollPreferredDirectoryHome(
             // base64 (not base64url) for the requester box key.
             encodeBase64(keyPair.publicKey, 'base64'),
         );
+        if (options.shouldCancel?.()) return { kind: 'cancelled' };
         if (assertion.audienceHomeServerIdentityId !== entry.homeServerIdentityId) {
             throw new Error('Account Service assertion targeted a different Home');
         }
@@ -88,8 +107,10 @@ export async function enrollPreferredDirectoryHome(
             home: entry,
             clientSecretKey: keyPair.privateKey,
             assertion,
+            shouldCancel: options.shouldCancel,
         });
-        publishPending(result);
+        if (options.shouldCancel?.()) return { kind: 'cancelled' };
+        publishPending(result, session.serviceKey);
         return result;
     } catch (error) {
         return { kind: 'failed', error };

@@ -16,39 +16,85 @@ export type RelayRuntimeStatusData = Readonly<{
     }>;
 }>;
 
+function readLoopbackHttpOrigin(value: unknown): string | null {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    try {
+        const parsed = new URL(value.trim());
+        const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/gu, '');
+        const port = Number(parsed.port);
+        if (
+            parsed.protocol !== 'http:'
+            || (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '::1')
+            || !Number.isInteger(port)
+            || port < 1
+            || port > 65_535
+            || parsed.username
+            || parsed.password
+            || parsed.pathname !== '/'
+            || parsed.search
+            || parsed.hash
+        ) {
+            return null;
+        }
+        return parsed.origin;
+    } catch {
+        return null;
+    }
+}
+
 /** Canonical UI decoder for relay-runtime task results consumed by settings and bootstrap. */
 export function readRelayRuntimeStatusData(
     result: SystemTaskResult | null,
-    options: Readonly<{ fallbackRelayUrl?: string }> = {},
 ): RelayRuntimeStatusData | null {
     if (!result?.ok) return null;
 
     const data = result.data && typeof result.data === 'object' && !Array.isArray(result.data)
         ? result.data as Record<string, unknown>
         : null;
-    const relayUrl = typeof data?.relayUrl === 'string' && data.relayUrl.trim()
-        ? data.relayUrl.trim()
-        : String(options.fallbackRelayUrl ?? '').trim();
+    const relayUrl = readLoopbackHttpOrigin(data?.relayUrl);
     const service = data?.service;
-    if (!relayUrl || !service || typeof service !== 'object' || Array.isArray(service)) return null;
+    if (
+        !relayUrl
+        || typeof data?.dataPresent !== 'boolean'
+        || !service
+        || typeof service !== 'object'
+        || Array.isArray(service)
+    ) return null;
 
     const serviceRecord = service as Record<string, unknown>;
     const purposeValue = data?.purpose;
     const purposeRecord = purposeValue && typeof purposeValue === 'object' && !Array.isArray(purposeValue)
         ? purposeValue as Record<string, unknown>
         : null;
-    const canonicalServerUrl = typeof purposeRecord?.canonicalServerUrl === 'string'
-        ? purposeRecord.canonicalServerUrl.trim()
-        : '';
-    const purpose = purposeRecord?.kind === 'personal-home' && canonicalServerUrl
-        ? { kind: 'personal-home' as const, canonicalServerUrl }
-        : purposeRecord?.kind === 'generic'
-            ? { kind: 'generic' as const }
-            : null;
+    let purpose: RelayRuntimeStatusData['purpose'] = null;
+    if (purposeValue != null) {
+        if (!purposeRecord) return null;
+        if (purposeRecord.kind === 'personal-home') {
+            const canonicalServerUrl = readLoopbackHttpOrigin(purposeRecord.canonicalServerUrl);
+            const projectedCanonicalServerUrl = data?.canonicalServerUrl == null
+                ? canonicalServerUrl
+                : readLoopbackHttpOrigin(data.canonicalServerUrl);
+            if (
+                !canonicalServerUrl
+                || projectedCanonicalServerUrl !== canonicalServerUrl
+                || canonicalServerUrl !== relayUrl
+            ) {
+                return null;
+            }
+            purpose = { kind: 'personal-home', canonicalServerUrl };
+        } else if (purposeRecord.kind === 'generic') {
+            if (data?.canonicalServerUrl != null) return null;
+            purpose = { kind: 'generic' };
+        } else {
+            return null;
+        }
+    } else if (data?.canonicalServerUrl != null) {
+        return null;
+    }
 
     return {
         installed: data?.installed === true,
-        dataPresent: data?.dataPresent === true,
+        dataPresent: data.dataPresent,
         version: typeof data?.version === 'string' ? data.version : null,
         relayUrl,
         healthy: data?.healthy === true,

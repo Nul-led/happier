@@ -1276,6 +1276,30 @@ describe('OnboardingWizardSurface', () => {
         expect(screen.findByTestId('onboarding-wizard-lost-access')).toBeTruthy();
     });
 
+    it('disables every onboarding escape after the restore request crosses its authority boundary', async () => {
+        const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
+        const screen = await renderScreen(
+            React.createElement(OnboardingWizardSurface, {
+                layout: 'portrait',
+                isDesktopShell: true,
+                initialStepId: 'auth_restore',
+                authEntryOptions: baseAuthOptions,
+                onCreateAccount: vi.fn(),
+                onCreateAccountViaProvider: vi.fn(),
+                onLoginWithKeylessProvider: vi.fn(),
+                onLoginWithMtls: vi.fn(),
+            }),
+        );
+
+        const restoreStep = screen.findByType('RestoreIndexEmbedded' as never) as unknown as ReactTestInstance;
+        await act(async () => {
+            (restoreStep.props as any).onNavigationLockChange?.(true);
+        });
+
+        expect(screen.findByTestId('onboarding-wizard-back')?.props.disabled).toBe(true);
+        expect(screen.findByTestId('onboarding-wizard-skip')?.props.disabled).toBe(true);
+    });
+
     it('treats skip on the restore QR step as an escape hatch back to auth', async () => {
         const { OnboardingWizardSurface } = await import('./OnboardingWizardSurface');
         const screen = await renderScreen(

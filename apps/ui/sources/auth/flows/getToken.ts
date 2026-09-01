@@ -99,9 +99,9 @@ function resolveSelectedKeyChallengeV2Audience(): Readonly<{
 }> {
     const active = getActiveServerSnapshot();
     const profile = getServerProfileById(active.serverId);
-    const origin = profile
-        ? canonicalizeKeyChallengeV2AudienceOrigin(profile.serverUrl)
-        : null;
+    const origin = canonicalizeKeyChallengeV2AudienceOrigin(
+        profile?.canonicalServerUrl ?? active.serverUrl ?? profile?.serverUrl,
+    );
     if (!origin || !profile?.serverIdentityId) {
         throw new Error('Authentication failed: selected server identity is unavailable for key-challenge v2.');
     }
@@ -152,7 +152,11 @@ async function authGetTokenCore(params: AuthTokenCoreParams): Promise<AuthCreden
     if (params.expectedAccountId) {
         assertCurrentAccountStoredContentServerCompatibility(serverFeaturesSnapshot);
     }
-    if (serverFeaturesSnapshot.status !== 'ready') {
+    const mayUseReleasedV1Fallback =
+        params.credentialTarget === 'ordinary_home'
+        && params.expectedAccountId === undefined
+        && !params.requireKeyChallengeV2;
+    if (serverFeaturesSnapshot.status !== 'ready' && !mayUseReleasedV1Fallback) {
         throw new HappyError(
             'Authentication failed: server capability probe did not return a valid response.',
             true,
@@ -165,29 +169,33 @@ async function authGetTokenCore(params: AuthTokenCoreParams): Promise<AuthCreden
             },
         );
     }
-    const observedServerIdentityId = readObservedServerIdentityId(
-        serverFeaturesSnapshot,
-    );
-    if (
-        params.expectedServerIdentityId
-        && observedServerIdentityId !== params.expectedServerIdentityId
-    ) {
-        throwEndpointIdentityMismatch();
-    }
+    const readyServerFeaturesSnapshot = serverFeaturesSnapshot.status === 'ready'
+        ? serverFeaturesSnapshot
+        : null;
+    if (readyServerFeaturesSnapshot) {
+        const observedServerIdentityId = readObservedServerIdentityId(
+            readyServerFeaturesSnapshot,
+        );
+        if (
+            params.expectedServerIdentityId
+            && observedServerIdentityId !== params.expectedServerIdentityId
+        ) {
+            throwEndpointIdentityMismatch();
+        }
 
-    const serverFeatures = serverFeaturesSnapshot.features;
-    // Newer servers advertise this gate under the feature payload. Older
-    // servers omit it, and omission remains compatible with v1 login.
-    const keyChallengeEnabledRaw = readNestedBoolean(
-        serverFeatures,
-        ['features', 'auth', 'login', 'keyChallenge', 'enabled'],
-    );
-    if (keyChallengeEnabledRaw === false) {
-        throw new Error('Authentication failed: key-challenge login is disabled on this server.');
+        // Newer servers advertise this gate under the feature payload. Older
+        // servers omit it, and omission remains compatible with v1 login.
+        const keyChallengeEnabledRaw = readNestedBoolean(
+            readyServerFeaturesSnapshot.features,
+            ['features', 'auth', 'login', 'keyChallenge', 'enabled'],
+        );
+        if (keyChallengeEnabledRaw === false) {
+            throw new Error('Authentication failed: key-challenge login is disabled on this server.');
+        }
     }
 
     const supportsKeyChallengeV2 =
-        serverFeatures.capabilities.auth.keyChallenge.v2 === true;
+        readyServerFeaturesSnapshot?.features.capabilities.auth.keyChallenge.v2 === true;
     const requireKeyChallengeV2 =
         params.requireKeyChallengeV2
         || params.credentialTarget === 'account_directory';
@@ -196,7 +204,7 @@ async function authGetTokenCore(params: AuthTokenCoreParams): Promise<AuthCreden
     }
 
     let body: KeyChallengeAuthRequest;
-    if (supportsKeyChallengeV2) {
+    if (supportsKeyChallengeV2 && readyServerFeaturesSnapshot) {
         const issueResponse = await params.request(authPaths.challenge, {
             method: 'POST',
             headers: {
@@ -223,7 +231,7 @@ async function authGetTokenCore(params: AuthTokenCoreParams): Promise<AuthCreden
         }
         const assertion = authChallengeV2(params.secret, {
             challenge: parsedIssue.data,
-            expectedAudience: params.resolveAudience(serverFeaturesSnapshot),
+            expectedAudience: params.resolveAudience(readyServerFeaturesSnapshot),
             ...(params.expectedAccountId ? { expectedAccountId: params.expectedAccountId } : {}),
         });
         body = {
@@ -246,8 +254,9 @@ async function authGetTokenCore(params: AuthTokenCoreParams): Promise<AuthCreden
 
     // New content-key fields are sent only when negotiated, except for the
     // Account-bound flow where they are part of the binding contract.
-    const supportsContentKeys =
-        readServerEnabledBit(serverFeatures, 'sharing.contentKeys') === true;
+    const supportsContentKeys = readyServerFeaturesSnapshot
+        ? readServerEnabledBit(readyServerFeaturesSnapshot.features, 'sharing.contentKeys') === true
+        : false;
     if (supportsContentKeys || params.expectedAccountId) {
         const encryption = await Encryption.create(params.secret);
         const contentPublicKey = encryption.contentDataKey;

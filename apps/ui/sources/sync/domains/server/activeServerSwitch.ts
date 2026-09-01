@@ -7,6 +7,7 @@ import {
     areServerProfileIdentifiersEquivalent,
     clearTabActiveServerId,
     getDeviceDefaultServerId,
+    getServerProfileById,
     getTabActiveServerId,
 } from './serverProfiles';
 import type { ServerProfileSource } from './serverProfiles';
@@ -15,6 +16,22 @@ import { canonicalizeServerUrl, createServerUrlComparableKey } from './url/serve
 export { upsertAndActivateServer } from './serverRuntime';
 
 export type ActiveServerSwitchResult = 'switched' | 'already_active' | 'blocked';
+
+let activeServerSwitchTail: Promise<void> = Promise.resolve();
+
+async function serializeActiveServerSwitch<T>(run: () => Promise<T>): Promise<T> {
+    const previous = activeServerSwitchTail;
+    let release!: () => void;
+    activeServerSwitchTail = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    await previous;
+    try {
+        return await run();
+    } finally {
+        release();
+    }
+}
 
 export function normalizeServerUrl(raw: string): string {
     return canonicalizeServerUrl(raw);
@@ -133,34 +150,36 @@ export async function upsertActivateAndSwitchServer(params: Readonly<{
     name?: string;
     refreshAuth?: (() => Promise<void>) | null;
 }>): Promise<ActiveServerSwitchResult> {
-    const targetServerUrl = normalizeServerUrl(params.serverUrl);
-    if (!targetServerUrl) return 'blocked';
+    return await serializeActiveServerSwitch(async () => {
+        const targetServerUrl = normalizeServerUrl(params.serverUrl);
+        if (!targetServerUrl) return 'blocked';
 
-    const active = getActiveServerSnapshot();
-    const scope = params.scope ?? 'device';
-    if (canSkipActiveServerUrlSwitch({ activeServerUrl: active.serverUrl, targetServerUrl, scope })) return 'already_active';
+        const active = getActiveServerSnapshot();
+        const scope = params.scope ?? 'device';
+        if (canSkipActiveServerUrlSwitch({ activeServerUrl: active.serverUrl, targetServerUrl, scope })) return 'already_active';
 
-    return await runGuardedActiveServerSwitch(async () => {
-        const source = params.source ?? 'url';
-        if (source === 'manual') {
-            const profile = await adoptHomeProfile({
-                descriptor: { serverUrl: targetServerUrl },
-                source: 'manual',
-                preserveUserLabel: true,
-            });
-            await stageActiveServerAndSwitch(() => {
-                setActiveServer({ serverId: profile.id, scope });
-            }, params.refreshAuth ?? undefined);
-        } else {
-            await stageActiveServerAndSwitch(() => {
-                upsertAndActivateServer({
-                    serverUrl: targetServerUrl,
-                    name: params.name ?? defaultServerNameFromUrl(targetServerUrl),
-                    source,
-                    scope,
+        return await runGuardedActiveServerSwitch(async () => {
+            const source = params.source ?? 'url';
+            if (source === 'manual') {
+                const profile = await adoptHomeProfile({
+                    descriptor: { serverUrl: targetServerUrl },
+                    source: 'manual',
+                    preserveUserLabel: true,
                 });
-            }, params.refreshAuth ?? undefined);
-        }
+                await stageActiveServerAndSwitch(() => {
+                    setActiveServer({ serverId: profile.id, scope });
+                }, params.refreshAuth ?? undefined);
+            } else {
+                await stageActiveServerAndSwitch(() => {
+                    upsertAndActivateServer({
+                        serverUrl: targetServerUrl,
+                        name: params.name ?? defaultServerNameFromUrl(targetServerUrl),
+                        source,
+                        scope,
+                    });
+                }, params.refreshAuth ?? undefined);
+            }
+        });
     });
 }
 
@@ -169,19 +188,21 @@ export async function setActiveServerAndSwitch(params: Readonly<{
     scope?: 'device' | 'tab';
     refreshAuth?: (() => Promise<void>) | null;
 }>): Promise<ActiveServerSwitchResult> {
-    const targetServerId = String(params.serverId ?? '').trim();
-    if (!targetServerId) return 'blocked';
+    return await serializeActiveServerSwitch(async () => {
+        const targetServerId = String(params.serverId ?? '').trim();
+        if (!targetServerId || !getServerProfileById(targetServerId)) return 'blocked';
 
-    const active = getActiveServerSnapshot();
-    const scope = params.scope ?? 'device';
-    if (canSkipActiveServerIdSwitch({ activeServerId: active.serverId, targetServerId, scope })) return 'already_active';
+        const active = getActiveServerSnapshot();
+        const scope = params.scope ?? 'device';
+        if (canSkipActiveServerIdSwitch({ activeServerId: active.serverId, targetServerId, scope })) return 'already_active';
 
-    return await runGuardedActiveServerSwitch(async () => {
-        await stageActiveServerAndSwitch(() => {
-            setActiveServer({
-                serverId: targetServerId,
-                scope,
-            });
-        }, params.refreshAuth ?? undefined);
+        return await runGuardedActiveServerSwitch(async () => {
+            await stageActiveServerAndSwitch(() => {
+                setActiveServer({
+                    serverId: targetServerId,
+                    scope,
+                });
+            }, params.refreshAuth ?? undefined);
+        });
     });
 }

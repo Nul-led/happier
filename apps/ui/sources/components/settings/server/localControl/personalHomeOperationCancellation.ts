@@ -1,14 +1,12 @@
 export type CancellablePersonalHomeTaskKind =
     | 'relay.runtime.personal_home.backup.v1'
     | 'relay.runtime.personal_home.restore.v1'
-    | 'relay.runtime.personal_home.erase.v1'
-    | 'relay.runtime.personal_home.relocate.v1';
+    | 'relay.runtime.personal_home.erase.v1';
 
 export const PERSONAL_HOME_OPERATION_IRREVERSIBLE_BOUNDARY_STEP = Object.freeze({
     'relay.runtime.personal_home.backup.v1': 'stopping_home',
     'relay.runtime.personal_home.restore.v1': 'stopping_home',
     'relay.runtime.personal_home.erase.v1': 'erasing',
-    'relay.runtime.personal_home.relocate.v1': 'stopping_source',
 } satisfies Record<CancellablePersonalHomeTaskKind, string>);
 
 const CANCELLABLE_STEPS: Readonly<Record<CancellablePersonalHomeTaskKind, ReadonlySet<string>>> = {
@@ -26,11 +24,6 @@ const CANCELLABLE_STEPS: Readonly<Record<CancellablePersonalHomeTaskKind, Readon
         'acquiring_lock',
         'awaiting_confirmation',
         'confirm_erase',
-    ]),
-    'relay.runtime.personal_home.relocate.v1': new Set([
-        'acquiring_lock',
-        'preflight',
-        'staging',
     ]),
 };
 

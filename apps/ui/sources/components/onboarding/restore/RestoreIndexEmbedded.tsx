@@ -13,6 +13,7 @@ export type RestoreIndexEmbeddedProps = Readonly<{
     onBack: () => void;
     onOpenSecretKeyLogin?: () => void;
     initialPairingLink?: string | null;
+    onNavigationLockChange?: (locked: boolean) => void;
 }>;
 
 export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(props: RestoreIndexEmbeddedProps) {
@@ -54,6 +55,7 @@ export const RestoreIndexEmbedded = React.memo(function RestoreIndexEmbedded(pro
             onBack={props.onBack}
             onOpenSecretKeyLogin={props.onOpenSecretKeyLogin}
             onShowQrInstead={() => setCurrentView('qr')}
+            onNavigationLockChange={props.onNavigationLockChange}
         />
     ) : (
         <RestoreQrView

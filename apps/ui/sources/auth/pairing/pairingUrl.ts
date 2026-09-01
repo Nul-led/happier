@@ -3,6 +3,7 @@ import {
     parseHomeQrInviteV2Payload,
     type HomeQrInviteV2,
 } from '@happier-dev/protocol';
+import { tryCreateQRMatrix } from '@/components/qr/qrMatrix';
 import { isAcceptedHappierUrlProtocol, resolveAppUrlScheme } from '@/utils/url/appScheme';
 
 type PairingDeepLinkPayload = {
@@ -91,6 +92,35 @@ export function buildHomeQrInviteDeepLink(input: Readonly<{ invite: HomeQrInvite
     const payload = encodeHomeQrInviteV2Payload(input.invite);
     const link = `${resolveAppUrlScheme()}:///pair?v=2&payload=${encodeURIComponent(payload)}`;
     return link;
+}
+
+export type RenderableHomeQrInviteDeepLinkResult =
+    | Readonly<{ ok: true; link: string; invite: HomeQrInviteV2 }>
+    | Readonly<{ ok: false; reason: 'invalid_invite' }>
+    | Readonly<{ ok: false; reason: 'qr_unavailable'; link: string }>;
+
+/**
+ * Builds the exact secret-bearing deep link that the Add Device surface will
+ * render and admits it through the real medium-error-correction QR encoder.
+ * This keeps protocol parsing bounds separate from physical QR capacity and
+ * turns an encoder exception into a typed unavailable result. A valid invite
+ * over encoder capacity still returns its exact link so the pairing stays
+ * live with the warned link-only fallback (lane-05 A6); only a malformed
+ * invite is rejected without a link.
+ */
+export function buildRenderableHomeQrInviteDeepLink(
+    input: Readonly<{ invite: HomeQrInviteV2 }>,
+): RenderableHomeQrInviteDeepLinkResult {
+    const invite = input.invite;
+    let link: string;
+    try {
+        link = buildHomeQrInviteDeepLink({ invite });
+    } catch {
+        return { ok: false, reason: 'invalid_invite' };
+    }
+    const matrix = tryCreateQRMatrix(link, 'medium');
+    if (!matrix.ok) return { ok: false, reason: matrix.reason, link };
+    return { ok: true, link, invite };
 }
 
 /** Parse only the v2 opaque invite shape; v1 links stay on the compatibility reader. */

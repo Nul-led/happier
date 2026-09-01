@@ -33,6 +33,7 @@ export type ProvisionAuthenticatedHomeLinkInput = Readonly<{
     capability: AccountDirectoryCapabilities;
     /** Explicit user-approved replacement of the Home's pinned Account Service trust facts. */
     relink?: boolean;
+    shouldCancel?: () => boolean;
 }>;
 
 /**
@@ -54,6 +55,7 @@ export async function provisionAuthenticatedHomeLink(
     if (!homeServerIdentityId || !issuerServerIdentityId) {
         return { kind: 'unavailable', reason: 'home_profile_unavailable' };
     }
+    if (input.shouldCancel?.()) return { kind: 'failed' };
     const resolved = resolveServerProfileForPortableIdentity(homeServerIdentityId);
     if (resolved.kind !== 'resolved') {
         return { kind: 'unavailable', reason: 'home_profile_unavailable' };
@@ -70,6 +72,7 @@ export async function provisionAuthenticatedHomeLink(
     if (!credentials) {
         return { kind: 'unavailable', reason: 'home_credentials_unavailable' };
     }
+    if (input.shouldCancel?.()) return { kind: 'failed' };
     const resolvedTransport = await resolveHomeEnrollmentTransport(descriptor, {
         verification: { kind: 'authenticated', token: credentials.token },
     });
@@ -79,6 +82,7 @@ export async function provisionAuthenticatedHomeLink(
     const transport = resolvedTransport.transport;
     try {
         const account = await input.session.readAccountSummary();
+        if (input.shouldCancel?.()) return { kind: 'failed' };
         await putHomeDirectoryLink(
             transport,
             {
@@ -89,11 +93,13 @@ export async function provisionAuthenticatedHomeLink(
             },
             { credentials, relink: input.relink === true },
         );
+        if (input.shouldCancel?.()) return { kind: 'failed' };
         await input.session.putHome({
             homeServerIdentityId: descriptor.homeServerIdentityId,
             label: profile.name,
             connectionDescriptor: descriptor,
         });
+        if (input.shouldCancel?.()) return { kind: 'failed' };
         return { kind: 'linked', homeServerIdentityId };
     } catch (error) {
         if (input.relink !== true && isAccountDirectoryRelinkConflict(error)) {

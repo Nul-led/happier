@@ -2,11 +2,12 @@ import * as React from 'react';
 import { Pressable, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 
-import { SystemTaskProgressCard } from '@/components/systemTasks/SystemTaskProgressCard';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
+import { PersonalHomeDiagnosticDetails } from '../setup/PersonalHomeDiagnosticDetails';
+import type { NormalizedSetupDetail } from './personalHomeBootstrapTypes';
 
 const styles = StyleSheet.create((theme) => ({
     root: {
@@ -46,6 +47,7 @@ const styles = StyleSheet.create((theme) => ({
 export const PersonalHomeRecoveryStrip = React.memo(function PersonalHomeRecoveryStrip(props: Readonly<{
     kind: 'profile' | 'computer';
     activeTask?: SystemTaskRunState | null;
+    detail?: NormalizedSetupDetail;
     onOpenDetails?: () => void;
     onRetry?: () => void;
 }>) {
@@ -53,7 +55,7 @@ export const PersonalHomeRecoveryStrip = React.memo(function PersonalHomeRecover
     const message = props.kind === 'computer'
         ? t('personalHome.bootstrap.computerRecoveryBody')
         : t('personalHome.bootstrap.profileRecoveryBody');
-    const hasDetails = props.onOpenDetails != null || props.activeTask != null;
+    const hasDetails = props.onOpenDetails != null || props.activeTask != null || props.detail != null;
     const openDetails = React.useCallback(() => {
         if (props.onOpenDetails) {
             props.onOpenDetails();
@@ -93,9 +95,9 @@ export const PersonalHomeRecoveryStrip = React.memo(function PersonalHomeRecover
                     </Pressable>
                 ) : null}
             </View>
-            {detailsOpen && props.activeTask ? (
+            {detailsOpen && (props.activeTask || props.detail) ? (
                 <View testID="personal-home-recovery-details-panel" style={styles.details}>
-                    <SystemTaskProgressCard snapshot={props.activeTask} />
+                    <PersonalHomeDiagnosticDetails detail={props.detail} activeTask={props.activeTask} />
                 </View>
             ) : null}
         </View>

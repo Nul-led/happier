@@ -5,7 +5,9 @@ import type {
     AccountEncryptionFirstKeyRecoveryHandle,
 } from '@/sync/ops/account/accountEncryptionFirstKeyExternalAuth';
 
-const switchConnectionToActiveServerSpy = vi.hoisted(() => vi.fn(async () => null));
+const switchConnectionToActiveServerSpy = vi.hoisted(() => vi.fn(
+    async (_params?: unknown): Promise<void | null> => null,
+));
 const guardCredentialMutationSpy = vi.hoisted(() => vi.fn<
     () => Promise<AccountEncryptionFirstKeyCredentialMutationResult>
 >(async () => ({ kind: 'allowed' })));
@@ -352,5 +354,129 @@ describe('activeServerSwitch device scope', () => {
             serverUrl: targetProfile.serverUrl,
             serverId: targetProfile.id,
         });
+    });
+
+    it('serializes overlapping device focus transactions before staging the next target', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        stubWebRuntime('https://origin.example.test');
+
+        let releaseFirstSwitch!: () => void;
+        const firstSwitchPending = new Promise<void>((resolve) => {
+            releaseFirstSwitch = resolve;
+        });
+        switchConnectionToActiveServerSpy
+            .mockImplementationOnce(async () => await firstSwitchPending)
+            .mockResolvedValueOnce(null);
+        const { profiles, switches } = await importFreshServerModules();
+        const activeProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://active.example.test',
+            name: 'Active',
+        });
+        const middleProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://middle.example.test',
+            name: 'Middle',
+        });
+        const finalProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://final.example.test',
+            name: 'Final',
+        });
+        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+
+        const first = switches.setActiveServerAndSwitch({
+            serverId: middleProfile.id,
+            scope: 'device',
+        });
+        await vi.waitFor(() => {
+            expect(switchConnectionToActiveServerSpy).toHaveBeenCalledTimes(1);
+        });
+        const second = switches.setActiveServerAndSwitch({
+            serverId: finalProfile.id,
+            scope: 'device',
+        });
+
+        await Promise.resolve();
+        expect(profiles.getDeviceDefaultServerId()).toBe(middleProfile.id);
+        expect(switchConnectionToActiveServerSpy).toHaveBeenCalledTimes(1);
+
+        releaseFirstSwitch();
+        await expect(Promise.all([first, second])).resolves.toEqual(['switched', 'switched']);
+        expect(profiles.getDeviceDefaultServerId()).toBe(finalProfile.id);
+        expect(profiles.getActiveServerId()).toBe(finalProfile.id);
+        expect(switchConnectionToActiveServerSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('finishes a failed tab focus rollback before applying the next tab request', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        stubWebRuntime('https://origin.example.test');
+
+        const targetFailure = new Error('middle target failed');
+        let releaseRollback!: () => void;
+        const rollbackPending = new Promise<void>((resolve) => {
+            releaseRollback = resolve;
+        });
+        switchConnectionToActiveServerSpy
+            .mockRejectedValueOnce(targetFailure)
+            .mockImplementationOnce(async () => await rollbackPending)
+            .mockResolvedValueOnce(null);
+        const { profiles, switches } = await importFreshServerModules();
+        const activeProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://active.example.test',
+            name: 'Active',
+        });
+        const middleProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://middle.example.test',
+            name: 'Middle',
+        });
+        const finalProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://final.example.test',
+            name: 'Final',
+        });
+        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+
+        const first = switches.setActiveServerAndSwitch({
+            serverId: middleProfile.id,
+            scope: 'tab',
+        });
+        await vi.waitFor(() => {
+            expect(switchConnectionToActiveServerSpy).toHaveBeenCalledTimes(2);
+        });
+        const second = switches.setActiveServerAndSwitch({
+            serverId: finalProfile.id,
+            scope: 'tab',
+        });
+
+        await Promise.resolve();
+        expect(profiles.getTabActiveServerId()).toBeNull();
+        expect(switchConnectionToActiveServerSpy).toHaveBeenCalledTimes(2);
+
+        releaseRollback();
+        await expect(first).rejects.toBe(targetFailure);
+        await expect(second).resolves.toBe('switched');
+        expect(profiles.getDeviceDefaultServerId()).toBe(activeProfile.id);
+        expect(profiles.getTabActiveServerId()).toBe(finalProfile.id);
+        expect(profiles.getActiveServerId()).toBe(finalProfile.id);
+        expect(switchConnectionToActiveServerSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it('fails closed without mutating focus when the requested profile does not exist', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = randomScope();
+        stubWebRuntime('https://origin.example.test');
+
+        const { profiles, switches } = await importFreshServerModules();
+        const activeProfile = profiles.upsertServerProfile({
+            serverUrl: 'https://active.example.test',
+            name: 'Active',
+        });
+        profiles.setActiveServerId(activeProfile.id, { scope: 'device' });
+
+        await expect(switches.setActiveServerAndSwitch({
+            serverId: 'missing-home',
+            scope: 'tab',
+        })).resolves.toBe('blocked');
+
+        expect(profiles.getDeviceDefaultServerId()).toBe(activeProfile.id);
+        expect(profiles.getTabActiveServerId()).toBeNull();
+        expect(profiles.getActiveServerId()).toBe(activeProfile.id);
+        expect(switchConnectionToActiveServerSpy).not.toHaveBeenCalled();
     });
 });

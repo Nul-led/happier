@@ -38,6 +38,7 @@ export type WizardModalShellProps = Readonly<{
     backLabel?: React.ReactNode;
     primaryDisabled?: boolean;
     secondaryDisabled?: boolean;
+    backDisabled?: boolean;
     showSkip?: boolean;
     showBack?: boolean;
     skipDisabled?: boolean;
@@ -212,6 +213,7 @@ export function WizardModalShell(props: WizardModalShellProps) {
                             display="inverted"
                             style={styles.footerSecondaryButton}
                             title={props.backLabel ?? t('common.back')}
+                            disabled={props.backDisabled}
                             onPress={props.onBack}
                         />
                     </View>

@@ -5,12 +5,12 @@ import { t } from '@/text';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { resolveServerProfileScopeId, type ServerProfile } from '@/sync/domains/server/serverProfiles';
 import type { ServerSelectionGroup } from '@/sync/domains/server/selection/serverSelectionTypes';
-import { promptSignedOutServerSwitchConfirmation } from '@/components/settings/server/modals/ServerSwitchAuthPrompt';
 
 import type { ServerAuthStatus } from './useServerAuthStatusByServerId';
 import type { ActiveServerSwitchResult } from '@/sync/domains/server/activeServerSwitch';
 import type { HomeViewSelectionSettings } from '@/hooks/server/useHomeViewSelectionSettings';
 import { normalizeServerSelectionGroupsForSettings } from '@/sync/domains/server/selection/serverSelectionSettingsAdapter';
+import { resolveServerSelectionGroupActivation } from '@/sync/domains/server/selection/serverSelectionActivation';
 
 function toGroupProfileId(rawName: string): string {
     const base = String(rawName ?? '').trim().toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-');
@@ -24,6 +24,24 @@ function findServerProfileByScopeId(
     return profiles.find((server) => server.id === id || resolveServerProfileScopeId(server) === id) ?? null;
 }
 
+async function resolveServerAuthStatus(params: Readonly<{
+    servers: ReadonlyArray<ServerProfile>;
+    authStatusByServerId: Readonly<Record<string, ServerAuthStatus>>;
+    serverId: string;
+}>): Promise<ServerAuthStatus> {
+    const profile = findServerProfileByScopeId(params.servers, params.serverId);
+    const known = params.authStatusByServerId[params.serverId]
+        ?? (profile ? params.authStatusByServerId[profile.id] : undefined)
+        ?? 'unknown';
+    if (known !== 'unknown' || !profile) return known;
+    try {
+        const credentials = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, { serverId: profile.id });
+        return credentials ? 'signedIn' : 'signedOut';
+    } catch {
+        return 'unknown';
+    }
+}
+
 export function useServerSettingsGroupActions(params: Readonly<{
     servers: ReadonlyArray<ServerProfile>;
     activeServerId: string;
@@ -33,6 +51,7 @@ export function useServerSettingsGroupActions(params: Readonly<{
     normalizedGroupProfiles: ReadonlyArray<ServerSelectionGroup>;
     activeGroupId: string | null;
     groupPresentation: 'grouped' | 'flat-with-badge';
+    selectionScope: 'tab' | 'device';
 
     setRevision: React.Dispatch<React.SetStateAction<number>>;
     onSwitchServerById: (serverId: string) => Promise<ActiveServerSwitchResult>;
@@ -40,6 +59,7 @@ export function useServerSettingsGroupActions(params: Readonly<{
 
     setHomeViewSelectionSettings: (
         update: (current: HomeViewSelectionSettings) => HomeViewSelectionSettings,
+        options?: Readonly<{ targetScope?: 'tab' | 'device' }>,
     ) => void;
 }>) {
     const onSwitchGroup = React.useCallback(async (profile: ServerSelectionGroup) => {
@@ -49,24 +69,17 @@ export function useServerSettingsGroupActions(params: Readonly<{
             return;
         }
 
-        const nextServerId = nextServerIds.includes(params.activeServerId) ? params.activeServerId : nextServerIds[0]!;
-        let authStatus: ServerAuthStatus = params.authStatusByServerId[nextServerId] ?? 'unknown';
-        if (authStatus === 'unknown') {
-            const nextProfile = findServerProfileByScopeId(params.servers, nextServerId);
-            if (nextProfile) {
-                try {
-                    const creds = await TokenStorage.getCredentialsForServerUrl(nextProfile.serverUrl, { serverId: nextProfile.id });
-                    authStatus = creds ? 'signedIn' : 'signedOut';
-                } catch {
-                    authStatus = 'unknown';
-                }
-            }
-        }
-        if (authStatus === 'signedOut') {
-            const shouldContinue = await promptSignedOutServerSwitchConfirmation();
-            if (!shouldContinue) return;
-        }
-
+        const activation = await resolveServerSelectionGroupActivation({
+            currentServerId: params.activeServerId,
+            serverIds: nextServerIds,
+            resolveAuthStatus: async (serverId) => await resolveServerAuthStatus({
+                servers: params.servers,
+                authStatusByServerId: params.authStatusByServerId,
+                serverId,
+            }),
+        });
+        if (!activation) return;
+        const { serverId: nextServerId, authStatus } = activation;
         if (nextServerId !== params.activeServerId) {
             const result = await params.onSwitchServerById(nextServerId);
             if (result === 'blocked') return;
@@ -75,7 +88,7 @@ export function useServerSettingsGroupActions(params: Readonly<{
             ...current,
             serverSelectionActiveTargetKind: 'group',
             serverSelectionActiveTargetId: profile.id,
-        }));
+        }), { targetScope: params.selectionScope });
         if (authStatus === 'signedOut') {
             params.onAfterSignedOutSwitch();
         }
@@ -95,7 +108,7 @@ export function useServerSettingsGroupActions(params: Readonly<{
         params.setHomeViewSelectionSettings((current) => ({
             ...current,
             serverSelectionGroups: normalizeServerSelectionGroupsForSettings(nextProfiles),
-        }));
+        }), { targetScope: params.selectionScope });
     }, [params]);
 
     const onRemoveGroup = React.useCallback(async (profile: ServerSelectionGroup) => {
@@ -114,7 +127,7 @@ export function useServerSettingsGroupActions(params: Readonly<{
                 serverSelectionActiveTargetKind: params.activeServerId ? 'server' as const : null,
                 serverSelectionActiveTargetId: params.activeServerId || null,
             } : {}),
-        }));
+        }), { targetScope: params.selectionScope });
     }, [params]);
 
     const onCreateServerGroup = React.useCallback(async (input: { name: string; serverIds: string[] }) => {
@@ -135,22 +148,17 @@ export function useServerSettingsGroupActions(params: Readonly<{
             suffix += 1;
         }
 
-        const nextServerId = nextServerIds.includes(params.activeServerId) ? params.activeServerId : nextServerIds[0]!;
-        const nextProfile = findServerProfileByScopeId(params.servers, nextServerId);
-        let authStatus: ServerAuthStatus = params.authStatusByServerId[nextServerId] ?? 'unknown';
-        if (authStatus === 'unknown' && nextProfile) {
-            try {
-                const creds = await TokenStorage.getCredentialsForServerUrl(nextProfile.serverUrl, { serverId: nextProfile.id });
-                authStatus = creds ? 'signedIn' : 'signedOut';
-            } catch {
-                authStatus = 'unknown';
-            }
-        }
-        if (authStatus === 'signedOut') {
-            const shouldContinue = await promptSignedOutServerSwitchConfirmation();
-            if (!shouldContinue) return false;
-        }
-
+        const activation = await resolveServerSelectionGroupActivation({
+            currentServerId: params.activeServerId,
+            serverIds: nextServerIds,
+            resolveAuthStatus: async (serverId) => await resolveServerAuthStatus({
+                servers: params.servers,
+                authStatusByServerId: params.authStatusByServerId,
+                serverId,
+            }),
+        });
+        if (!activation) return false;
+        const { serverId: nextServerId, authStatus } = activation;
         const nextGroup: ServerSelectionGroup = {
             id,
             name: trimmedName,
@@ -167,7 +175,7 @@ export function useServerSettingsGroupActions(params: Readonly<{
             serverSelectionGroups: normalizeServerSelectionGroupsForSettings(nextProfiles),
             serverSelectionActiveTargetKind: 'group',
             serverSelectionActiveTargetId: nextGroup.id,
-        }));
+        }), { targetScope: params.selectionScope });
         if (authStatus === 'signedOut') {
             params.onAfterSignedOutSwitch();
         }

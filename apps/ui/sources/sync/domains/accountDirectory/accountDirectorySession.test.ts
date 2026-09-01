@@ -58,7 +58,7 @@ describe('AccountDirectorySession', () => {
             getMe: vi.fn(async () => ({ accountId: 'a' })),
             listHomes: vi.fn(() => new Promise<{ homes: ReturnType<typeof home>[] }>((resolve) => { resolveList = resolve; })),
         };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test' }, {
+        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
             client: client as never,
             capability: supportedCapability,
         });
@@ -68,37 +68,12 @@ describe('AccountDirectorySession', () => {
         resolveList!({ homes: [home('home-1')] });
         await Promise.all([first, second]);
         expect(session.snapshot.status).toBe('ready');
+        expect(client.getMe).not.toHaveBeenCalled();
 
         client.listHomes.mockRejectedValueOnce(new Error('offline'));
         const stale = await session.refresh();
         expect(stale.status).toBe('stale');
         expect(stale.homes).toHaveLength(1);
-    });
-
-    it('does not project a refresh result after the owning lifecycle cancels the attempt', async () => {
-        let resolveList: ((value: { homes: ReturnType<typeof home>[]; preferredHomeServerIdentityId: string }) => void) | null = null;
-        let cancelled = false;
-        const client = {
-            getMe: vi.fn(async () => ({ accountId: 'a' })),
-            listHomes: vi.fn(() => new Promise<{ homes: ReturnType<typeof home>[]; preferredHomeServerIdentityId: string }>((resolve) => {
-                resolveList = resolve;
-            })),
-        };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test' }, {
-            client: client as never,
-            capability: supportedCapability,
-        });
-
-        const refresh = session.refresh({ shouldCancel: () => cancelled });
-        cancelled = true;
-        resolveList!({ homes: [home('home-late')], preferredHomeServerIdentityId: 'home-late' });
-        await refresh;
-
-        expect(session.snapshot).not.toMatchObject({
-            status: 'ready',
-            preferredHomeServerIdentityId: 'home-late',
-        });
-        expect(session.snapshot.homes).toEqual([]);
     });
 
     it('keeps logout authoritative when an older refresh resolves late', async () => {
@@ -109,7 +84,7 @@ describe('AccountDirectorySession', () => {
                 resolveList = resolve;
             })),
         };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test' }, {
+        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
             client: client as never,
             capability: supportedCapability,
         });
@@ -119,7 +94,7 @@ describe('AccountDirectorySession', () => {
         resolveList!({ homes: [home('home-late')], preferredHomeServerIdentityId: 'home-late' });
         await refresh;
 
-        expect(session.snapshot).toMatchObject({ status: 'idle', account: null });
+        expect(session.snapshot).toMatchObject({ status: 'idle' });
         expect(session.snapshot.homes).toEqual([]);
     });
 
@@ -132,7 +107,7 @@ describe('AccountDirectorySession', () => {
             getMe: vi.fn(async () => ({ accountId: 'a' })),
             listHomes: vi.fn(async () => ({ homes: [] })),
         };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test' }, {
+        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
             client: client as never,
             capability: capability as never,
         });
@@ -148,13 +123,34 @@ describe('AccountDirectorySession', () => {
             listHomes: vi.fn(),
             requestLoginAssertion: vi.fn(async () => ({ v: 1 })),
         };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test' }, {
+        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
             client: client as never,
             capability: { ...supportedCapability, homeEnrollment: false },
         });
 
         await expect(session.requestLoginAssertion('home-1', 'client-key')).rejects.toThrow();
         expect(client.requestLoginAssertion).not.toHaveBeenCalled();
+        expect(session.snapshot.status).toBe('idle');
+    });
+
+    it('keeps a healthy Directory projection ready when Home enrollment is unavailable', async () => {
+        const client = {
+            getMe: vi.fn(async () => ({ accountId: 'a' })),
+            listHomes: vi.fn(async () => ({ homes: [home('home-1')] })),
+            requestLoginAssertion: vi.fn(),
+        };
+        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
+            client: client as never,
+            capability: { ...supportedCapability, homeEnrollment: false },
+        });
+
+        await expect(session.refresh()).resolves.toMatchObject({
+            status: 'ready',
+            homes: [expect.objectContaining({ homeServerIdentityId: 'home-1' })],
+        });
+        await expect(session.requestLoginAssertion('home-1', 'client-key')).rejects.toThrow();
+        expect(session.snapshot.status).toBe('ready');
+        expect(session.supportsHomeEnrollment).toBe(false);
     });
 
     it('allows assertion mint when the published capability supports Home enrollment', async () => {
@@ -163,7 +159,7 @@ describe('AccountDirectorySession', () => {
             listHomes: vi.fn(),
             requestLoginAssertion: vi.fn(async () => ({ v: 1 })),
         };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test' }, {
+        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
             client: client as never,
             capability: supportedCapability,
         });
@@ -178,7 +174,7 @@ describe('AccountDirectorySession', () => {
             listHomes: vi.fn(),
             putHome: vi.fn(async () => home('home-1')),
         };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test' }, {
+        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
             client: client as never,
             capability: { ...supportedCapability, homeDirectory: false },
         });
@@ -196,8 +192,10 @@ describe('AccountDirectorySession', () => {
             getMe: vi.fn(async () => ({ accountId: 'account-1' })),
             listHomes: vi.fn(),
             putHome: vi.fn(async () => home('home-1')),
+            publishHomeDescriptor: vi.fn(async () => ({ kind: 'published' as const, entry: home('home-1') })),
+            readHomeDescriptor: vi.fn(async () => home('home-1')),
         };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test' }, {
+        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
             client: client as never,
             capability: supportedCapability,
         });
@@ -213,6 +211,14 @@ describe('AccountDirectorySession', () => {
             label: 'home-1',
             connectionDescriptor: home('home-1').connectionDescriptor,
         });
+        await expect(session.publishHomeDescriptor({
+            homeServerIdentityId: 'home-1',
+            label: 'home-1',
+            minimumOuterRevisionExclusive: 1,
+            canonicalServerUrl: 'https://home-1.test',
+            endpoints: [{ kind: 'https', url: 'https://home-1.test' }],
+        })).resolves.toEqual({ kind: 'published', entry: home('home-1') });
+        await expect(session.readHomeDescriptor('home-1')).resolves.toEqual(home('home-1'));
     });
 
     it('routes preferred and remove commands through the capability-gated Directory client', async () => {
@@ -230,7 +236,7 @@ describe('AccountDirectorySession', () => {
                 preferredHomeServerIdentityId: 'home-2',
             })),
         };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test' }, {
+        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
             client: client as never,
             capability: supportedCapability,
         });
@@ -253,7 +259,7 @@ describe('AccountDirectorySession', () => {
             setPreferredHome: vi.fn(),
             deleteHome: vi.fn(),
         };
-        const session = new AccountDirectorySession({ endpoint: 'https://directory.test' }, {
+        const session = new AccountDirectorySession({ endpoint: 'https://directory.test', serverIdentityId: 'srv_dir_1' }, {
             client: client as never,
             capability: { ...supportedCapability, homeDirectory: false },
         });

@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
+import { usePreventRemove } from '@react-navigation/native';
 
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { useChromeSafeAreaInsets } from '@/components/ui/layout/useChromeSafeAreaInsets';
@@ -38,6 +39,7 @@ export function OnboardingWizardSurfacePresentation(props: OnboardingWizardSurfa
     const safeArea = useChromeSafeAreaInsets();
     const controller = props.controller;
     const testID = props.testID ?? 'onboarding-wizard';
+    usePreventRemove(controller.navigationLocked, () => undefined);
 
     return (
         <View testID={props.wizardChromeMode === 'bare' ? testID : undefined} style={{ flex: 1, position: 'relative' }}>
@@ -78,6 +80,7 @@ export function OnboardingWizardSurfacePresentation(props: OnboardingWizardSurfa
                     skipLabel={controller.skipLabel ?? undefined}
                     skipDisabled={controller.skipDisabled}
                     onBack={controller.onBack ?? (() => {})}
+                    backDisabled={controller.navigationLocked}
                     onPrimary={controller.onPrimary ?? undefined}
                     primaryLabel={controller.primaryLabel}
                     primaryDisabled={controller.primaryDisabled}

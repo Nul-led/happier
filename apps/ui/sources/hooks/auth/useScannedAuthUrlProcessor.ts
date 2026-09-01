@@ -15,7 +15,7 @@ type UseScannedAuthUrlProcessorOptions = Readonly<{
     onError?: (error: unknown) => void;
 }>;
 
-export function useScannedAuthUrlProcessor(options?: UseScannedAuthUrlProcessorOptions) {
+export function useScannedAuthUrlProcessor(options: UseScannedAuthUrlProcessorOptions) {
     const router = useRouter();
     const accountConnect = useConnectAccount(options);
     const terminalConnect = useConnectTerminal(options);
@@ -27,7 +27,7 @@ export function useScannedAuthUrlProcessor(options?: UseScannedAuthUrlProcessorO
         try {
             const restorePath = buildHomeQrInviteRestoreRoutePath(url);
             if (restorePath) {
-                if (options?.allowedUrlKind !== 'account') {
+                if (options.allowedUrlKind !== 'account') {
                     await Modal.alertAsync(t('common.error'), t('modals.invalidAuthUrl'), [{ text: t('common.ok') }]);
                     return false;
                 }
@@ -36,7 +36,7 @@ export function useScannedAuthUrlProcessor(options?: UseScannedAuthUrlProcessorO
             }
 
             if (parseTerminalConnectUrl(url)) {
-                if (options?.allowedUrlKind !== 'terminal') {
+                if (options.allowedUrlKind !== 'terminal') {
                     await Modal.alertAsync(t('common.error'), t('modals.invalidAuthUrl'), [{ text: t('common.ok') }]);
                     return false;
                 }
@@ -44,7 +44,7 @@ export function useScannedAuthUrlProcessor(options?: UseScannedAuthUrlProcessorO
             }
 
             if (parseAccountConnectDeepLink(url)) {
-                if (options?.allowedUrlKind !== 'account') {
+                if (options.allowedUrlKind !== 'account') {
                     await Modal.alertAsync(t('common.error'), t('modals.invalidAuthUrl'), [{ text: t('common.ok') }]);
                     return false;
                 }
@@ -54,7 +54,7 @@ export function useScannedAuthUrlProcessor(options?: UseScannedAuthUrlProcessorO
             await Modal.alertAsync(t('common.error'), t('modals.invalidAuthUrl'), [{ text: t('common.ok') }]);
             return false;
         } catch (error) {
-            options?.onError?.(error);
+            options.onError?.(error);
             throw error;
         }
     }, [accountConnect, options, router, terminalConnect]);

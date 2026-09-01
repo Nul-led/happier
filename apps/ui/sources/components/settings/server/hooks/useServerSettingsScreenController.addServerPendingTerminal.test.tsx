@@ -14,7 +14,6 @@ const setActiveServerAndSwitchMock = vi.fn(
 );
 const refreshFromActiveServerMock = vi.fn(async () => {});
 const createEndpointReadinessProbeMock = vi.hoisted(() => vi.fn(() => async () => ({ status: 'ready' as const })));
-const promptSignedOutServerSwitchConfirmationMock = vi.hoisted(() => vi.fn(async () => true));
 const pendingTerminalConnectMock = vi.hoisted(() => ({
     current: null as { publicKeyB64Url: string; serverUrl: string } | null,
     set: vi.fn((value: { publicKeyB64Url: string; serverUrl: string }) => {
@@ -71,10 +70,6 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
     TokenStorage: {
         getCredentialsForServerUrl: vi.fn(async () => null),
     },
-}));
-
-vi.mock('@/components/settings/server/modals/ServerSwitchAuthPrompt', () => ({
-    promptSignedOutServerSwitchConfirmation: promptSignedOutServerSwitchConfirmationMock,
 }));
 
 vi.mock('@/sync/domains/pending/pendingTerminalConnect', () => ({
@@ -180,7 +175,6 @@ describe('useServerSettingsScreenController (add server pending terminal)', () =
         setActiveServerAndSwitchMock.mockResolvedValue('switched');
         refreshFromActiveServerMock.mockClear();
         createEndpointReadinessProbeMock.mockClear();
-        promptSignedOutServerSwitchConfirmationMock.mockClear();
         pendingTerminalConnectMock.current = null;
         pendingTerminalConnectMock.set.mockClear();
         storageState.serverSelectionGroups = [];
@@ -214,7 +208,6 @@ describe('useServerSettingsScreenController (add server pending terminal)', () =
             await value?.onAddServer();
         });
 
-        expect(promptSignedOutServerSwitchConfirmationMock).not.toHaveBeenCalled();
         expect(pendingTerminalConnectMock.set).not.toHaveBeenCalled();
         expect(setActiveServerAndSwitchMock).not.toHaveBeenCalled();
         expect(storageState.serverSelectionActiveTargetKind).toBeNull();

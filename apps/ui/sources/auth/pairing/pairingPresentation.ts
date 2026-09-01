@@ -8,10 +8,6 @@ export function formatHomeEnrollmentTargetLabel(descriptor: HomeConnectionDescri
     }
 }
 
-export function formatPairingConfirmationCode(code: string): string {
-    return /^\d{6}$/u.test(code) ? `${code.slice(0, 3)} ${code.slice(3)}` : code;
-}
-
 export function formatEnrollmentExpiry(expiresAtMs: number): string {
     return new Date(expiresAtMs).toLocaleString();
 }

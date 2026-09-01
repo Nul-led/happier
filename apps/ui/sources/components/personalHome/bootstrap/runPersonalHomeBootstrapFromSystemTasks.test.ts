@@ -11,6 +11,7 @@ import {
 
 type RuntimeState = {
     installed: boolean;
+    dataPresent: boolean;
     healthy: boolean;
     signup: 'enabled' | 'disabled';
     purpose: 'personal-home' | 'generic' | null;
@@ -31,20 +32,25 @@ function createHarness(options: Readonly<{
     initialPurpose?: RuntimeState['purpose'];
     refusalVerified?: boolean;
     initialSignupPolicyKnown?: boolean;
-    persistedSignupPolicyKnownAfterRestart?: boolean;
+    persistedSignupPolicyKnownAfterClosureUpdate?: boolean;
     storagePolicy?: 'required_e2ee' | 'optional' | 'plaintext_only';
     seedCredentials?: string;
     homeAcceptedToken?: string;
     failFirstAdoption?: boolean;
     failProfilePreflight?: boolean;
     dataPresent?: boolean;
-    uninstalledRelayUrl?: string;
+    /** Simulates an explicit erase/uninstall winning immediately after this install mutation. */
+    eraseAfterInstallNumber?: number;
+    /** Simulates an explicit lifecycle operation winning after credentials but before closure. */
+    interruptBeforeClosure?: 'erase' | 'uninstall';
     /** /v1/features descriptor published by the endpoint probes (as parsed by the probe owner). */
     homeConnectionDescriptor?: HomeConnectionDescriptorV1;
 }> = {}) {
     const canonicalServerUrl = 'http://127.0.0.1:43123';
     const runtime: RuntimeState = {
         installed: options.initiallyInstalled === true || options.initiallyStopped === true,
+        dataPresent: options.dataPresent
+            ?? (options.initiallyInstalled === true || options.initiallyStopped === true),
         healthy: options.initiallyStopped === true ? false : options.initiallyInstalled === true,
         signup: 'enabled',
         purpose: options.initialPurpose ?? null,
@@ -59,7 +65,10 @@ function createHarness(options: Readonly<{
     let adoptionAttempts = 0;
     const adoptedInputs: Array<Parameters<PersonalHomeBootstrapSystemTaskDeps['adoptCompletedProfile']>[0]> = [];
     let refusalVerified = options.refusalVerified !== false;
-    let hasRestarted = false;
+    let hasManagedSignupUpdate = false;
+    let hasClosedSignupUpdate = false;
+    let pendingSeedAvailable = false;
+    let installCount = 0;
     let completionSource: string | null = null;
     const focusedHome = { id: 'home-a' };
 
@@ -71,10 +80,9 @@ function createHarness(options: Readonly<{
                 : null;
         return {
             installed: runtime.installed,
+            dataPresent: runtime.dataPresent,
             version: runtime.installed ? '0.3.0-test' : null,
-            relayUrl: !runtime.installed && options.uninstalledRelayUrl
-                ? options.uninstalledRelayUrl
-                : canonicalServerUrl,
+            relayUrl: canonicalServerUrl,
             healthy: runtime.healthy,
             service: {
                 active: runtime.installed ? runtime.healthy : null,
@@ -84,13 +92,12 @@ function createHarness(options: Readonly<{
             ...(runtime.purpose === 'personal-home' ? { canonicalServerUrl } : {}),
             anonymousSignupEnabled: runtime.purpose === 'personal-home'
                 && (
-                    hasRestarted
-                        ? options.persistedSignupPolicyKnownAfterRestart !== false
-                        : options.initialSignupPolicyKnown !== false
+                    runtime.signup === 'disabled' && hasClosedSignupUpdate
+                        ? options.persistedSignupPolicyKnownAfterClosureUpdate !== false
+                        : hasManagedSignupUpdate || options.initialSignupPolicyKnown !== false
                 )
                 ? runtime.signup === 'enabled'
                 : null,
-            ...(typeof options.dataPresent === 'boolean' ? { dataPresent: options.dataPresent } : {}),
         };
     };
 
@@ -99,13 +106,22 @@ function createHarness(options: Readonly<{
             taskCalls.push({ kind, options: taskOptions });
             calls.push(`task:${kind}:${taskOptions.anonymousSignupEnabled ?? 'unset'}`);
             if (kind === 'relay.runtime.installOrUpdate.v1') {
+                installCount += 1;
                 runtime.installed = true;
+                runtime.dataPresent = true;
                 runtime.healthy = true;
                 runtime.purpose = 'personal-home';
                 runtime.signup = taskOptions.anonymousSignupEnabled === false ? 'disabled' : 'enabled';
+                hasManagedSignupUpdate = true;
+                if (taskOptions.anonymousSignupEnabled === false) hasClosedSignupUpdate = true;
+                if (installCount === options.eraseAfterInstallNumber) {
+                    runtime.installed = false;
+                    runtime.dataPresent = false;
+                    runtime.healthy = false;
+                    runtime.purpose = null;
+                }
             } else if (kind === 'relay.runtime.start.v1' || kind === 'relay.runtime.restart.v1') {
                 runtime.healthy = true;
-                if (kind === 'relay.runtime.restart.v1') hasRestarted = true;
             }
             return taskResult(`task-${taskCalls.length}`, statusData());
         },
@@ -131,10 +147,21 @@ function createHarness(options: Readonly<{
             accountCreations += 1;
             return { token: 'home-b-token' };
         },
-        hasPendingBootstrapSeed: async () => false,
+        preparePendingBootstrapSeed: async (input) => {
+            calls.push(`seed:prepare:${input.serverIdentityId ?? 'url'}:${input.allowCreate ? 'create' : 'reuse'}`);
+            if (input.allowCreate) pendingSeedAvailable = true;
+            return pendingSeedAvailable;
+        },
         persistCredentials: async (input) => {
             calls.push(`credentials:persist:${input.serverIdentityId}`);
             credentials = input.credentials;
+            if (options.interruptBeforeClosure === 'erase') {
+                runtime.dataPresent = false;
+                runtime.healthy = false;
+            } else if (options.interruptBeforeClosure === 'uninstall') {
+                runtime.installed = false;
+                runtime.healthy = false;
+            }
             return true;
         },
         verifyAuthenticatedAccess: async (input) => {
@@ -143,6 +170,7 @@ function createHarness(options: Readonly<{
         },
         clearPendingBootstrapSeed: async (input) => {
             calls.push(`seed:clear:${input.serverUrl}:${input.serverIdentityId}`);
+            pendingSeedAvailable = false;
             return true;
         },
         preflightCompletedProfile: () => {
@@ -189,7 +217,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: freshAttempt.deps,
-            initialServerUrl: freshAttempt.canonicalServerUrl,
         })).rejects.toBeInstanceOf(PersonalHomeExistingRuntimeConflictError);
 
         expect(freshAttempt.taskCalls.map((entry) => entry.kind)).toEqual(['relay.runtime.status.v1']);
@@ -200,7 +227,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         const recoveryAttempt = createHarness({ dataPresent: true });
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: recoveryAttempt.deps,
-            initialServerUrl: recoveryAttempt.canonicalServerUrl,
             existingRuntimeDisposition: 'use-this-local-home',
         })).rejects.toBeInstanceOf(PersonalHomeExistingRuntimeConflictError);
         expect(recoveryAttempt.taskCalls.map((entry) => entry.kind)).toEqual(['relay.runtime.status.v1']);
@@ -212,12 +238,10 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
             initialPurpose: 'personal-home',
             dataPresent: true,
             seedCredentials: 'existing-home-token',
-            uninstalledRelayUrl: 'http://127.0.0.1:3005',
         });
 
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         });
 
         expect(result.accountCreated).toBe(false);
@@ -226,9 +250,9 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(harness.taskCalls.map((entry) => [entry.kind, entry.options.anonymousSignupEnabled])).toEqual([
             ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', false],
-            ['relay.runtime.start.v1', false],
+            ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', false],
-            ['relay.runtime.restart.v1', false],
+            ['relay.runtime.status.v1', undefined],
             ['relay.runtime.status.v1', undefined],
         ]);
         expect(harness.taskCalls[1]?.options.purpose).toEqual({
@@ -246,7 +270,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         })).rejects.toMatchObject({ code: 'personal_home_credentials_unverified' });
 
         expect(harness.accountCreations()).toBe(0);
@@ -254,21 +277,51 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(harness.credentials()).toBeNull();
     });
 
-    it('drives the production caller through install, restart, refusal/readback, token-only adoption, and leaves another Home focused', async () => {
+    it('recreates an erased no-data Personal Home only when an explicit retry authorizes it', async () => {
+        const harness = createHarness({
+            initiallyInstalled: true,
+            initialPurpose: 'personal-home',
+            dataPresent: false,
+            initialSignupPolicyKnown: false,
+        });
+
+        await expect(runPersonalHomeBootstrapFromSystemTasks({
+            deps: harness.deps,
+        })).rejects.toMatchObject({ code: 'personal_home_erased_retry_required' });
+        expect(harness.taskCalls.map((entry) => entry.kind)).toEqual(['relay.runtime.status.v1']);
+
+        harness.taskCalls.length = 0;
+        const result = await runPersonalHomeBootstrapFromSystemTasks({
+            deps: harness.deps,
+            allowErasedRuntimeRecreate: true,
+        });
+
+        expect(result.profileId).toBe('home-b-profile');
+        expect(harness.taskCalls.map((entry) => entry.kind)).toEqual([
+            'relay.runtime.status.v1',
+            'relay.runtime.installOrUpdate.v1',
+            'relay.runtime.status.v1',
+            'relay.runtime.installOrUpdate.v1',
+            'relay.runtime.status.v1',
+            'relay.runtime.status.v1',
+        ]);
+        expect(harness.taskCalls.some((entry) => entry.kind === 'relay.runtime.start.v1' || entry.kind === 'relay.runtime.restart.v1')).toBe(false);
+    });
+
+    it('drives the production caller through canonical install/update readbacks, refusal/readback, token-only adoption, and leaves another Home focused', async () => {
         const harness = createHarness();
         const focusBefore = harness.focusedHome.id;
 
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         });
 
         expect(harness.taskCalls.map((entry) => [entry.kind, entry.options.anonymousSignupEnabled])).toEqual([
             ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', true],
-            ['relay.runtime.start.v1', true],
+            ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', false],
-            ['relay.runtime.restart.v1', false],
+            ['relay.runtime.status.v1', undefined],
             ['relay.runtime.status.v1', undefined],
         ]);
         expect(harness.runtime.signup).toBe('disabled');
@@ -281,12 +334,62 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(harness.calls.lastIndexOf('auth:verify:home-b-token')).toBeLessThan(harness.calls.indexOf('profile:adopt:desktop-personal-home'));
     });
 
-    it('refuses completion when final managed status cannot prove persisted signup closure', async () => {
-        const harness = createHarness({ persistedSignupPolicyKnownAfterRestart: false });
+    it('does not start after an explicit erase wins immediately after the initial install/update', async () => {
+        const harness = createHarness({ eraseAfterInstallNumber: 1 });
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
+        })).rejects.toThrow('Personal Home runtime is not healthy after install/update.');
+
+        expect(harness.taskCalls.map((entry) => entry.kind)).toEqual([
+            'relay.runtime.status.v1',
+            'relay.runtime.installOrUpdate.v1',
+            'relay.runtime.status.v1',
+        ]);
+        expect(harness.accountCreations()).toBe(0);
+    });
+
+    it('does not restart after an explicit erase wins immediately after the signup-closure install/update', async () => {
+        const harness = createHarness({ eraseAfterInstallNumber: 2 });
+
+        await expect(runPersonalHomeBootstrapFromSystemTasks({
+            deps: harness.deps,
+        })).rejects.toThrow('Personal Home runtime is not healthy after install/update.');
+
+        expect(harness.taskCalls.map((entry) => entry.kind)).toEqual([
+            'relay.runtime.status.v1',
+            'relay.runtime.installOrUpdate.v1',
+            'relay.runtime.status.v1',
+            'relay.runtime.installOrUpdate.v1',
+            'relay.runtime.status.v1',
+        ]);
+        expect(harness.accountCreations()).toBe(1);
+    });
+
+    it.each(['erase', 'uninstall'] as const)(
+        'does not start the closure mutation after an explicit %s wins between bootstrap boundaries',
+        async (interruption) => {
+            const harness = createHarness({ interruptBeforeClosure: interruption });
+
+            await expect(runPersonalHomeBootstrapFromSystemTasks({
+                deps: harness.deps,
+            })).rejects.toThrow('Personal Home runtime is not healthy after install/update.');
+
+            expect(harness.taskCalls.map((entry) => entry.kind)).toEqual([
+                'relay.runtime.status.v1',
+                'relay.runtime.installOrUpdate.v1',
+                'relay.runtime.status.v1',
+                'relay.runtime.status.v1',
+            ]);
+            expect(harness.taskCalls.filter((entry) => entry.kind === 'relay.runtime.installOrUpdate.v1')).toHaveLength(1);
+        },
+    );
+
+    it('refuses completion when final managed status cannot prove persisted signup closure', async () => {
+        const harness = createHarness({ persistedSignupPolicyKnownAfterClosureUpdate: false });
+
+        await expect(runPersonalHomeBootstrapFromSystemTasks({
+            deps: harness.deps,
         })).rejects.toMatchObject({ code: 'personal_home_signup_closure_unverified' });
 
         expect(harness.runtime.signup).toBe('disabled');
@@ -308,7 +411,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         });
 
         expect(result.profileId).toBe('home-b-profile');
@@ -330,7 +432,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         });
 
         // Fail closed: the adoption still completes with the exact legacy HTTPS
@@ -344,7 +445,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         });
 
         expect(result.accountCreated).toBe(true);
@@ -363,7 +463,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         })).rejects.toMatchObject({ code: 'personal_home_signup_closure_unverified' });
 
         expect(harness.calls.filter((entry) => entry.startsWith('seed:clear:'))).toEqual([]);
@@ -375,7 +474,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         })).rejects.toMatchObject({ code: 'personal_home_signup_closure_unverified' });
         expect(harness.completionSource()).toBeNull();
         expect(harness.accountCreations()).toBe(1);
@@ -384,7 +482,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         harness.taskCalls.length = 0;
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         });
 
         expect(result.profileId).toBe('home-b-profile');
@@ -399,7 +496,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         })).rejects.toBeInstanceOf(PersonalHomeExistingRuntimeConflictError);
 
         expect(harness.taskCalls.map((entry) => entry.kind)).toEqual(['relay.runtime.status.v1']);
@@ -412,11 +508,11 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
             initiallyInstalled: true,
             initialPurpose: 'personal-home',
             initialSignupPolicyKnown: false,
+            dataPresent: true,
         });
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         })).rejects.toBeInstanceOf(PersonalHomeExistingRuntimeConflictError);
 
         expect(harness.taskCalls.map((entry) => entry.kind)).toEqual(['relay.runtime.status.v1']);
@@ -432,16 +528,15 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
             existingRuntimeDisposition: 'use-this-local-home',
         });
 
         expect(harness.taskCalls.map((entry) => [entry.kind, entry.options.anonymousSignupEnabled])).toEqual([
             ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', false],
-            ['relay.runtime.start.v1', false],
+            ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', false],
-            ['relay.runtime.restart.v1', false],
+            ['relay.runtime.status.v1', undefined],
             ['relay.runtime.status.v1', undefined],
         ]);
         expect(harness.runtime.purpose).toBe('personal-home');
@@ -461,7 +556,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
             existingRuntimeDisposition: 'use-this-local-home',
         })).rejects.toMatchObject({ code: 'personal_home_credentials_unverified' });
 
@@ -481,7 +575,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
             existingRuntimeDisposition: 'use-this-local-home',
         })).rejects.toMatchObject({ code: 'personal_home_credentials_unverified' });
 
@@ -497,7 +590,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
             await expect(runPersonalHomeBootstrapFromSystemTasks({
                 deps: harness.deps,
-                initialServerUrl: harness.canonicalServerUrl,
                 existingRuntimeDisposition: 'use-this-local-home',
             })).rejects.toBeInstanceOf(PersonalHomeExistingRuntimeConflictError);
 
@@ -518,7 +610,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
             existingRuntimeDisposition: 'use-this-local-home',
         })).rejects.toBeInstanceOf(PersonalHomeExistingRuntimeConflictError);
 
@@ -533,13 +624,13 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
             existingRuntimeDisposition: 'use-this-local-home',
         })).rejects.toMatchObject({ code: 'personal_home_credentials_unverified' });
 
         expect(harness.taskCalls.map((entry) => entry.kind)).toEqual([
             'relay.runtime.status.v1',
             'relay.runtime.start.v1',
+            'relay.runtime.status.v1',
         ]);
         const lifecycleStart = harness.taskCalls[1];
         expect(lifecycleStart.options.purpose).toBeUndefined();
@@ -560,7 +651,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
             existingRuntimeDisposition: 'use-this-local-home',
         })).rejects.toMatchObject({ code: 'personal_home_signup_closure_unverified' });
         expect(harness.accountCreations()).toBe(0);
@@ -570,7 +660,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         harness.setRefusalVerified(true);
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
             existingRuntimeDisposition: 'use-this-local-home',
         });
 
@@ -592,7 +681,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
             existingRuntimeDisposition: 'use-this-local-home',
         });
 
@@ -613,7 +701,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         });
 
         expect(harness.taskCalls.map((entry) => entry.kind)).toEqual([
@@ -643,12 +730,12 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         });
 
         expect(harness.taskCalls.map((entry) => entry.kind)).toEqual([
             'relay.runtime.status.v1',
             'relay.runtime.start.v1',
+            'relay.runtime.status.v1',
             'relay.runtime.status.v1',
         ]);
         const lifecycleStart = harness.taskCalls[1];
@@ -660,7 +747,7 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(result.profileId).toBe('home-b-profile');
     });
 
-    it('applies signup closure with install/update and restart to a stopped classified Personal Home whose signup is still enabled', async () => {
+    it('applies signup closure with install/update to a stopped classified Personal Home whose signup is still enabled', async () => {
         const harness = createHarness({
             initiallyStopped: true,
             initialPurpose: 'personal-home',
@@ -669,14 +756,14 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         });
 
         expect(harness.taskCalls.map((entry) => [entry.kind, entry.options.anonymousSignupEnabled])).toEqual([
             ['relay.runtime.status.v1', undefined],
             ['relay.runtime.start.v1', undefined],
+            ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', false],
-            ['relay.runtime.restart.v1', false],
+            ['relay.runtime.status.v1', undefined],
             ['relay.runtime.status.v1', undefined],
         ]);
         expect(harness.runtime.signup).toBe('disabled');
@@ -690,7 +777,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
 
         await expect(runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         })).rejects.toThrow('profile source temporarily unavailable');
         expect(harness.adoptionAttempts()).toBe(1);
         expect(harness.accountCreations()).toBe(1);
@@ -701,7 +787,6 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         harness.calls.length = 0;
         const result = await runPersonalHomeBootstrapFromSystemTasks({
             deps: harness.deps,
-            initialServerUrl: harness.canonicalServerUrl,
         });
 
         expect(harness.taskCalls.map((entry) => entry.kind)

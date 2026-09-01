@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MMKV } from 'react-native-mmkv';
 
 const mocks = vi.hoisted(() => {
     return {
@@ -27,6 +28,10 @@ import {
     setActiveServerId,
     upsertServerProfile,
 } from '@/sync/domains/server/serverProfiles';
+import {
+    readStorageScopeFromEnv,
+    scopedStorageId,
+} from '@/utils/system/storageScope';
 
 function jsonResponse(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), {
@@ -124,19 +129,26 @@ describe('authGetToken key-challenge gate', () => {
                     .mockResolvedValueOnce(jsonResponse({ token: 'must-not-redeem' }));
             },
         },
-    ])('fails closed and leaves the auth endpoint untouched when the feature probe has a $name', async ({ prepare }) => {
+    ])('uses the released v1 request shape when an ordinary unbound Home feature probe has a $name', async ({ prepare }) => {
         prepare();
 
-        await expect(authGetToken(new Uint8Array(32))).rejects.toMatchObject({
-            name: 'HappyError',
-            canTryAgain: true,
-        } satisfies Partial<HappyError>);
+        await expect(authGetToken(new Uint8Array(32))).resolves.toBe('must-not-redeem');
         expect(mocks.serverFetch.mock.calls.map((call) => call[0])).toEqual([
             '/v1/features',
+            '/v1/auth',
         ]);
+        const authRequest = mocks.serverFetch.mock.calls[1]?.[1] as RequestInit | undefined;
+        const body = JSON.parse(String(authRequest?.body)) as Record<string, unknown>;
+        expect(body).toMatchObject({
+            challenge: expect.any(String),
+            publicKey: expect.any(String),
+            signature: expect.any(String),
+        });
+        expect(body).not.toHaveProperty('challengeId');
+        expect(body).not.toHaveProperty('contentPublicKey');
     });
 
-    it('fails closed and leaves the auth endpoint untouched when the feature probe times out', async () => {
+    it('uses the released v1 request shape when an ordinary unbound Home feature probe times out', async () => {
         mocks.serverFetch
             .mockImplementationOnce((_url: string, init?: RequestInit) => {
                 return new Promise<Response>((_resolve, reject) => {
@@ -153,12 +165,24 @@ describe('authGetToken key-challenge gate', () => {
                     }, { once: true });
                 });
             })
+            .mockResolvedValueOnce(jsonResponse({ token: 'legacy-token' }));
+
+        await expect(authGetToken(new Uint8Array(32))).resolves.toBe('legacy-token');
+        expect(mocks.serverFetch.mock.calls.map((call) => call[0])).toEqual([
+            '/v1/features',
+            '/v1/auth',
+        ]);
+    });
+
+    it('keeps Account-bound login fail closed when its feature probe is unavailable', async () => {
+        mocks.serverFetch
+            .mockRejectedValueOnce(new Error('network unavailable'))
             .mockResolvedValueOnce(jsonResponse({ token: 'must-not-redeem' }));
 
-        await expect(authGetToken(new Uint8Array(32))).rejects.toMatchObject({
-            name: 'HappyError',
-            canTryAgain: true,
-        } satisfies Partial<HappyError>);
+        await expect(authGetToken(
+            new Uint8Array(32),
+            { expectedAccountId: 'account-expected' },
+        )).rejects.toBeInstanceOf(AccountStoredContentClientUpgradeRequiredError);
         expect(mocks.serverFetch.mock.calls.map((call) => call[0])).toEqual([
             '/v1/features',
         ]);
@@ -463,6 +487,66 @@ describe('authGetToken key-challenge gate', () => {
         expect(mocks.serverFetch.mock.calls.map((call) => call[0])).toEqual([
             '/v1/features',
             '/v1/auth/challenge',
+        ]);
+    });
+
+    it('signs focused v2 authentication for the canonical Home URL instead of its legacy profile alias', async () => {
+        const scope = readStorageScopeFromEnv();
+        const storage = new MMKV({ id: scopedStorageId('server-profiles', scope) });
+        const rawState = JSON.parse(storage.getString('server-state-v1') ?? '{}') as Record<string, unknown>;
+        const rawServers = rawState.servers && typeof rawState.servers === 'object'
+            ? rawState.servers as Record<string, unknown>
+            : {};
+        storage.set('server-state-v1', JSON.stringify({
+            ...rawState,
+            activeServerIdIsExplicit: true,
+            activeServerId: 'canonical-audience-home',
+            servers: {
+                ...rawServers,
+                'canonical-audience-home': {
+                    id: 'canonical-audience-home',
+                    name: 'Canonical audience Home',
+                    serverUrl: 'https://legacy-alias.example.test',
+                    canonicalServerUrl: 'https://canonical-home.example.test',
+                    serverIdentityId: 'srv_canonical_home',
+                    createdAt: 1,
+                    updatedAt: 1,
+                    lastUsedAt: 1,
+                    source: 'legacy',
+                },
+            },
+        }));
+        setActiveServerId('canonical-audience-home');
+
+        mocks.serverFetch
+            .mockResolvedValueOnce(
+                jsonResponse({
+                    features: {
+                        auth: { login: { keyChallenge: { enabled: true } } },
+                        sharing: { contentKeys: { enabled: false } },
+                    },
+                    capabilities: keyChallengeV2Capabilities('srv_canonical_home'),
+                }),
+            )
+            .mockResolvedValueOnce(
+                jsonResponse({
+                    challengeId: 'challenge-canonical-home',
+                    nonce: 'nonce-canonical-home',
+                    issuedAt: '2026-08-22T12:00:00.000Z',
+                    expiresAt: '2026-08-22T12:05:00.000Z',
+                    audience: {
+                        origin: 'https://canonical-home.example.test',
+                        serverIdentityId: 'srv_canonical_home',
+                    },
+                }),
+            )
+            .mockResolvedValueOnce(jsonResponse({ token: 'canonical-home-token' }));
+
+        await expect(authGetToken(new Uint8Array(32).fill(4))).resolves.toBe('canonical-home-token');
+        expect(mocks.serverFetch.mock.calls.map((call) => call[0])).toEqual([
+            '/v1/features',
+            '/v1/auth/challenge',
+            '/v1/auth',
         ]);
     });
 

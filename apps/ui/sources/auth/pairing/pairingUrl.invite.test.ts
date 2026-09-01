@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { encodeBase64, decodeBase64 } from '@/encryption/base64';
 import {
     buildHomeQrInviteDeepLink,
+    buildRenderableHomeQrInviteDeepLink,
     buildHomeQrInviteRestoreRoutePath,
     buildPairingDeepLink,
     parseHomeQrInviteDeepLink,
     parsePairingDeepLink,
 } from './pairingUrl';
+import { createQRMatrix } from '@/components/qr/qrMatrix';
 
 const INVITE_BASE = {
     v: 2 as const,
@@ -37,6 +39,106 @@ describe('HomeQrInviteV2 deep link', () => {
     it('round-trips the invite through the strict protocol schema', () => {
         const link = buildHomeQrInviteDeepLink({ invite: INVITE_BASE });
         expect(parseHomeQrInviteDeepLink(link)).toEqual({ invite: INVITE_BASE });
+    });
+
+    it('preserves every Iroh reachability alternative in a renderable invite', () => {
+        const fullInvite = {
+            ...INVITE_BASE,
+            home: {
+                ...INVITE_BASE.home,
+                canonicalServerUrl: 'http://127.0.0.1:43110',
+                endpoints: [
+                    {
+                        kind: 'iroh' as const,
+                        endpointId: 'a'.repeat(64),
+                        relayUrls: ['https://relay-1.example.test', 'https://relay-2.example.test'],
+                        directAddresses: ['192.0.2.10:443', '192.0.2.11:443'],
+                    },
+                    { kind: 'https' as const, url: 'https://public.example.test' },
+                ],
+            },
+        };
+
+        const result = buildRenderableHomeQrInviteDeepLink({ invite: fullInvite });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(() => createQRMatrix(result.link, 'medium')).not.toThrow();
+        expect(parseHomeQrInviteDeepLink(result.link)?.invite.home).toEqual(fullInvite.home);
+    });
+
+    it('returns typed unavailable rather than dropping alternatives from an over-capacity descriptor', () => {
+        const longRelayUrls = Array.from({ length: 4 }, (_, index) =>
+            `https://relay-${index}.example.test/${'a'.repeat(470)}`,
+        );
+        const fullInvite = {
+            ...INVITE_BASE,
+            home: {
+                ...INVITE_BASE.home,
+                canonicalServerUrl: 'http://127.0.0.1:43110',
+                endpoints: [
+                    {
+                        kind: 'iroh' as const,
+                        endpointId: 'a'.repeat(64),
+                        relayUrls: longRelayUrls,
+                        directAddresses: ['192.0.2.10:443', '192.0.2.11:443'],
+                    },
+                    { kind: 'https' as const, url: 'https://public.example.test' },
+                ],
+            },
+        };
+
+        const fullLink = buildHomeQrInviteDeepLink({ invite: fullInvite });
+        expect(() => createQRMatrix(fullLink, 'medium')).toThrow();
+        expect(buildRenderableHomeQrInviteDeepLink({ invite: fullInvite })).toEqual({
+            ok: false,
+            reason: 'qr_unavailable',
+            link: fullLink,
+        });
+        // The pairing stays live: the exact secret-bearing link still round-trips
+        // to the unchanged invite instead of a truncated or re-encoded descriptor.
+        expect(parseHomeQrInviteDeepLink(fullLink)?.invite).toEqual(fullInvite);
+    });
+
+    it('returns a typed unavailable result instead of throwing when even the minimal legal invite cannot render', () => {
+        const fullInvite = {
+            ...INVITE_BASE,
+            pairId: 'p'.repeat(128),
+            home: {
+                ...INVITE_BASE.home,
+                homeServerIdentityId: `srv_${'h'.repeat(60)}`,
+                canonicalServerUrl: `https://home.example.test/${'a'.repeat(480)}`,
+                endpoints: [
+                    {
+                        kind: 'iroh' as const,
+                        endpointId: 'b'.repeat(64),
+                        relayUrls: [`https://relay.example.test/${'r'.repeat(480)}`],
+                        directAddresses: [`[${'1'.repeat(4)}:${'2'.repeat(4)}:${'3'.repeat(4)}:${'4'.repeat(4)}:${'5'.repeat(4)}:${'6'.repeat(4)}:${'7'.repeat(4)}:${'8'.repeat(4)}]:65535`],
+                    },
+                    { kind: 'https' as const, url: `https://public.example.test/${'u'.repeat(478)}` },
+                ],
+            },
+            requestedDeviceLabel: 'd'.repeat(128),
+        };
+
+        const fullLink = buildHomeQrInviteDeepLink({ invite: fullInvite });
+        expect(buildRenderableHomeQrInviteDeepLink({ invite: fullInvite })).toEqual({
+            ok: false,
+            reason: 'qr_unavailable',
+            link: fullLink,
+        });
+        expect(parseHomeQrInviteDeepLink(fullLink)?.invite).toEqual(fullInvite);
+    });
+
+    it('returns invalid_invite without a link when the invite cannot be encoded at all', () => {
+        const malformed = {
+            ...INVITE_BASE,
+            qrSecretBase64Url: encodeBase64(new Uint8Array(16), 'base64url'),
+        };
+        expect(() => buildHomeQrInviteDeepLink({ invite: malformed })).toThrow();
+        expect(buildRenderableHomeQrInviteDeepLink({ invite: malformed })).toEqual({
+            ok: false,
+            reason: 'invalid_invite',
+        });
     });
 
     it('routes the unchanged opaque V2 link to the restore owner', () => {

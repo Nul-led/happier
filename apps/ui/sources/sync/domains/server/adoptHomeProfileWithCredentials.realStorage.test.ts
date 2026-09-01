@@ -70,6 +70,7 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         })).toEqual({
             canonicalServerUrl: 'https://home-b.test',
             serverIdentityId: 'srv_home_b',
+            credentialWrite: 'required',
         });
         expect(profiles.listServerProfiles()).not.toEqual(expect.arrayContaining([
             expect.objectContaining({ serverIdentityId: 'srv_home_b' }),
@@ -107,6 +108,210 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
         }
     });
 
+    it('preserves an established Home credential when selected Directory data remains advisory', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_advisory_established_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const established = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_established_home',
+                canonicalServerUrl: 'https://established-home.test',
+                revision: 3,
+                endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }],
+            },
+        });
+        await expect(TokenStorage.setCredentialsForServerUrl(
+            'https://established-home.test',
+            { serverId: 'srv_established_home' },
+            { token: 'established-home-token' },
+        )).resolves.toBe(true);
+
+        expect(profiles.preflightHomeProfileAdoption({
+            source: 'account-directory',
+            descriptorAuthority: 'advisory',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_established_home',
+                canonicalServerUrl: 'https://directory-route.test',
+                revision: 999,
+                endpoints: [{ kind: 'https', url: 'https://directory-route.test' }],
+            },
+        })).toEqual({
+            canonicalServerUrl: 'https://established-home.test',
+            serverIdentityId: 'srv_established_home',
+            credentialWrite: 'preserveExisting',
+        });
+
+        const adopted = await adoptHomeProfileWithCredentials({
+            source: 'account-directory',
+            descriptorAuthority: 'advisory',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_established_home',
+                canonicalServerUrl: 'https://directory-route.test',
+                revision: 999,
+                endpoints: [{ kind: 'https', url: 'https://directory-route.test' }],
+            },
+            credentials: { token: 'newly-issued-token' },
+        });
+
+        expect(adopted).toEqual(established);
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            'https://established-home.test',
+            { serverId: 'srv_established_home' },
+        )).resolves.toEqual({ token: 'established-home-token' });
+        for (const [, value] of localStorageMock.store.entries()) {
+            expect(value).not.toContain('newly-issued-token');
+        }
+    });
+
+    it('rejects a fake coupled route without replacing an established Home credential or profile', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_fake_coupled_established_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const established = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_coupled_conflict_home',
+                canonicalServerUrl: 'https://real-established-home.test',
+                revision: 4,
+                endpoints: [{ kind: 'https', url: 'https://real-established-home.test' }],
+            },
+        });
+        await expect(TokenStorage.setCredentialsForServerUrl(
+            'https://real-established-home.test',
+            { serverId: 'srv_coupled_conflict_home' },
+            { token: 'real-established-token' },
+        )).resolves.toBe(true);
+
+        await expect(adoptHomeProfileWithCredentials({
+            source: 'account-directory',
+            descriptorAuthority: 'redemption_coupled',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_coupled_conflict_home',
+                canonicalServerUrl: 'https://fake-coupled-home.test',
+                revision: 100,
+                endpoints: [{ kind: 'https', url: 'https://fake-coupled-home.test' }],
+            },
+            credentials: { token: 'fake-coupled-token' },
+        })).rejects.toMatchObject({ code: 'redemption_authority_conflict' });
+
+        expect(profiles.listServerProfiles()).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                id: established.id,
+                serverIdentityId: 'srv_coupled_conflict_home',
+                serverUrl: 'https://real-established-home.test',
+            }),
+        ]));
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            'https://real-established-home.test',
+            { serverId: 'srv_coupled_conflict_home' },
+        )).resolves.toEqual({ token: 'real-established-token' });
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            'https://fake-coupled-home.test',
+            { serverId: 'srv_coupled_conflict_home' },
+        )).resolves.toBeNull();
+        for (const [, value] of localStorageMock.store.entries()) {
+            expect(value).not.toContain('fake-coupled-token');
+        }
+    });
+
+    it('stores a newly issued credential for a signed-out established Home without accepting advisory routing changes', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_advisory_signed_out_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const established = await profiles.adoptHomeProfile({
+            source: 'qr',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_signed_out_home',
+                canonicalServerUrl: 'https://signed-out-home.test',
+                revision: 4,
+                endpoints: [{ kind: 'iroh', endpointId: 'b'.repeat(64) }],
+            },
+        });
+
+        const adopted = await adoptHomeProfileWithCredentials({
+            source: 'account-directory',
+            descriptorAuthority: 'advisory',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_signed_out_home',
+                canonicalServerUrl: 'https://directory-signed-out-route.test',
+                revision: 100,
+                endpoints: [{ kind: 'https', url: 'https://directory-signed-out-route.test' }],
+            },
+            credentials: { token: 'newly-issued-token' },
+        });
+
+        expect(adopted).toEqual(established);
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            'https://signed-out-home.test',
+            { serverId: 'srv_signed_out_home' },
+        )).resolves.toEqual({ token: 'newly-issued-token' });
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            'https://directory-signed-out-route.test',
+            { serverId: 'srv_signed_out_home' },
+        )).resolves.toBeNull();
+    });
+
+    it('stores through the placeholder-owned identity scope before a coupled descriptor upgrades its route', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_coupled_placeholder_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const placeholder = await profiles.adoptHomeProfile({
+            source: 'account-directory',
+            descriptorAuthority: 'advisory',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_coupled_storage_home',
+                canonicalServerUrl: 'https://directory-route.test',
+                revision: 50,
+                endpoints: [{ kind: 'https', url: 'https://directory-route.test' }],
+            },
+        });
+
+        const adopted = await adoptHomeProfileWithCredentials({
+            source: 'account-directory',
+            descriptorAuthority: 'redemption_coupled',
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_coupled_storage_home',
+                canonicalServerUrl: 'https://home-selected-route.test',
+                revision: 2,
+                endpoints: [{ kind: 'https', url: 'https://home-selected-route.test' }],
+            },
+            credentials: { token: 'coupled-home-token' },
+        });
+
+        expect(adopted.id).toBe(placeholder.id);
+        expect(adopted.canonicalServerUrl ?? adopted.serverUrl).toBe('https://home-selected-route.test');
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            'https://home-selected-route.test',
+            { serverId: 'srv_coupled_storage_home' },
+        )).resolves.toEqual({ token: 'coupled-home-token' });
+    });
+
     it('reads a pre-adoption loopback credential through the adopted stable identity', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_loopback_storage_${Date.now()}_${Math.random()}`;
         const localStorageMock = installLocalStorageMock();
@@ -133,4 +338,34 @@ describe('adoptHomeProfileWithCredentials (real storage integration)', () => {
             { serverId: 'srv_loopback_home' },
         )).resolves.toEqual({ token: 'loopback-home-token' });
     });
+
+    it('does not expose Home A credentials through a conflicting Home B identity observed at the same URL', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `identity_conflict_storage_${Date.now()}_${Math.random()}`;
+        const localStorageMock = installLocalStorageMock();
+        restoreLocalStorage = localStorageMock.restore;
+
+        const profiles = await import('@/sync/domains/server/serverProfiles');
+        const { TokenStorage } = await import('@/auth/storage/tokenStorage');
+        const serverUrl = 'https://shared-home.test';
+
+        profiles.upsertServerProfile({ serverUrl, source: 'manual' });
+        expect(profiles.setServerProfileIdentityForUrl(serverUrl, 'srv_home_a')?.serverIdentityId)
+            .toBe('srv_home_a');
+        await expect(TokenStorage.setCredentialsForServerUrl(
+            serverUrl,
+            { serverId: 'srv_home_a' },
+            { token: 'home-a-token' },
+        )).resolves.toBe(true);
+
+        expect(profiles.setServerProfileIdentityForUrl(serverUrl, 'srv_home_b')).toBeNull();
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            serverUrl,
+            { serverId: 'srv_home_b' },
+        )).resolves.toBeNull();
+        await expect(TokenStorage.getCredentialsForServerUrl(
+            serverUrl,
+            { serverId: 'srv_home_a' },
+        )).resolves.toEqual({ token: 'home-a-token' });
+    });
+
 });

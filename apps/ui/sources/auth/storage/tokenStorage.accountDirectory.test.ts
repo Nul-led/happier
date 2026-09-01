@@ -95,6 +95,47 @@ describe('TokenStorage Account Directory namespaces', () => {
         ).resolves.toEqual({ token: 'directory-token-b' });
     });
 
+    it('rejects endpoint-only operations without touching identity-bound credentials at the same URL', async () => {
+        const { TokenStorage } = await import('./tokenStorage');
+        const directory = TokenStorage.accountDirectoryAuthCredentials;
+        const endpoint = 'https://directory.example.test';
+
+        await directory.set(
+            { endpoint, serverIdentityId: 'directory-a' },
+            { token: 'directory-token-a' },
+        );
+        await directory.set(
+            { endpoint, serverIdentityId: 'directory-b' },
+            { token: 'directory-token-b' },
+        );
+
+        // @ts-expect-error Account Service credential targets require exact identity.
+        await expect(directory.get({ endpoint })).resolves.toBeNull();
+        // @ts-expect-error Account Service credential targets require exact identity.
+        await expect(directory.logout({ endpoint })).resolves.toBe(false);
+        await expect(directory.get({ endpoint, serverIdentityId: 'directory-a' })).resolves.toEqual({
+            token: 'directory-token-a',
+        });
+        await expect(directory.get({ endpoint, serverIdentityId: 'directory-b' })).resolves.toEqual({
+            token: 'directory-token-b',
+        });
+
+        // @ts-expect-error New endpoint-only Directory credential writes are forbidden.
+        await expect(directory.set({ endpoint }, { token: 'endpoint-only-token' })).resolves.toBe(false);
+        await expect(directory.set(
+            { endpoint, serverIdentityId: '   ' },
+            { token: 'malformed-identity-token' },
+        )).resolves.toBe(false);
+        await expect(directory.get({ endpoint, serverIdentityId: '   ' })).resolves.toBeNull();
+        await expect(directory.logout({ endpoint, serverIdentityId: '   ' })).resolves.toBe(false);
+        await expect(directory.get({ endpoint, serverIdentityId: 'directory-a' })).resolves.toEqual({
+            token: 'directory-token-a',
+        });
+        await expect(directory.get({ endpoint, serverIdentityId: 'directory-b' })).resolves.toEqual({
+            token: 'directory-token-b',
+        });
+    });
+
     it('keeps Directory pending OAuth records endpoint/identity scoped and expires them strictly', async () => {
         const { TokenStorage } = await import('./tokenStorage');
         const now = 1_000_000;
@@ -102,6 +143,7 @@ describe('TokenStorage Account Directory namespaces', () => {
         const pending = {
             endpoint: 'https://directory.example.test',
             serverIdentityId: 'directory-a',
+            credentialTarget: 'account_directory' as const,
             provider: 'github',
             purpose: 'account_directory' as const,
             pending: 'oauth-pending-a',
@@ -250,7 +292,7 @@ describe('TokenStorage Account Directory namespaces', () => {
         })).resolves.toBe(false);
     });
 
-    it('continues to parse legacy Directory pending records without a Home identity intent', async () => {
+    it('rejects Directory pending records without the explicit target marker', async () => {
         const { TokenStorage } = await import('./tokenStorage');
         const now = 1_000_000;
         vi.spyOn(Date, 'now').mockReturnValue(now);
@@ -264,10 +306,13 @@ describe('TokenStorage Account Directory namespaces', () => {
             expiresAt: now + 10_000,
         };
 
-        await expect(TokenStorage.setPendingAccountDirectoryAuth(pending)).resolves.toBe(true);
+        const setUntrustedPending = TokenStorage.setPendingAccountDirectoryAuth as (
+            value: unknown,
+        ) => Promise<boolean>;
+        await expect(setUntrustedPending(pending)).resolves.toBe(false);
         await expect(
             TokenStorage.getPendingAccountDirectoryAuth({ endpoint: pending.endpoint, serverIdentityId: pending.serverIdentityId }),
-        ).resolves.toEqual(pending);
+        ).resolves.toBeNull();
     });
 
     it('continues to parse the legacy Home pending shape without a target discriminator', async () => {
@@ -288,6 +333,7 @@ describe('TokenStorage Account Directory namespaces', () => {
         const directory = TokenStorage.accountDirectoryAuthCredentials;
         const endpoint = 'https://directory.example.test';
         const pending = {
+            credentialTarget: 'account_directory' as const,
             endpoint,
             serverIdentityId: 'directory-a',
             provider: 'github',
@@ -336,6 +382,7 @@ describe('TokenStorage Account Directory namespaces', () => {
         const pending = {
             endpoint: 'https://directory.example.test',
             serverIdentityId: 'directory-a',
+            credentialTarget: 'account_directory' as const,
             provider: 'github',
             purpose: 'account_directory' as const,
             pending: 'oauth-pending-a',

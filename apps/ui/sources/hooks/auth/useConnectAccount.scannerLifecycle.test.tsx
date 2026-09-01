@@ -78,10 +78,6 @@ vi.mock('@/encryption/libsodium', () => ({
   encryptBox: vi.fn(() => new Uint8Array([9, 9, 9])),
 }));
 
-vi.mock('@/auth/flows/accountApprove', () => ({
-  authAccountApprove: vi.fn(async () => {}),
-}));
-
 describe('useConnectAccount (scanner lifecycle)', () => {
   beforeEach(() => {
     vi.resetModules();

@@ -58,6 +58,13 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
     resolveServerProfileScopeId: (profile: { id: string; serverIdentityId?: string | null }) => profile.serverIdentityId ?? profile.id,
     getActiveServerId: () => 'server-a',
     getDeviceDefaultServerId: () => 'server-a',
+    getServerProfileById: (serverId: string) => ([
+        { id: 'server-a', name: 'A', serverUrl: 'https://a.example.test', lastUsedAt: 0, createdAt: 0, updatedAt: 0 },
+        { id: 'server-b', name: 'B', serverUrl: 'https://b.example.test', lastUsedAt: 0, createdAt: 0, updatedAt: 0 },
+    ].find((profile) => profile.id === serverId) ?? null),
+    areServerProfileIdentifiersEquivalent: (left: string, right: string) => left === right,
+    getTabActiveServerId: () => null,
+    clearTabActiveServerId: vi.fn(),
     getResetToDefaultServerId: () => 'server-a',
     subscribeActiveServer: vi.fn(() => () => {}),
     getServerProfilesGeneration: () => 1,
@@ -88,8 +95,12 @@ vi.mock('@/components/settings/server/hooks/useServerAutoAddFromRoute', () => ({
 }));
 
 vi.mock('@/components/settings/server/hooks/useServerSettingsServerProfileActions', () => ({
-    useServerSettingsServerProfileActions: () => ({
-        onSwitchServer: vi.fn(async () => {}),
+    useServerSettingsServerProfileActions: (params: {
+        onSwitchServerById: (serverId: string) => Promise<unknown>;
+    }) => ({
+        onSwitchServer: async (profile: { id: string }) => {
+            await params.onSwitchServerById(profile.id);
+        },
         onRenameServer: vi.fn(async () => {}),
         onRemoveServer: vi.fn(async () => {}),
     }),
@@ -111,7 +122,7 @@ vi.mock('@/components/settings/server/hooks/useServerSettingsConcurrentActions',
     }),
 }));
 
-describe('useServerSettingsScreenController.setGroupSelectionEnabled', () => {
+describe('useServerSettingsScreenController single-Home selection', () => {
     beforeEach(() => {
         routerReplaceMock.mockReset();
         Object.keys(storageState).forEach((key) => delete storageState[key]);
@@ -128,7 +139,9 @@ describe('useServerSettingsScreenController.setGroupSelectionEnabled', () => {
         vi.resetModules();
     });
 
-    it('prefers a group containing the active server when enabling concurrent view', async () => {
+    it('selecting a Home leaves group mode through the canonical HomeView owner', async () => {
+        storageState.serverSelectionActiveTargetKind = 'group';
+        storageState.serverSelectionActiveTargetId = 'grp-ab';
         const { useServerSettingsScreenController } = await import('./useServerSettingsScreenController');
 
         let controller: any = null;
@@ -140,36 +153,10 @@ describe('useServerSettingsScreenController.setGroupSelectionEnabled', () => {
         await renderScreen(React.createElement(Probe));
 
         await act(async () => {
-            controller.setGroupSelectionEnabled(true);
+            await controller.onSwitchServer({ id: 'server-a' });
         });
 
-        expect(storageState.serverSelectionActiveTargetKind).toBe('group');
-        expect(storageState.serverSelectionActiveTargetId).toBe('grp-ab');
-    });
-
-    it('prefers a multi-server group when multiple groups contain the active server', async () => {
-        storageState.serverSelectionGroups = [
-            { id: 'grp-a', name: 'Server A only', serverIds: ['server-a'], presentation: 'grouped' },
-            { id: 'grp-ab', name: 'Servers A+B', serverIds: ['server-a', 'server-b'], presentation: 'grouped' },
-        ];
-        storageState.serverSelectionActiveTargetKind = 'server';
-        storageState.serverSelectionActiveTargetId = 'server-a';
-
-        const { useServerSettingsScreenController } = await import('./useServerSettingsScreenController');
-
-        let controller: any = null;
-        function Probe() {
-            controller = useServerSettingsScreenController();
-            return null;
-        }
-
-        await renderScreen(React.createElement(Probe));
-
-        await act(async () => {
-            controller.setGroupSelectionEnabled(true);
-        });
-
-        expect(storageState.serverSelectionActiveTargetKind).toBe('group');
-        expect(storageState.serverSelectionActiveTargetId).toBe('grp-ab');
+        expect(storageState.serverSelectionActiveTargetKind).toBe('server');
+        expect(storageState.serverSelectionActiveTargetId).toBe('server-a');
     });
 });

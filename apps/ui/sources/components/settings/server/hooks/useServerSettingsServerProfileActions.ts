@@ -4,7 +4,6 @@ import { Modal } from '@/modal';
 import { t } from '@/text';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { renameServerProfile, resolveServerProfileScopeId, type ServerProfile } from '@/sync/domains/server/serverProfiles';
-import { promptSignedOutServerSwitchConfirmation } from '@/components/settings/server/modals/ServerSwitchAuthPrompt';
 import { removeServerProfileUiAction } from '@/components/serverProfiles/removeServerProfileUiAction';
 import { presentFirstKeyCredentialLifecycle } from '@/components/account/presentFirstKeyCredentialLifecycle';
 import { retargetPendingTerminalConnectToServerUrl } from '@/sync/domains/pending/retargetPendingTerminalConnectToServerUrl';
@@ -32,11 +31,6 @@ export function useServerSettingsServerProfileActions(params: Readonly<{
                 authStatus = 'unknown';
             }
         }
-        if (authStatus === 'signedOut') {
-            const shouldContinue = await promptSignedOutServerSwitchConfirmation();
-            if (!shouldContinue) return;
-        }
-
         const switched =
             await params.onSwitchServerById(scopeId, scope);
         if (switched === 'blocked') return;

@@ -40,11 +40,6 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
     isLegacyAuthCredentials: (credentials: unknown) => Boolean(credentials),
 }));
 
-const promptSignedOutServerSwitchConfirmationMock = vi.fn(async () => true);
-vi.mock('@/components/settings/server/modals/ServerSwitchAuthPrompt', () => ({
-    promptSignedOutServerSwitchConfirmation: promptSignedOutServerSwitchConfirmationMock,
-}));
-
 async function renderHook<T extends object>(
     useValue: () => T,
 ): Promise<T & { __cleanup: () => Promise<void> }> {
@@ -101,8 +96,6 @@ describe('useServerSettingsGroupActions', () => {
 
     beforeEach(() => {
         mountedHookCleanups.length = 0;
-        promptSignedOutServerSwitchConfirmationMock.mockReset();
-        promptSignedOutServerSwitchConfirmationMock.mockResolvedValue(true);
         vi.clearAllMocks();
     });
 
@@ -117,7 +110,7 @@ describe('useServerSettingsGroupActions', () => {
         vi.resetModules();
     });
 
-    it('seeds default selection when deleting the active server group', async () => {
+    it('seeds default selection without issuing push unregister when deleting the active server group', async () => {
         const networkBoundary = vi.spyOn(globalThis, 'fetch');
         const { useServerSettingsGroupActions } = await import('./useServerSettingsGroupActions');
         const activeServerId = 'server-a';
@@ -140,6 +133,7 @@ describe('useServerSettingsGroupActions', () => {
             ],
             activeGroupId: 'grp',
             groupPresentation: 'grouped',
+            selectionScope: 'device',
             setRevision: setRevision as unknown as React.Dispatch<React.SetStateAction<number>>,
             onSwitchServerById: vi.fn(async () => 'switched' as const),
             onAfterSignedOutSwitch: vi.fn(),
@@ -156,6 +150,10 @@ describe('useServerSettingsGroupActions', () => {
             serverSelectionActiveTargetId: activeServerId,
         });
         expect(networkBoundary).not.toHaveBeenCalled();
+        expect(networkBoundary).not.toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({ method: 'DELETE' }),
+        );
         networkBoundary.mockRestore();
     });
 
@@ -181,6 +179,7 @@ describe('useServerSettingsGroupActions', () => {
             ],
             activeGroupId: 'grp',
             groupPresentation: 'grouped',
+            selectionScope: 'device',
             setRevision: setRevision as unknown as React.Dispatch<React.SetStateAction<number>>,
             onSwitchServerById,
             onAfterSignedOutSwitch: vi.fn(),
@@ -199,7 +198,7 @@ describe('useServerSettingsGroupActions', () => {
         expect(setRevision).toHaveBeenCalled();
     });
 
-    it('checks signed-out confirmation against identity-backed group server ids', async () => {
+    it('selects a signed-out identity-backed group target without another prompt', async () => {
         const { useServerSettingsGroupActions } = await import('./useServerSettingsGroupActions');
         const homeView = createHomeViewSetter({
             serverSelectionGroups: [],
@@ -228,6 +227,7 @@ describe('useServerSettingsGroupActions', () => {
             ],
             activeGroupId: null,
             groupPresentation: 'grouped',
+            selectionScope: 'device',
             setRevision: setRevision as unknown as React.Dispatch<React.SetStateAction<number>>,
             onSwitchServerById,
             onAfterSignedOutSwitch,
@@ -237,13 +237,55 @@ describe('useServerSettingsGroupActions', () => {
 
         await actions.onSwitchGroup({ id: 'grp', name: 'Group', serverIds: ['srv-b'], presentation: 'grouped' });
 
-        expect(promptSignedOutServerSwitchConfirmationMock).toHaveBeenCalledTimes(1);
         expect(homeView.getCurrent()).toMatchObject({
             serverSelectionActiveTargetKind: 'group',
             serverSelectionActiveTargetId: 'grp',
         });
         expect(onSwitchServerById).toHaveBeenCalledWith('srv-b');
         expect(onAfterSignedOutSwitch).toHaveBeenCalledTimes(1);
+    });
+
+    it('chooses the first credentialed group member when the current Home is outside the group', async () => {
+        const { useServerSettingsGroupActions } = await import('./useServerSettingsGroupActions');
+        const homeView = createHomeViewSetter({
+            serverSelectionGroups: [],
+            serverSelectionActiveTargetKind: 'server',
+            serverSelectionActiveTargetId: 'server-a',
+        });
+        const onSwitchServerById = vi.fn(async () => 'switched' as const);
+        const setRevision = vi.fn();
+        const serverA = makeServerProfile('server-a', 'Server A', 'http://localhost:3013');
+        const serverB = makeServerProfile('server-b', 'Server B', 'http://localhost:3012');
+        const serverC = makeServerProfile('server-c', 'Server C', 'http://localhost:3011');
+
+        const actions = await renderHook(() => useServerSettingsGroupActions({
+            servers: [serverA, serverB, serverC],
+            activeServerId: 'server-a',
+            validServerIds: new Set(['server-a', 'server-b', 'server-c']),
+            authStatusByServerId: {
+                'server-b': 'signedOut',
+                'server-c': 'signedIn',
+            },
+            normalizedGroupProfiles: [
+                { id: 'grp-bc', name: 'Group B+C', serverIds: ['server-b', 'server-c'], presentation: 'grouped' } as const,
+            ],
+            activeGroupId: null,
+            groupPresentation: 'grouped',
+            selectionScope: 'device',
+            setRevision: setRevision as unknown as React.Dispatch<React.SetStateAction<number>>,
+            onSwitchServerById,
+            onAfterSignedOutSwitch: vi.fn(),
+            setHomeViewSelectionSettings: homeView.setHomeViewSelectionSettings,
+        }));
+        mountedHookCleanups.push(actions.__cleanup);
+
+        await actions.onSwitchGroup({ id: 'grp-bc', name: 'Group B+C', serverIds: ['server-b', 'server-c'], presentation: 'grouped' });
+
+        expect(onSwitchServerById).toHaveBeenCalledWith('server-c');
+        expect(homeView.getCurrent()).toMatchObject({
+            serverSelectionActiveTargetKind: 'group',
+            serverSelectionActiveTargetId: 'grp-bc',
+        });
     });
 
     it('keeps the current HomeView target unchanged when custody blocks the group focus switch', async () => {
@@ -268,6 +310,7 @@ describe('useServerSettingsGroupActions', () => {
             ],
             activeGroupId: null,
             groupPresentation: 'grouped',
+            selectionScope: 'device',
             setRevision: setRevision as unknown as React.Dispatch<React.SetStateAction<number>>,
             onSwitchServerById,
             onAfterSignedOutSwitch: vi.fn(),
@@ -306,6 +349,7 @@ describe('useServerSettingsGroupActions', () => {
             normalizedGroupProfiles: [],
             activeGroupId: null,
             groupPresentation: 'grouped',
+            selectionScope: 'device',
             setRevision: setRevision as unknown as React.Dispatch<React.SetStateAction<number>>,
             onSwitchServerById,
             onAfterSignedOutSwitch: vi.fn(),

@@ -87,7 +87,7 @@ describe('adoptHomeProfileWithCredentials', () => {
         expect(profiles.loadHomeViewState()).toEqual(viewBefore);
     });
 
-    it('preserves the adoption error when credential rollback itself rejects', async () => {
+    it('reports a partial commit with both errors when credential rollback rejects', async () => {
         process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_rollback_failure_${Date.now()}_${Math.random()}`;
         const profiles = await import('./serverProfiles');
         const rollback = vi.fn(async () => {
@@ -105,9 +105,12 @@ describe('adoptHomeProfileWithCredentials', () => {
                 rollback,
             };
         });
-        const { adoptHomeProfileWithCredentials } = await import('./adoptHomeProfile');
+        const {
+            adoptHomeProfileWithCredentials,
+            HomeProfileAdoptionPartialCommitError,
+        } = await import('./adoptHomeProfile');
 
-        await expect(adoptHomeProfileWithCredentials({
+        const result = adoptHomeProfileWithCredentials({
             descriptor: {
                 v: 1,
                 homeServerIdentityId: 'srv_home_b',
@@ -117,7 +120,61 @@ describe('adoptHomeProfileWithCredentials', () => {
             },
             source: 'qr',
             credentials: { token: 'new-home-b-token' },
-        })).rejects.toThrow('Home identity conflicts with URL');
+        });
+        await expect(result).rejects.toBeInstanceOf(HomeProfileAdoptionPartialCommitError);
+        await expect(result).rejects.toMatchObject({
+            code: 'home_profile_adoption_partial_commit',
+            canonicalServerUrl: 'https://home-b.test',
+            serverIdentityId: 'srv_home_b',
+            adoptionError: expect.objectContaining({ message: 'Home identity conflicts with URL' }),
+            rollbackOutcome: {
+                kind: 'failed',
+                error: expect.objectContaining({ message: 'credential rollback failed' }),
+            },
+        });
+        expect(rollback).toHaveBeenCalledOnce();
+    });
+
+    it('reports a partial commit when rollback cannot apply after credential ownership changes', async () => {
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `adopt_credentials_rollback_not_applied_${Date.now()}_${Math.random()}`;
+        const profiles = await import('./serverProfiles');
+        const rollback = vi.fn(async () => false);
+        setCredentialsForServerUrlWithRollbackMock.mockImplementationOnce(async () => {
+            const competitor = profiles.upsertServerProfile({
+                serverUrl: 'https://home-b.test',
+                source: 'manual',
+            });
+            profiles.setServerProfileIdentityForUrl(competitor.serverUrl, 'srv_competing_home');
+            return {
+                serverUrl: 'https://home-b.test',
+                serverId: 'srv_home_b',
+                rollback,
+            };
+        });
+        const {
+            adoptHomeProfileWithCredentials,
+            HomeProfileAdoptionPartialCommitError,
+        } = await import('./adoptHomeProfile');
+
+        const result = adoptHomeProfileWithCredentials({
+            descriptor: {
+                v: 1,
+                homeServerIdentityId: 'srv_home_b',
+                canonicalServerUrl: 'https://home-b.test',
+                revision: 1,
+                endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+            },
+            source: 'qr',
+            credentials: { token: 'new-home-b-token' },
+        });
+        await expect(result).rejects.toBeInstanceOf(HomeProfileAdoptionPartialCommitError);
+        await expect(result).rejects.toMatchObject({
+            code: 'home_profile_adoption_partial_commit',
+            canonicalServerUrl: 'https://home-b.test',
+            serverIdentityId: 'srv_home_b',
+            adoptionError: expect.objectContaining({ message: 'Home identity conflicts with URL' }),
+            rollbackOutcome: { kind: 'not_applied', reason: 'ownership_changed' },
+        });
         expect(rollback).toHaveBeenCalledOnce();
     });
 

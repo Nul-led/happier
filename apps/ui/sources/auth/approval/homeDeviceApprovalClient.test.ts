@@ -1,12 +1,30 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { HomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
 
 const endpointFetchMock = vi.hoisted(() => vi.fn());
-const createServerFetchAtEndpointMock = vi.hoisted(() => vi.fn((_input: unknown) => endpointFetchMock));
+const createRequestMock = vi.hoisted(() => vi.fn((_input: unknown) => endpointFetchMock));
 
 const TARGET = {
-    canonicalServerUrl: 'https://canonical.home-b.test/',
-    runtimeOrigin: 'http://127.0.0.1:55432',
-    serverId: 'srv_home_b',
+    transport: {
+        descriptor: {
+            v: 1,
+            homeServerIdentityId: 'srv_home_b',
+            canonicalServerUrl: 'https://canonical.home-b.test',
+            revision: 7,
+            endpoints: [{
+                kind: 'iroh',
+                endpointId: 'iroh-home-b',
+                relayUrls: ['https://relay.home-b.test'],
+            }],
+        },
+        canonicalServerUrl: 'https://canonical.home-b.test',
+        homeServerIdentityId: 'srv_home_b',
+        endpointUrl: 'https://canonical.home-b.test',
+        runtimeOrigin: 'http://127.0.0.1:55432',
+        carrier: 'iroh',
+        createRequest: createRequestMock,
+        close: async () => {},
+    } satisfies HomeEnrollmentTransport,
     credentials: { token: 'home-b-full-credential' },
 } as const;
 
@@ -32,10 +50,6 @@ function pendingApproval(index: number) {
     };
 }
 
-vi.mock('@/sync/http/client', () => ({
-    createServerFetchAtEndpoint: (input: unknown) => createServerFetchAtEndpointMock(input),
-}));
-
 import {
     decideHomeDeviceApproval,
     listHomeDeviceApprovals,
@@ -43,7 +57,7 @@ import {
 
 afterEach(() => {
     endpointFetchMock.mockReset();
-    createServerFetchAtEndpointMock.mockClear();
+    createRequestMock.mockClear();
 });
 
 describe('homeDeviceApprovalClient', () => {
@@ -52,10 +66,7 @@ describe('homeDeviceApprovalClient', () => {
 
         await expect(listHomeDeviceApprovals(TARGET)).resolves.toEqual({ ok: true, items: [] });
 
-        expect(createServerFetchAtEndpointMock).toHaveBeenCalledWith({
-            endpointUrl: 'https://canonical.home-b.test',
-            runtimeOrigin: 'http://127.0.0.1:55432',
-            serverId: 'srv_home_b',
+        expect(createRequestMock).toHaveBeenCalledWith({
             credentials: { token: 'home-b-full-credential' },
         });
     });

@@ -215,6 +215,27 @@ describe('explicit endpoint authentication foundations', () => {
         expect(activeSnapshotMock).not.toHaveBeenCalled();
     });
 
+    it('keeps explicit require-v2 authentication fail closed when feature discovery is unavailable', async () => {
+        runtimeFetchMock.mockRejectedValue(new Error('feature endpoint unavailable'));
+
+        const { authGetTokenAtEndpoint } = await import('./getToken');
+        await expect(authGetTokenAtEndpoint({
+            endpointUrl: 'https://home-b.example.test',
+            canonicalServerUrl: 'https://home-b.example.test',
+            serverIdentityId: 'srv_home_b',
+            secret: new Uint8Array(32).fill(7),
+            requireKeyChallengeV2: true,
+        })).rejects.toMatchObject({
+            name: 'HappyError',
+            canTryAgain: true,
+        });
+
+        expect(runtimeFetchMock.mock.calls.map((call) => String(call[0]))).not.toContain(
+            'https://home-b.example.test/v1/auth',
+        );
+        expect(activeSnapshotMock).not.toHaveBeenCalled();
+    });
+
     it('rejects an endpoint whose observed identity does not match the expected Home before authentication', async () => {
         runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
             const url = String(input);

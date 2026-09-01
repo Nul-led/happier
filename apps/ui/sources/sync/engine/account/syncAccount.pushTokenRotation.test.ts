@@ -110,6 +110,7 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
         await registerPushTokenIfAvailable({
             credentials: { token: 't:active', secret: 's' } satisfies AuthCredentials,
             log: { log: () => {} },
+            getAccountSettings: () => ({}),
         });
 
         expect(loadLastRegisteredExpoPushToken()).toBe('ExponentPushToken[new]');
@@ -147,6 +148,7 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
         await registerPushTokenIfAvailable({
             credentials: { token: 'token-b', secret: 'secret-b' } satisfies AuthCredentials,
             log: { log: () => {} },
+            getAccountSettings: () => ({}),
         });
 
         expect(loadLastRegisteredExpoPushToken()).toBe('ExponentPushToken[new]');
@@ -199,6 +201,7 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
         await registerPushTokenIfAvailable({
             credentials: { token: 't:caller-context', secret: 's' } satisfies AuthCredentials,
             log: { log: () => {} },
+            getAccountSettings: () => ({}),
         });
 
         expect(mocks.deletePushToken).toHaveBeenCalledTimes(2);
@@ -237,13 +240,13 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
         await registerPushTokenIfAvailable({
             credentials: { token: 't:home-a-caller', secret: 's' },
             log: { log: () => {} },
+            getAccountSettings: () => ({}),
             getHomeAccountSettings: async () => ({}),
         });
 
-        // Partial rotation: Home B adopted the new token, so the dead prior token
-        // is cleaned there immediately. Home A did not adopt it yet, so the prior
-        // token stays cleanup-pending and both tokens stay reachable for logout —
-        // neither may be stranded by an intermediate logout or profile removal.
+        // Partial rotation: Home B adopted the new token, so the immediate-prior
+        // token is cleaned there. Home A did not adopt it yet, so that one prior
+        // token remains available to the next reconciliation/removal attempt.
         expect(mocks.deletePushToken).toHaveBeenCalledTimes(1);
         expect(mocks.deletePushToken).toHaveBeenCalledWith(
             { token: 't:https://home-b.example.test', secret: 's' },
@@ -257,12 +260,12 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
         expect(loadExpoPushTokensToUnregister())
             .toEqual(['ExponentPushToken[new]', 'ExponentPushToken[old]']);
 
-        // Next fully successful cycle: prior-token cleanup succeeds at every Home
-        // and only then is the cleanup-pending state dropped.
+        // A fully successful next cycle drops the immediate-prior cleanup hint.
         mocks.deletePushToken.mockClear();
         await registerPushTokenIfAvailable({
             credentials: { token: 't:home-a-caller', secret: 's' },
             log: { log: () => {} },
+            getAccountSettings: () => ({}),
             getHomeAccountSettings: async () => ({}),
         });
 
@@ -302,12 +305,12 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
         await registerPushTokenIfAvailable({
             credentials: { token: 'home-a-token', secret: 's' },
             log: { log: () => {} },
+            getAccountSettings: () => ({}),
             getHomeAccountSettings: async () => ({}),
         });
 
-        // The observed token advanced (Home A holds it), but the failed old-token
-        // cleanup keeps the prior token cleanup-pending so logout, global forget,
-        // and profile removal still reach it, and the next cycle retries it.
+        // The observed token advanced (Home A holds it), while the failed cleanup
+        // keeps the immediate-prior token available to the next best-effort pass.
         expect(loadRegisteredExpoPushTokenState()).toEqual({
             current: 'ExponentPushToken[new]',
             cleanupPending: 'ExponentPushToken[old]',
@@ -316,7 +319,7 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
             .toEqual(['ExponentPushToken[new]', 'ExponentPushToken[old]']);
     });
 
-    it('settles an unresolved token before advancing through a successive rotation', async () => {
+    it('registers the latest token per Home even when an offline Home cannot clean an older generation', async () => {
         const {
             saveLastRegisteredExpoPushToken,
             loadRegisteredExpoPushTokenState,
@@ -324,23 +327,29 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
         saveLastRegisteredExpoPushToken('ExponentPushToken[A]');
         mocks.listServerProfiles.mockReturnValue([
             { id: 'home-a', serverUrl: 'https://home-a.example.test' },
+            { id: 'home-b', serverUrl: 'https://home-b.example.test' },
         ]);
         mocks.getActiveServerSnapshot.mockReturnValue({
             serverId: 'home-a',
             serverUrl: 'https://home-a.example.test',
             generation: 1,
         });
-        mocks.getCredentialsForServerUrl.mockResolvedValue({ token: 'home-a-token', secret: 's' });
+        mocks.getCredentialsForServerUrl.mockImplementation(async (url: string) => ({ token: `token:${url}`, secret: 's' }));
         mocks.getExpoPushTokenAsync
             .mockResolvedValueOnce({ data: 'ExponentPushToken[B]' })
             .mockResolvedValueOnce({ data: 'ExponentPushToken[C]' });
-        mocks.registerPushToken.mockResolvedValue(undefined);
-        mocks.deletePushToken.mockRejectedValueOnce(new Error('A cleanup unavailable'));
+        mocks.registerPushToken.mockImplementation(async (_credentials, _token, options: { apiEndpoint: string }) => {
+            if (options.apiEndpoint.includes('home-a')) throw new Error('Home A offline');
+        });
+        mocks.deletePushToken.mockImplementation(async (_credentials, _token, options: { apiEndpoint: string }) => {
+            if (options.apiEndpoint.includes('home-a')) throw new Error('Home A offline');
+        });
 
         const { registerPushTokenIfAvailable } = await import('./syncAccount');
         const params = {
-            credentials: { token: 'home-a-token', secret: 's' } satisfies AuthCredentials,
+            credentials: { token: 'token:https://home-a.example.test', secret: 's' } satisfies AuthCredentials,
             log: { log: () => {} },
+            getAccountSettings: () => ({}),
             getHomeAccountSettings: async () => ({}),
         };
         await registerPushTokenIfAvailable(params);
@@ -350,23 +359,24 @@ describe('registerPushTokenIfAvailable rotation cleanup', () => {
             cleanupPending: 'ExponentPushToken[A]',
         });
 
-        const secondCycleEvents: string[] = [];
-        mocks.registerPushToken.mockImplementation(async (_credentials, token: string) => {
-            secondCycleEvents.push(`register:${token}`);
+        const healthyHomeEvents: string[] = [];
+        mocks.registerPushToken.mockImplementation(async (_credentials, token: string, options: { apiEndpoint: string }) => {
+            if (options.apiEndpoint.includes('home-a')) throw new Error('Home A offline');
+            healthyHomeEvents.push(`register:${token}`);
         });
-        mocks.deletePushToken.mockImplementation(async (_credentials, token: string) => {
-            secondCycleEvents.push(`delete:${token}`);
+        mocks.deletePushToken.mockImplementation(async (_credentials, token: string, options: { apiEndpoint: string }) => {
+            if (options.apiEndpoint.includes('home-a')) throw new Error('Home A offline');
+            healthyHomeEvents.push(`delete:${token}`);
         });
         await registerPushTokenIfAvailable(params);
 
-        expect(secondCycleEvents).toEqual([
-            'delete:ExponentPushToken[A]',
+        expect(healthyHomeEvents).toEqual([
             'register:ExponentPushToken[C]',
             'delete:ExponentPushToken[B]',
         ]);
         expect(loadRegisteredExpoPushTokenState()).toEqual({
             current: 'ExponentPushToken[C]',
-            cleanupPending: null,
+            cleanupPending: 'ExponentPushToken[B]',
         });
     });
 

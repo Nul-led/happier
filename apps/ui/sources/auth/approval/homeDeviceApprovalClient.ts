@@ -1,24 +1,22 @@
-import { z } from 'zod';
 import {
+    HOME_LOGIN_APPROVALS_HTTP_PATH_V1,
     HomeDeviceApprovalListV1Schema,
+    HomeDeviceApprovalDecisionRequestV1Schema,
+    HomeDeviceApprovalDecisionResponseV1Schema,
+    buildHomeLoginApprovalDecisionHttpPathV1,
+    type HomeDeviceApprovalDecisionRequestV1,
     type HomeDeviceApprovalRequestV1,
 } from '@happier-dev/protocol';
 
+import type { HomeEnrollmentTransport } from '@/auth/enrollment/homeEnrollmentTransport';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { createServerFetchAtEndpoint } from '@/sync/http/client';
 
 export type HomeDeviceApprovalTarget = Readonly<{
-    canonicalServerUrl: string;
-    runtimeOrigin?: string | null;
-    serverId: string;
+    transport: HomeEnrollmentTransport;
     credentials: AuthCredentials;
 }>;
 
-export type HomeDeviceApprovalDecision = 'approve' | 'reject';
-
-const HomeDeviceApprovalDecisionSchema = z.object({
-    status: z.enum(['approved', 'rejected', 'already_decided']),
-}).strict();
+export type HomeDeviceApprovalDecision = HomeDeviceApprovalDecisionRequestV1['decision'];
 
 export type HomeDeviceApprovalListItem = HomeDeviceApprovalRequestV1;
 export type HomeDeviceApprovalListResult =
@@ -28,31 +26,18 @@ export type HomeDeviceApprovalDecisionResult =
     | Readonly<{ ok: true; status: 'approved' | 'rejected' }>
     | Readonly<{ ok: false; reason: 'not_found' | 'unauthorized' | 'already_decided' | 'malformed' | 'request_failed'; status: number }>;
 
-function normalizeTarget(target: HomeDeviceApprovalTarget): HomeDeviceApprovalTarget | null {
-    const canonicalServerUrl = target.canonicalServerUrl.trim().replace(/\/+$/, '');
-    const serverId = target.serverId.trim();
-    if (!canonicalServerUrl || !serverId || !target.credentials.token || !/^https?:\/\//i.test(canonicalServerUrl)) return null;
-    return { ...target, canonicalServerUrl, serverId };
-}
-
-async function createAuthenticatedHomeRequest(target: HomeDeviceApprovalTarget) {
-    const normalized = normalizeTarget(target);
-    if (!normalized) return null;
-    return createServerFetchAtEndpoint({
-        endpointUrl: normalized.canonicalServerUrl,
-        ...(normalized.runtimeOrigin ? { runtimeOrigin: normalized.runtimeOrigin } : {}),
-        serverId: normalized.serverId,
-        credentials: normalized.credentials,
-    });
+function createAuthenticatedHomeRequest(target: HomeDeviceApprovalTarget) {
+    if (!target.credentials.token) return null;
+    return target.transport.createRequest({ credentials: target.credentials });
 }
 
 export async function listHomeDeviceApprovals(
     target: HomeDeviceApprovalTarget,
 ): Promise<HomeDeviceApprovalListResult> {
-    const request = await createAuthenticatedHomeRequest(target);
+    const request = createAuthenticatedHomeRequest(target);
     if (!request) return { ok: false, reason: 'unauthorized', status: 401 };
     try {
-        const response = await request('/v1/auth/home-login/approvals', undefined, {
+        const response = await request(HOME_LOGIN_APPROVALS_HTTP_PATH_V1, undefined, {
             includeAuth: true,
             retry: 'none',
         });
@@ -78,15 +63,15 @@ export async function decideHomeDeviceApproval(
     if (!normalizedApprovalId || normalizedApprovalId.length > 256) {
         return { ok: false, reason: 'not_found', status: 404 };
     }
-    const request = await createAuthenticatedHomeRequest(target);
+    const request = createAuthenticatedHomeRequest(target);
     if (!request) return { ok: false, reason: 'unauthorized', status: 401 };
     try {
         const response = await request(
-            `/v1/auth/home-login/approvals/${encodeURIComponent(normalizedApprovalId)}/decision`,
+            buildHomeLoginApprovalDecisionHttpPathV1(normalizedApprovalId),
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ decision }),
+                body: JSON.stringify(HomeDeviceApprovalDecisionRequestV1Schema.parse({ decision })),
             },
             { includeAuth: true, retry: 'none' },
         );
@@ -95,7 +80,7 @@ export async function decideHomeDeviceApproval(
         }
         if (response.status === 404) return { ok: false, reason: 'not_found', status: 404 };
         if (!response.ok) return { ok: false, reason: 'request_failed', status: response.status };
-        const parsed = HomeDeviceApprovalDecisionSchema.safeParse(await response.json().catch(() => null));
+        const parsed = HomeDeviceApprovalDecisionResponseV1Schema.safeParse(await response.json().catch(() => null));
         if (!parsed.success) return { ok: false, reason: 'malformed', status: 502 };
         if (parsed.data.status === 'already_decided') {
             return { ok: false, reason: 'already_decided', status: 409 };

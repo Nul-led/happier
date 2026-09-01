@@ -81,6 +81,10 @@ const administrationTargetState = vi.hoisted(() => ({
         machine: { id: string; metadata: { displayName: string; host: string } };
     } | null,
 }));
+const localDaemonControlState = vi.hoisted(() => ({
+    machineId: 'machine-1' as string | null,
+    isUnavailable: false,
+}));
 
 installServerSettingsHooksCommonModuleMocks({
     text: async () => {
@@ -99,6 +103,15 @@ vi.mock('@/sync/domains/machines/administration/useTargetSelection', () => ({
 
 vi.mock('@/components/machines/doctorSnapshot/machineDoctorSnapshotCache', () => ({
     readCachedMachineDoctorSnapshot: () => state.cachedDoctorSnapshot,
+}));
+
+vi.mock('@/components/settings/machines/localControl/useLocalDaemonControl', () => ({
+    useLocalDaemonControl: () => ({
+        status: localDaemonControlState.machineId === null
+            ? null
+            : { machineId: localDaemonControlState.machineId },
+        isUnavailable: localDaemonControlState.isUnavailable,
+    }),
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
@@ -171,6 +184,44 @@ describe('useRelayDriftBanner', () => {
                 metadata: { displayName: 'Machine 1', host: 'machine-1.local' },
             },
         };
+        localDaemonControlState.machineId = 'machine-1';
+        localDaemonControlState.isUnavailable = false;
+    });
+
+    it('disables local repair when the selected machine is not the system-task bridge machine', async () => {
+        localDaemonControlState.machineId = 'machine-local';
+        state.cachedDoctorSnapshot = {
+            cachedAt: 1,
+            snapshot: {
+                capturedAt: '2026-03-29T00:00:00.000Z',
+                server: {
+                    activeServerId: 'server-a',
+                    serverUrl: '',
+                    publicServerUrl: '',
+                    webappUrl: '',
+                },
+                accountId: null,
+                settings: { activeServerId: 'server-a', servers: [], knownAccountIds: [] },
+            },
+        };
+        const start = vi.fn(async () => 'task_1');
+        state.runner = { ...state.runner!, start };
+        const { useRelayDriftBanner } = await import('./useRelayDriftBanner');
+        let banner: RelayDriftBanner | null = null;
+        function Probe() {
+            banner = useRelayDriftBanner();
+            return null;
+        }
+        await renderScreen(React.createElement(Probe));
+
+        expect(banner).toMatchObject({
+            actionDisabled: true,
+            actionHint: 'settings.systemTaskBridgeUnavailable',
+        });
+        await renderer.act(async () => {
+            await banner?.onPress();
+        });
+        expect(start).not.toHaveBeenCalled();
     });
 
     it('does not show drift when the daemon public relay matches the active relay', async () => {

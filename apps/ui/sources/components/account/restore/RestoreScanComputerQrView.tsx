@@ -16,13 +16,14 @@ import { parseAccountConnectDeepLink } from '@/auth/pairing/accountConnectUrl';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
-import { pairingRequest } from '@/sync/api/account/apiPairingAuth';
+import { pairingRequest, pairingStart, pairingStatus, type PairingRequestResult } from '@/sync/api/account/apiPairingAuth';
 import { adoptHomeProfileWithCredentials } from '@/sync/domains/server/adoptHomeProfile';
 import {
-    computeHomeQrConfirmationCodeV2,
     computeHomeQrBindingProofV2,
     deriveHomeQrBindingKeyV2,
     deriveHomeQrRendezvousSecretV2,
+    deriveHomeQrRendezvousVerifierV2,
+    readServerEnabledBit,
     type HomeQrInviteV2,
 } from '@happier-dev/protocol';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
@@ -33,14 +34,45 @@ import { Text } from '@/components/ui/text/Text';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Typography } from '@/constants/Typography';
 import { QrCodeScannerView } from '@/components/qr/QrCodeScannerView';
-import { trackAccountRestored } from '@/track';
+import { trackAccountRestored, trackAuthEnrollmentTransientRetry } from '@/track';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { promptAccountConnectApprovalRequired } from './accountConnectApprovalGuidance';
 import {
     formatEnrollmentExpiry,
     formatHomeEnrollmentTargetLabel,
-    formatPairingConfirmationCode,
 } from '@/auth/pairing/pairingPresentation';
+import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
+import { enrollmentPollingBackoffMs } from '@/auth/enrollment/enrollmentPollingBackoff';
+import { completeTrustedHomeQrPairingRequest, InvalidTrustedHomeQrRequestError } from '@/auth/pairing/completeTrustedHomeQrPairingRequest';
+import { buildHomeConnectionDescriptorForProfile, getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import { AccountCompletionError } from '@/auth/flows/accountCompletion';
+
+const DESKTOP_QR_SCAN_FEATURE_ID = 'auth.pairing.desktopQrMobileScan' as const;
+
+function isTransientEnrollmentStatus(status: number): boolean {
+    return status === 0 || status === 408 || status === 429 || status >= 500;
+}
+
+async function waitForEnrollmentRetry(params: Readonly<{
+    expiresAtMs: number;
+    failureCount: number;
+    signal: AbortSignal;
+}>): Promise<boolean> {
+    const remainingMs = params.expiresAtMs - Date.now();
+    if (remainingMs <= 0 || params.signal.aborted) return false;
+    const delayMs = Math.min(enrollmentPollingBackoffMs(params.failureCount), remainingMs);
+    return await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => {
+            params.signal.removeEventListener('abort', handleAbort);
+            resolve(!params.signal.aborted && Date.now() < params.expiresAtMs);
+        }, delayMs);
+        const handleAbort = () => {
+            clearTimeout(timer);
+            resolve(false);
+        };
+        params.signal.addEventListener('abort', handleAbort, { once: true });
+    });
+}
 
 const stylesheet = StyleSheet.create((theme) => ({
     scrollView: {
@@ -92,21 +124,19 @@ const stylesheet = StyleSheet.create((theme) => ({
     embeddedStatusCard: {
         marginTop: 10,
     },
-    codeLabel: {
+    detailLabel: {
         marginTop: 12,
         fontSize: 13,
         lineHeight: 18,
         color: theme.colors.text.secondary,
         ...Typography.default(),
     },
-    codeValue: {
-        marginTop: 6,
-        fontSize: 28,
-        lineHeight: 34,
+    identityValue: {
+        marginTop: 4,
+        fontSize: 16,
+        lineHeight: 22,
         color: theme.colors.text.primary,
-        letterSpacing: 2,
-        fontVariant: ['tabular-nums'],
-        ...Typography.mono(),
+        ...Typography.default('semiBold'),
     },
     footer: {
         marginTop: 12,
@@ -138,6 +168,7 @@ export type RestoreScanComputerQrViewProps = Readonly<{
     onBack?: () => void;
     onOpenSecretKeyLogin?: () => void;
     onShowQrInstead?: () => void;
+    onNavigationLockChange?: (locked: boolean) => void;
 }>;
 
 export const RestoreScanComputerQrView = React.memo(function RestoreScanComputerQrView(props: RestoreScanComputerQrViewProps) {
@@ -146,11 +177,17 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
     const router = useRouter();
     const isFocused = useIsFocused();
     const embedded = props.embedded === true;
-    const pairingDecision = useFeatureDecision('auth.pairing.desktopQrMobileScan');
-    const pairingState = pairingDecision?.state ?? 'unknown';
+    const pairingDecision = useFeatureDecision(DESKTOP_QR_SCAN_FEATURE_ID);
+    // The focused Home may decide only its own server capability. Keep its
+    // server-axis result out of local scanner admission; after parsing, the
+    // exact QR target is probed and decides whether enrollment is supported.
+    const pairingState = pairingDecision === null
+        ? 'unknown'
+        : pairingDecision.blockedBy === 'server'
+            ? 'enabled'
+            : pairingDecision.state;
 
-    const [phase, setPhase] = React.useState<'idle' | 'requesting' | 'waiting' | 'securing'>('idle');
-    const [confirmCode, setConfirmCode] = React.useState<string | null>(null);
+    const [phase, setPhase] = React.useState<'idle' | 'requesting' | 'securing'>('idle');
     const [activeInvite, setActiveInvite] = React.useState<HomeQrInviteV2 | null>(null);
     const nextAttemptIdRef = React.useRef(0);
     const activeAttemptRef = React.useRef<{
@@ -174,7 +211,6 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
         nextAttemptIdRef.current = attempt.id;
         activeAttemptRef.current = attempt;
         setPhase('requesting');
-        setConfirmCode(null);
         setActiveInvite(invite);
         return attempt;
     }, []);
@@ -185,7 +221,6 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
         attempt.controller.abort();
         activeAttemptRef.current = null;
         setPhase('idle');
-        setConfirmCode(null);
         setActiveInvite(null);
     }, []);
 
@@ -284,23 +319,230 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
             let target: HomeQrEnrollmentTarget | null = null;
             let didComplete = false;
             try {
-                const transportResolution = await resolveHomeEnrollmentTransport(link.invite.home);
-                const resolvedTarget = transportResolution.ok
-                    ? transportResolution.transport
-                    : null;
-                if (!isCurrentAttempt(attempt.id)) {
-                    await resolvedTarget?.close().catch(() => {});
-                    return;
-                }
-                target = resolvedTarget;
-                if (!target || Date.now() > link.invite.expiresAtMs) {
+                if (Date.now() > link.invite.expiresAtMs) {
                     await Modal.alertAsync(t('modals.authRequestExpired'), t('modals.authRequestExpiredDescription'));
                     return;
+                }
+
+                if (link.invite.direction === 'requester_displays') {
+                    // The enrolled scanner resolves the trusted Home from its stored registry by
+                    // the invite identity. Focus is neither a selector nor a fallback.
+                    const storedProfile = getServerProfileById(link.invite.home.homeServerIdentityId);
+                    const storedDescriptor = storedProfile
+                        ? buildHomeConnectionDescriptorForProfile(storedProfile)
+                        : null;
+                    if (
+                        !storedProfile
+                        || !storedDescriptor
+                        || storedProfile.serverIdentityId !== link.invite.home.homeServerIdentityId
+                        || storedDescriptor.homeServerIdentityId !== link.invite.home.homeServerIdentityId
+                    ) {
+                        await Modal.alertAsync(t('connect.wrongHomeTitle'), t('connect.wrongHomeBody'));
+                        return;
+                    }
+                    const transportResolution = await resolveHomeEnrollmentTransport(storedDescriptor);
+                    if (!transportResolution.ok) {
+                        await Modal.alertAsync(t('connect.scanComputerQrUnavailableTitle'), t('connect.scanComputerQrUnavailableBody'));
+                        return;
+                    }
+                    target = { ...transportResolution.transport, serverId: storedProfile.id };
+                    const targetFeatureSnapshot = await probeServerFeaturesAtUrl({
+                        endpointUrl: target.endpointUrl,
+                        runtimeOrigin: target.runtimeOrigin,
+                        serverId: storedProfile.id,
+                        force: true,
+                        signal: attempt.controller.signal,
+                    });
+                    if (!isCurrentAttempt(attempt.id)) return;
+                    if (
+                        targetFeatureSnapshot.status !== 'ready'
+                        || targetFeatureSnapshot.serverIdentityId !== storedDescriptor.homeServerIdentityId
+                        || readServerEnabledBit(targetFeatureSnapshot.features, DESKTOP_QR_SCAN_FEATURE_ID) !== true
+                    ) {
+                        await Modal.alertAsync(t('connect.scanComputerQrUnavailableTitle'), t('connect.scanComputerQrUnavailableBody'));
+                        return;
+                    }
+
+                    const qrSecret = decodeBase64(link.invite.qrSecretBase64Url, 'base64url');
+                    let startFailures = 0;
+                    while (true) {
+                        const started = await pairingStart({
+                            direction: 'requester_displays',
+                            secretHash: encodeBase64(deriveHomeQrRendezvousVerifierV2(qrSecret), 'base64url'),
+                            pairId: link.invite.pairId,
+                            expiresAtMs: link.invite.expiresAtMs,
+                        }, target);
+                        if (!isCurrentAttempt(attempt.id)) return;
+                        if (started.ok) break;
+                        if (!isTransientEnrollmentStatus(started.status)) {
+                            await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
+                            return;
+                        }
+                        startFailures += 1;
+                        if (!await waitForEnrollmentRetry({
+                            expiresAtMs: link.invite.expiresAtMs,
+                            failureCount: startFailures,
+                            signal: attempt.controller.signal,
+                        })) {
+                            if (isCurrentAttempt(attempt.id)) {
+                                await Modal.alertAsync(t('modals.authRequestExpired'), t('modals.authRequestExpiredDescription'));
+                            }
+                            return;
+                        }
+                    }
+
+                    let statusFailures = 0;
+                    while (true) {
+                        const status = await pairingStatus({ pairId: link.invite.pairId }, target);
+                        if (!isCurrentAttempt(attempt.id)) return;
+                        if (status.ok && status.data.state === 'pending') {
+                            statusFailures = 0;
+                        } else if (status.ok) {
+                            const expectedRequesterPublicKey = decodeBase64(link.invite.requesterPublicKeyBase64Url, 'base64url');
+                            // This is the Home-authority commit boundary. The shared owner checks
+                            // the exact key, Home, expiry, direction and proof before responding.
+                            attempt.cancellable = false;
+                            props.onNavigationLockChange?.(true);
+                            setPhase('securing');
+                            try {
+                                await completeTrustedHomeQrPairingRequest({
+                                    context: {
+                                        direction: link.invite.direction,
+                                        pairId: link.invite.pairId,
+                                        target,
+                                        qrSecret,
+                                        issuedAtMs: link.invite.issuedAtMs,
+                                        expiresAtMs: link.invite.expiresAtMs,
+                                        expectedRequesterPublicKeyBase64: encodeBase64(expectedRequesterPublicKey),
+                                    },
+                                    status: status.data,
+                                    signal: attempt.controller.signal,
+                                });
+                            } catch (error) {
+                                if (error instanceof AccountCompletionError && error.retryable) {
+                                    statusFailures += 1;
+                                } else if (error instanceof InvalidTrustedHomeQrRequestError) {
+                                    await Modal.alertAsync(t('common.error'), t('errors.authenticationFailed'));
+                                    return;
+                                } else {
+                                    await Modal.alertAsync(t('common.error'), t('errors.operationFailed'));
+                                    return;
+                                }
+                            }
+                            if (statusFailures === 0) {
+                                didComplete = true;
+                                await Modal.alertAsync(
+                                    formatHomeEnrollmentTargetLabel(storedDescriptor),
+                                    t('connect.requesterDeviceAddedBody'),
+                                );
+                                handleBack();
+                                return;
+                            }
+                        } else if (status.reason === 'not_found' || (status.reason === 'http_error' && isTransientEnrollmentStatus(status.status))) {
+                            statusFailures += 1;
+                        } else {
+                            await Modal.alertAsync(t('common.error'), t('errors.authenticationFailed'));
+                            return;
+                        }
+                        if (!await waitForEnrollmentRetry({
+                            expiresAtMs: link.invite.expiresAtMs,
+                            failureCount: Math.max(1, statusFailures),
+                            signal: attempt.controller.signal,
+                        })) {
+                            if (isCurrentAttempt(attempt.id)) {
+                                await Modal.alertAsync(t('modals.authRequestExpired'), t('modals.authRequestExpiredDescription'));
+                            }
+                            return;
+                        }
+                    }
+                }
+
+                let transportFailureCount = 0;
+                while (!target) {
+                    const transportResolution = await resolveHomeEnrollmentTransport(link.invite.home);
+                    const resolvedTarget = transportResolution.ok
+                        ? transportResolution.transport
+                        : null;
+                    if (!isCurrentAttempt(attempt.id)) {
+                        await resolvedTarget?.close().catch(() => {});
+                        return;
+                    }
+                    if (resolvedTarget) {
+                        target = resolvedTarget;
+                        break;
+                    }
+                    if (transportResolution.reason !== 'iroh_transport_unavailable') {
+                        await Modal.alertAsync(
+                            t('connect.scanComputerQrUnavailableTitle'),
+                            t('connect.scanComputerQrUnavailableBody'),
+                        );
+                        return;
+                    }
+
+                    transportFailureCount += 1;
+                    trackAuthEnrollmentTransientRetry();
+                    const shouldRetry = await waitForEnrollmentRetry({
+                        expiresAtMs: link.invite.expiresAtMs,
+                        failureCount: transportFailureCount,
+                        signal: attempt.controller.signal,
+                    });
+                    if (!shouldRetry) {
+                        if (isCurrentAttempt(attempt.id)) {
+                            await Modal.alertAsync(t('modals.authRequestExpired'), t('modals.authRequestExpiredDescription'));
+                        }
+                        return;
+                    }
+                }
+
+                let featureProbeFailureCount = 0;
+                while (true) {
+                    const targetFeatureSnapshot = await probeServerFeaturesAtUrl({
+                        endpointUrl: target.endpointUrl,
+                        runtimeOrigin: target.runtimeOrigin,
+                        serverId: target.serverId ?? link.invite.home.homeServerIdentityId,
+                        force: true,
+                        signal: attempt.controller.signal,
+                    });
+                    if (!isCurrentAttempt(attempt.id)) return;
+
+                    if (
+                        targetFeatureSnapshot.status === 'error'
+                        && targetFeatureSnapshot.reason !== 'identity_conflict'
+                    ) {
+                        featureProbeFailureCount += 1;
+                        trackAuthEnrollmentTransientRetry();
+                        const shouldRetry = await waitForEnrollmentRetry({
+                            expiresAtMs: link.invite.expiresAtMs,
+                            failureCount: featureProbeFailureCount,
+                            signal: attempt.controller.signal,
+                        });
+                        if (!shouldRetry) {
+                            if (isCurrentAttempt(attempt.id)) {
+                                await Modal.alertAsync(t('modals.authRequestExpired'), t('modals.authRequestExpiredDescription'));
+                            }
+                            return;
+                        }
+                        continue;
+                    }
+
+                    if (
+                        targetFeatureSnapshot.status !== 'ready'
+                        || targetFeatureSnapshot.serverIdentityId !== link.invite.home.homeServerIdentityId
+                        || readServerEnabledBit(targetFeatureSnapshot.features, DESKTOP_QR_SCAN_FEATURE_ID) !== true
+                    ) {
+                        await Modal.alertAsync(
+                            t('connect.scanComputerQrUnavailableTitle'),
+                            t('connect.scanComputerQrUnavailableBody'),
+                        );
+                        return;
+                    }
+                    break;
                 }
 
                 const keypair = generateAuthKeyPair();
                 const qrSecret = decodeBase64(link.invite.qrSecretBase64Url, 'base64url');
                 const bindingProof = computeHomeQrBindingProofV2({
+                    direction: link.invite.direction,
                     qrSecret,
                     pairId: link.invite.pairId,
                     homeServerIdentityId: link.invite.home.homeServerIdentityId,
@@ -313,18 +555,42 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                     expiresAtMs: link.invite.expiresAtMs,
                     bindingProof,
                 };
-                const started = await authQRStart(keypair, target, { signal: attempt.controller.signal });
-                if (!isCurrentAttempt(attempt.id)) return;
-                if (!started) {
-                    await Modal.alertAsync(t('common.error'), t('errors.authenticationFailed'));
-                    return;
+                let startFailureCount = 0;
+                while (true) {
+                    const startResult = await authQRStart(keypair, target, { signal: attempt.controller.signal });
+                    if (!isCurrentAttempt(attempt.id)) return;
+                    if (startResult.ok) break;
+                    if (startResult.reason === 'cancelled') return;
+                    if (startResult.reason !== 'transient') {
+                        await Modal.alertAsync(t('common.error'), t('errors.authenticationFailed'));
+                        return;
+                    }
+                    startFailureCount += 1;
+                    trackAuthEnrollmentTransientRetry();
+                    const shouldRetry = await waitForEnrollmentRetry({
+                        expiresAtMs: link.invite.expiresAtMs,
+                        failureCount: startFailureCount,
+                        signal: attempt.controller.signal,
+                    });
+                    if (!shouldRetry) {
+                        if (isCurrentAttempt(attempt.id)) {
+                            await Modal.alertAsync(t('modals.authRequestExpired'), t('modals.authRequestExpiredDescription'));
+                        }
+                        return;
+                    }
                 }
 
                 // V2 joins derive the rendezvous secret from QR-only material; V1 links
                 // keep their released reader semantics.
                 const rendezvousSecret = encodeBase64(deriveHomeQrRendezvousSecretV2(qrSecret), 'base64url');
 
-                const pairingRes = await pairingRequest({
+                // Submitting the bound request is the direct-QR authorization boundary.
+                // From here, the trusted Home may complete automatically, so local Cancel
+                // must not claim the enrollment was revoked.
+                attempt.cancellable = false;
+                props.onNavigationLockChange?.(true);
+                setPhase('securing');
+                const pairingParams = {
                     pairId: link.invite.pairId,
                     secret: rendezvousSecret,
                     publicKey: encodeBase64(keypair.publicKey),
@@ -332,8 +598,28 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                     homeServerIdentityId: v2RequestContext.homeServerIdentityId,
                     expiresAtMs: v2RequestContext.expiresAtMs,
                     bindingProof: v2RequestContext.bindingProof,
-                }, target, { signal: attempt.controller.signal });
-                if (!isCurrentAttempt(attempt.id)) return;
+                };
+                let pairingFailureCount = 0;
+                let pairingRes: PairingRequestResult;
+                while (true) {
+                    pairingRes = await pairingRequest(pairingParams, target, { signal: attempt.controller.signal });
+                    if (!isCurrentAttempt(attempt.id)) return;
+                    if (pairingRes.ok) break;
+                    if (pairingRes.reason !== 'http_error' || !isTransientEnrollmentStatus(pairingRes.status)) break;
+                    pairingFailureCount += 1;
+                    trackAuthEnrollmentTransientRetry();
+                    const shouldRetry = await waitForEnrollmentRetry({
+                        expiresAtMs: link.invite.expiresAtMs,
+                        failureCount: pairingFailureCount,
+                        signal: attempt.controller.signal,
+                    });
+                    if (!shouldRetry) {
+                        if (isCurrentAttempt(attempt.id)) {
+                            await Modal.alertAsync(t('modals.authRequestExpired'), t('modals.authRequestExpiredDescription'));
+                        }
+                        return;
+                    }
+                }
 
                 if (!pairingRes.ok) {
                     if (pairingRes.reason === 'not_found') {
@@ -349,24 +635,12 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                     return;
                 }
 
-                // The confirmation code is computed from QR-only material for V2 invites;
-                // the server echo is never the authorization primitive.
-                const resolvedConfirmCode = computeHomeQrConfirmationCodeV2({
-                    qrSecret,
-                    pairId: link.invite.pairId,
-                    homeServerIdentityId: link.invite.home.homeServerIdentityId,
-                    requesterPublicKey: keypair.publicKey,
-                    expiresAtMs: link.invite.expiresAtMs,
-                });
-
-                setConfirmCode(resolvedConfirmCode);
-
-                setPhase('waiting');
                 const result = await authQRWait(keypair, target, {
                     shouldCancel: () => !isCurrentAttempt(attempt.id),
                     signal: attempt.controller.signal,
                     expiresAtMs: link.invite.expiresAtMs,
                     v2Context: {
+                        direction: link.invite.direction,
                         pairId: link.invite.pairId,
                         homeServerIdentityId: link.invite.home.homeServerIdentityId,
                         bindingSecret: deriveHomeQrBindingKeyV2(qrSecret),
@@ -440,16 +714,16 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
             } finally {
                 await target?.close().catch(() => {});
                 if (activeAttemptRef.current?.id === attempt.id) {
+                    props.onNavigationLockChange?.(false);
                     activeAttemptRef.current = null;
                     if (!didComplete) {
                         setPhase('idle');
-                        setConfirmCode(null);
                         setActiveInvite(null);
                     }
                 }
             }
         },
-        [beginEnrollmentAttempt, classifyScannedLink, completeEnrollment, isCurrentAttempt, openShowQrInstead, router],
+        [beginEnrollmentAttempt, classifyScannedLink, completeEnrollment, isCurrentAttempt, openShowQrInstead, props.onNavigationLockChange, router],
     );
 
     const processedInitialPairingLinkRef = React.useRef<string | null>(null);
@@ -475,17 +749,16 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
             const attempt = activeAttemptRef.current;
             activeAttemptRef.current = null;
             attempt?.controller.abort();
+            props.onNavigationLockChange?.(false);
         };
-    }, []);
+    }, [props.onNavigationLockChange]);
 
     const statusText =
         phase === 'idle'
             ? t('connect.scanComputerQrInstructions')
                 : phase === 'requesting'
                     ? t('common.loading')
-                    : phase === 'waiting'
-                        ? t('connect.waitingForApproval')
-                        : t('connect.securingCredentials');
+                    : t('connect.securingCredentials');
 
     if (pairingState === 'unknown') {
         const frame = (
@@ -550,7 +823,7 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                     <Text style={styles.subtitle}>{t('connect.scanComputerQrUnavailableBody')}</Text>
 
                     <View style={[styles.statusCard, embedded ? styles.embeddedStatusCard : null]}>
-                        <Text style={styles.codeLabel}>{t('connect.scanComputerQrUnavailableTitle')}</Text>
+                        <Text style={styles.detailLabel}>{t('connect.scanComputerQrUnavailableTitle')}</Text>
                     </View>
 
                     <View style={[styles.footer, embedded ? styles.embeddedFooter : null]}>
@@ -679,29 +952,16 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                     <ActivitySpinner size="small" color={theme.colors.text.primary} />
                     {activeInvite ? (
                         <>
-                            <Text style={styles.codeLabel}>{t('common.home')}</Text>
-                            <Text style={styles.codeValue} numberOfLines={2}>
+                            <Text style={styles.detailLabel}>{t('common.home')}</Text>
+                            <Text style={styles.identityValue} numberOfLines={2}>
                                 {formatHomeEnrollmentTargetLabel(activeInvite.home)}
                             </Text>
-                            <Text style={styles.codeLabel}>
+                            <Text style={styles.detailLabel}>
                                 {t('connect.requestingDeviceLabel')}: {resolveDeviceLabel() ?? t('connect.thisDevice')}
                             </Text>
-                            <Text style={styles.codeLabel}>
+                            <Text style={styles.detailLabel}>
                                 {t('connect.expiresAtLabel')}: {formatEnrollmentExpiry(activeInvite.expiresAtMs)}
                             </Text>
-                        </>
-                    ) : null}
-                    {confirmCode ? (
-                        <>
-                            <Text style={styles.codeLabel}>{t('connect.confirmCodeLabel')}</Text>
-                            <Text
-                                testID="restore-scan-confirm-code"
-                                style={styles.codeValue}
-                                accessibilityLabel={`${t('connect.confirmCodeLabel')}: ${formatPairingConfirmationCode(confirmCode)}`}
-                            >
-                                {formatPairingConfirmationCode(confirmCode)}
-                            </Text>
-                            <Text style={styles.codeLabel}>{t('connect.confirmCodeComparisonBody')}</Text>
                         </>
                     ) : null}
                 </View>

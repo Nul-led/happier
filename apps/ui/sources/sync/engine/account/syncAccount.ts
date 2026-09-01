@@ -26,7 +26,11 @@ import {
     saveExpoPushTokenGeneration,
     saveLastRegisteredExpoPushToken,
 } from '@/sync/domains/state/pushTokenRegistration';
-import { readExpoPushToken, readPushPermission } from '@/activity/notifications/permission/pushNotificationAccess';
+import {
+    readExpoPushToken,
+    readPushPermission,
+    subscribeExpoPushTokenChanges,
+} from '@/activity/notifications/permission/pushNotificationAccess';
 import { loadAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
 import { createAccountSettingsScope } from '@/sync/domains/settings/scope/accountSettingsScope';
 import { parseToken } from '@/utils/auth/parseToken';
@@ -191,6 +195,7 @@ export async function handleUpdateAccountSocketUpdate(params: {
         version: number;
         source: 'v1' | 'v2';
     }>): void => {
+        const pushWasEnabled = isExpoPushNotificationChannelEnabled(getLocalSettings?.());
         const opened = openAccountSettingsStoredContent({
             content: paramsForSettings.content,
             encryption,
@@ -212,6 +217,9 @@ export async function handleUpdateAccountSocketUpdate(params: {
             localSettings: getLocalSettings?.(),
         });
         applyAccountSettings(normalizedSettings, paramsForSettings.version);
+        if (pushWasEnabled !== isExpoPushNotificationChannelEnabled(normalizedSettings)) {
+            schedulePushTokenReconciliation();
+        }
         log.log(
             paramsForSettings.source === 'v2'
                 ? `📋 Settings synced from server (v2, version ${paramsForSettings.version})`
@@ -345,73 +353,6 @@ export async function unregisterPushTokenForHomeBestEffort(params: Readonly<{
     }
 }
 
-async function settlePendingExpoPushTokenBeforeAdvance(params: Readonly<{
-    profiles: readonly ServerProfile[];
-    credentials?: AuthCredentials | null;
-    observedToken: string;
-    currentToken: string | null;
-    cleanupPendingToken: string | null;
-}>): Promise<boolean> {
-    const {
-        profiles,
-        credentials,
-        observedToken,
-        currentToken,
-        cleanupPendingToken,
-    } = params;
-    if (!currentToken || !cleanupPendingToken || currentToken === observedToken) return true;
-
-    let activeServerId: string | null = null;
-    let activeServerUrl: string | null = null;
-    try {
-        const activeServer = getActiveServerSnapshot();
-        activeServerId = String(activeServer.serverId ?? '').trim() || null;
-        activeServerUrl = String(activeServer.serverUrl ?? '').trim().replace(/\/+$/, '') || null;
-    } catch {
-        activeServerId = null;
-        activeServerUrl = null;
-    }
-
-    let didProcessAnyHome = false;
-    let didCleanupFail = false;
-    let didEnumerateActiveServer = false;
-    for (const profile of profiles) {
-        const profileScopeId = resolveServerProfileScopeId(profile);
-        const isActiveProfile = activeServerId !== null
-            && areServerProfileIdentifiersEquivalent(profileScopeId, activeServerId);
-        didEnumerateActiveServer ||= isActiveProfile;
-
-        let serverCredentials = await TokenStorage.getCredentialsForServerUrl(profile.serverUrl, {
-            serverId: profileScopeId,
-        }).catch(() => null);
-        if (!serverCredentials && isActiveProfile && credentials) serverCredentials = credentials;
-        if (!serverCredentials) continue;
-        didProcessAnyHome = true;
-        const cleaned = await unregisterPushTokenForHomeBestEffort({
-            credentials: serverCredentials,
-            token: cleanupPendingToken,
-            serverUrl: profile.serverUrl,
-            profile,
-        });
-        didCleanupFail ||= !cleaned;
-    }
-
-    // Compatibility for a focused Home created before profile adoption.
-    if (!didEnumerateActiveServer && activeServerUrl && credentials) {
-        didProcessAnyHome = true;
-        const cleaned = await unregisterPushTokenForHomeBestEffort({
-            credentials,
-            token: cleanupPendingToken,
-            serverUrl: activeServerUrl,
-        });
-        didCleanupFail ||= !cleaned;
-    }
-
-    if (!didProcessAnyHome || didCleanupFail) return false;
-    saveLastRegisteredExpoPushToken(currentToken);
-    return true;
-}
-
 export async function registerPushTokenIfAvailable(params: {
     credentials?: AuthCredentials | null;
     log: { log: (message: string) => void };
@@ -444,19 +385,7 @@ export async function registerPushTokenIfAvailable(params: {
     try {
         const profiles = listServerProfiles();
         const token = tokenOutcome.token;
-        let previousState = loadRegisteredExpoPushTokenState();
-        const didSettlePendingToken = await settlePendingExpoPushTokenBeforeAdvance({
-            profiles,
-            credentials,
-            observedToken: token,
-            currentToken: previousState.current,
-            cleanupPendingToken: previousState.cleanupPending,
-        });
-        if (!didSettlePendingToken) {
-            log.log('Push token rotation deferred until prior token cleanup succeeds');
-            return;
-        }
-        previousState = loadRegisteredExpoPushTokenState();
+        const previousState = loadRegisteredExpoPushTokenState();
         const cleanupPendingToken = previousState.current && previousState.current !== token
             ? previousState.current
             : previousState.cleanupPending;
@@ -498,18 +427,23 @@ export async function registerPushTokenIfAvailable(params: {
                 continue;
             }
             try {
-                let homeSettings: unknown;
+                // Focused settings include the user's synchronous local write even while its
+                // server flush is pending. Other Homes have no active local writer, so they
+                // continue through their explicit scoped read/cache owner.
+                let homeSettings: unknown = isActiveProfile ? readAccountSettings() : undefined;
                 let provisional = false;
-                try {
-                    homeSettings = await getHomeAccountSettings({
-                        id: profile.id,
-                        serverUrl: transport.canonicalServerUrl,
-                        serverIdentityId: profile.serverIdentityId,
-                        legacyServerIds: profile.legacyServerIds,
-                        runtimeOrigin: transport.runtimeOrigin,
-                    }, serverCredentials);
-                } catch {
-                    homeSettings = undefined;
+                if (!isActiveProfile || homeSettings == null) {
+                    try {
+                        homeSettings = await getHomeAccountSettings({
+                            id: profile.id,
+                            serverUrl: transport.canonicalServerUrl,
+                            serverIdentityId: profile.serverIdentityId,
+                            legacyServerIds: profile.legacyServerIds,
+                            runtimeOrigin: transport.runtimeOrigin,
+                        }, serverCredentials);
+                    } catch {
+                        homeSettings = undefined;
+                    }
                 }
                 if (homeSettings == null) {
                     homeSettings = isActiveProfile ? readAccountSettings() : {};
@@ -632,6 +566,26 @@ let devicePushReconcilerStarted = false;
 let devicePushReconcileTimer: ReturnType<typeof setTimeout> | null = null;
 let devicePushReconcileInFlight = false;
 let devicePushReconcileAgain = false;
+let expoPushTokenChangeUnsubscribe: (() => void) | null = null;
+let expoPushTokenChangeSubscriptionStart: Promise<void> | null = null;
+
+function ensureExpoPushTokenChangeSubscription(): void {
+    if (expoPushTokenChangeUnsubscribe || expoPushTokenChangeSubscriptionStart) return;
+    expoPushTokenChangeSubscriptionStart = subscribeExpoPushTokenChanges(() => {
+        // The event payload is not registration authority. Re-read permission and
+        // the current Expo token through the canonical reconciler.
+        schedulePushTokenReconciliation();
+    }).then((unsubscribe) => {
+        if (!unsubscribe) return;
+        if (!devicePushReconcilerStarted) {
+            unsubscribe();
+            return;
+        }
+        expoPushTokenChangeUnsubscribe = unsubscribe;
+    }).catch(() => undefined).finally(() => {
+        expoPushTokenChangeSubscriptionStart = null;
+    });
+}
 
 async function runDevicePushTokenReconciliation(): Promise<void> {
     if (!devicePushReconcilerStarted || devicePushReconcileInFlight) return;
@@ -651,6 +605,7 @@ async function runDevicePushTokenReconciliation(): Promise<void> {
 
 export function startPushTokenReconciliation(): void {
     devicePushReconcilerStarted = true;
+    ensureExpoPushTokenChangeSubscription();
 }
 
 export function stopPushTokenReconciliation(): void {
@@ -660,6 +615,8 @@ export function stopPushTokenReconciliation(): void {
         clearTimeout(devicePushReconcileTimer);
         devicePushReconcileTimer = null;
     }
+    expoPushTokenChangeUnsubscribe?.();
+    expoPushTokenChangeUnsubscribe = null;
 }
 
 export function schedulePushTokenReconciliation(): void {

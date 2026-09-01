@@ -14,6 +14,7 @@ import { classifyRelayDrift, createRelayUrlComparableKeySafe, resolveKnownRelayE
 import { buildRelayDriftRepairSystemTaskSpec } from '@/sync/domains/server/relayDrift/relayDriftSystemTask';
 import { resolveWebappUrlFromServerUrl } from '@/sync/domains/server/url/resolveWebappUrlFromServerUrl';
 import type { RelayDriftBanner } from './relayDriftTypes';
+import { useLocalDaemonControl } from '@/components/settings/machines/localControl/useLocalDaemonControl';
 
 function readAppSameOriginRelayUrl(): string | null {
     const currentOrigin = typeof window !== 'undefined'
@@ -84,10 +85,14 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
     }, [activeServerSnapshot.serverId, administrationTargetSelection]);
     const executionTarget = resolveRelayExecutionTarget();
     const runner = React.useMemo(() => getDefaultSystemTaskRunner(), []);
+    const localDaemonControl = useLocalDaemonControl({ runner });
     const [repairTaskId, setRepairTaskId] = React.useState<string | null>(null);
     const [isRepairStarting, setIsRepairStarting] = React.useState(false);
     const repairTaskSnapshot = useSystemTaskSnapshot(runner, repairTaskId);
-    const isRepairUnavailable = runner.mode === 'unavailable';
+    const isRepairUnavailable = runner.mode === 'unavailable'
+        || localDaemonControl.isUnavailable
+        || executionTarget === null
+        || localDaemonControl.status?.machineId !== executionTarget.machine.id;
 
     const cachedDoctorSnapshot = React.useMemo(() => {
         if (!executionTarget) {
@@ -128,7 +133,11 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
         if (isRepairUnavailable || isRepairStarting || (repairTaskSnapshot != null && repairTaskSnapshot.result == null)) {
             return;
         }
-        if (!resolveRelayExecutionTarget()) return;
+        const currentTarget = resolveRelayExecutionTarget();
+        if (
+            !currentTarget
+            || localDaemonControl.status?.machineId !== currentTarget.machine.id
+        ) return;
 
         setIsRepairStarting(true);
         try {
@@ -150,6 +159,7 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
         repairTaskSnapshot,
         resolveRelayExecutionTarget,
         runner,
+        localDaemonControl.status?.machineId,
     ]);
 
     const startLocalBackgroundServiceTask = React.useCallback(async (
@@ -158,7 +168,11 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
         if (isRepairUnavailable || isRepairStarting || (repairTaskSnapshot != null && repairTaskSnapshot.result == null)) {
             return;
         }
-        if (!resolveRelayExecutionTarget()) return;
+        const currentTarget = resolveRelayExecutionTarget();
+        if (
+            !currentTarget
+            || localDaemonControl.status?.machineId !== currentTarget.machine.id
+        ) return;
 
         setIsRepairStarting(true);
         try {
@@ -167,7 +181,7 @@ export function useRelayDriftBanner(): RelayDriftBanner | null {
         } finally {
             setIsRepairStarting(false);
         }
-    }, [isRepairStarting, isRepairUnavailable, repairTaskSnapshot, resolveRelayExecutionTarget, runner]);
+    }, [isRepairStarting, isRepairUnavailable, localDaemonControl.status?.machineId, repairTaskSnapshot, resolveRelayExecutionTarget, runner]);
 
     const handleCancelRepair = React.useCallback(() => {
         if (!repairTaskId || !repairTaskSnapshot || repairTaskSnapshot.result) {

@@ -1,0 +1,100 @@
+import * as React from 'react';
+
+import {
+    ENROLLMENT_POLL_IDLE_DELAY_MS,
+    enrollmentPollingBackoffMs,
+} from '@/auth/enrollment/enrollmentPollingBackoff';
+import {
+    isRuntimeActive,
+    subscribeToRuntimeActiveChange,
+} from '@/utils/runtime/isRuntimeActive';
+
+export type AccountDirectoryActivePollingOutcome = 'success' | 'transient';
+type PollingCallback = () =>
+    | AccountDirectoryActivePollingOutcome
+    | Promise<AccountDirectoryActivePollingOutcome>;
+
+const callbacks = new Set<PollingCallback>();
+let pollingTimeout: ReturnType<typeof setTimeout> | null = null;
+let stopListening: (() => void) | null = null;
+let pollDueAtMs = 0;
+let transientFailureCount = 0;
+let pollRunning = false;
+
+function stopScheduler(): void {
+    if (pollingTimeout) clearTimeout(pollingTimeout);
+    pollingTimeout = null;
+    stopListening?.();
+    stopListening = null;
+    pollDueAtMs = 0;
+    transientFailureCount = 0;
+}
+
+function nextDelayMs(): number {
+    return transientFailureCount === 0
+        ? ENROLLMENT_POLL_IDLE_DELAY_MS
+        : enrollmentPollingBackoffMs(transientFailureCount);
+}
+
+function schedulePolling(delayMs = nextDelayMs()): void {
+    if (callbacks.size === 0 || pollRunning) return;
+    if (pollingTimeout) clearTimeout(pollingTimeout);
+    const boundedDelayMs = Math.max(0, Math.trunc(delayMs));
+    pollDueAtMs = Date.now() + boundedDelayMs;
+    pollingTimeout = setTimeout(() => {
+        pollingTimeout = null;
+        if (isRuntimeActive()) void runPollingCallbacks();
+    }, boundedDelayMs);
+}
+
+async function runPollingCallbacks(): Promise<void> {
+    if (pollRunning || callbacks.size === 0 || !isRuntimeActive()) return;
+    pollRunning = true;
+    try {
+        const outcomes = await Promise.all([...callbacks].map(async (callback) => {
+            try {
+                return await callback();
+            } catch {
+                return 'transient';
+            }
+        }));
+        transientFailureCount = outcomes.includes('transient')
+            ? transientFailureCount + 1
+            : 0;
+    } finally {
+        pollRunning = false;
+        schedulePolling();
+    }
+}
+
+function onRuntimeActiveChange(): void {
+    if (!isRuntimeActive() || callbacks.size === 0 || pollRunning) return;
+    const remainingMs = pollDueAtMs - Date.now();
+    if (remainingMs <= 0) void runPollingCallbacks();
+    else schedulePolling(remainingMs);
+}
+
+function reconcilePolling(): void {
+    if (callbacks.size === 0) {
+        stopScheduler();
+    } else {
+        stopListening ??= subscribeToRuntimeActiveChange(onRuntimeActiveChange);
+        if (!pollingTimeout && !pollRunning) schedulePolling();
+    }
+}
+
+/** One active-screen cadence shared by Account Directory enrollment and Home approval surfaces. */
+export function useAccountDirectoryActivePolling(callback: PollingCallback, enabled = true): void {
+    const callbackRef = React.useRef(callback);
+    callbackRef.current = callback;
+    React.useEffect(() => {
+        if (!enabled) return;
+        const invoke = () => callbackRef.current();
+        callbacks.add(invoke);
+        reconcilePolling();
+        return () => {
+            callbacks.delete(invoke);
+            reconcilePolling();
+        };
+    }, [enabled]);
+}

@@ -3,7 +3,7 @@ import { QRAuthKeyPair, type HomeQrEnrollmentTarget } from './qrStart';
 import { decryptBox } from '@/encryption/libsodium';
 import { isRuntimeActive } from '@/utils/runtime/isRuntimeActive';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
-import { openTerminalProvisioningV3Response } from '@happier-dev/protocol';
+import { openTerminalProvisioningV3Response, type HomeQrInviteDirectionV2 } from '@happier-dev/protocol';
 import tweetnacl from 'tweetnacl';
 import {
     ENROLLMENT_POLL_IDLE_DELAY_MS,
@@ -35,6 +35,7 @@ export type AuthQrWaitOptions = Readonly<{
     /** Enrollment deadline; polling never continues past it. */
     expiresAtMs?: number;
     v2Context?: Readonly<{
+        direction: HomeQrInviteDirectionV2;
         pairId: string;
         homeServerIdentityId: string;
         bindingSecret: Uint8Array;

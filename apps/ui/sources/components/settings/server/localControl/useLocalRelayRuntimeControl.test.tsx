@@ -81,7 +81,12 @@ function createScriptedRunnerHarness() {
     return { runner, listeners, startedSpecs, startedTaskIds, subscribedTaskIds, startMock, start, settle, emitEvent };
 }
 
-const BASE_PARAMS = { target: { kind: 'local' }, purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' } };
+const BASE_PARAMS = {
+    target: { kind: 'local' },
+    channel: 'stable',
+    mode: 'user',
+    purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+};
 
 const BACKUP_RESULT_DATA = {
     path: '/tmp/home-backup.tar',
@@ -100,6 +105,7 @@ const BACKUP_RESULT_DATA = {
 };
 
 const VERIFY_RESULT_DATA = {
+    archiveBytes: 4096,
     manifest: {
         format: 'happier-personal-home-backup',
         version: 1,
@@ -139,6 +145,32 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
         const recovery = await harness.start(() => getCurrent().recoverPersonalHomeRestore());
         await harness.settle(recovery, true, { data: { outcome: 'rolled_back', restartedHome: true } });
         expect(harness.startedSpecs.find((spec) => spec.kind === 'relay.runtime.personal_home.restore.v1')?.params).toEqual({ ...BASE_PARAMS, action: 'recover' });
+    });
+
+    it('projects only canonical durable relocation recovery facts from inspection', async () => {
+        const harness = createScriptedRunnerHarness();
+        const { getCurrent } = await renderHook(() => useLocalRelayRuntimeControl({ runner: harness.runner }));
+        const inspect = await harness.start(() => getCurrent().refreshInspection());
+        await harness.settle(inspect, true, { data: {
+            running: false, identity: null, masterSecret: {}, layout: {},
+            storage: { destinationEmpty: false, ownedErasePaths: [] },
+            restoreRecovery: { status: 'none', affectedTargets: [] },
+            relocationRecovery: {
+                status: 'recovery_available',
+                operationId: 'relocation-1',
+                destinationMachineId: 'managed-host-1',
+                sourceDescriptorRevision: 7,
+                primaryAction: 'finish_move',
+                secondaryAction: 'return_to_source',
+            },
+        } });
+        expect(getCurrent().inspection?.relocationRecovery).toEqual({
+            operationId: 'relocation-1',
+            destinationMachineId: 'managed-host-1',
+            sourceDescriptorRevision: 7,
+            primaryAction: 'finish_move',
+            secondaryAction: 'return_to_source',
+        });
     });
 
     it('projects completed restore finalization and keeps both rollback and finalize actions on the restore kind', async () => {
@@ -226,6 +258,10 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
             archivePath: '/other.tar',
             identityMatchesCurrentHome: 'match',
             homeServerIdentityId: 'home-identity-1',
+            format: 'happier-personal-home-backup',
+            version: 1,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            archiveBytes: 4096,
         };
         // Same-attempt evidence must match the requested archive.
         await act(async () => {
@@ -238,6 +274,12 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
         const verification = await harness.settle(verify, true, { data: VERIFY_RESULT_DATA });
         expect(verification?.archivePath).toBe('/a.tar');
         expect(verification?.identityMatchesCurrentHome).toBe('match');
+        expect(verification).toMatchObject({
+            archiveBytes: 4096,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            format: 'happier-personal-home-backup',
+            version: 1,
+        });
 
         await act(async () => {
             // A different archive than the verified one is refused.
@@ -249,7 +291,25 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
 
         const restore = await harness.start(() => getCurrent().restorePersonalHomeBackup({ archivePath: '/a.tar', overwriteConfirmed: true, verification: verification! }));
         expect(restore.taskId).toContain('relay.runtime.personal_home.restore.v1');
-        await harness.settle(restore, true, { data: { outcome: 'rolled_back', rollbackPaths: ['/safe/home.sqlite.rollback'], error: 'health check failed' } });
+        await harness.settle(restore, true, {
+            data: {
+                outcome: 'rolled_back',
+                rollbackPaths: ['/safe/home.sqlite.rollback'],
+                error: 'health check failed',
+                recoveryArchive: {
+                    path: '/safe/backups/personal-home-pre-restore.tar',
+                    sha256: 'recovery-sha256',
+                    archiveBytes: 16384,
+                    manifest: {
+                        format: 'happier-personal-home-backup',
+                        version: 1,
+                        createdAt: '2026-01-02T00:00:00.000Z',
+                        homeServerIdentityId: 'home-identity-1',
+                        entries: [],
+                    },
+                },
+            },
+        });
 
         const restoreSpec = harness.startedSpecs.find((spec) => spec.kind === 'relay.runtime.personal_home.restore.v1');
         expect(restoreSpec?.params).toEqual({
@@ -257,7 +317,22 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
             archivePath: '/a.tar',
             confirmOverwrite: true,
         });
-        expect(getCurrent().lastOperation).toEqual({ operation: 'restore', restore: { outcome: 'rolled_back', rollbackPaths: ['/safe/home.sqlite.rollback'], error: 'health check failed' } });
+        expect(getCurrent().lastOperation).toEqual({
+            operation: 'restore',
+            restore: {
+                outcome: 'rolled_back',
+                error: 'health check failed',
+                recoveryArchive: {
+                    path: '/safe/backups/personal-home-pre-restore.tar',
+                    bytes: 16384,
+                    sha256: 'recovery-sha256',
+                    homeServerIdentityId: 'home-identity-1',
+                    createdAt: '2026-01-02T00:00:00.000Z',
+                    homeNeedsAttention: false,
+                    verified: true,
+                },
+            },
+        });
     });
 
     it('fails restore closed after a failed verification of the same archive', async () => {
@@ -366,6 +441,7 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
             },
             ownedErasePaths: [],
             restoreRecovery: { status: 'none', affectedTargets: [] },
+            relocationRecovery: null,
             estimatedOwnedBytes: null,
             destinationEmpty: false,
         });

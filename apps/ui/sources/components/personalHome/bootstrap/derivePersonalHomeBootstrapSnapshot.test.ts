@@ -5,7 +5,7 @@ import type { PersonalHomeFacts } from './personalHomeBootstrapTypes';
 
 const profile = {
     id: 'local', name: 'Personal Home', serverUrl: 'http://127.0.0.1:53288',
-    createdAt: 1, updatedAt: 1, lastUsedAt: 1,
+    serverIdentityId: 'home-1', createdAt: 1, updatedAt: 1, lastUsedAt: 1,
 } as const;
 
 function facts(overrides: Partial<PersonalHomeFacts> = {}): PersonalHomeFacts {
@@ -14,8 +14,9 @@ function facts(overrides: Partial<PersonalHomeFacts> = {}): PersonalHomeFacts {
         isDesktopMainWindow: true,
         explicitlySelectedOtherHome: false,
         completedPersonalHomeProfile: null,
-        candidateLocalProfile: null,
+        candidateLocalProfile: profile,
         relayRuntime: {
+            relayUrl: 'http://127.0.0.1:53288',
             installed: true,
             healthy: true,
             status: 'healthy',
@@ -37,14 +38,14 @@ function facts(overrides: Partial<PersonalHomeFacts> = {}): PersonalHomeFacts {
 describe('derivePersonalHomeBootstrapSnapshot', () => {
     it('gates while the managed Home runtime is missing', () => {
         const snapshot = derivePersonalHomeBootstrapSnapshot(facts({ relayRuntime: null }));
-        expect(snapshot.phase).toBe('preparing-home');
+        expect(snapshot.phase).toBe('ensuring-home');
         expect(snapshot.shouldGateShell).toBe(true);
-        expect(snapshot.rows[0]).toMatchObject({ id: 'home', status: 'active' });
     });
 
     it('shows idle unhealthy runtime state as actionable recovery instead of active progress', () => {
         const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
             relayRuntime: {
+                relayUrl: 'http://127.0.0.1:53288',
                 installed: true,
                 healthy: false,
                 status: 'needs-repair',
@@ -53,7 +54,6 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
         }));
 
         expect(snapshot).toMatchObject({ phase: 'blocked', action: 'retry' });
-        expect(snapshot.rows[0]).toMatchObject({ id: 'home', status: 'blocked' });
     });
 
     it('resumes at app connection when runtime is healthy but profile/auth is missing', () => {
@@ -61,44 +61,33 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
             localHomeIdentity: null,
             localHomeAuth: 'missing',
         }));
-        expect(snapshot.phase).toBe('connecting-app');
-        expect(snapshot.rows).toEqual([
-            { id: 'home', status: 'complete' },
-            { id: 'app', status: 'active' },
-            { id: 'computer', status: 'pending' },
-        ]);
+        expect(snapshot.phase).toBe('ensuring-home');
     });
 
     it('closes signup before releasing the shell', () => {
         const snapshot = derivePersonalHomeBootstrapSnapshot(facts({ anonymousSignup: 'enabled' }));
-        expect(snapshot.phase).toBe('closing-signup');
+        expect(snapshot.phase).toBe('ensuring-home');
         expect(snapshot.shouldGateShell).toBe(true);
         expect(snapshot.homeReady).toBe(false);
     });
 
     it.each([
         {
-            name: 'prepare-home',
+            name: 'runtime preparation',
             overrides: { relayRuntime: null },
-            phase: 'preparing-home',
-            activeRow: 'home',
-            activeRowStatus: 'active',
+            phase: 'ensuring-home',
         },
         {
-            name: 'connect-app',
+            name: 'app connection',
             overrides: { localHomeIdentity: null, localHomeAuth: 'missing' as const },
-            phase: 'connecting-app',
-            activeRow: 'app',
-            activeRowStatus: 'active',
+            phase: 'ensuring-home',
         },
         {
-            name: 'close-signup',
+            name: 'signup closure',
             overrides: { anonymousSignup: 'enabled' as const },
-            phase: 'closing-signup',
-            activeRow: 'app',
-            activeRowStatus: 'active',
+            phase: 'ensuring-home',
         },
-    ])('keeps daemon failure out of the $name Home phase', ({ overrides, phase, activeRow, activeRowStatus }) => {
+    ])('keeps daemon failure out of the $name Home phase', ({ overrides, phase }) => {
         const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
             ...overrides,
             daemon: {
@@ -117,7 +106,6 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
             action: 'none',
             daemonState: 'blocked',
         });
-        expect(snapshot.rows.find((row) => row.id === activeRow)).toMatchObject({ status: activeRowStatus });
         expect(snapshot.detail).toBeUndefined();
     });
 
@@ -144,13 +132,12 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
         expect(snapshot.homeReady).toBe(true);
         expect(snapshot.phase).toBe('preparing-computer');
         expect(snapshot.daemonState).toBe('blocked');
-        expect(snapshot.rows[2]).toMatchObject({ id: 'computer', status: 'blocked', detail: 'service failed' });
     });
 
     it('never reopens the gate for a completed Home that is temporarily offline', () => {
         const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
             completedPersonalHomeProfile: profile,
-            relayRuntime: { installed: true, healthy: false, status: 'unhealthy' },
+            relayRuntime: { relayUrl: 'http://127.0.0.1:53288', installed: true, healthy: false, status: 'unhealthy' },
             localHomeReachability: 'unreachable',
             localHomeIdentity: null,
             localHomeAuth: 'unknown',
@@ -163,7 +150,7 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
         const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
             candidateLocalProfile: profile,
             completedPersonalHomeProfile: null,
-            relayRuntime: { installed: true, healthy: true, status: 'healthy' },
+            relayRuntime: { relayUrl: 'http://127.0.0.1:53288', installed: true, healthy: true, status: 'healthy' },
         }));
         expect(snapshot.phase).toBe('blocked');
         expect(snapshot.action).toBe('choose-existing-runtime');
@@ -173,6 +160,7 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
         const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
             explicitlySelectedOtherHome: true,
             relayRuntime: {
+                relayUrl: 'http://127.0.0.1:53288',
                 installed: true,
                 healthy: true,
                 status: 'healthy',
@@ -207,6 +195,7 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
             candidateLocalProfile: null,
             completedPersonalHomeProfile: null,
             relayRuntime: {
+                relayUrl: 'http://127.0.0.1:53288',
                 installed: false,
                 healthy: false,
                 dataPresent: true,
@@ -218,11 +207,39 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
         expect(snapshot.action).toBe('choose-existing-runtime');
     });
 
+    it('keeps an explicitly erased Personal Home blocked until the user deliberately retries', () => {
+        const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
+            candidateLocalProfile: null,
+            completedPersonalHomeProfile: null,
+            localHomeIdentity: null,
+            localHomeAuth: 'missing',
+            anonymousSignup: 'unknown',
+            relayRuntime: {
+                relayUrl: 'http://127.0.0.1:53288',
+                installed: true,
+                dataPresent: false,
+                healthy: false,
+                status: 'stopped',
+                purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:53288' },
+                anonymousSignupEnabled: null,
+            },
+        }));
+
+        expect(snapshot).toMatchObject({
+            shouldGateShell: true,
+            homeReady: false,
+            phase: 'blocked',
+            action: 'retry',
+            detail: { code: 'personal_home_erased', retryable: true },
+        });
+    });
+
     it('blocks on an installed generic runtime even when it has no provisional profile', () => {
         const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
             candidateLocalProfile: null,
             completedPersonalHomeProfile: null,
             relayRuntime: {
+                relayUrl: 'http://127.0.0.1:53288',
                 installed: true,
                 healthy: true,
                 status: 'healthy',
@@ -240,6 +257,7 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
             localHomeIdentity: null,
             localHomeAuth: 'missing',
             relayRuntime: {
+                relayUrl: 'http://127.0.0.1:53288',
                 installed: true,
                 healthy: true,
                 status: 'healthy',
@@ -249,7 +267,7 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
                 },
             } as unknown as PersonalHomeFacts['relayRuntime'],
         }));
-        expect(snapshot.phase).toBe('connecting-app');
+        expect(snapshot.phase).toBe('ensuring-home');
         expect(snapshot.action).toBe('none');
     });
 
@@ -259,6 +277,7 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
             localHomeIdentity: null,
             localHomeAuth: 'missing',
             relayRuntime: {
+                relayUrl: 'http://127.0.0.1:53288',
                 installed: true,
                 healthy: true,
                 dataPresent: true,
@@ -270,7 +289,7 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
             },
         }));
 
-        expect(snapshot.phase).toBe('connecting-app');
+        expect(snapshot.phase).toBe('ensuring-home');
         expect(snapshot.action).toBe('none');
     });
 
@@ -280,19 +299,21 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
         expect(snapshot.phase).toBe('ready');
     });
 
-    it('treats a verified runtime with an unadopted profile as a post-shell completion retry state', () => {
-        const snapshot = derivePersonalHomeBootstrapSnapshot(facts({ completedPersonalHomeProfile: null }));
-        expect(snapshot.homeReady).toBe(true);
-        expect(snapshot.shouldGateShell).toBe(false);
-        expect(snapshot.phase).toBe('connecting-app');
-        expect(snapshot.action).toBe('retry');
-        expect(snapshot.rows[0]).toMatchObject({ id: 'home', status: 'complete' });
-        expect(snapshot.rows[1]).toMatchObject({ id: 'app', status: 'active' });
-    });
-
-    it('never gates the shell for profile completion even when the daemon is blocked', () => {
+    it('keeps a verified runtime gated until the canonical profile has been adopted', () => {
         const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
             completedPersonalHomeProfile: null,
+            candidateLocalProfile: null,
+        }));
+        expect(snapshot.homeReady).toBe(false);
+        expect(snapshot.shouldGateShell).toBe(true);
+        expect(snapshot.phase).toBe('ensuring-home');
+        expect(snapshot.action).toBe('none');
+    });
+
+    it('releases the shell once a canonical candidate is adopted while durable source classification retries', () => {
+        const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
+            completedPersonalHomeProfile: null,
+            candidateLocalProfile: profile,
             daemon: {
                 serviceInstalled: true,
                 daemonRunning: false,
@@ -303,5 +324,21 @@ describe('derivePersonalHomeBootstrapSnapshot', () => {
         }));
         expect(snapshot.shouldGateShell).toBe(false);
         expect(snapshot.homeReady).toBe(true);
+        expect(snapshot.phase).toBe('ensuring-home');
+        expect(snapshot.action).toBe('retry');
+    });
+
+    it('keeps a URL-matching candidate gated when its identity differs from the observed Home', () => {
+        const snapshot = derivePersonalHomeBootstrapSnapshot(facts({
+            completedPersonalHomeProfile: null,
+            candidateLocalProfile: { ...profile, serverIdentityId: 'different-home' },
+        }));
+
+        expect(snapshot).toMatchObject({
+            shouldGateShell: true,
+            homeReady: false,
+            phase: 'ensuring-home',
+            action: 'none',
+        });
     });
 });

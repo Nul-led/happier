@@ -3,21 +3,10 @@ import type { SystemTaskRunState } from '@/components/systemTasks/types';
 
 export type PersonalHomeBootstrapPhase =
     | 'checking'
-    | 'preparing-home'
-    | 'connecting-app'
-    | 'closing-signup'
+    | 'ensuring-home'
     | 'preparing-computer'
     | 'blocked'
     | 'ready';
-
-export type SetupRowId = 'home' | 'app' | 'computer';
-export type SetupRowStatus = 'pending' | 'active' | 'complete' | 'blocked';
-
-export type SetupRowState = Readonly<{
-    id: SetupRowId;
-    status: SetupRowStatus;
-    detail?: string;
-}>;
 
 export type NormalizedSetupDetail = Readonly<{
     code?: string;
@@ -26,6 +15,8 @@ export type NormalizedSetupDetail = Readonly<{
 }>;
 
 export type RelayRuntimeStatusSnapshot = Readonly<{
+    /** Canonical loopback origin read from the runtime-status owner. */
+    relayUrl: string;
     installed: boolean;
     dataPresent?: boolean;
     healthy?: boolean | null;
@@ -79,13 +70,10 @@ export type PersonalHomeBootstrapSnapshot = Readonly<{
     daemonReady: boolean;
     phase: PersonalHomeBootstrapPhase;
     daemonState: 'not-started' | 'pending' | 'ready' | 'blocked';
-    rows: readonly SetupRowState[];
     action: 'none' | 'retry' | 'choose-existing-runtime' | 'use-another-home' | 'open-details';
     detail?: NormalizedSetupDetail;
 }>;
 
 export type PersonalHomeBootstrapOperation =
-    | 'prepare-home'
-    | 'connect-app'
-    | 'close-signup'
+    | 'ensure-home-ready'
     | 'prepare-computer';

@@ -182,7 +182,9 @@ describe('HomeDeviceApprovalSection', () => {
         const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
         await flushHookEffects({ cycles: 2, turns: 2 });
 
-        expect(screen.findByTestId('settings.server.homeApprovals.empty')).toBeTruthy();
+        expect(screen.findByTestId('settings.server.homeApprovals.empty')).toBeNull();
+        expect(screen.findAllByType('ItemGroup').filter((group) => group.props.title === 'approvals.title'))
+            .toHaveLength(0);
         expect(listMock).toHaveBeenCalledTimes(1);
 
         await React.act(async () => {
@@ -210,22 +212,77 @@ describe('HomeDeviceApprovalSection', () => {
         expect(listMock).toHaveBeenCalledTimes(1);
 
         await React.act(async () => {
-            await vi.advanceTimersByTimeAsync(5_000);
+            await vi.advanceTimersByTimeAsync(1_900);
         });
         expect(listMock).toHaveBeenCalledTimes(1);
 
         await React.act(async () => {
             firstList.resolve({ ok: true, items: [] });
             await flushHookEffects({ cycles: 2, turns: 2 });
-            await vi.advanceTimersByTimeAsync(999);
+            await vi.advanceTimersByTimeAsync(2_000);
+            await flushHookEffects({ cycles: 2, turns: 2 });
         });
+        expect(listMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('recovers from an interactive load failure when a later poll returns the same empty snapshot', async () => {
+        vi.useFakeTimers();
+        listMock
+            .mockResolvedValueOnce({ ok: false, reason: 'request_failed', status: 503 })
+            .mockResolvedValueOnce({ ok: true, items: [] });
+        resolveTransportMock.mockResolvedValue({ ok: true, transport: createTransport() });
+
+        const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
+        const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(screen.findByTestId('settings.server.homeApprovals.error')).toBeTruthy();
+
+        await React.act(async () => {
+            await vi.advanceTimersByTimeAsync(1_000);
+            await flushHookEffects({ cycles: 2, turns: 2 });
+        });
+
+        expect(listMock).toHaveBeenCalledTimes(2);
+        expect(screen.findByTestId('settings.server.homeApprovals.error')).toBeNull();
+        expect(screen.findByTestId('settings.server.homeApprovals.empty')).toBeNull();
+        expect(screen.findAllByType('ItemGroup').filter((group) => group.props.title === 'approvals.title'))
+            .toHaveLength(0);
+    });
+
+    it('backs off repeated transient approval refresh failures through the enrollment cadence owner', async () => {
+        vi.useFakeTimers();
+        const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+        listMock
+            .mockResolvedValueOnce({ ok: true, items: [] })
+            .mockResolvedValueOnce({ ok: false, reason: 'request_failed', status: 503 })
+            .mockResolvedValueOnce({ ok: false, reason: 'request_failed', status: 503 })
+            .mockResolvedValueOnce({ ok: true, items: [] });
+        resolveTransportMock.mockResolvedValue({ ok: true, transport: createTransport() });
+
+        const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
+        await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
+        await flushHookEffects({ cycles: 2, turns: 2 });
         expect(listMock).toHaveBeenCalledTimes(1);
+
+        await React.act(async () => {
+            await vi.advanceTimersByTimeAsync(2_000);
+            await flushHookEffects({ cycles: 2, turns: 2 });
+        });
+        expect(listMock).toHaveBeenCalledTimes(3);
+
+        await React.act(async () => {
+            await vi.advanceTimersByTimeAsync(1_999);
+            await flushHookEffects({ cycles: 2, turns: 2 });
+        });
+        expect(listMock).toHaveBeenCalledTimes(3);
 
         await React.act(async () => {
             await vi.advanceTimersByTimeAsync(1);
             await flushHookEffects({ cycles: 2, turns: 2 });
         });
-        expect(listMock).toHaveBeenCalledTimes(2);
+        expect(listMock).toHaveBeenCalledTimes(4);
+        random.mockRestore();
     });
 
     it('pauses approval refresh in the background and stops it on unmount', async () => {
@@ -391,7 +448,7 @@ describe('HomeDeviceApprovalSection', () => {
         expect(screen.findByTestId('settings.server.homeEnrollment.pending')?.props.title).toBe('srv_unknown');
     });
 
-    it('shows the stable requester-key fingerprint when no device label is available', async () => {
+    it('shows the stable requester fingerprint before a decision without a redundant security disclosure', async () => {
         listMock.mockResolvedValue({ ok: true, items: [{ ...APPROVAL, deviceLabel: null }] });
         resolveTransportMock.mockResolvedValue({
             ok: true,
@@ -402,8 +459,14 @@ describe('HomeDeviceApprovalSection', () => {
         const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
         await flushHookEffects({ cycles: 2, turns: 2 });
 
-        expect(screen.findByTestId('settings.server.homeApprovals.approval-1')?.props.subtitle)
+        const approval = screen.findByTestId('settings.server.homeApprovals.approval-1');
+        expect(approval?.props.subtitle).toContain('navigation.linkNewDevice');
+        expect(approval?.props.subtitle)
             .toContain('connect.requestKeyFingerprintLabel: U9NW-XLlJ-x5Hw-8zJH');
+        expect(approval?.props.accessibilityLabel)
+            .toContain('connect.requestKeyFingerprintLabel: U9NW-XLlJ-x5Hw-8zJH');
+
+        expect(screen.findByTestId('settings.server.homeApprovals.approval-1.security')).toBeNull();
     });
 
     it('shows a target Home approval and disables both decisions while approving', async () => {
@@ -437,15 +500,19 @@ describe('HomeDeviceApprovalSection', () => {
             verification: { kind: 'authenticated', token: 'home-b-full-credential' },
         });
         expect(listMock).toHaveBeenCalledWith({
-            canonicalServerUrl: 'https://canonical.home-b.test',
-            runtimeOrigin: 'http://127.0.0.1:55432',
-            serverId: 'srv_home_b',
+            transport: expect.objectContaining({
+                descriptor: HOME_DESCRIPTOR,
+                runtimeOrigin: 'http://127.0.0.1:55432',
+                carrier: 'iroh',
+            }),
             credentials: { token: 'home-b-full-credential' },
         });
         expect(closeTransportMock).toHaveBeenCalledTimes(1);
         expect(screen.findByTestId('settings.server.homeApprovals.approval-1')?.props.title).toBe('Home B');
         expect(screen.findByTestId('settings.server.homeApprovals.approval-1')?.props.subtitle)
-            .toContain('connect.deviceLabel: New phone · connect.requestKeyFingerprintLabel: U9NW-XLlJ-x5Hw-8zJH');
+            .toContain('connect.deviceLabel: New phone');
+        expect(screen.findByTestId('settings.server.homeApprovals.approval-1')?.props.subtitle)
+            .toContain('connect.requestKeyFingerprintLabel: U9NW-XLlJ-x5Hw-8zJH');
         expect(screen.findByTestId('settings.server.homeApprovals.approval-1')?.props.subtitle)
             .toContain('connect.expiresAtLabel:');
         const liveRegions = screen.findAllByProps({ accessibilityLiveRegion: 'polite' });
@@ -466,16 +533,18 @@ describe('HomeDeviceApprovalSection', () => {
         });
         expect(decideMock).toHaveBeenCalledWith(
             {
-                canonicalServerUrl: 'https://canonical.home-b.test',
-                runtimeOrigin: 'http://127.0.0.1:55432',
-                serverId: 'srv_home_b',
+                transport: expect.objectContaining({
+                    descriptor: HOME_DESCRIPTOR,
+                    runtimeOrigin: 'http://127.0.0.1:55432',
+                    carrier: 'iroh',
+                }),
                 credentials: { token: 'home-b-full-credential' },
             },
             'approval-1',
             'approve',
         );
         expect(closeTransportMock).toHaveBeenCalledTimes(2);
-        expect(screen.findByTestId('settings.server.homeApprovals.empty')).toBeTruthy();
+        expect(screen.findByTestId('settings.server.homeApprovals.empty')).toBeNull();
         expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
             .toBe('approvals.status.approved: Home B');
     });
@@ -494,6 +563,9 @@ describe('HomeDeviceApprovalSection', () => {
         const { HomeDeviceApprovalSection } = await import('./HomeDeviceApprovalSection');
         const screen = await renderScreen(<HomeDeviceApprovalSection homes={[HOME]} />);
         await flushHookEffects({ cycles: 2, turns: 2 });
+
+        expect(screen.findAllByType('ItemGroup').filter((group) => group.props.title === 'approvals.title'))
+            .toHaveLength(1);
         await React.act(async () => {
             screen.findByTestId('settings.server.homeApprovals.approval-1.approve')?.props.onPress();
             await flushHookEffects({ cycles: 2, turns: 2 });
@@ -532,7 +604,7 @@ describe('HomeDeviceApprovalSection', () => {
         expect(listMock).toHaveBeenCalledTimes(2);
         expect(screen.findByTestId('settings.server.homeApprovals.approval-1.error')).toBeNull();
         expect(screen.findByTestId('settings.server.homeApprovals.approval-1')).toBeNull();
-        expect(screen.findByTestId('settings.server.homeApprovals.empty')).toBeTruthy();
+        expect(screen.findByTestId('settings.server.homeApprovals.empty')).toBeNull();
         expect(screen.findByTestId('settings.server.homeApprovals.status')?.props.accessibilityLabel)
             .toBe('inbox.emptyDescription');
     });

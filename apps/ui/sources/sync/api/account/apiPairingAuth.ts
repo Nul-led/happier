@@ -40,7 +40,7 @@ export type PairingStartResult =
 
 export type PairingStatusResult =
     | Readonly<{ ok: true; data: PairingStatus }>
-    | Readonly<{ ok: false; reason: 'not_found' | 'invalid_target' | 'http_error'; status: number }>;
+    | Readonly<{ ok: false; reason: 'not_found' | 'invalid_target' | 'invalid_response' | 'http_error'; status: number }>;
 
 /**
  * Explicit Home endpoint for pairing calls. When supplied, requests are bound to that
@@ -89,7 +89,16 @@ function resolvePairingRequest(target: PairingCallTarget, authenticated = false)
     });
 }
 
-export async function pairingStart(params: { secretHash: string }, target: PairingCallTarget): Promise<PairingStartResult> {
+export type PairingStartParams =
+    | Readonly<{ direction: 'trusted_home_displays'; secretHash: string }>
+    | Readonly<{
+        direction: 'requester_displays';
+        secretHash: string;
+        pairId: string;
+        expiresAtMs: number;
+    }>;
+
+export async function pairingStart(params: PairingStartParams, target: PairingCallTarget): Promise<PairingStartResult> {
     const request = resolvePairingRequest(target, true);
     if (!request) return { ok: false, reason: 'invalid_target', status: 0 };
     const res = await request(
@@ -97,7 +106,7 @@ export async function pairingStart(params: { secretHash: string }, target: Pairi
         {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ secretHash: params.secretHash }),
+            body: JSON.stringify(params),
         },
         { includeAuth: true },
     );
@@ -130,12 +139,12 @@ export async function pairingStatus(params: { pairId: string }, target: PairingC
     }
     const json = await safeReadJson(res);
     if (!isRecord(json) || (json.state !== 'pending' && json.state !== 'requested') || typeof json.pairId !== 'string') {
-        return { ok: false, reason: 'http_error', status: 502 };
+        return { ok: false, reason: 'invalid_response', status: 502 };
     }
     if (json.state === 'pending' && (
         typeof json.expiresAt !== 'string'
         || !hasExactKeys(json, ['state', 'pairId', 'expiresAt'])
-    )) return { ok: false, reason: 'http_error', status: 502 };
+    )) return { ok: false, reason: 'invalid_response', status: 502 };
     if (json.state === 'requested' && (
         typeof json.expiresAt !== 'string'
         || typeof json.requestedPublicKey !== 'string'
@@ -151,7 +160,7 @@ export async function pairingStatus(params: { pairId: string }, target: PairingC
             'bindingProof',
             'requestedDeviceLabel',
         ])
-    )) return { ok: false, reason: 'http_error', status: 502 };
+    )) return { ok: false, reason: 'invalid_response', status: 502 };
     if (json.state === 'pending') {
         return {
             ok: true,

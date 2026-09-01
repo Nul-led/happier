@@ -12,6 +12,12 @@ import { getAuthProvider } from '@/auth/providers/registry';
 import type { RestoreRedirectReason, RestoreRedirectNotice } from '@/auth/providers/types';
 import { Text } from '@/components/ui/text/Text';
 import { canUseCurrentDeviceQrScanner } from '@/utils/platform/qrScannerSupport';
+import { useReversePairingSession } from '@/hooks/auth/useReversePairingSession';
+import { QRCode } from '@/components/qr/QRCode';
+import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
+import { formatHomeEnrollmentTargetLabel } from '@/auth/pairing/pairingPresentation';
+import { setClipboardStringSafe } from '@/utils/ui/clipboard';
+import { Modal } from '@/modal';
 
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -75,6 +81,32 @@ const stylesheet = StyleSheet.create((theme) => ({
         width: '100%',
         paddingVertical: 10,
     },
+    statusCard: {
+        marginTop: 12,
+        borderWidth: 1,
+        borderColor: theme.colors.border.default,
+        borderRadius: 14,
+        paddingHorizontal: 16,
+        paddingVertical: 14,
+        alignItems: 'center',
+        backgroundColor: theme.colors.surface.base,
+    },
+    targetName: {
+        marginTop: 8,
+        fontSize: 16,
+        lineHeight: 22,
+        textAlign: 'center',
+        color: theme.colors.text.primary,
+        ...Typography.default('semiBold'),
+    },
+    linkWarning: {
+        marginTop: 10,
+        fontSize: 13,
+        lineHeight: 18,
+        textAlign: 'center',
+        color: theme.colors.text.secondary,
+        ...Typography.default(),
+    },
     embeddedQrBlock: {
         paddingVertical: 6,
     },
@@ -133,6 +165,11 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
     const [providerResetEnabled, setProviderResetEnabled] = useState(false);
     const embedded = props.embedded === true;
     const canOpenScanner = typeof props.onOpenScanQr === 'function' && canUseCurrentDeviceQrScanner();
+    const reversePairing = useReversePairingSession({ enabled: true });
+    const pairing = reversePairing.presentation;
+    const targetLabel = 'descriptor' in pairing
+        ? formatHomeEnrollmentTargetLabel(pairing.descriptor)
+        : null;
     const scrollViewStyle: StyleProp<ViewStyle> = embedded
         ? [styles.scrollView, { backgroundColor: 'transparent' }]
         : styles.scrollView;
@@ -170,10 +207,79 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
                 ) : null}
 
                 <Text style={[styles.sectionLead, embedded ? styles.embeddedSectionLead : null]}>
-                    {t('connect.legacyAccountQrUnavailable')}
+                    {pairing.phase === 'succeeded'
+                        ? t('connect.homeAddedPreservedFocusBody')
+                        : pairing.phase === 'expired'
+                            ? t('connect.pairingQrExpired')
+                            : pairing.phase === 'invalid'
+                                ? t('connect.scanComputerQrUnavailableBody')
+                                : pairing.phase === 'retryable_error'
+                                    ? pairing.partialCommit
+                                        ? t('connect.homeEnrollmentPartialCommitBody')
+                                        : t('connect.homeEnrollmentRetryBody')
+                                    : t('connect.showRequesterQrInstructions')}
                 </Text>
 
+                <View style={[styles.statusCard, embedded ? styles.embeddedQrBlock : null]} accessibilityLiveRegion="polite">
+                    {pairing.phase === 'generating' || pairing.phase === 'connecting' || pairing.phase === 'adding' ? (
+                        <ActivitySpinner size="small" />
+                    ) : null}
+                    {targetLabel ? <Text style={styles.targetName}>{targetLabel}</Text> : null}
+                    {pairing.phase === 'ready' ? (
+                        <>
+                            <View testID="restore-requester-qr" style={styles.qrBlock}>
+                                {pairing.qrAvailable ? (
+                                    <QRCode data={pairing.link} size={240} />
+                                ) : (
+                                    <Text style={styles.noticeBody}>{t('connect.pairingQrTooLargeBody')}</Text>
+                                )}
+                            </View>
+                            <Text style={styles.linkWarning}>{t('connect.pairingLinkSecurityWarning')}</Text>
+                            <View style={styles.footerButton}>
+                                <RoundButton
+                                    testID="restore-copy-requester-link"
+                                    size="small"
+                                    title={t('common.copy')}
+                                    display="inverted"
+                                    action={async () => {
+                                        const copied = await setClipboardStringSafe(pairing.link);
+                                        if (!copied) await Modal.alertAsync(t('common.error'), t('items.failedToCopyToClipboard'));
+                                    }}
+                                />
+                            </View>
+                        </>
+                    ) : null}
+                </View>
+
                 <View style={[styles.footer, embedded ? styles.embeddedFooter : null]}>
+                    {reversePairing.canCancel ? (
+                        <>
+                            <View style={styles.footerButton}>
+                                <RoundButton
+                                    testID="restore-requester-cancel"
+                                    size="small"
+                                    title={t('common.cancel')}
+                                    display="inverted"
+                                    onPress={reversePairing.cancel}
+                                />
+                            </View>
+                            <View style={styles.footerButtonSpacer} />
+                        </>
+                    ) : null}
+                    {pairing.phase === 'expired' || pairing.phase === 'invalid' || pairing.phase === 'retryable_error' ? (
+                        <>
+                            <View style={styles.footerButton}>
+                                <RoundButton
+                                    testID="restore-requester-retry"
+                                    size="small"
+                                    title={t('common.retry')}
+                                    display="inverted"
+                                    action={reversePairing.start}
+                                />
+                            </View>
+                            <View style={styles.footerButtonSpacer} />
+                        </>
+                    ) : null}
                     {canOpenScanner ? (
                         <>
                             <View style={styles.footerButton}>

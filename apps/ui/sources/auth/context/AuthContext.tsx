@@ -223,7 +223,7 @@ export function AuthProvider({ children, initialCredentials }: { children: React
                     await unregisterPushTokenForHomeBestEffort(target)),
             );
             await switchConnectionToActiveServer();
-            await cleanup;
+            fireAndForget(cleanup, { tag: 'AuthContext.logout.unregisterAllPushTokens' });
             return { kind: 'completed' };
         }
 
@@ -283,7 +283,7 @@ export function AuthProvider({ children, initialCredentials }: { children: React
         if (shouldClearFocusedAuth) {
             await switchConnectionToActiveServer();
         }
-        await cleanup;
+        fireAndForget(cleanup, { tag: 'AuthContext.logout.unregisterPushToken' });
         return { kind: 'completed' };
     }, [credentials]);
 

@@ -56,6 +56,7 @@ import { createEndpointReadinessProbe } from '@/sync/runtime/connectivity/create
 import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
+import { resolveRoutineServerSelectionScope } from '@/sync/domains/server/selection/serverSelectionScope';
 
 type SearchParams = Readonly<{ url?: string | string[]; auto?: string | string[]; source?: string | string[] }>;
 type SwitchServerByIdOptions = Readonly<{
@@ -123,8 +124,6 @@ export type ServerSettingsController = Readonly<{
     onRemoveGroup: (profile: ServerSelectionGroup) => Promise<void>;
     onCreateServerGroup: (params: { name: string; serverIds: string[] }) => Promise<boolean>;
 
-    groupSelectionEnabled: boolean;
-    setGroupSelectionEnabled: (value: boolean) => void;
     groupSelectionPresentation: 'grouped' | 'flat-with-badge';
     activeServerGroupId: string | null;
     selectedGroupServerIds: ReadonlySet<string>;
@@ -155,6 +154,7 @@ export function useServerSettingsScreenController(): ServerSettingsController {
         serverSelectionActiveTargetId,
         setHomeViewSelectionSettings,
     } = useHomeViewSelectionSettingsMutable(accountSettings);
+    const routineSelectionScope = resolveRoutineServerSelectionScope(Platform.OS, isDesktopHost());
     const serverProfilesGeneration = useServerProfilesGeneration();
     const subscribedActiveServer = useActiveServerSnapshot();
 
@@ -180,7 +180,10 @@ export function useServerSettingsScreenController(): ServerSettingsController {
         if (switched === 'blocked') return switched;
         if (opts?.preserveSelectionTarget !== true) {
             const target = buildServerSelectionActiveTargetForServer(targetServerId);
-            setHomeViewSelectionSettings((current) => ({ ...current, ...target }));
+            setHomeViewSelectionSettings(
+                (current) => ({ ...current, ...target }),
+                { targetScope: opts?.scope ?? 'device' },
+            );
         }
         if (opts?.normalizeRoute ?? true) {
             router.replace('/server');
@@ -403,7 +406,7 @@ export function useServerSettingsScreenController(): ServerSettingsController {
             setHomeViewSelectionSettings((current) => ({
                 ...current,
                 serverSelectionGroups: normalizeServerSelectionGroupsForSettings(normalizedStored),
-            }));
+            }), { targetScope: routineSelectionScope });
             return;
         }
         const kind = serverSelectionActiveTargetKind === 'server' || serverSelectionActiveTargetKind === 'group'
@@ -415,7 +418,7 @@ export function useServerSettingsScreenController(): ServerSettingsController {
                 ...current,
                 serverSelectionActiveTargetKind: activeServerIdValue ? 'server' : null,
                 serverSelectionActiveTargetId: activeServerIdValue || null,
-            }));
+            }), { targetScope: routineSelectionScope });
         }
     }, [
         activeServerIdValue,
@@ -424,6 +427,7 @@ export function useServerSettingsScreenController(): ServerSettingsController {
         serverSelectionGroups,
         serverSelectionScopeSettings.serverSelectionGroups,
         setHomeViewSelectionSettings,
+        routineSelectionScope,
     ]);
 
     const activeMultiServerProfileId = React.useMemo(() => {
@@ -445,10 +449,13 @@ export function useServerSettingsScreenController(): ServerSettingsController {
     const concurrentActions = useServerSettingsConcurrentActions({
         activeGroupId: activeMultiServerProfileId,
         serverSelectionGroupsRaw: serverSelectionGroups,
-        setServerSelectionGroups: (value) => setHomeViewSelectionSettings((current) => ({
-            ...current,
-            serverSelectionGroups: normalizeServerSelectionGroupsForSettings(value),
-        })),
+        setServerSelectionGroups: (value) => setHomeViewSelectionSettings(
+            (current) => ({
+                ...current,
+                serverSelectionGroups: normalizeServerSelectionGroupsForSettings(value),
+            }),
+            { targetScope: routineSelectionScope },
+        ),
     });
 
     const profileActions = useServerSettingsServerProfileActions({
@@ -468,10 +475,12 @@ export function useServerSettingsScreenController(): ServerSettingsController {
         normalizedGroupProfiles,
         activeGroupId: activeMultiServerProfileId,
         groupPresentation: (activeGroupProfile?.presentation ?? 'grouped') === 'flat-with-badge' ? 'flat-with-badge' : 'grouped',
+        selectionScope: routineSelectionScope,
         setRevision,
         onSwitchServerById: async (serverId) => {
             return await switchServerById(serverId, {
                 preserveSelectionTarget: true,
+                scope: routineSelectionScope,
             });
         },
         onAfterSignedOutSwitch: () => router.replace('/'),
@@ -630,41 +639,6 @@ export function useServerSettingsScreenController(): ServerSettingsController {
         onRemoveGroup: groupActions.onRemoveGroup,
         onCreateServerGroup: groupActions.onCreateServerGroup,
 
-        groupSelectionEnabled: activeMultiServerProfileId !== null,
-        setGroupSelectionEnabled: (value) => {
-            if (!value) {
-                setHomeViewSelectionSettings((current) => ({
-                    ...current,
-                    serverSelectionActiveTargetKind: activeServerIdValue ? 'server' : null,
-                    serverSelectionActiveTargetId: activeServerIdValue || null,
-                }));
-                return;
-            }
-            const nextGroupId = (() => {
-                if (activeMultiServerProfileId) return activeMultiServerProfileId;
-                if (activeServerIdValue) {
-                    const candidates = normalizedGroupProfiles.filter((profile) => profile.serverIds.includes(activeServerIdValue));
-                    if (candidates.length > 0) {
-                        const multiServerCandidates = candidates.filter((profile) => profile.serverIds.length > 1);
-                        const pool = multiServerCandidates.length > 0 ? multiServerCandidates : candidates;
-                        let best = pool[0]!;
-                        for (const candidate of pool.slice(1)) {
-                            if (candidate.serverIds.length > best.serverIds.length) {
-                                best = candidate;
-                            }
-                        }
-                        return best.id;
-                    }
-                }
-                return normalizedGroupProfiles[0]?.id ?? null;
-            })();
-            if (!nextGroupId) return;
-            setHomeViewSelectionSettings((current) => ({
-                ...current,
-                serverSelectionActiveTargetKind: 'group',
-                serverSelectionActiveTargetId: nextGroupId,
-            }));
-        },
         groupSelectionPresentation: (activeGroupProfile?.presentation ?? 'grouped') === 'flat-with-badge' ? 'flat-with-badge' : 'grouped',
         activeServerGroupId: activeMultiServerProfileId,
         selectedGroupServerIds: selectedConcurrentServerIds,

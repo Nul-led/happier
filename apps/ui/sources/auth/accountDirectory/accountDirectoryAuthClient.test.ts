@@ -48,12 +48,13 @@ describe('accountDirectoryAuthClient', () => {
         await expect(accountDirectoryAuthClient.loginWithKey({
             endpointUrl: 'https://accounts.example.test/',
             endpointServerIdentityId: 'directory-1',
+            canonicalServerUrl: 'https://canonical-directory.example.test/',
             secret,
         })).resolves.toEqual({ token: 'restricted-directory-token' });
 
         expect(authGetTokenAtEndpointMock).toHaveBeenCalledWith({
             endpointUrl: 'https://accounts.example.test',
-            canonicalServerUrl: 'https://accounts.example.test',
+            canonicalServerUrl: 'https://canonical-directory.example.test',
             serverId: 'directory-1',
             serverIdentityId: 'directory-1',
             secret,
@@ -77,6 +78,7 @@ describe('accountDirectoryAuthClient', () => {
         await expect(accountDirectoryAuthClient.loginWithKey({
             endpointUrl: 'https://accounts.example.test',
             endpointServerIdentityId: 'directory-1',
+            canonicalServerUrl: 'https://canonical-directory.example.test',
             secret: new Uint8Array(32).fill(12),
         })).rejects.toThrow('persist Account Service credentials');
     });

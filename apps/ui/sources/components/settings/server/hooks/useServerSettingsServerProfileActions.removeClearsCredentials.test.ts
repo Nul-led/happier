@@ -40,8 +40,8 @@ vi.mock('@/components/account/presentFirstKeyCredentialLifecycle', () => ({
 }));
 
 const pendingTerminalConnectMock = vi.hoisted(() => ({
-    current: null as { publicKeyB64Url: string; serverUrl: string } | null,
-    set: vi.fn((value: { publicKeyB64Url: string; serverUrl: string }) => {
+    current: null as { publicKeyB64Url: string; serverUrl: string; serverIdentityId: string } | null,
+    set: vi.fn((value: { publicKeyB64Url: string; serverUrl: string; serverIdentityId: string }) => {
         pendingTerminalConnectMock.current = value;
     }),
 }));
@@ -112,7 +112,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         const actions = await renderHook(() =>
             useServerSettingsServerProfileActions({
                 authStatusByServerId: {},
-                onSwitchServerById: vi.fn(async () => true),
+                onSwitchServerById: vi.fn(async () => 'switched' as const),
                 onAfterSignedOutSwitch: vi.fn(),
                 setRevision: setRevision as any,
             }),
@@ -175,7 +175,7 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
         const actions = await renderHook(() =>
             useServerSettingsServerProfileActions({
                 authStatusByServerId: {},
-                onSwitchServerById: vi.fn(async () => true),
+                onSwitchServerById: vi.fn(async () => 'switched' as const),
                 onAfterSignedOutSwitch: vi.fn(),
                 setRevision: ((next: React.SetStateAction<number>) => {
                     revision = typeof next === 'function'
@@ -236,6 +236,36 @@ describe('useServerSettingsServerProfileActions (remove server)', () => {
             serverIdentityId: 'srv_original_home',
         });
         expect(onSwitchServerById).toHaveBeenCalledWith('server-correct', 'device');
+    });
+
+    it('selects a signed-out Home and continues to target-specific auth without another prompt', async () => {
+        const onSwitchServerById = vi.fn(async () => 'switched' as const);
+        const onAfterSignedOutSwitch = vi.fn();
+        const setRevision = vi.fn();
+        const profile = {
+            id: 'server-signed-out',
+            name: 'Signed out',
+            serverUrl: 'https://signed-out.example.test',
+            createdAt: 0,
+            updatedAt: 0,
+            lastUsedAt: 0,
+        };
+
+        const { useServerSettingsServerProfileActions } = await import('./useServerSettingsServerProfileActions');
+        const actions = await renderHook(() =>
+            useServerSettingsServerProfileActions({
+                authStatusByServerId: { 'server-signed-out': 'signedOut' },
+                onSwitchServerById,
+                onAfterSignedOutSwitch,
+                setRevision: setRevision as any,
+            }),
+        );
+
+        await actions.onSwitchServer(profile);
+
+        expect(modalSpies.confirm).not.toHaveBeenCalled();
+        expect(onSwitchServerById).toHaveBeenCalledWith('server-signed-out', 'device');
+        expect(onAfterSignedOutSwitch).toHaveBeenCalledTimes(1);
     });
 
     it('does not retarget pending terminal state when custody blocks the server switch', async () => {

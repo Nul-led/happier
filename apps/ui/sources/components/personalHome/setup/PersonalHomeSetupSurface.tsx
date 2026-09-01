@@ -2,8 +2,8 @@ import * as React from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { SystemTaskProgressCard } from '@/components/systemTasks/SystemTaskProgressCard';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
+import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Icon, ICON_SIZE } from '@/components/ui/icons/Icon';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
@@ -12,7 +12,7 @@ import { t } from '@/text';
 import type { PersonalHomeBootstrapSnapshot } from '../bootstrap/personalHomeBootstrapTypes';
 import { PersonalHomeExistingRuntimeDecision } from './PersonalHomeExistingRuntimeDecision';
 import { PersonalHomeSetupFailure } from './PersonalHomeSetupFailure';
-import { PersonalHomeSetupProgress } from './PersonalHomeSetupProgress';
+import { PersonalHomeDiagnosticDetails } from './PersonalHomeDiagnosticDetails';
 
 const styles = StyleSheet.create((theme) => ({
     root: { flex: 1, backgroundColor: theme.colors.background.canvas },
@@ -22,7 +22,7 @@ const styles = StyleSheet.create((theme) => ({
     mark: { width: 42, height: 42, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.button.primary.background },
     title: { ...Typography.default('semiBold'), color: theme.colors.text.primary, fontSize: 30, lineHeight: 36, letterSpacing: -0.5 },
     status: { ...Typography.default(), color: theme.colors.text.secondary, fontSize: 15, lineHeight: 22 },
-    rows: { gap: 10 },
+    activity: { alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center' },
     detailsButton: { alignSelf: 'flex-start', minHeight: 44, marginTop: 20, paddingHorizontal: 4, justifyContent: 'center' },
     detailsText: { ...Typography.default('semiBold'), color: theme.colors.text.secondary, fontSize: 14 },
     details: { marginTop: 8 },
@@ -31,9 +31,7 @@ const styles = StyleSheet.create((theme) => ({
 function phaseCopy(snapshot: PersonalHomeBootstrapSnapshot): string {
     switch (snapshot.phase) {
         case 'checking': return t('common.loading');
-        case 'preparing-home': return t('personalHome.bootstrap.preparingHomeStatus');
-        case 'connecting-app': return t('personalHome.bootstrap.connectingAppStatus');
-        case 'closing-signup': return t('personalHome.bootstrap.closingSignupStatus');
+        case 'ensuring-home': return t('personalHome.bootstrap.ensuringHomeStatus');
         case 'preparing-computer': return t('personalHome.bootstrap.preparingComputerStatus');
         case 'blocked': return t('personalHome.bootstrap.blockedStatus');
         case 'ready': return t('personalHome.bootstrap.readyStatus');
@@ -70,9 +68,11 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
     const hasFailure = props.snapshot.phase === 'blocked';
     const showExistingDecision = props.snapshot.action === 'choose-existing-runtime';
     const showFailure = hasFailure && (!showExistingDecision || props.snapshot.detail?.retryable === true);
-    const showDetails = detailsOpen && props.activeTask != null;
+    const showActivity = !hasFailure && props.snapshot.phase !== 'ready';
+    const hasLocalDetails = props.activeTask != null || props.snapshot.detail != null;
+    const showDetails = detailsOpen && hasLocalDetails;
     const toggleDetails = React.useCallback(() => setDetailsOpen((value) => !value), []);
-    const failureDetailsAction = props.onOpenDetails ?? (props.activeTask ? toggleDetails : undefined);
+    const failureDetailsAction = props.onOpenDetails ?? (hasLocalDetails ? toggleDetails : undefined);
     const recoveryFocusState = showExistingDecision && props.onUseExisting && props.onUseAnotherHome
         ? 'existing-runtime'
         : hasFailure && props.snapshot.action === 'retry' && props.onRetry
@@ -115,9 +115,15 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                     <Text testID="personal-home-bootstrap-phase" accessibilityLiveRegion="polite" style={styles.status}>{phaseCopy(props.snapshot)}</Text>
                 </View>
 
-                <View style={styles.rows}>
-                    <PersonalHomeSetupProgress rows={props.snapshot.rows} />
-                </View>
+                {showActivity ? (
+                    <View style={styles.activity} testID="personal-home-bootstrap-activity" accessible={false}>
+                        <ActivitySpinner
+                            accessible={false}
+                            size="small"
+                            color={theme.colors.button.primary.background}
+                        />
+                    </View>
+                ) : null}
 
                 {showExistingDecision && props.onUseExisting && props.onUseAnotherHome ? (
                     <PersonalHomeExistingRuntimeDecision
@@ -136,7 +142,7 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                     />
                 ) : null}
 
-                {props.activeTask && !hasFailure ? (
+                {hasLocalDetails && !hasFailure ? (
                     <Pressable
                         testID="personal-home-bootstrap-details-toggle"
                         accessibilityRole="button"
@@ -150,7 +156,7 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                 ) : null}
                 {showDetails ? (
                     <View style={styles.details} testID="personal-home-bootstrap-details-panel">
-                        <SystemTaskProgressCard snapshot={props.activeTask!} />
+                        <PersonalHomeDiagnosticDetails detail={props.snapshot.detail} activeTask={props.activeTask} />
                     </View>
                 ) : null}
             </ScrollView>
