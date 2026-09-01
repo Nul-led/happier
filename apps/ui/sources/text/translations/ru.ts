@@ -21,6 +21,9 @@ import { automationTriggerSetTranslations } from './automationTriggerSetTranslat
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
+import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { en } from './en';
+import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
 
 const mcpServersUxTranslationExtension = {
   mcpServersConfiguredEmptySubtitle: 'Создайте сервер, импортируйте JSON хоста или установите рекомендуемый пресет.',
@@ -521,6 +524,11 @@ const sessionHandoffTranslationExtensions = {
       planned: 'Запланировано',
       transferred: 'Передано',
       remaining: 'Осталось',
+      primary: {
+        preparing: 'Подготовка',
+        moving: 'Перемещение',
+        ready: 'Готово',
+      },
       timeline: {
         scanSource: 'Сканирование источника',
         plan: 'Планирование изменений',
@@ -633,6 +641,7 @@ function plural({
  * Must match the exact structure of the English translations
  */
 export const ru = {
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ru, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ru.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: 'Завершить подготовленную загрузку',
@@ -1581,17 +1590,16 @@ export const ru = {
     serverUrlNotEmbeddedTitle: "Настройте сервер на телефоне",
     serverUrlNotEmbeddedBody:
       "Этот QR‑код не может включать адрес сервера, потому что он настроен на localhost. На телефоне откройте Настройки → Серверы и добавьте URL, доступный с телефона (LAN IP или Tailscale), затем отсканируйте снова.",
-    pairingRequestTitle: "Запрос на привязку",
-    pairingRequestBody: "Убедитесь, что этот код совпадает с тем, что отображается на телефоне, затем подтвердите.",
     pairingAlreadyRequestedTitle: "Код уже использован",
     pairingAlreadyRequestedBody:
       "Этот QR‑код уже был отсканирован на другом телефоне. Попросите компьютер сгенерировать новый.",
     deviceLabel: "Устройство",
     requestKeyFingerprintLabel: "Отпечаток ключа запроса",
-    confirmCodeLabel: "Код подтверждения",
     expiresAtLabel: "Истекает",
-    confirmCodeComparisonBody: "Убедитесь, что этот код совпадает на обоих устройствах.",
     showPairingLink: "Показать ссылку для подключения",
+    pairingLinkSecurityWarning: "Любой, у кого есть эта временная ссылка, может добавить устройство до её истечения. Делитесь ею только со своим устройством.",
+    pairingQrTooLargeTitle: "Не помещается в QR-код",
+    pairingQrTooLargeBody: "Это приглашение содержит дополнительные сведения о подключении и не может быть показано как QR-код. Ваш Home по-прежнему готов к сопряжению — используйте безопасную ссылку ниже.",
     homeAddedPreservedFocusBody: "Этот Home добавлен. Выбранный Home не изменился.",
     requestingDeviceLabel: "Запрашивающее устройство",
     thisDevice: "Это устройство",
@@ -1606,7 +1614,6 @@ export const ru = {
     unsupportedEnrollmentResponseBody: "Этот Home вернул ответ, который данная версия Happier не может использовать. Обновите Happier или отсканируйте другой Home.",
     updateRequiredTitle: "Требуется обновление",
     updateRequiredBody: "Этот Home использует устаревший формат подключения, который нельзя безопасно принять. Обновите Happier на обоих устройствах и повторите попытку.",
-    approveButton: "Подтвердить",
     generateNewQrCode: "Сгенерировать новый QR‑код",
     pairingQrExpired: "Этот QR‑код истёк. Сгенерируйте новый.",
     openMachine: "Открыть машину",
@@ -2770,7 +2777,7 @@ export const ru = {
       lastSync: "Последняя синхронизация",
     },
     server: {
-      activeServer: "Активный Relay",
+      activeServer: "Активный Home",
     },
     identity: {
       accountId: "ID аккаунта",
@@ -2826,7 +2833,7 @@ export const ru = {
       findings: "Результаты",
     },
     overview: {
-      activeServer: "Активный Relay",
+      activeServer: "Активный Home",
       account: "Аккаунт",
       onlineMachines: "Машины в сети (активный сервер)",
       cachedAttribution: ({ count }: { count: number }) => `Доступно doctor snapshot в кэше: ${count}`,
@@ -5684,7 +5691,7 @@ export const ru = {
     serverConfiguration: "Настройки Relay",
     enterServerUrl: "Пожалуйста, введите URL Relay",
     notValidHappyServer: "Это не валидный Relay Happier",
-    changeServer: "Изменить Relay",
+    changeServer: "Изменить Home",
     continueWithServer: "Продолжить с этим Relay?",
     resetToDefault: "Сбросить по умолчанию",
     resetServerDefault: "Сбросить Relay по умолчанию?",
@@ -5707,7 +5714,7 @@ export const ru = {
     cannotRenameCloud: "Облачный Relay нельзя переименовать.",
     removeServer: "Удалить Relay",
     removeServerConfirm: ({ name }: { name: string }) =>
-      `Удалить "${name}" из сохранённых Relay?`,
+      `Удалить «${name}» с этого устройства? Сохранённые на этом устройстве учётные данные для этого Home будут удалены.`,
     removeServerGroup: "Удалить группу Relay",
     removeServerGroupConfirm: ({ name }: { name: string }) =>
       `Удалить "${name}" из сохранённых групп Relay?`,
@@ -5726,9 +5733,8 @@ export const ru = {
     switchForThisTab: "Переключить для этой вкладки",
     makeDefaultOnDevice: "Сделать по умолчанию на этом устройстве",
     serverNameLabel: "Имя Relay",
-    addAndUse: "Добавить и использовать",
     addTargetsTitle: "Добавить",
-    addServerSubtitle: "Добавить новый Relay и переключиться на него",
+    addServerSubtitle: "Добавить новый Relay",
     notificationAddServerHint: "Этот Relay ещё не сохранён на этом устройстве. Добавьте его ниже, чтобы продолжить.",
     serverCount: ({ count }: { count: number }) =>
       `${count} ${plural({ count, one: "Relay", few: "Relay", many: "Relay" })}`,
@@ -5738,9 +5744,6 @@ export const ru = {
     insecureHttpUrlTitle: "Небезопасный URL Relay",
     insecureHttpUrlBody:
       "Этот URL использует http:// и может не работать с телефона или вне вашей LAN. По возможности используйте HTTPS. Продолжить всё равно?",
-    signedOutSwitchConfirmTitle: "Вы не подключены",
-    signedOutSwitchConfirmBody:
-      "Переключиться на этот Relay и перейти на главный экран, чтобы вы могли войти или создать аккаунт?",
     addServerGroupTitle: "Добавить группу Relay",
     addServerGroupSubtitle: "Создать группу Relay для повторного использования",
     serverGroupNameLabel: "Имя группы",
@@ -5801,8 +5804,6 @@ export const ru = {
     multiServerView: {
       title: "Параллельный просмотр нескольких Relay",
       footer: "Выберите, объединять ли несколько Relay в одном списке сессий.",
-      enableTitle: "Включить параллельный просмотр",
-      enableSubtitle: "Показывать вместе сессии выбранных Relay",
       presentationTitle: "Режим отображения",
       presentation: {
         flatWithBadges: "Плоский список с бейджами Relay",
@@ -6213,20 +6214,11 @@ export const ru = {
     title: "Соединение",
     labels: {
       server: "Сервер",
-      transport: "Транспорт",
-      connectionMode: "Режим подключения",
       socket: "Сокет",
       authenticated: "Авторизовано",
       lastSync: "Последняя синхронизация",
       nextRetry: "Следующая попытка",
       lastError: "Последняя ошибка",
-    },
-    transport: {
-      standard: "Стандартное подключение",
-      direct: "Напрямую",
-      secureRelay: "Защищённый ретранслятор",
-      directOnly: "Только прямые подключения",
-      automatic: "Автоматически: напрямую + защищённый ретранслятор",
     },
   },
 
@@ -9300,7 +9292,6 @@ export const ru = {
                 allowAgentModeOverride: { title: "Режим агента", subtitle: "Разрешить выбрать режим агента или сессии." },
                 allowConfigOptionOverrides: { title: "Параметры конфигурации", subtitle: "Разрешить параметры провайдера, например усилие рассуждения и workflow." },
                 allowProfileOverride: { title: "Профиль", subtitle: "Разрешить выбор профиля по id без раскрытия секретов." },
-                allowEnvironmentVariables: { title: "Переменные окружения", subtitle: "Разрешить явные переменные окружения в новых сессиях." },
                 allowConnectedServicesOverride: { title: "Подключенные сервисы", subtitle: "Разрешить выбор привязок подключенных сервисов по ссылке." },
                 allowMcpSelectionOverride: { title: "Выбор MCP", subtitle: "Разрешить переопределить унаследованный выбор серверов MCP." },
                 allowTranscriptStorageOverride: { title: "Хранение транскрипта", subtitle: "Разрешить выбрать совместимый режим хранения." },
@@ -11305,6 +11296,8 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: 'Link a Home to this Account Service, then refresh.',
         accountServiceConnectHome: 'Connect Home',
+        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHomeDescription: 'Let {accountService} help your other devices find this Home and request access.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
         accountServiceHomeApprovalRequired: 'Approval needed',
@@ -13467,24 +13460,10 @@ settingsSession: {
     personalHome: {
         bootstrap: {
             title: 'Подготовка вашего Личного дома',
-            preparingHomeStatus: 'Подготовка локального Дома.',
-            connectingAppStatus: 'Подключение Happier к вашему Дому.',
-            closingSignupStatus: 'Защита вашего Дома перед началом работы.',
+            ensuringHomeStatus: 'Подготовка локального Дома.',
             preparingComputerStatus: 'Ваш Дом готов. Этот компьютер подготавливается в фоновом режиме.',
             blockedStatus: 'Для продолжения настройки требуется ваше внимание.',
             readyStatus: 'Ваш Дом готов.',
-            preparingHomeTitle: 'Подготовка вашего Дома',
-            preparingHomeDetail: 'Подготовка этого компьютера для локальной работы.',
-            connectingAppTitle: 'Подключение Happier',
-            connectingAppDetail: 'Безопасное подключение Happier к вашему Дому.',
-            preparingComputerTitle: 'Подготовка этого компьютера',
-            preparingComputerDetail: 'Настройка фоновой службы, чтобы сессии могли продолжать работу.',
-            pending: 'Ожидание',
-            active: 'Выполняется',
-            complete: 'Завершено',
-            blocked: 'Требует внимания',
-            progressLabel: 'Ход настройки Личного дома',
-            rowAccessibilityLabel: ({ title, status, detail }: { title: string; status: string; detail: string }) => `${title}. ${status}. ${detail}`,
             failureBody: 'Не удалось завершить этот шаг. Уже выполненная настройка сохранена; повторите попытку или откройте подробности.',
             profileRecoveryBody: 'Ваш Личный дом готов. Happier ещё должен завершить подключение к нему.',
             computerRecoveryBody: 'Ваш Личный дом готов. Настройка Агента требует внимания.',

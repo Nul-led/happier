@@ -67,23 +67,29 @@ export type PluginAppPageLocationOwner = Readonly<{
     dispose: () => void;
 }>;
 
-export type CreatePluginAppPageLocationOwnerInput = Readonly<{
+export type CreatePluginAppPageLocationOwnerInput<Route = string> = Readonly<{
     /** The page's current plugin-local location; `null` when it is not a live page. */
     currentSubPath: () => string | null;
     /** Build the host route for one plugin-local location. */
-    routePathFor: (subPath: string) => string;
+    routePathFor: (subPath: string) => Route;
     /** Replace the current history entry. Never a push. */
-    replaceLocation: (routePath: string) => void;
+    replaceLocation: (routePath: Route) => void;
     /** The bound controller's mount predicate; this owner never makes a second one. */
     isCurrent: () => boolean;
 }>;
+/**
+ * `Route` is the host route handle in whatever representation the embedding
+ * route's router consumes (a plain path string, or a typed `{ pathname, params }`
+ * route). This owner never interprets it: it only moves locations through the
+ * embedding route's own grammar.
+ */
 
 function refusal(code: PluginUiHostApiErrorCodeV1, reason: string): PluginUiJsonValueV1 {
     return createPluginSurfaceHostApiError(code, [reason]);
 }
 
-export function createPluginAppPageLocationOwner(
-    input: CreatePluginAppPageLocationOwnerInput,
+export function createPluginAppPageLocationOwner<Route = string>(
+    input: CreatePluginAppPageLocationOwnerInput<Route>,
 ): PluginAppPageLocationOwner {
     // The declared step, plus the location it was declared FOR. Keeping both is
     // what lets a foreign location change be told apart from this owner's own

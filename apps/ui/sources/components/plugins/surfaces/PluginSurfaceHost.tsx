@@ -3996,6 +3996,8 @@ export function PluginSettingsPageHost(props: Readonly<{
     /** Settings-only availability is independent of this mount's action bridge. */
     settingsScopesEnabled?: Readonly<{ account: boolean; daemon: boolean }>;
     pluginUiProjection?: PluginUiProjectionModel | null;
+    /** The page's plugin-local location; `''` at the page root. */
+    subPath?: PluginUiSubPathV1;
     platform?: LocalServicePreviewPlatform;
     channel?: PluginUiChannelV1;
     nowMs?: () => number;
@@ -4018,6 +4020,7 @@ export function PluginSettingsPageHost(props: Readonly<{
             isDaemonSettingsTargetCurrent={props.isDaemonSettingsTargetCurrent}
             settingsScopesEnabled={props.settingsScopesEnabled}
             pluginUiProjection={props.pluginUiProjection}
+            subPath={props.subPath}
             platform={props.platform}
             channel={props.channel}
             nowMs={props.nowMs}

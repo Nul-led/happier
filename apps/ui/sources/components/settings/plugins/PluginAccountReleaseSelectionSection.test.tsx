@@ -17,8 +17,17 @@ const select = vi.hoisted(() => vi.fn(async () => Object.freeze({
 })));
 const retire = vi.hoisted(() => vi.fn());
 const alert = vi.hoisted(() => vi.fn());
+const confirm = vi.hoisted(() => vi.fn(async () => true));
+const readHostedArtifactStatus = vi.hoisted(() => vi.fn(() => 'unavailable' as 'unavailable' | 'hosted'));
+const setHostedArtifactsEnabled = vi.hoisted(() => vi.fn(async () => ({ kind: 'updated' as const })));
+const disableAndRemoveHostedArtifacts = vi.hoisted(() => vi.fn(async () => ({ kind: 'updated' as const })));
+const clearHostedArtifactCache = vi.hoisted(() => vi.fn(async () => ({ kind: 'updated' as const })));
 const createController = vi.hoisted(() => vi.fn(() => ({
     select,
+    readHostedArtifactStatus,
+    setHostedArtifactsEnabled,
+    disableAndRemoveHostedArtifacts,
+    clearHostedArtifactCache,
     retire,
     isPending: () => false,
 })));
@@ -44,7 +53,7 @@ vi.mock('@/text', async () => {
 });
 
 vi.mock('@/modal', () => ({
-    Modal: { alert },
+    Modal: { alert, confirm },
 }));
 
 vi.mock('./pluginAccountReleaseSelectionController', () => ({
@@ -56,7 +65,13 @@ afterEach(() => {
     select.mockClear();
     retire.mockClear();
     alert.mockClear();
+    confirm.mockClear();
     createController.mockClear();
+    readHostedArtifactStatus.mockReset();
+    readHostedArtifactStatus.mockReturnValue('unavailable');
+    setHostedArtifactsEnabled.mockClear();
+    disableAndRemoveHostedArtifacts.mockClear();
+    clearHostedArtifactCache.mockClear();
 });
 
 describe('PluginAccountReleaseSelectionSection', () => {
@@ -93,5 +108,36 @@ describe('PluginAccountReleaseSelectionSection', () => {
             'common.success',
             'settingsPlugins.accountReleaseSelection.selectedBody',
         );
+    });
+
+    it('shows current hosted status and exposes removal plus exact local cache clear actions', async () => {
+        readHostedArtifactStatus.mockReturnValue('hosted');
+        const { PluginAccountReleaseSelectionSection } = await import('./PluginAccountReleaseSelectionSection');
+        const reader = { subscribe: () => () => {} } as never;
+        const screen = await renderScreen(
+            <PluginAccountReleaseSelectionSection
+                pluginId="example.tasks"
+                version="2.0.0"
+                reader={reader}
+                projection={null}
+                daemon={{ serverId: null, serverIdentityId: null, machineId: null }}
+                testID="plugin.release"
+            />,
+        );
+
+        expect(screen.findByTestId('plugin.release.hosting')?.props.subtitle).toBe(
+            'settingsPlugins.accountReleaseSelection.hostedStatusReady',
+        );
+        await act(async () => {
+            screen.findByTestId('plugin.release.clearCache')?.props.onPress();
+            await Promise.resolve();
+        });
+        expect(clearHostedArtifactCache).toHaveBeenCalledWith({ pluginId: 'example.tasks', reader });
+        await act(async () => {
+            screen.findByTestId('plugin.release.removeHosted')?.props.onPress();
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(disableAndRemoveHostedArtifacts).toHaveBeenCalledWith({ pluginId: 'example.tasks', reader });
     });
 });

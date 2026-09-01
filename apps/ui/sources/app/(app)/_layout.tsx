@@ -94,10 +94,12 @@ function AuthenticatedAppRuntimeMountsGate({
     );
 }
 
-function MobileBottomChromeMountGate(): React.ReactElement | null {
+function MobileBottomChromeMountGate(props: Readonly<{
+    newSessionRendersFloatingComposer: boolean;
+}>): React.ReactElement | null {
     const onboardingJourneyActive = useOnboardingJourneySessionActive();
     if (onboardingJourneyActive) return null;
-    return <MobileBottomChromeHost />;
+    return <MobileBottomChromeHost newSessionRendersFloatingComposer={props.newSessionRendersFloatingComposer} />;
 }
 
 const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElement {
@@ -684,7 +686,7 @@ const RootLayoutShell = React.memo(function RootLayoutShell(): React.ReactElemen
                     options={rootStackRouteOptions.zenView}
                 />
             </Stack>
-            <MobileBottomChromeMountGate />
+            <MobileBottomChromeMountGate newSessionRendersFloatingComposer={newSessionRendersFloatingComposer} />
             </BrowserPresentationRetentionProvider>
         </SessionCockpitChromeRegistryProvider>
     );

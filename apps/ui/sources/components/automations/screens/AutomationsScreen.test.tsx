@@ -110,6 +110,10 @@ const machinesState = vi.hoisted(() => ({
     list: [] as Array<{ id: string }>,
 }));
 
+const activeAccountScopeState = vi.hoisted(() => ({
+    scope: { serverId: 'server-1', accountId: 'account-1' },
+}));
+
 const syncSpies = vi.hoisted(() => ({
     refreshAutomations: vi.fn(async () => {}),
     loadMoreAutomations: vi.fn(async () => ({ nextCursor: null })),
@@ -146,7 +150,7 @@ installAutomationScreensCommonModuleMocks({
             storage: createLiveStorageStoreMock(() => ({
                 profileScope: { serverId: 'server-1', accountId: 'account-1' },
             })),
-            useActiveServerAccountScope: () => ({ serverId: 'server-1', accountId: 'account-1' }),
+            useActiveServerAccountScope: () => activeAccountScopeState.scope,
             useAutomations: () => automationsState.list,
             useAutomationDefinitionNextCursor: () => automationsState.nextCursor,
             useAllMachines: () => machinesState.list,
@@ -188,6 +192,7 @@ vi.mock('@/sync/sync', () => ({
 
 describe('AutomationsScreen', () => {
     beforeEach(() => {
+        activeAccountScopeState.scope = { serverId: 'server-1', accountId: 'account-1' };
         automationsState.list = [];
         automationsState.nextCursor = null;
         machinesState.list = [];
@@ -202,6 +207,19 @@ describe('AutomationsScreen', () => {
         syncSpies.pauseAutomation.mockClear();
         syncSpies.resumeAutomation.mockClear();
         syncSpies.deleteAutomation.mockClear();
+    });
+
+    it('starts a new authoritative refresh when the active Account changes without remounting', async () => {
+        const { AutomationsScreen } = await import('./AutomationsScreen');
+        const screen = await renderScreen(React.createElement(AutomationsScreen));
+        await flushHookEffects();
+        expect(syncSpies.refreshAutomations).toHaveBeenCalledTimes(1);
+
+        activeAccountScopeState.scope = { serverId: 'server-1', accountId: 'account-2' };
+        await screen.update(React.createElement(AutomationsScreen));
+        await flushHookEffects();
+
+        expect(syncSpies.refreshAutomations).toHaveBeenCalledTimes(2);
     });
 
     afterEach(() => {
@@ -378,7 +396,7 @@ describe('AutomationsScreen', () => {
         }));
 
         const { AutomationsScreen } = await import('./AutomationsScreen');
-        await renderScreen(React.createElement(AutomationsScreen));
+        const screen = await renderScreen(React.createElement(AutomationsScreen));
         await flushHookEffects();
 
         const listProps = legendListMock.state.props;
@@ -398,10 +416,11 @@ describe('AutomationsScreen', () => {
         automationsState.nextCursor = 'definition-cursor-1';
 
         const { AutomationsScreen } = await import('./AutomationsScreen');
-        await renderScreen(React.createElement(AutomationsScreen));
+        const screen = await renderScreen(React.createElement(AutomationsScreen));
         await flushHookEffects();
 
         expect(legendListMock.state.props?.onEndReached).toEqual(expect.any(Function));
+        expect(screen.findByTestId('automations-load-more')).not.toBeNull();
         await act(async () => {
             legendListMock.state.props.onEndReached();
             // Virtualized lists may report the same boundary more than once
@@ -479,7 +498,11 @@ describe('AutomationsScreen', () => {
         const screen = await renderScreen(React.createElement(AutomationsScreen));
         await flushHookEffects();
 
-        const runNow = screen.findByProps({ accessibilityLabel: 'automations.detail.runNowTitle: Nightly' });
+        const runNow = screen.findAll((instance) => (
+            typeof instance.props.accessibilityLabel === 'string'
+            && instance.props.accessibilityLabel.startsWith('automations.detail.runNowTitle: Nightly')
+        ))[0];
+        if (!runNow) throw new Error('Run now action was not found');
         const style = flattenStyle(runNow.props.style);
         const minimum = resolveMinimumInteractiveTargetSize(Platform.OS);
         expect(Math.max(Number(style.width ?? 0), Number(style.minWidth ?? 0))).toBeGreaterThanOrEqual(minimum);

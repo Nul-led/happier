@@ -12,6 +12,15 @@ const english = {
         unavailableBody: 'The exact release or its required migration source is unavailable for the current Account. Try again when the Account is ready.',
         rejectedTitle: 'Account release was not selected',
         rejectedBody: 'The Account did not accept this release selection. Check the Account state and try again.',
+        hostedEnableTitle: 'Host UI artifacts for this Account',
+        hostedDisableTitle: 'Stop hosting UI artifacts',
+        hostedStatusDisabled: 'Disabled. Enable hosting to make this release available when its source machine is offline.',
+        hostedStatusPending: 'Enabled. This release is waiting for the host to publish its exact UI artifacts.',
+        hostedStatusReady: 'Hosted UI artifacts are available for this exact release.',
+        hostedRemoveTitle: 'Disable and remove hosted artifacts',
+        hostedRemoveBody: 'Stops Account hosting and removes the exact hosted UI artifacts for this release. Local cache cleanup is separate.',
+        hostedClearCacheTitle: 'Clear local artifact cache',
+        hostedClearCacheBody: 'Removes locally cached UI artifact bytes for this exact release without changing Account hosting.',
     },
 } as const;
 
@@ -19,7 +28,7 @@ const english = {
 // localization pipeline supplies reviewed translations. The complete shape is
 // still present in every locale, so this Account-only action never renders a
 // raw key or machine-management wording.
-export const pluginAccountReleaseSelectionTranslations = {
+const localizedPluginAccountReleaseSelectionTranslations = {
     en: english,
     de: {
     accountReleaseSelection: {
@@ -198,3 +207,15 @@ export const pluginAccountReleaseSelectionTranslations = {
     },
 },
 } as const;
+
+export const pluginAccountReleaseSelectionTranslations = Object.fromEntries(
+    Object.entries(localizedPluginAccountReleaseSelectionTranslations).map(([locale, value]) => [
+        locale,
+        {
+            accountReleaseSelection: {
+                ...english.accountReleaseSelection,
+                ...value.accountReleaseSelection,
+            },
+        },
+    ]),
+) as unknown as typeof localizedPluginAccountReleaseSelectionTranslations;

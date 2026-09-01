@@ -10,6 +10,7 @@ import {
     loginWithCredentialsSpy,
     modal,
     pendingAccountDirectoryAuthClearSpy,
+    pendingAccountDirectoryAuthGetSpy,
     replaceSpy,
     renderOAuthReturnScreen,
     resetOAuthHarness,
@@ -21,9 +22,10 @@ import {
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { encryptBox } from '@/encryption/libsodium';
-import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { AccountDirectoryStorageReadError, TokenStorage } from '@/auth/storage/tokenStorage';
 import { renderScreen } from '@/dev/testkit';
 import type { PreferredDirectoryHomeEnrollmentResult } from '@/sync/ops/accountDirectory/enrollPreferredDirectoryHome';
+import { setAccountServiceEndpoint } from '@/sync/domains/server/serverProfiles';
 
 const accountDirectoryComposition = vi.hoisted(() => ({
     useRealOwners: false,
@@ -41,6 +43,9 @@ const enrollPreferredDirectoryHomeSpy = vi.hoisted(() => vi.fn<
 const probeServerFeaturesAtUrlSpy = vi.hoisted(() => vi.fn<
     (..._args: unknown[]) => Promise<unknown>
 >(async () => undefined));
+const startAccountDirectoryOAuthSpy = vi.hoisted(() => vi.fn(
+    async (..._args: unknown[]) => 'https://oauth.example.test/authorize-keyed',
+));
 const supportedCapability = {
     version: 1,
     homeDirectory: true,
@@ -85,6 +90,18 @@ vi.mock('@/sync/ops/accountDirectory/enrollPreferredDirectoryHome', async (impor
 vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
     probeServerFeaturesAtUrl: (...args: unknown[]) => probeServerFeaturesAtUrlSpy(...args),
 }));
+vi.mock('@/auth/accountDirectory/accountDirectoryAuthClient', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/auth/accountDirectory/accountDirectoryAuthClient')>();
+    return {
+        ...actual,
+        accountDirectoryAuthClient: {
+            ...actual.accountDirectoryAuthClient,
+            startOAuth: (...args: Parameters<typeof actual.accountDirectoryAuthClient.startOAuth>) => (
+                startAccountDirectoryOAuthSpy(...args)
+            ),
+        },
+    };
+});
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -97,9 +114,10 @@ beforeEach(() => {
     probeServerFeaturesAtUrlSpy.mockReset();
     probeServerFeaturesAtUrlSpy.mockResolvedValue({
         status: 'ready',
-        serverIdentityId: 'directory-1',
+        serverIdentityId: 'srv_directory_1',
         features: { capabilities: { accountDirectory: supportedCapability } },
     });
+    startAccountDirectoryOAuthSpy.mockClear();
 });
 
 afterEach(() => {
@@ -112,10 +130,123 @@ afterEach(() => {
 });
 
 describe('oauth/[provider] return (Account Directory)', () => {
+    it('starts a fresh keyed continuation when an unlinked keyless login requires keyed authentication', async () => {
+        const now = Date.now();
+        const endpoint = 'https://directory.example.test';
+        const identity = 'srv_directory_1';
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github', flow: 'auth', purpose: 'account_directory',
+            credentialTarget: 'account_directory', endpointUrl: endpoint,
+            endpointServerIdentityId: identity, pending: 'directory-pending', mode: 'keyless',
+        });
+        setPendingAccountDirectoryAuthState({
+            endpoint, serverIdentityId: identity, credentialTarget: 'account_directory',
+            provider: 'github', purpose: 'account_directory', pending: 'directory-pending',
+            createdAt: now - 100, expiresAt: now + 60_000, mode: 'keyless',
+            proof: 'directory-proof', returnTo: '/settings/account',
+        });
+        setRuntimeFetch(vi.fn(async () => new Response(JSON.stringify({
+            error: 'keyed-authentication-required',
+        }), { status: 409, headers: { 'Content-Type': 'application/json' } })) as unknown as typeof fetch);
+
+        await runWithOAuthScreen(async () => {
+            await flushOAuthEffects(12);
+            expect(startAccountDirectoryOAuthSpy).toHaveBeenCalledWith({
+                endpointUrl: endpoint,
+                endpointServerIdentityId: identity,
+                providerId: 'github',
+                mode: 'keyed',
+                returnTo: '/settings/account',
+            });
+            expect(accountDirectoryCredentialSetSpy).not.toHaveBeenCalled();
+        });
+    });
+
+    it('does not commit a late callback after the selected Account Service changes during exchange', async () => {
+        const now = Date.now();
+        const endpoint = 'https://directory.example.test';
+        const identity = 'srv_directory_1';
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github', flow: 'auth', purpose: 'account_directory',
+            credentialTarget: 'account_directory', endpointUrl: endpoint,
+            endpointServerIdentityId: identity, pending: 'directory-pending', mode: 'keyless',
+        });
+        setPendingAccountDirectoryAuthState({
+            endpoint, serverIdentityId: identity, credentialTarget: 'account_directory',
+            provider: 'github', purpose: 'account_directory', pending: 'directory-pending',
+            createdAt: now - 100, expiresAt: now + 60_000, mode: 'keyless',
+            proof: 'directory-proof', returnTo: '/settings/account',
+        });
+        let resolveExchange: ((response: Response) => void) | null = null;
+        setRuntimeFetch(vi.fn(() => new Promise<Response>((resolve) => { resolveExchange = resolve; })) as unknown as typeof fetch);
+
+        const tree = await renderOAuthReturnScreen();
+        try {
+            await vi.waitFor(() => expect(resolveExchange).not.toBeNull());
+            setAccountServiceEndpoint({
+                url: 'https://replacement.example.test',
+                serverIdentityId: 'srv_directory_2',
+                source: 'user',
+            });
+            await act(async () => resolveExchange?.(new Response(JSON.stringify({ token: 'late-token' }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            })));
+            await flushOAuthEffects(4);
+
+            expect(accountDirectoryCredentialSetSpy).not.toHaveBeenCalled();
+            expect(refreshAccountHomeDirectorySpy).not.toHaveBeenCalled();
+            expect(enrollPreferredDirectoryHomeSpy).not.toHaveBeenCalled();
+        } finally {
+            act(() => tree.unmount());
+        }
+    });
+
+    it('does not publish Directory or enrollment work when service selection changes during credential commit', async () => {
+        const now = Date.now();
+        const endpoint = 'https://directory.example.test';
+        const identity = 'srv_directory_1';
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github', flow: 'auth', purpose: 'account_directory',
+            credentialTarget: 'account_directory', endpointUrl: endpoint,
+            endpointServerIdentityId: identity, pending: 'directory-pending', mode: 'keyless',
+        });
+        setPendingAccountDirectoryAuthState({
+            endpoint, serverIdentityId: identity, credentialTarget: 'account_directory',
+            provider: 'github', purpose: 'account_directory', pending: 'directory-pending',
+            createdAt: now - 100, expiresAt: now + 60_000, mode: 'keyless',
+            proof: 'directory-proof', returnTo: '/settings/account',
+        });
+        setRuntimeFetch(vi.fn(async () => new Response(JSON.stringify({ token: 'directory-token' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })) as unknown as typeof fetch);
+        let resolveCommit: ((stored: boolean) => void) | null = null;
+        accountDirectoryCredentialSetSpy.mockImplementationOnce(() => new Promise<boolean>((resolve) => { resolveCommit = resolve; }));
+
+        const tree = await renderOAuthReturnScreen();
+        try {
+            await vi.waitFor(() => expect(resolveCommit).not.toBeNull());
+            setAccountServiceEndpoint({
+                url: 'https://replacement.example.test',
+                serverIdentityId: 'srv_directory_2',
+                source: 'user',
+            });
+            await act(async () => resolveCommit?.(true));
+            await flushOAuthEffects(4);
+
+            expect(accountDirectoryCredentialSetSpy).toHaveBeenCalledOnce();
+            expect(refreshAccountHomeDirectorySpy).not.toHaveBeenCalled();
+            expect(enrollPreferredDirectoryHomeSpy).not.toHaveBeenCalled();
+        } finally {
+            act(() => tree.unmount());
+        }
+    });
+
     it('identifies an expired Account Service continuation without attempting token exchange', async () => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
-        const identity = 'directory-1';
+        const identity = 'srv_directory_1';
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
@@ -167,11 +298,12 @@ describe('oauth/[provider] return (Account Directory)', () => {
             flow: 'unknown',
             credentialTarget: 'future_target',
             endpointUrl: 'https://directory.example.test',
-            endpointServerIdentityId: 'directory-1',
+            endpointServerIdentityId: 'srv_directory_1',
         });
         setPendingAccountDirectoryAuthState({
             endpoint: 'https://directory.example.test',
-            serverIdentityId: 'directory-1',
+            serverIdentityId: 'srv_directory_1',
+            credentialTarget: 'account_directory',
             provider: 'github',
             purpose: 'account_directory',
             createdAt: now - 100,
@@ -188,7 +320,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
     it('completes against the persisted endpoint without consuming Home auth or changing focus', async () => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
-        const identity = 'directory-1';
+        const identity = 'srv_directory_1';
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
@@ -247,8 +379,14 @@ describe('oauth/[provider] return (Account Directory)', () => {
                 { endpoint, serverIdentityId: identity },
                 { capability: supportedCapability },
             );
-            expect(refreshAccountHomeDirectorySpy).toHaveBeenCalledWith(expect.anything());
-            expect(enrollPreferredDirectoryHomeSpy).toHaveBeenCalledWith(expect.anything());
+            expect(refreshAccountHomeDirectorySpy).toHaveBeenCalledWith(
+                expect.anything(),
+                expect.objectContaining({ shouldCancel: expect.any(Function) }),
+            );
+            expect(enrollPreferredDirectoryHomeSpy).toHaveBeenCalledWith(
+                expect.anything(),
+                expect.objectContaining({ shouldCancel: expect.any(Function) }),
+            );
             expect(clearPendingExternalAuthMock).not.toHaveBeenCalled();
             expect(loginSpy).not.toHaveBeenCalled();
             expect(loginWithCredentialsSpy).not.toHaveBeenCalled();
@@ -263,8 +401,8 @@ describe('oauth/[provider] return (Account Directory)', () => {
 
     it('keeps one polite Account Service status region visible while Home discovery is pending', async () => {
         const now = Date.now();
-        const endpoint = 'https://directory.example.test';
-        const identity = 'directory-1';
+        const endpoint = 'https://directory.example.test/account-service/';
+        const identity = 'srv_directory_1';
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
@@ -316,7 +454,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
             })).toHaveLength(0);
             expect(tree.root.findByProps({
                 testID: 'oauth-account-directory-service-identity',
-            }).props.children).toContain('directory.example.test');
+            }).props.children).toContain('directory.example.test/account-service');
         } finally {
             await act(async () => {
                 resolveRefresh?.();
@@ -328,7 +466,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
     it('shows stage-specific partial-success recovery after sign-in when Home discovery fails', async () => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
-        const identity = 'directory-1';
+        const identity = 'srv_directory_1';
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
@@ -383,7 +521,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
     it('continues from a stored Account Service credential when pending cleanup fails', async () => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
-        const identity = 'directory-1';
+        const identity = 'srv_directory_1';
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
@@ -429,7 +567,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
     it('does not commit Account Service authority when cancellation wins the token-exchange race', async () => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
-        const identity = 'directory-1';
+        const identity = 'srv_directory_1';
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
@@ -495,7 +633,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
     it('closes cancellation synchronously before the credential storage commit starts', async () => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
-        const identity = 'directory-1';
+        const identity = 'srv_directory_1';
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
@@ -546,9 +684,12 @@ describe('oauth/[provider] return (Account Directory)', () => {
             });
             await vi.waitFor(() => {
                 expect(tree.root.findByProps({
-                    testID: 'oauth-account-directory-stage-saving_credentials',
+                    testID: 'oauth-account-directory-stage-signing_in',
                 })).toBeTruthy();
             });
+            expect(tree.root.findAllByProps({
+                testID: 'oauth-account-directory-stage-saving_credentials',
+            })).toHaveLength(0);
             expect(tree.root.findAllByProps({
                 testID: 'oauth-return-wizard-secondary',
             })).toHaveLength(0);
@@ -569,10 +710,66 @@ describe('oauth/[provider] return (Account Directory)', () => {
         }
     });
 
+    it('keeps Home discovery as one visible stage while preferred enrollment begins', async () => {
+        const now = Date.now();
+        const endpoint = 'https://directory.example.test';
+        const identity = 'srv_directory_1';
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github',
+            flow: 'auth',
+            purpose: 'account_directory',
+            credentialTarget: 'account_directory',
+            endpointUrl: endpoint,
+            endpointServerIdentityId: identity,
+            pending: 'directory-pending',
+            mode: 'keyless',
+        });
+        setPendingAccountDirectoryAuthState({
+            endpoint,
+            serverIdentityId: identity,
+            credentialTarget: 'account_directory',
+            provider: 'github',
+            purpose: 'account_directory',
+            pending: 'directory-pending',
+            createdAt: now - 100,
+            expiresAt: now + 60_000,
+            mode: 'keyless',
+            proof: 'directory-proof',
+            returnTo: '/settings/account',
+        });
+        let resolveEnrollment: ((result: PreferredDirectoryHomeEnrollmentResult) => void) | null = null;
+        enrollPreferredDirectoryHomeSpy.mockImplementationOnce(async () => await new Promise((resolve) => {
+            resolveEnrollment = resolve;
+        }));
+        setRuntimeFetch(vi.fn(async () => new Response(JSON.stringify({ token: 'directory-token' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })) as unknown as typeof fetch);
+
+        const tree = await renderOAuthReturnScreen();
+        try {
+            await vi.waitFor(() => {
+                expect(enrollPreferredDirectoryHomeSpy).toHaveBeenCalled();
+                expect(tree.root.findByProps({
+                    testID: 'oauth-account-directory-stage-finding_homes',
+                    accessibilityLiveRegion: 'polite',
+                })).toBeTruthy();
+            });
+            expect(tree.root.findAllByProps({
+                testID: 'oauth-account-directory-stage-connecting_home',
+            })).toHaveLength(0);
+        } finally {
+            await act(async () => {
+                resolveEnrollment?.({ kind: 'enrolled', homeServerIdentityId: 'home-b' });
+            });
+            act(() => tree.unmount());
+        }
+    });
+
     it('returns successful Account Service sign-in to settings when Home enrollment is unsupported', async () => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
-        const identity = 'directory-1';
+        const identity = 'srv_directory_1';
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
@@ -613,20 +810,108 @@ describe('oauth/[provider] return (Account Directory)', () => {
             headers: { 'Content-Type': 'application/json' },
         })) as unknown as typeof fetch);
 
-        await runWithOAuthScreen(async () => {
-            await flushOAuthEffects(12);
+        let resolveRefresh: ((result: { status: 'ready' }) => void) | null = null;
+        refreshAccountHomeDirectorySpy.mockImplementationOnce(async () => await new Promise((resolve) => {
+            resolveRefresh = resolve;
+        }));
+
+        const tree = await renderOAuthReturnScreen();
+        try {
+            await vi.waitFor(() => {
+                expect(refreshAccountHomeDirectorySpy).toHaveBeenCalled();
+            });
+            replaceSpy.mockClear();
+            await act(async () => {
+                resolveRefresh?.({ status: 'ready' });
+            });
+            await vi.waitFor(() => {
+                expect(replaceSpy).toHaveBeenCalledWith('/settings/account');
+                expect(tree.root.findByProps({
+                    testID: 'oauth-account-directory-stage-finding_homes',
+                })).toBeTruthy();
+                expect(tree.root.findAllByProps({
+                    testID: 'oauth-account-directory-stage-connected',
+                })).toHaveLength(0);
+            });
             expect(accountDirectoryCredentialSetSpy).toHaveBeenCalled();
             expect(refreshAccountHomeDirectorySpy).toHaveBeenCalled();
             expect(enrollPreferredDirectoryHomeSpy).not.toHaveBeenCalled();
-            expect(replaceSpy).toHaveBeenCalledWith('/settings/account');
             expect(modal.alert).not.toHaveBeenCalled();
+        } finally {
+            act(() => tree.unmount());
+        }
+    });
+
+    it('commits the waiting-for-approval status before continuing to Home settings', async () => {
+        const now = Date.now();
+        const endpoint = 'https://directory.example.test';
+        const identity = 'srv_directory_1';
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github',
+            flow: 'auth',
+            purpose: 'account_directory',
+            credentialTarget: 'account_directory',
+            endpointUrl: endpoint,
+            endpointServerIdentityId: identity,
+            pending: 'directory-pending',
+            mode: 'keyless',
         });
+        setPendingAccountDirectoryAuthState({
+            endpoint,
+            serverIdentityId: identity,
+            credentialTarget: 'account_directory',
+            provider: 'github',
+            purpose: 'account_directory',
+            pending: 'directory-pending',
+            createdAt: now - 100,
+            expiresAt: now + 60_000,
+            mode: 'keyless',
+            proof: 'directory-proof',
+            returnTo: '/settings/account',
+        });
+        let resolveEnrollment: ((result: PreferredDirectoryHomeEnrollmentResult) => void) | null = null;
+        enrollPreferredDirectoryHomeSpy.mockImplementationOnce(async () => await new Promise((resolve) => {
+            resolveEnrollment = resolve;
+        }));
+        setRuntimeFetch(vi.fn(async () => new Response(JSON.stringify({ token: 'directory-token' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })) as unknown as typeof fetch);
+
+        const tree = await renderOAuthReturnScreen();
+        try {
+            await vi.waitFor(() => {
+                expect(enrollPreferredDirectoryHomeSpy).toHaveBeenCalled();
+            });
+            replaceSpy.mockClear();
+            await act(async () => {
+                resolveEnrollment?.({
+                    kind: 'approval_required',
+                    homeServerIdentityId: 'home-b',
+                    approvalId: 'approval-1',
+                    expiresAtMs: now + 60_000,
+                    resume: vi.fn(async () => ({ kind: 'cancelled' as const })),
+                    cancel: vi.fn(async () => ({ kind: 'cancelled' as const })),
+                });
+            });
+            await vi.waitFor(() => {
+                expect(replaceSpy).toHaveBeenCalledWith('/settings/server');
+                expect(tree.root.findByProps({
+                    testID: 'oauth-account-directory-stage-finding_homes',
+                })).toBeTruthy();
+                expect(tree.root.findAllByProps({
+                    testID: 'oauth-account-directory-stage-waiting_approval',
+                })).toHaveLength(0);
+            });
+        } finally {
+            act(() => tree.unmount());
+        }
     });
 
     it('does not report Home-added success when preferred Home enrollment fails', async () => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
-        const identity = 'directory-1';
+        const identity = 'srv_directory_1';
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
@@ -673,7 +958,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
     it('cancels only the pending Account Service attempt and reassures that existing Homes stay signed in', async () => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
-        const identity = 'directory-1';
+        const identity = 'srv_directory_1';
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
@@ -734,13 +1019,14 @@ describe('oauth/[provider] return (Account Directory)', () => {
             purpose: 'account_directory',
             credentialTarget: 'account_directory',
             endpointUrl: endpoint,
-            endpointServerIdentityId: 'directory-1',
+            endpointServerIdentityId: 'srv_directory_1',
             pending: 'directory-pending',
             mode: 'keyless',
         });
         setPendingAccountDirectoryAuthState({
             endpoint,
-            serverIdentityId: 'directory-1',
+            serverIdentityId: 'srv_directory_1',
+            credentialTarget: 'account_directory',
             provider: 'github',
             purpose: 'account_directory',
             pending: 'directory-pending',
@@ -751,7 +1037,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
         });
         probeServerFeaturesAtUrlSpy.mockResolvedValue({
             status: 'ready',
-            serverIdentityId: 'directory-2',
+            serverIdentityId: 'srv_directory_2',
             features: { capabilities: { accountDirectory: supportedCapability } },
         });
         const fetchMock = vi.fn(async (
@@ -786,7 +1072,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
     ])('stores the completed credential but starts no Directory work for a %s capability', async (_name, capability) => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
-        const identity = 'directory-1';
+        const identity = 'srv_directory_1';
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
@@ -800,6 +1086,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
         setPendingAccountDirectoryAuthState({
             endpoint,
             serverIdentityId: identity,
+            credentialTarget: 'account_directory',
             provider: 'github',
             purpose: 'account_directory',
             pending: 'directory-pending',
@@ -864,6 +1151,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
         setPendingAccountDirectoryAuthState({
             endpoint,
             serverIdentityId: identity,
+            credentialTarget: 'account_directory',
             provider: 'github',
             purpose: 'account_directory',
             pending: 'directory-pending',
@@ -940,7 +1228,17 @@ describe('oauth/[provider] return (Account Directory)', () => {
                 }
                 const sealedHomeTokenBase64Url = encodeBase64(
                     encryptBox(
-                        new TextEncoder().encode(JSON.stringify({ token: 'home-b-token' })),
+                        new TextEncoder().encode(JSON.stringify({
+                            v: 1,
+                            credentials: { token: 'home-b-token' },
+                            connectionDescriptor: {
+                                v: 1,
+                                homeServerIdentityId: 'srv_home_b',
+                                canonicalServerUrl: 'https://home-b.test',
+                                revision: 1,
+                                endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+                            },
+                        })),
                         decodeBase64(requestedBoxPublicKeyBase64, 'base64'),
                     ),
                     'base64url',
@@ -1033,6 +1331,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
         setPendingAccountDirectoryAuthState({
             endpoint,
             serverIdentityId: directoryIdentity,
+            credentialTarget: 'account_directory',
             provider: 'github',
             purpose: 'account_directory',
             pending: 'directory-pending',
@@ -1121,7 +1420,17 @@ describe('oauth/[provider] return (Account Directory)', () => {
                 }
                 const sealedHomeTokenBase64Url = encodeBase64(
                     encryptBox(
-                        new TextEncoder().encode(JSON.stringify({ token: 'home-b-token' })),
+                        new TextEncoder().encode(JSON.stringify({
+                            v: 1,
+                            credentials: { token: 'home-b-token' },
+                            connectionDescriptor: {
+                                v: 1,
+                                homeServerIdentityId: homeIdentity,
+                                canonicalServerUrl: homeUrl,
+                                revision: 1,
+                                endpoints: [{ kind: 'https', url: homeUrl }],
+                            },
+                        })),
                         decodeBase64(requestedBoxPublicKeyBase64, 'base64'),
                     ),
                     'base64url',
@@ -1172,6 +1481,8 @@ describe('oauth/[provider] return (Account Directory)', () => {
             await act(async () => {
                 retry.props.onPress();
             });
+            await vi.waitFor(() => expect(homeLoginCalls).toBe(2));
+            await vi.waitFor(() => expect(enrollmentOwner.getPendingPreferredHomeEnrollment()).toBeNull());
             await vi.waitFor(() => {
                 expect(credentialStoreSpy).toHaveBeenCalledWith(
                     homeUrl,
@@ -1200,7 +1511,7 @@ describe('oauth/[provider] return (Account Directory)', () => {
     it('uses the existing keyed finalizer when the server selects keyed provisioning for a new Account', async () => {
         const now = Date.now();
         const endpoint = 'https://directory.example.test';
-        const identity = 'directory-1';
+        const identity = 'srv_directory_1';
         localSearchParamsMock.mockReturnValue({
             provider: 'github',
             flow: 'auth',
@@ -1269,13 +1580,14 @@ describe('oauth/[provider] return (Account Directory)', () => {
             purpose: 'account_directory',
             credentialTarget: 'account_directory',
             endpointUrl: endpoint,
-            endpointServerIdentityId: 'directory-1',
+            endpointServerIdentityId: 'srv_directory_1',
             pending: 'directory-pending',
             mode: 'keyless',
         });
         setPendingAccountDirectoryAuthState({
             endpoint,
-            serverIdentityId: 'directory-1',
+            serverIdentityId: 'srv_directory_1',
+            credentialTarget: 'account_directory',
             provider: 'github',
             purpose: 'account_directory',
             pending: 'directory-pending',
@@ -1299,11 +1611,11 @@ describe('oauth/[provider] return (Account Directory)', () => {
     it.each([
         {
             name: 'purpose',
-            callback: { purpose: 'account', endpointServerIdentityId: 'directory-1' },
+            callback: { purpose: 'account', endpointServerIdentityId: 'srv_directory_1' },
         },
         {
             name: 'endpoint identity',
-            callback: { purpose: 'account_directory', endpointServerIdentityId: 'directory-tampered' },
+            callback: { purpose: 'account_directory', endpointServerIdentityId: 'srv_directory_tampered' },
         },
     ])('rejects tampered $name before token exchange or credential storage', async ({ callback }) => {
         const now = Date.now();
@@ -1318,7 +1630,8 @@ describe('oauth/[provider] return (Account Directory)', () => {
         });
         setPendingAccountDirectoryAuthState({
             endpoint,
-            serverIdentityId: 'directory-1',
+            serverIdentityId: 'srv_directory_1',
+            credentialTarget: 'account_directory',
             provider: 'github',
             purpose: 'account_directory',
             pending: 'directory-pending',
@@ -1667,6 +1980,40 @@ describe('oauth/[provider] return (Account Directory)', () => {
             })).toBeTruthy();
             expect(modal.alert).not.toHaveBeenCalled();
             expect(replaceSpy).not.toHaveBeenCalled();
+        } finally {
+            act(() => tree.unmount());
+        }
+    });
+
+    it('surfaces unavailable secure custody without clearing the pending continuation', async () => {
+        localSearchParamsMock.mockReturnValue({
+            provider: 'github',
+            flow: 'auth',
+            purpose: 'account_directory',
+            credentialTarget: 'account_directory',
+            endpointUrl: 'https://directory.example.test',
+            endpointServerIdentityId: 'srv_directory_1',
+            pending: 'directory-pending',
+            mode: 'keyless',
+        });
+        setAccountServiceEndpoint({
+            url: 'https://directory.example.test',
+            serverIdentityId: 'srv_directory_1',
+            source: 'user',
+        });
+        pendingAccountDirectoryAuthGetSpy.mockRejectedValueOnce(
+            new AccountDirectoryStorageReadError('unavailable'),
+        );
+
+        const tree = await renderOAuthReturnScreen();
+        try {
+            await vi.waitFor(() => {
+                expect(tree.root.findByProps({
+                    testID: 'oauth-account-directory-error-credential_storage_failed',
+                })).toBeTruthy();
+            });
+            expect(pendingAccountDirectoryAuthClearSpy).not.toHaveBeenCalled();
+            expect(accountDirectoryCredentialSetSpy).not.toHaveBeenCalled();
         } finally {
             act(() => tree.unmount());
         }

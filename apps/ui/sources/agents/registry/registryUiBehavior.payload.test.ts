@@ -20,10 +20,11 @@ import {
     buildWakeResumeExtras,
     resolveAgentUiBehavior,
 } from './registryUiBehavior';
-import { makeSettings } from './registryUiBehavior.testHelpers';
+import { attachAgentPluginSettings } from './agentUiSettingLookup';
+import { makeSettings as makeHostSettings } from './registryUiBehavior.testHelpers';
 
-function codexRuntimeDescriptor(backendMode: 'acp' | 'appServer') {
-    return { v: 1 as const, agentId: 'codex', agent: { backendMode } };
+function makeSettings(account: Readonly<Record<string, unknown>> = {}) {
+    return attachAgentPluginSettings(makeHostSettings(), { account });
 }
 
 describe('buildSpawnSessionExtrasFromUiState', () => {
@@ -34,7 +35,6 @@ describe('buildSpawnSessionExtrasFromUiState', () => {
             resumeSessionId: '',
             updatedAt: 123,
         })).toEqual({
-            runtimeDescriptorV1: codexRuntimeDescriptor('acp'),
             sessionConfigOptionOverrides: {
                 v: 1,
                 updatedAt: 123,
@@ -60,7 +60,6 @@ describe('buildSpawnSessionExtrasFromUiState', () => {
             resumeSessionId: 'x1',
             updatedAt: 456,
         })).toEqual({
-            runtimeDescriptorV1: codexRuntimeDescriptor('appServer'),
             sessionConfigOptionOverrides: {
                 v: 1,
                 updatedAt: 456,
@@ -78,7 +77,6 @@ describe('buildSpawnSessionExtrasFromUiState', () => {
             resumeSessionId: 'x1',
             updatedAt: 789,
         })).toEqual({
-            runtimeDescriptorV1: codexRuntimeDescriptor('appServer'),
             sessionConfigOptionOverrides: {
                 v: 1,
                 updatedAt: 789,
@@ -99,31 +97,8 @@ describe('buildSpawnSessionExtrasFromUiState', () => {
 });
 
 describe('provider behavior runtime diagnostics', () => {
-    it('exposes Codex app-server transport synthesis through provider behavior', () => {
-        const transportBehavior = (resolveAgentUiBehavior('codex').payload as any)?.buildBackendTransportFields;
-
-        expect(transportBehavior?.({
-            agentId: 'codex',
-            backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
-            providerMode: 'appServer',
-            providerSessionId: 'codex-session-1',
-        })).toEqual({
-            runtimeDescriptorV1: expect.objectContaining({
-                v: 1,
-                agentId: 'codex',
-                agent: expect.objectContaining({
-                    backendMode: 'appServer',
-                    providerSessionId: 'codex-session-1',
-                    agentExtra: expect.objectContaining({
-                        owner: 'codex',
-                        runtimeHandle: expect.objectContaining({
-                            backendMode: 'appServer',
-                            providerSessionId: 'codex-session-1',
-                        }),
-                    }),
-                }),
-            }),
-        });
+    it('does not expose generic Agent runtime-descriptor synthesis', () => {
+        expect(resolveAgentUiBehavior('codex').payload).not.toHaveProperty('buildBackendTransportFields');
     });
 });
 
@@ -132,41 +107,20 @@ beforeEach(() => {
 });
 
 describe('buildResumeSessionExtrasFromUiState', () => {
-    it('passes codex mode through to resume extras', () => {
-        expect(buildResumeSessionExtrasFromUiState({
-            agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'acp' }),
-        })).toEqual({
-            runtimeDescriptorV1: codexRuntimeDescriptor('acp'),
-        });
-
-        expect(buildResumeSessionExtrasFromUiState({
-            agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'mcp' }),
-        })).toEqual({
-            runtimeDescriptorV1: codexRuntimeDescriptor('appServer'),
-        });
-
-        expect(buildResumeSessionExtrasFromUiState({
-            agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'appServer' as any }),
-        })).toEqual({
-            runtimeDescriptorV1: codexRuntimeDescriptor('appServer'),
-        });
-    });
-
-    it('prefers persisted codex backend metadata over account settings when resuming codex sessions', () => {
+    it('does not reconstruct Codex runtime descriptors from settings or persisted metadata', () => {
         expect(buildResumeSessionExtrasFromUiState({
             agentId: 'codex',
             settings: makeSettings({ codexBackendMode: 'acp' }),
             session: {
                 metadata: {
-                    codexBackendMode: 'appServer',
+                    runtimeDescriptorV1: {
+                        v: 1,
+                        agentId: 'codex',
+                        agent: { backendMode: 'appServer', opaqueResumeToken: 'keep-agent-owned' },
+                    },
                 },
             } as any,
-        })).toEqual({
-            runtimeDescriptorV1: codexRuntimeDescriptor('appServer'),
-        });
+        })).toEqual({});
     });
 
     it('does not emit legacy experimentalCodexAcp for codex resume extras', () => {
@@ -183,7 +137,7 @@ describe('buildResumeSessionExtrasFromUiState', () => {
         })).toEqual({});
     });
 
-    it('inherits OpenCode backend mode and server url from session metadata when resuming', () => {
+    it('uses OpenCode settings without interpreting Session runtime descriptors when resuming', () => {
         expect(buildResumeSessionExtrasFromUiState({
             agentId: 'opencode',
             settings: makeSettings({
@@ -199,14 +153,14 @@ describe('buildResumeSessionExtrasFromUiState', () => {
             } as any,
         })).toEqual({
             environmentVariables: {
-                HAPPIER_OPENCODE_BACKEND_MODE: 'server',
-                HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4096/',
+                HAPPIER_OPENCODE_BACKEND_MODE: 'acp',
+                HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4999/',
                 HAPPIER_OPENCODE_SERVER_URL_EXPLICIT: '1',
             },
         });
     });
 
-    it('does not inherit non-explicit OpenCode server affinity from session metadata when resuming', () => {
+    it('ignores non-explicit OpenCode Session affinity when resuming', () => {
         expect(buildResumeSessionExtrasFromUiState({
             agentId: 'opencode',
             settings: makeSettings({
@@ -221,20 +175,14 @@ describe('buildResumeSessionExtrasFromUiState', () => {
             } as any,
         })).toEqual({
             environmentVariables: {
-                HAPPIER_OPENCODE_BACKEND_MODE: 'server',
+                HAPPIER_OPENCODE_BACKEND_MODE: 'acp',
                 HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4999/',
                 HAPPIER_OPENCODE_SERVER_URL_EXPLICIT: '1',
             },
         });
     });
 
-    /**
-     * The canonical `runtimeDescriptorV1` envelope is what the current writer
-     * produces, so it is the authority for a bundled Agent's affinity too. The
-     * flat metadata keys beside it are the released pre-envelope shape and only
-     * answer when the envelope carries nothing for this Agent.
-     */
-    it('prefers the canonical runtime-descriptor envelope over disagreeing legacy OpenCode metadata keys', () => {
+    it('ignores canonical and legacy OpenCode runtime metadata in generic UI resume projection', () => {
         expect(buildResumeSessionExtrasFromUiState({
             agentId: 'opencode',
             settings: makeSettings({}),
@@ -256,14 +204,12 @@ describe('buildResumeSessionExtrasFromUiState', () => {
             } as any,
         })).toEqual({
             environmentVariables: {
-                HAPPIER_OPENCODE_BACKEND_MODE: 'acp',
-                HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4096/',
-                HAPPIER_OPENCODE_SERVER_URL_EXPLICIT: '1',
+                HAPPIER_OPENCODE_BACKEND_MODE: 'server',
             },
         });
     });
 
-    it('still reads the legacy OpenCode metadata keys when the envelope names another Agent', () => {
+    it('also ignores legacy OpenCode metadata when the descriptor names another Agent', () => {
         expect(buildResumeSessionExtrasFromUiState({
             agentId: 'opencode',
             settings: makeSettings({}),
@@ -282,8 +228,6 @@ describe('buildResumeSessionExtrasFromUiState', () => {
         })).toEqual({
             environmentVariables: {
                 HAPPIER_OPENCODE_BACKEND_MODE: 'server',
-                HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4999/',
-                HAPPIER_OPENCODE_SERVER_URL_EXPLICIT: '1',
             },
         });
     });
@@ -291,7 +235,7 @@ describe('buildResumeSessionExtrasFromUiState', () => {
 });
 
 describe('buildWakeResumeExtras', () => {
-    it('passes codex backend mode through for codex wake payloads only', () => {
+    it('does not reconstruct Codex runtime descriptors for wake payloads', () => {
         expect(buildWakeResumeExtras({
             agentId: 'claude',
             resumeCapabilityOptions: { accountSettings: makeSettings({ codexBackendMode: 'acp' }) },
@@ -300,83 +244,22 @@ describe('buildWakeResumeExtras', () => {
         expect(buildWakeResumeExtras({
             agentId: 'codex',
             resumeCapabilityOptions: { accountSettings: makeSettings({ codexBackendMode: 'acp' }) },
-            session: null,
-        })).toEqual({ runtimeDescriptorV1: codexRuntimeDescriptor('acp') });
-        expect(buildWakeResumeExtras({
-            agentId: 'codex',
-            resumeCapabilityOptions: { accountSettings: makeSettings({ codexBackendMode: 'mcp' }) },
-            session: null,
-        })).toEqual({ runtimeDescriptorV1: codexRuntimeDescriptor('appServer') });
-        expect(buildWakeResumeExtras({
-            agentId: 'codex',
-            resumeCapabilityOptions: { accountSettings: makeSettings({ codexBackendMode: 'appServer' as any }) },
-            session: null,
-        })).toEqual({ runtimeDescriptorV1: codexRuntimeDescriptor('appServer') });
-    });
-
-    it('prefers persisted codex backend metadata over account settings for wake resume', () => {
-        expect(buildWakeResumeExtras({
-            agentId: 'codex',
-            resumeCapabilityOptions: { accountSettings: makeSettings({ codexBackendMode: 'acp' }) },
-            session: {
-                metadata: {
-                    codexBackendMode: 'appServer',
-                },
-            } as any,
-        })).toEqual({ runtimeDescriptorV1: codexRuntimeDescriptor('appServer') });
-
-        expect(buildWakeResumeExtras({
-            agentId: 'codex',
-            resumeCapabilityOptions: { accountSettings: makeSettings({ codexBackendMode: 'acp' }) },
             session: {
                 metadata: {
                     runtimeDescriptorV1: {
                         v: 1,
                         agentId: 'codex',
-                        provider: {
+                        agent: {
                             backendMode: 'appServer',
-                            providerSessionId: 'x1',
+                            opaqueResumeToken: 'keep-agent-owned',
                         },
                     },
-                    codexBackendMode: 'acp',
                 },
             } as any,
-        })).toEqual({ runtimeDescriptorV1: codexRuntimeDescriptor('appServer') });
-
-        expect(buildWakeResumeExtras({
-            agentId: 'codex',
-            resumeCapabilityOptions: { accountSettings: makeSettings({ codexBackendMode: 'appServer' as any }) },
-            session: {
-                metadata: {
-                    codexBackendMode: 'acp',
-                },
-            } as any,
-        })).toEqual({ runtimeDescriptorV1: codexRuntimeDescriptor('acp') });
-
-        expect(buildWakeResumeExtras({
-            agentId: 'codex',
-            resumeCapabilityOptions: { accountSettings: makeSettings({ codexBackendMode: 'acp' }) },
-            session: {
-                metadata: {
-                    externalSessionV1: {
-                        v: 1,
-                        agentId: 'codex',
-                        codexBackendMode: 'appServer',
-                    },
-                },
-            } as any,
-        })).toEqual({ runtimeDescriptorV1: codexRuntimeDescriptor('appServer') });
+        })).toEqual({});
     });
 
-    it('does not emit legacy experimentalCodexAcp for codex wake extras', () => {
-        expect(buildWakeResumeExtras({
-            agentId: 'codex',
-            resumeCapabilityOptions: { accountSettings: makeSettings({ codexBackendMode: 'acp' }) },
-            session: null,
-        })).not.toHaveProperty('experimentalCodexAcp');
-    });
-
-    it('adds OpenCode backend mode and server url from session metadata for wake resume', () => {
+    it('uses OpenCode settings without interpreting Session runtime metadata for wake resume', () => {
         expect(buildWakeResumeExtras({
             agentId: 'opencode',
             resumeCapabilityOptions: {
@@ -394,8 +277,8 @@ describe('buildWakeResumeExtras', () => {
             } as any,
         })).toEqual({
             environmentVariables: {
-                HAPPIER_OPENCODE_BACKEND_MODE: 'server',
-                HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4096/',
+                HAPPIER_OPENCODE_BACKEND_MODE: 'acp',
+                HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4999/',
                 HAPPIER_OPENCODE_SERVER_URL_EXPLICIT: '1',
             },
         });
@@ -437,7 +320,7 @@ describe('buildWakeResumeExtras', () => {
         });
     });
 
-    it('prefers OpenCode agentRuntimeDescriptorV1 over legacy metadata for wake resume', () => {
+    it('ignores OpenCode descriptor and legacy metadata when projecting wake environment', () => {
         expect(buildWakeResumeExtras({
             agentId: 'opencode',
             resumeCapabilityOptions: {
@@ -462,9 +345,7 @@ describe('buildWakeResumeExtras', () => {
             } as any,
         })).toEqual({
             environmentVariables: {
-                HAPPIER_OPENCODE_BACKEND_MODE: 'server',
-                HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4096/',
-                HAPPIER_OPENCODE_SERVER_URL_EXPLICIT: '1',
+                HAPPIER_OPENCODE_BACKEND_MODE: 'acp',
             },
         });
     });

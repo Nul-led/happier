@@ -17,6 +17,9 @@ import { automationTriggerSetTranslations } from './automationTriggerSetTranslat
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
+import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { en } from './en';
+import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
 
 const mcpServersUxTranslationExtension = {
   mcpServersConfiguredEmptySubtitle: 'Erstelle einen Server, importiere Host-JSON oder installiere ein empfohlenes Preset.',
@@ -482,6 +485,7 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
  * - New translation keys must be added to ALL language files
  */
 export const de: TranslationStructure = {
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.de, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.de.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: 'Vorgemerkten Upload abschließen',
@@ -1575,20 +1579,11 @@ export const de: TranslationStructure = {
         title: 'Verbindung',
         labels: {
             server: 'Server',
-            transport: 'Transport',
-            connectionMode: 'Verbindungsmodus',
             socket: 'Socket',
             authenticated: 'Authentifiziert',
             lastSync: 'Letzte Synchronisierung',
             nextRetry: 'Nächster Versuch',
             lastError: 'Letzter Fehler',
-        },
-        transport: {
-            standard: 'Standardverbindung',
-            direct: 'Direkt',
-            secureRelay: 'Sicheres Relay',
-            directOnly: 'Nur direkte Verbindungen',
-            automatic: 'Automatisch: Direkt + sicheres Relay',
         },
     },
 
@@ -1642,17 +1637,16 @@ export const de: TranslationStructure = {
         serverUrlNotEmbeddedTitle: 'Server deines Telefons einrichten',
         serverUrlNotEmbeddedBody:
             'Dieser QR-Code kann die Serveradresse nicht enthalten, weil sie auf localhost steht. Geh auf deinem Telefon zu Einstellungen → Server und füge eine URL hinzu, die dein Telefon erreicht (LAN-IP oder Tailscale), und scanne dann erneut.',
-        pairingRequestTitle: 'Kopplungsanfrage',
-        pairingRequestBody: 'Prüfe, ob dieser Code mit dem auf deinem Telefon übereinstimmt, und gib ihn dann frei.',
         pairingAlreadyRequestedTitle: 'Code bereits verwendet',
         pairingAlreadyRequestedBody:
             'Dieser QR-Code wurde schon auf einem anderen Telefon gescannt. Lass den Computer einen neuen erzeugen.',
         deviceLabel: 'Gerät',
         requestKeyFingerprintLabel: 'Anfrageschlüssel-Fingerabdruck',
-        confirmCodeLabel: 'Bestätigungscode',
         expiresAtLabel: 'Läuft ab',
-        confirmCodeComparisonBody: 'Vergewissere dich, dass dieser Code auf beiden Geräten übereinstimmt.',
         showPairingLink: 'Kopplungslink anzeigen',
+        pairingLinkSecurityWarning: 'Jeder mit diesem temporären Link kann vor Ablauf ein Gerät hinzufügen. Teile ihn nur mit deinem eigenen Gerät.',
+        pairingQrTooLargeTitle: 'Zu groß für einen QR-Code',
+        pairingQrTooLargeBody: 'Diese Einladung enthält zusätzliche Verbindungsdetails und kann nicht als QR-Code angezeigt werden. Dein Home ist weiterhin bereit zum Koppeln – nutze unten den sicheren Link.',
         homeAddedPreservedFocusBody: 'Dieses Home wurde hinzugefügt. Dein fokussiertes Home bleibt unverändert.',
         requestingDeviceLabel: 'Anfragendes Gerät',
         thisDevice: 'Dieses Gerät',
@@ -1667,7 +1661,6 @@ export const de: TranslationStructure = {
         unsupportedEnrollmentResponseBody: 'Dieses Home hat eine Antwort gesendet, die diese Happier-Version nicht verwenden kann. Aktualisiere Happier oder scanne ein anderes Home.',
         updateRequiredTitle: 'Aktualisierung erforderlich',
         updateRequiredBody: 'Dieses Home verwendet ein älteres Kopplungsformat, das nicht sicher angenommen werden kann. Aktualisiere Happier auf beiden Geräten und versuche es erneut.',
-        approveButton: 'Freigeben',
         generateNewQrCode: 'Neuen QR-Code erzeugen',
         pairingQrExpired: 'Dieser QR-Code ist abgelaufen. Erzeuge einen neuen.',
         openMachine: 'Rechner öffnen',
@@ -2762,7 +2755,7 @@ export const de: TranslationStructure = {
             lastSync: 'Letzte Synchronisierung',
         },
         server: {
-            activeServer: 'Aktives Relay',
+            activeServer: 'Aktives Home',
         },
         identity: {
             accountId: 'Konto-ID',
@@ -2818,7 +2811,7 @@ export const de: TranslationStructure = {
             findings: 'Befunde',
         },
         overview: {
-            activeServer: 'Aktives Relay',
+            activeServer: 'Aktives Home',
             account: 'Konto',
             onlineMachines: 'Online-Rechner (aktiver Server)',
             cachedAttribution: ({ count }: { count: number }) => `${count} zwischengespeicherte Doctor-Snapshots verfügbar`,
@@ -6004,6 +5997,11 @@ export const de: TranslationStructure = {
             planned: 'Geplant',
             transferred: 'Übertragen',
             remaining: 'Verbleibend',
+            primary: {
+                preparing: 'Vorbereitung',
+                moving: 'Verschieben',
+                ready: 'Bereit',
+            },
             timeline: {
                 scanSource: 'Quelle scannen',
                 plan: 'Änderungen planen',
@@ -7020,7 +7018,7 @@ export const de: TranslationStructure = {
         serverConfiguration: 'Relay-Einstellungen',
         enterServerUrl: 'Gib eine Relay-URL ein',
         notValidHappyServer: 'Kein gültiges Happier-Relay',
-        changeServer: 'Relay wechseln',
+        changeServer: 'Home wechseln',
         continueWithServer: 'Mit diesem Relay weitermachen?',
         resetToDefault: 'Auf Standard zurücksetzen',
         resetServerDefault: 'Relay auf Standard zurücksetzen?',
@@ -7040,7 +7038,7 @@ export const de: TranslationStructure = {
         serverNamePlaceholder: 'Relay-Name',
         cannotRenameCloud: 'Das Cloud-Relay lässt sich nicht umbenennen.',
         removeServer: 'Relay entfernen',
-        removeServerConfirm: ({ name }: { name: string }) => `Entferne "${name}" aus den gespeicherten Relays entfernen?`,
+        removeServerConfirm: ({ name }: { name: string }) => `„${name}“ von diesem Gerät entfernen? Dadurch werden die auf diesem Gerät gespeicherten Zugangsdaten dieses Homes gelöscht.`,
         removeServerGroup: 'Relay-Gruppe entfernen',
         removeServerGroupConfirm: ({ name }: { name: string }) => `Entferne "${name}" aus den gespeicherten Relay-Gruppen entfernen?`,
         cannotRemoveCloud: 'Das Cloud-Relay lässt sich nicht entfernen.',
@@ -7057,18 +7055,14 @@ export const de: TranslationStructure = {
         switchForThisTab: 'Für diesen Tab wechseln',
         makeDefaultOnDevice: 'Auf diesem Gerät zum Standard machen',
         serverNameLabel: 'Relay-Name',
-        addAndUse: 'Hinzufügen und nutzen',
         addTargetsTitle: 'Hinzufügen',
-        addServerSubtitle: 'Ein neues Relay hinzufügen und dorthin wechseln',
+        addServerSubtitle: 'Ein neues Relay hinzufügen',
         notificationAddServerHint: 'Dieses Relay ist auf diesem Gerät noch nicht gespeichert. Füg es unten hinzu, um weiterzumachen.',
         serverCount: ({ count }: { count: number }) => `${count} ${plural({ count, singular: 'Relay', plural: 'Relays' })}`,
         useCanonicalServerUrlTitle: 'Kanonische Relay-URL nutzen?',
         useCanonicalServerUrlBody: 'Dieses Relay gibt eine kanonische URL an, die auch von anderen Geräten funktionieren sollte. Statt der eingegebenen nutzen?',
         insecureHttpUrlTitle: 'Unsichere Relay-URL',
         insecureHttpUrlBody: 'Diese URL nutzt http:// und funktioniert womöglich nicht von deinem Telefon oder außerhalb deines LAN. Nutze nach Möglichkeit HTTPS. Trotzdem weitermachen?',
-        signedOutSwitchConfirmTitle: 'Du bist nicht verbunden',
-        signedOutSwitchConfirmBody:
-            'Zu diesem Relay wechseln und zum Startbildschirm gehen, um dich anzumelden oder ein Konto anzulegen?',
         addServerGroupTitle: 'Relay-Gruppe hinzufügen',
         addServerGroupSubtitle: 'Eine wiederverwendbare Gruppe von Relays erstellen',
         serverGroupNameLabel: 'Gruppenname',
@@ -7132,8 +7126,6 @@ export const de: TranslationStructure = {
         multiServerView: {
             title: 'Gleichzeitige Ansicht mehrerer Relays',
             footer: 'Lege fest, ob mehrere Relays in einer Session-Liste zusammengeführt werden.',
-            enableTitle: 'Gleichzeitige Ansicht aktivieren',
-            enableSubtitle: 'Sessions der gewählten Relays gemeinsam zeigen',
             presentationTitle: 'Darstellung',
             presentation: {
                 flatWithBadges: 'Flache Liste mit Relay-Badges',
@@ -9472,10 +9464,6 @@ export const de: TranslationStructure = {
                     title: 'Profil',
                     subtitle: 'Die Wahl eines Profils per ID erlauben, ohne Profil-Secrets offenzulegen.',
                 },
-                allowEnvironmentVariables: {
-                    title: 'Umgebungsvariablen',
-                    subtitle: 'Ausdrückliche Umgebungsvariablen für neue Sessions erlauben.',
-                },
                 allowConnectedServicesOverride: {
                     title: 'Verbundene Dienste',
                     subtitle: 'Die Wahl von Bindings verbundener Dienste per Referenz erlauben.',
@@ -11660,6 +11648,8 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: 'Link a Home to this Account Service, then refresh.',
         accountServiceConnectHome: 'Connect Home',
+        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHomeDescription: 'Let {accountService} help your other devices find this Home and request access.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
         accountServiceHomeApprovalRequired: 'Approval needed',
@@ -13930,24 +13920,10 @@ settingsSession: {
     personalHome: {
         bootstrap: {
             title: 'Dein persönliches Zuhause wird vorbereitet',
-            preparingHomeStatus: 'Dein lokales Zuhause wird eingerichtet.',
-            connectingAppStatus: 'Happier wird mit deinem Zuhause verbunden.',
-            closingSignupStatus: 'Dein Zuhause wird abgesichert, bevor es verfügbar ist.',
+            ensuringHomeStatus: 'Dein lokales Zuhause wird eingerichtet.',
             preparingComputerStatus: 'Dein Zuhause ist bereit. Dieser Computer wird im Hintergrund vorbereitet.',
             blockedStatus: 'Die Einrichtung benötigt deine Aufmerksamkeit, bevor wir fortfahren können.',
             readyStatus: 'Dein Zuhause ist bereit.',
-            preparingHomeTitle: 'Dein Zuhause wird vorbereitet',
-            preparingHomeDetail: 'Dieser Computer wird für deine lokale Arbeit vorbereitet.',
-            connectingAppTitle: 'Happier wird verbunden',
-            connectingAppDetail: 'Happier wird sicher mit deinem Zuhause verbunden.',
-            preparingComputerTitle: 'Dieser Computer wird vorbereitet',
-            preparingComputerDetail: 'Der Hintergrunddienst wird eingerichtet, damit Sessions weiterlaufen können.',
-            pending: 'Wartet',
-            active: 'In Arbeit',
-            complete: 'Abgeschlossen',
-            blocked: 'Aufmerksamkeit erforderlich',
-            progressLabel: 'Fortschritt bei der Einrichtung des persönlichen Zuhauses',
-            rowAccessibilityLabel: ({ title, status, detail }: { title: string; status: string; detail: string }) => `${title}. ${status}. ${detail}`,
             failureBody: 'Dieser Schritt konnte nicht abgeschlossen werden. Deine bereits abgeschlossene Einrichtung ist sicher. Versuch es erneut oder öffne die Details.',
             profileRecoveryBody: 'Dein persönliches Zuhause ist bereit. Happier muss die Verbindung noch fertigstellen.',
             computerRecoveryBody: 'Dein persönliches Zuhause ist bereit. Die Agent-Einrichtung benötigt Aufmerksamkeit.',

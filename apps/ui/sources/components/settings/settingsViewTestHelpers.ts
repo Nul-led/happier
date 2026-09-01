@@ -142,8 +142,11 @@ export function installSettingsViewCommonModuleMocks(
     });
 
     vi.mock('@/hooks/auth/useScannedAuthUrlProcessor', () => ({
-        useScannedAuthUrlProcessor: () => ({
-            processAuthUrl: settingsViewModuleState.scanProcessAuthUrlSpy,
+        useScannedAuthUrlProcessor: (processorOptions: { allowedUrlKind: 'account' | 'terminal' }) => ({
+            processAuthUrl: async (url: string) => {
+                if (processorOptions.allowedUrlKind !== 'terminal') return false;
+                return await settingsViewModuleState.scanProcessAuthUrlSpy(url);
+            },
             isLoading: false,
         }),
     }));

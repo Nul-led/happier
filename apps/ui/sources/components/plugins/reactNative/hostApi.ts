@@ -53,6 +53,7 @@ import {
     OpenableContentReadResultV1Schema,
     OpenableContentStatResultV1Schema,
 } from '@happier-dev/protocol';
+import { qualifyPluginContributionReferenceV1 } from '@happier-dev/protocol/plugins/contribution-identity';
 import type {
     PluginUiHostApi,
     PluginUiActionExecutionOptions,
@@ -83,7 +84,6 @@ import {
 } from '../surfaces/createPluginSurfaceHostApi';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
 import { decodeBase64 } from '@/encryption/base64';
-import { qualifyPluginContributionReference } from '@/components/plugins/qualifyPluginContributionReference';
 
 export type PluginReactNativeHostApiRequestHandler = (
     request: PluginUiHostApiRequestEnvelopeV1,
@@ -1266,7 +1266,7 @@ export function createCanonicalPluginReactNativeHostApiAdapter(params: Readonly<
             assertActive(options?.signal);
             assertInstalled('openSurface');
             await transport.request('openSurface', {
-                destination: qualifyPluginContributionReference(
+                destination: qualifyPluginContributionReferenceV1(
                     destination,
                     params.requestSurface.pluginId,
                 ),

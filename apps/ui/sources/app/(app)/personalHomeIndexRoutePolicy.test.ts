@@ -25,8 +25,12 @@ describe('shouldKeepDesktopPersonalHomeShell', () => {
             isDesktopMainWindow: true,
             explicitlySelectedOtherHome: false,
             completedPersonalHomeProfile: null,
-            candidateLocalProfile: null,
+            candidateLocalProfile: {
+                id: 'local', name: 'Personal Home', serverUrl: 'http://127.0.0.1:43123',
+                serverIdentityId: 'srv_personal_home', createdAt: 1, updatedAt: 1, lastUsedAt: 1,
+            },
             relayRuntime: {
+                relayUrl: 'http://127.0.0.1:43123',
                 installed: true,
                 healthy: true,
                 status: 'healthy',

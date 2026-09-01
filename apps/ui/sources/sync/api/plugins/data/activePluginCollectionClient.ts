@@ -904,13 +904,15 @@ export function createActivePluginCollectionClient<
         options?: ActivePluginCollectionOperationOptionsV1,
     ): Promise<ActivePluginCollectionForgetOutcomeV1> => {
         // The freshness epoch is Collection-wide, so an unrelated concurrent
-        // forget can legitimately invalidate it. Retry only that typed race;
-        // an exact live revision remains a real conflict and all transport or
-        // currentness failures retain their normal outcome.
+        // forget can legitimately invalidate it. Retry only that typed race.
+        // An exact live revision is the retention-only atomic retire arm;
+        // a newer revision remains an immediate conflict.
         for (;;) {
             const current = await get(rowId, options);
             if (current.status !== 'ready') return current;
-            if (current.row?.revision === expectedRevision) return { status: 'conflict' };
+            if (current.row !== null && current.row.revision !== expectedRevision) {
+                return { status: 'conflict' };
+            }
             const prepared = await prepareCollectionOperation(options, params.accountLifetime);
             if (prepared.status === 'unavailable') return prepared;
             try {

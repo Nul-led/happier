@@ -76,7 +76,6 @@ export const ACCOUNT_WORKFLOW_SETTING_ANALYTICS = defineAccountSettingAnalytics(
         identityScope: 'person',
         serializeCurrentProperties: (value: z.infer<typeof SessionHandoffDefaultsV1Schema>) => ({
             workspaceSyncMode: value.workspaceSyncMode,
-            workspaceSyncRelationshipConfigured: Boolean(value.workspaceSyncRelationshipId),
             includeIgnoredMode: value.includeIgnoredMode,
             directTargetMode: value.directTargetMode,
         }),

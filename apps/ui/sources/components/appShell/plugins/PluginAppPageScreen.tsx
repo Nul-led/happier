@@ -141,14 +141,14 @@ export function PluginAppPageScreen(props: Readonly<{
         isCurrent: () => pageIsMountedRef.current && accountLifetime?.isCurrent() !== false,
     }), [accountLifetime, props.localId, props.pluginId, router]);
     React.useEffect(() => () => locationOwner.dispose(), [locationOwner]);
-    // A location this owner did not settle on — a push, a deep link, or the
-    // user's own history walk — retires the declared step, so Back can never
-    // fire against a location it was not declared for.
-    React.useEffect(() => {
-        locationOwner.retireForeignLocationChange(props.subPath);
-    }, [locationOwner, props.subPath]);
-
     const pageIsLive = props.subPath !== null && !!page && page.disabledReason === null;
+    // A location this owner did not settle on — a push, a deep link, or the
+    // user's own history walk — retires the declared step. Losing the live
+    // page does the same even if its route sub-path has not moved; otherwise a
+    // later renderer could inherit a Back step declared by a retired one.
+    React.useEffect(() => {
+        locationOwner.retireForeignLocationChange(pageIsLive ? props.subPath : null);
+    }, [locationOwner, pageIsLive, props.subPath]);
     // Registered through the app's ONE native-Back layer owner for the whole
     // focused lifetime of a live page, rather than only while a step is
     // declared. React Native dispatches Back in REVERSE registration order, so

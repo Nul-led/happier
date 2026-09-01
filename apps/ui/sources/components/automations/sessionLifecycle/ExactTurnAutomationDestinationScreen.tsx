@@ -15,6 +15,7 @@ import { sync } from '@/sync/sync';
 import { t } from '@/text';
 import { navigateWithBlurOnWeb } from '@/utils/platform/deferOnWeb';
 import { useAutomationDefinitionPagination } from '@/components/automations/list/useAutomationDefinitionPagination';
+import { useResolveExistingSessionAutomationDetails } from '@/components/automations/list/useResolveExistingSessionAutomationDetails';
 
 import {
     areExactTurnAutomationPrefillsEqual,
@@ -50,7 +51,7 @@ export function ExactTurnAutomationDestinationScreen(props: Readonly<{
     supportRef.current = support.enabled;
     const automations = useAutomations();
     const pagination = useAutomationDefinitionPagination();
-    const [loading, setLoading] = React.useState(false);
+    const [loading, setLoading] = React.useState(true);
     const [refreshFailed, setRefreshFailed] = React.useState(false);
     const [refreshGeneration, setRefreshGeneration] = React.useState(0);
     const current = readExactActiveParentTurn(sourceSession);
@@ -85,6 +86,11 @@ export function ExactTurnAutomationDestinationScreen(props: Readonly<{
         props.observed.sourceSessionId,
         support.enabled,
     ]);
+    const directDetailResolution = useResolveExistingSessionAutomationDetails({
+        automations,
+        accountScopeKey: accountScopeKey ?? 'unscoped',
+        enabled: Boolean(authority) && observedIsCurrent && !loading && !refreshFailed,
+    });
 
     React.useEffect(() => {
         if (!authority) return;
@@ -167,7 +173,7 @@ export function ExactTurnAutomationDestinationScreen(props: Readonly<{
         );
     }
 
-    if (loading) {
+    if (loading || directDetailResolution.resolving) {
         return (
             <SurfaceStateCard
                 kind="loading"
@@ -177,14 +183,20 @@ export function ExactTurnAutomationDestinationScreen(props: Readonly<{
         );
     }
 
-    if (refreshFailed) {
+    if (refreshFailed || directDetailResolution.hasFailure) {
         return (
             <SurfaceStateCard
                 testID="exact-turn-automation-refresh-failed"
                 kind="warning"
                 title={t('common.error')}
                 reason={t('automations.exactTurn.unavailable')}
-                action={{ label: t('common.retry'), onPress: () => setRefreshGeneration((value) => value + 1) }}
+                action={{
+                    label: t('common.retry'),
+                    onPress: () => {
+                        directDetailResolution.retry();
+                        setRefreshGeneration((value) => value + 1);
+                    },
+                }}
                 accessibilitySemantics="alert"
             />
         );
@@ -221,6 +233,7 @@ export function ExactTurnAutomationDestinationScreen(props: Readonly<{
                 onEndReached: pagination.requestPage,
                 onRetry: pagination.requestPage,
                 loadingLabel: t('common.loading'),
+                moreLabel: t('common.more'),
                 retryLabel: t('common.retry'),
                 endReachedLabel: t('common.done'),
             }}

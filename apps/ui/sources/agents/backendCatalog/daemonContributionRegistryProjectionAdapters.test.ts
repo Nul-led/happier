@@ -6,10 +6,58 @@ import { createProjectedAgentLocalAuthPlugin } from '@/agents/catalog/localAuth/
 import {
     adaptDaemonContributionRegistryProjectionToMergedProjectionInputs,
     mapV2EditableSettingsGroup,
+    resolvePluginProjectionEditableSettingsGroup,
     type DaemonContributionRegistryProjectionV1Like,
 } from './daemonContributionRegistryProjectionAdapters';
 
 describe('daemon contribution registry projection adapters', () => {
+    it('resolves every localized Settings label through the shared plugin text owner', () => {
+        const settings: PluginProjectedSettingsV2 = {
+            id: 'acme.review.settings',
+            pluginId: 'acme.review',
+            version: 1,
+            title: { key: 'settings.title', fallback: 'Review settings' },
+            description: { key: 'settings.description', fallback: 'Configure review' },
+            scope: { kind: 'account' },
+            presentation: { sections: [], subagentSections: [] },
+            target: { kind: 'plugin' },
+            fields: [{
+                id: 'enabled',
+                kind: 'settings.field',
+                version: '1.0.0',
+                valueSchema: { type: 'boolean' },
+                valueType: 'boolean',
+                control: 'switch',
+                secretCustody: null,
+                displayKey: { key: 'settings.enabled', fallback: 'Enabled' },
+                descriptionKey: { key: 'settings.enabled.description', fallback: 'Use review' },
+                redaction: 'none',
+                clearWhenEmpty: 'persist',
+                capabilityGates: [],
+                permissionGates: [],
+            }],
+        };
+        const seen: unknown[] = [];
+
+        const resolved = resolvePluginProjectionEditableSettingsGroup(
+            mapV2EditableSettingsGroup(settings),
+            (pluginId, value) => {
+                seen.push([pluginId, value]);
+                return typeof value === 'string' ? value : `localized:${value.key}`;
+            },
+        );
+
+        expect(resolved).toMatchObject({
+            title: 'localized:settings.title',
+            description: 'localized:settings.description',
+            fields: [{
+                title: 'localized:settings.enabled',
+                subtitle: 'localized:settings.enabled.description',
+            }],
+        });
+        expect(seen).toHaveLength(4);
+    });
+
     it('preserves projected secret custody for the Settings presentation dispatcher', () => {
         const settings: PluginProjectedSettingsV2 = {
             id: 'acme.review.settings',

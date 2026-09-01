@@ -21,6 +21,9 @@ import { automationTriggerSetTranslations } from './automationTriggerSetTranslat
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
+import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { en } from './en';
+import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
 
 /**
  * Chinese (Simplified) translations for the Happier app
@@ -522,6 +525,11 @@ const sessionHandoffTranslationExtensions = {
       planned: '已计划',
       transferred: '已传输',
       remaining: '剩余',
+      primary: {
+        preparing: '准备中',
+        moving: '移动中',
+        ready: '已就绪',
+      },
       timeline: {
         scanSource: '扫描源',
         plan: '规划更改',
@@ -616,6 +624,7 @@ function plural({
 }
 
 export const zhHans = {
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations['zh-Hans'], resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations['zh-Hans'].resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: '完成暂存上传',
@@ -1559,20 +1568,11 @@ export const zhHans = {
     title: "连接",
     labels: {
       server: "服务器",
-      transport: "传输方式",
-      connectionMode: "连接模式",
       socket: "套接字",
       authenticated: "已认证",
       lastSync: "上次同步",
       nextRetry: "下次重试",
       lastError: "上次错误",
-    },
-    transport: {
-      standard: "标准连接",
-      direct: "直连",
-      secureRelay: "安全中继",
-      directOnly: "仅直连",
-      automatic: "自动：直连 + 安全中继",
     },
   },
 
@@ -1616,17 +1616,16 @@ export const zhHans = {
     serverUrlNotEmbeddedTitle: "在手机上设置服务器",
     serverUrlNotEmbeddedBody:
       "此二维码无法包含服务器地址，因为服务器被设置为 localhost。请在手机上前往 设置 → 服务器，添加一个手机可访问的 URL（例如局域网 IP 或 Tailscale URL），然后再扫描一次。",
-    pairingRequestTitle: "配对请求",
-    pairingRequestBody: "确认该验证码与手机上显示的一致，然后批准。",
     pairingAlreadyRequestedTitle: "二维码已被使用",
     pairingAlreadyRequestedBody:
       "此二维码已在另一部手机上扫描。请在电脑上生成新的二维码。",
     deviceLabel: "设备",
     requestKeyFingerprintLabel: "请求密钥指纹",
-    confirmCodeLabel: "确认码",
     expiresAtLabel: "过期时间",
-    confirmCodeComparisonBody: "请确认两台设备上显示的代码一致。",
     showPairingLink: "显示配对链接",
+    pairingLinkSecurityWarning: "任何拥有此临时链接的人都可以在链接过期前添加设备。请只与您自己的设备共享。",
+    pairingQrTooLargeTitle: "内容过长，无法显示为二维码",
+    pairingQrTooLargeBody: "此邀请包含额外的连接信息，无法以二维码显示。您的 Home 仍可继续配对——请改用下方的安全链接。",
     homeAddedPreservedFocusBody: "已添加此 Home。当前选中的 Home 未发生变化。",
     requestingDeviceLabel: "请求设备",
     thisDevice: "此设备",
@@ -1641,7 +1640,6 @@ export const zhHans = {
     unsupportedEnrollmentResponseBody: "此 Home 返回了当前版本 Happier 无法使用的响应。请更新 Happier 或扫描其他 Home。",
     updateRequiredTitle: "需要更新",
     updateRequiredBody: "此 Home 使用了无法安全接受的旧配对格式。请在两台设备上更新 Happier 后重试。",
-    approveButton: "批准",
     generateNewQrCode: "生成新的二维码",
     pairingQrExpired: "此二维码已过期。请生成新的二维码。",
     openMachine: "打开机器",
@@ -2759,7 +2757,7 @@ export const zhHans = {
       lastSync: "最近同步",
     },
     server: {
-      activeServer: "当前 Relay",
+      activeServer: "当前 Home",
     },
     identity: {
       accountId: "账号 ID",
@@ -2815,7 +2813,7 @@ export const zhHans = {
       findings: "发现的问题",
     },
     overview: {
-      activeServer: "当前 Relay",
+      activeServer: "当前 Home",
       account: "账号",
       onlineMachines: "在线机器（当前服务器）",
       cachedAttribution: ({ count }: { count: number }) => `可用缓存 doctor snapshot：${count} 个`,
@@ -6534,7 +6532,7 @@ export const zhHans = {
     serverConfiguration: "Relay 设置",
     enterServerUrl: "请输入 Relay URL",
     notValidHappyServer: "不是有效的 Happier Relay",
-    changeServer: "更改 Relay",
+    changeServer: "更改 Home",
     continueWithServer: "继续使用此 Relay？",
     resetToDefault: "重置为默认",
     resetServerDefault: "重置 Relay 为默认值？",
@@ -6557,7 +6555,7 @@ export const zhHans = {
     cannotRenameCloud: "无法重命名云 Relay。",
     removeServer: "移除 Relay",
     removeServerConfirm: ({ name }: { name: string }) =>
-      `从已保存的 Relay 中移除“${name}”？`,
+      `从此设备移除“${name}”？这会删除此设备上为该 Home 保存的凭据。`,
     removeServerGroup: "移除 Relay 组",
     removeServerGroupConfirm: ({ name }: { name: string }) =>
       `从已保存的 Relay 组中移除“${name}”？`,
@@ -6576,9 +6574,8 @@ export const zhHans = {
     switchForThisTab: "仅为此标签页切换",
     makeDefaultOnDevice: "设为此设备默认",
     serverNameLabel: "Relay 名称",
-    addAndUse: "添加并使用",
     addTargetsTitle: "添加",
-    addServerSubtitle: "添加新 Relay 并切换到它",
+    addServerSubtitle: "添加新 Relay",
     notificationAddServerHint: "此 Relay 尚未在此设备上保存。请在下方添加以继续。",
     serverCount: ({ count }: { count: number }) => `${count} 个 Relay`,
     useCanonicalServerUrlTitle: "使用 Relay 的规范 URL？",
@@ -6587,9 +6584,6 @@ export const zhHans = {
     insecureHttpUrlTitle: "不安全的 Relay URL",
     insecureHttpUrlBody:
       "此 URL 使用 http://，可能无法在手机或局域网外正常工作。建议尽量使用 HTTPS。仍要继续吗？",
-    signedOutSwitchConfirmTitle: "未连接",
-    signedOutSwitchConfirmBody:
-      "切换到此 Relay 并返回主页，以便登录或创建账户？",
     addServerGroupTitle: "添加 Relay 组",
     addServerGroupSubtitle: "创建可复用的 Relay 组",
     serverGroupNameLabel: "组名称",
@@ -6650,8 +6644,6 @@ export const zhHans = {
     multiServerView: {
       title: "多 Relay 并行视图",
       footer: "选择是否将多个 Relay 合并到一个会话列表中显示。",
-      enableTitle: "启用并行视图",
-      enableSubtitle: "将所选 Relay 的会话合并显示",
       presentationTitle: "展示模式",
       presentation: {
         flatWithBadges: "扁平列表（带 Relay 徽标）",
@@ -9067,7 +9059,6 @@ export const zhHans = {
                 allowAgentModeOverride: { title: "代理模式", subtitle: "允许选择代理或会话模式。" },
                 allowConfigOptionOverrides: { title: "配置选项", subtitle: "允许思考强度和 workflow 等提供方选项。" },
                 allowProfileOverride: { title: "配置档", subtitle: "允许按 id 选择配置档，且不暴露秘密。" },
-                allowEnvironmentVariables: { title: "环境变量", subtitle: "允许在新会话中显式设置环境变量。" },
                 allowConnectedServicesOverride: { title: "已连接服务", subtitle: "允许按引用选择已连接服务绑定。" },
                 allowMcpSelectionOverride: { title: "MCP 选择", subtitle: "允许覆盖继承的 MCP 服务器选择。" },
                 allowTranscriptStorageOverride: { title: "转录存储", subtitle: "允许选择兼容的转录存储模式。" },
@@ -10961,6 +10952,8 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: 'Link a Home to this Account Service, then refresh.',
         accountServiceConnectHome: 'Connect Home',
+        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHomeDescription: 'Let {accountService} help your other devices find this Home and request access.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
         accountServiceHomeApprovalRequired: 'Approval needed',
@@ -13118,24 +13111,10 @@ settingsSession: {
     personalHome: {
         bootstrap: {
             title: '正在准备你的个人之家',
-            preparingHomeStatus: '正在准备你的本地之家。',
-            connectingAppStatus: '正在将 Happier 连接到你的之家。',
-            closingSignupStatus: '正在保护你的之家，完成后即可使用。',
+            ensuringHomeStatus: '正在准备你的本地之家。',
             preparingComputerStatus: '你的之家已准备就绪。正在后台准备此计算机。',
             blockedStatus: '继续之前，设置需要你处理。',
             readyStatus: '你的之家已准备就绪。',
-            preparingHomeTitle: '正在准备你的之家',
-            preparingHomeDetail: '正在准备此计算机以供本地工作使用。',
-            connectingAppTitle: '正在连接 Happier',
-            connectingAppDetail: '正在将 Happier 安全地连接到你的之家。',
-            preparingComputerTitle: '正在准备此计算机',
-            preparingComputerDetail: '正在设置后台服务，以便会话可以继续运行。',
-            pending: '等待中',
-            active: '进行中',
-            complete: '已完成',
-            blocked: '需要处理',
-            progressLabel: '个人之家设置进度',
-            rowAccessibilityLabel: ({ title, status, detail }: { title: string; status: string; detail: string }) => `${title}。${status}。${detail}`,
             failureBody: '无法完成此步骤。已完成的设置内容不会丢失；请重试或打开详情。',
             profileRecoveryBody: '你的个人之家已准备就绪。Happier 仍需完成与它的连接。',
             computerRecoveryBody: '你的个人之家已准备就绪。Agent 设置需要处理。',

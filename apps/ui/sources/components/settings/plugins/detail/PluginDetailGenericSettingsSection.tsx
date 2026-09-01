@@ -8,10 +8,14 @@ import { readManagedServiceEndpointUrl } from '@happier-dev/protocol';
 import type { PluginPortableReleaseManifestV1 } from '@happier-dev/protocol/plugins/availability';
 
 import type {
-    PluginProjectionEditableSettingField,
-    PluginProjectionEditableSettingsGroup,
     PluginProjectionEntry,
 } from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
+import {
+    resolvePluginProjectionEditableSettingsGroup,
+    type ResolvedPluginProjectionEditableSettingField as PluginProjectionEditableSettingField,
+    type ResolvedPluginProjectionEditableSettingsGroup as PluginProjectionEditableSettingsGroup,
+} from '@/agents/backendCatalog/daemonContributionRegistryProjectionAdapters';
+import { useProjectedPluginLocalizedTextResolver } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { SavedSecretPickerModal } from '@/components/ui/forms/valueRefs/SavedSecretPickerModal';
 import { Switch } from '@/components/ui/forms/Switch';
@@ -223,6 +227,18 @@ export function PluginSettingTextField(props: Readonly<{
     const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
     const testID = `settings.plugins.detail.${props.pluginId}.settings.${props.group.id}.${props.field.key}.input`;
     const saveLabel = t(props.saveFailed ? 'common.retry' : 'common.save');
+    const confirmDelete = async (): Promise<void> => {
+        if (!props.onDelete) return;
+        const scope = props.group.scope.kind === 'account' ? 'Account' : 'Machine';
+        const confirmed = await Modal.confirm(
+            t('secrets.prompts.deleteTitle'),
+            t('secrets.prompts.deleteConfirm', {
+                name: `${props.pluginId} · ${props.field.title} · ${scope}`,
+            }),
+            { destructive: true, confirmText: t('common.delete'), cancelText: t('common.cancel') },
+        );
+        if (confirmed) props.onDelete();
+    };
 
     return (
         <View testID={`${testID}.row`} style={styles.fieldContainer}>
@@ -284,7 +300,7 @@ export function PluginSettingTextField(props: Readonly<{
                         accessibilityLabel={`${t('common.delete')}: ${props.field.title}`}
                         textStyle={{ color: theme.colors.state.danger.foreground }}
                         disabled={props.saving || props.persistenceDisabled}
-                        onPress={props.onDelete}
+                        onPress={() => { void confirmDelete(); }}
                     />
                 ) : null}
                 {props.onUnbind ? (
@@ -927,13 +943,16 @@ type PluginDetailGenericSettingsSectionProps = Readonly<{
 }>;
 
 export function PluginDetailGenericSettingsSection(props: PluginDetailGenericSettingsSectionProps) {
+    const localizePluginText = useProjectedPluginLocalizedTextResolver();
     const groups = React.useMemo(() => (
-        props.projection?.editableSettingsGroups
-        ?? projectAccountDeclaredPluginSettingsGroups({
-            pluginId: props.pluginId,
-            declaration: props.accountSettingsDeclaration,
-        })
-    ), [props.accountSettingsDeclaration, props.pluginId, props.projection]);
+        (
+            props.projection?.editableSettingsGroups
+            ?? projectAccountDeclaredPluginSettingsGroups({
+                pluginId: props.pluginId,
+                declaration: props.accountSettingsDeclaration,
+            })
+        ).map((group) => resolvePluginProjectionEditableSettingsGroup(group, localizePluginText))
+    ), [localizePluginText, props.accountSettingsDeclaration, props.pluginId, props.projection]);
     const sourceLifetimeIdentity = settingsSourceLifetimeIdentity({
         projection: props.projection,
         accountSettingsDeclaration: props.accountSettingsDeclaration,

@@ -16,6 +16,17 @@ const refreshAutomationsSpy = vi.hoisted(() => vi.fn(async () => {
     if (refreshState.reject) throw new Error('offline');
 }));
 const loadMoreAutomationsSpy = vi.hoisted(() => vi.fn(async () => ({ nextCursor: null })));
+const refreshAutomationDefinitionDetailSpy = vi.hoisted(() => vi.fn(async (automationId: string) => {
+    const automation = state.automations.find((candidate) => candidate.id === automationId);
+    if (!automation) throw new Error('missing automation');
+    state.automations = state.automations.map((candidate) => candidate.id === automationId ? {
+        ...candidate,
+        linkedExistingSessionId: automationId === 'same-session-target'
+            ? 'source-session'
+            : 'different-session',
+        detail: { kind: 'loaded' },
+    } : candidate);
+}));
 // Lifetime- and scope-sensitive Account state: a same-server Account A→B
 // switch retires the A-era lifetime exactly like the real scope owner.
 const accountScopeState = vi.hoisted(() => ({
@@ -25,6 +36,7 @@ const state = vi.hoisted(() => ({
     session: {
         id: 'source-session',
         serverId: 'server-1',
+        metadata: { flavor: 'acp:test-backend' },
         latestTurnId: 'turn-observed',
         latestTurnStatus: 'in_progress',
     } as any,
@@ -59,6 +71,7 @@ vi.mock('@/sync/domains/state/storage', async () => {
 vi.mock('@/sync/sync', () => ({
     sync: {
         refreshAutomations: refreshAutomationsSpy,
+        refreshAutomationDefinitionDetail: refreshAutomationDefinitionDetailSpy,
         loadMoreAutomations: loadMoreAutomationsSpy,
     },
 }));
@@ -107,6 +120,7 @@ describe('ExactTurnAutomationDestinationScreen', () => {
         routerMock.back.mockClear();
         routerMock.setParams.mockClear();
         refreshAutomationsSpy.mockClear();
+        refreshAutomationDefinitionDetailSpy.mockClear();
         loadMoreAutomationsSpy.mockClear();
         refreshState.reject = false;
         accountScopeState.value = { serverId: 'server-1', accountId: 'account-1' };
@@ -114,6 +128,7 @@ describe('ExactTurnAutomationDestinationScreen', () => {
         state.session = {
             id: 'source-session',
             serverId: 'server-1',
+            metadata: { flavor: 'acp:test-backend' },
             latestTurnId: 'turn-observed',
             latestTurnStatus: 'in_progress',
         };
@@ -128,12 +143,15 @@ describe('ExactTurnAutomationDestinationScreen', () => {
             name: 'Must not target its source',
             targetType: 'existingSession',
             linkedExistingSessionId: 'source-session',
+            detail: { kind: 'loaded' },
         });
         state.automations.push({
             id: 'missing-session-target',
             name: 'Target was not proven',
             targetType: 'existingSession',
             linkedExistingSessionId: null,
+            templateVersion: 1,
+            detail: { kind: 'unloaded' },
         });
     });
 
@@ -147,9 +165,11 @@ describe('ExactTurnAutomationDestinationScreen', () => {
             inputPlaceholder: 'automations.exactTurn.searchPlaceholder',
             sections: [{ virtualization: 'force' }],
         });
-        expect(picker.props.rootStep.sections[0].options).toHaveLength(71);
+        expect(picker.props.rootStep.sections[0].options).toHaveLength(72);
         expect(picker.props.rootStep.sections[0].options).not.toEqual(expect.arrayContaining([
             expect.objectContaining({ id: 'existing:same-session-target' }),
+        ]));
+        expect(picker.props.rootStep.sections[0].options).toEqual(expect.arrayContaining([
             expect.objectContaining({ id: 'existing:missing-session-target' }),
         ]));
         expect(picker.props.listAccessibilityLabel).toBe('automations.exactTurn.destinationA11y');

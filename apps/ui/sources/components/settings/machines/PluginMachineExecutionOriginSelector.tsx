@@ -16,6 +16,7 @@ import {
     type PluginMachineExecutionOriginCandidateV1,
 } from '@/sync/domains/machines/administration/pluginExecutionOrigin';
 import {
+    type PluginExecutionOriginSelectionMutationResult,
     type PluginMachineExecutionOriginSelectionV1,
 } from '@/sync/domains/machines/administration/usePluginExecutionOriginSelection';
 
@@ -131,6 +132,23 @@ export function PluginMachineExecutionOriginSelectorView(props: Readonly<{
     selection: PluginMachineExecutionOriginSelectionV1;
     testIDPrefix?: string;
 }>) {
+    const [settlementError, setSettlementError] = React.useState<string | null>(null);
+    const settleSelection = React.useCallback(async (
+        mutation: Promise<PluginExecutionOriginSelectionMutationResult>,
+    ) => {
+        try {
+            const result = await mutation;
+            if (result.status === 'applied') {
+                setSettlementError(null);
+                return;
+            }
+            setSettlementError(result.status === 'outcomeUnknown'
+                ? t('settingsProviders.errors.mutationOutcomeUnknownDescription')
+                : t('settingsPlugins.genericSettingsSaveError'));
+        } catch {
+            setSettlementError(t('settingsPlugins.genericSettingsSaveError'));
+        }
+    }, []);
     const current = resolvePluginMachineExecutionOriginPresentation(props.selection);
     const groups = React.useMemo(
         () => buildOriginGroups(props.selection.candidates),
@@ -157,7 +175,15 @@ export function PluginMachineExecutionOriginSelectorView(props: Readonly<{
                     <Item
                         testID={clearTestID}
                         title={t('common.remove')}
-                        onPress={props.selection.clearOrigin}
+                        onPress={() => { void settleSelection(props.selection.clearOrigin()); }}
+                        showChevron={false}
+                    />
+                ) : null}
+                {settlementError ? (
+                    <Item
+                        testID={props.testIDPrefix ? `${props.testIDPrefix}.settlementError` : undefined}
+                        title={settlementError}
+                        mode="info"
                         showChevron={false}
                     />
                 ) : null}
@@ -167,7 +193,7 @@ export function PluginMachineExecutionOriginSelectorView(props: Readonly<{
                     groups={groups}
                     selectedMachineId={selectedOrigin?.materializationRef.machineId ?? null}
                     selectedServerId={selectedOrigin?.serverIdentityId ?? null}
-                    onSelect={(machine) => props.selection.selectOrigin(machine.origin)}
+                    onSelect={(machine) => { void settleSelection(props.selection.selectOrigin(machine.origin)); }}
                     resolveMachineAvailability={(machine) => ({
                         detail: resolveCandidatePresentationDetail(machine.candidate),
                         selectable: isPluginMachineExecutionOriginCandidateSelectable(machine.candidate),

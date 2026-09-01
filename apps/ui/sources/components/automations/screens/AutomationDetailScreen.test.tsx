@@ -22,6 +22,7 @@ import {
     pressTestInstance,
     renderScreen,
 } from '@/dev/testkit';
+import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
 import { installAutomationScreensCommonModuleMocks } from './automationScreensTestHelpers';
 
 type FetchAutomationRuns = (
@@ -142,6 +143,9 @@ const automationRunsState = vi.hoisted(() => ({
     list: [] as any[],
 }));
 const activeAccountLifetimeState = vi.hoisted(() => ({ current: true }));
+const activeAccountScopeState = vi.hoisted(() => ({
+    scope: { serverId: 'server-1', accountId: 'account-1' },
+}));
 
 installAutomationScreensCommonModuleMocks({
     router: async () => {
@@ -254,7 +258,7 @@ installAutomationScreensCommonModuleMocks({
                 automationRunsByAutomationId: { a1: automationRunsState.list },
                 profileScope: { serverId: 'server-1', accountId: 'account-1' },
             })),
-            useActiveServerAccountScope: () => ({ serverId: 'server-1', accountId: 'account-1' }),
+            useActiveServerAccountScope: () => activeAccountScopeState.scope,
             useAutomation: () => (automationState.missing ? null : automationState.automation),
             useAutomationRuns: () => automationRunsState.list,
             useAutomationRunNextCursor: () => automationRunCursorState.nextCursor,
@@ -396,6 +400,7 @@ vi.mock('@/sync/sync', () => ({
 describe('AutomationDetailScreen', () => {
     beforeEach(() => {
         activeAccountLifetimeState.current = true;
+        activeAccountScopeState.scope = { serverId: 'server-1', accountId: 'account-1' };
         eventRuntimeProjectionState.immutableGenerationId = 'github-generation-1';
         runHistoryListMock.state.reset();
         routeParamsState.id = 'a1';
@@ -447,6 +452,19 @@ describe('AutomationDetailScreen', () => {
         syncSpies.resumeAutomation.mockResolvedValue(undefined);
         syncSpies.replaceAutomationAssignments.mockReset();
         syncSpies.replaceAutomationAssignments.mockResolvedValue(undefined);
+    });
+
+    it('refreshes the same Automation route for a new active Account lifetime', async () => {
+        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
+        await flushHookEffects();
+        expect(syncSpies.refreshAutomations).toHaveBeenCalledTimes(1);
+
+        activeAccountScopeState.scope = { serverId: 'server-1', accountId: 'account-2' };
+        await screen.update(React.createElement(AutomationDetailScreen));
+        await flushHookEffects();
+
+        expect(syncSpies.refreshAutomations).toHaveBeenCalledTimes(2);
     });
 
     function createDeferred<T = void>() {
@@ -1804,6 +1822,27 @@ describe('AutomationDetailScreen', () => {
             historyRefresh.resolve({ nextCursor: null });
             await historyRefresh.promise;
         });
+    });
+
+    it('shows an announced inline retry when Run history fails instead of claiming the history is empty', async () => {
+        syncSpies.fetchAutomationRuns.mockRejectedValueOnce(new Error('history unavailable'));
+        const { AutomationDetailScreen } = await import('./AutomationDetailScreen');
+
+        const screen = await renderScreen(React.createElement(AutomationDetailScreen));
+        await act(async () => {
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        const errorRow = screen.findByProps({ testID: 'automation-detail-history-error' });
+        expect(errorRow.props.accessibilityLiveRegion).toBe('polite');
+        expect(findTestInstanceByTypeContainingText(screen, 'Text', 'runs.empty')).toBeUndefined();
+
+        await act(async () => {
+            await pressTestInstance(errorRow, 'Retry run history');
+            await Promise.resolve();
+        });
+        expect(syncSpies.fetchAutomationRuns).toHaveBeenCalledTimes(2);
     });
 
     it('continues run history from the server-provided cursor instead of stopping at the first page', async () => {

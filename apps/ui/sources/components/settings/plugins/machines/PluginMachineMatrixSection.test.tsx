@@ -76,6 +76,7 @@ describe('PluginMachineMatrixSection', () => {
         fixture.materializationAdmission = {
             kind: 'available',
             availabilityCursor: 7,
+            intentReads: [],
             materializations: [materialization('machine-a'), materialization('machine-b')],
             // Reporting identity: both machines are included in this snapshot,
             // so neither is silently unknown to the matrix.
@@ -84,6 +85,83 @@ describe('PluginMachineMatrixSection', () => {
                 { serverIdentityId: 'srv_one', machineId: 'machine-b', revision: 1, materializations: [] },
             ],
         };
+    });
+
+    it('states Account desired release and hosted UI Artifact availability above machine-local truth', async () => {
+        fixture.materializationAdmission = {
+            ...(fixture.materializationAdmission as Record<string, unknown>),
+            intentReads: [{
+                pluginId: 'acme.plugin',
+                response: {
+                    availabilityCursor: 7,
+                    hostingCapability: {
+                        enabled: true,
+                        maxArtifactBytes: 1024,
+                        maxAccountBytes: 2048,
+                    },
+                    intent: {
+                        pluginId: 'acme.plugin',
+                        desiredVersion: '2.0.0',
+                        enabled: true,
+                        offlineUiHosting: 'enabled',
+                        writableCollections: [],
+                        revision: 'intent-1',
+                    },
+                    release: {
+                        ref: { pluginId: 'acme.plugin', version: '2.0.0' },
+                        archiveDigestSha256: `sha256:${'b'.repeat(64)}`,
+                        normalizedManifest: {
+                            schemaVersion: 2,
+                            id: 'acme.plugin',
+                            version: '2.0.0',
+                            displayName: 'Acme Plugin',
+                            engines: { happier: '^1.0.0' },
+                            runtime: { apiVersion: 1 },
+                            contributes: {},
+                        },
+                        collectionContracts: [],
+                        uiSlots: [{
+                            contributionId: 'panel',
+                            tier: 'hostedWeb',
+                            platform: 'web',
+                            artifactDigest: `sha256:${'a'.repeat(64)}`,
+                            compatibility: { hostUiApiVersion: '1.0.0' },
+                        }],
+                        packageAssetArchive: {
+                            archiveDigestSha256: `sha256:${'c'.repeat(64)}`,
+                            resources: [],
+                        },
+                    },
+                    uiArtifacts: [{
+                        release: { pluginId: 'acme.plugin', version: '2.0.0' },
+                        contributionId: 'panel',
+                        tier: 'hostedWeb',
+                        platform: 'web',
+                        artifactId: '00000000-0000-4000-8000-000000000001',
+                        artifactDigest: `sha256:${'a'.repeat(64)}`,
+                        compatibility: {
+                            hostAppVersion: '1.0.0',
+                            hostUiApiVersion: '1.0.0',
+                            reactVersion: '19.2.0',
+                            platform: 'web',
+                            channel: 'store',
+                            nativeCapabilities: [],
+                        },
+                    }],
+                },
+            }],
+        };
+        const { PluginMachineMatrixSection } = await import('./PluginMachineMatrixSection');
+        await renderScreen(<PluginMachineMatrixSection pluginId="acme.plugin" />);
+
+        expect(capturedItemProps.find((props) => props.testID === 'settings.plugins.machineMatrix.acme.plugin.account'))
+            .toMatchObject({
+                title: 'settingsPlugins.accountReleaseSelection.groupTitle',
+                subtitle: 'common.version 2.0.0 · settingsPlugins.accountReleaseSelection.hostedStatusReady',
+                detail: 'common.enabled',
+                mode: 'info',
+                showChevron: false,
+            });
     });
 
     afterEach(() => {

@@ -3,6 +3,9 @@ import type { PluginProjectionV2 } from '@happier-dev/protocol';
 import {
     readActivePluginAccountRelease,
 } from '@/sync/api/plugins/availability/activePluginAccountReleaseRead';
+import { setActivePluginAccountAvailabilityIntent } from '@/sync/api/plugins/availability/setActivePluginAccountAvailabilityIntent';
+import { removeActivePluginAccountHostedArtifact } from '@/sync/api/plugins/availability/removeActivePluginAccountHostedArtifact';
+import { getInstalledPluginReactNativeBundleCache } from '@/components/plugins/reactNative/bundleCache';
 import {
     captureActiveServerAccountScopeLifetime,
     type ActiveServerAccountScopeLifetime,
@@ -25,6 +28,10 @@ import {
     type CandidateCollectionReleaseSelectionTarget,
 } from '@/sync/domains/plugins/availability/candidateCollectionReleaseSelection';
 import type { PluginAccountAvailabilityReader } from '@/sync/domains/plugins/availability/reader';
+import {
+    classifyPluginAccountHostedArtifactStatus,
+    type PluginAccountHostedArtifactStatus,
+} from './pluginAccountHostedArtifactStatus';
 
 export type PluginAccountReleaseSelectionControllerDependencies = Readonly<{
     captureLifetime: () => ActiveServerAccountScopeLifetime | null;
@@ -33,6 +40,9 @@ export type PluginAccountReleaseSelectionControllerDependencies = Readonly<{
     resolveAccountHostedTarget: typeof resolveCandidatePluginCollectionMigrationArtifactAccountHostedTarget;
     createAppExactSource: typeof createBundledPluginUiAppExactArtifactSource;
     select: typeof selectCandidateCollectionRelease;
+    setIntent: typeof setActivePluginAccountAvailabilityIntent;
+    removeHostedArtifact: typeof removeActivePluginAccountHostedArtifact;
+    removeCachedArtifact: ReturnType<typeof getInstalledPluginReactNativeBundleCache>['removePersistentArtifact'];
 }>;
 
 export type PluginAccountReleaseSelectionControllerResult =
@@ -58,6 +68,23 @@ export type PluginAccountReleaseSelectionController = Readonly<{
         /** Component-owned presentation lifetime, distinct from Account lifetime. */
         isCurrent?: () => boolean;
     }>) => Promise<PluginAccountReleaseSelectionControllerResult>;
+    readHostedArtifactStatus: (input: Readonly<{
+        pluginId: string;
+        reader: PluginAccountAvailabilityReader | null;
+    }>) => PluginAccountHostedArtifactStatus;
+    setHostedArtifactsEnabled: (input: Readonly<{
+        pluginId: string;
+        reader: PluginAccountAvailabilityReader | null;
+        enabled: boolean;
+    }>) => Promise<Readonly<{ kind: 'updated' | 'conflict' | 'unavailable' }>>;
+    disableAndRemoveHostedArtifacts: (input: Readonly<{
+        pluginId: string;
+        reader: PluginAccountAvailabilityReader | null;
+    }>) => Promise<Readonly<{ kind: 'updated' | 'conflict' | 'unavailable' }>>;
+    clearHostedArtifactCache: (input: Readonly<{
+        pluginId: string;
+        reader: PluginAccountAvailabilityReader | null;
+    }>) => Promise<Readonly<{ kind: 'updated' | 'unavailable' }>>;
     retire: () => void;
     isPending: () => boolean;
 }>;
@@ -74,7 +101,23 @@ const defaultDependencies: PluginAccountReleaseSelectionControllerDependencies =
     resolveAccountHostedTarget: resolveCandidatePluginCollectionMigrationArtifactAccountHostedTarget,
     createAppExactSource: createBundledPluginUiAppExactArtifactSource,
     select: selectCandidateCollectionRelease,
+    setIntent: setActivePluginAccountAvailabilityIntent,
+    removeHostedArtifact: removeActivePluginAccountHostedArtifact,
+    removeCachedArtifact: (identity, isCurrent) => getInstalledPluginReactNativeBundleCache().removePersistentArtifact(identity, isCurrent),
 });
+
+function readHostedAdministration(input: Readonly<{
+    reader: PluginAccountAvailabilityReader | null;
+    pluginId: string;
+}>) {
+    if (!input.reader) return null;
+    try {
+        const selected = input.reader.readCurrentHostedArtifactAdministration({ pluginId: input.pluginId });
+        return selected.kind === 'available' ? selected : null;
+    } catch {
+        return null;
+    }
+}
 
 function currentIntent(input: Readonly<{
     reader: PluginAccountAvailabilityReader | null;
@@ -216,8 +259,100 @@ export function createPluginAccountReleaseSelectionController(
         }
     };
 
+    const updateHostingIntent: PluginAccountReleaseSelectionController['setHostedArtifactsEnabled'] = async (input) => {
+        const selected = readHostedAdministration(input);
+        if (!selected || selected.release.uiSlots.length === 0 || (input.enabled && !selected.hostingCapability.enabled)) {
+            return Object.freeze({ kind: 'unavailable' as const });
+        }
+        const result = await dependencies.setIntent({
+            pluginId: input.pluginId,
+            desiredVersion: selected.intent.desiredVersion,
+            enabled: selected.intent.enabled,
+            offlineUiHosting: input.enabled ? 'enabled' : 'disabled',
+            writableCollections: selected.intent.writableCollections,
+            expectedRevision: selected.intent.revision,
+        });
+        return Object.freeze({
+            kind: result.kind === 'updated' ? 'updated' as const : result.kind === 'conflict' ? 'conflict' as const : 'unavailable' as const,
+        });
+    };
+
+    const setHostedArtifactsEnabled: PluginAccountReleaseSelectionController['setHostedArtifactsEnabled'] = async (input) => {
+        if (retired || activeAction) return Object.freeze({ kind: 'unavailable' as const });
+        const action = {};
+        activeAction = action;
+        try {
+            return await updateHostingIntent(input);
+        } finally {
+            if (activeAction === action) activeAction = null;
+        }
+    };
+
+    const disableAndRemoveHostedArtifacts: PluginAccountReleaseSelectionController['disableAndRemoveHostedArtifacts'] = async (input) => {
+        if (retired || activeAction) return Object.freeze({ kind: 'unavailable' as const });
+        const action = {};
+        activeAction = action;
+        const selected = readHostedAdministration(input);
+        const lifetime = dependencies.captureLifetime();
+        try {
+            if (!selected || !lifetime?.isCurrent()) return Object.freeze({ kind: 'unavailable' as const });
+            const disabled = await updateHostingIntent({ ...input, enabled: false });
+            if (disabled.kind !== 'updated') return disabled;
+            for (const link of selected.uiArtifacts) {
+                const removed = await dependencies.removeHostedArtifact({
+                    accountLifetime: lifetime,
+                    target: {
+                        release: selected.release.ref,
+                        contributionId: link.contributionId,
+                        tier: link.tier,
+                        platform: link.platform,
+                    },
+                });
+                if (removed.kind !== 'removed') return Object.freeze({ kind: 'unavailable' as const });
+            }
+            return Object.freeze({ kind: 'updated' as const });
+        } finally {
+            if (activeAction === action) activeAction = null;
+        }
+    };
+
+    const clearHostedArtifactCache: PluginAccountReleaseSelectionController['clearHostedArtifactCache'] = async (input) => {
+        if (retired || activeAction) return Object.freeze({ kind: 'unavailable' as const });
+        const action = {};
+        activeAction = action;
+        const selected = readHostedAdministration(input);
+        const lifetime = dependencies.captureLifetime();
+        try {
+            if (!selected || !lifetime?.isCurrent()) return Object.freeze({ kind: 'unavailable' as const });
+            for (const slot of selected.release.uiSlots) {
+                await dependencies.removeCachedArtifact({
+                    accountScope: lifetime.scope,
+                    pluginId: input.pluginId,
+                    releaseVersion: selected.release.ref.version,
+                    contributionId: slot.contributionId,
+                    tier: slot.tier,
+                    platform: slot.platform,
+                    artifactDigest: slot.artifactDigest,
+                }, lifetime.isCurrent);
+                if (!lifetime.isCurrent()) return Object.freeze({ kind: 'unavailable' as const });
+            }
+            return Object.freeze({ kind: 'updated' as const });
+        } finally {
+            if (activeAction === action) activeAction = null;
+        }
+    };
+
     return Object.freeze({
         select,
+        readHostedArtifactStatus: (input) => {
+            const selected = readHostedAdministration(input);
+            return selected
+                ? classifyPluginAccountHostedArtifactStatus(selected)
+                : 'unavailable';
+        },
+        setHostedArtifactsEnabled,
+        disableAndRemoveHostedArtifacts,
+        clearHostedArtifactCache,
         retire: () => {
             retired = true;
         },

@@ -252,6 +252,7 @@ type PluginUiProjectionUnionEntryAdmission = 'unmaterialized' | 'selectedOrigin'
 function admitMemberEntry(input: Readonly<{
     member: PluginUiProjectionUnionMember & Readonly<{ projection: PluginUiProjectionModel }>;
     selectedOriginsByPluginId: PluginUiProjectionUnionOriginSelections;
+    conflictedOriginlessPluginIds?: ReadonlySet<string>;
     entry: unknown;
 }>): PluginUiProjectionUnionEntryAdmission | null {
     const pluginId = readString(asRecord(input.entry)?.pluginId);
@@ -275,6 +276,7 @@ function admitMemberEntry(input: Readonly<{
     // materialization.
     if (
         !input.selectedOriginsByPluginId.has(pluginId)
+        && !input.conflictedOriginlessPluginIds?.has(pluginId)
         && readPluginUiProjectionEntryExecutionOrigin(input.entry) === null
     ) {
         return 'unmaterialized';
@@ -291,10 +293,12 @@ function admitMemberEntry(input: Readonly<{
 function memberHasAdmittedContribution(input: Readonly<{
     member: PluginUiProjectionUnionMember & Readonly<{ projection: PluginUiProjectionModel }>;
     selectedOriginsByPluginId: PluginUiProjectionUnionOriginSelections;
+    conflictedOriginlessPluginIds: ReadonlySet<string>;
 }>): boolean {
     const owns = (entry: unknown): boolean => admitMemberEntry({
         member: input.member,
         selectedOriginsByPluginId: input.selectedOriginsByPluginId,
+        conflictedOriginlessPluginIds: input.conflictedOriginlessPluginIds,
         entry,
     }) !== null;
     const projection = input.member.projection;
@@ -367,9 +371,44 @@ export function unionPluginUiProjections(
         });
     }
 
+    const originlessMembersByPluginId = new Map<string, Set<string>>();
+    for (const member of contributing) {
+        const model = member.projection;
+        const entries = [
+            ...Object.values(model.translationsByPluginId),
+            ...Object.values(model.sessionHeaderActionsById),
+            ...Object.values(model.hostedWebById),
+            ...Object.values(model.reactNativeBundlesById),
+            ...Object.values(model.surfacePlacementsById),
+            ...Object.values(model.settingsGroupsById),
+            ...Object.values(model.settingsPagesById),
+            ...Object.values(model.actionsById),
+            ...Object.values(model.voiceProvidersById),
+            ...Object.values(model.unknownEntriesById),
+        ];
+        for (const entry of entries) {
+            const pluginId = readString(asRecord(entry)?.pluginId);
+            if (
+                !pluginId
+                || selectedOriginsByPluginId.has(pluginId)
+                || readPluginUiProjectionEntryExecutionOrigin(entry) !== null
+            ) continue;
+            const memberKey = `${member.serverId ?? ''}\u0000${member.machineId}`;
+            const owners = originlessMembersByPluginId.get(pluginId) ?? new Set<string>();
+            owners.add(memberKey);
+            originlessMembersByPluginId.set(pluginId, owners);
+        }
+    }
+    const conflictedOriginlessPluginIds = new Set(
+        [...originlessMembersByPluginId]
+            .filter(([, owners]) => owners.size > 1)
+            .map(([pluginId]) => pluginId),
+    );
+
     const admittedContributing = contributing.filter((member) => memberHasAdmittedContribution({
         member,
         selectedOriginsByPluginId,
+        conflictedOriginlessPluginIds,
     }));
 
     if (admittedContributing.length === 0) {
@@ -403,15 +442,9 @@ export function unionPluginUiProjections(
     const voiceProvidersById: Record<string, PluginVoiceProviderProjection> = {};
     const unknownEntriesById: Record<string, UnknownRecord> = {};
 
-    // A plugin the Account can never materialize is admitted through the
-    // unmaterialized arm on EVERY machine that holds it, so the same
-    // contribution key arrives once per member. `admittedContributing` is
-    // already ordered by `machineId`, which makes the first admitted replica
-    // the deterministic one; plain assignment instead published the last, so
-    // connecting an unrelated machine silently re-homed every such surface and
-    // shadowed its package brand. A replica is therefore skipped. The selected
-    // arm cannot produce a duplicate at all — it admits only the one member
-    // whose `machineId` equals the selection's — so this changes nothing there.
+    // Exact selected origins are unique. Originless replicas were withheld as
+    // conflicts above, so this guard only protects malformed duplicate keys
+    // within one admitted producer.
     const publishFirstAdmitted = <T>(map: Record<string, T>, key: string, value: T): void => {
         if (Object.hasOwn(map, key)) return;
         map[key] = value;
@@ -421,7 +454,12 @@ export function unionPluginUiProjections(
         const model = member.projection;
         const admittedPluginIds = new Set<string>();
         const originFor = (entry: UnknownRecord): PluginUiContributionOriginV1 | null => {
-            const admission = admitMemberEntry({ member, selectedOriginsByPluginId, entry });
+            const admission = admitMemberEntry({
+                member,
+                selectedOriginsByPluginId,
+                conflictedOriginlessPluginIds,
+                entry,
+            });
             if (!admission) return null;
             const executionOrigin = readPluginUiProjectionEntryExecutionOrigin(entry);
             // A selected contribution keeps its hard producer-stamp

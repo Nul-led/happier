@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import {
@@ -108,5 +109,20 @@ describe('/restore (web phone)', () => {
         expect(restoreRouteIngressState.scannerProps?.initialPairingLink).toBe(
             restoreRouteIngressState.pairingLink,
         );
+    });
+
+    it('disables the wizard Back action while the joining enrollment is past its commit boundary', async () => {
+        vi.stubGlobal('navigator', { maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)' } as any);
+        vi.resetModules();
+        const { default: Screen } = await import('@/app/(app)/restore/index');
+
+        const screen = await renderScreen(<Screen />);
+        await act(async () => {
+            const setNavigationLocked = restoreRouteIngressState.scannerProps?.onNavigationLockChange;
+            expect(setNavigationLocked).toBeInstanceOf(Function);
+            (setNavigationLocked as (locked: boolean) => void)(true);
+        });
+
+        expect(screen.findByTestId('restore-wizard-back')?.props.disabled).toBe(true);
     });
 });

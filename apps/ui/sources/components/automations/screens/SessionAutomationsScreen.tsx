@@ -28,12 +28,11 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { isSessionRouteHydrationAvailable } from '@/sync/domains/session/sessionRouteHydrationState';
 import { Icon } from '@/components/ui/icons/Icon';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
-import { runTasksWithLimit } from '@/sync/runtime/orchestration/runTasksWithLimit';
-import { loadSyncTuning } from '@/sync/runtime/syncTuning';
 import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
 import { buildAutomationListSegments } from '@/components/automations/list/automationListSegmentation';
 import { useAutomationDefinitionPagination } from '@/components/automations/list/useAutomationDefinitionPagination';
+import { useResolveExistingSessionAutomationDetails } from '@/components/automations/list/useResolveExistingSessionAutomationDetails';
 
 const stylesheet = StyleSheet.create((theme) => ({
     container: {
@@ -52,17 +51,6 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
 }));
 
-/**
- * One retained definition revision. The association answer is version-scoped:
- * a newer template version is a different question and must be asked again.
- */
-function directDetailKey(
-    accountScopeKey: string,
-    automation: Readonly<{ id: string; templateVersion: number }>,
-): string {
-    return `${accountScopeKey}\u0000${automation.id}\u0000${automation.templateVersion}`;
-}
-
 export function SessionAutomationsScreen(props: {
     sessionId: string;
     hydrationOptions?: Readonly<{ serverId?: string; forceRefresh?: boolean }>;
@@ -76,41 +64,6 @@ export function SessionAutomationsScreen(props: {
         : 'unscoped';
     const routeIdentity = `${accountScopeKey}\u0000${props.sessionId}`;
     const automations = useAutomations();
-    // The bounded list does not disclose private recipe targets. Resolve only
-    // unloaded existing-Session candidates through the canonical direct
-    // definition reader before associating them with this Session.
-    const undisclosedExistingSessionDefinitions = React.useMemo(
-        () => automations.filter((automation) => (
-            automation.targetType === 'existingSession'
-            && automation.detail.kind === 'unloaded'
-            && automation.linkedExistingSessionId === null
-        )),
-        [automations],
-    );
-    const [completedDirectDetailKeys, setCompletedDirectDetailKeys] = React.useState<ReadonlySet<string>>(
-        () => new Set<string>(),
-    );
-    // A read that FAILED is not a read that answered. Keeping the two in one
-    // "already attempted" set is what let one rejection hide every remaining
-    // association for the route lifetime; keeping them apart lets the failed
-    // ones be re-admitted by an explicit retry without re-arming an automatic
-    // loop for a target that is still failing.
-    const [failedDirectDetailKeys, setFailedDirectDetailKeys] = React.useState<ReadonlySet<string>>(
-        () => new Set<string>(),
-    );
-    const directDetailsToResolve = React.useMemo(
-        () => undisclosedExistingSessionDefinitions.filter((automation) => {
-            const key = directDetailKey(accountScopeKey, automation);
-            return !completedDirectDetailKeys.has(key) && !failedDirectDetailKeys.has(key);
-        }),
-        [accountScopeKey, completedDirectDetailKeys, failedDirectDetailKeys, undisclosedExistingSessionDefinitions],
-    );
-    const hasUnresolvedDirectDetailFailure = React.useMemo(
-        () => undisclosedExistingSessionDefinitions.some(
-            (automation) => failedDirectDetailKeys.has(directDetailKey(accountScopeKey, automation)),
-        ),
-        [accountScopeKey, failedDirectDetailKeys, undisclosedExistingSessionDefinitions],
-    );
     const routeHydrationState = useHydrateSessionForRoute(
         props.sessionId,
         'SessionAutomationsScreen.hydrateTargetSession',
@@ -148,6 +101,11 @@ export function SessionAutomationsScreen(props: {
     const refreshFailed = refreshFailure.routeIdentity === routeIdentity && refreshFailure.value;
     const runNow = useAutomationRunNowController();
     const pagination = useAutomationDefinitionPagination();
+    const directDetailResolution = useResolveExistingSessionAutomationDetails({
+        automations,
+        accountScopeKey,
+        enabled: !loading,
+    });
 
     const refresh = React.useCallback(async () => {
         const requestRouteIdentity = routeIdentity;
@@ -171,58 +129,13 @@ export function SessionAutomationsScreen(props: {
     // or both. Re-admitting the failed reads is what makes them eligible for
     // the resolution effect again.
     const retryFailedLoads = React.useCallback(() => {
-        setFailedDirectDetailKeys(new Set<string>());
+        directDetailResolution.retry();
         void refresh();
-    }, [refresh]);
+    }, [directDetailResolution, refresh]);
 
     React.useEffect(() => {
         void refresh();
     }, [refresh]);
-
-    React.useEffect(() => {
-        if (loading || directDetailsToResolve.length === 0) return;
-        let alive = true;
-        void (async () => {
-            const resolvedKeys: string[] = [];
-            const failedKeys: string[] = [];
-            // Accounts can contain thousands of listed definitions, so this
-            // resolution runs through the shared request-concurrency owner and
-            // stops issuing reads the moment the route retires instead of
-            // fanning out one request each.
-            // Each read owns its own outcome: a rejection that escaped the
-            // task would also cancel its peers' queue.
-            await runTasksWithLimit(
-                directDetailsToResolve.map((automation) => async () => {
-                    if (!alive) return;
-                    try {
-                        await sync.refreshAutomationDefinitionDetail(automation.id);
-                        resolvedKeys.push(directDetailKey(accountScopeKey, automation));
-                    } catch {
-                        failedKeys.push(directDetailKey(accountScopeKey, automation));
-                    }
-                }),
-                loadSyncTuning().automationDefinitionDetailHydrationConcurrencyLimit,
-            );
-            if (!alive) return;
-            if (resolvedKeys.length > 0) {
-                setCompletedDirectDetailKeys((previous) => {
-                    const next = new Set(previous);
-                    for (const key of resolvedKeys) next.add(key);
-                    return next;
-                });
-            }
-            if (failedKeys.length > 0) {
-                setFailedDirectDetailKeys((previous) => {
-                    const next = new Set(previous);
-                    for (const key of failedKeys) next.add(key);
-                    return next;
-                });
-            }
-        })();
-        return () => {
-            alive = false;
-        };
-    }, [accountScopeKey, directDetailsToResolve, loading]);
 
     const linked = React.useMemo(() => {
         return filterAutomationDefinitionsLinkedToSession(automations, props.sessionId);
@@ -243,7 +156,7 @@ export function SessionAutomationsScreen(props: {
         () => buildAutomationListSegments(linked),
         [linked],
     );
-    const listFailureHeader = refreshFailed || hasUnresolvedDirectDetailFailure ? (
+    const listFailureHeader = refreshFailed || directDetailResolution.hasFailure ? (
         <View style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}>
             <ItemGroup>
                 <Item
@@ -362,7 +275,7 @@ export function SessionAutomationsScreen(props: {
             <ItemList style={{ paddingTop: 0 }}>
                 <View style={{ maxWidth: layout.maxWidth, alignSelf: 'center', width: '100%' }}>
                     {listFailureHeader}
-                    {directDetailsToResolve.length > 0 ? (
+                    {directDetailResolution.resolving ? (
                         <View style={styles.resolvingLinks}>
                             <ActivitySpinner size="small" color={theme.colors.text.secondary} />
                         </View>

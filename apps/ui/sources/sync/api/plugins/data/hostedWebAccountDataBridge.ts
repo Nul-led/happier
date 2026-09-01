@@ -351,6 +351,12 @@ export function createHostedWebAccountDataBridge(input: Readonly<{
                             ...(signal === undefined ? {} : { signal }),
                         }) as unknown as JsonValue;
                         break;
+                    case 'collection.forget':
+                        value = await collection.forget(args[0] as string, {
+                            ...(args[1] as Readonly<{ expectedRevision: number }>),
+                            ...(signal === undefined ? {} : { signal }),
+                        }) as unknown as JsonValue;
+                        break;
                     case 'collection.query':
                         value = await collection.query(args[0] as never, signalOptions) as unknown as JsonValue;
                         break;

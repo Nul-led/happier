@@ -656,6 +656,7 @@ describe('Plugin Account Availability reader', () => {
         expect(reader.readMaterializations()).toEqual({
             kind: 'available',
             availabilityCursor: 43,
+            intentReads: [],
             materializations: [],
             snapshots: [],
         });

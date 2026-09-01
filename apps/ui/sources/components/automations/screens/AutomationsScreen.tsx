@@ -3,7 +3,7 @@ import { Platform, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { useAllMachines, useAutomations } from '@/sync/domains/state/storage';
+import { useActiveServerAccountScope, useAllMachines, useAutomations } from '@/sync/domains/state/storage';
 import { sync } from '@/sync/sync';
 import { Text } from '@/components/ui/text/Text';
 import { layout } from '@/components/ui/layout/layout';
@@ -26,6 +26,7 @@ import {
     type AutomationListSegment,
 } from '@/components/automations/list/automationListSegmentation';
 import { useAutomationDefinitionPagination } from '@/components/automations/list/useAutomationDefinitionPagination';
+import { serverAccountScopeKeySuffix } from '@/sync/domains/scope/serverAccountScope';
 
 /**
  * Accounts can contain high-cardinality Automation catalogs, so the screen
@@ -59,29 +60,52 @@ export function AutomationsScreen() {
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const router = useRouter();
+    const activeAccountScope = useActiveServerAccountScope();
+    const accountScopeKey = activeAccountScope
+        ? serverAccountScopeKeySuffix(activeAccountScope)
+        : 'unscoped';
     const automations = useAutomations();
     const machines = useAllMachines();
-    const [loading, setLoading] = React.useState(true);
-    const [refreshFailed, setRefreshFailed] = React.useState(false);
+    const [refreshState, setRefreshState] = React.useState(() => ({
+        accountScopeKey,
+        loading: true,
+        failed: false,
+    }));
+    const loading = refreshState.accountScopeKey !== accountScopeKey || refreshState.loading;
+    const refreshFailed = refreshState.accountScopeKey === accountScopeKey && refreshState.failed;
     const runNow = useAutomationRunNowController();
     const pagination = useAutomationDefinitionPagination();
-    const mountedRef = React.useRef(true);
+    const currentScopeRef = React.useRef({ accountScopeKey, mounted: true });
+    currentScopeRef.current.accountScopeKey = accountScopeKey;
     React.useEffect(() => () => {
-        mountedRef.current = false;
+        currentScopeRef.current.mounted = false;
     }, []);
-    const isInvocationCurrent = React.useCallback(() => mountedRef.current, []);
+    const isInvocationCurrent = React.useCallback(
+        () => currentScopeRef.current.mounted
+            && currentScopeRef.current.accountScopeKey === accountScopeKey,
+        [accountScopeKey],
+    );
 
     const refresh = React.useCallback(async () => {
+        const requestScopeKey = accountScopeKey;
+        const isCurrent = () => currentScopeRef.current.mounted
+            && currentScopeRef.current.accountScopeKey === requestScopeKey;
         try {
-            setLoading(true);
-            setRefreshFailed(false);
+            setRefreshState({ accountScopeKey: requestScopeKey, loading: true, failed: false });
             await sync.refreshAutomations();
+            if (!isCurrent()) return;
         } catch {
-            setRefreshFailed(true);
+            if (!isCurrent()) return;
+            setRefreshState({ accountScopeKey: requestScopeKey, loading: false, failed: true });
+            return;
         } finally {
-            setLoading(false);
+            if (isCurrent()) {
+                setRefreshState((current) => current.accountScopeKey === requestScopeKey
+                    ? { ...current, loading: false }
+                    : current);
+            }
         }
-    }, []);
+    }, [accountScopeKey]);
 
     React.useEffect(() => {
         void refresh();
@@ -154,13 +178,13 @@ export function AutomationsScreen() {
         <View style={styles.row}>
             <ActivitySpinner size="small" color={theme.colors.text.secondary} />
         </View>
-    ) : pagination.loadMoreFailed ? (
+    ) : pagination.loadMoreFailed || pagination.hasMore ? (
         <View style={styles.row}>
             <ItemGroup>
                 <Item
-                    testID="automations-load-more-retry"
-                    title={t('common.retry')}
-                    icon={<Icon name="arrow-clockwise" size={20} color={theme.colors.accent.blue} />}
+                    testID={pagination.loadMoreFailed ? 'automations-load-more-retry' : 'automations-load-more'}
+                    title={t(pagination.loadMoreFailed ? 'common.retry' : 'common.more')}
+                    icon={<Icon name={pagination.loadMoreFailed ? 'arrow-clockwise' : 'arrow-down'} size={20} color={theme.colors.accent.blue} />}
                     onPress={pagination.requestPage}
                     showChevron={false}
                     accessibilityRole="button"

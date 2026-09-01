@@ -2,6 +2,7 @@ import type {
     ActionInputHints,
     PluginActionConfirmationV2,
     PluginProjectedActionV2,
+    PluginLocalizedStringV2,
     PluginProjectedResourceV2,
     PluginProjectedSettingsFieldV2,
     PluginProjectedSettingsV2,
@@ -55,8 +56,8 @@ export type PluginProjectionEditableSettingField = Readonly<{
     managedServiceOrigin?: PluginProjectedSettingsFieldV2['managedServiceOrigin'];
     valueType: PluginProjectionEditableSettingValueType;
     valueSchema: PluginProjectedSettingsFieldV2['valueSchema'];
-    title: string;
-    subtitle?: string | null;
+    title: PluginProjectedSettingsFieldV2['displayKey'];
+    subtitle?: PluginProjectedSettingsFieldV2['descriptionKey'] | null;
     order?: number;
     groupId?: string | null;
     redaction: string;
@@ -72,8 +73,8 @@ export type PluginProjectionEditableSettingsGroup = Readonly<{
     id: string;
     pluginId: string;
     version: 1;
-    title: string;
-    description?: string | null;
+    title: PluginProjectedSettingsV2['title'];
+    description?: PluginProjectedSettingsV2['description'] | null;
     /** One declared record owner. Legacy storageScope is intentionally not inferred. */
     scope: PluginProjectedSettingsV2['scope'];
     presentation: PluginProjectedSettingsV2['presentation'];
@@ -82,6 +83,21 @@ export type PluginProjectionEditableSettingsGroup = Readonly<{
         | Readonly<{ kind: 'agent'; agent: Readonly<{ pluginId: string; localId: string }> }>;
     fields: readonly PluginProjectionEditableSettingField[];
 }>;
+
+export type ResolvedPluginProjectionEditableSettingField = Readonly<
+    Omit<PluginProjectionEditableSettingField, 'title' | 'subtitle'> & {
+        title: string;
+        subtitle?: string | null;
+    }
+>;
+
+export type ResolvedPluginProjectionEditableSettingsGroup = Readonly<
+    Omit<PluginProjectionEditableSettingsGroup, 'title' | 'description' | 'fields'> & {
+        title: string;
+        description?: string | null;
+        fields: readonly ResolvedPluginProjectionEditableSettingField[];
+    }
+>;
 
 export type PluginProjectionAction = Readonly<{
     id: string;
@@ -299,6 +315,85 @@ export function mapV2EditableSettingsGroup(
         presentation: settings.presentation,
         target: settings.target,
         fields: settings.fields.map(mapV2EditableSettingsField),
+    };
+}
+
+/**
+ * Resolves the author declaration at the UI presentation edge through the
+ * existing plugin translation owner. The daemon projection remains locale
+ * independent and no Settings-specific translation catalog is introduced.
+ */
+export function resolvePluginProjectionEditableSettingsGroup(
+    group: PluginProjectionEditableSettingsGroup,
+    localize: (pluginId: string, value: PluginLocalizedStringV2) => string,
+): ResolvedPluginProjectionEditableSettingsGroup {
+    return {
+        ...group,
+        title: localize(group.pluginId, group.title),
+        ...(group.description === undefined || group.description === null
+            ? { description: group.description }
+            : { description: localize(group.pluginId, group.description) }),
+        presentation: {
+            ...group.presentation,
+            sections: group.presentation.sections.map((section) => ({
+                ...section,
+                title: localize(group.pluginId, section.title),
+                ...(section.description === undefined
+                    ? {}
+                    : { description: localize(group.pluginId, section.description) }),
+            })),
+            subagentSections: group.presentation.subagentSections.map((section) => ({
+                ...section,
+                title: localize(group.pluginId, section.title),
+                ...(section.description === undefined
+                    ? {}
+                    : { description: localize(group.pluginId, section.description) }),
+                items: section.items.map((item) => ({
+                    ...item,
+                    title: localize(group.pluginId, item.title),
+                    ...(item.description === undefined
+                        ? {}
+                        : { description: localize(group.pluginId, item.description) }),
+                })),
+            })),
+        },
+        fields: group.fields.map((field) => {
+            const availability: PluginProjectionEditableSettingField['availability'] =
+                field.availability?.disabledWhen !== undefined
+                ? {
+                    ...field.availability,
+                    disabledReason: localize(group.pluginId, field.availability.disabledReason),
+                }
+                : field.availability;
+            const presentation: PluginProjectionEditableSettingField['presentation'] = field.presentation
+                ? {
+                    ...field.presentation,
+                    ...(field.presentation.placeholder === undefined
+                        ? {}
+                        : { placeholder: localize(group.pluginId, field.presentation.placeholder) }),
+                    ...(field.presentation.options === undefined
+                        ? {}
+                        : {
+                            options: field.presentation.options.map((option) => ({
+                                ...option,
+                                title: localize(group.pluginId, option.title),
+                                ...(option.description === undefined
+                                    ? {}
+                                    : { description: localize(group.pluginId, option.description) }),
+                            })),
+                        }),
+                }
+                : undefined;
+            return {
+                ...field,
+                title: localize(group.pluginId, field.title),
+                ...(field.subtitle === undefined || field.subtitle === null
+                    ? { subtitle: field.subtitle }
+                    : { subtitle: localize(group.pluginId, field.subtitle) }),
+                ...(availability === undefined ? {} : { availability }),
+                ...(presentation === undefined ? {} : { presentation }),
+            };
+        }),
     };
 }
 

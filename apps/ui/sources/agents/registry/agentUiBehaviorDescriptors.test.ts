@@ -7,10 +7,15 @@ import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 
 import { makeSettings } from './registryUiBehavior.testHelpers';
 import { createAgentUiBehaviorFromDescriptor } from './agentUiBehaviorDescriptors';
+import { attachAgentPluginSettings } from './agentUiSettingLookup';
 import { BUNDLED_CANONICAL_AGENT_UI_BEHAVIOR_DESCRIPTORS } from './generatedBundledPluginEntries.uiBehaviorOverrides';
 
 function readObjectField(value: unknown, key: string): unknown {
     return value !== null && typeof value === 'object' ? Reflect.get(value, key) : undefined;
+}
+
+function makeAgentAccountSettings(account: Readonly<Record<string, unknown>>) {
+    return attachAgentPluginSettings(makeSettings(), { account });
 }
 
 describe('createAgentUiBehaviorFromDescriptor', () => {
@@ -154,15 +159,14 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
                         {
                             serviceId: 'openai-codex',
                             keyPrefix: 'codex:connected-service',
-                            detailSettingsKey: 'connectedServicesProfileLabelByKey',
+                            detailSettingsKey: { scope: 'host', localId: 'connectedServicesProfileLabelByKey' },
                             source: { kind: 'codexHome', home: 'connectedService' },
                         },
                     ],
                     linkEnsureRequestExtras: {
-                        runtimeDescriptorFromCandidate: {
-                            backendMode: {
-                                values: ['acp', 'appServer'],
-                            },
+                        sourceFromCandidate: {
+                            sourceKind: 'codexHome',
+                            optionalFields: expect.arrayContaining(['home', 'homePath']),
                         },
                     },
                 },
@@ -179,14 +183,13 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
         const externalSessions = readObjectField(generated, 'externalSessions');
         const browse = readObjectField(externalSessions, 'browse');
         const linkEnsureRequestExtras = readObjectField(browse, 'linkEnsureRequestExtras');
-        const runtimeDescriptorFromCandidate = readObjectField(linkEnsureRequestExtras, 'runtimeDescriptorFromCandidate');
-        const backendMode = readObjectField(runtimeDescriptorFromCandidate, 'backendMode');
         const workState = readObjectField(generated, 'workState');
         const editableGoals = readObjectField(workState, 'editableGoals');
         const payload = readObjectField(generated, 'payload');
         const sessionExtras = readObjectField(payload, 'sessionExtras');
-        expect(runtimeDescriptorFromCandidate).not.toHaveProperty('providerSessionIdPaths');
-        expect(backendMode).not.toHaveProperty('candidatePaths');
+        expect(linkEnsureRequestExtras).not.toHaveProperty('runtimeDescriptorFromCandidate');
+        expect(payload).not.toHaveProperty('backendTransport');
+        expect(editableGoals).toMatchObject({ capabilityDriven: true });
         expect(editableGoals).not.toHaveProperty('modeCandidates');
         expect(sessionExtras).not.toHaveProperty('settingsCandidates');
         expect(sessionExtras).not.toHaveProperty('metadataCandidates');
@@ -241,46 +244,27 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
                 },
             },
         ]);
+        const opaqueRuntimeDescriptor = {
+            v: 1 as const,
+            agentId: 'codex',
+            agent: {
+                backendMode: 'appServer',
+                providerSessionId: 'thread-1',
+                resumeCriticalOpaqueState: { cursor: 'opaque-cursor', nested: { revision: 7 } },
+            },
+        };
         expect(behavior.externalSessions?.browse?.buildLinkEnsureRequestExtras?.({
             agentId: 'codex',
             source: { kind: 'codexHome', home: 'user' },
             candidate: {
                 details: {
-                    codexBackendMode: 'appServer',
-                    agentRuntimeDescriptorV1: {
-                        v: 1,
-                        agentId: 'codex',
-                        provider: {
-                            backendMode: 'appServer',
-                            providerSessionId: 'thread-1',
-                        },
-                    },
+                    runtimeDescriptorV1: opaqueRuntimeDescriptor,
                     source: { kind: 'codexHome', home: 'user', homePath: '/tmp/custom-home' },
                 },
             },
         })).toEqual({
             source: { kind: 'codexHome', home: 'user', homePath: '/tmp/custom-home' },
-            runtimeDescriptorV1: {
-                v: 1,
-                agentId: 'codex',
-                agent: {
-                    backendMode: 'appServer',
-                    providerSessionId: 'thread-1',
-                    home: 'user',
-                    homePath: '/tmp/custom-home',
-                    agentExtra: {
-                        owner: 'codex',
-                        schemaId: 'codex.agentRuntimeDescriptorExtra',
-                        v: 1,
-                        runtimeHandle: {
-                            backendMode: 'appServer',
-                            providerSessionId: 'thread-1',
-                            home: 'user',
-                            homePath: '/tmp/custom-home',
-                        },
-                    },
-                },
-            },
+            runtimeDescriptorV1: opaqueRuntimeDescriptor,
         });
         expect(behavior.permissions?.footer).toMatchObject({
             usePermissionUpdates: false,
@@ -290,50 +274,44 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
         });
         expect(behavior.resume?.experimentSwitches?.[0]?.id).toBe('resumeAcp');
         expect(behavior.resume?.experimentSwitches?.[0]?.getValue?.(
-            makeSettings({ codexBackendMode: 'acp' }),
+            makeAgentAccountSettings({ codexBackendMode: 'acp' }),
         )).toBe(true);
         expect(behavior.resume?.experimentSwitches?.[0]?.getValue?.(
-            makeSettings({ codexBackendMode: 'appServer' as any }),
+            makeAgentAccountSettings({ codexBackendMode: 'appServer' }),
         )).toBe(false);
         expect(behavior.newSession?.getRelevantInstallableDepKeys?.({
             agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'acp' }),
+            settings: makeAgentAccountSettings({ codexBackendMode: 'acp' }),
             experiments: { enabled: true, switches: {} },
             resumeSessionId: '',
         })).toEqual(['codex-acp']);
         expect(behavior.newSession?.getRelevantInstallableDepKeys?.({
             agentId: 'codex',
-            settings: makeSettings({ experimentalCodexAcp: true }),
+            settings: makeAgentAccountSettings({ experimentalCodexAcp: true }),
             experiments: { enabled: true, switches: {} },
             resumeSessionId: '',
         })).toEqual(['codex-acp']);
         expect(behavior.newSession?.getRelevantInstallableDepKeys?.({
             agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'appServer' as any }),
+            settings: makeAgentAccountSettings({ codexBackendMode: 'appServer' }),
             experiments: { enabled: true, switches: {} },
             resumeSessionId: '',
         })).toEqual([]);
         expect(behavior.newSession?.getRelevantInstallableDepKeys?.({
             agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'acp' }),
+            settings: makeAgentAccountSettings({ codexBackendMode: 'acp' }),
             experiments: { enabled: false, switches: {} },
             resumeSessionId: '',
         })).toEqual([]);
-        // The retired `mcp` spelling normalizes to `appServer`, and the spawn
-        // envelope carries the canonical runtime descriptor and the config-option
-        // override the Agent runtime reads.
+        // Create-time settings remain ordinary Session configuration; the Agent
+        // runtime descriptor stays Agent-owned.
         expect(behavior.payload?.buildSpawnSessionExtras?.({
             agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'mcp' }),
+            settings: makeAgentAccountSettings({ codexBackendMode: 'mcp' }),
             experiments: { enabled: true, switches: {} },
             resumeSessionId: '',
             updatedAt: 4242,
         })).toEqual({
-            runtimeDescriptorV1: {
-                v: 1,
-                agentId: 'codex',
-                agent: { backendMode: 'appServer' },
-            },
             sessionConfigOptionOverrides: {
                 v: 1,
                 updatedAt: 4242,
@@ -342,39 +320,13 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
                 },
             },
         });
-        expect(behavior.payload?.buildResumeSessionExtras?.({
-            agentId: 'codex',
-            settings: makeSettings({ codexBackendMode: 'acp' }),
-            experiments: { enabled: true, switches: {} },
-            session: {
-                metadata: {
-                    runtimeDescriptorV1: {
-                        v: 1,
-                        agentId: 'codex',
-                        provider: {
-                            backendMode: 'appServer',
-                        },
-                    },
-                },
-            } as any,
-        })).toEqual({
-            runtimeDescriptorV1: {
-                v: 1,
-                agentId: 'codex',
-                agent: { backendMode: 'appServer' },
-            },
-        });
+        expect(behavior.payload?.buildResumeSessionExtras).toBeUndefined();
         expect(behavior.workState?.supportsEditableGoals?.({
             agentId: 'codex',
             session: {
-                active: false,
-                metadata: {
-                    agentRuntimeDescriptorV1: {
-                        v: 1,
-                        agentId: 'codex',
-                        provider: { backendMode: 'appServer' },
-                    },
-                },
+                active: true,
+                metadata: { runtimeDescriptorV1: opaqueRuntimeDescriptor },
+                agentState: { capabilities: { sessionGoalSetSupported: true } },
             } as any,
         })).toBe(true);
         expect(behavior.workState?.supportsEditableGoals?.({
@@ -385,7 +337,7 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
                     sessionWorkStateV1: {
                         v: 1,
                         agentId: 'codex',
-                        items: [{ kind: 'goal' }],
+                        items: [{ kind: 'goal', goalCapabilities: { canEdit: true } }],
                     },
                 },
             } as any,
@@ -701,7 +653,7 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
         expect(behavior.guidance?.includeInSessionGettingStartedCliExamples).toBe(true);
         expect(behavior.permissions?.footer?.stopHandling).toBe('denyOnly');
         expect(behavior.resume?.experimentSwitches?.[0]?.getValue?.(
-            makeSettings({ directTranscriptStorageMode: true }),
+            makeAgentAccountSettings({ directTranscriptStorageMode: true }),
         )).toBe(true);
         expect(behavior.newSession?.getRelevantInstallableDepKeys?.({
             agentId: 'acme' as any,
@@ -759,7 +711,7 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
         });
     });
 
-    it('materializes declared backend transport fields for an Agent that names no host adapter', () => {
+    it('does not interpret retired backend-transport declaration data', () => {
         const { behavior, diagnostics } = createAgentUiBehaviorFromDescriptor({
             payload: {
                 backendTransport: {
@@ -769,63 +721,12 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
                         legacyExperimentalValue: 'acp',
                     },
                     runtimeHandleFields: ['backendMode', 'providerSessionId'],
-                    agentExtra: {
-                        owner: 'codex',
-                        schemaId: 'codex.agentRuntimeDescriptorExtra',
-                        v: 1,
-                    },
                 },
             },
         }, 'codex');
 
         expect(diagnostics).toEqual([]);
-        expect(behavior.payload?.buildBackendTransportFields?.({
-            agentId: 'codex',
-            backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
-            providerMode: 'appServer',
-            providerSessionId: 'codex-session-1',
-        } as any)).toEqual({
-            runtimeDescriptorV1: {
-                v: 1,
-                agentId: 'codex',
-                agent: {
-                    backendMode: 'appServer',
-                    providerSessionId: 'codex-session-1',
-                    agentExtra: {
-                        owner: 'codex',
-                        schemaId: 'codex.agentRuntimeDescriptorExtra',
-                        v: 1,
-                        runtimeHandle: {
-                            backendMode: 'appServer',
-                            providerSessionId: 'codex-session-1',
-                        },
-                    },
-                },
-            },
-        });
-
-        // The retired setting spelling and the legacy experiment flag both still
-        // resolve, and a mode nobody can resolve contributes nothing.
-        expect(behavior.payload?.buildBackendTransportFields?.({
-            agentId: 'codex',
-            backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
-            providerMode: 'mcp',
-        } as any).runtimeDescriptorV1?.agent.backendMode).toBe('appServer');
-        expect(behavior.payload?.buildBackendTransportFields?.({
-            agentId: 'codex',
-            backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
-            legacyExperimentalMode: true,
-        } as any).runtimeDescriptorV1?.agent.backendMode).toBe('acp');
-        expect(behavior.payload?.buildBackendTransportFields?.({
-            agentId: 'codex',
-            backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
-        } as any)).toEqual({});
-        // Another Agent's spawn never picks up this declaration.
-        expect(behavior.payload?.buildBackendTransportFields?.({
-            agentId: 'claude',
-            backendTarget: { kind: 'backend', backendId: 'claude', sourceKind: 'built_in' },
-            providerMode: 'appServer',
-        } as any)).toEqual({});
+        expect(behavior.payload ?? {}).not.toHaveProperty('buildBackendTransportFields');
     });
 
     it('materializes session subagent slots through same-plugin public inline surfaces', () => {
@@ -975,8 +876,6 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
                     backendMode: {
                         envKey: 'HAPPIER_OPENCODE_BACKEND_MODE',
                         settingKey: { scope: 'account', localId: 'opencodeBackendMode' },
-                        legacyMetadataKey: 'opencodeBackendMode',
-                        runtimeDescriptorField: 'backendMode',
                         defaultValue: 'server',
                         values: ['server', 'acp'],
                     },
@@ -984,10 +883,6 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
                         envKey: 'HAPPIER_OPENCODE_SERVER_URL',
                         settingKey: { scope: 'account', localId: 'opencodeServerBaseUrl' },
                         byServerIdSettingKey: { scope: 'account', localId: 'opencodeServerBaseUrlByServerIdV1' },
-                        legacyMetadataKey: 'opencodeServerBaseUrl',
-                        legacyExplicitMetadataKey: 'opencodeServerBaseUrlExplicit',
-                        runtimeDescriptorField: 'serverBaseUrl',
-                        runtimeDescriptorExplicitField: 'serverBaseUrlExplicit',
                     },
                 },
             },
@@ -999,12 +894,12 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
         }));
         expect(behavior.payload?.buildSpawnEnvironmentVariables?.({
             agentId: 'opencode' as any,
-            settings: makeSettings({
-                opencodeBackendMode: 'server' as any,
+            settings: makeAgentAccountSettings({
+                opencodeBackendMode: 'server',
                 opencodeServerBaseUrlByServerIdV1: {
                     'server-1': 'http://127.0.0.1:4096/',
                 },
-            } as any),
+            }),
             environmentVariables: undefined,
             newSessionOptions: { targetServerId: 'server-1' },
         })).toEqual({
@@ -1043,8 +938,6 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
                     backendMode: {
                         envKey: 'HAPPIER_OPENCODE_BACKEND_MODE',
                         settingKey: { scope: 'account', localId: 'opencodeBackendMode' },
-                        legacyMetadataKey: 'opencodeBackendMode',
-                        runtimeDescriptorField: 'backendMode',
                         defaultValue: 'server',
                         values: ['server', 'acp'],
                     },
@@ -1053,10 +946,6 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
                         explicitEnvKey: 'HAPPIER_OPENCODE_SERVER_URL_EXPLICIT',
                         settingKey: { scope: 'account', localId: 'opencodeServerBaseUrl' },
                         byServerIdSettingKey: { scope: 'account', localId: 'opencodeServerBaseUrlByServerIdV1' },
-                        legacyMetadataKey: 'opencodeServerBaseUrl',
-                        legacyExplicitMetadataKey: 'opencodeServerBaseUrlExplicit',
-                        runtimeDescriptorField: 'serverBaseUrl',
-                        runtimeDescriptorExplicitField: 'serverBaseUrlExplicit',
                         allowedProtocols: ['http:', 'https:'],
                         rejectCredentials: true,
                         originOnly: true,
@@ -1126,12 +1015,12 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
         })).toEqual({});
         expect(behavior.payload?.buildSpawnEnvironmentVariables?.({
             agentId: 'opencode' as any,
-            settings: makeSettings({
-                opencodeBackendMode: 'acp' as any,
+            settings: makeAgentAccountSettings({
+                opencodeBackendMode: 'acp',
                 opencodeServerBaseUrlByServerIdV1: {
                     'server-1': 'http://127.0.0.1:4096/path',
                 },
-            } as any),
+            }),
             environmentVariables: { FOO: '1' },
             newSessionOptions: { targetServerId: 'server-1' },
         })).toEqual({
@@ -1143,7 +1032,10 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
         expect(behavior.payload?.buildResumeSessionExtras?.({
             agentId: 'opencode' as any,
             experiments: { enabled: true, switches: {} },
-            settings: makeSettings({ opencodeBackendMode: 'acp' as any }),
+            settings: makeAgentAccountSettings({
+                opencodeBackendMode: 'acp',
+                opencodeServerBaseUrl: 'http://127.0.0.1:4999/',
+            }),
             session: {
                 metadata: {
                     runtimeDescriptorV1: {
@@ -1159,8 +1051,8 @@ describe('createAgentUiBehaviorFromDescriptor', () => {
             } as any,
         })).toEqual({
             environmentVariables: {
-                HAPPIER_OPENCODE_BACKEND_MODE: 'server',
-                HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4097/',
+                HAPPIER_OPENCODE_BACKEND_MODE: 'acp',
+                HAPPIER_OPENCODE_SERVER_URL: 'http://127.0.0.1:4999/',
                 HAPPIER_OPENCODE_SERVER_URL_EXPLICIT: '1',
             },
         });

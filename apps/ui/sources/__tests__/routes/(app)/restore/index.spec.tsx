@@ -86,7 +86,7 @@ vi.mock('@/components/ui/layout/layout', () => ({
 
 vi.mock('@/auth/flows/qrStart', () => ({
     generateAuthKeyPair: () => ({ publicKey: new Uint8Array([1]), secretKey: new Uint8Array([2]) }),
-    authQRStart: vi.fn(async () => false),
+    authQRStart: vi.fn(async () => ({ ok: false, reason: 'rejected', status: 401 })),
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({

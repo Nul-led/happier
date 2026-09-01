@@ -21,6 +21,9 @@ import { automationTriggerSetTranslations } from './automationTriggerSetTranslat
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
+import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { en } from './en';
+import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
 
 const mcpServersUxTranslationExtension = {
   mcpServersConfiguredEmptySubtitle: 'Crea un servidor, importa JSON de l’amfitrió o instal·la un preajust recomanat.',
@@ -517,6 +520,11 @@ const sessionHandoffTranslationExtensions = {
       planned: 'Planificat',
       transferred: 'Transferit',
       remaining: 'Restant',
+      primary: {
+        preparing: 'Preparant',
+        moving: 'Traslladant',
+        ready: 'A punt',
+      },
       timeline: {
         scanSource: 'Escanejant origen',
         plan: 'Planificant canvis',
@@ -608,6 +616,7 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
  * Must match the exact structure of the English translations
  */
 export const ca = {
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ca, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ca.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: 'Finalitza la pujada preparada',
@@ -1559,20 +1568,11 @@ export const ca = {
         title: 'Connexió',
         labels: {
             server: 'Servidor',
-            transport: 'Transport',
-            connectionMode: 'Mode de connexió',
             socket: 'WebSocket',
             authenticated: 'Autenticat',
             lastSync: 'Última sincronització',
             nextRetry: 'Proper reintent',
             lastError: 'Últim error',
-        },
-        transport: {
-            standard: 'Connexió estàndard',
-            direct: 'Directa',
-            secureRelay: 'Retransmissió segura',
-            directOnly: 'Només connexions directes',
-            automatic: 'Automàtic: directa + retransmissió segura',
         },
     },
 
@@ -1616,17 +1616,16 @@ export const ca = {
         serverUrlNotEmbeddedTitle: 'Configura el servidor al teu telèfon',
         serverUrlNotEmbeddedBody:
             'Aquest codi QR no pot incloure l’adreça del servidor perquè està configurada com a localhost. Al teu telèfon, ves a Configuració → Servidors i afegeix una URL a la qual el telèfon pugui accedir (IP de la LAN o Tailscale) i després torna a escanejar.',
-        pairingRequestTitle: 'Sol·licitud d’enllaç',
-        pairingRequestBody: 'Comprova que aquest codi coincideix amb el que veus al telèfon i després aprova.',
         pairingAlreadyRequestedTitle: 'Codi ja utilitzat',
         pairingAlreadyRequestedBody:
             'Aquest codi QR ja s\'ha escanejat en un altre telèfon. Demana a l\'ordinador que en generi un de nou.',
         deviceLabel: 'Dispositiu',
         requestKeyFingerprintLabel: 'Empremta de la clau de sol·licitud',
-        confirmCodeLabel: 'Codi de confirmació',
         expiresAtLabel: 'Caduca',
-        confirmCodeComparisonBody: 'Comprova que aquest codi coincideixi als dos dispositius.',
         showPairingLink: 'Mostra l’enllaç de vinculació',
+        pairingLinkSecurityWarning: 'Qualsevol persona amb aquest enllaç temporal pot afegir un dispositiu abans que caduqui. Comparteix-lo només amb el teu propi dispositiu.',
+        pairingQrTooLargeTitle: 'Massa gran per a un codi QR',
+        pairingQrTooLargeBody: 'Aquesta invitació conté detalls de connexió addicionals i no es pot mostrar com a codi QR. El teu Home continua a punt per vincular-se: utilitza l\'enllaç segur de sota.',
         homeAddedPreservedFocusBody: 'Aquest Home s’ha afegit. El Home enfocat no ha canviat.',
         requestingDeviceLabel: 'Dispositiu sol·licitant',
         thisDevice: 'Aquest dispositiu',
@@ -1641,7 +1640,6 @@ export const ca = {
         unsupportedEnrollmentResponseBody: 'Aquest Home ha retornat una resposta que aquesta versió de Happier no pot utilitzar. Actualitza Happier o escaneja un altre Home.',
         updateRequiredTitle: 'Cal actualitzar',
         updateRequiredBody: 'Aquest Home utilitza un format de vinculació antic que no es pot acceptar de manera segura. Actualitza Happier als dos dispositius i torna-ho a provar.',
-        approveButton: 'Aprovar',
         generateNewQrCode: 'Generar un nou codi QR',
         pairingQrExpired: 'Aquest codi QR ha caducat. Genera\'n un de nou.',
         openMachine: 'Obrir màquina',
@@ -2497,7 +2495,7 @@ export const ca = {
             lastSync: 'Última sincronització',
         },
         server: {
-            activeServer: 'Relay actiu',
+            activeServer: 'Home actiu',
         },
         identity: {
             accountId: 'ID del compte',
@@ -2553,7 +2551,7 @@ export const ca = {
             findings: 'Resultats',
         },
         overview: {
-            activeServer: 'Relay actiu',
+            activeServer: 'Home actiu',
             account: 'Compte',
             onlineMachines: 'Màquines en línia (servidor actiu)',
             cachedAttribution: ({ count }: { count: number }) => `${count} instantània(es) del doctor en memòria cau disponibles`,
@@ -5947,7 +5945,7 @@ deps: {
         serverConfiguration: 'Configuració del Relay',
         enterServerUrl: 'Introdueix una URL del Relay',
         notValidHappyServer: 'No és un Relay Happier vàlid',
-        changeServer: 'Canvia el Relay',
+        changeServer: 'Canvia de Home',
         continueWithServer: 'Continuar amb aquest Relay?',
         resetToDefault: 'Reinicia per defecte',
         resetServerDefault: 'Reiniciar el Relay per defecte?',
@@ -5967,7 +5965,7 @@ deps: {
         serverNamePlaceholder: 'Nom del Relay',
         cannotRenameCloud: 'No pots reanomenar el Relay al núvol.',
         removeServer: 'Elimina el Relay',
-        removeServerConfirm: ({ name }: { name: string }) => `Eliminar "${name}" dels Relays desats?`,
+        removeServerConfirm: ({ name }: { name: string }) => `Vols eliminar "${name}" d’aquest dispositiu? Això elimina d’aquest dispositiu les credencials desades d’aquest Home.`,
         removeServerGroup: 'Elimina el grup de Relays',
         removeServerGroupConfirm: ({ name }: { name: string }) =>
             `Eliminar "${name}" dels grups de Relays desats?`,
@@ -5985,9 +5983,8 @@ deps: {
         switchForThisTab: 'Canvia per a aquesta pestanya',
         makeDefaultOnDevice: 'Fes-lo predeterminat en aquest dispositiu',
         serverNameLabel: 'Nom del Relay',
-        addAndUse: 'Afegeix i usa',
           addTargetsTitle: 'Afegeix',
-          addServerSubtitle: 'Afegeix un nou Relay i canvia-hi',
+          addServerSubtitle: 'Afegeix un nou Relay',
           notificationAddServerHint: 'Aquest Relay encara no està desat en aquest dispositiu. Afegeix-lo a continuació per continuar.',
           serverCount: ({ count }: { count: number }) => `${count} ${plural({ count, singular: 'Relay', plural: 'Relays' })}`,
           useCanonicalServerUrlTitle: 'Fer servir l’URL canònica del Relay?',
@@ -5996,9 +5993,6 @@ deps: {
         insecureHttpUrlTitle: 'URL del Relay no segura',
         insecureHttpUrlBody:
             'Aquesta URL utilitza http:// i potser no funcionarà des del teu telèfon o fora de la LAN. Utilitza HTTPS si és possible. Vols continuar igualment?',
-        signedOutSwitchConfirmTitle: 'No estàs connectat',
-        signedOutSwitchConfirmBody:
-            'Canviar a aquest Relay i continuar a la pantalla principal perquè puguis iniciar sessió o crear un compte?',
         addServerGroupTitle: 'Afegeix un grup de Relays',
         addServerGroupSubtitle: 'Crea un grup reutilitzable de Relays',
         serverGroupNameLabel: 'Nom del grup',
@@ -6062,8 +6056,6 @@ deps: {
         multiServerView: {
             title: 'Vista concurrent de múltiples Relays',
             footer: 'Selecciona si vols combinar diversos Relays en una sola llista de sessions.',
-            enableTitle: 'Activa la vista concurrent',
-            enableSubtitle: 'Mostra juntes les sessions dels Relays seleccionats',
             presentationTitle: 'Mode de presentació',
             presentation: {
                 flatWithBadges: 'Llista plana amb insígnies de Relay',
@@ -8382,10 +8374,6 @@ deps: {
                     title: 'Perfil',
                     subtitle: 'Permet seleccionar un perfil per identificador sense exposar secrets.',
                 },
-                allowEnvironmentVariables: {
-                    title: 'Variables d’entorn',
-                    subtitle: 'Permet variables d’entorn explícites a sessions noves.',
-                },
                 allowConnectedServicesOverride: {
                     title: 'Serveis connectats',
                     subtitle: 'Permet seleccionar vinculacions de serveis connectats per referència.',
@@ -10257,6 +10245,8 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: 'Link a Home to this Account Service, then refresh.',
         accountServiceConnectHome: 'Connect Home',
+        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHomeDescription: 'Let {accountService} help your other devices find this Home and request access.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
         accountServiceHomeApprovalRequired: 'Approval needed',
@@ -12100,7 +12090,7 @@ settingsSession: {
       marketplaceInstallDecisionFailed: ({ outcome }: { outcome: string }) => `El connector no s'ha instal·lat (${outcome}).`,
       marketplaceChangeDecisionFailed: ({ action, outcome }: { action: string; outcome: string }) => `${action} ha fallat (${outcome}).`,
       pluginChangeConfirmBody: ({ action, name, machine, server }: { action: string; name: string; machine: string; server: string }) => `Confirma l'acció «${action}» per a ${name} a ${machine} (${server}).`,
-      pluginChangeConfirmTarget: ({ machine, server }: { machine: string; server: string }) => `Aquesta acció s'aplica a ${machine} ({server}).`,
+      pluginChangeConfirmTarget: ({ machine, server }: { machine: string; server: string }) => `Aquesta acció s'aplica a ${machine} (${server}).`,
       forgetTrust: "Oblida la confiança",
       rollback: "Reverteix",
       uninstall: "Desinstal·la",
@@ -12279,24 +12269,10 @@ settingsSession: {
     personalHome: {
         bootstrap: {
             title: 'S’està preparant la teva Llar personal',
-            preparingHomeStatus: 'S’està preparant la teva Llar local.',
-            connectingAppStatus: 'S’està connectant Happier a la teva Llar.',
-            closingSignupStatus: 'S’està protegint la teva Llar abans que estigui disponible.',
+            ensuringHomeStatus: 'S’està preparant la teva Llar local.',
             preparingComputerStatus: 'La teva Llar està preparada. S’està preparant aquest ordinador en segon pla.',
             blockedStatus: 'La configuració necessita la teva atenció abans de continuar.',
             readyStatus: 'La teva Llar està preparada.',
-            preparingHomeTitle: 'S’està preparant la teva Llar',
-            preparingHomeDetail: 'S’està preparant aquest ordinador per al teu treball local.',
-            connectingAppTitle: 'S’està connectant Happier',
-            connectingAppDetail: 'S’està connectant Happier de manera segura a la teva Llar.',
-            preparingComputerTitle: 'S’està preparant aquest ordinador',
-            preparingComputerDetail: 'S’està configurant el servei en segon pla perquè les sessions puguin continuar executant-se.',
-            pending: 'En espera',
-            active: 'En curs',
-            complete: 'Completat',
-            blocked: 'Requereix atenció',
-            progressLabel: 'Progrés de configuració de la Llar personal',
-            rowAccessibilityLabel: ({ title, status, detail }: { title: string; status: string; detail: string }) => `${title}. ${status}. ${detail}`,
             failureBody: 'No hem pogut completar aquest pas. La configuració ja completada està segura; torna-ho a provar o obre’n els detalls.',
             profileRecoveryBody: 'La teva Llar personal està preparada. Happier encara ha d’acabar de connectar-s’hi.',
             computerRecoveryBody: 'La teva Llar personal està preparada. La configuració de l’Agent necessita atenció.',

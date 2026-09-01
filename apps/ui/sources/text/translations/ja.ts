@@ -21,6 +21,9 @@ import { automationTriggerSetTranslations } from './automationTriggerSetTranslat
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
+import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { en } from './en';
+import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
 
 /**
  * Japanese translations for the Happier app
@@ -524,6 +527,11 @@ const sessionHandoffTranslationExtensions = {
       planned: '計画済み',
       transferred: '転送済み',
       remaining: '残り',
+      primary: {
+        preparing: '準備中',
+        moving: '移動中',
+        ready: '準備完了',
+      },
       timeline: {
         scanSource: 'ソースをスキャン',
         plan: '変更を計画',
@@ -601,6 +609,7 @@ const settingsSessionHandoffTranslationExtensions = {
 } as const;
 
 export const ja = {
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ja, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ja.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: '一時アップロードを完了',
@@ -1902,20 +1911,11 @@ export const ja = {
 	    title: "接続",
 	    labels: {
 	      server: "サーバー",
-	      transport: "接続経路",
-	      connectionMode: "接続モード",
 	      socket: "ソケット",
 	      authenticated: "認証済み",
 	      lastSync: "最終同期",
 	      nextRetry: "次の再試行",
 	      lastError: "直近のエラー",
-	    },
-	    transport: {
-	      standard: "標準接続",
-	      direct: "直接接続",
-	      secureRelay: "セキュアリレー",
-	      directOnly: "直接接続のみ",
-	      automatic: "自動：直接接続 + セキュアリレー",
 	    },
 	  },
 
@@ -1960,17 +1960,16 @@ export const ja = {
     serverUrlNotEmbeddedTitle: "スマホでサーバーを設定",
     serverUrlNotEmbeddedBody:
       "このQRコードにはサーバーのURLを含められません（localhost に設定されているため）。スマホで「設定 → サーバー」を開き、スマホから到達できるURL（LANのIPやTailscaleのURLなど）を追加してから、もう一度スキャンしてください。",
-    pairingRequestTitle: "ペアリング要求",
-    pairingRequestBody: "スマホに表示されたコードと一致することを確認してから承認してください。",
     pairingAlreadyRequestedTitle: "コードは使用済みです",
     pairingAlreadyRequestedBody:
       "このQRコードは別の端末で既にスキャンされています。パソコン側で新しいコードを生成してください。",
     deviceLabel: "デバイス",
     requestKeyFingerprintLabel: "リクエストキーのフィンガープリント",
-    confirmCodeLabel: "確認コード",
     expiresAtLabel: "有効期限",
-    confirmCodeComparisonBody: "両方のデバイスに同じコードが表示されていることを確認してください。",
     showPairingLink: "ペアリングリンクを表示",
+    pairingLinkSecurityWarning: "この一時リンクを持つ人は、有効期限内にデバイスを追加できます。自分のデバイスだけと共有してください。",
+    pairingQrTooLargeTitle: "QRコードに収まりません",
+    pairingQrTooLargeBody: "この招待には接続情報が多く含まれているため、QRコードとして表示できません。Homeは引き続きペアリングできます。下の安全なリンクをご利用ください。",
     homeAddedPreservedFocusBody: "このHomeを追加しました。現在選択中のHomeは変更されていません。",
     requestingDeviceLabel: "要求元デバイス",
     thisDevice: "このデバイス",
@@ -1985,7 +1984,6 @@ export const ja = {
     unsupportedEnrollmentResponseBody: "このHomeから、現在のHappierでは使用できない応答が返されました。Happierを更新するか、別のHomeをスキャンしてください。",
     updateRequiredTitle: "更新が必要です",
     updateRequiredBody: "このHomeは安全に受け入れられない古いペアリング形式を使用しています。両方のデバイスでHappierを更新して、もう一度お試しください。",
-    approveButton: "承認",
     generateNewQrCode: "新しいQRコードを生成",
     pairingQrExpired: "このQRコードは期限切れです。新しいコードを生成してください。",
     openMachine: "マシンを開く",
@@ -3137,7 +3135,7 @@ localTailscale: {
       lastSync: "最終同期",
     },
     server: {
-      activeServer: "アクティブ Relay",
+      activeServer: "アクティブ Home",
     },
     identity: {
       accountId: "アカウントID",
@@ -3193,7 +3191,7 @@ localTailscale: {
       findings: "検出結果",
     },
     overview: {
-      activeServer: "アクティブ Relay",
+      activeServer: "アクティブ Home",
       account: "アカウント",
       onlineMachines: "オンラインのマシン（アクティブサーバー）",
       cachedAttribution: ({ count }: { count: number }) => `キャッシュされた doctor スナップショット: ${count} 件`,
@@ -7004,7 +7002,7 @@ localTailscale: {
     serverConfiguration: "Relay 設定",
     enterServerUrl: "Relay URLを入力してください",
     notValidHappyServer: "有効なHappier Relayではありません",
-    changeServer: "Relayを変更",
+    changeServer: "Homeを変更",
     continueWithServer: "このRelayで続行しますか？",
     resetToDefault: "デフォルトにリセット",
     resetServerDefault: "Relayをデフォルトにリセットしますか？",
@@ -7028,7 +7026,7 @@ localTailscale: {
     cannotRenameCloud: "クラウドRelayの名前は変更できません。",
     removeServer: "Relayを削除",
     removeServerConfirm: ({ name }: { name: string }) =>
-      `保存済みRelayから「${name}」を削除しますか？`,
+      `「${name}」をこのデバイスから削除しますか？このHome用にこのデバイスに保存された認証情報も削除されます。`,
     removeServerGroup: "Relayグループを削除",
     removeServerGroupConfirm: ({ name }: { name: string }) =>
       `保存済みRelayグループから「${name}」を削除しますか？`,
@@ -7047,9 +7045,8 @@ localTailscale: {
     switchForThisTab: "このタブのみ切り替え",
     makeDefaultOnDevice: "この端末のデフォルトにする",
     serverNameLabel: "Relay名",
-    addAndUse: "追加して使用",
       addTargetsTitle: "追加",
-      addServerSubtitle: "新しいRelayを追加して切り替え",
+      addServerSubtitle: "新しいRelayを追加",
       notificationAddServerHint: "このRelayはまだこの端末に保存されていません。続行するには下で追加してください。",
       serverCount: ({ count }: { count: number }) => `${count} Relay`,
       useCanonicalServerUrlTitle: "正規のRelay URLを使用しますか？",
@@ -7058,9 +7055,6 @@ localTailscale: {
     insecureHttpUrlTitle: "安全でないRelay URL",
     insecureHttpUrlBody:
       "このURLは http:// を使用しており、スマホやLAN外からは動作しない可能性があります。可能であればHTTPSを使用してください。それでも続行しますか？",
-    signedOutSwitchConfirmTitle: "接続されていません",
-    signedOutSwitchConfirmBody:
-      "このRelayに切り替えてホーム画面へ進み、サインインまたはアカウント作成を行いますか？",
     addServerGroupTitle: "Relayグループを追加",
     addServerGroupSubtitle: "再利用可能なRelayのグループを作成",
     serverGroupNameLabel: "グループ名",
@@ -7122,8 +7116,6 @@ localTailscale: {
     multiServerView: {
       title: "複数Relay同時表示",
       footer: "複数のRelayを 1 つのセッション一覧にまとめるか選択します。",
-      enableTitle: "同時表示を有効化",
-      enableSubtitle: "選択したRelayのセッションをまとめて表示します",
       presentationTitle: "表示モード",
       presentation: {
         flatWithBadges: "Relayバッジ付きのフラット一覧",
@@ -9572,7 +9564,6 @@ localTailscale: {
               allowAgentModeOverride: { title: "エージェントモード", subtitle: "エージェントまたはセッションモードを選べるようにします。" },
               allowConfigOptionOverrides: { title: "設定オプション", subtitle: "思考 effort や workflow などのプロバイダー設定を許可します。" },
               allowProfileOverride: { title: "プロファイル", subtitle: "秘密情報を公開せずに profile id を選べるようにします。" },
-              allowEnvironmentVariables: { title: "環境変数", subtitle: "新しいセッションで明示的な環境変数を許可します。" },
               allowConnectedServicesOverride: { title: "接続済みサービス", subtitle: "接続済みサービスのバインディングを参照で選べるようにします。" },
               allowMcpSelectionOverride: { title: "MCP 選択", subtitle: "継承した MCP サーバー選択を上書きできるようにします。" },
               allowTranscriptStorageOverride: { title: "トランスクリプト保存", subtitle: "互換性のある保存モードを選べるようにします。" },
@@ -11571,6 +11562,8 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: 'Link a Home to this Account Service, then refresh.',
         accountServiceConnectHome: 'Connect Home',
+        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHomeDescription: 'Let {accountService} help your other devices find this Home and request access.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
         accountServiceHomeApprovalRequired: 'Approval needed',
@@ -13444,24 +13437,10 @@ settingsSession: {
     personalHome: {
         bootstrap: {
             title: 'パーソナルホームを準備しています',
-            preparingHomeStatus: 'ローカルホームを準備しています。',
-            connectingAppStatus: 'Happier をホームに接続しています。',
-            closingSignupStatus: '利用可能になる前にホームを保護しています。',
+            ensuringHomeStatus: 'ローカルホームを準備しています。',
             preparingComputerStatus: 'ホームの準備ができました。バックグラウンドでこのコンピューターを準備しています。',
             blockedStatus: '続行するには、セットアップを確認してください。',
             readyStatus: 'ホームの準備ができました。',
-            preparingHomeTitle: 'ホームを準備しています',
-            preparingHomeDetail: 'このコンピューターをローカル作業用に準備しています。',
-            connectingAppTitle: 'Happier を接続しています',
-            connectingAppDetail: 'Happier をホームに安全に接続しています。',
-            preparingComputerTitle: 'このコンピューターを準備しています',
-            preparingComputerDetail: 'セッションを実行し続けられるように、バックグラウンドサービスを設定しています。',
-            pending: '待機中',
-            active: '進行中',
-            complete: '完了',
-            blocked: '確認が必要',
-            progressLabel: 'パーソナルホームのセットアップ進捗',
-            rowAccessibilityLabel: ({ title, status, detail }: { title: string; status: string; detail: string }) => `${title}。${status}。${detail}`,
             failureBody: 'この手順を完了できませんでした。完了済みのセットアップは保持されています。再試行するか、詳細を開いてください。',
             profileRecoveryBody: 'パーソナルホームの準備ができました。Happier はまだ接続を完了する必要があります。',
             computerRecoveryBody: 'パーソナルホームの準備ができました。エージェントのセットアップを確認してください。',

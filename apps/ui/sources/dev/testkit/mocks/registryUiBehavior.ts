@@ -15,7 +15,6 @@ export function createRegistryUiBehaviorModuleMock(
     const defaults = {
         CANONICAL_AGENTS_UI_BEHAVIOR: EMPTY_AGENT_UI_BEHAVIOR_BY_ID,
         AGENTS_UI_BEHAVIOR: EMPTY_AGENT_UI_BEHAVIOR_BY_ID,
-        buildBackendTransportFieldsFromUiState: () => ({}),
         buildResumeCapabilityOptionsFromUiState: () => ({}),
         buildNewSessionOptionsFromUiState: () => ({}),
         canSelectAgentWithoutDetectedCli: () => false,
@@ -24,7 +23,6 @@ export function createRegistryUiBehaviorModuleMock(
         buildResumeSessionExtrasFromUiState: () => ({}),
         buildSpawnSessionExtrasFromUiState: () => ({}),
         buildWakeResumeExtras: () => ({}),
-        buildSessionHandoffSourceRecoveryResumePatch: () => ({}),
         getAgentResumeExperimentsFromSettings: () => ({ enabled: true, switches: {} }),
         getNewSessionPreflightIssues: () => [],
         getNewSessionRelevantInstallableDepKeys: () => [],

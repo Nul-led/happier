@@ -288,10 +288,7 @@ function publishResponseMatchesExpected(input: Readonly<{
         && link.contributionId === input.request.slot.contributionId
         && link.tier === input.request.slot.tier
         && link.platform === input.request.slot.platform
-        && (
-            input.response.outcome === 'rejoined'
-            || link.artifactId === input.request.artifactId
-        )
+        && link.artifactId === input.request.artifactId
         && link.artifactDigest === input.request.slot.artifactDigest
         && sameHostCompatibility(input.request.hostCompatibility, link.compatibility);
 }

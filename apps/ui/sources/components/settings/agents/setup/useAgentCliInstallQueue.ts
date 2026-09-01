@@ -1,6 +1,5 @@
 import * as React from 'react';
 
-import type { AgentId } from '@/agents/catalog/catalog';
 import { buildProviderCliCapabilityId } from '@/capabilities/cliCapabilityId';
 import { machineCapabilitiesInvoke } from '@/sync/ops';
 import type { CapabilitiesInvokeResponse } from '@/sync/api/capabilities/capabilitiesProtocol';
@@ -14,15 +13,15 @@ export type AgentCliInstallResult = Readonly<{
 }>;
 
 export type AgentCliInstallQueueSummary = Readonly<{
-    installedAgentIds: AgentId[];
-    failedAgentIds: AgentId[];
+    installedAgentIds: string[];
+    failedAgentIds: string[];
 }>;
 
 export type AgentCliInstallQueueState = Readonly<{
     isRunning: boolean;
     hasStarted: boolean;
-    agentIds: readonly AgentId[];
-    statusByProviderId: Readonly<Partial<Record<AgentId, AgentCliInstallResult>>>;
+    agentIds: readonly string[];
+    statusByProviderId: Readonly<Record<string, AgentCliInstallResult | undefined>>;
 }>;
 
 export type AgentCliInstallExecutionTarget = Readonly<{
@@ -50,9 +49,9 @@ export function useAgentCliInstallQueue(params: Readonly<{
      * every machine mutation.
      */
     resolveExecutionTarget?: () => AgentCliInstallExecutionTarget | null;
-    agentIds: readonly AgentId[];
-    agentDetectKeys: Readonly<Partial<Record<AgentId, string>>>;
-    installedByAgentId: Readonly<Partial<Record<AgentId, boolean | null>>>;
+    agentIds: readonly string[];
+    agentDetectKeys: Readonly<Record<string, string | undefined>>;
+    installedByAgentId: Readonly<Record<string, boolean | null | undefined>>;
 }>) {
     const mountedRef = React.useRef(true);
     const abortRef = React.useRef<{ aborted: boolean }>({ aborted: false });
@@ -60,7 +59,7 @@ export function useAgentCliInstallQueue(params: Readonly<{
 
     const [hasStarted, setHasStarted] = React.useState(false);
     const [isRunning, setIsRunning] = React.useState(false);
-    const [statusByProviderId, setStatusByProviderId] = React.useState<Partial<Record<AgentId, AgentCliInstallResult>>>({});
+    const [statusByProviderId, setStatusByProviderId] = React.useState<Record<string, AgentCliInstallResult | undefined>>({});
 
     const resolveCurrentExecutionTarget = React.useCallback((): AgentCliInstallExecutionTarget | null => {
         if (params.resolveExecutionTarget) return params.resolveExecutionTarget();
@@ -80,7 +79,7 @@ export function useAgentCliInstallQueue(params: Readonly<{
         };
     }, []);
 
-    const setStatus = React.useCallback((agentId: AgentId, next: AgentCliInstallResult) => {
+    const setStatus = React.useCallback((agentId: string, next: AgentCliInstallResult) => {
         if (!mountedRef.current) return;
         setStatusByProviderId((previous) => ({
             ...previous,
@@ -88,7 +87,7 @@ export function useAgentCliInstallQueue(params: Readonly<{
         }));
     }, []);
 
-    const resolveStatus = React.useCallback((agentId: AgentId): AgentCliInstallResult => {
+    const resolveStatus = React.useCallback((agentId: string): AgentCliInstallResult => {
         const override = statusByProviderId[agentId];
         const installed = resolveInstalledCandidate(params.installedByAgentId[agentId]);
 
@@ -103,7 +102,7 @@ export function useAgentCliInstallQueue(params: Readonly<{
         return override ?? { status: 'idle', logPath: null, failureReason: null };
     }, [params.installedByAgentId, statusByProviderId]);
 
-    const start = React.useCallback(async (agentIds: readonly AgentId[] = params.agentIds): Promise<AgentCliInstallQueueSummary> => {
+    const start = React.useCallback(async (agentIds: readonly string[] = params.agentIds): Promise<AgentCliInstallQueueSummary> => {
         if (runningRef.current) {
             return {
                 installedAgentIds: agentIds.filter((id) => resolveStatus(id).status === 'installed'),
@@ -118,10 +117,10 @@ export function useAgentCliInstallQueue(params: Readonly<{
         runningRef.current = true;
         setIsRunning(true);
 
-        const installedAgentIds: AgentId[] = [];
-        const failedAgentIds: AgentId[] = [];
+        const installedAgentIds: string[] = [];
+        const failedAgentIds: string[] = [];
 
-        const installTargets: AgentId[] = [];
+        const installTargets: string[] = [];
         for (const agentId of agentIds) {
             if (resolveStatus(agentId).status === 'installed') {
                 installedAgentIds.push(agentId);
@@ -198,7 +197,7 @@ export function useAgentCliInstallQueue(params: Readonly<{
         return { installedAgentIds, failedAgentIds };
     }, [isExecutionTargetCurrent, params.agentDetectKeys, params.agentIds, resolveCurrentExecutionTarget, resolveStatus, setStatus]);
 
-    const retry = React.useCallback(async (agentId: AgentId): Promise<AgentCliInstallQueueSummary> => {
+    const retry = React.useCallback(async (agentId: string): Promise<AgentCliInstallQueueSummary> => {
         setStatus(agentId, { status: 'queued', logPath: null, failureReason: null });
         return start([agentId]);
     }, [setStatus, start]);

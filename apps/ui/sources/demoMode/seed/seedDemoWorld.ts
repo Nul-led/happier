@@ -1,6 +1,13 @@
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { getActiveServerSnapshot, setActiveServer, upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
-import { listServerProfiles, removeServerProfile, type ActiveServerSnapshot } from '@/sync/domains/server/serverProfiles';
+import {
+    listServerProfiles,
+    loadHomeViewState,
+    removeServerProfile,
+    saveHomeViewState,
+    type ActiveServerSnapshot,
+    type HomeViewStateV1,
+} from '@/sync/domains/server/serverProfiles';
 import { listServerProfileScopeIds } from '@/sync/domains/server/selection/serverSelectionProfileScopeIds';
 import { storage } from '@/sync/domains/state/storage';
 import { deleteServerFeaturesSnapshot, primeServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
@@ -21,6 +28,7 @@ type ActiveDemoSnapshot = Readonly<{
     sessionIds: ReadonlySet<string>;
     machineIds: ReadonlySet<string>;
     activeServerSnapshot: ActiveServerSnapshot;
+    homeViewState: HomeViewStateV1 | null;
     demoServerProfileId: string;
     demoServerProfileExisted: boolean;
     primedServerFeatureIds: readonly string[];
@@ -101,6 +109,7 @@ export async function seedDemoWorld(options: SeedDemoWorldOptions = {}): Promise
     const world = buildDemoWorld();
     const ids = collectWorldIds(world);
     const activeServerSnapshot = getActiveServerSnapshot();
+    const homeViewState = loadHomeViewState();
     const demoServerProfileExisted = listServerProfiles().some((profile) => profile.serverUrl === DEMO_SERVER_BASE_URL);
     const demoServerProfile = upsertAndActivateServer({
         serverUrl: DEMO_SERVER_BASE_URL,
@@ -117,6 +126,7 @@ export async function seedDemoWorld(options: SeedDemoWorldOptions = {}): Promise
         snapshot: takeStoreSnapshot(storage.getState()),
         ...ids,
         activeServerSnapshot,
+        homeViewState,
         demoServerProfileId: demoServerProfile.id,
         demoServerProfileExisted,
         primedServerFeatureIds,
@@ -124,6 +134,13 @@ export async function seedDemoWorld(options: SeedDemoWorldOptions = {}): Promise
     };
 
     enterDemoMode();
+    if (homeViewState) {
+        saveHomeViewState({
+            ...homeViewState,
+            activeTargetKind: 'server',
+            activeTargetId: getActiveServerSnapshot().serverId,
+        });
+    }
     for (const serverId of primedServerFeatureIds) {
         primeServerFeaturesSnapshot({
             serverId,
@@ -202,6 +219,7 @@ export async function clearDemoWorld(options: ClearDemoWorldOptions = {}): Promi
         machineIds: active.machineIds,
     }));
     setActiveServer({ serverId: active.activeServerSnapshot.serverId, scope: 'device' });
+    if (active.homeViewState) saveHomeViewState(active.homeViewState);
     for (const serverId of active.primedServerFeatureIds) {
         deleteServerFeaturesSnapshot({ serverId });
     }

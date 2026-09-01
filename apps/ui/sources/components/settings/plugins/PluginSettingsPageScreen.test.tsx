@@ -292,6 +292,63 @@ describe('PluginSettingsPageScreen', () => {
         }));
     });
 
+    it('retires a declared Back step when the page renderer becomes unavailable', async () => {
+        const page = settingsPage();
+        appShellState.projection = {
+            ...EMPTY_PLUGIN_UI_PROJECTION,
+            settingsPagesById: { [page.id]: page },
+        };
+        const { PluginSettingsPageScreen } = await import('./PluginSettingsPageScreen');
+        const screen = await renderScreen(
+            <PluginSettingsPageScreen
+                pluginId="examples.descriptor-only"
+                pageId="settings"
+                subPath=""
+            />,
+        );
+
+        latestHostProps().binding?.mountedHostApiHandlers?.replacePageLocation?.({
+            v: 1,
+            method: 'replacePageLocation',
+            payload: { subPath: 'bindings/7', backLocation: '' },
+        });
+        appShellState.projection = {
+            ...EMPTY_PLUGIN_UI_PROJECTION,
+            settingsPagesById: {
+                [page.id]: {
+                    ...page,
+                    availability: {
+                        state: 'unavailable',
+                        reason: 'disabled',
+                        diagnostics: [],
+                    },
+                },
+            },
+        };
+        await screen.update(
+            <PluginSettingsPageScreen
+                pluginId="examples.descriptor-only"
+                pageId="settings"
+                subPath="bindings/7"
+            />,
+        );
+        appShellState.projection = {
+            ...EMPTY_PLUGIN_UI_PROJECTION,
+            settingsPagesById: { [page.id]: page },
+        };
+        await screen.update(
+            <PluginSettingsPageScreen
+                pluginId="examples.descriptor-only"
+                pageId="settings"
+                subPath="bindings/7"
+            />,
+        );
+
+        routerReplaceSpy.mockClear();
+        expect(routeRemovalState.consume?.()).toBe(false);
+        expect(routerReplaceSpy).not.toHaveBeenCalled();
+    });
+
     it('keeps a restored Settings destination pending until the app projection has described it', async () => {
         appShellState.projection = null;
         appShellState.phase = 'establishing';

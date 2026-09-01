@@ -321,7 +321,7 @@ describe('SessionAutomationsScreen', () => {
 
         const { SessionAutomationsScreen } = await import('./SessionAutomationsScreen');
 
-        const screen = await renderScreen(React.createElement(SessionAutomationsScreen, { sessionId: 's1' }));
+        await renderScreen(React.createElement(SessionAutomationsScreen, { sessionId: 's1' }));
 
         const json = JSON.stringify(screen.tree.toJSON());
         expect(json).toContain('Linked');
@@ -612,7 +612,7 @@ describe('SessionAutomationsScreen', () => {
         ));
         const { SessionAutomationsScreen } = await import('./SessionAutomationsScreen');
 
-        await renderScreen(React.createElement(SessionAutomationsScreen, { sessionId: 's1' }));
+        const screen = await renderScreen(React.createElement(SessionAutomationsScreen, { sessionId: 's1' }));
         await act(async () => {
             await Promise.resolve();
         });

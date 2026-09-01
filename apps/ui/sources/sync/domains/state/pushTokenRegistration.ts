@@ -31,7 +31,7 @@ const LOCAL_STORAGE_KEY_EXPO_PUSH_TOKEN_GENERATION = `${scopedStorageId('push-to
 export type RegisteredExpoPushTokenState = Readonly<{
     /** Token observed on this device and processed by the latest registration cycle. */
     current: string | null;
-    /** Prior token retained until every Home completed old-token cleanup. */
+    /** Immediate-prior token retained for bounded best-effort cleanup. */
     cleanupPending: string | null;
 }>;
 
@@ -129,8 +129,9 @@ export function loadLastRegisteredExpoPushToken(): string | null {
 }
 
 /**
- * Persist the device token generation. `cleanupPending` retains a prior token
- * until every Home completed old-token cleanup; a full-success commit omits it.
+ * Persist the device token generation. `cleanupPending` retains only the
+ * immediate-prior token for bounded best-effort cleanup; a full-success commit
+ * omits it and a later rotation may replace it.
  */
 export function saveExpoPushTokenGeneration(params: Readonly<{
     current: string;
@@ -147,14 +148,14 @@ export function saveExpoPushTokenGeneration(params: Readonly<{
     deleteLegacyRawValue();
 }
 
-/** Full-success commit: the observed token is registered everywhere and no cleanup is pending. */
+/** Full-success commit: this cycle had no known registration or immediate-prior cleanup failure. */
 export function saveLastRegisteredExpoPushToken(token: string): void {
     saveExpoPushTokenGeneration({ current: token });
 }
 
 /**
- * Canonical owner helper for cleanup callers: every token that must be
- * unregistered on Home logout, global credential forget, or profile removal.
+ * Canonical cleanup input for Home logout, global credential forget, and
+ * profile removal: the current token plus the bounded immediate-prior hint.
  */
 export function loadExpoPushTokensToUnregister(): string[] {
     const state = loadRegisteredExpoPushTokenState();

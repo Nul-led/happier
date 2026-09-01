@@ -240,6 +240,7 @@ export function createStorageModuleStub<TOverrides extends object>(
         useSessionPendingMessages: () => ({ messages: [], discarded: [], isLoaded: true } as const),
         useAllMachines: () => allMachines,
         useMachineDisplayById: () => machineDisplayById,
+        useMachineDisplayNamesById: () => ({}),
         useAllSessions: () => allSessions,
         useAllSessionsForAttention: () => allAttentionSessions,
         useAllSessionListRenderables: () => allSessionListRenderables,

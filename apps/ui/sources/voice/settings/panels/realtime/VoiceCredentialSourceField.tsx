@@ -8,6 +8,7 @@ import type {
   VoiceProviderContribution,
 } from '@happier-dev/protocol';
 import { buildQualifiedPluginContributionKey } from '@happier-dev/protocol';
+import { qualifyPluginContributionReferenceV1 } from '@happier-dev/protocol/plugins/contribution-identity';
 
 import {
   DropdownMenu,
@@ -51,15 +52,6 @@ function sameService(
   right: PluginContributionIdentityV1,
 ): boolean {
   return left.pluginId === right.pluginId && left.localId === right.localId;
-}
-
-function qualifyService(
-  service: string | PluginContributionIdentityV1,
-  declaringPluginId: string,
-): PluginContributionIdentityV1 {
-  return typeof service === 'string'
-    ? Object.freeze({ pluginId: declaringPluginId, localId: service })
-    : service;
 }
 
 function targetId(target: QualifiedConnectedAccountPurposeBindingTargetV1): string {
@@ -120,7 +112,10 @@ export function VoiceCredentialSourceField(props: Readonly<{
       source.kind === 'connectedAccount'
         ? [Object.freeze({
             ...source,
-            service: qualifyService(source.service, props.contribution.pluginId),
+            service: qualifyPluginContributionReferenceV1(
+              source.service,
+              props.contribution.pluginId,
+            ),
           })]
         : []
     )),

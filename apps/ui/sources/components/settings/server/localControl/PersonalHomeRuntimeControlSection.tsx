@@ -63,7 +63,8 @@ function readPersonalHomeRelocationRecovery(value: unknown): PersonalHomeRelocat
     const destinationMachineId = typeof facts.destinationMachineId === 'string' ? facts.destinationMachineId.trim() : '';
     const sourceDescriptorRevision = facts.sourceDescriptorRevision;
     const recoveryAction = facts.recoveryAction;
-    if (!operationId || !destinationMachineId || !Number.isSafeInteger(sourceDescriptorRevision) || sourceDescriptorRevision < 1
+    if (!operationId || !destinationMachineId || typeof sourceDescriptorRevision !== 'number'
+        || !Number.isSafeInteger(sourceDescriptorRevision) || sourceDescriptorRevision < 1
         || (recoveryAction !== 'finish_move' && recoveryAction !== 'return_to_source')) {
         return null;
     }

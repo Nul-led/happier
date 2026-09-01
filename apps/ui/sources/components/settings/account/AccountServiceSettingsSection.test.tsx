@@ -647,38 +647,47 @@ describe('AccountServiceSettingsSection', () => {
     });
 
     it('distinguishes unsupported discovery, an empty directory, and refresh failure', async () => {
-        const unsupportedScreen = await renderScreen(<AccountServiceSettingsSection />);
-        await vi.waitFor(() => expect(unsupportedScreen.findByTestId('settings-account-service-refresh')).not.toBeNull());
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await waitForAutomaticHydration(screen);
+
+        act(() => publishSessionSnapshot({
+            ...session.snapshot,
+            status: 'unsupported',
+        }));
+        expect(screen.findByTestId('settings-account-service-directory-unsupported')).not.toBeNull();
+
+        act(() => publishSessionSnapshot({
+            ...session.snapshot,
             status: 'ready',
-            serverIdentityId: 'directory-1',
-            features: { capabilities: {} },
-        });
-        await unsupportedScreen.pressByTestIdAsync('settings-account-service-refresh');
-        expect(unsupportedScreen.findByTestId('settings-account-service-directory-unsupported')).not.toBeNull();
+            homes: [],
+            preferredHomeServerIdentityId: null,
+        }));
+        expect(screen.findByTestId('settings-account-service-directory-empty')).not.toBeNull();
 
-        refreshMock.mockImplementationOnce(async () => {
-            publishSessionSnapshot({
-                ...session.snapshot,
-                status: 'ready',
-                homes: [],
-                preferredHomeServerIdentityId: null,
-            });
-            return session.snapshot;
-        });
-        const emptyScreen = await renderScreen(<AccountServiceSettingsSection />);
-        await vi.waitFor(() => expect(emptyScreen.findByTestId('settings-account-service-refresh')).not.toBeNull());
-        await emptyScreen.pressByTestIdAsync('settings-account-service-refresh');
-        expect(emptyScreen.findByTestId('settings-account-service-directory-empty')).not.toBeNull();
-
-        const unavailableScreen = await renderScreen(<AccountServiceSettingsSection />);
-        await vi.waitFor(() => expect(unavailableScreen.findByTestId('settings-account-service-refresh')).not.toBeNull());
-        await unavailableScreen.pressByTestIdAsync('settings-account-service-refresh');
-        await vi.waitFor(() => expect(unavailableScreen.findByTestId('settings-account-service-home-home-a')).not.toBeNull());
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({ status: 'error', reason: 'network' });
-        await unavailableScreen.pressByTestIdAsync('settings-account-service-refresh');
-        expect(unavailableScreen.findByTestId('settings-account-service-directory-unavailable')).not.toBeNull();
-        expect(unavailableScreen.findByTestId('settings-account-service-home-home-a')).not.toBeNull();
+        act(() => publishSessionSnapshot({
+            ...session.snapshot,
+            status: 'stale',
+            homes: [{
+                v: 1,
+                homeServerIdentityId: 'home-a',
+                canonicalServerUrl: 'https://home-a.test',
+                label: 'Home A',
+                connectionDescriptor: {
+                    v: 1,
+                    homeServerIdentityId: 'home-a',
+                    canonicalServerUrl: 'https://home-a.test',
+                    revision: 1,
+                    endpoints: [{ kind: 'https', url: 'https://home-a.test' }],
+                },
+                createdAtMs: 1,
+                updatedAtMs: 1,
+                preferred: true,
+            }],
+            preferredHomeServerIdentityId: 'home-a',
+            error: new Error('offline'),
+        }));
+        expect(screen.findByTestId('settings-account-service-directory-unavailable')).not.toBeNull();
+        expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull();
     });
 
     it('offers reconnection when the Account Service credential has expired', async () => {
@@ -692,9 +701,6 @@ describe('AccountServiceSettingsSection', () => {
             return session.snapshot;
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-refresh')).not.toBeNull());
-
-        await screen.pressByTestIdAsync('settings-account-service-refresh');
 
         await vi.waitFor(() => {
             expect(screen.findByTestId('settings-account-service-directory-credential-expired')).not.toBeNull();
@@ -733,12 +739,13 @@ describe('AccountServiceSettingsSection', () => {
 
     it('shows canonical service and Home technical facts only inside Advanced', async () => {
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await screen.pressByTestIdAsync('settings-account-service-refresh');
-        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-b')).not.toBeNull());
+        await waitForAutomaticHydration(screen);
 
-        expect(screen.findByTestId('settings-account-service-select')?.props.subtitle)
+        const endpointDetails = screen.findAllByTestId('settings-account-service-select')
+            .find((node) => node.props.subtitle === 'https://accounts.example.test');
+        expect(endpointDetails?.props.subtitle)
             .toBe('https://accounts.example.test');
-        expect(screen.findByTestId('settings-account-service-select')?.props.detail)
+        expect(endpointDetails?.props.detail)
             .toBe('directory-1');
         expect(screen.findByTestId('settings-account-service-technical-last-refresh')?.props.detail).toBeTruthy();
         expect(screen.findByTestId('settings-account-service-technical-preferred')?.props.detail).toBe('Home B');
@@ -783,7 +790,6 @@ describe('AccountServiceSettingsSection', () => {
         });
 
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await screen.pressByTestIdAsync('settings-account-service-refresh');
         await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-srv_coherent_home')).not.toBeNull());
 
         expect(screen.findByTestId('settings-account-service-home-srv_coherent_home-link')).not.toBeNull();
@@ -1107,7 +1113,8 @@ describe('AccountServiceSettingsSection', () => {
             features: { capabilities: { accountDirectory: supportedCapability } },
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-refresh')).not.toBeNull());
+        await waitForAutomaticHydration(screen);
+        clearAutomaticHydrationCalls();
 
         await screen.pressByTestIdAsync('settings-account-service-refresh');
 
@@ -1146,6 +1153,8 @@ describe('AccountServiceSettingsSection', () => {
             features: { capabilities: { accountDirectory: supportedCapability } },
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await waitForAutomaticHydration(screen);
+        clearAutomaticHydrationCalls();
         await vi.waitFor(() => expect(
             screen.findByTestId('settings-account-service-local-home-srv_home_a-link'),
         ).not.toBeNull());
@@ -1191,6 +1200,8 @@ describe('AccountServiceSettingsSection', () => {
             features: { capabilities: { accountDirectory: supportedCapability } },
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await waitForAutomaticHydration(screen);
+        clearAutomaticHydrationCalls();
         await vi.waitFor(() => expect(
             screen.findByTestId('settings-account-service-local-home-srv_home_a-link'),
         ).not.toBeNull());
@@ -1224,6 +1235,8 @@ describe('AccountServiceSettingsSection', () => {
             features: { capabilities: { accountDirectory: supportedCapability } },
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await waitForAutomaticHydration(screen);
+        clearAutomaticHydrationCalls();
         await vi.waitFor(() => expect(
             screen.findByTestId('settings-account-service-local-home-srv_home_a-link'),
         ).not.toBeNull());
@@ -1281,8 +1294,13 @@ describe('AccountServiceSettingsSection', () => {
     });
 
     it('fails closed before OAuth when the selected endpoint has no stable identity', async () => {
-        credentialGetMock.mockResolvedValueOnce(null);
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
+        endpointState.endpoint = {
+            url: 'https://accounts.example.test',
+            displayName: 'Company Account Service',
+            source: 'user',
+        };
+        credentialGetMock.mockResolvedValue(null);
+        probeServerFeaturesAtUrlMock.mockResolvedValue({
             status: 'ready',
             features: { capabilities: {} },
         });
@@ -1358,13 +1376,9 @@ describe('AccountServiceSettingsSection', () => {
     });
 
     it('runs refresh and preferred enrollment through the selected Account Service without changing Home focus', async () => {
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
-            status: 'ready',
-            serverIdentityId: 'directory-1',
-            features: { capabilities: { accountDirectory: supportedCapability } },
-        });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-refresh')).not.toBeNull());
+        await waitForAutomaticHydration(screen);
+        clearAutomaticHydrationCalls();
 
         await screen.pressByTestIdAsync('settings-account-service-refresh');
 
@@ -1385,6 +1399,8 @@ describe('AccountServiceSettingsSection', () => {
 
     it('selects and disconnects only the Account Service endpoint', async () => {
         const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await waitForAutomaticHydration(screen);
+        clearAutomaticHydrationCalls();
         await screen.pressByTestIdAsync('settings-account-service-select');
         expect(endpointState.set).toHaveBeenCalledWith(expect.objectContaining({
             url: 'https://new-accounts.example.test',
@@ -1411,8 +1427,10 @@ describe('AccountServiceSettingsSection', () => {
     });
 
     it('keeps the previous Account Service selection when endpoint probing cannot bind an identity', async () => {
-        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({ status: 'error', reason: 'network' });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await waitForAutomaticHydration(screen);
+        clearAutomaticHydrationCalls();
+        probeServerFeaturesAtUrlMock.mockResolvedValueOnce({ status: 'error', reason: 'network' });
 
         await screen.pressByTestIdAsync('settings-account-service-select');
 
@@ -1421,12 +1439,14 @@ describe('AccountServiceSettingsSection', () => {
     });
 
     it('keeps the previous Account Service selection when identity is ready but Home Directory capability is missing', async () => {
+        const screen = await renderScreen(<AccountServiceSettingsSection />);
+        await waitForAutomaticHydration(screen);
+        clearAutomaticHydrationCalls();
         probeServerFeaturesAtUrlMock.mockResolvedValueOnce({
             status: 'ready',
             serverIdentityId: 'directory-2',
             features: { capabilities: {} },
         });
-        const screen = await renderScreen(<AccountServiceSettingsSection />);
 
         await screen.pressByTestIdAsync('settings-account-service-select');
 
@@ -1563,8 +1583,6 @@ describe('AccountServiceSettingsSection', () => {
         });
         const screen = await renderScreen(<AccountServiceSettingsSection />);
 
-        await screen.pressByTestIdAsync('settings-account-service-refresh');
-
         await vi.waitFor(() => expect(screen.findAllByTestId('settings-account-service-home-srv_durable_home_b')
             .find((node) => typeof node.props.detail === 'string')?.props.detail)
             .toContain(t('settingsAccount.accountServiceHomeConnected')));
@@ -1579,10 +1597,6 @@ describe('AccountServiceSettingsSection', () => {
             };
         }));
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-refresh')).not.toBeNull());
-        act(() => {
-            screen.pressByTestId('settings-account-service-refresh');
-        });
         await vi.waitFor(() => expect(refreshMock).toHaveBeenCalledOnce());
 
         act(() => {
@@ -1604,7 +1618,8 @@ describe('AccountServiceSettingsSection', () => {
 
     it('disconnect cancels preferred enrollment and prevents its late result from projecting', async () => {
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await screen.pressByTestIdAsync('settings-account-service-refresh');
+        await waitForAutomaticHydration(screen);
+        clearAutomaticHydrationCalls();
         await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a-set-preferred')).not.toBeNull());
         sessionRefreshMock.mockImplementationOnce(async () => {
             publishSessionSnapshot({
@@ -1657,8 +1672,7 @@ describe('AccountServiceSettingsSection', () => {
         const beforeProfiles = profiles.listServerProfiles();
         const focusedServerId = profiles.getActiveServerSnapshot().serverId;
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await screen.pressByTestIdAsync('settings-account-service-refresh');
-        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a-remove')).not.toBeNull());
+        await waitForAutomaticHydration(screen);
 
         provisionAuthenticatedHomeLinkMock.mockClear();
         enrollMock.mockClear();
@@ -1678,14 +1692,14 @@ describe('AccountServiceSettingsSection', () => {
     it('surfaces a preferred mutation failure and preserves the refreshed Home projection', async () => {
         setPreferredHomeMock.mockRejectedValueOnce(new Error('offline'));
         const screen = await renderScreen(<AccountServiceSettingsSection />);
-        await screen.pressByTestIdAsync('settings-account-service-refresh');
-        await vi.waitFor(() => expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull());
+        await waitForAutomaticHydration(screen);
+        clearAutomaticHydrationCalls();
 
         await screen.pressByTestIdAsync('settings-account-service-home-home-a-set-preferred');
 
         expect(alertAsyncMock).toHaveBeenCalledWith(t('common.error'), t('errors.operationFailed'));
         expect(sessionRefreshMock).not.toHaveBeenCalled();
-        expect(refreshMock).toHaveBeenCalledTimes(1);
+        expect(refreshMock).not.toHaveBeenCalled();
         expect(screen.findByTestId('settings-account-service-home-home-a')).not.toBeNull();
         expect(screen.findByTestId('settings-account-service-home-home-b')).not.toBeNull();
     });

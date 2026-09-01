@@ -10,6 +10,7 @@ import { buildMachineAdministrationCandidatesFromSnapshots } from '@/sync/domain
 import type { MachineAdministrationCandidateV1 } from '@/sync/domains/machines/administration/targetSelection';
 import type { ServerMachineInventorySnapshotV1 } from '@/sync/domains/machines/machineInventorySnapshots';
 import type { PluginMachineMaterializationAdmission } from '@/sync/domains/plugins/availability/reader';
+import type { PluginAccountAvailabilityIntentReadResponseV1 } from '@happier-dev/protocol/plugins/availability';
 
 /**
  * One Account-wide answer to "where is this plugin installed, and where is it
@@ -56,6 +57,8 @@ export type PluginMachineMatrixCellV1 = Readonly<{
 
 export type PluginMachineMatrixRowV1 = Readonly<{
     pluginId: string;
+    /** Exact desired release/artifact truth from the existing Account projection. */
+    accountAvailability: PluginAccountAvailabilityIntentReadResponseV1 | null;
     cells: readonly PluginMachineMatrixCellV1[];
     installedCurrentCount: number;
 }>;
@@ -176,6 +179,17 @@ export function buildPluginMachineMatrix(params: Readonly<{
         rows.push(materialization);
         materializationsByPluginId.set(materialization.pluginId, rows);
     }
+    const accountAvailabilityByPluginId = new Map(
+        params.admission.intentReads.map((read) => [read.pluginId, read.response] as const),
+    );
+    for (const pluginId of accountAvailabilityByPluginId.keys()) {
+        if (
+            (params.pluginId === undefined || params.pluginId === pluginId)
+            && !materializationsByPluginId.has(pluginId)
+        ) {
+            materializationsByPluginId.set(pluginId, []);
+        }
+    }
     if (params.pluginId !== undefined && !materializationsByPluginId.has(params.pluginId)) {
         materializationsByPluginId.set(params.pluginId, []);
     }
@@ -259,6 +273,7 @@ export function buildPluginMachineMatrix(params: Readonly<{
             ];
             return Object.freeze({
                 pluginId,
+                accountAvailability: accountAvailabilityByPluginId.get(pluginId) ?? null,
                 cells: Object.freeze(cells),
                 installedCurrentCount,
             });

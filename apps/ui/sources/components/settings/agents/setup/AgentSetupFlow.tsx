@@ -50,6 +50,22 @@ function supportsDirectAgentSetup(agentId: AgentId | null | undefined): agentId 
     return isBundledAgentId(agentId) && Boolean(getAgentCliRuntimeSpec(agentId).binaryName);
 }
 
+function resolveAgentSetupRuntimeId(entry: AgentSetupEntry): string | null {
+    if (entry.cli) return entry.agentId;
+    return entry.isBuiltIn && supportsDirectAgentSetup(entry.catalogAgentId)
+        ? entry.catalogAgentId
+        : null;
+}
+
+function resolveAgentSetupDetectKey(entry: AgentSetupEntry): string | null {
+    const projectedBinaryName = entry.cli?.executable.binaryName.trim();
+    if (projectedBinaryName) return projectedBinaryName;
+    const runtimeAgentId = resolveAgentSetupRuntimeId(entry);
+    return runtimeAgentId && isBundledAgentId(runtimeAgentId)
+        ? getAgentCore(runtimeAgentId).cli.detectKey
+        : null;
+}
+
 const DEFAULT_AGENT_IDS = AGENT_IDS.filter((agentId) => supportsDirectAgentSetup(agentId));
 const DEFAULT_AGENT_ENTRIES = getResolvedAgentCatalogEntries({
     enabledAgentIds: DEFAULT_AGENT_IDS,
@@ -90,12 +106,12 @@ function buildSelectableProviderEntries(entries: readonly AgentSetupEntry[], sco
     }));
 }
 
-function uniqueSetupProviderIds(entries: readonly AgentSetupEntry[]): AgentId[] {
+function uniqueSetupProviderIds(entries: readonly AgentSetupEntry[]): string[] {
     return [
         ...new Set(
             entries
-                .map((entry) => entry.catalogAgentId)
-                .filter((agentId): agentId is AgentId => supportsDirectAgentSetup(agentId)),
+                .map(resolveAgentSetupRuntimeId)
+                .filter((agentId): agentId is string => agentId !== null),
         ),
     ];
 }
@@ -296,8 +312,11 @@ export const AgentSetupFlow = React.memo(function AgentSetupFlow(props: Readonly
         () => agentEntries.find((entry) => entry.agentId === activeProviderId) ?? null,
         [activeProviderId, agentEntries],
     );
-    const activeSetupProviderId = activeEntry?.catalogAgentId ?? null;
-    const authPlugin = activeSetupProviderId ? getAgentLocalAuthPlugin(activeSetupProviderId) : null;
+    const activeSetupProviderId = activeEntry ? resolveAgentSetupRuntimeId(activeEntry) : null;
+    const authPlugin = activeEntry?.authPlugin
+        ?? (activeSetupProviderId && isBundledAgentId(activeSetupProviderId)
+            ? getAgentLocalAuthPlugin(activeSetupProviderId)
+            : null);
     const selectedSetupProviderIds = React.useMemo(
         () => uniqueSetupProviderIds(agentEntries.filter((entry) => selectedAgentIds.includes(entry.agentId))),
         [agentEntries, selectedAgentIds],
@@ -317,13 +336,16 @@ export const AgentSetupFlow = React.memo(function AgentSetupFlow(props: Readonly
         primaryMachine: machine ?? null,
     });
     const agentDetectKeys = React.useMemo(() => {
-        const out: Partial<Record<AgentId, string>> = {};
-        for (const agentId of selectedSetupProviderIds) {
-            const detectKey = getAgentCore(agentId)?.cli.detectKey;
-            if (detectKey) out[agentId] = detectKey;
+        const out: Record<string, string> = {};
+        for (const entry of agentEntries) {
+            const runtimeAgentId = resolveAgentSetupRuntimeId(entry);
+            const detectKey = resolveAgentSetupDetectKey(entry);
+            if (runtimeAgentId && detectKey && selectedSetupProviderIds.includes(runtimeAgentId)) {
+                out[runtimeAgentId] = detectKey;
+            }
         }
         return out;
-    }, [selectedSetupProviderIds]);
+    }, [agentEntries, selectedSetupProviderIds]);
     const installQueue = useAgentCliInstallQueue({
         machineId,
         serverId,
@@ -384,10 +406,16 @@ export const AgentSetupFlow = React.memo(function AgentSetupFlow(props: Readonly
         setQueueState(createAgentSetupQueueStateFromInstallSummary({
             selectedAgentIds: selectedEntries.map((entry) => entry.agentId),
             installedAgentIds: selectedEntries
-                .filter((entry) => entry.catalogAgentId != null && installedProviderIdSet.has(entry.catalogAgentId))
+                .filter((entry) => {
+                    const runtimeAgentId = resolveAgentSetupRuntimeId(entry);
+                    return runtimeAgentId !== null && installedProviderIdSet.has(runtimeAgentId);
+                })
                 .map((entry) => entry.agentId),
             failedAgentIds: selectedEntries
-                .filter((entry) => entry.catalogAgentId != null && failedProviderIdSet.has(entry.catalogAgentId))
+                .filter((entry) => {
+                    const runtimeAgentId = resolveAgentSetupRuntimeId(entry);
+                    return runtimeAgentId !== null && failedProviderIdSet.has(runtimeAgentId);
+                })
                 .map((entry) => entry.agentId),
         }));
     }, [agentEntries, canStart, installQueue, resolveSetupExecutionTarget, selectedAgentIds]);
@@ -475,7 +503,8 @@ export const AgentSetupFlow = React.memo(function AgentSetupFlow(props: Readonly
                     {agentEntries.map((entry) => {
                         const selected = selectedAgentIds.includes(entry.agentId);
                         const stepState = resolveProviderStepState({ agentId: entry.agentId, queueState });
-                        const installStatus = entry.catalogAgentId ? installQueue.resolveStatus(entry.catalogAgentId).status : 'idle';
+                        const runtimeAgentId = resolveAgentSetupRuntimeId(entry);
+                        const installStatus = runtimeAgentId ? installQueue.resolveStatus(runtimeAgentId).status : 'idle';
                         const canRetryInstall = installQueue.state.hasStarted && !installQueue.state.isRunning && installStatus === 'failed';
                         return (
                             <Item
@@ -513,8 +542,8 @@ export const AgentSetupFlow = React.memo(function AgentSetupFlow(props: Readonly
                                 }
                                 onPress={async () => {
                                     if (installQueue.state.hasStarted) {
-                                        if (canRetryInstall && entry.catalogAgentId) {
-                                            await installQueue.retry(entry.catalogAgentId);
+                                        if (canRetryInstall && runtimeAgentId) {
+                                            await installQueue.retry(runtimeAgentId);
                                         }
                                         return;
                                     }

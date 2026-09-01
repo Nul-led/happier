@@ -18,6 +18,7 @@ const capabilitiesState = vi.hoisted(() => ({
         response: { ok: true as const, result: null },
     })),
 }));
+const authenticationStateInput = vi.hoisted(() => vi.fn());
 const administrationTargetState = vi.hoisted(() => ({
     resolveExecutionTarget: vi.fn(() => ({
         target: { serverIdentityId: 'identity-target', machineId: 'machine-target' },
@@ -158,20 +159,23 @@ vi.mock('@/hooks/machine/useCapabilityInstallability', () => ({
 }));
 
 vi.mock('../authentication/useAgentAuthenticationState', () => ({
-    useAgentAuthenticationState: () => ({
-        authStatus: null,
-        cliAvailable: false,
-        machineId: 'machine-1',
-        machineHomeDir: null,
-        canCheckNow: false,
-        supportsLoginTerminal: false,
-        canLaunchLogin: false,
-        loginLaunch: null,
-        loginActionKind: 'login',
-        docsUrl: null,
-        support: 'unsupported',
-        statusHelpText: null,
-    }),
+    useAgentAuthenticationState: (input: unknown) => {
+        authenticationStateInput(input);
+        return ({
+            authStatus: null,
+            cliAvailable: false,
+            machineId: 'machine-1',
+            machineHomeDir: null,
+            canCheckNow: false,
+            supportsLoginTerminal: false,
+            canLaunchLogin: false,
+            loginLaunch: null,
+            loginActionKind: 'login',
+            docsUrl: null,
+            support: 'unsupported',
+            statusHelpText: null,
+        });
+    },
 }));
 
 vi.mock('@/agents/catalog/localAuth/agentLocalAuthCatalog', () => ({
@@ -203,6 +207,7 @@ describe('AgentSetupFlow', () => {
         tauriDesktopState.value = true;
         modalMock.spies.confirm.mockClear();
         capabilitiesState.invoke.mockClear();
+        authenticationStateInput.mockClear();
         administrationTargetState.resolveExecutionTarget.mockReset();
         administrationTargetState.resolveExecutionTarget.mockReturnValue({
             target: { serverIdentityId: 'identity-target', machineId: 'machine-target' },
@@ -303,6 +308,30 @@ describe('AgentSetupFlow', () => {
         expect(screen.findAllByType('WizardTerminalHandoff' as never)).toHaveLength(0);
     });
 
+    it('passes an installable external Agent operational id through the web setup handoff', async () => {
+        tauriDesktopState.value = false;
+        const { AgentSetupFlow } = await import('./AgentSetupFlow');
+        const screen = await renderScreen(React.createElement(AgentSetupFlow, {
+            presentation: 'wizard',
+            agentEntries: [createResolvedAgentCatalogEntryFixture({
+                agentId: 'acme.review.provider',
+                overrides: {
+                    catalogAgentId: null,
+                    cli: {
+                        executable: { binaryName: 'acme-review', sourcePreference: 'system-first' },
+                        install: { manual: { kind: 'none' } },
+                        auth: { support: 'unsupported', loginLaunches: [] },
+                    },
+                },
+            })],
+        }));
+
+        const handoff = screen.findByType('WizardTerminalHandoff' as never) as unknown as {
+            props: { steps: Array<{ code: string }> };
+        };
+        expect(handoff.props.steps[0]?.code).toContain('--providers acme.review.provider --yes');
+    });
+
     it('preserves explicit provider entries instead of filtering them through the built-in setup recommendation list', async () => {
         const { AgentSetupFlow } = await import('./AgentSetupFlow');
         const screen = await renderScreen(React.createElement(AgentSetupFlow, {
@@ -334,7 +363,7 @@ describe('AgentSetupFlow', () => {
         expect(screen.findByTestId('provider-setup-start-card')?.props.disabled).toBe(false);
     });
 
-    it('renders projected plugin providers in setup with plugin identity preserved while using optional backing runtime capabilities', async () => {
+    it('does not grant an external Agent a bundled setup path from its presentation carrier', async () => {
         const { AgentSetupFlow } = await import('./AgentSetupFlow');
         const screen = await renderScreen(React.createElement(AgentSetupFlow, {
             agentEntries: [createResolvedAgentCatalogEntryFixture({
@@ -356,20 +385,56 @@ describe('AgentSetupFlow', () => {
         expect(option?.props.icon?.type).toBe(AgentCatalogIdentityIcon);
         expect(option?.props.icon?.props.entry.identity).toEqual({ pluginId: 'acme.review', localId: 'provider' });
 
+        expect(screen.findByTestId('provider-setup-start-card')?.props.disabled).toBe(true);
+        expect(capabilitiesState.invoke).not.toHaveBeenCalled();
+    });
+
+    it('uses an external Agent\'s projected CLI and auth declaration instead of its optional bundled carrier', async () => {
+        const projectedAuthPlugin = {
+            agentId: 'acme.review.provider',
+            support: 'login_terminal' as const,
+            docsUrl: 'https://example.com/acme/auth',
+            loginLaunchKinds: ['primary'] as const,
+            buildLoginLaunch: vi.fn(() => ({ initialCommand: 'acme-review login' })),
+        };
+        const { AgentSetupFlow } = await import('./AgentSetupFlow');
+        const screen = await renderScreen(React.createElement(AgentSetupFlow, {
+            agentEntries: [createResolvedAgentCatalogEntryFixture({
+                agentId: 'acme.review.provider',
+                overrides: {
+                    qualifiedId: 'acme.review/provider',
+                    identity: { pluginId: 'acme.review', localId: 'provider' },
+                    catalogAgentId: 'claude',
+                    title: 'Acme Review Provider',
+                    cli: {
+                        executable: { binaryName: 'acme-review', sourcePreference: 'system-first' },
+                        install: { manual: { kind: 'none' } },
+                        auth: {
+                            support: 'login_terminal',
+                            loginLaunches: [{ kind: 'primary', args: ['login'] }],
+                        },
+                    },
+                    authPlugin: projectedAuthPlugin,
+                },
+            })],
+        }));
+
         await screen.pressByTestIdAsync('provider-setup-start-card');
 
         expect(capabilitiesState.invoke).toHaveBeenCalledWith(
             'machine-target',
-            expect.objectContaining({ id: 'cli.claude' }),
+            expect.objectContaining({ id: 'cli.acme.review.provider' }),
             expect.objectContaining({ serverId: 'server-target' }),
         );
-        expect(screen.findByTestId('provider-setup-active-acme.review.provider')).toBeTruthy();
-
+        expect(authenticationStateInput).toHaveBeenLastCalledWith(expect.objectContaining({
+            agentId: 'acme.review.provider',
+            authPlugin: projectedAuthPlugin,
+        }));
         const authCard = screen.findByType('AgentAuthenticationCard' as never) as unknown as {
             props: { agentId: string; runtimeAgentId: string | null };
         };
         expect(authCard.props.agentId).toBe('acme.review.provider');
-        expect(authCard.props.runtimeAgentId).toBe('claude');
+        expect(authCard.props.runtimeAgentId).toBe('acme.review.provider');
     });
 
     it('keeps plugin providers in the setup flow even when they have no built-in runtime carrier', async () => {

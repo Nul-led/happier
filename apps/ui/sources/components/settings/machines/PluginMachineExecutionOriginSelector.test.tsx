@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { act } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { PluginMachineExecutionOriginV1 } from '@happier-dev/protocol';
@@ -108,8 +109,8 @@ function selection(input: Readonly<{
     selectOrigin: ReturnType<typeof vi.fn>;
     clearOrigin: ReturnType<typeof vi.fn>;
 }> {
-    const selectOrigin = vi.fn();
-    const clearOrigin = vi.fn();
+    const selectOrigin = vi.fn(async () => ({ status: 'applied' as const, settingsVersion: 8, value: undefined }));
+    const clearOrigin = vi.fn(async () => ({ status: 'applied' as const, settingsVersion: 8, value: undefined }));
     return {
         value: {
             candidates: input.candidates,
@@ -205,6 +206,33 @@ describe('PluginMachineExecutionOriginSelector', () => {
             },
         });
         expect(picker.getMachineKey?.(presentedA)).toBe('7:srv_one|9:machine-a|5:mat-a|11:acme.plugin');
+    });
+
+    it('keeps a typed selection conflict visible instead of silently dropping it', async () => {
+        const machineA = candidate({ machineId: 'machine-a', materializationId: 'mat-a', version: '1.0.0' });
+        const fixture = selection({
+            candidates: [machineA],
+            state: { kind: 'conflict', candidates: [machineA], reasons: ['different_versions'] },
+        });
+        fixture.selectOrigin.mockResolvedValueOnce({ status: 'conflict', currentSettingsVersion: 9 });
+        const { PluginMachineExecutionOriginSelectorView } = await import('./PluginMachineExecutionOriginSelector');
+        capturedPickerProps.length = 0;
+        capturedItemProps.length = 0;
+
+        await renderScreen(React.createElement(PluginMachineExecutionOriginSelectorView, {
+            selection: fixture.value,
+            testIDPrefix: 'plugin.origin',
+        }));
+        const presented = capturedPickerProps[0]!.groups[0]!.machines[0]!;
+        await act(async () => {
+            capturedPickerProps[0]!.onSelect(presented);
+            await Promise.resolve();
+        });
+
+        expect(capturedItemProps).toContainEqual(expect.objectContaining({
+            testID: 'plugin.origin.settlementError',
+            title: 'settingsPlugins.genericSettingsSaveError',
+        }));
     });
 
     it('keeps an Artifact release-content conflict visible with its version instead of reducing it to unavailable', async () => {

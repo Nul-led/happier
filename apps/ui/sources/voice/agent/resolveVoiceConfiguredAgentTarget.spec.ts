@@ -110,6 +110,86 @@ describe('resolveVoiceConfiguredAgentTarget', () => {
     expectProjectionDescribeCallsForMachine('machine-1');
   });
 
+  it('preserves a slash-containing external local identity through catalog resolution', async () => {
+    const identity = { pluginId: 'acme.voice', localId: 'agents/reviewer' } as const;
+    const targetKey = 'agent:acme.voice/agents/reviewer';
+    const agentId = 'acme-voice-reviewer';
+    clearDaemonMergedProjectionCacheForTests();
+    machineContributionRegistryProjectionDescribe.mockResolvedValue({
+      supported: true,
+      projection: PluginProjectionV2Schema.parse({
+        v: 2,
+        generation: 9,
+        agentsById: {
+          [agentId]: {
+            id: agentId,
+            identity,
+            title: 'Acme Voice Reviewer',
+            capabilities: {
+              sessions: { open: ['create', 'resume'], delivery: ['newTurn'], cancel: true },
+            },
+          },
+        },
+        backendsById: {
+          [agentId]: { id: agentId, agentId },
+        },
+        familiesById: {},
+      }),
+    });
+
+    await expect(resolveVoiceConfiguredAgentTarget({
+      machineId: 'machine-1',
+      selection: { agentId, agentTargetKey: targetKey, agentIdentity: identity },
+    })).resolves.toEqual({
+      ok: true,
+      kind: 'catalog',
+      agentId,
+      backendTarget: { kind: 'backend', backendId: agentId },
+      targetKey,
+    });
+  });
+
+  it('retains the maximum valid external identity instead of narrowing it to a backend-sized id', async () => {
+    const pluginId = `p${'l'.repeat(255)}`;
+    const localId = `a${'g'.repeat(255)}`;
+    const identity = { pluginId, localId } as const;
+    const agentId = 'max-identity-agent';
+    const targetKey = `agent:${pluginId}/${localId}`;
+    clearDaemonMergedProjectionCacheForTests();
+    machineContributionRegistryProjectionDescribe.mockResolvedValue({
+      supported: true,
+      projection: PluginProjectionV2Schema.parse({
+        v: 2,
+        generation: 10,
+        agentsById: {
+          [agentId]: {
+            id: agentId,
+            identity,
+            title: 'Maximum Identity Agent',
+            capabilities: {
+              sessions: { open: ['create'], delivery: ['newTurn'], cancel: false },
+            },
+          },
+        },
+        backendsById: {
+          [agentId]: { id: agentId, agentId },
+        },
+        familiesById: {},
+      }),
+    });
+
+    await expect(resolveVoiceConfiguredAgentTarget({
+      machineId: 'machine-1',
+      selection: { agentId, agentTargetKey: targetKey, agentIdentity: identity },
+    })).resolves.toEqual({
+      ok: true,
+      kind: 'catalog',
+      agentId,
+      backendTarget: { kind: 'backend', backendId: agentId },
+      targetKey,
+    });
+  });
+
   it('resolves a released bundled backend key to the canonical Agent target without requiring a machine projection', async () => {
     machineContributionRegistryProjectionDescribe.mockResolvedValue({ supported: false, reason: 'not-supported' });
 

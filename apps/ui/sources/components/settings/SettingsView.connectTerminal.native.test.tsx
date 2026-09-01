@@ -2,7 +2,10 @@ import * as React from 'react';
 import { act, ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
 import { createDeferred, flushHookEffects, pressTestInstanceAsync, renderScreen } from '@/dev/testkit';
-import { installSettingsViewCommonModuleMocks, settingsViewScanProcessAuthUrlSpy } from './settingsViewTestHelpers';
+import {
+    installSettingsViewCommonModuleMocks,
+    settingsViewScanProcessAuthUrlSpy,
+} from './settingsViewTestHelpers';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -97,12 +100,18 @@ vi.mock('expo-constants', () => ({
     default: { expoConfig: { version: '0.0.0-test' } },
 }));
 
-vi.mock('@/constants/Typography', () => ({
-    Typography: {
-        default: () => ({}),
-        mono: () => ({}),
-    },
-}));
+vi.mock('@/constants/Typography', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/constants/Typography')>();
+    return {
+        ...actual,
+        Typography: {
+            ...actual.Typography,
+            default: () => ({}),
+            mono: () => ({}),
+            rowMeta: () => ({}),
+        },
+    };
+});
 
 vi.mock('@/components/ui/lists/ItemList', () => ({
     ItemList: ({ children }: any) => React.createElement('ItemList', null, children),
@@ -209,6 +218,7 @@ vi.mock('@/hooks/server/useFeatureDecision', () => ({
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
     getActiveServerSnapshot: () => ({ serverId: 'server-1', serverUrl: 'https://local.example.test', generation: 0 }),
+    loadHomeViewState: () => null,
     listServerProfiles: () => [],
     subscribeActiveServer: (listener: any) => {
         listener({ serverId: 'server-1', serverUrl: 'https://local.example.test', generation: 0 });

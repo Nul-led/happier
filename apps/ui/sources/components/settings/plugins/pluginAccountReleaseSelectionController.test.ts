@@ -52,6 +52,9 @@ function dependencies(input: Readonly<{
     resolveExecution?: PluginAccountReleaseSelectionControllerDependencies['resolveExecution'];
     resolveAccountHostedTarget?: PluginAccountReleaseSelectionControllerDependencies['resolveAccountHostedTarget'];
     select?: PluginAccountReleaseSelectionControllerDependencies['select'];
+    setIntent?: PluginAccountReleaseSelectionControllerDependencies['setIntent'];
+    removeHostedArtifact?: PluginAccountReleaseSelectionControllerDependencies['removeHostedArtifact'];
+    removeCachedArtifact?: PluginAccountReleaseSelectionControllerDependencies['removeCachedArtifact'];
 }>): PluginAccountReleaseSelectionControllerDependencies {
     return {
         captureLifetime: () => input.lifetime,
@@ -79,6 +82,9 @@ function dependencies(input: Readonly<{
                 revision: 'intent-1',
             },
         })),
+        setIntent: input.setIntent ?? (async () => Object.freeze({ kind: 'updated' as const, intent: {} as never })),
+        removeHostedArtifact: input.removeHostedArtifact ?? (async () => Object.freeze({ kind: 'removed' as const })),
+        removeCachedArtifact: input.removeCachedArtifact ?? (async () => {}),
     };
 }
 
@@ -347,5 +353,64 @@ describe('Plugin Account release selection controller', () => {
             code: 'target_release_unavailable',
         });
         expect(select).not.toHaveBeenCalled();
+    });
+
+    it('disables hosting before removing every current qualified link and clears only exact current cache identities', async () => {
+        const active = createLifetime();
+        const setIntent = vi.fn(async () => Object.freeze({ kind: 'updated' as const, intent: {} as never }));
+        const removeHostedArtifact = vi.fn(async () => Object.freeze({ kind: 'removed' as const }));
+        const removeCachedArtifact = vi.fn(async () => {});
+        const slot = {
+            contributionId: 'tasks-ui', tier: 'reactNative' as const, platform: 'ios' as const,
+            artifactDigest: `sha256:${'c'.repeat(64)}` as const,
+            compatibility: { hostUiApiVersion: 1, reactVersion: '19', reactNativeVersion: '0.81', expoRuntimeVersion: '54', hermesVersion: '1' },
+        };
+        const reader = {
+            readCurrentHostedArtifactAdministration: () => ({
+                kind: 'available' as const,
+                availabilityCursor: 4,
+                hostingCapability: { enabled: true, maxArtifactBytes: 1, maxAccountBytes: 1, maxAccountArtifacts: 1 },
+                intent: { pluginId, desiredVersion: targetVersion, enabled: true, offlineUiHosting: 'enabled' as const, writableCollections: [], revision: 'intent-current' },
+                release: { ref: { pluginId, version: targetVersion }, normalizedManifest: facts.normalizedManifest, uiSlots: [slot] },
+                uiArtifacts: [{ release: { pluginId, version: targetVersion }, contributionId: slot.contributionId, tier: slot.tier, platform: slot.platform }],
+            }),
+        } as unknown as PluginAccountAvailabilityReader;
+        const controller = createPluginAccountReleaseSelectionController(dependencies({
+            lifetime: active.lifetime, setIntent, removeHostedArtifact, removeCachedArtifact,
+        }));
+
+        expect(controller.readHostedArtifactStatus({ pluginId, reader })).toBe('hosted');
+        const hostedAdmin = reader.readCurrentHostedArtifactAdministration({ pluginId });
+        if (hostedAdmin.kind !== 'available') throw new Error('Expected hosted Administration fixture');
+        const disabledWithRetainedLink = {
+            readCurrentHostedArtifactAdministration: () => ({
+                ...hostedAdmin,
+                intent: {
+                    ...hostedAdmin.intent,
+                    offlineUiHosting: 'disabled' as const,
+                },
+            }),
+        } as unknown as PluginAccountAvailabilityReader;
+        expect(controller.readHostedArtifactStatus({ pluginId, reader: disabledWithRetainedLink })).toBe('disabledHosted');
+
+        await expect(controller.disableAndRemoveHostedArtifacts({ pluginId, reader })).resolves.toEqual({ kind: 'updated' });
+        expect(setIntent).toHaveBeenCalledWith({
+            pluginId, desiredVersion: targetVersion, enabled: true, offlineUiHosting: 'disabled', writableCollections: [], expectedRevision: 'intent-current',
+        });
+        expect(removeHostedArtifact).toHaveBeenCalledWith(expect.objectContaining({
+            accountLifetime: active.lifetime,
+            target: { release: { pluginId, version: targetVersion }, contributionId: 'tasks-ui', tier: 'reactNative', platform: 'ios' },
+        }));
+
+        await expect(controller.clearHostedArtifactCache({ pluginId, reader })).resolves.toEqual({ kind: 'updated' });
+        expect(removeCachedArtifact).toHaveBeenCalledWith({
+            accountScope: active.lifetime.scope,
+            pluginId,
+            releaseVersion: targetVersion,
+            contributionId: 'tasks-ui',
+            tier: 'reactNative',
+            platform: 'ios',
+            artifactDigest: slot.artifactDigest,
+        }, expect.any(Function));
     });
 });

@@ -42,6 +42,7 @@ import { Icon } from '@/components/ui/icons/Icon';
 
 const DEFER_BELOW_FOLD_SETTINGS_SECTIONS_DELAY_MS = 0;
 const DEFER_BELOW_FOLD_SETTINGS_STAGE_DELAY_MS = 16;
+const TERMINAL_AUTH_URL_PROCESSOR_OPTIONS = { allowedUrlKind: 'terminal' } as const;
 
 export const SettingsView = React.memo(function SettingsView() {
     const { theme } = useUnistyles();
@@ -80,7 +81,7 @@ export const SettingsView = React.memo(function SettingsView() {
     const [belowFoldSettingsStage, setBelowFoldSettingsStage] = React.useState(0);
 
     const { connectTerminal, isLoading } = useConnectTerminal();
-    const { processAuthUrl } = useScannedAuthUrlProcessor();
+    const { processAuthUrl } = useScannedAuthUrlProcessor(TERMINAL_AUTH_URL_PROCESSOR_OPTIONS);
 
     useFocusEffect(
         React.useCallback(() => {

@@ -1,8 +1,8 @@
 import { AGENT_IDS, getAgentCore, isBundledAgentId, type AgentId } from '@/agents/catalog/catalog';
 import {
     AgentsBackendsListOutputSchema,
-    readBackendTargetRefV2,
     readLegacyConfiguredAcpBackendId,
+    resolveActionBackendTargetSelection,
     providerCatalogPermitsUnlistedModelIdV1,
     readProviderSettingsFromAccountSettingsV1,
     type AgentsBackendsListOutput,
@@ -356,18 +356,15 @@ export async function listAgentModelsForVoiceTool(params: Readonly<{
   backendTargetKey?: string;
 }>): Promise<unknown> {
   const backendTargetKey = normalizeId(params.backendTargetKey);
-  let backendTarget: BackendTargetRefV1 | null = null;
-  if (backendTargetKey) {
-    try {
-      const canonicalBackendTarget = readBackendTargetRefV2(backendTargetKey);
-      backendTarget = canonicalBackendTarget.sourceKind === 'configured'
-        ? { kind: 'configuredAcpBackend', backendId: canonicalBackendTarget.configuredBackendId ?? canonicalBackendTarget.backendId }
-        : { kind: 'builtInAgent', agentId: canonicalBackendTarget.backendId };
-    } catch {
-      return { ok: false, errorCode: 'invalid_parameters', errorMessage: 'invalid_parameters' };
-    }
+  const selection = resolveActionBackendTargetSelection({
+    agentId: normalizeId(params.agentId) || undefined,
+    backendTargetKey: backendTargetKey || undefined,
+  });
+  if (!selection.ok) {
+    return { ok: false, errorCode: 'invalid_parameters', errorMessage: 'invalid_parameters' };
   }
-  const providedAgentId = normalizeId(params.agentId);
+  const backendTarget = selection.selection.backendTarget;
+  const providedAgentId = selection.selection.agentId ?? '';
   const compatConfiguredAcpProbeAgentId = resolveConfiguredAcpCompatProbeAgentId({
     backendTarget,
     providedAgentId,
@@ -413,9 +410,10 @@ export async function listAgentModelsForVoiceTool(params: Readonly<{
 
   const machineId = normalizeId(params.machineId);
   const serverId = normalizeId(params.serverId) || normalizeId(getActiveServerSnapshot()?.serverId) || null;
-  const canonicalTargetKey = backendTarget
-    ? resolveBackendTargetKeyV2(backendTarget)
-    : resolveBackendTargetKeyV2({ kind: 'backend', backendId: agentId });
+  const canonicalTargetKey = selection.selection.backendTargetKey
+    ?? (backendTarget
+      ? resolveBackendTargetKeyV2(backendTarget)
+      : resolveBackendTargetKeyV2({ kind: 'backend', backendId: agentId }));
   const withProviderProjection = async (base: VoiceToolModelListResult): Promise<VoiceToolModelListResult> => (
     machineId
       ? projectVoiceToolProviderModels({

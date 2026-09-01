@@ -1,6 +1,9 @@
 import * as React from 'react';
 
-import { matchesPluginUiDestinationBindingV1 } from '@happier-dev/protocol/plugins/ui';
+import {
+    matchesPluginUiDestinationBindingV1,
+    normalizePluginUiSubPathV1,
+} from '@happier-dev/protocol/plugins/ui';
 
 import { Icon } from '@/components/ui/icons/Icon';
 import { resolvePluginUiIconName } from '@/components/plugins/surfaces/iconToken/resolvePluginUiIconToken';
@@ -211,6 +214,35 @@ export function pluginSettingsPageRoute(pluginId: string, pageId: string): strin
     return `/settings/plugins/${encodeURIComponent(pluginId)}/${encodeURIComponent(pageId)}`;
 }
 
+/** The typed Expo route pattern of the one mounted Settings page route. */
+export const PLUGIN_SETTINGS_PAGE_ROUTE = '/(app)/settings/plugins/[pluginId]/[pageId]' as const;
+
+/**
+ * The typed host route for one Settings page and its plugin-local location.
+ *
+ * The location rides as a param on the SAME two-segment page route the host
+ * built, so a page-internal location replacement (`replacePageLocation`) can
+ * never leave the page route or add a history entry — the user's real previous
+ * screen stays one Back press away.
+ */
+export function buildPluginSettingsPageRoutePath(input: Readonly<{
+    pluginId: string;
+    pageId: string;
+    subPath: string;
+}>): Readonly<{
+    pathname: typeof PLUGIN_SETTINGS_PAGE_ROUTE;
+    params: Readonly<{ pluginId: string; pageId: string; subPath: string }>;
+}> {
+    return Object.freeze({
+        pathname: PLUGIN_SETTINGS_PAGE_ROUTE,
+        params: Object.freeze({
+            pluginId: input.pluginId,
+            pageId: input.pageId,
+            subPath: normalizePluginUiSubPathV1(input.subPath) ?? '',
+        }),
+    });
+}
+
 function readRouteSegment(value: unknown): string | null {
     if (Array.isArray(value)) {
         return value.length === 1 ? readRouteSegment(value[0]) : null;
@@ -218,14 +250,23 @@ function readRouteSegment(value: unknown): string | null {
     return readString(value);
 }
 
-/** Reads exactly the two host-generated dynamic route segments; ambiguous params fail closed. */
+/**
+ * Reads the host-generated dynamic route segments plus the page's plugin-local
+ * location; ambiguous identity params fail closed. An absent location is the
+ * page root (`''`); a present-but-illegal one is `null`, the same fail-closed
+ * shape the app-page route owner hands back.
+ */
 export function readPluginSettingsPageRouteParams(params: Readonly<{
     pluginId?: unknown;
     pageId?: unknown;
-}>): Readonly<{ pluginId: string; pageId: string }> | null {
+    subPath?: unknown;
+}>): Readonly<{ pluginId: string; pageId: string; subPath: string | null }> | null {
     const pluginId = readRouteSegment(params.pluginId);
     const pageId = readRouteSegment(params.pageId);
-    return pluginId && pageId ? Object.freeze({ pluginId, pageId }) : null;
+    if (!pluginId || !pageId) return null;
+    const rawSubPath = params.subPath === undefined ? '' : readRouteSegment(params.subPath);
+    const subPath = rawSubPath === null ? null : normalizePluginUiSubPathV1(rawSubPath);
+    return Object.freeze({ pluginId, pageId, subPath });
 }
 
 /**

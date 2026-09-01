@@ -17,6 +17,7 @@ import {
   type VoiceRawCredentialGrantDeclaration,
   VoiceProviderContributionSchema,
 } from '@happier-dev/protocol';
+import { qualifyPluginContributionReferenceV1 } from '@happier-dev/protocol/plugins/contribution-identity';
 
 import { settingsParse, type Settings } from '@/sync/domains/settings/settings';
 import { stableJsonStringify } from '@/utils/json/stableJsonStringify';
@@ -131,15 +132,6 @@ function sameContribution(
   return left.pluginId === right.pluginId && left.localId === right.localId;
 }
 
-function qualifyCredentialService(
-  service: string | PluginContributionIdentityV1,
-  pluginId: string,
-): PluginContributionIdentityV1 {
-  return typeof service === 'string'
-    ? Object.freeze({ pluginId, localId: service })
-    : service;
-}
-
 /**
  * Raw grants belong to the exact source the user selected for this credential
  * slot. Keeping that source matching here prevents readiness and disclosure UI
@@ -172,7 +164,10 @@ export function resolveSelectedVoiceCredentialRawGrants(params: Readonly<{
       return source.kind === 'savedSecret' ? source.rawGrants ?? [] : [];
     }
     if (source.kind !== 'connectedAccount' || selectedService === null) return [];
-    const sourceService = qualifyCredentialService(source.service, params.contribution.pluginId);
+    const sourceService = qualifyPluginContributionReferenceV1(
+      source.service,
+      params.contribution.pluginId,
+    );
     return sourceService.pluginId === selectedService.pluginId
       && sourceService.localId === selectedService.localId
       ? source.rawGrants ?? []
@@ -230,7 +225,7 @@ function canonicalVoiceCredentialSource(
   return Object.freeze({
     ...source,
     ...(source.kind === 'connectedAccount'
-      ? { service: qualifyCredentialService(source.service, declaringPluginId) }
+      ? { service: qualifyPluginContributionReferenceV1(source.service, declaringPluginId) }
       : { secretKinds: [...source.secretKinds].sort() }),
     ...(operationProjections
       ? { operationProjections: sortByCanonicalJson(operationProjections) }
@@ -288,7 +283,7 @@ function voiceCredentialSourceMutationContractKey(
               ? selection.target.account.service
               : selection.target.service;
             return sameContribution(
-              qualifyCredentialService(source.service, mutation.contribution.pluginId),
+              qualifyPluginContributionReferenceV1(source.service, mutation.contribution.pluginId),
               selectedService,
             );
           }) ?? null

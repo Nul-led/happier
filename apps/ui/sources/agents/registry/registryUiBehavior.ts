@@ -2,10 +2,7 @@ import type { ReactNode } from 'react';
 import {
     buildBackendTargetKeyV2,
     readAcpConfiguredBackendV1FromMetadata,
-    readBackendTargetRefV2,
     SessionModelSelectionIntentV1Schema,
-    type BackendTargetRefV2,
-    type BackendTargetRefV2Input,
     AccountProfile,
     type ExternalSessionsAgentId,
     type AcpConfigOptionOverridesV1,
@@ -165,10 +162,6 @@ export type AgentSessionHandoffProviderPatch = Readonly<{
     externalSessionRuntimeDescriptor?: RuntimeDescriptorV1 | null;
 }>;
 
-export type AgentSessionHandoffSourceRecoveryResumePatch = Readonly<{
-    environmentVariables?: Record<string, string>;
-}>;
-
 export type AgentSessionComposerNonSteerableReason = 'provider_config_change_refused';
 
 export type AgentSessionComposerNonSteerablePayloadContext = Readonly<{
@@ -189,19 +182,6 @@ export type AgentContextWindowBehavior = Readonly<{
         contextWindowTokens: number;
         observedUsedTokens: unknown;
     }>) => number;
-}>;
-
-export type AgentBackendTransportFields = Readonly<{
-    runtimeDescriptorV1?: RuntimeDescriptorV1;
-}>;
-
-export type AgentBackendTransportContext = Readonly<{
-    agentId: AgentLookupId;
-    backendTarget: BackendTargetRefV2;
-    providerMode?: unknown;
-    legacyExperimentalMode?: boolean;
-    runtimeDescriptorV1?: RuntimeDescriptorV1;
-    providerSessionId?: string;
 }>;
 
 /**
@@ -364,17 +344,6 @@ export type AgentUiBehavior = Readonly<{
             targetDirectSource: ExternalSessionsSource | Record<string, unknown>;
             targetRuntimeDescriptor?: RuntimeDescriptorV1;
         }) => AgentSessionHandoffProviderPatch;
-        buildSourceRecoveryResumePatch?: (ctx: {
-            agentId: AgentId;
-            metadata: Record<string, unknown>;
-            /**
-             * The Agent's own canonical runtime handle for the session being
-             * recovered. `metadata` is the strict Agent-facing handoff view,
-             * whose key list is first-party only, so this is where an installed
-             * Agent's declared runtime fields actually arrive.
-             */
-            runtimeDescriptorV1?: RuntimeDescriptorV1;
-        }) => AgentSessionHandoffSourceRecoveryResumePatch;
     }>;
     payload?: Readonly<{
         buildSpawnEnvironmentVariables?: (opts: {
@@ -406,7 +375,6 @@ export type AgentUiBehavior = Readonly<{
             resumeCapabilityOptions: ResumeCapabilityOptions;
             session?: Session | null;
         }) => Record<string, unknown>;
-        buildBackendTransportFields?: (opts: AgentBackendTransportContext) => AgentBackendTransportFields;
     }>;
     sessionSubagents?: Readonly<{
         renderLaunchCards?: (ctx: {
@@ -1033,73 +1001,6 @@ export function buildWakeResumeExtras(opts: {
         opts.agentId,
         resolveOwningMachineIdForSession(opts.session),
     )?.payload?.buildWakeResumeExtras;
-    return fn ? fn(opts) : {};
-}
-
-function readCanonicalBackendTarget(input: BackendTargetRefV2Input | undefined): BackendTargetRefV2 | null {
-    if (!input) return null;
-    try {
-        return readBackendTargetRefV2(input);
-    } catch {
-        return null;
-    }
-}
-
-function resolveAgentIdFromBackendTarget(input: BackendTargetRefV2Input | undefined): AgentId | null {
-    const target = readCanonicalBackendTarget(input);
-    if (!target || target.kind !== 'backend' || target.sourceKind === 'configured') return null;
-    // An Agent-sourced backend target carries the Agent's own id, which may be an
-    // externally installed contribution. `resolveAgentUiBehavior` already answers
-    // with the neutral behavior when no bundled behavior is contributed, so there
-    // is nothing left for a bundled-id filter to decide here.
-    return target.backendId;
-}
-
-export function buildBackendTransportFieldsFromUiState(opts: Readonly<{
-    /** Exact daemon target that will consume the transport fields. */
-    machineId: string | null;
-    backendTarget?: BackendTargetRefV2Input;
-    providerMode?: unknown;
-    legacyExperimentalMode?: boolean;
-    runtimeDescriptorV1?: RuntimeDescriptorV1;
-    providerSessionId?: string;
-}>): AgentBackendTransportFields {
-    const backendTarget = readCanonicalBackendTarget(opts.backendTarget);
-    const agentId = resolveAgentIdFromBackendTarget(opts.backendTarget);
-    if (!backendTarget || !agentId) return {};
-
-    const fn = resolveAgentUiBehavior(agentId, opts.machineId).payload?.buildBackendTransportFields;
-    return fn
-        ? fn({
-            agentId,
-            backendTarget,
-            providerMode: opts.providerMode,
-            legacyExperimentalMode: opts.legacyExperimentalMode,
-            runtimeDescriptorV1: opts.runtimeDescriptorV1,
-            providerSessionId: opts.providerSessionId,
-        })
-        : {};
-}
-
-/**
- * The Agent's own source-recovery patch for a handoff that is being rolled back
- * onto the machine it came from.
- *
- * `machineId` is passed explicitly because the Agent-facing handoff metadata
- * view deliberately drops host-owned facts such as `machineId`; deriving the
- * machine from that view answered `null` for every real caller and silently
- * degraded the read to the machine-blind floor.
- */
-export function buildSessionHandoffSourceRecoveryResumePatch(opts: {
-    agentId: AgentId;
-    machineId: string | null;
-    metadata: Record<string, unknown>;
-    runtimeDescriptorV1?: RuntimeDescriptorV1;
-}): AgentSessionHandoffSourceRecoveryResumePatch {
-    const fn = resolveAgentUiBehavior(
-        opts.agentId,
-        opts.machineId,
-    ).sessionHandoff?.buildSourceRecoveryResumePatch;
     return fn ? fn(opts) : {};
 }
 

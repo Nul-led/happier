@@ -68,6 +68,7 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
     testID: string;
 }>): React.ReactElement {
     const [pending, setPending] = React.useState(false);
+    const [hostedStatus, setHostedStatus] = React.useState<ReturnType<PluginAccountReleaseSelectionController['readHostedArtifactStatus']>>('unavailable');
     const controllerLifetimeRef = React.useRef<ControllerLifetime | null>(null);
 
     React.useEffect(() => {
@@ -82,6 +83,39 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
             lifetime.controller.retire();
         };
     }, []);
+
+    React.useEffect(() => {
+        const update = () => {
+            const lifetime = controllerLifetimeRef.current;
+            if (!lifetime?.current) return;
+            setHostedStatus(lifetime.controller.readHostedArtifactStatus({
+                pluginId: props.pluginId,
+                reader: props.reader,
+            }));
+        };
+        update();
+        return props.reader?.subscribe(update);
+    }, [props.pluginId, props.reader]);
+
+    const runHostedAction = React.useCallback((action: (
+        controller: PluginAccountReleaseSelectionController,
+    ) => Promise<Readonly<{ kind: string }>>) => {
+        const lifetime = controllerLifetimeRef.current;
+        if (!lifetime || pending || lifetime.controller.isPending()) return;
+        setPending(true);
+        void action(lifetime.controller).then((result) => {
+            if (!lifetime.current || controllerLifetimeRef.current !== lifetime) return;
+            if (result.kind !== 'updated') {
+                Modal.alert(t('common.error'), t('common.requestFailed'));
+            }
+        }).catch(() => {
+            if (lifetime.current && controllerLifetimeRef.current === lifetime) {
+                Modal.alert(t('common.error'), t('common.requestFailed'));
+            }
+        }).finally(() => {
+            if (lifetime.current && controllerLifetimeRef.current === lifetime) setPending(false);
+        });
+    }, [pending]);
 
     const selectRelease = React.useCallback(() => {
         const lifetime = controllerLifetimeRef.current;
@@ -124,6 +158,63 @@ export function PluginAccountReleaseSelectionSection(props: Readonly<{
                 loading={pending}
                 showChevron={false}
             />
+            {hostedStatus !== 'unavailable' ? (
+                <Item
+                    testID={`${props.testID}.hosting`}
+                    title={hostedStatus === 'notOptedIn' || hostedStatus === 'disabledHosted'
+                        ? t('settingsPlugins.accountReleaseSelection.hostedEnableTitle')
+                        : t('settingsPlugins.accountReleaseSelection.hostedDisableTitle')}
+                    subtitle={hostedStatus === 'unsupported' || hostedStatus === 'unsupportedHosted'
+                        ? t('common.unavailable')
+                        : hostedStatus === 'hosted'
+                        ? t('settingsPlugins.accountReleaseSelection.hostedStatusReady')
+                        : hostedStatus === 'publicationPending'
+                            ? t('settingsPlugins.accountReleaseSelection.hostedStatusPending')
+                            : t('settingsPlugins.accountReleaseSelection.hostedStatusDisabled')}
+                    onPress={() => runHostedAction((controller) => controller.setHostedArtifactsEnabled({
+                        pluginId: props.pluginId,
+                        reader: props.reader,
+                        enabled: hostedStatus === 'notOptedIn' || hostedStatus === 'disabledHosted',
+                    }))}
+                    disabled={pending || hostedStatus === 'unsupported' || hostedStatus === 'unsupportedHosted'}
+                    loading={pending}
+                    showChevron={false}
+                />
+            ) : null}
+            {hostedStatus === 'hosted' || hostedStatus === 'publicationPending' || hostedStatus === 'disabledHosted' || hostedStatus === 'unsupportedHosted' ? (
+                <Item
+                    testID={`${props.testID}.removeHosted`}
+                    title={t('settingsPlugins.accountReleaseSelection.hostedRemoveTitle')}
+                    subtitle={t('settingsPlugins.accountReleaseSelection.hostedRemoveBody')}
+                    destructive
+                    onPress={() => {
+                        void Modal.confirm(t('settingsPlugins.accountReleaseSelection.hostedRemoveTitle'), t('settingsPlugins.accountReleaseSelection.hostedRemoveBody'), {
+                            confirmText: t('common.remove'),
+                            destructive: true,
+                        }).then((confirmed) => {
+                            if (confirmed) runHostedAction((controller) => controller.disableAndRemoveHostedArtifacts({
+                                pluginId: props.pluginId,
+                                reader: props.reader,
+                            }));
+                        });
+                    }}
+                    disabled={pending}
+                    showChevron={false}
+                />
+            ) : null}
+            {hostedStatus !== 'unavailable' ? (
+                <Item
+                    testID={`${props.testID}.clearCache`}
+                    title={t('settingsPlugins.accountReleaseSelection.hostedClearCacheTitle')}
+                    subtitle={t('settingsPlugins.accountReleaseSelection.hostedClearCacheBody')}
+                    onPress={() => runHostedAction((controller) => controller.clearHostedArtifactCache({
+                        pluginId: props.pluginId,
+                        reader: props.reader,
+                    }))}
+                    disabled={pending}
+                    showChevron={false}
+                />
+            ) : null}
         </ItemGroup>
     );
 }

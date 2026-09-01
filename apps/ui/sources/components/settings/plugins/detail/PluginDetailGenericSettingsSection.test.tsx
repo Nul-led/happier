@@ -34,6 +34,7 @@ const machinePluginSecretDeleteMock = vi.hoisted(() => vi.fn());
 const accountPluginSecretReadMock = vi.hoisted(() => vi.fn());
 const accountPluginSecretWriteMock = vi.hoisted(() => vi.fn());
 const modalShowMock = vi.hoisted(() => vi.fn());
+const modalConfirmMock = vi.hoisted(() => vi.fn(async () => true));
 const scopedSettingsWatchMock = vi.hoisted(() => vi.fn());
 const scopedSettingsReadMock = vi.hoisted(() => vi.fn());
 const scopedSettingsWriteMock = vi.hoisted(() => vi.fn());
@@ -51,7 +52,7 @@ const activeAccountLifetimeState = vi.hoisted(() => ({
 installSettingsViewCommonModuleMocks({
     modal: async () => {
         const { createModalModuleMock } = await import('@/dev/testkit/mocks/modal');
-        return createModalModuleMock({ spies: { show: modalShowMock } }).module;
+        return createModalModuleMock({ spies: { show: modalShowMock, confirm: modalConfirmMock } }).module;
     },
     reactNative: async () => {
         const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -72,6 +73,17 @@ installSettingsViewCommonModuleMocks({
         return createExpoRouterMock({ router: { push: routerPushSpy } }).module;
     },
 });
+
+vi.mock('@/components/appShell/plugins/AppShellPluginUiProjection', () => ({
+    useProjectedPluginLocalizedTextResolver: () => (_pluginId: string, value: unknown) => {
+        if (typeof value === 'string') return value;
+        if (value && typeof value === 'object' && 'fallback' in value) {
+            const fallback = (value as { fallback?: unknown }).fallback;
+            return typeof fallback === 'string' ? fallback : '';
+        }
+        return '';
+    },
+}));
 
 vi.mock('@/track/settingsAnalytics/emitPluginSettingChangedEvent', () => ({
     emitPluginSettingChangedEvent: (...args: unknown[]) => emitPluginSettingChangedEventMock(...args),
@@ -658,6 +670,8 @@ describe('PluginDetailGenericSettingsSection', () => {
         accountPluginSecretReadMock.mockReset();
         accountPluginSecretWriteMock.mockReset();
         modalShowMock.mockReset();
+        modalConfirmMock.mockReset();
+        modalConfirmMock.mockResolvedValue(true);
         accountPluginSecretReadMock.mockResolvedValue({
             status: 'ready',
             snapshot: {
@@ -1306,6 +1320,11 @@ describe('PluginDetailGenericSettingsSection', () => {
         });
         await flushAsync();
 
+        expect(modalConfirmMock).toHaveBeenCalledWith(
+            'secrets.prompts.deleteTitle',
+            'secrets.prompts.deleteConfirm',
+            { destructive: true, confirmText: 'common.delete', cancelText: 'common.cancel' },
+        );
         expect(accountPluginSecretWriteMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
             fieldId: 'accountToken',
             mutation: { kind: 'delete' },

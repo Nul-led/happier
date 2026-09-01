@@ -17,7 +17,12 @@ export type AccountServiceOAuthStage =
     | 'finding_homes'
     | 'connecting_home'
     | 'waiting_approval'
+    | 'account_service_connected'
     | 'home_added';
+
+type AccountServiceOAuthVisibleStage =
+    | 'signing_in'
+    | 'finding_homes';
 
 export type AccountServiceOAuthFailure =
     | 'provider_failed'
@@ -61,24 +66,38 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
 }));
 
-function endpointHost(endpointUrl: string): string {
+function endpointDisplayName(endpointUrl: string): string {
     try {
-        return new URL(endpointUrl).host;
+        const endpoint = new URL(endpointUrl);
+        const pathname = endpoint.pathname.replace(/\/+$/, '');
+        return `${endpoint.host}${pathname === '' || pathname === '/' ? '' : pathname}`;
     } catch {
         return endpointUrl;
     }
 }
 
-function stageTitle(stage: AccountServiceOAuthStage): string {
+function visibleStageFor(stage: AccountServiceOAuthStage): AccountServiceOAuthVisibleStage {
     switch (stage) {
-        case 'verifying_service': return t('settingsAccount.accountServiceOAuth.stages.verifyingService');
+        case 'verifying_service':
+        case 'signing_in':
+        case 'saving_credentials':
+        case 'signed_in':
+            return 'signing_in';
+        case 'finding_homes':
+        case 'connecting_home':
+        case 'waiting_approval':
+        case 'account_service_connected':
+        case 'home_added':
+            return 'finding_homes';
+    }
+}
+
+function stageTitle(
+    stage: AccountServiceOAuthVisibleStage,
+): string {
+    switch (stage) {
         case 'signing_in': return t('settingsAccount.accountServiceOAuth.stages.signingIn');
-        case 'saving_credentials': return t('settingsAccount.accountServiceOAuth.stages.signingIn');
-        case 'signed_in': return t('settingsAccount.accountServiceOAuth.stages.signedIn');
         case 'finding_homes': return t('settingsAccount.accountServiceOAuth.stages.findingHomes');
-        case 'connecting_home': return t('settingsAccount.accountServiceOAuth.stages.connectingHome');
-        case 'waiting_approval': return t('settingsAccount.accountServiceOAuth.stages.waitingApproval');
-        case 'home_added': return t('settingsAccount.accountServiceOAuth.stages.homeAdded');
     }
 }
 
@@ -100,16 +119,20 @@ function failureCopy(failure: AccountServiceOAuthFailure): Readonly<{ title: str
 export function AccountServiceOAuthJourney(props: Readonly<{
     state: AccountServiceOAuthJourneyState;
     onRecovery: () => void;
+    onTerminalPresented?: () => void;
 }>): React.ReactElement {
     const styles = stylesheet;
-    const host = endpointHost(props.state.endpointUrl);
+    const host = endpointDisplayName(props.state.endpointUrl);
     const identity = t('settingsAccount.accountServiceOAuth.serviceIdentity', {
         provider: props.state.providerName,
         host,
     });
     const isError = props.state.kind === 'error';
     const failure = isError ? failureCopy(props.state.failure) : null;
-    const stage = props.state.kind === 'progress' ? props.state.stage : null;
+    const sourceStage = props.state.kind === 'progress' ? props.state.stage : null;
+    const stage = props.state.kind === 'progress'
+        ? visibleStageFor(props.state.stage)
+        : null;
     const nativeRecoveryRef = React.useRef<React.ComponentRef<typeof View>>(null);
     const recoveryLabel = isError && props.state.signedIn
         ? t('settingsAccount.accountServiceOAuth.actions.openSettings')
@@ -127,6 +150,16 @@ export function AccountServiceOAuthJourney(props: Readonly<{
         }
         focusNativeAccessibilityTarget(nativeRecoveryRef.current);
     }, [isError, props.state.kind === 'error' ? props.state.failure : null]);
+
+    React.useEffect(() => {
+        if (
+            isError
+            || (sourceStage !== 'waiting_approval'
+                && sourceStage !== 'account_service_connected'
+                && sourceStage !== 'home_added')
+        ) return;
+        props.onTerminalPresented?.();
+    }, [isError, props.onTerminalPresented, sourceStage]);
 
     return (
         <View style={styles.root}>
@@ -147,14 +180,7 @@ export function AccountServiceOAuthJourney(props: Readonly<{
                     : `oauth-account-directory-stage-${stage}`}
                 kind={isError
                     ? 'error'
-                    : stage === 'waiting_approval'
-                        ? 'warning'
-                        : stage === 'home_added'
-                            ? 'empty'
-                            : 'loading'}
-                iconName={!isError && stage === 'home_added'
-                    ? 'check-circle'
-                    : undefined}
+                    : 'loading'}
                 title={failure?.title ?? stageTitle(stage!)}
                 reason={failure?.body ?? t('settingsAccount.accountServiceOAuth.focusedHomePreserved')}
                 accessibilitySemantics={isError ? 'alert' : 'status'}
@@ -162,11 +188,7 @@ export function AccountServiceOAuthJourney(props: Readonly<{
             {isError ? (
                 <View
                     ref={nativeRecoveryRef}
-                    accessible={Platform.OS !== 'web'}
-                    accessibilityRole={Platform.OS !== 'web' ? 'button' : undefined}
-                    accessibilityLabel={recoveryLabel}
                     style={styles.recoveryAction}
-                    onAccessibilityTap={props.onRecovery}
                 >
                     <RoundButton
                         testID="oauth-account-directory-continue"

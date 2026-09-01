@@ -43,9 +43,7 @@ describe('Personal Home translations', () => {
         });
         const untranslated = Object.values(auditTranslations({ en, locales }))
             .flatMap((report) => report.untranslatedStrings)
-            .filter((entry) => entry.key.startsWith('personalHome.'))
-            // The formatter deliberately composes already-localized row fields with punctuation.
-            .filter((entry) => entry.key !== 'personalHome.bootstrap.rowAccessibilityLabel');
+            .filter((entry) => entry.key.startsWith('personalHome.'));
 
         expect(shapeMismatches).toEqual([]);
         expect(untranslated).toEqual([]);

@@ -3,6 +3,7 @@ import { storage } from '@/sync/domains/state/storage';
 import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { getActiveServerSnapshot, upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
+import { loadHomeViewState, saveHomeViewState } from '@/sync/domains/server/serverProfiles';
 import { loadSessionReviewCommentsDrafts } from '@/sync/domains/state/sessionPersistence';
 import { loadProfile } from '@/sync/domains/state/profilePersistence';
 import { loadLocalSettings, loadSettings, saveSettings } from '@/sync/domains/state/settingsPersistence';
@@ -293,6 +294,32 @@ describe('seedDemoWorld and clearDemoWorld', () => {
             serverSelectionActiveTargetKind: 'server',
             serverSelectionActiveTargetId: activeServerId,
         });
+    });
+
+    it('uses and restores the canonical initialized HomeView target while seeded', async () => {
+        const previous = upsertAndActivateServer({
+            serverUrl: 'https://home-view-demo-restore.example.test',
+            name: 'HomeView restore test server',
+            scope: 'device',
+        });
+        saveHomeViewState({
+            version: 1,
+            groups: [{ id: 'homes', name: 'Homes', serverIds: [previous.id] }],
+            activeTargetKind: 'group',
+            activeTargetId: 'homes',
+        });
+        const before = loadHomeViewState();
+
+        await seedDemoWorld();
+
+        expect(loadHomeViewState()).toMatchObject({
+            activeTargetKind: 'server',
+            activeTargetId: getActiveServerSnapshot().serverId,
+        });
+
+        await clearDemoWorld();
+
+        expect(loadHomeViewState()).toEqual(before);
     });
 
     it('reports runtime residue without rejecting when diagnostic teardown is requested', async () => {

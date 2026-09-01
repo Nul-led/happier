@@ -378,7 +378,7 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
         return { kind: 'personal-home' as const, canonicalServerUrl };
     };
 
-    const readMutationStatus = async (expectedAnonymousSignupEnabled: boolean): Promise<void> => {
+    const readMutationStatus = async (expectedAnonymousSignupEnabled: boolean | null): Promise<void> => {
         const task = requireSuccessfulTask(
             await input.deps.runRelayTask('relay.runtime.status.v1', {}),
             'Personal Home runtime status readback',
@@ -393,11 +393,13 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
         ) {
             throw new Error('Personal Home runtime changed during install/update.');
         }
-        if (expectedAnonymousSignupEnabled === false && status.anonymousSignupEnabled !== false) {
-            throw new PersonalHomeSignupClosureError();
-        }
-        if (status.anonymousSignupEnabled !== expectedAnonymousSignupEnabled) {
-            throw new Error('Personal Home runtime changed during install/update.');
+        if (expectedAnonymousSignupEnabled != null) {
+            if (expectedAnonymousSignupEnabled === false && status.anonymousSignupEnabled !== false) {
+                throw new PersonalHomeSignupClosureError();
+            }
+            if (status.anonymousSignupEnabled !== expectedAnonymousSignupEnabled) {
+                throw new Error('Personal Home runtime changed during install/update.');
+            }
         }
     };
 
@@ -493,6 +495,10 @@ export async function runPersonalHomeBootstrapFromSystemTasks(input: Readonly<{
                 // live refusal/policy/listener-origin readbacks below still fail closed.
                 return;
             }
+            // An explicit erase or uninstall may win the incumbent mutation lock after account
+            // work. Re-admit from authoritative status immediately before the next mutation so
+            // that operation wins and bootstrap waits for a deliberate Retry.
+            await readMutationStatus(null);
             const purpose = purposeForDesiredState(desired);
             await runConfiguredTask('relay.runtime.installOrUpdate.v1', desired.anonymousSignupEnabled, purpose);
             await readMutationStatus(desired.anonymousSignupEnabled);

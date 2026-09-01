@@ -32,6 +32,7 @@ import {
     type AutomationTriggerEditorValue,
     type AutomationEditorTriggerDraft,
 } from '@/sync/domains/automations/automationEditorDraft';
+import { restoreFocusToBestTarget } from '@/keyboard/focusReturn';
 import { clampAutomationIntervalMinutes } from '@/sync/domains/automations/automationDraft';
 import { t } from '@/text';
 import { AutomationRecipeComposer } from './AutomationRecipeComposer';
@@ -315,11 +316,48 @@ function createDefaultSchedule(): ScheduleTriggerDefinition {
 function ScheduleEditor(props: Readonly<{
     value: ScheduleTriggerDefinition;
     onChange: (value: ScheduleTriggerDefinition) => void;
+    /** Receives focus when the trigger editor opens; whichever schedule field is mounted takes it. */
+    fieldRef?: React.Ref<React.ComponentRef<typeof TextInput>>;
 }>): React.ReactElement {
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const boundaryRef = usePopoverBoundaryRef();
     const [menuOpen, setMenuOpen] = React.useState(false);
+    // The interval field owns a local draft so intermediate strings ("", "0",
+    // partial numbers) stay editable; validated minutes commit through the
+    // editor draft owner on end-editing/submit. A committed change arriving
+    // from outside (a schedule-kind switch, another owner, the consumed
+    // commit) resets the draft so it can never shadow a foreign value.
+    const scheduleKind = props.value.schedule.kind;
+    const committedIntervalText = String(scheduleKind === 'interval'
+        ? Math.max(1, Math.round(props.value.schedule.everyMs / 60_000))
+        : 1);
+    const [intervalDraftState, setIntervalDraftState] = React.useState<Readonly<{
+        basisKind: typeof scheduleKind;
+        basisText: string;
+        value: string;
+    }> | null>(null);
+    const intervalDraft = intervalDraftState?.basisKind === scheduleKind
+        && intervalDraftState.basisText === committedIntervalText
+        ? intervalDraftState.value
+        : null;
+    const commitIntervalDraft = React.useCallback(() => {
+        if (intervalDraft === null) return;
+        setIntervalDraftState(null);
+        const normalized = intervalDraft.trim();
+        if (!/^\d+$/u.test(normalized)) return;
+        const minutes = Number(normalized);
+        if (!Number.isSafeInteger(minutes) || minutes < 1) return;
+        props.onChange({
+            ...props.value,
+            schedule: {
+                kind: 'interval',
+                scheduleExpr: null,
+                everyMs: clampAutomationIntervalMinutes(minutes) * 60_000,
+                timezone: props.value.schedule.timezone,
+            },
+        });
+    }, [intervalDraft, props]);
     const scheduleItems = React.useMemo<ReadonlyArray<DropdownMenuItem>>(() => [
         {
             id: 'interval',
@@ -396,24 +434,19 @@ function ScheduleEditor(props: Readonly<{
                             <TextInput
                                 testID="automation-trigger-interval-minutes"
                                 style={styles.input}
-                                value={String(Math.max(1, Math.round(props.value.schedule.everyMs / 60_000)))}
-                                onChangeText={(raw) => {
-                                    const minutes = Number.parseInt(raw, 10);
-                                    if (!Number.isSafeInteger(minutes) || minutes < 1) return;
-                                    props.onChange({
-                                        ...props.value,
-                                        schedule: {
-                                            kind: 'interval',
-                                            scheduleExpr: null,
-                                            everyMs: clampAutomationIntervalMinutes(minutes) * 60_000,
-                                            timezone: props.value.schedule.timezone,
-                                        },
-                                    });
-                                }}
+                                value={intervalDraft ?? committedIntervalText}
+                                onChangeText={(value) => setIntervalDraftState({
+                                    basisKind: scheduleKind,
+                                    basisText: committedIntervalText,
+                                    value,
+                                })}
+                                onEndEditing={commitIntervalDraft}
+                                onSubmitEditing={commitIntervalDraft}
                                 keyboardType="numeric"
                                 accessibilityLabel={t('automations.form.labels.everyMinutes')}
                                 autoCorrect={false}
                                 autoCapitalize="none"
+                                ref={props.fieldRef}
                             />
                         </FieldItem>
                     ) : (
@@ -437,6 +470,7 @@ function ScheduleEditor(props: Readonly<{
                                 autoCorrect={false}
                                 autoCapitalize="none"
                                 accessibilityLabel={t('automations.form.labels.cronExpression')}
+                                ref={props.fieldRef}
                             />
                         </FieldItem>
                     )}
@@ -494,6 +528,31 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
     const styles = stylesheet;
     const [editor, setEditor] = React.useState<EditorState>({ kind: 'none' });
     const [lifecycleSelectionStale, setLifecycleSelectionStale] = React.useState(false);
+    // Focus continuity for the trigger-kind transition. Choosing a kind
+    // unmounts the pressed control and mounts an editor; the shared
+    // focus-return owner moves focus into the new editor and hands it back to
+    // the originating trigger row (or the add-trigger row) when the editor
+    // closes, so keyboard and assistive-tech users are never stranded.
+    const editorFieldRef = React.useRef<React.ComponentRef<typeof TextInput> | null>(null);
+    const pendingEditorFieldFocusRef = React.useRef(false);
+    const addTriggerRowRef = React.useRef<React.ComponentRef<typeof Pressable> | null>(null);
+    const triggerRowRefsByClientIdRef = React.useRef(
+        new Map<string, React.RefObject<React.ComponentRef<typeof Pressable> | null>>(),
+    );
+    const getTriggerRowRef = React.useCallback((clientId: string) => {
+        const existing = triggerRowRefsByClientIdRef.current.get(clientId);
+        if (existing) return existing;
+        const created: React.RefObject<React.ComponentRef<typeof Pressable> | null> = { current: null };
+        triggerRowRefsByClientIdRef.current.set(clientId, created);
+        return created;
+    }, []);
+    const closeTriggerEditor = React.useCallback((editedClientId: string | null) => {
+        setEditor({ kind: 'none' });
+        restoreFocusToBestTarget(
+            editedClientId === null ? null : getTriggerRowRef(editedClientId),
+            addTriggerRowRef,
+        );
+    }, [getTriggerRowRef]);
     // A save commits the captured draft under CAS. Ignore late editor events
     // while that request is in flight so the mounted draft cannot diverge
     // from the bytes whose witnesses are being submitted.
@@ -501,6 +560,22 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
         if (props.submitting === true) return;
         props.onChange(next);
     }, [props.onChange, props.submitting]);
+    const chooseTriggerKind = React.useCallback((kind: 'schedule' | 'pluginEvent' | 'sessionLifecycle') => {
+        setLifecycleSelectionStale(false);
+        if (kind === 'schedule') {
+            const appended = appendTrigger(props.value, createDefaultSchedule());
+            emitChange(appended.draft);
+            pendingEditorFieldFocusRef.current = true;
+            setEditor({ kind: 'schedule', clientId: appended.clientId });
+            return;
+        }
+        setEditor({ kind, clientId: null });
+    }, [emitChange, props.value]);
+    React.useEffect(() => {
+        if (editor.kind !== 'schedule' || !pendingEditorFieldFocusRef.current) return;
+        pendingEditorFieldFocusRef.current = false;
+        restoreFocusToBestTarget(editorFieldRef);
+    }, [editor]);
 
     const updateMetadata = React.useCallback((patch: Partial<AutomationTriggerEditorValue>) => {
         emitChange({ ...props.value, ...patch });
@@ -522,8 +597,8 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                 ? [...props.value.removedTriggers, trigger.persisted]
                 : props.value.removedTriggers,
         });
-        setEditor({ kind: 'none' });
-    }, [emitChange, props.value]);
+        closeTriggerEditor(null);
+    }, [closeTriggerEditor, emitChange, props.value]);
 
     const lifecycleOptions = React.useMemo<ReadonlyArray<SelectionListOption>>(() => (
         (props.sessionOptions ?? []).map((option) => ({
@@ -574,8 +649,8 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
         } else {
             emitChange(appendTrigger(props.value, definition).draft);
         }
-        setEditor({ kind: 'none' });
-    }, [editor, emitChange, props.value]);
+        closeTriggerEditor(editor.clientId);
+    }, [closeTriggerEditor, editor, emitChange, props.value]);
 
     const selectLifecycleSession = React.useCallback((sessionId: string) => {
         if (editor.kind !== 'sessionLifecycle') return;
@@ -612,8 +687,8 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
             emitChange(appendTrigger(props.value, definition).draft);
         }
         setLifecycleSelectionStale(false);
-        setEditor({ kind: 'none' });
-    }, [editor, emitChange, props.resolveCurrentSessionTurn, props.sessionOptions, props.value, props.onSessionSelectionStale]);
+        closeTriggerEditor(editor.clientId);
+    }, [closeTriggerEditor, editor, emitChange, props.resolveCurrentSessionTurn, props.sessionOptions, props.value, props.onSessionSelectionStale]);
 
     return (
         <View testID="automation-plural-editor" style={styles.root}>
@@ -691,6 +766,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                         title={triggerTitle(trigger)}
                         subtitle={subtitle}
                         subtitleLines={0}
+                        pressableRef={getTriggerRowRef(trigger.clientId)}
                         icon={<Icon
                             name={getAutomationEditorTriggerKind(trigger) === 'schedule'
                                 ? 'repeat'
@@ -742,6 +818,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                     subtitle={t('automations.pluralEditor.addTriggerSubtitle')}
                     icon={<Icon name="plus" size={18} color={theme.colors.text.secondary} />}
                     onPress={() => setEditor({ kind: 'chooseKind' })}
+                    pressableRef={addTriggerRowRef}
                 />
             </ItemGroup>
 
@@ -756,16 +833,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                             key={kind}
                             testID={`automation-trigger-kind-${kind}`}
                             accessibilityRole="button"
-                            onPress={() => {
-                                setLifecycleSelectionStale(false);
-                                if (kind === 'schedule') {
-                                    const appended = appendTrigger(props.value, createDefaultSchedule());
-                                    emitChange(appended.draft);
-                                    setEditor({ kind: 'schedule', clientId: appended.clientId });
-                                    return;
-                                }
-                                setEditor({ kind, clientId: null });
-                            }}
+                            onPress={() => chooseTriggerKind(kind)}
                             style={({ pressed }) => [styles.kindButton, pressed ? styles.kindButtonPressed : null]}
                         >
                             <Icon name={icon} size={18} color={theme.colors.text.secondary} />
@@ -779,6 +847,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                 <>
                     <ScheduleEditor
                         value={selectedSchedule.definition}
+                        fieldRef={editorFieldRef}
                         onChange={(definition) => emitChange(replaceTrigger(
                             props.value,
                             selectedSchedule.clientId,
@@ -786,7 +855,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                         ))}
                     />
                     <EditorActions
-                        onDone={() => setEditor({ kind: 'none' })}
+                        onDone={() => closeTriggerEditor(selectedSchedule.clientId)}
                         onRemove={() => { void removeTrigger(selectedSchedule.clientId); }}
                     />
                 </>
@@ -801,11 +870,11 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                                 ? selectedPluginEvent.definition
                                 : null,
                             onComplete: completePluginEvent,
-                            onCancel: () => setEditor({ kind: 'none' }),
+                            onCancel: () => closeTriggerEditor(editor.clientId),
                         })}
                         {editor.clientId ? (
                             <EditorActions
-                                onDone={() => setEditor({ kind: 'none' })}
+                                onDone={() => closeTriggerEditor(editor.clientId!)}
                                 onRemove={() => { void removeTrigger(editor.clientId!); }}
                             />
                         ) : null}
@@ -819,7 +888,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                         />
                         <Item
                             title={t('common.done')}
-                            onPress={() => setEditor({ kind: 'none' })}
+                            onPress={() => closeTriggerEditor(editor.clientId)}
                             showChevron={false}
                         />
                     </ItemGroup>
@@ -849,7 +918,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                             rootStep={lifecycleStep}
                             listAccessibilityLabel={t('automations.pluralEditor.chooseSession')}
                             onSelect={(id) => selectLifecycleSession(id)}
-                            onRequestClose={() => setEditor({ kind: 'none' })}
+                            onRequestClose={() => closeTriggerEditor(editor.clientId)}
                             autoFocusInputOnWeb
                             maxHeight={360}
                             heightBehavior="stabilizedContentHeight"
@@ -857,7 +926,7 @@ const AutomationTriggerEditorContents = React.memo(function AutomationTriggerEdi
                     </View>
                     {editor.clientId ? (
                         <EditorActions
-                            onDone={() => setEditor({ kind: 'none' })}
+                            onDone={() => closeTriggerEditor(editor.clientId!)}
                             onRemove={() => { void removeTrigger(editor.clientId!); }}
                         />
                     ) : null}

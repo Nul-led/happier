@@ -142,9 +142,7 @@ describe('Protocol-owned Account Settings catalog', () => {
             sessionTmuxSessionName: 'happy',
             sessionHandoffDefaultsV1: {
                 v: 1,
-                workspaceTransferEnabled: false,
-                workspaceTransferStrategy: 'transfer_snapshot',
-                conflictPolicy: 'create_sibling_copy',
+                workspaceSyncMode: 'keep_synced',
                 includeIgnoredMode: 'exclude',
                 ignoredIncludeGlobs: [],
                 directTargetMode: 'keep_direct',

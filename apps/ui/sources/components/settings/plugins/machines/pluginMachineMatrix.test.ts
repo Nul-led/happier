@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type {
+    PluginAccountAvailabilityIntentReadResponseV1,
     PluginMachineMaterializationSnapshotV1,
     PluginMachineMaterializationV1,
 } from '@happier-dev/protocol';
@@ -89,8 +90,12 @@ function admission(
         revision: index + 1,
         materializations: [row],
     })),
+    intentReads: readonly Readonly<{
+        pluginId: string;
+        response: PluginAccountAvailabilityIntentReadResponseV1;
+    }>[] = [],
 ): PluginMachineMaterializationAdmission {
-    return { kind: 'available', availabilityCursor: 42, materializations, snapshots };
+    return { kind: 'available', availabilityCursor: 42, intentReads, materializations, snapshots };
 }
 
 const MATCHED: PluginMachineReleaseClassificationV1 = {
@@ -126,6 +131,35 @@ function stateByMachineName(
 }
 
 describe('buildPluginMachineMatrix', () => {
+    it('includes desired Account release and artifact truth even before any machine materializes the plugin', () => {
+        const response = {
+            availabilityCursor: 42,
+            hostingCapability: { enabled: true, maxArtifactBytes: 1024, maxAccountBytes: 2048 },
+            intent: {
+                pluginId: 'acme.desired',
+                desiredVersion: '2.0.0',
+                enabled: true,
+                offlineUiHosting: 'enabled',
+                writableCollections: [],
+                revision: 'intent-1',
+            },
+            release: null,
+            uiArtifacts: [],
+        } satisfies PluginAccountAvailabilityIntentReadResponseV1;
+        const matrix = buildPluginMachineMatrix({
+            admission: admission([], [], [{ pluginId: 'acme.desired', response }]),
+            machineSnapshots: [],
+            classifyRelease: () => MATCHED,
+        });
+
+        expect(availableMatrix(matrix).rows).toEqual([
+            expect.objectContaining({
+                pluginId: 'acme.desired',
+                accountAvailability: response,
+                cells: [],
+            }),
+        ]);
+    });
     it('distinguishes every Account-wide per-machine state the administration matrix promises', () => {
         const snapshots = [resolvedSnapshot({
             serverIdentityId: 'srv_one',

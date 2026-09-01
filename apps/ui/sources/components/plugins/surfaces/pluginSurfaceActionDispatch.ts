@@ -26,6 +26,7 @@ import {
 } from '@happier-dev/protocol';
 import { PluginError } from '@happier-dev/plugin-sdk';
 import type { PluginReference } from '@happier-dev/plugin-sdk';
+import { qualifyPluginContributionReferenceV1 } from '@happier-dev/protocol/plugins/contribution-identity';
 import {
     readPluginActionInputParser,
     readPluginActionResultParser,
@@ -57,7 +58,6 @@ import type {
 } from '@happier-dev/protocol/plugins/ui';
 
 import { machinePluginStructuredMessageActionExecute } from '@/sync/ops/machineContributionRegistryProjection';
-import { qualifyPluginContributionReference } from '@/components/plugins/qualifyPluginContributionReference';
 import {
     resolvePluginUiClientActionRegistration,
     type PluginUiClientExecutableRegistration,
@@ -459,10 +459,10 @@ function clientActionOpenSurface(
         if (!openSurface) {
             throw new PluginError({ code: 'plugin_surface_open_unavailable' });
         }
-        // This is the SDK's public bare-reference qualification rule. It only
-        // adapts the Action capability to the existing incumbent navigation
-        // owner; it does not resolve a route or create a second surface owner.
-        const destination = qualifyPluginContributionReference(
+        // The shared identity owner only qualifies this bare reference. It
+        // adapts the Action capability to the incumbent navigation owner; it
+        // does not resolve a route or create a second surface owner.
+        const destination = qualifyPluginContributionReferenceV1(
             view,
             selection.action.pluginId,
         );

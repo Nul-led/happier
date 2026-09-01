@@ -295,6 +295,32 @@ async function loadBridge(input: Readonly<{
 }
 
 describe('hosted-web Account Data bridge adapter', () => {
+    it('forwards exact-revision Collection forget through the current mounted Data client', async () => {
+        const forget = vi.fn(async () => ({ rowId: 'task-1', forgotten: true as const }));
+        const { createHostedWebAccountDataBridge } = await import('./hostedWebAccountDataBridge');
+        const bridge = createHostedWebAccountDataBridge({
+            dataClient: {
+                collection: () => ({ forget }),
+            } as unknown as PluginUiDataClient,
+            publish: () => undefined,
+        });
+        const controller = new AbortController();
+
+        await expect(bridge.handle({
+            kind: 'data',
+            operation: 'collection.forget',
+            definition: collectionDefinition,
+            arguments: ['task-1', { expectedRevision: 7 }],
+        }, { signal: controller.signal })).resolves.toEqual({
+            kind: 'data',
+            value: { rowId: 'task-1', forgotten: true },
+        });
+        expect(forget).toHaveBeenCalledWith('task-1', {
+            expectedRevision: 7,
+            signal: controller.signal,
+        });
+    });
+
     it('fails Account KV closed before transport when the current release lacks storage.account', async () => {
         const { bridge, transport } = await loadBridge({
             readAvailability: () => createAvailabilityReader({ accountKv: false }),

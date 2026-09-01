@@ -579,7 +579,10 @@ import {
     shouldSchedulePendingOutboxTransportRetry,
     type PendingInputServerWireMode,
 } from './engine/pending/pendingInputServerWireContract';
-import { getServerFeaturesSnapshot } from './api/capabilities/serverFeaturesClient';
+import {
+    getServerFeaturesSnapshot,
+    refreshAuthenticatedServerFeaturesSnapshot,
+} from './api/capabilities/serverFeaturesClient';
 import {
     dropSocketSessionWork,
     flushActivityUpdates as flushActivityUpdatesEngine,
@@ -1123,7 +1126,7 @@ class Sync {
         private activeEndpointSupervisor: ManagedEndpointSupervisor | null = null;
       private syncTuning: SyncTuning = loadSyncTuning();
       private resumeInFlight: Promise<void> | null = null;
-      private accountChangeWakeQueuedAfterResume = false;
+      private changesCatchUpQueuedAfterResume = false;
       private pendingOutboxRearmInFlightByScope = new Map<string, Promise<void>>();
       private readonly usesPersistentDesktopSync = isDesktopHost();
       private isForeground = this.usesPersistentDesktopSync || AppState.currentState === 'active';
@@ -1254,6 +1257,8 @@ class Sync {
 	      private lastSocketDisconnectedAtMs: number | null = null;
       private lastSocketOfflineDurationMs: number | null = null;
       private socketOfflineCatchUpConsumedSessionIds = new Set<string>();
+      private socketStatus: 'disconnected' | 'connecting' | 'connected' | 'error' = 'disconnected';
+      private postSubscriptionChangesCatchUpPending = false;
       revenueCatInitialized = false;
     private settingsSecretsKey: Uint8Array | null = null;
     private settingsSecretsReadKeys: readonly Uint8Array[] = [];
@@ -1456,12 +1461,7 @@ class Sync {
                   log.log('📱 App became active');
                   this.pauseController.resume();
                   fireAndForget(invalidateAllServerReachabilitySupervisors(), { tag: 'Sync.invalidateAllServerReachabilitySupervisors' });
-                  try {
-                      apiSocket.connect();
-                  } catch {
-                      // ignore
-                  }
-                  fireAndForget(this.resumeSync('app-foreground'), { tag: 'Sync.resumeSync.app-foreground' });
+                  this.resumeAfterForegroundTransition('Sync.resumeSync.app-foreground');
               } else {
                   this.isForeground = false;
                   this.markNativeCryptoWorkerBackgroundQuiescent();
@@ -1470,7 +1470,7 @@ class Sync {
                   const teardownConnectivity = () => {
                       setServerReachabilityNetworkAllowed(false);
                       try {
-                          apiSocket.disconnect();
+                          this.disconnectSocketIntentionally();
                       } catch {
                           // ignore
                       }
@@ -1499,7 +1499,7 @@ class Sync {
                       const teardownConnectivity = () => {
                           setServerReachabilityNetworkAllowed(false);
                           try {
-                              apiSocket.disconnect();
+                              this.disconnectSocketIntentionally();
                           } catch {
                               // ignore
                           }
@@ -1515,7 +1515,7 @@ class Sync {
                       this.userRequestLeaseOwner.crossHardBoundary(() => {
                           setServerReachabilityNetworkAllowed(false);
                           try {
-                              apiSocket.disconnect();
+                              this.disconnectSocketIntentionally();
                           } catch {
                               // ignore
                           }
@@ -1529,12 +1529,7 @@ class Sync {
                       setServerReachabilityNetworkAllowed(true);
                       this.pauseController.resume();
                       fireAndForget(invalidateAllServerReachabilitySupervisors(), { tag: `${tag}.reachability` });
-                      try {
-                          apiSocket.connect();
-                      } catch {
-                          // ignore
-                      }
-                      fireAndForget(this.resumeSync('app-foreground'), { tag });
+                      this.resumeAfterForegroundTransition(tag);
                   };
                   const onVisibilityChange = () => {
                       const state = String(doc.visibilityState ?? '').trim().toLowerCase();
@@ -1699,6 +1694,30 @@ class Sync {
 	          this.socketOfflineCatchUpConsumedSessionIds.add(sessionId);
 	      }
 
+      private connectSocketWithPostSubscriptionCatchUp(): void {
+          if (this.socketStatus !== 'connected') {
+              this.postSubscriptionChangesCatchUpPending = true;
+          }
+          apiSocket.connect();
+      }
+
+      private disconnectSocketIntentionally(): void {
+          this.postSubscriptionChangesCatchUpPending = false;
+          this.socketStatus = 'disconnected';
+          apiSocket.disconnect();
+      }
+
+      private resumeAfterForegroundTransition(tag: string): void {
+          const resume = this.resumeSync('app-foreground');
+          fireAndForget(resume, { tag });
+          try {
+              this.connectSocketWithPostSubscriptionCatchUp();
+          } catch {
+              // The foreground resume still repairs the HTTP snapshot. A later successful connect
+              // consumes the armed post-subscription catch-up demand.
+          }
+      }
+
 	      private getMessageDecryptBatchOptions(): {
 	          initialMessageDecryptBatchSize: number;
           messageDecryptBatchSize: number;
@@ -1829,7 +1848,7 @@ class Sync {
     private async assertActiveEndpointAuthenticated(options?: Readonly<{ forceProbe?: boolean }>): Promise<void> {
         const target = this.getActiveEndpointTarget();
         if (target) {
-            assertServerReachabilityAuthenticated(target.serverUrl);
+            assertServerReachabilityAuthenticated(target.serverUrl, this.credentials?.token ?? null);
         }
 
         const supervisors = this.getActiveEndpointAuthSupervisors();
@@ -2246,6 +2265,8 @@ class Sync {
     }
 
     private resetServerScopedRuntimeState = () => {
+        this.changesCatchUpQueuedAfterResume = false;
+        this.postSubscriptionChangesCatchUpPending = false;
         this.sessionDraftSyncEnabled = false;
         this.sessionDraftOfflineCatchUpPending = false;
         this.sessionDraftRepositoryConfiguredScope = null;
@@ -2254,7 +2275,6 @@ class Sync {
         // The UI-sync generation fence is the sole shared Account retirement
         // boundary. Consumers receive synchronous owner-local cancellation
         // before this reset continues, while no consumer cleanup is awaited.
-        this.accountChangeWakeQueuedAfterResume = false;
         this.pluginAvailabilityProjectionHydrator.reset();
         clearPluginAccountAvailabilityProjection();
         retireActiveServerAccountScopeLifetime();
@@ -2264,7 +2284,7 @@ class Sync {
         this.warmCacheBootHydration = null;
         this.flushPendingSettingsForCurrentScopeNow();
         this.clearActiveAccountSettingsScope();
-        this.userRequestLeaseOwner.crossHardBoundary(() => apiSocket.disconnect());
+        this.userRequestLeaseOwner.crossHardBoundary(() => this.disconnectSocketIntentionally());
         this.activityAccumulator.reset();
         this.machineActivityAccumulator.reset();
 
@@ -2426,6 +2446,10 @@ class Sync {
 
         this.resetServerScopedRuntimeState();
         apiSocket.initialize({ endpoint: getActiveServerSnapshot().serverUrl, token: credentials.token }, encryption);
+        fireAndForget(
+            refreshAuthenticatedServerFeaturesSnapshot({ credentials, force: true }),
+            { tag: 'Sync.refreshAuthenticatedServerFeatures.switchServer' },
+        );
         await this.restore(credentials, encryption);
     }
 
@@ -5312,10 +5336,11 @@ class Sync {
     }
 
       public retryNow = () => {
+          let reconnectSocket = false;
           try {
               storage.getState().clearSyncError();
-              apiSocket.disconnect();
-              apiSocket.connect();
+              this.disconnectSocketIntentionally();
+              reconnectSocket = true;
           } catch {
               // ignore
           }
@@ -5326,13 +5351,23 @@ class Sync {
           } catch {
               // ignore
           }
-          fireAndForget(this.resumeSync('manual'), { tag: 'Sync.resumeSync.manual' });
+          const resume = this.resumeSync('manual');
+          fireAndForget(resume, { tag: 'Sync.resumeSync.manual' });
+          if (reconnectSocket) {
+              try {
+                  this.connectSocketWithPostSubscriptionCatchUp();
+              } catch {
+                  // The manual HTTP resume remains active; the next successful connection will
+                  // consume the armed post-subscription catch-up demand.
+              }
+          }
       }
 
-      private requestAccountChangeCatchUp = (): void => {
+      private requestChangesCatchUp = (): void => {
+          if (!this.isForeground) return;
           const activeResume = this.resumeInFlight;
           if (!activeResume) {
-              fireAndForget(this.resumeSync('account-change'), { tag: 'Sync.resumeSync.account-change' });
+              fireAndForget(this.resumeSync('changes-catch-up'), { tag: 'Sync.resumeSync.changes-catch-up' });
               return;
           }
 
@@ -5340,22 +5375,23 @@ class Sync {
           // changes page but before its outer cleanup releases this in-flight
           // slot. Preserve one level-triggered follow-up through the same
           // cursor owner; reset clears it with the Account lifetime.
-          this.accountChangeWakeQueuedAfterResume = true;
+          if (this.changesCatchUpQueuedAfterResume) return;
+          this.changesCatchUpQueuedAfterResume = true;
           void activeResume.then(
-              () => this.runQueuedAccountChangeCatchUp(),
-              () => this.runQueuedAccountChangeCatchUp(),
+              () => this.runQueuedChangesCatchUp(),
+              () => this.runQueuedChangesCatchUp(),
           );
       };
 
-      private runQueuedAccountChangeCatchUp = (): void => {
-          if (!this.accountChangeWakeQueuedAfterResume) {
+      private runQueuedChangesCatchUp = (): void => {
+          if (!this.changesCatchUpQueuedAfterResume) {
               return;
           }
-          this.accountChangeWakeQueuedAfterResume = false;
-          this.requestAccountChangeCatchUp();
+          this.changesCatchUpQueuedAfterResume = false;
+          this.requestChangesCatchUp();
       };
 
-      public resumeSync = (reason: 'app-foreground' | 'socket-reconnect' | 'account-change' | 'manual' | 'server-reachable'): Promise<void> => {
+      public resumeSync = (reason: 'app-foreground' | 'socket-reconnect' | 'changes-catch-up' | 'manual' | 'server-reachable'): Promise<void> => {
           return runWithInFlightDedupe(
               {
                   get: () => this.resumeInFlight,
@@ -5365,7 +5401,7 @@ class Sync {
               },
               async () => {
                   const shouldContinue = this.createServerScopeGuard();
-                  if ((reason === 'socket-reconnect' || reason === 'account-change' || reason === 'server-reachable') && !this.isForeground) {
+                  if ((reason === 'socket-reconnect' || reason === 'changes-catch-up' || reason === 'server-reachable') && !this.isForeground) {
                       return;
                   }
                   if (this.pauseController.isPaused()) {
@@ -5379,10 +5415,12 @@ class Sync {
                       return;
                   }
 
-                  await this.ensureSessionDraftRepositoryRuntimeReady({
-                      forceSnapshotHydration: reason === 'manual' || this.sessionDraftOfflineCatchUpPending,
-                  });
-                  if (!shouldContinue()) return;
+                  if (reason !== 'changes-catch-up') {
+                      await this.ensureSessionDraftRepositoryRuntimeReady({
+                          forceSnapshotHydration: reason === 'manual' || this.sessionDraftOfflineCatchUpPending,
+                      });
+                      if (!shouldContinue()) return;
+                  }
 
                   let accountId = storage.getState().profile?.id ?? null;
                   if (!accountId) {
@@ -5399,12 +5437,18 @@ class Sync {
                       return;
                   }
 
-                  await this.rearmPendingOutboxForActiveScope();
-                  if (!shouldContinue()) {
-                      return;
+                  if (reason !== 'changes-catch-up') {
+                      await this.rearmPendingOutboxForActiveScope();
+                      if (!shouldContinue()) {
+                          return;
+                      }
                   }
 
-                  const { status, refreshedByCatchUp } = await this.resumeViaChanges({ accountId, shouldContinue });
+                  const { status, refreshedByCatchUp } = await this.resumeViaChanges({
+                      accountId,
+                      shouldContinue,
+                      allowOfflineSnapshotRefresh: reason !== 'changes-catch-up',
+                  });
                   if (status === 'aborted') {
                       return;
                   }
@@ -5413,6 +5457,10 @@ class Sync {
                           return;
                       }
                       await this.snapshotRefreshOnResume({ mode: 'fallback', reason: 'changes-fallback' });
+                      return;
+                  }
+
+                  if (reason === 'changes-catch-up') {
                       return;
                   }
 
@@ -8326,13 +8374,19 @@ class Sync {
         apiSocket.onMessage('session', () => {});
 
 		          apiSocket.onStatusChange((status) => {
+	              this.socketStatus = status;
 	              if (status === 'connected') {
+	                  const shouldClosePostSubscriptionGap = this.postSubscriptionChangesCatchUpPending;
+	                  this.postSubscriptionChangesCatchUpPending = false;
 	                  if (this.lastSocketDisconnectedAtMs != null) {
 	                      this.lastSocketOfflineDurationMs = Date.now() - this.lastSocketDisconnectedAtMs;
 	                      this.sessionDraftOfflineCatchUpPending = true;
 	                      this.socketOfflineCatchUpConsumedSessionIds.clear();
 		                  }
 		                  this.lastSocketDisconnectedAtMs = null;
+	                  if (shouldClosePostSubscriptionGap) {
+	                      this.requestChangesCatchUp();
+	                  }
 		                  return;
 		              }
 		              if (status === 'disconnected' || status === 'error') {
@@ -8627,6 +8681,7 @@ class Sync {
       private async resumeViaChanges(opts: {
           accountId: string;
           shouldContinue?: () => boolean;
+          allowOfflineSnapshotRefresh?: boolean;
       }): Promise<ResumeViaChangesOutcome> {
           const CHANGES_PAGE_LIMIT = this.syncTuning.changesPageLimit;
           const afterCursor = this.changesCursor ?? '0';
@@ -8649,7 +8704,8 @@ class Sync {
           };
 
 	          const offlineForMs = this.readSocketOfflineDurationMs();
-	          const forceSnapshotRefresh = offlineForMs >= this.syncTuning.messageForceSnapshotOfflineMs;
+	          const forceSnapshotRefresh = opts.allowOfflineSnapshotRefresh !== false
+	              && offlineForMs >= this.syncTuning.messageForceSnapshotOfflineMs;
 
           const catchUp = await runSocketReconnectCatchUpViaChanges({
               credentials: this.credentials,
@@ -8892,7 +8948,7 @@ class Sync {
               sourceServerId,
               shouldContinue,
               onAccountChangeWake: () => {
-                  this.requestAccountChangeCatchUp();
+                  this.requestChangesCatchUp();
               },
               artifactDataKeys: this.artifactDataKeys,
               applySessions: (sessions) => this.applySessions(sessions),
@@ -9728,6 +9784,10 @@ async function syncInit(credentials: AuthCredentials, restore: boolean) {
 
     // Initialize socket connection
     apiSocket.initialize({ endpoint: getActiveServerSnapshot().serverUrl, token: credentials.token }, encryption);
+    fireAndForget(
+        refreshAuthenticatedServerFeaturesSnapshot({ credentials, force: true }),
+        { tag: 'Sync.refreshAuthenticatedServerFeatures.init' },
+    );
 
     // Wire socket status to storage
     apiSocket.onStatusChange((status) => {

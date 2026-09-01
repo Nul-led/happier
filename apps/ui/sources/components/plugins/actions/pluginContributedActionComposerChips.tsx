@@ -6,6 +6,7 @@ import {
     trimBugReportTextToMaxBytes,
 } from '@happier-dev/protocol';
 import { PLUGIN_UI_HOST_API_DIAGNOSTIC_MAX_UTF8_BYTES_V1 } from '@happier-dev/protocol/plugins/ui';
+import { qualifyPluginContributionReferenceV1 } from '@happier-dev/protocol/plugins/contribution-identity';
 import type {
     ComposerControlStateV1,
     ComposerOperationV1,
@@ -266,15 +267,6 @@ function qualifiesForComposerScope(
     return control.definition.scopes === undefined || control.definition.scopes.includes(scope);
 }
 
-function qualifyContributionReference(
-    control: PluginProjectedComposerControlEntryV1,
-    reference: string | PluginContributionIdentityV1,
-): PluginContributionIdentityV1 {
-    return typeof reference === 'string'
-        ? { pluginId: control.identity.pluginId, localId: reference }
-        : reference;
-}
-
 /** Applies declaration → validated Resource precedence. */
 function resolveComposerControlState(
     control: PluginProjectedComposerControlEntryV1,
@@ -459,7 +451,10 @@ function createChoicePopover(params: Readonly<{
         if (choice.effect.kind === 'action') {
             params.host.openAction({
                 control: params.control,
-                action: qualifyContributionReference(params.control, choice.effect.action),
+                action: qualifyPluginContributionReferenceV1(
+                    choice.effect.action,
+                    params.control.identity.pluginId,
+                ),
                 ...(choice.effect.input === undefined ? {} : { input: choice.effect.input }),
             });
             return true;
@@ -616,14 +611,20 @@ function resolveComposerControlInteraction(params: Readonly<{
         if (interaction.kind === 'action') {
             host.openAction({
                 control,
-                action: qualifyContributionReference(control, interaction.action),
+                action: qualifyPluginContributionReferenceV1(
+                    interaction.action,
+                    control.identity.pluginId,
+                ),
             });
             return;
         }
         if (interaction.kind === 'destination') {
             host.openDestination({
                 control,
-                destination: qualifyContributionReference(control, interaction.destination),
+                destination: qualifyPluginContributionReferenceV1(
+                    interaction.destination,
+                    control.identity.pluginId,
+                ),
             });
             return;
         }

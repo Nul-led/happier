@@ -86,12 +86,6 @@ const POLICY_TOGGLE_DEFINITIONS: readonly PolicyToggleDefinition[] = [
         icon: 'user-circle',
     },
     {
-        key: 'allowEnvironmentVariables',
-        titleKey: 'settingsActions.spawnPolicy.toggles.allowEnvironmentVariables.title',
-        subtitleKey: 'settingsActions.spawnPolicy.toggles.allowEnvironmentVariables.subtitle',
-        icon: 'key',
-    },
-    {
         key: 'allowConnectedServicesOverride',
         titleKey: 'settingsActions.spawnPolicy.toggles.allowConnectedServicesOverride.title',
         subtitleKey: 'settingsActions.spawnPolicy.toggles.allowConnectedServicesOverride.subtitle',

@@ -9,15 +9,12 @@ import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 import { tLoose, type TranslationKey } from '@/text';
 import {
     LEGACY_ACP_CONFIG_OPTION_OVERRIDES_KEY,
-    isSupportedRuntimeDescriptorProviderId,
     readMetadataAliasValue,
-    readSessionMetadataRuntimeDescriptor,
     SESSION_CONFIG_OPTION_OVERRIDES_KEY,
 } from '@happier-dev/agents';
 import {
     mergeSpawnConfigOptionAliases,
     type AgentUiSettingReferenceV1,
-    type RuntimeDescriptorV1,
     type SpawnConfigOptionValue,
 } from '@happier-dev/protocol';
 
@@ -40,7 +37,6 @@ import {
 } from './uiDescriptorDiagnostics';
 import {
     createDescriptorAdapterBehavior,
-    readRuntimeDescriptorAgentPayload,
 } from './agentUiBehaviorDescriptorAdapters';
 import { readAgentUiSetting } from './agentUiSettingLookup';
 import { readSessionMetadataLayoutVersion } from '@/sync/engine/sessions/parsePlainSessionPayload';
@@ -277,13 +273,6 @@ export type PluginUiBehaviorDescriptor = Readonly<{
             values?: readonly string[];
         }>;
         environmentVariables?: unknown;
-        /**
-         * The declared half of an Agent's spawn/resume transport: its backend-mode
-         * vocabulary and the runtime-handle fields that travel with it. The host owns
-         * the canonical `runtimeDescriptorV1` shape and reads incoming descriptors
-         * through the protocol-generated canonical reader.
-         */
-        backendTransport?: unknown;
     }>;
     externalSessions?: unknown;
     sessionHandoff?: unknown;
@@ -503,15 +492,7 @@ function normalizeSessionExtraMode(
     return normalized && descriptor.values.includes(normalized) ? normalized : null;
 }
 
-/**
- * The Agent's mode as ITS OWN declaration describes it.
- *
- * Both readers are keyed by the declaration's Agent id and bounded by its
- * declared value set, so they answer identically for a bundled and an installed
- * Agent. Neither consults a build-time roster: the canonical
- * `runtimeDescriptorV1` envelope already carries the owning `agentId`, and the
- * account setting is named by the declaration.
- */
+/** The Agent's create-time mode, bounded by its own declared setting vocabulary. */
 function readDeclaredSettingsMode(
     descriptor: SessionExtrasDescriptor,
     settings: Settings | Readonly<Record<string, unknown>>,
@@ -525,44 +506,11 @@ function readDeclaredSettingsMode(
         ?? normalizeSessionExtraMode(descriptor, descriptor.defaultValue);
 }
 
-function readDeclaredPersistedMode(
-    providerId: string,
-    values: readonly string[],
-    metadata: unknown,
-): string | null {
-    const mode = readString(readRuntimeDescriptorAgentPayload(metadata, providerId)?.backendMode);
-    return mode && values.includes(mode) ? mode : null;
-}
-
 function createSessionExtrasPayloadBehavior(
     descriptor: SessionExtrasDescriptor,
 ): NonNullable<AgentUiBehavior['payload']> {
-    const buildExtras = (mode: string | null): Record<string, unknown> => (
-        mode
-            ? {
-                runtimeDescriptorV1: {
-                    v: 1,
-                    agentId: descriptor.providerId,
-                    agent: { backendMode: mode },
-                } satisfies RuntimeDescriptorV1,
-            }
-            : {}
-    );
     const resolveSettingsMode = (settings: Readonly<Record<string, unknown>>) =>
         readDeclaredSettingsMode(descriptor, settings);
-    const resolveSessionMode = (session: { metadata?: Record<string, unknown> | null } | null | undefined) => {
-        const metadata = readOwnerMetadataFromSessionLike(session);
-        return readDeclaredPersistedMode(descriptor.providerId, descriptor.values, metadata)
-            // Same rule for persisted shapes: the canonical envelope above is
-            // the one an installed Agent can occupy; the reader below knows a
-            // bundled Agent's released pre-envelope metadata and nothing else.
-            ?? (isSupportedRuntimeDescriptorProviderId(descriptor.providerId)
-                ? normalizeSessionExtraMode(
-                    descriptor,
-                    readSessionMetadataRuntimeDescriptor(metadata, descriptor.providerId)?.runtimeKind,
-                )
-                : null);
-    };
 
     return {
         buildSpawnSessionExtras: ({ agentId, settings, sessionConfigOptionOverrides, updatedAt }) => {
@@ -570,7 +518,6 @@ function createSessionExtrasPayloadBehavior(
             const mode = resolveSettingsMode(settings);
             if (!mode) return {};
             return {
-                ...buildExtras(mode),
                 sessionConfigOptionOverrides: mergeSpawnConfigOptionAliases({
                     sessionConfigOptionOverrides: sessionConfigOptionOverrides ?? undefined,
                     configOptions: { [descriptor.outputKey]: mode },
@@ -578,16 +525,6 @@ function createSessionExtrasPayloadBehavior(
                 }),
             };
         },
-        buildResumeSessionExtras: ({ agentId, settings, session }) => (
-            agentId === descriptor.providerId
-                ? buildExtras(resolveSessionMode(session) ?? resolveSettingsMode(settings))
-                : {}
-        ),
-        buildWakeResumeExtras: ({ agentId, resumeCapabilityOptions, session }) => (
-            agentId === descriptor.providerId
-                ? buildExtras(resolveSessionMode(session) ?? resolveSettingsMode(resumeCapabilityOptions.accountSettings ?? ({} as Settings)))
-                : {}
-        ),
     };
 }
 
@@ -747,14 +684,6 @@ function createWorkStateBehavior(
             if (session.active === true) return readLiveGoalActionCapabilityProfile(session) !== null;
             return hasEditableGoalCapability(metadata, editableGoals);
         }
-        const mode = readDeclaredPersistedMode(editableGoals.providerId, editableGoals.modeValues, metadata)
-            // The canonical envelope above is what an installed Agent occupies;
-            // the reader below knows a bundled Agent's released pre-envelope
-            // metadata shapes and answers for nothing else.
-            ?? (isSupportedRuntimeDescriptorProviderId(editableGoals.providerId)
-                ? readSessionMetadataRuntimeDescriptor(metadata, editableGoals.providerId)?.runtimeKind ?? null
-                : null);
-        if (mode) return editableGoals.activeModeValues.includes(mode);
         if (editableGoals.activeWhenNoPersistedMode && session.active === true) return true;
         return hasPersistedGoalWorkState(metadata, editableGoals);
     };

@@ -230,7 +230,7 @@ describe('active Account-hosted plugin Artifact publisher', () => {
         expect(openedArchive?.files.get('entry.js')).toEqual(entryBytes);
     });
 
-    it('accepts the existing qualified Artifact identity when publication rejoins after response loss', async () => {
+    it('rejects a rejoin response whose Artifact identity differs from the proposed exact identity', async () => {
         const { lifetime } = createLifetime();
         const existingArtifactId = '00000000-0000-4000-8000-000000000099';
         let proposedArtifactId: string | null = null;
@@ -257,12 +257,9 @@ describe('active Account-hosted plugin Artifact publisher', () => {
         });
         const current = createPublisher({ lifetime, request });
 
-        await expect(current.publisher.publish(input(lifetime))).resolves.toMatchObject({
-            kind: 'published',
-            value: {
-                outcome: 'rejoined',
-                link: { artifactId: existingArtifactId },
-            },
+        await expect(current.publisher.publish(input(lifetime))).resolves.toEqual({
+            kind: 'unavailable',
+            code: 'response_identity_mismatch',
         });
         expect(proposedArtifactId).not.toBe(existingArtifactId);
     });

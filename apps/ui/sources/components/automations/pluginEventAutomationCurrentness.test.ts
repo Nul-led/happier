@@ -58,6 +58,10 @@ describe('plugin Event Automation currentness', () => {
 
         expect(arePluginMachineExecutionOriginsEqual(origin, { ...origin })).toBe(true);
         expect(areFreshPluginMachineExecutionOriginsCurrent(freshOrigin, { ...freshOrigin })).toBe(true);
+        expect(areFreshPluginMachineExecutionOriginsCurrent(
+            { ...freshOrigin, selectionRevision: 1 },
+            { ...freshOrigin, selectionRevision: 3 },
+        )).toBe(false);
         expect(areFreshPluginMachineExecutionOriginsCurrent(freshOrigin, {
             ...freshOrigin,
             machineTarget: {

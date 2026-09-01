@@ -396,19 +396,19 @@ describe('ActionSettingsDetailView', () => {
 
         await renderScreen(<ActionSettingsDetailContent actionId="session.spawn_new" />);
 
-        const envToggle = capture.switches.find((switchProps) =>
-            switchProps.testID === 'settings-actions:session-spawn-policy:allowEnvironmentVariables',
+        const directoryToggle = capture.switches.find((switchProps) =>
+            switchProps.testID === 'settings-actions:session-spawn-policy:allowCustomDirectory',
         );
-        expect(envToggle).toBeTruthy();
-        expect(envToggle?.value).toBe(true);
+        expect(directoryToggle).toBeTruthy();
+        expect(directoryToggle?.value).toBe(true);
 
-        const onEnvToggleChange = envToggle?.onValueChange;
-        expect(typeof onEnvToggleChange).toBe('function');
-        (onEnvToggleChange as (next: boolean) => void)(false);
+        const onDirectoryToggleChange = directoryToggle?.onValueChange;
+        expect(typeof onDirectoryToggleChange).toBe('function');
+        (onDirectoryToggleChange as (next: boolean) => void)(false);
 
         expect(capture.setRawSettings).toHaveBeenCalledWith(expect.objectContaining({
             v: 1,
-            allowEnvironmentVariables: false,
+            allowCustomDirectory: false,
         }));
     });
 

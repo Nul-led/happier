@@ -8,9 +8,22 @@ import {
 
 import { renderScreen } from '@/dev/testkit';
 import { createPassThroughComponent, createPassThroughModule } from '@/dev/testkit/mocks/components';
-import type { AutomationEditorDraft } from '@/sync/domains/automations/automationEditorDraft';
+import { MAX_AUTOMATION_INTERVAL_MINUTES } from '@/sync/domains/automations/automationDraft';
+import type {
+    AutomationEditorDraft,
+    AutomationEditorTriggerDraft,
+} from '@/sync/domains/automations/automationEditorDraft';
 
 import { installAutomationComponentCommonModuleMocks } from '../automationComponentTestHelpers';
+
+/**
+ * Focus-continuity boundary: the real `Item` forwards `pressableRef` to its
+ * Pressable host and the real `TextInput` forwards its ref to the native
+ * input. These mocks keep both seams falsifiable, mirroring the established
+ * focus-restoration test pattern.
+ */
+const itemFocusNodes = vi.hoisted(() => new Map<string, { focus: ReturnType<typeof vi.fn> }>());
+const textInputFocusNodes = vi.hoisted(() => new Map<string, { focus: ReturnType<typeof vi.fn> }>());
 
 installAutomationComponentCommonModuleMocks({
     reactNative: async () => {
@@ -38,16 +51,48 @@ installAutomationComponentCommonModuleMocks({
 
 vi.mock('@/components/ui/lists/ItemGroup', () => createPassThroughModule(['ItemGroup']));
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: Record<string, unknown> & { children?: React.ReactNode; rightElement?: React.ReactNode }) => (
-        React.createElement('Item', props, props.children, props.rightElement)
-    ),
+    // Test boundary: the real Item forwards `pressableRef` to its Pressable host.
+    // Dropping it here would make every focus-restoration assertion unfalsifiable.
+    Item: ({ pressableRef, ...props }: Record<string, unknown> & {
+        children?: React.ReactNode;
+        pressableRef?: unknown;
+        rightElement?: React.ReactNode;
+        testID?: string;
+    }) => {
+        const testID = typeof props.testID === 'string' ? props.testID : '';
+        const node = itemFocusNodes.get(testID) ?? { focus: vi.fn() };
+        itemFocusNodes.set(testID, node);
+        React.useEffect(() => {
+            if (typeof pressableRef === 'function') {
+                (pressableRef as (value: unknown) => void)(node);
+                return () => (pressableRef as (value: unknown) => void)(null);
+            }
+            return undefined;
+        });
+        return React.createElement('Item', props, props.children, props.rightElement);
+    },
 }));
 vi.mock('@/components/ui/lists/ItemGroupColumns', () => createPassThroughModule(['ItemGroupColumns', 'ItemGroupColumn']));
 vi.mock('@/components/ui/forms/Switch', () => createPassThroughModule(['Switch']));
 vi.mock('@/components/ui/forms/FieldItem', () => createPassThroughModule(['FieldItem']));
 vi.mock('@/components/ui/forms/dropdown/DropdownMenu', () => createPassThroughModule(['DropdownMenu']));
 vi.mock('@/components/ui/selectionList', () => createPassThroughModule(['SelectionList']));
-vi.mock('@/components/ui/text/Text', () => createPassThroughModule(['Text', 'TextInput']));
+vi.mock('@/components/ui/text/Text', () => ({
+    Text: (props: Record<string, unknown> & { children?: React.ReactNode }) => (
+        React.createElement('Text', props, props.children)
+    ),
+    // Test boundary: the real TextInput forwards its ref to the native input.
+    TextInput: React.forwardRef(function TextInputMock(
+        props: Record<string, unknown> & { children?: React.ReactNode; testID?: string },
+        ref,
+    ) {
+        const testID = typeof props.testID === 'string' ? props.testID : '';
+        const node = textInputFocusNodes.get(testID) ?? { focus: vi.fn() };
+        textInputFocusNodes.set(testID, node);
+        React.useImperativeHandle(ref, () => node);
+        return React.createElement('TextInput', props, props.children);
+    }),
+}));
 vi.mock('@/components/ui/icons/Icon', async () => {
     const { createPassThroughModule: createModule } = await import('@/dev/testkit/mocks/components');
     return createModule(['Icon']);
@@ -247,8 +292,23 @@ describe('AutomationPluralEditorScreen', () => {
         await act(async () => {
             screen.findByProps({ testID: 'automation-trigger-row-schedule-a' }).props.onPress();
         });
+        const intervalInput = () => screen.findByProps({ testID: 'automation-trigger-interval-minutes' });
+        expect(intervalInput().props.value).toBe('60');
+
+        // Intermediate drafts stay editable without committing partial values.
         await act(async () => {
-            screen.findByProps({ testID: 'automation-trigger-interval-minutes' }).props.onChangeText('120');
+            intervalInput().props.onChangeText('');
+        });
+        expect(intervalInput().props.value).toBe('');
+        expect(onChange).not.toHaveBeenCalled();
+
+        await act(async () => {
+            intervalInput().props.onChangeText('120');
+        });
+        expect(onChange).not.toHaveBeenCalled();
+
+        await act(async () => {
+            intervalInput().props.onEndEditing();
         });
 
         const next = onChange.mock.calls.at(-1)?.[0] as AutomationEditorDraft;
@@ -270,6 +330,118 @@ describe('AutomationPluralEditorScreen', () => {
         expect(next.triggers[1]).toBe(original.triggers[1]);
         expect(next.triggers[2]).toBe(original.triggers[2]);
         expect(next.triggers[3]).toBe(original.triggers[3]);
+        // The consumed draft no longer shadows the committed cadence.
+        expect(intervalInput().props.value).toBe('60');
+    });
+
+    it('reverts a rejected interval draft on commit instead of snapping the field shut', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const onChange = vi.fn();
+        const screen = await renderScreen(
+            <AutomationPluralEditorScreen variant="edit" value={createDraft()} onChange={onChange} />,
+        );
+
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-row-schedule-a' }).props.onPress();
+        });
+        const intervalInput = () => screen.findByProps({ testID: 'automation-trigger-interval-minutes' });
+
+        await act(async () => {
+            intervalInput().props.onChangeText('0');
+        });
+        expect(intervalInput().props.value).toBe('0');
+
+        await act(async () => {
+            intervalInput().props.onEndEditing();
+        });
+
+        expect(onChange).not.toHaveBeenCalled();
+        expect(intervalInput().props.value).toBe('60');
+    });
+
+    it('commits a clamped interval through the shared cadence clamp owner on submit', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const onChange = vi.fn();
+        const screen = await renderScreen(
+            <AutomationPluralEditorScreen variant="edit" value={createDraft()} onChange={onChange} />,
+        );
+
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-row-schedule-a' }).props.onPress();
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-interval-minutes' })
+                .props.onChangeText(`${MAX_AUTOMATION_INTERVAL_MINUTES + 1440}`);
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-interval-minutes' }).props.onSubmitEditing();
+        });
+
+        const next = onChange.mock.calls.at(-1)?.[0] as AutomationEditorDraft;
+        expect(next.triggers[0]).toMatchObject({
+            clientId: 'schedule-a',
+            isDirty: true,
+            definition: {
+                kind: 'schedule',
+                schedule: {
+                    kind: 'interval',
+                    everyMs: MAX_AUTOMATION_INTERVAL_MINUTES * 60_000,
+                },
+            },
+        });
+    });
+
+    it('drops an uncommitted interval draft when the committed cadence changes underneath the field', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const original = createDraft();
+        const movedBasis: AutomationEditorDraft = {
+            ...original,
+            triggers: original.triggers.map((trigger): AutomationEditorTriggerDraft => (
+                trigger.clientId === 'schedule-a'
+                    ? {
+                        ...trigger,
+                        definition: {
+                            kind: 'schedule',
+                            enabled: true,
+                            schedule: {
+                                kind: 'interval',
+                                scheduleExpr: null,
+                                everyMs: 7_200_000,
+                                timezone: null,
+                            },
+                        },
+                    }
+                    : trigger
+            )),
+        };
+        let pushBasis: ((next: AutomationEditorDraft) => void) | null = null;
+        function StatefulEditorHost(): React.ReactElement {
+            const [value, setValue] = React.useState(original);
+            React.useEffect(() => {
+                pushBasis = setValue;
+                return () => {
+                    pushBasis = null;
+                };
+            }, []);
+            return <AutomationPluralEditorScreen variant="edit" value={value} onChange={setValue} />;
+        }
+        const screen = await renderScreen(<StatefulEditorHost />);
+
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-row-schedule-a' }).props.onPress();
+        });
+        const intervalInput = () => screen.findByProps({ testID: 'automation-trigger-interval-minutes' });
+        await act(async () => {
+            intervalInput().props.onChangeText('55');
+        });
+        expect(intervalInput().props.value).toBe('55');
+
+        // Another owner moves the same trigger row while the draft is open.
+        await act(async () => {
+            pushBasis?.(movedBasis);
+        });
+
+        expect(intervalInput().props.value).toBe('120');
     });
 
     it('keeps a zero-trigger Automation creatable and exposes keyboard and screen-reader semantics', async () => {
@@ -430,6 +602,70 @@ describe('AutomationPluralEditorScreen', () => {
                 sourceTurnId: 'turn-new-current',
             },
         });
+    });
+
+    it('moves focus into the schedule editor when choosing a kind unmounts the pressed control', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const intervalFocus = vi.fn();
+        textInputFocusNodes.set('automation-trigger-interval-minutes', { focus: intervalFocus });
+        function StatefulEditorHost(): React.ReactElement {
+            const [value, setValue] = React.useState(() => ({ ...createDraft(), triggers: [] }));
+            return <AutomationPluralEditorScreen variant="edit" value={value} onChange={setValue} />;
+        }
+        const screen = await renderScreen(<StatefulEditorHost />);
+
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-add' }).props.onPress();
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-kind-schedule' }).props.onPress();
+        });
+
+        // The kind choice appended the row and mounted the schedule editor;
+        // its first owned field took focus instead of stranding it on body.
+        expect(screen.findByProps({ testID: 'automation-trigger-interval-minutes' })).toBeDefined();
+        expect(intervalFocus).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns focus to the edited trigger row when the trigger editor closes', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const rowFocus = vi.fn();
+        itemFocusNodes.set('automation-trigger-row-schedule-a', { focus: rowFocus });
+        const screen = await renderScreen(
+            <AutomationPluralEditorScreen variant="edit" value={createDraft()} onChange={() => {}} />,
+        );
+
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-row-schedule-a' }).props.onPress();
+        });
+        expect(screen.findByProps({ testID: 'automation-trigger-editor-done' })).toBeDefined();
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-editor-done' }).props.onPress();
+        });
+
+        expect(rowFocus).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns focus to the add-trigger row when a removal closes the editor without its row', async () => {
+        const { AutomationPluralEditorScreen } = await import('./AutomationPluralEditorScreen');
+        const addFocus = vi.fn();
+        itemFocusNodes.set('automation-trigger-add', { focus: addFocus });
+        function StatefulEditorHost(): React.ReactElement {
+            const [value, setValue] = React.useState(() => createDraft());
+            return <AutomationPluralEditorScreen variant="edit" value={value} onChange={setValue} />;
+        }
+        const screen = await renderScreen(<StatefulEditorHost />);
+
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-row-schedule-b' }).props.onPress();
+        });
+        await act(async () => {
+            screen.findByProps({ testID: 'automation-trigger-remove' }).props.onPress();
+        });
+        await act(async () => {});
+
+        expect(addFocus).toHaveBeenCalledTimes(1);
+        expect(screen.findAllByProps({ testID: 'automation-trigger-row-schedule-b' })).toHaveLength(0);
     });
 
     it('rejoins the injected canonical Event editor with one strict trigger row', async () => {

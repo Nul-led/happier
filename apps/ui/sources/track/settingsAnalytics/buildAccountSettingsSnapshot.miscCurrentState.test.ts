@@ -94,9 +94,9 @@ describe('buildAccountSettingsSnapshot', () => {
             },
             sessionHandoffDefaultsV1: {
                 ...settingsDefaults.sessionHandoffDefaultsV1,
-                workspaceTransferEnabled: false,
-                conflictPolicy: 'replace_existing',
+                workspaceSyncMode: 'mirror_exactly',
                 includeIgnoredMode: 'include_selected',
+                ignoredIncludeGlobs: ['generated/**'],
                 directTargetMode: 'convert_to_persisted',
             },
         });
@@ -108,8 +108,7 @@ describe('buildAccountSettingsSnapshot', () => {
         expect(snapshot.properties.acct_setting__notificationsSettingsV1__permissionRequest).toBe(false);
         expect(snapshot.properties.acct_setting__notificationsSettingsV1__userActionRequest).toBe(false);
         expect(snapshot.properties.acct_setting__notificationsSettingsV1__foregroundBehavior).toBe('silent');
-        expect(snapshot.properties.acct_setting__sessionHandoffDefaultsV1__workspaceTransferEnabled).toBe(false);
-        expect(snapshot.properties.acct_setting__sessionHandoffDefaultsV1__conflictPolicy).toBe('replace_existing');
+        expect(snapshot.properties.acct_setting__sessionHandoffDefaultsV1__workspaceSyncMode).toBe('mirror_exactly');
         expect(snapshot.properties.acct_setting__sessionHandoffDefaultsV1__includeIgnoredMode).toBe('include_selected');
         expect(snapshot.properties.acct_setting__sessionHandoffDefaultsV1__directTargetMode).toBe('convert_to_persisted');
     });

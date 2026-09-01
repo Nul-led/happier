@@ -1820,7 +1820,10 @@ describe('sync.sendMessage optimistic thinking', () => {
             expect(peekServerReachabilityState('https://reachability-auth.test')?.phase).toBe('auth_failed');
 
             const { sync } = await import('./sync');
-            sync.encryption = encryption;
+            Object.assign(sync, {
+                credentials: { token: 'stale-token', secret: 'secret' },
+                encryption,
+            });
             vi.spyOn(apiSocket, 'sessionRPC').mockRejectedValue(createRpcMethodNotAvailableError());
 
             const send = vi.fn();
@@ -1850,9 +1853,79 @@ describe('sync.sendMessage optimistic thinking', () => {
                 message: 'Authentication required',
             });
         } finally {
+            const { sync } = await import('./sync');
+            Object.assign(sync, { credentials: undefined });
             resetRuntimeFetch();
             await resetServerReachabilitySupervisors();
             await resetEndpointSupervisorPoolForTests();
+            if (previousSnapshot.serverId) {
+                setActiveServer({ serverId: previousSnapshot.serverId, scope: 'device' });
+            }
+        }
+    });
+
+    it('ignores auth failure from a different credential scope at the active Home URL', async () => {
+        const sessionId = 's_other_credential_auth_failed';
+        storage.getState().applySessions([createSession({ sessionId })]);
+
+        const encryption = await Encryption.create(new Uint8Array(32).fill(9));
+        await encryption.initializeSessions(new Map([[sessionId, null]]));
+
+        const { resetRuntimeFetch, setRuntimeFetch } = await import('@/utils/system/runtimeFetch');
+        const { upsertAndActivateServer, getActiveServerSnapshot, setActiveServer } = await import('@/sync/domains/server/serverRuntime');
+        const {
+            peekServerReachabilityState,
+            reportServerAuthFailed,
+            resetServerReachabilitySupervisors,
+            startServerReachabilitySupervisor,
+        } = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
+
+        const previousSnapshot = getActiveServerSnapshot();
+        upsertAndActivateServer({ serverUrl: 'https://shared-auth-scope.test', scope: 'device' });
+        setRuntimeFetch(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
+                return Response.json({ ok: true });
+            }
+            throw new Error(`Unexpected reachability probe URL: ${url}`);
+        });
+
+        try {
+            await startServerReachabilitySupervisor({
+                serverUrl: 'https://shared-auth-scope.test',
+                token: 'other-home-token',
+            });
+            reportServerAuthFailed('https://shared-auth-scope.test', 401, undefined, 'other-home-token');
+            await vi.waitFor(() => {
+                expect(peekServerReachabilityState('https://shared-auth-scope.test', 'other-home-token')?.phase)
+                    .toBe('auth_failed');
+            });
+
+            const { sync } = await import('./sync');
+            Object.assign(sync, {
+                credentials: { token: 'active-home-token', secret: 'active-home-secret' },
+                encryption,
+            });
+            vi.spyOn(apiSocket, 'sessionRPC').mockRejectedValue(createRpcMethodNotAvailableError());
+            sync.setMessageTransport({
+                emitWithAck: vi.fn(async () => ({
+                    ok: true,
+                    id: 'm-other-scope',
+                    seq: 1,
+                    localId: null,
+                    didWrite: true,
+                })) as any,
+                send: vi.fn(),
+            });
+
+            await expect(sync.sendMessage(sessionId, 'active scope still works')).resolves.toMatchObject({
+                persistence: 'committed',
+            });
+        } finally {
+            const { sync } = await import('./sync');
+            Object.assign(sync, { credentials: undefined });
+            resetRuntimeFetch();
+            await resetServerReachabilitySupervisors();
             if (previousSnapshot.serverId) {
                 setActiveServer({ serverId: previousSnapshot.serverId, scope: 'device' });
             }

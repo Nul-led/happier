@@ -8,7 +8,7 @@ import {
     assertPluginAccountKvExpectedVersionV1,
     assertPluginAccountStorageEnvelopeForModeV1,
     clonePluginAccountKvRowV1,
-    commitPluginAccountKvMutationWithRebaseV1,
+    commitPluginAccountKvMutationV1,
     createEmptyPluginAccountKvRowV1,
     deletePluginAccountKvEntryV1,
     listPluginAccountKvEntriesV1,
@@ -21,6 +21,7 @@ import {
     type PluginAccountStorageRowV1,
 } from '@happier-dev/protocol';
 import { PluginError, type JsonValue } from '@happier-dev/plugin-sdk';
+import { mergeAbortSignals } from '@happier-dev/plugin-sdk/async';
 import type {
     AccountKvEntry,
     AccountKvListItem,
@@ -269,9 +270,9 @@ export function createActivePluginAccountKvClient(input: Readonly<{
     };
 
     // transaction() itself is non-reentrant. Service set/delete calls remain
-    // separate mutations while a callback is pending: the transaction handle
-    // is the atomic unit, and the shared per-key rebase owner resolves physical
-    // row conflicts without replaying either callback.
+    // separate logical mutations while a callback is pending; the shared
+    // dependency/write-set rebase owner resolves disjoint physical conflicts
+    // without replaying either callback.
     let explicitTransactionOpen = false;
 
     const mutate = async <T>(
@@ -289,7 +290,9 @@ export function createActivePluginAccountKvClient(input: Readonly<{
             assertStillCurrent(prepared);
             assertAccountKvAdmitted();
             const row = clonePluginAccountKvRowV1(snapshot.row);
-            const touchedKeys = new Set<string>();
+            const dependencyKeys = new Set<string>();
+            const writeKeys = new Set<string>();
+            const transactionSignals = new Set<AbortSignal>();
             let active = true;
             let mutated = false;
             const assertActive = (signal?: AbortSignal): void => {
@@ -299,7 +302,9 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                         'Account KV transaction handle is no longer active',
                     );
                 }
+                assertSignalActive(options?.signal);
                 assertSignalActive(signal);
+                if (signal) transactionSignals.add(signal);
                 assertStillCurrent(prepared);
                 assertAccountKvAdmitted();
             };
@@ -309,10 +314,9 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                     getOptions?: Readonly<{ signal?: AbortSignal }>,
                 ): Promise<AccountKvEntry<TValue> | null> {
                     assertActive(getOptions?.signal);
-                    const entry = readPluginAccountKvEntryV1(
-                        row,
-                        inRowAlgebra(() => normalizePluginAccountKvLogicalKeyV1(key)),
-                    );
+                    const normalized = inRowAlgebra(() => normalizePluginAccountKvLogicalKeyV1(key));
+                    dependencyKeys.add(normalized);
+                    const entry = readPluginAccountKvEntryV1(row, normalized);
                     return entry
                         ? inRowAlgebra(() => projectPluginAccountKvEntryV1<TValue>(entry)) as AccountKvEntry<TValue>
                         : null;
@@ -324,6 +328,8 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                 ): Promise<Readonly<{ version: number }>> {
                     assertActive(setOptions.signal);
                     const normalized = inRowAlgebra(() => normalizePluginAccountKvLogicalKeyV1(key));
+                    dependencyKeys.add(normalized);
+                    writeKeys.add(normalized);
                     const previous = inRowAlgebra(() => assertPluginAccountKvExpectedVersionV1(
                         row,
                         normalized,
@@ -332,7 +338,6 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                     const version = inRowAlgebra(
                         () => setPluginAccountKvEntryV1(row, normalized, value, previous),
                     );
-                    touchedKeys.add(normalized);
                     mutated = true;
                     return Object.freeze({ version });
                 },
@@ -342,6 +347,8 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                 ): Promise<Readonly<{ version: number; deleted: true }>> {
                     assertActive(deleteOptions.signal);
                     const normalized = inRowAlgebra(() => normalizePluginAccountKvLogicalKeyV1(key));
+                    dependencyKeys.add(normalized);
+                    writeKeys.add(normalized);
                     const previous = inRowAlgebra(() => assertPluginAccountKvExpectedVersionV1(
                         row,
                         normalized,
@@ -353,40 +360,53 @@ export function createActivePluginAccountKvClient(input: Readonly<{
                     const version = inRowAlgebra(
                         () => deletePluginAccountKvEntryV1(row, normalized, previous),
                     );
-                    touchedKeys.add(normalized);
                     mutated = true;
                     return Object.freeze({ version, deleted: true as const });
                 },
             });
             try {
                 const result = await operation(transaction);
-                assertStillCurrent(prepared);
-                assertAccountKvAdmitted();
-                if (mutated) {
-                    await inRowAlgebraAsync(async () => await commitPluginAccountKvMutationWithRebaseV1({
-                        initialSnapshot: snapshot,
-                        pendingRow: row,
-                        touchedKeys: [...touchedKeys],
-                        assertCurrent: () => {
-                            assertSignalActive(options?.signal);
-                            assertStillCurrent(prepared);
-                            assertAccountKvAdmitted();
-                        },
-                        readLatest: async () => await readSnapshot({
-                            pluginId: input.pluginId,
-                            operation: prepared,
-                            ...(options ? { options } : {}),
-                        }),
-                        write: async (currentSnapshot, currentRow) => await writeSnapshot({
-                            pluginId: input.pluginId,
-                            operation: prepared,
-                            snapshot: currentSnapshot,
-                            row: currentRow,
-                            ...(options ? { options } : {}),
-                        }),
-                    }));
+                const mergedSignal = mergeAbortSignals([
+                    options?.signal,
+                    ...transactionSignals,
+                ]);
+                try {
+                    assertSignalActive(mergedSignal.signal);
+                    assertStillCurrent(prepared);
+                    assertAccountKvAdmitted();
+                    if (mutated) {
+                        const commitOptions = mergedSignal.signal
+                            ? { signal: mergedSignal.signal }
+                            : undefined;
+                        await inRowAlgebraAsync(async () => await commitPluginAccountKvMutationV1({
+                            initialSnapshot: snapshot,
+                            pendingRow: row,
+                            dependencyKeys: [...dependencyKeys],
+                            writeKeys: [...writeKeys],
+                            assertCurrent: () => {
+                                assertSignalActive(mergedSignal.signal);
+                                assertStillCurrent(prepared);
+                                assertAccountKvAdmitted();
+                            },
+                            readLatest: async () => await readSnapshot({
+                                pluginId: input.pluginId,
+                                operation: prepared,
+                                ...(commitOptions ? { options: commitOptions } : {}),
+                            }),
+                            write: async (currentSnapshot, currentRow) => await writeSnapshot({
+                                pluginId: input.pluginId,
+                                operation: prepared,
+                                snapshot: currentSnapshot,
+                                row: currentRow,
+                                ...(commitOptions ? { options: commitOptions } : {}),
+                            }),
+                        }));
+                    }
+                    assertSignalActive(mergedSignal.signal);
+                    return result;
+                } finally {
+                    mergedSignal.dispose();
                 }
-                return result;
             } finally {
                 active = false;
             }

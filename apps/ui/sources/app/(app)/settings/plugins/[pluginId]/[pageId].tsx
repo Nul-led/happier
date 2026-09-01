@@ -8,5 +8,11 @@ export default React.memo(function PluginSettingsPageRoute() {
     const params = useLocalSearchParams();
     const route = readPluginSettingsPageRouteParams(params);
 
-    return <PluginSettingsPageScreen pluginId={route?.pluginId ?? null} pageId={route?.pageId ?? null} />;
+    return (
+        <PluginSettingsPageScreen
+            pluginId={route?.pluginId ?? null}
+            pageId={route?.pageId ?? null}
+            subPath={route ? route.subPath : undefined}
+        />
+    );
 });

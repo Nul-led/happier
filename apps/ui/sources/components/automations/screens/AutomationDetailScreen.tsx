@@ -11,6 +11,7 @@ import {
 import { Modal } from '@/modal';
 import {
     storage,
+    useActiveServerAccountScope,
     useAllMachines,
     useAutomation,
     useAutomationRunNextCursor,
@@ -464,6 +465,7 @@ const AUTOMATION_RUN_HISTORY_PAGE_SIZE = 20;
 
 type AutomationDetailRunHistoryRow =
     | Readonly<{ kind: 'run'; key: string; run: AutomationDefinitionRun }>
+    | Readonly<{ kind: 'error'; key: 'error' }>
     | Readonly<{ kind: 'empty'; key: 'empty' }>
     | Readonly<{ kind: 'previous'; key: 'previous' }>
     | Readonly<{ kind: 'loadMore'; key: 'loadMore' }>;
@@ -474,14 +476,23 @@ export function AutomationDetailScreen() {
     const router = useRouter();
     const params = useLocalSearchParams<{ id?: string }>();
     const automationId = typeof params.id === 'string' ? params.id : '';
+    const activeAccountScope = useActiveServerAccountScope();
+    const accountScopeKey = activeAccountScope
+        ? serverAccountScopeKeySuffix(activeAccountScope)
+        : 'unscoped';
     const routeCurrentRef = React.useRef({
         automationId,
+        accountScopeKey,
         generation: 0,
         mounted: true,
     });
-    if (routeCurrentRef.current.automationId !== automationId) {
+    if (
+        routeCurrentRef.current.automationId !== automationId
+        || routeCurrentRef.current.accountScopeKey !== accountScopeKey
+    ) {
         routeCurrentRef.current = {
             automationId,
+            accountScopeKey,
             generation: routeCurrentRef.current.generation + 1,
             mounted: routeCurrentRef.current.mounted,
         };
@@ -523,6 +534,10 @@ export function AutomationDetailScreen() {
         generation: routeGeneration,
         value: false,
     });
+    const [runHistoryFailureState, setRunHistoryFailureState] = React.useState<RouteScopedState<boolean>>({
+        generation: routeGeneration,
+        value: false,
+    });
     const [runHistoryAnchorState, setRunHistoryAnchorState] = React.useState<RouteScopedState<readonly string[]>>({
         generation: routeGeneration,
         value: [],
@@ -543,6 +558,8 @@ export function AutomationDetailScreen() {
     const runHistoryAnchors = runHistoryAnchorState.generation === routeGeneration
         ? runHistoryAnchorState.value
         : [];
+    const runHistoryFailed = runHistoryFailureState.generation === routeGeneration
+        && runHistoryFailureState.value;
     const runHistoryAnchorId = runHistoryAnchors.at(-1) ?? null;
     const anchoredRunHistoryIndex = runHistoryAnchorId === null
         ? 0
@@ -580,11 +597,14 @@ export function AutomationDetailScreen() {
             // every unrelated mutation locked on that secondary read would
             // turn a history transport delay into false definition staleness.
             setLoadingState({ generation: request.generation, value: false });
+            setRunHistoryFailureState({ generation: request.generation, value: false });
             await sync.fetchAutomationRuns(request.automationId);
         } catch {
             if (!isCurrentRoute(request.automationId, request.generation)) return;
             if (!authoritativeDefinitionSettled) {
                 setRefreshFailureState({ generation: request.generation, value: true });
+            } else {
+                setRunHistoryFailureState({ generation: request.generation, value: true });
             }
         } finally {
             if (isCurrentRoute(request.automationId, request.generation)) {
@@ -825,11 +845,12 @@ export function AutomationDetailScreen() {
             key: run.id,
             run,
         }));
+        if (runHistoryFailed) next.unshift({ kind: 'error', key: 'error' });
         if (next.length === 0) next.push({ kind: 'empty', key: 'empty' });
         if (runHistoryAnchors.length > 0) next.push({ kind: 'previous', key: 'previous' });
         if (canShowOlderRunHistoryPage) next.push({ kind: 'loadMore', key: 'loadMore' });
         return next;
-    }, [canShowOlderRunHistoryPage, runHistoryAnchors.length, visibleRunHistory]);
+    }, [canShowOlderRunHistoryPage, runHistoryAnchors.length, runHistoryFailed, visibleRunHistory]);
     const renderRunHistoryRow = React.useCallback(({
         item,
         index,
@@ -856,6 +877,18 @@ export function AutomationDetailScreen() {
                 subtitleLines={0}
                 onPress={() => handleOpenRun(item.run.id)}
             />
+        ) : item.kind === 'error' ? (
+            <Item
+                testID="automation-detail-history-error"
+                title={t('automations.detail.refreshFailed')}
+                subtitle={t('common.retry')}
+                subtitleLines={0}
+                icon={<Icon name="warning-circle" size={18} color={theme.colors.state.danger.foreground} />}
+                onPress={() => { void refresh(); }}
+                accessibilityLabel={`${t('automations.detail.refreshFailed')}. ${t('common.retry')}`}
+                accessibilityLiveRegion="polite"
+                showChevron={false}
+            />
         ) : item.kind === 'empty' ? (
             <Item title={t('runs.empty')} showChevron={false} />
         ) : item.kind === 'previous' ? (
@@ -879,7 +912,7 @@ export function AutomationDetailScreen() {
                 </ItemGroup>
             </View>
         );
-    }, [handleLoadMoreRuns, handleOpenRun, handleShowNewerRuns, loadingMoreRuns, runHistoryRows.length, unknownDate]);
+    }, [handleLoadMoreRuns, handleOpenRun, handleShowNewerRuns, loadingMoreRuns, refresh, runHistoryRows.length, theme.colors.state.danger.foreground, unknownDate]);
 
     if (!automationId) {
         return (

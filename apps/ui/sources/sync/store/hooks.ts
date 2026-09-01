@@ -945,6 +945,23 @@ export function useMachineDisplayById(): Record<string, MachineDisplayRenderable
   return getStorage()(useShallow((state) => state.machineDisplayById ?? EMPTY_MACHINE_DISPLAY_BY_ID));
 }
 
+/** Subscribe only to display-name changes for an already-bounded machine set. */
+export function useMachineDisplayNamesById(machineIds: readonly string[]): Readonly<Record<string, string>> {
+  const normalizedIds = React.useMemo(
+    () => [...new Set(machineIds.map((id) => id.trim()).filter(Boolean))].sort(),
+    [machineIds],
+  );
+  return getStorage()(useShallow((state) => {
+    const names: Record<string, string> = {};
+    for (const machineId of normalizedIds) {
+      const metadata = state.machineDisplayById?.[machineId]?.metadata;
+      const name = metadata?.displayName?.trim() || metadata?.host?.trim() || '';
+      if (name) names[machineId] = name;
+    }
+    return names;
+  }));
+}
+
 const noopSessionServerIdSubscribe = () => () => {};
 const readNullSessionServerId = () => null;
 

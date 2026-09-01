@@ -91,12 +91,23 @@ vi.mock('@/auth/context/AuthContext', () => ({
 }));
 
 vi.mock('@/auth/storage/tokenStorage', () => ({
+    subscribeHomeCredentialMutations: () => () => {},
+    accountDirectoryAuthCredentials: {
+        getCredentials: vi.fn(async () => null),
+        setCredentials: vi.fn(async () => {}),
+        removeCredentials: vi.fn(async () => {}),
+    },
     TokenStorage: {
         getCredentials: vi.fn(async () => null),
         getCredentialsForServerUrl: getCredentialsForServerUrlMock,
         invalidateCredentialsTokenForServerUrl: vi.fn(async () => {}),
         removeCredentialsForServerUrl: vi.fn(async () => {}),
         setCredentialsForServerUrl: vi.fn(async () => {}),
+        accountDirectoryAuthCredentials: {
+            getCredentials: vi.fn(async () => null),
+            setCredentials: vi.fn(async () => {}),
+            removeCredentials: vi.fn(async () => {}),
+        },
     },
     isLegacyAuthCredentials: (credentials: unknown) => Boolean(credentials),
 }));
@@ -230,7 +241,7 @@ describe('ServerConfigScreen', () => {
         expect(routerReplaceMock).not.toHaveBeenCalledWith('/');
     });
 
-    it('navigates to pending notification session after adding a server from a notification deep link', async () => {
+    it('preserves a pending notification destination after saving its Home without switching', async () => {
         localSearchParamsMock = { url: 'https://company.example.test', source: 'notification' };
         pendingNotificationNavValue = { serverUrl: 'https://company.example.test', route: '/session/s_123' };
         getCredentialsForServerUrlMock.mockResolvedValue({ token: 'token', secret: 'secret' });
@@ -240,7 +251,7 @@ describe('ServerConfigScreen', () => {
 
         const screen = await renderServerScreen();
 
-        const addButton = findRoundButtonByTitle(screen, 'server.addAndUse');
+        const addButton = findRoundButtonByTitle(screen, 'common.add');
         expect(addButton).toBeTruthy();
 
         await act(async () => {
@@ -248,8 +259,9 @@ describe('ServerConfigScreen', () => {
         });
         await flushHookEffects();
 
-        expect(clearPendingNotificationNavSpy).toHaveBeenCalledTimes(1);
-        expect(routerReplaceMock).toHaveBeenCalledWith('/session/s_123');
+        expect(clearPendingNotificationNavSpy).not.toHaveBeenCalled();
+        expect(routerReplaceMock).not.toHaveBeenCalledWith('/session/s_123');
+        expect(switchConnectionToActiveServerSpy).not.toHaveBeenCalled();
     });
 
     it('renders a preconfigured server as a normal saved server entry', async () => {
@@ -317,7 +329,7 @@ describe('ServerConfigScreen', () => {
         expect(after.serverSelectionGroups).toEqual(before.serverSelectionGroups);
     });
 
-    it('cleans stale server query from the route after add-and-use succeeds', async () => {
+    it('saves a manually added Home without changing the active Home', async () => {
         localSearchParamsMock = { server: 'http://localhost:3012' };
         routerReplaceMock.mockClear();
         switchConnectionToActiveServerSpy.mockClear();
@@ -345,16 +357,16 @@ describe('ServerConfigScreen', () => {
             urlInput!.props.onChangeText('http://localhost:3012');
         });
 
-        const addAndUse = findRoundButtonByTitle(screen, 'server.addAndUse');
-        expect(addAndUse?.props.action).toBeTruthy();
+        const add = findRoundButtonByTitle(screen, 'common.add');
+        expect(add?.props.action).toBeTruthy();
 
         await act(async () => {
-            await addAndUse!.props.action!();
+            await add!.props.action!();
         });
         await flushHookEffects();
 
-        expect(switchConnectionToActiveServerSpy).toHaveBeenCalledTimes(1);
-        expect(routerReplaceMock).toHaveBeenCalledWith('/server');
+        expect(switchConnectionToActiveServerSpy).not.toHaveBeenCalled();
+        expect(routerReplaceMock).not.toHaveBeenCalledWith('/server');
     });
 
 });

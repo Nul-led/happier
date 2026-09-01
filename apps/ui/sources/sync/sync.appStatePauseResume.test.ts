@@ -36,6 +36,7 @@ const platformOs = vi.hoisted(() => ({ value: 'web' as 'web' | 'ios' }));
 
 vi.mock('@/utils/platform/desktopHost', () => ({
     isDesktopHost: () => tauriDesktopState.value,
+    desktopHostKind: () => tauriDesktopState.value ? 'tauri' : null,
 }));
 
 const jsThreadLagTelemetrySummary = vi.hoisted(() => ({
@@ -82,7 +83,10 @@ vi.mock('react-native', async () => {
     );
 });
 
-const apiSocketDisconnect = vi.hoisted(() => vi.fn());
+const socketStatusHandlers = vi.hoisted(() => new Set<(status: 'disconnected' | 'connecting' | 'connected' | 'error') => void>());
+const apiSocketDisconnect = vi.hoisted(() => vi.fn(() => {
+    for (const handler of socketStatusHandlers) handler('disconnected');
+}));
 const apiSocketConnect = vi.hoisted(() => vi.fn());
 
 vi.mock('@/sync/api/session/apiSocket', () => ({
@@ -90,7 +94,10 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
         onMessage: vi.fn(),
         onError: vi.fn(),
         onReconnected: vi.fn(),
-        onStatusChange: vi.fn(() => () => {}),
+        onStatusChange: vi.fn((handler: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => void) => {
+            socketStatusHandlers.add(handler);
+            return () => socketStatusHandlers.delete(handler);
+        }),
         onConnectionStateChange: vi.fn(() => () => {}),
         connect: apiSocketConnect,
         disconnect: apiSocketDisconnect,
@@ -108,6 +115,7 @@ describe('sync AppState pause/resume', () => {
         vi.resetModules();
         kvStore.clear();
         appStateHandlers.clear();
+        socketStatusHandlers.clear();
         appStateAddListener.mockClear();
         appStateCurrentState.value = 'active';
         platformOs.value = 'web';
@@ -139,6 +147,28 @@ describe('sync AppState pause/resume', () => {
 
         expect(apiSocketDisconnect).toHaveBeenCalledTimes(1);
         expect(isServerReachabilityNetworkAllowed()).toBe(false);
+    });
+
+    it('runs one changes-only catch-up after an intentional foreground connection reports subscribed', async () => {
+        platformOs.value = 'ios';
+        const { sync } = await import('./sync');
+        (sync as unknown as { subscribeToUpdates(): void }).subscribeToUpdates();
+        const resumeSync = vi.spyOn(sync, 'resumeSync').mockResolvedValue(undefined);
+
+        for (const handler of socketStatusHandlers) handler('connected');
+        for (const handler of appStateHandlers) handler('background');
+        expect(apiSocketDisconnect).toHaveBeenCalledTimes(1);
+
+        for (const handler of appStateHandlers) handler('active');
+        expect(resumeSync).toHaveBeenCalledWith('app-foreground');
+
+        for (const handler of socketStatusHandlers) handler('connected');
+        for (const handler of socketStatusHandlers) handler('connected');
+
+        expect(resumeSync.mock.calls.map(([reason]) => reason)).toEqual([
+            'app-foreground',
+            'changes-catch-up',
+        ]);
     });
 
     afterEach(() => {

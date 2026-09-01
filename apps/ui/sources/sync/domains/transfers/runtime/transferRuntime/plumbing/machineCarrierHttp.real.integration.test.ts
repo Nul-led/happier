@@ -1,5 +1,8 @@
 import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
 import { type AddressInfo } from 'node:net';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import tweetnacl from 'tweetnacl';
@@ -19,6 +22,7 @@ import { FEATURE_ENV_KEYS } from '../../../../../../../../server/sources/app/fea
 import { registerPeerMediationGrantRoutes } from '../../../../../../../../server/sources/app/api/routes/machines/peer/mediation/registerPeerMediationGrantRoutes';
 import { createRouteTestBuilder } from '../../../../../../../../server/sources/app/api/testkit/routeTestBuilder';
 import { registerPeerMediationIrohMachineAdmissionRoute } from '../../../../../../../../cli/src/daemon/peer/mediation/loopback/irohMachineAdmission';
+import { acquireMachineCarrierHttpLease } from './machineCarrierHttpLease';
 import { uploadBulkPayloadFromFileWithCarrierFallbacks } from './uploadBulkPayloadFromFileWithCarrierFallbacks';
 
 const prepareDirectImportMock = vi.hoisted(() => vi.fn());
@@ -122,6 +126,7 @@ describeReal('production transfer caller over native MachineHttpTunnel', () => {
     const native = createIrohNodeNativeModule(raw);
     const openServers: HttpServer[] = [];
     const openFastifyApps: FastifyInstance[] = [];
+    const endpointKeyRoots: string[] = [];
 
     beforeEach(() => {
         nativeBoundary.current = native;
@@ -137,6 +142,7 @@ describeReal('production transfer caller over native MachineHttpTunnel', () => {
         await raw.restoreAutomatic();
         await Promise.all(openFastifyApps.splice(0).map(async (app) => await app.close()));
         await Promise.all(openServers.splice(0).map(close));
+        await Promise.all(endpointKeyRoots.splice(0).map(async (root) => await rm(root, { recursive: true, force: true })));
     });
 
     async function runComposedTransfer(input: Readonly<{
@@ -179,7 +185,12 @@ describeReal('production transfer caller over native MachineHttpTunnel', () => {
             relayUrls: relayUrl ? [relayUrl] : [],
             capProfile: 'machineBulk' as const,
         };
-        const target = await native.createEndpoint(endpointRequest);
+        const targetKeyRoot = await mkdtemp(join(tmpdir(), 'happier-machine-transfer-target-'));
+        endpointKeyRoots.push(targetKeyRoot);
+        const target = await native.createEndpoint({
+            ...endpointRequest,
+            keyPath: join(targetKeyRoot, 'endpoint.key'),
+        });
         const targetStatus = await native.getEndpointStatus(target.endpointHandle);
         const directAddresses = input.topology === 'direct' ? targetStatus?.directAddresses ?? [] : [];
         const machineId = 'machine-1';
@@ -353,9 +364,27 @@ describeReal('production transfer caller over native MachineHttpTunnel', () => {
         });
 
         const acceptorStatus = await native.getMachineAcceptorStatus(target.endpointHandle);
+        let acquireDiagnostic: string | null = null;
+        if (grantRequests.length === 0) {
+            try {
+                const diagnosticLease = await acquireMachineCarrierHttpLease({
+                    operationId,
+                    machineId,
+                    serverId,
+                    flow: input.transferKind === 'attachment' ? 'attachment_transfer' : 'file_transfer',
+                    maxBytes: payload.byteLength,
+                });
+                await diagnosticLease.release();
+                acquireDiagnostic = 'unexpectedly_succeeded';
+            } catch (error) {
+                acquireDiagnostic = error instanceof Error
+                    ? `${error.name}: ${error.message}`
+                    : String(error);
+            }
+        }
         expect(
             grantRequests,
-            JSON.stringify({ result, standardFallbackStarted: relay.init.mock.calls.length > 0 }),
+            JSON.stringify({ result, standardFallbackStarted: relay.init.mock.calls.length > 0, acquireDiagnostic }),
         ).toHaveLength(1);
         expect(grantAuthorizationHeaders).toEqual([`Bearer ${accountToken}`]);
         expect(grantRequests[0]).toMatchObject({

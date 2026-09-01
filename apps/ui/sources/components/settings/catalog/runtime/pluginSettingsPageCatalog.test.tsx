@@ -9,7 +9,10 @@ import {
     type PluginUiSettingsPageProjection,
 } from '@/sync/domains/plugins/ui/projection';
 
-import { mergeAdmittedPluginSettingsPages } from './pluginSettingsPageCatalog';
+import {
+    mergeAdmittedPluginSettingsPages,
+    readPluginSettingsPageRouteParams,
+} from './pluginSettingsPageCatalog';
 
 function settingsBinding(pluginId: string, pageId: string, rendererId = 'settings-renderer') {
     const binding = normalizePluginUiSettingsPageBindingV1({
@@ -155,5 +158,36 @@ describe('mergeAdmittedPluginSettingsPages', () => {
         expect(ids).not.toContain('foreign-group');
         expect(ids).not.toContain('wrong-binding');
         expect(ids).not.toContain('pluginSettingsGroup:acme.review:review');
+    });
+});
+
+describe('readPluginSettingsPageRouteParams', () => {
+    it('treats an absent sub-location as the page root and rejects malformed present locations', () => {
+        expect(readPluginSettingsPageRouteParams({
+            pluginId: 'acme.review',
+            pageId: 'policy',
+        })).toEqual({
+            pluginId: 'acme.review',
+            pageId: 'policy',
+            subPath: '',
+        });
+        expect(readPluginSettingsPageRouteParams({
+            pluginId: 'acme.review',
+            pageId: 'policy',
+            subPath: ['bindings/1', 'bindings/2'],
+        })).toEqual({
+            pluginId: 'acme.review',
+            pageId: 'policy',
+            subPath: null,
+        });
+        expect(readPluginSettingsPageRouteParams({
+            pluginId: 'acme.review',
+            pageId: 'policy',
+            subPath: 42,
+        })).toEqual({
+            pluginId: 'acme.review',
+            pageId: 'policy',
+            subPath: null,
+        });
     });
 });

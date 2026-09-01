@@ -62,6 +62,29 @@ const claudeEntry: ResolvedBackendCatalogEntry = {
     subtitle: 'Claude',
     cliAuthBackgroundCheckSafe: false,
 };
+const qualifiedPluginAgentEntry: ResolvedBackendCatalogEntry = {
+    agentCatalogEntry: createResolvedAgentCatalogEntryFixture({
+        agentId: 'acme-review',
+        overrides: {
+            identity: { pluginId: 'acme.review', localId: 'agents/reviewer' },
+            qualifiedId: 'acme.review/agents/agents/reviewer',
+        },
+    }),
+    backendTarget: {
+        kind: 'agent',
+        identity: { pluginId: 'acme.review', localId: 'agents/reviewer' },
+    },
+    backendTargetKey: 'agent:acme.review/agents/reviewer',
+    kind: 'pluginBackend',
+    backendId: 'acme-review',
+    agentId: 'acme-review',
+    catalogAgentId: null,
+    builtInAgentId: null,
+    iconAgentId: null,
+    title: 'Acme Review',
+    subtitle: 'External Agent',
+    cliAuthBackgroundCheckSafe: false,
+};
 
 describe('profileBackendEntryStorage', () => {
     it('reads explicit compatibility by backend target key', () => {
@@ -117,6 +140,18 @@ describe('profileBackendEntryStorage', () => {
             [pluginBackendEntry],
         )).toEqual({
             [profileTargetKey]: true,
+        });
+    });
+
+    it('preserves the exact qualified external Agent key during legacy profile normalization', () => {
+        expect(stripLegacyProviderSentinelTargetKeys(
+            {
+                [qualifiedPluginAgentEntry.backendTargetKey]: 'acceptEdits',
+                'agent:missing.plugin/missing': undefined,
+            },
+            [qualifiedPluginAgentEntry],
+        )).toEqual({
+            [qualifiedPluginAgentEntry.backendTargetKey]: 'acceptEdits',
         });
     });
 

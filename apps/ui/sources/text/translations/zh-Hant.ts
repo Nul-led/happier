@@ -18,6 +18,8 @@ import { eventAutomationComposerTranslations } from './eventAutomationComposerTr
 import { automationTriggerSetTranslations } from './automationTriggerSetTranslations';
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
+import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
 
 /**
  * Chinese (Traditional) translations for the Happier app
@@ -523,6 +525,11 @@ const sessionHandoffTranslationExtensions = {
       planned: '已規劃',
       transferred: '已傳輸',
       remaining: '剩餘',
+      primary: {
+        preparing: '準備中',
+        moving: '移動中',
+        ready: '已就緒',
+      },
       timeline: {
         scanSource: '掃描來源',
         plan: '規劃變更',
@@ -640,6 +647,7 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
 }
 
 const zhHantOverrides: DeepPartial<typeof zhHans> = {
+    workspaceSync: workspaceSyncDiagnosticTranslations['zh-Hant'],
     transferRecovery: {
         title: '完成暫存上傳',
         message: '上傳已到達裝置，但最終儲存需要處理。只重試最終儲存，或丟棄暫存上傳。',
@@ -2261,20 +2269,11 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         title: '連線',
         labels: {
             server: '伺服器',
-            transport: '傳輸方式',
-            connectionMode: '連線模式',
             socket: '套接字',
             authenticated: '已驗證',
             lastSync: '上次同步',
             nextRetry: '下次重試',
             lastError: '上次錯誤',
-        },
-        transport: {
-            standard: '標準連線',
-            direct: '直接連線',
-            secureRelay: '安全中繼',
-            directOnly: '僅直接連線',
-            automatic: '自動：直接連線 + 安全中繼',
         },
     },
 
@@ -2318,16 +2317,15 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         serverUrlNotEmbeddedTitle: '在手機上設定伺服器',
         serverUrlNotEmbeddedBody:
             '此 QR 碼無法包含伺服器位址，因為伺服器被設定為 localhost。請在手機上前往 設定 → 伺服器，新增一個手機可連線的 URL（例如區網 IP 或 Tailscale URL），然後再掃描一次。',
-        pairingRequestTitle: '配對請求',
-        pairingRequestBody: '確認此驗證碼與手機上顯示的一致，然後批准。',
         pairingAlreadyRequestedTitle: 'QR 碼已被使用',
         pairingAlreadyRequestedBody: '此 QR 碼已在另一支手機上掃描。請在電腦上產生新的 QR 碼。',
         deviceLabel: '裝置',
         requestKeyFingerprintLabel: '請求金鑰指紋',
-        confirmCodeLabel: '確認碼',
         expiresAtLabel: '到期時間',
-        confirmCodeComparisonBody: '請確認兩台裝置上顯示的代碼一致。',
         showPairingLink: '顯示配對連結',
+        pairingLinkSecurityWarning: '任何擁有此暫時連結的人都可以在連結過期前新增裝置。請只與您自己的裝置分享。',
+        pairingQrTooLargeTitle: '內容過長，無法顯示為 QR 碼',
+        pairingQrTooLargeBody: '此邀請包含額外的連線資訊，無法以 QR 碼顯示。您的 Home 仍可繼續配對——請改用下方的安全連結。',
         homeAddedPreservedFocusBody: '已加入此 Home。目前選取的 Home 未變更。',
         requestingDeviceLabel: '提出要求的裝置',
         thisDevice: '此裝置',
@@ -2342,7 +2340,6 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         unsupportedEnrollmentResponseBody: '此 Home 傳回了目前版本 Happier 無法使用的回應。請更新 Happier 或掃描其他 Home。',
         updateRequiredTitle: '需要更新',
         updateRequiredBody: '此 Home 使用了無法安全接受的舊配對格式。請在兩台裝置上更新 Happier 後再試一次。',
-        approveButton: '批准',
         generateNewQrCode: '產生新的 QR 碼',
         pairingQrExpired: '此 QR 碼已過期。請產生新的 QR 碼。',
         accountUrlPlaceholder: 'happier:///account?...',
@@ -3071,7 +3068,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
             lastSync: '最近同步',
         },
         server: {
-            activeServer: '目前 Relay',
+            activeServer: '目前 Home',
         },
         identity: {
             accountId: '帳戶 ID',
@@ -3127,7 +3124,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
             findings: '發現的問題',
         },
         overview: {
-            activeServer: '目前 Relay',
+            activeServer: '目前 Home',
             account: '帳戶',
             onlineMachines: '線上機器（目前伺服器）',
             cachedAttribution: ({ count }: { count: number }) => `可用快取 doctor snapshot：${count} 個`,
@@ -5360,7 +5357,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         serverConfiguration: 'Relay 設定',
         enterServerUrl: '請輸入 Relay URL',
         notValidHappyServer: '不是有效的 Happier Relay',
-        changeServer: '更改 Relay',
+        changeServer: '更改 Home',
         continueWithServer: '繼續使用此 Relay？',
         resetToDefault: '重設為預設',
         resetServerDefault: '重設 Relay 為預設值？',
@@ -5380,7 +5377,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         serverNamePlaceholder: 'Relay 名稱',
         cannotRenameCloud: '無法重新命名雲端 Relay。',
         removeServer: '移除 Relay',
-        removeServerConfirm: ({ name }: { name: string }) => `從已儲存的 Relay 中移除「${name}」？`,
+        removeServerConfirm: ({ name }: { name: string }) => `從此裝置移除「${name}」？這會刪除此裝置上為該 Home 儲存的憑證。`,
         removeServerGroup: '移除 Relay 群組',
         removeServerGroupConfirm: ({ name }: { name: string }) => `從已儲存的 Relay 群組中移除「${name}」？`,
         cannotRemoveCloud: '無法移除雲端 Relay。',
@@ -5397,9 +5394,8 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         switchForThisTab: '僅為此分頁切換',
         makeDefaultOnDevice: '設為此裝置預設',
         serverNameLabel: 'Relay 名稱',
-        addAndUse: '新增並使用',
         addTargetsTitle: '新增',
-        addServerSubtitle: '新增 Relay 並切換',
+        addServerSubtitle: '新增 Relay',
         notificationAddServerHint: '此 Relay 尚未在此裝置上儲存。請在下方新增以繼續。',
         useCanonicalServerUrlTitle: '使用 Relay 的標準 URL？',
         useCanonicalServerUrlBody: '此 Relay 提供了一個可在其他裝置上使用的標準 URL。要改用它取代你輸入的 URL 嗎？',
@@ -5465,8 +5461,6 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         multiServerView: {
             title: '多 Relay 並行檢視',
             footer: '選擇是否將多個 Relay 合併在同一個工作階段清單中顯示。',
-            enableTitle: '啟用並行檢視',
-            enableSubtitle: '將所選 Relay 的工作階段合併顯示',
             presentationTitle: '呈現模式',
             presentation: {
                 flatWithBadges: '扁平清單（含 Relay 徽章）',
@@ -7604,7 +7598,6 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
                 allowAgentModeOverride: { title: '代理模式', subtitle: '允許選擇代理或工作階段模式。' },
                 allowConfigOptionOverrides: { title: '設定選項', subtitle: '允許思考強度和 workflow 等提供者選項。' },
                 allowProfileOverride: { title: '設定檔', subtitle: '允許依 id 選擇設定檔，且不暴露秘密。' },
-                allowEnvironmentVariables: { title: '環境變數', subtitle: '允許在新工作階段中明確設定環境變數。' },
                 allowConnectedServicesOverride: { title: '已連接服務', subtitle: '允許依參照選擇已連接服務綁定。' },
                 allowMcpSelectionOverride: { title: 'MCP 選擇', subtitle: '允許覆寫繼承的 MCP 伺服器選擇。' },
                 allowTranscriptStorageOverride: { title: '轉錄儲存', subtitle: '允許選擇相容的轉錄儲存模式。' },
@@ -9013,6 +9006,8 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: 'Link a Home to this Account Service, then refresh.',
         accountServiceConnectHome: 'Connect Home',
+        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHomeDescription: 'Let {accountService} help your other devices find this Home and request access.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
         accountServiceHomeApprovalRequired: 'Approval needed',
@@ -10742,24 +10737,10 @@ settingsSession: {
   personalHome: {
       bootstrap: {
           title: '正在準備你的個人之家',
-          preparingHomeStatus: '正在準備你的本地之家。',
-          connectingAppStatus: '正在將 Happier 連接到你的之家。',
-          closingSignupStatus: '正在保護你的之家，完成後即可使用。',
+          ensuringHomeStatus: '正在準備你的本地之家。',
           preparingComputerStatus: '你的之家已準備就緒。正在背景準備此電腦。',
           blockedStatus: '繼續之前，設定需要你處理。',
           readyStatus: '你的之家已準備就緒。',
-          preparingHomeTitle: '正在準備你的之家',
-          preparingHomeDetail: '正在準備此電腦以供本地工作使用。',
-          connectingAppTitle: '正在連接 Happier',
-          connectingAppDetail: '正在將 Happier 安全地連接到你的之家。',
-          preparingComputerTitle: '正在準備此電腦',
-          preparingComputerDetail: '正在設定背景服務，讓工作階段可以繼續執行。',
-          pending: '等待中',
-          active: '進行中',
-          complete: '已完成',
-          blocked: '需要處理',
-          progressLabel: '個人之家設定進度',
-          rowAccessibilityLabel: ({ title, status, detail }: { title: string; status: string; detail: string }) => `${title}。${status}。${detail}`,
           failureBody: '無法完成此步驟。已完成的設定內容不會遺失；請再試一次或開啟詳細資料。',
           profileRecoveryBody: '你的個人之家已準備就緒。Happier 仍需完成與它的連接。',
           computerRecoveryBody: '你的個人之家已準備就緒。Agent 設定需要處理。',

@@ -43,14 +43,18 @@ export function stripLegacyProviderSentinelTargetKeys<TValue>(
     record: ProfileTargetValueRecord<TValue>,
     entries: readonly ResolvedBackendCatalogEntry[],
 ): Record<string, TValue> {
-    void entries;
     if (!record || typeof record !== 'object') {
         return {};
     }
 
+    const currentTargetKeys = new Set(entries.map(resolveProfileBackendTargetKeyForEntry));
     const out: Record<string, TValue> = {};
     for (const [rawKey, value] of Object.entries(record)) {
         if (value === undefined) continue;
+        if (currentTargetKeys.has(rawKey)) {
+            out[rawKey] = value;
+            continue;
+        }
         try {
             const canonicalKey = buildBackendTargetKeyV2(
                 readBackendTargetRefV2(rawKey as BackendTargetRefV2Input),

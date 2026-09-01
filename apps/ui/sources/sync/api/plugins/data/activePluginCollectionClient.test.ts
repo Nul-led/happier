@@ -1040,6 +1040,8 @@ describe('active Account Collection direct client', () => {
             status: 'ready',
             limits: {
                 maxRowEncodedBytes: 256 * 1024,
+                maxRows: 5_000,
+                maxCollectionEncodedBytes: 64 * 1024 * 1024,
                 maxBatchBytes: 4 * 1024 * 1024,
                 maxBatchRows: 40,
                 maxAccountRows: 5_000,
@@ -1078,9 +1080,11 @@ describe('active Account Collection direct client', () => {
             status: 'ready',
             limits: {
                 maxRowEncodedBytes: 32 * 1024,
+                maxRows: 250,
+                maxCollectionEncodedBytes: 64 * 1024 * 1024,
                 maxBatchBytes: 4 * 1024 * 1024,
                 maxBatchRows: 40,
-                maxAccountRows: 250,
+                maxAccountRows: 5_000,
                 maxAccountBytes: 64 * 1024 * 1024,
                 basis: 'deployment',
             },
@@ -1094,6 +1098,8 @@ describe('active Account Collection direct client', () => {
             status: 'ready',
             limits: {
                 ...PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1,
+                maxRows: PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1.maxAccountRows,
+                maxCollectionEncodedBytes: PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1.maxAccountBytes,
                 basis: 'default',
             },
         });

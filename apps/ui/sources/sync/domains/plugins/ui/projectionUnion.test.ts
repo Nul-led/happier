@@ -734,12 +734,7 @@ describe('unionPluginUiProjections', () => {
         expect(union.pluginUiProjection?.installedPackagesById['acme.selected']).toBeUndefined();
     });
 
-    it('keeps the first admitted machine when two machines replicate one unmaterialized plugin', () => {
-        // A plugin the Account can never materialize arrives UNSTAMPED from
-        // every machine that holds it, so two connected machines publish the
-        // SAME contribution key. Members are ordered by `machineId`; taking the
-        // later one would silently re-home every such surface — and shadow its
-        // package brand — the moment an unrelated machine connects.
+    it('withholds an originless plugin when multiple machines replicate it', () => {
         const replica = (machineId: string, version: string): PluginUiProjectionUnionMember => ({
             machineId,
             serverId: 'server-1',
@@ -769,8 +764,9 @@ describe('unionPluginUiProjections', () => {
 
         const placement = union.pluginUiProjection
             ?.surfacePlacementsById['surfacePlacement:happier.triage:triage'];
-        expect(readPluginUiContributionOrigin(placement)?.machineId).toBe('machine-a');
-        expect(union.pluginUiProjection?.installedPackagesById['happier.triage']?.version).toBe('1.0.0');
+        expect(placement).toBeUndefined();
+        expect(union.pluginUiProjection?.installedPackagesById['happier.triage']).toBeUndefined();
+        expect(union.interactionEnabled).toBe(false);
     });
 
     it('treats an authority flip as a member change and an unchanged snapshot as none', () => {

@@ -46,7 +46,7 @@ type SyncAccountChangeWakeSchedulingHarness = SyncAccountChangeCatchUpHarness & 
     rearmPendingOutboxForActiveScope(): Promise<void>;
     resumeViaChanges(options: { accountId: string; shouldContinue?: () => boolean }): Promise<unknown>;
     catchUpLoadedExternalSessionsOnResume(): Promise<void>;
-    resumeSync(reason: 'app-foreground' | 'socket-reconnect' | 'account-change' | 'manual' | 'server-reachable'): Promise<void>;
+    resumeSync(reason: 'app-foreground' | 'socket-reconnect' | 'changes-catch-up' | 'manual' | 'server-reachable'): Promise<void>;
     handleUpdate(update: unknown): Promise<void>;
 };
 
@@ -459,7 +459,9 @@ describe('sync AccountChange catch-up projection', () => {
         harness.sessionsSync = resumeUnit;
         harness.machinesSync = resumeUnit;
 
-        vi.spyOn(harness, 'rearmPendingOutboxForActiveScope').mockResolvedValue(undefined);
+        const rearmPendingOutbox = vi
+            .spyOn(harness, 'rearmPendingOutboxForActiveScope')
+            .mockResolvedValue(undefined);
         // The cursor owner has already completed; hold only the outer resume tail to
         // reproduce a wake delivered after /v2/changes responds but before cleanup.
         const resumeViaChanges = vi.spyOn(harness, 'resumeViaChanges').mockResolvedValue({
@@ -499,6 +501,11 @@ describe('sync AccountChange catch-up projection', () => {
         await vi.waitFor(() => expect(harness.resumeInFlight).toBeNull());
 
         expect(resumeViaChanges).toHaveBeenCalledTimes(2);
+        // The socket wake is already a durable changes-cursor signal. Its trailing pass must not
+        // repeat the full resume's outbox, external-session, purchases, or native-update tail.
+        expect(rearmPendingOutbox).toHaveBeenCalledTimes(1);
+        expect(catchUpCalls).toBe(1);
+        expect(resumeUnit.invalidateCoalesced).toHaveBeenCalledTimes(2);
     });
 
     it('drops a queued AccountChange wake when its server/account lifetime resets', async () => {

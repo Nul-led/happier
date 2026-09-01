@@ -21,6 +21,9 @@ import { automationTriggerSetTranslations } from './automationTriggerSetTranslat
 import { actionOperationInboxTranslations } from './actionOperationInboxTranslations';
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
+import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { en } from './en';
+import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
 
 const mcpServersUxTranslationExtension = {
   mcpServersConfiguredEmptySubtitle: 'Utwórz serwer, zaimportuj JSON hosta albo zainstaluj zalecany preset.',
@@ -517,6 +520,11 @@ const sessionHandoffTranslationExtensions = {
       planned: 'Zaplanowane',
       transferred: 'Przesłane',
       remaining: 'Pozostało',
+      primary: {
+        preparing: 'Przygotowywanie',
+        moving: 'Przenoszenie',
+        ready: 'Gotowe',
+      },
       timeline: {
         scanSource: 'Skanowanie źródła',
         plan: 'Planowanie zmian',
@@ -629,6 +637,7 @@ function plural({
  * Must match the exact structure of the English translations
  */
 export const pl = {
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.pl, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.pl.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: 'Dokończ przygotowane przesyłanie',
@@ -1598,20 +1607,11 @@ export const pl = {
 	    title: "Połączenie",
 	    labels: {
 	      server: "Serwer",
-	      transport: "Transport",
-	      connectionMode: "Tryb połączenia",
 	      socket: "Gniazdo",
 	      authenticated: "Uwierzytelniono",
 	      lastSync: "Ostatnia synchronizacja",
 	      nextRetry: "Następna próba",
 	      lastError: "Ostatni błąd",
-	    },
-	    transport: {
-	      standard: "Połączenie standardowe",
-	      direct: "Bezpośrednie",
-	      secureRelay: "Bezpieczny przekaźnik",
-	      directOnly: "Tylko połączenia bezpośrednie",
-	      automatic: "Automatycznie: bezpośrednio + bezpieczny przekaźnik",
 	    },
 	  },
 
@@ -1657,17 +1657,16 @@ export const pl = {
     serverUrlNotEmbeddedTitle: "Skonfiguruj serwer na telefonie",
     serverUrlNotEmbeddedBody:
       "Ten kod QR nie może zawierać adresu serwera, ponieważ jest ustawiony na localhost. Na telefonie przejdź do Ustawienia → Serwery i dodaj URL, do którego telefon ma dostęp (LAN IP lub Tailscale), a następnie zeskanuj ponownie.",
-    pairingRequestTitle: "Prośba o sparowanie",
-    pairingRequestBody: "Sprawdź, czy ten kod zgadza się z tym na telefonie, a następnie zatwierdź.",
     pairingAlreadyRequestedTitle: "Kod już użyty",
     pairingAlreadyRequestedBody:
       "Ten kod QR został już zeskanowany na innym telefonie. Poproś komputer o wygenerowanie nowego.",
     deviceLabel: "Urządzenie",
     requestKeyFingerprintLabel: "Odcisk klucza żądania",
-    confirmCodeLabel: "Kod potwierdzenia",
     expiresAtLabel: "Wygasa",
-    confirmCodeComparisonBody: "Upewnij się, że ten kod jest taki sam na obu urządzeniach.",
     showPairingLink: "Pokaż link parowania",
+    pairingLinkSecurityWarning: "Każda osoba z tym tymczasowym linkiem może dodać urządzenie przed jego wygaśnięciem. Udostępnij go tylko własnemu urządzeniu.",
+    pairingQrTooLargeTitle: "Za duży na kod QR",
+    pairingQrTooLargeBody: "To zaproszenie zawiera dodatkowe szczegóły połączenia i nie może zostać wyświetlone jako kod QR. Twój Home nadal czeka na parowanie — użyj poniższego bezpiecznego linku.",
     homeAddedPreservedFocusBody: "Ten Home został dodany. Wybrany Home nie został zmieniony.",
     requestingDeviceLabel: "Urządzenie wysyłające prośbę",
     thisDevice: "To urządzenie",
@@ -1682,7 +1681,6 @@ export const pl = {
     unsupportedEnrollmentResponseBody: "Ten Home zwrócił odpowiedź, której ta wersja Happier nie obsługuje. Zaktualizuj Happier lub zeskanuj inny Home.",
     updateRequiredTitle: "Wymagana aktualizacja",
     updateRequiredBody: "Ten Home używa starszego formatu parowania, którego nie można bezpiecznie zaakceptować. Zaktualizuj Happier na obu urządzeniach i spróbuj ponownie.",
-    approveButton: "Zatwierdź",
     generateNewQrCode: "Wygeneruj nowy kod QR",
     pairingQrExpired: "Ten kod QR wygasł. Wygeneruj nowy.",
     openMachine: "Otwórz maszynę",
@@ -2855,7 +2853,7 @@ export const pl = {
       lastSync: "Ostatnia synchronizacja",
     },
     server: {
-      activeServer: "Aktywny Relay",
+      activeServer: "Aktywny Home",
     },
     identity: {
       accountId: "Id konta",
@@ -2911,7 +2909,7 @@ export const pl = {
       findings: "Wyniki",
     },
     overview: {
-      activeServer: "Aktywny Relay",
+      activeServer: "Aktywny Home",
       account: "Konto",
       onlineMachines: "Maszyny online (aktywny serwer)",
       cachedAttribution: ({ count }: { count: number }) => `Dostępne snapshoty doctor w cache: ${count}`,
@@ -6749,7 +6747,7 @@ export const pl = {
     serverConfiguration: "Ustawienia Relay",
     enterServerUrl: "Proszę wprowadzić URL Relay",
     notValidHappyServer: "To nie jest prawidłowy Relay Happier",
-    changeServer: "Zmień Relay",
+    changeServer: "Zmień Home",
     continueWithServer: "Kontynuować z tym Relay?",
     resetToDefault: "Resetuj do domyślnego",
     resetServerDefault: "Zresetować Relay do domyślnego?",
@@ -6772,7 +6770,7 @@ export const pl = {
     cannotRenameCloud: "Nie możesz zmienić nazwy Relay w chmurze.",
     removeServer: "Usuń Relay",
     removeServerConfirm: ({ name }: { name: string }) =>
-      `Usunąć "${name}" z zapisanych Relay?`,
+      `Usunąć „${name}” z tego urządzenia? Spowoduje to usunięcie z tego urządzenia zapisanych danych logowania do tego Home.`,
     removeServerGroup: "Usuń grupę Relay",
     removeServerGroupConfirm: ({ name }: { name: string }) =>
       `Usunąć "${name}" z zapisanych grup Relay?`,
@@ -6791,9 +6789,8 @@ export const pl = {
     switchForThisTab: "Przełącz dla tej karty",
     makeDefaultOnDevice: "Ustaw jako domyślny na tym urządzeniu",
     serverNameLabel: "Nazwa Relay",
-    addAndUse: "Dodaj i użyj",
     addTargetsTitle: "Dodaj",
-    addServerSubtitle: "Dodaj nowy Relay i przełącz na niego",
+    addServerSubtitle: "Dodaj nowy Relay",
     notificationAddServerHint: "Ten Relay nie jest jeszcze zapisany na tym urządzeniu. Dodaj go poniżej, aby kontynuować.",
     serverCount: ({ count }: { count: number }) =>
       `${count} ${plural({ count, one: "Relay", few: "Relaye", many: "Relayów" })}`,
@@ -6803,9 +6800,6 @@ export const pl = {
     insecureHttpUrlTitle: "Niezabezpieczony URL Relay",
     insecureHttpUrlBody:
       "Ten adres URL używa http:// i może nie działać z telefonu lub spoza Twojej sieci LAN. Jeśli to możliwe, użyj HTTPS. Kontynuować mimo to?",
-    signedOutSwitchConfirmTitle: "Nie jesteś połączony",
-    signedOutSwitchConfirmBody:
-      "Przełączyć na ten Relay i przejść do ekranu głównego, aby móc się zalogować lub utworzyć konto?",
     addServerGroupTitle: "Dodaj grupę Relay",
     addServerGroupSubtitle: "Utwórz wielokrotnie używaną grupę Relay",
     serverGroupNameLabel: "Nazwa grupy",
@@ -6867,8 +6861,6 @@ export const pl = {
     multiServerView: {
       title: "Równoległy widok wielu Relay",
       footer: "Wybierz, czy łączyć wiele Relay w jednej liście sesji.",
-      enableTitle: "Włącz widok równoległy",
-      enableSubtitle: "Pokazuj razem sesje z wybranych Relay",
       presentationTitle: "Tryb prezentacji",
       presentation: {
         flatWithBadges: "Płaska lista z odznakami Relay",
@@ -9314,7 +9306,6 @@ export const pl = {
                 allowAgentModeOverride: { title: 'Tryb agenta', subtitle: 'Pozwala wybrać tryb agenta lub sesji.' },
                 allowConfigOptionOverrides: { title: 'Opcje konfiguracji', subtitle: 'Pozwala na opcje dostawcy, takie jak wysiłek rozumowania i workflow.' },
                 allowProfileOverride: { title: 'Profil', subtitle: 'Pozwala wybrać profil po identyfikatorze bez ujawniania sekretów.' },
-                allowEnvironmentVariables: { title: 'Zmienne środowiskowe', subtitle: 'Pozwala na jawne zmienne środowiskowe w nowych sesjach.' },
                 allowConnectedServicesOverride: { title: 'Połączone usługi', subtitle: 'Pozwala wybrać powiązania połączonych usług przez referencję.' },
                 allowMcpSelectionOverride: { title: 'Wybór MCP', subtitle: 'Pozwala nadpisać odziedziczony wybór serwerów MCP.' },
                 allowTranscriptStorageOverride: { title: 'Przechowywanie transkrypcji', subtitle: 'Pozwala wybrać zgodny tryb przechowywania.' },
@@ -11331,6 +11322,8 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: 'Link a Home to this Account Service, then refresh.',
         accountServiceConnectHome: 'Connect Home',
+        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHomeDescription: 'Let {accountService} help your other devices find this Home and request access.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
         accountServiceHomeApprovalRequired: 'Approval needed',
@@ -13560,24 +13553,10 @@ settingsSession: {
     personalHome: {
         bootstrap: {
             title: 'Przygotowywanie Twojego Domu osobistego',
-            preparingHomeStatus: 'Przygotowywanie lokalnego Domu.',
-            connectingAppStatus: 'Łączenie Happier z Twoim Domem.',
-            closingSignupStatus: 'Zabezpieczanie Domu przed jego udostępnieniem.',
+            ensuringHomeStatus: 'Przygotowywanie lokalnego Domu.',
             preparingComputerStatus: 'Twój Dom jest gotowy. Przygotowywanie tego komputera w tle.',
             blockedStatus: 'Konfiguracja wymaga Twojej uwagi, zanim będzie można kontynuować.',
             readyStatus: 'Twój Dom jest gotowy.',
-            preparingHomeTitle: 'Przygotowywanie Twojego Domu',
-            preparingHomeDetail: 'Przygotowywanie tego komputera do pracy lokalnej.',
-            connectingAppTitle: 'Łączenie Happier',
-            connectingAppDetail: 'Bezpieczne łączenie Happier z Twoim Domem.',
-            preparingComputerTitle: 'Przygotowywanie tego komputera',
-            preparingComputerDetail: 'Konfigurowanie usługi w tle, aby sesje mogły działać dalej.',
-            pending: 'Oczekiwanie',
-            active: 'W toku',
-            complete: 'Ukończono',
-            blocked: 'Wymaga uwagi',
-            progressLabel: 'Postęp konfiguracji Domu osobistego',
-            rowAccessibilityLabel: ({ title, status, detail }: { title: string; status: string; detail: string }) => `${title}. ${status}. ${detail}`,
             failureBody: 'Nie udało się ukończyć tego kroku. Ukończona część konfiguracji jest bezpieczna; spróbuj ponownie lub otwórz szczegóły.',
             profileRecoveryBody: 'Twój Dom osobisty jest gotowy. Happier musi jeszcze dokończyć łączenie z nim.',
             computerRecoveryBody: 'Twój Dom osobisty jest gotowy. Konfiguracja Agenta wymaga uwagi.',

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import type { PluginAccountAvailabilityIntentReadResponseV1 } from '@happier-dev/protocol';
 
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
@@ -7,6 +8,26 @@ import { formatShortRelativeTime } from '@/utils/time/formatShortRelativeTime';
 
 import type { PluginMachineMatrixCellStateV1, PluginMachineMatrixCellV1 } from './pluginMachineMatrix';
 import { usePluginMachineMatrix } from './usePluginMachineMatrix';
+import { classifyPluginAccountHostedArtifactStatus } from '../pluginAccountHostedArtifactStatus';
+
+function accountAvailabilitySubtitle(
+    account: PluginAccountAvailabilityIntentReadResponseV1,
+): string {
+    const intent = account.intent;
+    if (!intent) return t('common.unavailable');
+    const release = intent.desiredVersion
+        ? `${t('common.version')} ${intent.desiredVersion}`
+        : t('common.unavailable');
+    const hostedStatus = classifyPluginAccountHostedArtifactStatus(account);
+    const hosted = hostedStatus === 'hosted'
+        ? t('settingsPlugins.accountReleaseSelection.hostedStatusReady')
+        : hostedStatus === 'publicationPending'
+            ? t('settingsPlugins.accountReleaseSelection.hostedStatusPending')
+            : hostedStatus === 'notOptedIn' || hostedStatus === 'disabledHosted'
+                ? t('settingsPlugins.accountReleaseSelection.hostedStatusDisabled')
+                : t('common.unavailable');
+    return `${release} · ${hosted}`;
+}
 
 function stateLabel(state: PluginMachineMatrixCellStateV1): string {
     switch (state) {
@@ -105,6 +126,20 @@ export const PluginMachineMatrixSection = React.memo(function PluginMachineMatri
                     {...(index === 0 ? { title: t('settingsPlugins.machineMatrix.title') } : {})}
                     {...(index === matrix.rows.length - 1 ? { footer } : {})}
                 >
+                    <Item
+                        testID={`${prefix}.${row.pluginId}.account`}
+                        title={t('settingsPlugins.accountReleaseSelection.groupTitle')}
+                        subtitle={row.accountAvailability
+                            ? accountAvailabilitySubtitle(row.accountAvailability)
+                            : t('common.unavailable')}
+                        detail={row.accountAvailability?.intent?.enabled === true
+                            ? t('common.enabled')
+                            : row.accountAvailability?.intent?.enabled === false
+                                ? t('common.disabled')
+                                : t('common.unavailable')}
+                        mode="info"
+                        showChevron={false}
+                    />
                     <Item
                         testID={`${prefix}.${row.pluginId}.summary`}
                         title={row.pluginId}

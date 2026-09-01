@@ -316,6 +316,7 @@ function createJourneyPreAuthController(): OnboardingWizardController {
         contentTransitionDirection: 'replace',
         showBack: true,
         showSkip: false,
+        navigationLocked: false,
         onBack: vi.fn(),
         onSkip: null,
         onPrimary: vi.fn(),

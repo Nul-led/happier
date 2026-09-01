@@ -10,10 +10,14 @@ import {
     PluginCollectionMutationRequestV1Schema,
     PluginManifestV2Schema,
 } from '@happier-dev/protocol';
-import { projectPluginAccountCollectionDeclaration, type JsonValue } from '@happier-dev/plugin-sdk';
+import {
+    projectPluginAccountCollectionDeclaration,
+    type JsonValue,
+} from '@happier-dev/plugin-sdk';
 import {
     defineAccountCollection,
 } from '@happier-dev/plugin-sdk/collections';
+import type { AccountKvTransaction } from '@happier-dev/plugin-sdk/storage';
 import {
     defineProtocolLiteral,
     defineProtocolObject,
@@ -201,6 +205,12 @@ async function loadClient(options: Readonly<{
         }
         if (path === '/v1/plugins/data/contract') {
             return new Response(JSON.stringify({ contract }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+        if (path === '/v1/plugins/data/get') {
+            return new Response(JSON.stringify({ row: null, absenceEpoch: 0 }), {
                 status: 200,
                 headers: { 'Content-Type': 'application/json' },
             });
@@ -461,9 +471,56 @@ describe('Plugin UI Data client', () => {
                 },
             },
         ]);
+        expect(readCount).toBe(2);
+        expect(writeCount).toBe(2);
     });
 
-    it('allows independent service mutations to overlap without treating them as nested transaction writes', async () => {
+    it('conflicts when a transaction read dependency changes before its derived write commits', async () => {
+        let readCount = 0;
+        let writeCount = 0;
+        const callback = vi.fn(async (transaction: AccountKvTransaction) => {
+            const source = await transaction.get<number>('source');
+            await transaction.set('derived', (source && 'value' in source ? source.value : 0) * 2, {
+                expectedVersion: 'absent',
+            });
+        });
+        const { client } = await loadClient({
+            accountKvRead: () => {
+                readCount += 1;
+                return new Response(JSON.stringify({
+                    status: 'present',
+                    revision: readCount,
+                    content: {
+                        t: 'plain',
+                        v: {
+                            v: 1,
+                            values: {
+                                source: {
+                                    version: readCount - 1,
+                                    value: readCount + 1,
+                                },
+                            },
+                        },
+                    },
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            },
+            accountKvWrite: () => {
+                writeCount += 1;
+                return new Response(JSON.stringify({ status: 'conflict', revision: 2 }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            },
+        });
+
+        await expect(client.accountKv.transaction(callback))
+            .rejects.toMatchObject({ code: 'plugin_account_kv_conflict' });
+        expect(callback).toHaveBeenCalledOnce();
+        expect(writeCount).toBe(1);
+        expect(readCount).toBe(2);
+    });
+
+    it('allows overlapping service mutations on disjoint keys to rebase', async () => {
         let releaseInitialReads!: () => void;
         const initialReadsStarted = new Promise<void>((resolve) => {
             releaseInitialReads = resolve;
@@ -512,11 +569,15 @@ describe('Plugin UI Data client', () => {
             },
         });
 
-        await expect(Promise.all([
+        const outcomes = await Promise.allSettled([
             client.accountKv.set('first', 1, { expectedVersion: 'absent' }),
             client.accountKv.set('second', 2, { expectedVersion: 'absent' }),
-        ])).resolves.toEqual([{ version: 0 }, { version: 0 }]);
+        ]);
 
+        expect(outcomes).toEqual([
+            { status: 'fulfilled', value: { version: 0 } },
+            { status: 'fulfilled', value: { version: 0 } },
+        ]);
         expect(accountKvWrites).toHaveLength(3);
         expect(persisted).toEqual({
             t: 'plain',
@@ -530,7 +591,7 @@ describe('Plugin UI Data client', () => {
         });
     });
 
-    it('treats service writes during an awaiting transaction as separate mutations while rejecting a nested transaction', async () => {
+    it('treats service mutations during an awaiting transaction as separate logical mutations', async () => {
         let revision: number | 'absent' = 'absent';
         let persistedContent: unknown = null;
         const { client } = await loadClient({
@@ -629,6 +690,20 @@ describe('Plugin UI Data client', () => {
         expect(accountKvWrites).toEqual([]);
     });
 
+    it('keeps an inner direct transaction signal active through the physical commit', async () => {
+        const { client, accountKvWrites } = await loadClient();
+        const cancellation = new AbortController();
+
+        await expect(client.accountKv.transaction(async (transaction) => {
+            await transaction.set('cancelled', true, {
+                expectedVersion: 'absent',
+                signal: cancellation.signal,
+            });
+            cancellation.abort();
+        })).rejects.toMatchObject({ code: 'plugin_collection_cancelled' });
+        expect(accountKvWrites).toEqual([]);
+    });
+
     it('does not reread a direct Account KV row after cancellation wins a physical conflict', async () => {
         const cancellation = new AbortController();
         let reads = 0;
@@ -658,7 +733,7 @@ describe('Plugin UI Data client', () => {
         expect(reads).toBe(1);
     });
 
-    it('writes one atomic row for a transaction and rejects when a touched key changed', async () => {
+    it('writes one atomic row for a transaction and rejects when a written dependency changed', async () => {
         let readCount = 0;
         const { client, accountKvWrites } = await loadClient({
             accountKvRead: () => {
@@ -689,8 +764,6 @@ describe('Plugin UI Data client', () => {
         await expect(client.accountKv.transaction(async (transaction) => {
             await transaction.set('one', 1, { expectedVersion: 'absent' });
             await transaction.set('two', 2, { expectedVersion: 'absent' });
-            await expect(client.accountKv.set('three', 3, { expectedVersion: 'absent' }))
-                .rejects.toMatchObject({ code: 'plugin_account_kv_invalid' });
         })).rejects.toMatchObject({ code: 'plugin_account_kv_conflict' });
 
         expect(accountKvWrites).toHaveLength(1);
@@ -824,6 +897,8 @@ describe('Plugin UI Data client', () => {
 
         await expect(client.collection(collectionDefinition).limits()).resolves.toEqual({
             maxRowEncodedBytes: 256 * 1024,
+            maxRows: 5_000,
+            maxCollectionEncodedBytes: 64 * 1024 * 1024,
             maxBatchBytes: 4 * 1024 * 1024,
             maxBatchRows: 40,
             maxAccountRows: 5_000,
@@ -838,6 +913,8 @@ describe('Plugin UI Data client', () => {
 
         await expect(client.collection(collectionDefinition).limits()).resolves.toEqual({
             ...PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1,
+            maxRows: PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1.maxAccountRows,
+            maxCollectionEncodedBytes: PLUGIN_COLLECTION_DEFAULT_DEPLOYMENT_LIMITS_V1.maxAccountBytes,
             basis: 'default',
         });
     });
