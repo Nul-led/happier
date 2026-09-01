@@ -7766,6 +7766,8 @@
                             "delivered",
                             "notDelivered",
                             "suppressed",
+                            "partial",
+                            "outcomeUnknown",
                             "resolvedAccepted",
                             "resolvedDiscarded",
                             "connectionDeleted"
@@ -10784,6 +10786,33 @@
                 }
               ]
             },
+            "endpointContinuation": {
+              "additionalProperties": false,
+              "properties": {
+                "connectionId": {
+                  "maxLength": 96,
+                  "minLength": 1,
+                  "pattern": "^[\\x21-\\x7E]+$",
+                  "type": "string"
+                },
+                "webhookEndpointId": {
+                  "maxLength": 28,
+                  "minLength": 28,
+                  "pattern": "^wh_ep_[A-Za-z0-9_-]{21}[AQgw]$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "connectionId",
+                "webhookEndpointId"
+              ],
+              "type": "object"
+            },
+            "expectedAuthorityEpoch": {
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            },
             "expectedRevision": {
               "maximum": 9007199254740991,
               "minimum": 1,
@@ -10906,6 +10935,7 @@
           "required": [
             "connectionId",
             "expectedRevision",
+            "expectedAuthorityEpoch",
             "providerSelection",
             "providerSetupInput",
             "credentialRef",
@@ -10957,6 +10987,107 @@
                 "connectionId",
                 "revision",
                 "authorityEpoch"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "connectionId": {
+                  "maxLength": 96,
+                  "minLength": 1,
+                  "pattern": "^[\\x21-\\x7E]+$",
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "endpointRequired"
+                },
+                "sourceInstanceId": {
+                  "maxLength": 116,
+                  "minLength": 21,
+                  "pattern": "^channels\\.connection\\.[A-Za-z0-9._:-]{1,96}$",
+                  "type": "string"
+                },
+                "targetMaterialization": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "machineId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "materializationId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "pluginId": {
+                      "maxLength": 256,
+                      "minLength": 3,
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "pluginId",
+                    "machineId",
+                    "materializationId"
+                  ],
+                  "type": "object"
+                },
+                "webhookContribution": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "localId": {
+                      "maxLength": 256,
+                      "minLength": 1,
+                      "pattern": "^[a-z0-9]+(?:[-/][a-z0-9]+)*$",
+                      "type": "string"
+                    },
+                    "pluginId": {
+                      "maxLength": 256,
+                      "minLength": 3,
+                      "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:\\.|$))[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "pluginId",
+                    "localId"
+                  ],
+                  "type": "object"
+                },
+                "webhookEndpointIdempotencyKey": {
+                  "maxLength": 128,
+                  "minLength": 16,
+                  "pattern": "^[A-Za-z0-9._:-]+$",
+                  "type": "string"
+                },
+                "webhookEndpointSetup": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "credential": {
+                      "const": "serverGenerated"
+                    },
+                    "kind": {
+                      "const": "accountEndpointV1"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "credential"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "kind",
+                "connectionId",
+                "webhookContribution",
+                "targetMaterialization",
+                "sourceInstanceId",
+                "webhookEndpointSetup",
+                "webhookEndpointIdempotencyKey"
               ],
               "type": "object"
             },

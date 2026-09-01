@@ -100645,11 +100645,57 @@ const AutomationRunStateChangedHostEventV1Schema: z.ZodObject<{
             triggerKind: z.ZodLiteral<"sessionLifecycle">;
             occurrenceKey: z.core.$ZodBranded<z.ZodString, "AutomationOccurrenceKeyV1", "out">;
             occurredAt: z.ZodNumber;
-            evidence: z.ZodObject<{
-                event: z.ZodLiteral<"parentTurnCompleted">;
-                sourceSessionId: z.ZodString;
-                sourceTurnId: z.ZodString;
-            }, z.core.$strict>;
+            evidence: z.ZodDiscriminatedUnion<[
+                z.ZodObject<{
+                    event: z.ZodEnum<{
+                        parentTurnCancelled: "parentTurnCancelled";
+                        parentTurnCompleted: "parentTurnCompleted";
+                        parentTurnFailed: "parentTurnFailed";
+                    }>;
+                    sourceSessionId: z.ZodString;
+                    sourceTurnId: z.ZodString;
+                    policy: z.ZodDiscriminatedUnion<[
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"currentTurn">;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"firstMatch">;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"nextMatches">;
+                            count: z.ZodNumber;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"everyMatch">;
+                        }, z.core.$strict>
+                    ], "kind">;
+                }, z.core.$strict>,
+                z.ZodObject<{
+                    event: z.ZodLiteral<"userActionRequired">;
+                    sourceSessionId: z.ZodString;
+                    sourceTurnId: z.ZodString;
+                    requestId: z.ZodString;
+                    requestKind: z.ZodEnum<{
+                        permission: "permission";
+                        user_action: "user_action";
+                    }>;
+                    policy: z.ZodDiscriminatedUnion<[
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"currentTurn">;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"firstMatch">;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"nextMatches">;
+                            count: z.ZodNumber;
+                        }, z.core.$strict>,
+                        z.ZodObject<{
+                            kind: z.ZodLiteral<"everyMatch">;
+                        }, z.core.$strict>
+                    ], "kind">;
+                }, z.core.$strict>
+            ], "event">;
         }, z.core.$strict>,
         z.ZodObject<{
             kind: z.ZodLiteral<"manual">;
