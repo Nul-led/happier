@@ -276,6 +276,23 @@ function AutomationTriggerOverview(props: Readonly<{
                     copy={trigger.sourceSessionId}
                     showChevron={false}
                 />
+                <Item
+                    title={t('automations.pluralEditor.lifecycleEventsTitle')}
+                    subtitle={trigger.events.map((event) => (
+                        t(`automations.pluralEditor.lifecycleEvent.${event}`)
+                    )).join(' · ')}
+                    subtitleLines={0}
+                    showChevron={false}
+                />
+                <Item
+                    title={t('automations.pluralEditor.lifecyclePolicyTitle')}
+                    subtitle={t(`automations.pluralEditor.lifecyclePolicy.${trigger.policy.kind}`)}
+                    detail={trigger.remainingOccurrences === null
+                        ? undefined
+                        : String(trigger.remainingOccurrences)}
+                    subtitleLines={0}
+                    showChevron={false}
+                />
                 {trigger.policy.kind === 'currentTurn' ? (
                     <Item
                         title={t('automations.detail.trigger.sourceTurn')}

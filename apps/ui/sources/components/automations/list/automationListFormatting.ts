@@ -1,10 +1,17 @@
 import type {
     AutomationRunCause,
     AutomationRunStateV3,
+    AutomationSessionLifecycleEvent,
     AutomationSessionLifecycleTriggerStatus,
     AutomationTriggerListItem,
 } from '@happier-dev/protocol';
 import { t, type TranslationKey } from '@/text';
+
+export function formatAutomationSessionLifecycleEventLabel(
+    event: AutomationSessionLifecycleEvent,
+): string {
+    return t(`automations.pluralEditor.lifecycleEvent.${event}`);
+}
 
 export function formatAutomationScheduleLabel(automation: {
     schedule: { kind: 'cron' | 'interval'; everyMs: number | null; scheduleExpr: string | null; timezone?: string | null };
@@ -101,6 +108,9 @@ export function getAutomationRunCauseAt(cause: AutomationRunCause): number {
 export function formatAutomationRunCauseLabel(cause: AutomationRunCause): string {
     if (cause.kind === 'trigger' && cause.triggerKind === 'pluginEvent') {
         return t('automations.list.event', { eventId: cause.evidence.eventRef.localId });
+    }
+    if (cause.kind === 'trigger' && cause.triggerKind === 'sessionLifecycle') {
+        return formatAutomationSessionLifecycleEventLabel(cause.evidence.event);
     }
     return t(getAutomationRunCauseTranslationKey(cause));
 }

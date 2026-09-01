@@ -833,6 +833,12 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                             {triggerCause?.triggerKind === 'sessionLifecycle' ? (
                                 <>
                                     <Item
+                                        title={t('automations.pluralEditor.lifecycleEventsTitle')}
+                                        subtitle={t(`automations.pluralEditor.lifecycleEvent.${triggerCause.evidence.event}`)}
+                                        showChevron={false}
+                                        mode="info"
+                                    />
+                                    <Item
                                         title={t('automations.detail.trigger.sourceSession')}
                                         subtitle={triggerCause.evidence.sourceSessionId}
                                         copy={triggerCause.evidence.sourceSessionId}
