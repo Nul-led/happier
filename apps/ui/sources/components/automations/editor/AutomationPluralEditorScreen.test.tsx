@@ -642,6 +642,8 @@ describe('AutomationPluralEditorScreen', () => {
         await act(async () => {
             screen.findByProps({ testID: 'automation-lifecycle-event-parentTurnFailed' })
                 .props.rightElement.props.onValueChange(true);
+        });
+        await act(async () => {
             screen.findByProps({ testID: 'automation-lifecycle-policy-nextMatches' }).props.onPress();
         });
         await act(async () => {

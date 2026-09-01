@@ -223,9 +223,9 @@ export async function proveSessionLifecycleRegistrationSettlementRace(
             trigger: {
                 kind: "sessionLifecycle",
                 enabled: true,
-                event: "parentTurnCompleted",
-                scope: { kind: "exactTurn", sourceSessionId: sessionId, sourceTurnId: turnId },
-                consumption: "once",
+                sourceSessionId: sessionId,
+                events: ["parentTurnCompleted"],
+                policy: { kind: "currentTurn", sourceTurnId: turnId },
             },
         });
         await barrier.registrationWitnessed;
@@ -318,9 +318,9 @@ export async function proveSessionLifecycleSettlementBeforeRegistration(
             trigger: {
                 kind: "sessionLifecycle",
                 enabled: true,
-                event: "parentTurnCompleted",
-                scope: { kind: "exactTurn", sourceSessionId: sessionId, sourceTurnId: turnId },
-                consumption: "once",
+                sourceSessionId: sessionId,
+                events: ["parentTurnCompleted"],
+                policy: { kind: "currentTurn", sourceTurnId: turnId },
             },
         }).then(
             () => "committed" as const,
