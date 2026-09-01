@@ -108,10 +108,9 @@ vi.mock('@/constants/Typography', () => ({
         semiBold: '500',
         bold: '600',
     },
-    Typography: {
-        default: () => ({}),
-        rowMeta: () => ({}),
-    },
+    Typography: new Proxy({}, {
+        get: () => () => ({}),
+    }),
 }));
 
 vi.mock('@/sync/domains/server/serverRuntime', () => ({

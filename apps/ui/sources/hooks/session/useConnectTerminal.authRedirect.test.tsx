@@ -13,7 +13,11 @@ import { installSessionHooksCommonModuleMocks } from './sessionHooksTestHelpers'
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const routerReplaceSpy = vi.fn();
-const setPendingTerminalConnectSpy = vi.fn((_pending: { publicKeyB64Url: string; serverUrl: string }) => {});
+const setPendingTerminalConnectSpy = vi.fn((_pending: {
+    publicKeyB64Url: string;
+    serverUrl: string;
+    serverIdentityId: string;
+}) => {});
 const modalAlertSpy = vi.fn((..._args: unknown[]) => {});
 const modalAlertAsyncSpy = vi.fn(async (...args: unknown[]) => {
     modalAlertSpy(...args);
@@ -42,7 +46,13 @@ let serverProfiles: Array<{ id: string; serverUrl: string; serverIdentityId?: st
     serverUrl: 'https://api.happier.dev',
     serverIdentityId: 'srv_home_current',
 }];
-const getCredentialsForServerUrlSpy = vi.fn(async (_url: string, _options?: { serverId?: string }) => null as any);
+const getCredentialsForServerUrlSpy = vi.fn(async (url: string, options?: { serverId?: string }) => {
+    const target = serverProfiles.find((profile) => (
+        profile.serverUrl === url
+        && profile.serverIdentityId === options?.serverId
+    ));
+    return target ? authCredentials : null;
+});
 
 afterEach(() => {
     authCredentials = null;
@@ -56,7 +66,13 @@ afterEach(() => {
         serverIdentityId: 'srv_home_current',
     }];
     getCredentialsForServerUrlSpy.mockReset();
-    getCredentialsForServerUrlSpy.mockResolvedValue(null);
+    getCredentialsForServerUrlSpy.mockImplementation(async (url: string, options?: { serverId?: string }) => {
+        const target = serverProfiles.find((profile) => (
+            profile.serverUrl === url
+            && profile.serverIdentityId === options?.serverId
+        ));
+        return target ? authCredentials : null;
+    });
     routerReplaceSpy.mockClear();
     setPendingTerminalConnectSpy.mockClear();
     modalAlertSpy.mockClear();
@@ -172,11 +188,8 @@ vi.mock('@/sync/domains/pending/pendingTerminalConnect', () => ({
     clearPendingTerminalConnect: vi.fn(),
 }));
 
-// `authApproveSpy` records calls to the explicit-target v3 approval owner. The retired
-// active-server `authApprove` export stays mocked only until the hook migration lands;
-// no current caller may reach it.
+// `authApproveSpy` records calls to the explicit-target v3 approval owner.
 vi.mock('@/auth/flows/approve', () => ({
-    authApprove: authApproveSpy,
     authApproveAtEndpoint: authApproveSpy,
 }));
 
@@ -276,6 +289,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
         expect(setPendingTerminalConnectSpy).toHaveBeenCalledWith({
             publicKeyB64Url: 'abc123',
             serverUrl: 'https://api.happier.dev',
+            serverIdentityId: '',
         });
         expect(modalAlertSpy).toHaveBeenCalledWith('terminal.connectTerminal', 'modals.pleaseSignInFirst', [
             { text: 'common.continue' },
@@ -363,6 +377,11 @@ describe('useConnectTerminal unauthenticated flow', () => {
         modalAlertSpy.mockClear();
 
         activeServerUrl = 'http://happier-stack.localhost:3121';
+        serverProfiles = [{
+            id: 'current-profile',
+            serverUrl: 'http://localhost:3121',
+            serverIdentityId: 'srv_home_current',
+        }];
         authCredentials = createDataKeyCredentials({ token: 'token-1', machineKeyByte: 7 });
         authApproveSpy.mockResolvedValue('approved');
 
@@ -425,6 +444,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
         expect(setPendingTerminalConnectSpy).toHaveBeenCalledWith({
             publicKeyB64Url: 'abc123',
             serverUrl: 'http://127.0.0.1:43005',
+            serverIdentityId: '',
         });
         expect(routerReplaceSpy).toHaveBeenCalledWith('/?server=http%3A%2F%2F127.0.0.1%3A43005');
     });
@@ -458,6 +478,7 @@ describe('useConnectTerminal unauthenticated flow', () => {
         expect(setPendingTerminalConnectSpy).toHaveBeenCalledWith({
             publicKeyB64Url: 'abc123',
             serverUrl: 'https://lan.example.test:53288',
+            serverIdentityId: '',
         });
         expect(routerReplaceSpy).toHaveBeenCalledWith('/?server=https%3A%2F%2Flan.example.test%3A53288');
     });

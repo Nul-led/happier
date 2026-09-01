@@ -87,6 +87,8 @@ vi.mock('@/auth/storage/tokenStorage', () => ({
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
   getActiveServerUrl: () => 'https://api.happier.dev',
+  listServerProfiles: () => [],
+  loadHomeViewState: () => null,
 }));
 
 vi.mock('@/sync/domains/server/activeServerSwitch', () => ({

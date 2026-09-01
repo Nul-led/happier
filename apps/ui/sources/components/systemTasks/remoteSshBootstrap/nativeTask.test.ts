@@ -52,6 +52,9 @@ describe('runNativeRemoteSshBootstrapTask', () => {
                             ok: true,
                             data: {
                                 authenticated: true,
+                                credentialState: 'valid',
+                                machineRegistered: true,
+                                machineRegistrationState: 'server-confirmed',
                                 machineId: 'machine-a',
                             },
                         }),
@@ -118,6 +121,9 @@ describe('runNativeRemoteSshBootstrapTask', () => {
                         ok: true,
                         data: {
                             authenticated: true,
+                            credentialState: 'valid',
+                            machineRegistered: true,
+                            machineRegistrationState: 'server-confirmed',
                             machineId: 'machine-fresh',
                         },
                     };
@@ -312,6 +318,9 @@ describe('runNativeRemoteSshBootstrapTask', () => {
                         ok: true,
                         data: {
                             authenticated: true,
+                            credentialState: 'valid',
+                            machineRegistered: true,
+                            machineRegistrationState: 'server-confirmed',
                             machineId: 'machine-relay',
                         },
                     };

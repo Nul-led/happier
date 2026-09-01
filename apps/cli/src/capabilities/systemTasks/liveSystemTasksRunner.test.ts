@@ -8,7 +8,9 @@ import {
   resolveInstalledPersonalHomeSqliteMigrationPaths,
   resolvePersonalHomeRuntimeLayout,
   resolveRelayRuntimeDefaults,
+  type PersonalHomeRelocationDestinationOwner,
 } from '@happier-dev/cli-common/firstPartyRuntime';
+import type { PersonalHomeSystemTaskOperations } from '@happier-dev/cli-common/systemTasks';
 import { SYSTEM_TASK_PROTOCOL_VERSION } from '@happier-dev/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,21 +19,22 @@ import { getLiveSystemTasksRunnerAdapter } from './liveSystemTasksRunner';
 describe('getLiveSystemTasksRunnerAdapter', () => {
   it('keeps the default singleton isolated from an explicitly targeted Personal Home invocation', async () => {
     vi.resetModules();
-    const operations = {
+    const operations: PersonalHomeSystemTaskOperations = {
       inspect: vi.fn(async () => ({ purpose: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123', running: false })),
       backup: vi.fn(async () => ({})),
       verifyBackup: vi.fn(async () => ({})),
       restore: vi.fn(async () => ({})),
+      recoverRestore: vi.fn(async () => ({})),
+      finalizeRestore: vi.fn(async () => ({})),
       erase: vi.fn(async () => ({})),
-      relocate: vi.fn(async () => ({})),
     };
     const createOperations = vi.fn(async () => operations);
     const destinationStatus = vi.fn(async (operationId: string) => ({ operationId, status: 'absent' as const }));
-    const createRelocationDestination = vi.fn(async () => ({
-      stage: async () => { throw new Error('not used'); },
+    const createRelocationDestination = vi.fn(async (): Promise<PersonalHomeRelocationDestinationOwner> => ({
+      stage: async (_input) => { throw new Error('not used'); },
       status: destinationStatus,
-      commit: async () => { throw new Error('not used'); },
-      abort: async () => { throw new Error('not used'); },
+      commit: async (_input) => { throw new Error('not used'); },
+      abort: async (_operationId) => { throw new Error('not used'); },
     }));
     vi.doMock('./relayRuntime/liveRelayRuntime', async (importOriginal) => {
       const actual = await importOriginal<typeof import('./relayRuntime/liveRelayRuntime')>();
@@ -629,7 +632,6 @@ describe('relay runtime system tasks', () => {
         recoverRestore: async () => ({}),
         finalizeRestore: async () => ({}),
         erase: async () => ({}),
-        relocate: async () => ({}),
       },
     });
     const started = await adapter.start({
@@ -660,17 +662,21 @@ describe('relay runtime system tasks', () => {
       status: 'quarantined' as const,
       bundleSha256: 'a'.repeat(64),
       expectedHomeServerIdentityId: 'home-1',
+      expectedCanonicalServerUrl: 'http://127.0.0.1:43123',
       sourceDescriptorRevision: 4,
+      authenticated: true as const,
+      accountCount: 1,
+      sessionCount: 0,
     }));
     const module = await import('./liveSystemTasksRunner');
     const adapter = module.getLiveSystemTasksRunnerAdapter({
       loadPersonalHomeRelocationDestination: async (target) => {
         expect(target).toEqual({ channel: 'stable', mode: 'user' });
         return {
-          stage: async () => { throw new Error('not used'); },
+          stage: async (_input) => { throw new Error('not used'); },
           status,
-          commit: async () => { throw new Error('not used'); },
-          abort: async () => { throw new Error('not used'); },
+          commit: async (_input) => { throw new Error('not used'); },
+          abort: async (_operationId) => { throw new Error('not used'); },
         };
       },
     });
