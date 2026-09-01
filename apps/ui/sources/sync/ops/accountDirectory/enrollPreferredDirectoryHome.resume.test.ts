@@ -217,6 +217,26 @@ describe('enrollPreferredDirectoryHome requester continuation', () => {
         expect(getPendingPreferredHomeEnrollment()).toBeNull();
     });
 
+    it('returns the retained pending continuation instead of cancelling it and starting a competing enrollment', async () => {
+        const keyPair = sodium.crypto_box_keypair();
+        vi.spyOn(sodium, 'crypto_box_keypair').mockReturnValueOnce(keyPair);
+        endpointFetchMock.mockResolvedValueOnce(json(202, {
+            v: 1,
+            outcome: 'approval_required',
+            homeServerIdentityId: 'srv_home_b',
+            approvalId: 'approval-retained',
+            deviceLabel: null,
+            expiresAtMs: Date.now() + 60_000,
+        }));
+
+        const first = await enrollPreferredDirectoryHome(makeSession());
+        const retained = await enrollPreferredDirectoryHome(makeSession());
+
+        expect(retained).toBe(getPendingPreferredHomeEnrollment());
+        expect(retained).toBe(first);
+        expect(endpointFetchMock).toHaveBeenCalledTimes(1);
+    });
+
     it('stop waiting cancels the retained continuation and prevents a late response from persisting or publishing', async () => {
         const keyPair = sodium.crypto_box_keypair();
         vi.spyOn(sodium, 'crypto_box_keypair').mockReturnValueOnce(keyPair);

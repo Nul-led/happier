@@ -1648,7 +1648,6 @@ export function buildHomeConnectionDescriptorForProfile(profile: ServerProfile):
  */
 export type HomeProfileDescriptorAuthority =
     | 'advisory'
-    | 'redemption_coupled'
     | 'current_connection_observation';
 
 type HomeProfileAdoptionParams = Readonly<{
@@ -1679,7 +1678,7 @@ export type HomeConnectionDescriptorReconciliationResult =
         profile: ServerProfile | null;
     }>;
 
-export type HomeProfileAdoptionConflictCode = 'equal_revision_conflict' | 'redemption_authority_conflict';
+export type HomeProfileAdoptionConflictCode = 'equal_revision_conflict';
 
 export class HomeProfileAdoptionConflictError extends Error {
     readonly code: HomeProfileAdoptionConflictCode;
@@ -1834,6 +1833,13 @@ function resolveHomeProfileAdoption(
     params: HomeProfileAdoptionParams,
     options: Readonly<{ persistCanonicalization?: boolean }> = {},
 ): ResolvedHomeProfileAdoption {
+    if (
+        params.descriptorAuthority !== undefined
+        && params.descriptorAuthority !== 'advisory'
+        && params.descriptorAuthority !== 'current_connection_observation'
+    ) {
+        throw new Error('Invalid Home descriptor authority');
+    }
     let descriptor = params.descriptor;
     if (!descriptor || typeof descriptor !== 'object') {
         throw new Error('Invalid Home connection descriptor');
@@ -1870,17 +1876,6 @@ function resolveHomeProfileAdoption(
     if (parsedCanonicalDescriptor.success && existing) {
         if (params.descriptorAuthority === 'advisory') {
             // Advisory Directory data never retargets an existing Home profile.
-            descriptorAdjudication = 'unchanged';
-        } else if (
-            params.descriptorAuthority === 'redemption_coupled'
-            && existing.descriptorProvenance !== 'advisory-only'
-        ) {
-            // Coupling prevents token/route splicing but is not an independent
-            // Home identity proof. It is idempotent for an established exact
-            // descriptor and can never retarget established routing facts.
-            if (!descriptorSnapshotMatchesProfile(parsedCanonicalDescriptor.data, existing)) {
-                throw new HomeProfileAdoptionConflictError('redemption_authority_conflict');
-            }
             descriptorAdjudication = 'unchanged';
         } else if (existing.descriptorProvenance === 'advisory-only') {
             // Any Home/user authority outranks advisory-authored placeholder facts: a
@@ -1921,10 +1916,7 @@ export function preflightHomeProfileAdoption(
     const existingEstablished = resolved.existing !== null
         && resolved.existing.descriptorProvenance !== 'advisory-only';
     const preserveExisting = existingEstablished
-        && (
-            params.descriptorAuthority === 'advisory'
-            || params.descriptorAuthority === 'redemption_coupled'
-        );
+        && params.descriptorAuthority === 'advisory';
     const existingServerUrl = resolved.existing
         ? normalizeUrl(resolved.existing.canonicalServerUrl ?? resolved.existing.serverUrl)
         : resolved.canonicalServerUrl;

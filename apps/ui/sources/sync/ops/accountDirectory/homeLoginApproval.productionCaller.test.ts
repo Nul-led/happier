@@ -91,7 +91,7 @@ describe('Directory enrollment production composition', () => {
             }),
         };
         const coupledPayload = {
-            v: 1 as const,
+            v: 1,
             credentials: { token: 'home-b-token' },
             connectionDescriptor: home.connectionDescriptor,
         };

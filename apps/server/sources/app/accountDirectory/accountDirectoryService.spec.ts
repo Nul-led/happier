@@ -956,16 +956,8 @@ describe("Account Directory service", () => {
             const sealed = decodeBase64((result as { sealedHomeTokenBase64Url: string }).sealedHomeTokenBase64Url, "base64url");
             const opened = openBoxBundle({ bundle: sealed, recipientSecretKeyOrSeed: clientBoxKeyPair.secretKey });
             const plaintext = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(opened as Uint8Array)) as unknown;
-            expect(plaintext).toEqual({
-                v: 1,
-                credentials: { token: "ordinary-home-local-token" },
-                connectionDescriptor: homeDescriptor,
-            });
-            expect(Object.keys(plaintext as Record<string, unknown>).sort()).toEqual([
-                "connectionDescriptor",
-                "credentials",
-                "v",
-            ]);
+            expect(plaintext).toEqual({ token: "ordinary-home-local-token" });
+            expect(Object.keys(plaintext as Record<string, unknown>)).toEqual(["token"]);
             expect((result as { expiresAtMs: number }).expiresAtMs).toBe(1_700_000_180_000);
             // A different client key cannot open the sealed token.
             expect(openBoxBundle({ bundle: sealed, recipientSecretKeyOrSeed: otherBoxKeyPair.secretKey })).toBeNull();

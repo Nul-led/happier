@@ -1,251 +1,147 @@
 import * as React from 'react';
-import renderer, { act } from 'react-test-renderer';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { QRAuthKeyPair } from '@/auth/flows/qrStart';
-import type { AuthCredentials, ServerCredentialLookupOptions } from '@/auth/storage/tokenStorage';
-import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
-import { createModalModuleMock } from '@/dev/testkit/mocks/modal';
-import { createTextModuleMock } from '@/dev/testkit/mocks/text';
-import { lightTheme } from '@/theme';
+import { act } from 'react-test-renderer';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-type ReactActEnvironmentGlobal = typeof globalThis & {
-    IS_REACT_ACT_ENVIRONMENT?: boolean;
-};
-type AdoptHomeProfileInput = Parameters<
-    (typeof import('@/sync/domains/server/serverProfiles'))['adoptHomeProfile']
->[0];
-(globalThis as ReactActEnvironmentGlobal).IS_REACT_ACT_ENVIRONMENT = true;
+import { createExpoRouterMock, renderScreen } from '@/dev/testkit';
+
+const descriptor = Object.freeze({
+    v: 1 as const,
+    homeServerIdentityId: 'known-home',
+    canonicalServerUrl: 'https://known-home.example.test',
+    revision: 1,
+    endpoints: [{ kind: 'https' as const, url: 'https://known-home.example.test' }],
+});
+
+const state = vi.hoisted(() => ({
+    presentation: { phase: 'generating' } as Record<string, unknown>,
+    canCancel: true,
+    cancel: vi.fn(),
+    start: vi.fn(async () => {}),
+    copy: vi.fn(async () => true),
+    preventRemove: vi.fn(),
+}));
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
-    return createReactNativeWebMock({
-        View: 'View',
-        ScrollView: 'ScrollView',
-        ActivityIndicator: 'ActivityIndicator',
-        Platform: { OS: 'web', select: (spec: Record<string, unknown>) => spec.web ?? spec.default },
-    });
+    return createReactNativeWebMock({ Platform: { OS: 'web' } });
 });
 
-const expoRouterMock = createExpoRouterMock({
-    params: {},
-    router: {
-        push: vi.fn(),
-        back: vi.fn(),
-    },
-});
+const routerMock = createExpoRouterMock({ params: {} });
+vi.mock('expo-router', () => routerMock.module);
 
-vi.mock('expo-router', () => expoRouterMock.module);
-
-const restoreQrViewState = vi.hoisted(() => ({
-    loginSpy: vi.fn(async () => ({ kind: 'completed' as const })),
-    authQRWaitSpy: vi.fn<(keypair: QRAuthKeyPair, target: unknown, options?: { shouldCancel?: () => boolean }) => Promise<unknown>>(async (
-        _keypair,
-        _target,
-        _options,
-    ) => await new Promise(() => {})),
-    trackAccountRestoredSpy: vi.fn(),
-    setCredentialsForServerUrlSpy: vi.fn<(
-        serverUrl: string,
-        options: ServerCredentialLookupOptions,
-        credentials: AuthCredentials,
-    ) => Promise<boolean>>(async () => true),
-    adoptHomeProfileSpy: vi.fn<(input: AdoptHomeProfileInput) => Promise<{
-        id: string;
-        serverUrl: string;
-        serverIdentityId: string;
-    }>>(async () => ({
-        id: 'profile-home-b',
-        serverUrl: 'https://home-b.test',
-        serverIdentityId: 'srv_home_b',
-    })),
+vi.mock('@react-navigation/native', () => ({
+    usePreventRemove: (locked: boolean) => state.preventRemove(locked),
 }));
 
-vi.mock('@/auth/context/AuthContext', () => ({
-    useAuth: () => ({ loginWithCredentials: restoreQrViewState.loginSpy }),
-}));
-
-vi.mock('@/sync/domains/server/serverProfiles', () => ({
-    getActiveServerSnapshot: () => ({ serverId: 'profile-home-b', serverUrl: 'https://home-b.test', generation: 1 }),
-    getServerProfileById: () => ({
-        id: 'profile-home-b',
-        serverUrl: 'https://home-b.test',
-        canonicalServerUrl: 'https://home-b.test',
-        serverIdentityId: 'srv_home_b',
+vi.mock('@/hooks/auth/useReversePairingSession', () => ({
+    useReversePairingSession: () => ({
+        presentation: state.presentation,
+        canCancel: state.canCancel,
+        cancel: state.cancel,
+        start: state.start,
     }),
-    adoptHomeProfile: (input: AdoptHomeProfileInput) => restoreQrViewState.adoptHomeProfileSpy(input),
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
-    TokenStorage: {
-        setCredentialsForServerUrl: (
-            serverUrl: string,
-            options: ServerCredentialLookupOptions,
-            credentials: AuthCredentials,
-        ) => restoreQrViewState.setCredentialsForServerUrlSpy(serverUrl, options, credentials),
-    },
+vi.mock('@/utils/ui/clipboard', () => ({
+    setClipboardStringSafe: (value: string) => state.copy(value),
 }));
 
-vi.mock('@/auth/flows/qrStart', () => ({
-    generateAuthKeyPair: () => ({ publicKey: new Uint8Array([1]), secretKey: new Uint8Array([2]) }),
-    authQRStart: vi.fn(async () => ({ ok: true })),
-}));
+vi.mock('@/components/qr/QRCode', () => ({ QRCode: 'QRCode' }));
+vi.mock('@/components/ui/buttons/RoundButton', () => ({ RoundButton: 'RoundButton' }));
+vi.mock('@/components/ui/feedback/ActivitySpinner', () => ({ ActivitySpinner: 'ActivitySpinner' }));
+vi.mock('@/utils/platform/qrScannerSupport', () => ({ canUseCurrentDeviceQrScanner: () => true }));
+vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({ getReadyServerFeatures: vi.fn(async () => null) }));
+vi.mock('@/utils/system/fireAndForget', () => ({ fireAndForget: (promise: Promise<unknown>) => void promise }));
+vi.mock('@/auth/providers/registry', () => ({ getAuthProvider: () => null }));
 
-vi.mock('@/auth/flows/qrWait', () => ({
-    authQRWait: restoreQrViewState.authQRWaitSpy,
-}));
-
-vi.mock('@/auth/pairing/accountConnectUrl', () => ({
-    buildAccountConnectDeepLink: () => 'happier:///account?v=1',
-}));
-
-vi.mock('@/encryption/base64', () => ({
-    encodeBase64: () => 'encoded',
-}));
-
-const modalMock = createModalModuleMock();
-vi.mock('@/modal', () => modalMock.module);
-
-const textMock = createTextModuleMock({ translate: (key: string) => key });
-vi.mock('@/text', () => textMock);
-
-vi.mock('react-native-unistyles', async () => {
-    const { createUnistylesMock } = await import('@/dev/testkit/mocks/unistyles');
-    return createUnistylesMock({
-        theme: lightTheme,
+describe('RestoreQrView known-target requester QR', () => {
+    beforeEach(() => {
+        state.presentation = {
+            phase: 'ready',
+            invite: {},
+            link: 'happier:///pair?v=2&payload=opaque-secret',
+            qrAvailable: true,
+            descriptor,
+        };
+        state.canCancel = true;
+        state.cancel.mockClear();
+        state.start.mockClear();
+        state.copy.mockClear();
+        state.preventRemove.mockClear();
     });
-});
 
-vi.mock('@/components/qr/QRCode', () => ({
-    QRCode: (props: Record<string, unknown>) => React.createElement('QRCode', props),
-}));
+    afterEach(() => vi.clearAllMocks());
 
-vi.mock('@/sync/api/capabilities/getReadyServerFeatures', () => ({
-    getReadyServerFeatures: vi.fn(async () => null),
-}));
-
-vi.mock('@/utils/system/fireAndForget', () => ({
-    fireAndForget: (promise: Promise<unknown>) => {
-        void promise;
-    },
-}));
-
-vi.mock('@/auth/providers/registry', () => ({
-    getAuthProvider: () => null,
-}));
-
-vi.mock('@/components/ui/text/Text', () => ({
-    Text: 'Text',
-}));
-
-vi.mock('@/components/ui/buttons/RoundButton', () => ({
-    RoundButton: 'RoundButton',
-}));
-
-vi.mock('@/utils/platform/qrScannerSupport', () => ({
-    canUseCurrentDeviceQrScanner: () => true,
-}));
-
-vi.mock('@/track', () => ({
-    trackAccountRestored: restoreQrViewState.trackAccountRestoredSpy,
-}));
-
-afterEach(() => {
-    vi.clearAllMocks();
-});
-
-describe('RestoreQrView (embedded navigation)', () => {
-    it('does not issue or poll the retired reverse account QR', async () => {
-        vi.resetModules();
+    it('renders the exact known-target requester QR with no code or approval controls', async () => {
         const { RestoreQrView } = await import('./RestoreQrView');
+        const screen = await renderScreen(<RestoreQrView embedded />);
 
-        let tree!: renderer.ReactTestRenderer;
-        try {
-            await act(async () => {
-                tree = renderer.create(<RestoreQrView embedded />);
-            });
-            await act(async () => {});
-
-            expect(restoreQrViewState.authQRWaitSpy).not.toHaveBeenCalled();
-            expect(tree.root.findByProps({ children: 'connect.legacyAccountQrUnavailable' })).toBeTruthy();
-        } finally {
-            act(() => {
-                tree?.unmount();
-            });
-        }
-
+        expect(screen.findByTestId('restore-requester-qr')?.findByType('QRCode').props.data)
+            .toBe('happier:///pair?v=2&payload=opaque-secret');
+        expect(screen.getTextContent()).toContain('known-home.example.test');
+        expect(screen.findByTestId('restore-scan-confirm-code')).toBeNull();
+        expect(screen.findByTestId('restore-approve')).toBeNull();
+        expect(screen.findByTestId('restore-reject')).toBeNull();
     });
 
-    it('renders an explicit scan action when an embedded scanner callback is available', async () => {
-        vi.resetModules();
+    it('keeps the secret-bearing link behind explicit warned disclosure, then copies the exact value', async () => {
+        const { RestoreQrView } = await import('./RestoreQrView');
+        const screen = await renderScreen(<RestoreQrView embedded />);
+
+        expect(screen.getTextContent()).toContain(
+            'Anyone with this temporary link can add a device before it expires. Share it only with your own device.',
+        );
+        expect(screen.findByTestId('restore-requester-link-value')).toBeNull();
+        expect(screen.findByTestId('restore-copy-requester-link')).toBeNull();
+
+        await act(async () => screen.findByTestId('restore-show-requester-link')?.props.onPress());
+        expect(screen.findByTestId('restore-requester-link-value')?.props.children)
+            .toBe('happier:///pair?v=2&payload=opaque-secret');
+        await act(async () => screen.findByTestId('restore-copy-requester-link')?.props.action());
+        expect(state.copy).toHaveBeenCalledWith('happier:///pair?v=2&payload=opaque-secret');
+    });
+
+    it('keeps the exact live link row when only QR encoding is unavailable', async () => {
+        state.presentation = { ...state.presentation, qrAvailable: false };
+        const { RestoreQrView } = await import('./RestoreQrView');
+        const screen = await renderScreen(<RestoreQrView embedded />);
+
+        expect(screen.findByTestId('restore-requester-qr')?.findAllByType('QRCode')).toHaveLength(0);
+        expect(screen.getTextContent()).toContain("This invite carries extra connection details, so it can't be shown as a QR code.");
+        await act(async () => screen.findByTestId('restore-show-requester-link')?.props.onPress());
+        expect(screen.findByTestId('restore-requester-link-value')?.props.children)
+            .toBe('happier:///pair?v=2&payload=opaque-secret');
+    });
+
+    it('locks route removal and hides destructive navigation after the requester claim', async () => {
+        state.presentation = { phase: 'connecting', descriptor, expiresAtMs: Date.now() + 60_000 };
+        state.canCancel = false;
+        const onBack = vi.fn();
+        const onOpenScanQr = vi.fn();
+        const onNavigationLockChange = vi.fn();
+        const { RestoreQrView } = await import('./RestoreQrView');
+        const screen = await renderScreen(
+            <RestoreQrView
+                embedded
+                onBack={onBack}
+                onOpenScanQr={onOpenScanQr}
+                onNavigationLockChange={onNavigationLockChange}
+            />,
+        );
+
+        expect(state.preventRemove).toHaveBeenLastCalledWith(true);
+        expect(onNavigationLockChange).toHaveBeenCalledWith(true);
+        expect(screen.findByTestId('restore-requester-cancel')).toBeNull();
+        expect(screen.findByTestId('restore-open-scan-qr')).toBeNull();
+        expect(screen.findByTestId('restore-open-manual')).toBeNull();
+    });
+
+    it('routes the embedded scanner action through its owner before any claim exists', async () => {
         const onOpenScanQr = vi.fn();
         const { RestoreQrView } = await import('./RestoreQrView');
+        const screen = await renderScreen(<RestoreQrView embedded onOpenScanQr={onOpenScanQr} />);
 
-        let tree!: renderer.ReactTestRenderer;
-        try {
-            await act(async () => {
-                tree = renderer.create(<RestoreQrView embedded onOpenScanQr={onOpenScanQr} />);
-            });
-
-            const button = tree.root.findByProps({ testID: 'restore-open-scan-qr' });
-            expect(button).toBeTruthy();
-
-            await act(async () => {
-                button.props.onPress();
-            });
-
-            expect(onOpenScanQr).toHaveBeenCalledTimes(1);
-        } finally {
-            act(() => {
-                tree?.unmount();
-            });
-        }
-    });
-
-    it('does not render the retired unbound account QR writer', async () => {
-        vi.resetModules();
-        const { RestoreQrView } = await import('./RestoreQrView');
-
-        let tree!: renderer.ReactTestRenderer;
-        try {
-            await act(async () => {
-                tree = renderer.create(<RestoreQrView embedded />);
-            });
-            await act(async () => {});
-
-            expect(tree.root.findAllByType('QRCode')).toHaveLength(0);
-        } finally {
-            act(() => {
-                tree?.unmount();
-            });
-        }
-    });
-
-    it('does not adopt a Home or write credentials from the retired reverse flow', async () => {
-        vi.resetModules();
-        restoreQrViewState.authQRWaitSpy.mockResolvedValueOnce({
-            ok: true,
-            credentials: { token: 'tok_qr' },
-            homeServerIdentityId: 'srv_home_b',
-        });
-        const onBack = vi.fn();
-        const { RestoreQrView } = await import('./RestoreQrView');
-
-        let tree!: renderer.ReactTestRenderer;
-        try {
-            await act(async () => {
-                tree = renderer.create(<RestoreQrView embedded onBack={onBack} />);
-            });
-            await act(async () => {});
-
-            expect(restoreQrViewState.loginSpy).not.toHaveBeenCalled();
-            expect(restoreQrViewState.adoptHomeProfileSpy).not.toHaveBeenCalled();
-            expect(restoreQrViewState.setCredentialsForServerUrlSpy).not.toHaveBeenCalled();
-            expect(restoreQrViewState.trackAccountRestoredSpy).not.toHaveBeenCalled();
-            expect(onBack).not.toHaveBeenCalled();
-        } finally {
-            act(() => {
-                tree?.unmount();
-            });
-        }
+        await act(async () => screen.findByTestId('restore-open-scan-qr')?.props.onPress());
+        expect(onOpenScanQr).toHaveBeenCalledOnce();
     });
 });

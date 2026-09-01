@@ -18,6 +18,7 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { formatHomeEnrollmentTargetLabel } from '@/auth/pairing/pairingPresentation';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { Modal } from '@/modal';
+import { usePreventRemove } from '@react-navigation/native';
 
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -107,6 +108,13 @@ const stylesheet = StyleSheet.create((theme) => ({
         color: theme.colors.text.secondary,
         ...Typography.default(),
     },
+    linkValue: {
+        marginTop: 8,
+        fontSize: 12,
+        lineHeight: 16,
+        color: theme.colors.text.secondary,
+        ...Typography.mono(),
+    },
     embeddedQrBlock: {
         paddingVertical: 6,
     },
@@ -155,6 +163,7 @@ export type RestoreQrViewProps = Readonly<{
     onBack?: () => void;
     onOpenSecretKeyLogin?: () => void;
     onOpenScanQr?: () => void;
+    onNavigationLockChange?: (locked: boolean) => void;
 }>;
 
 export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrViewProps) {
@@ -167,12 +176,24 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
     const canOpenScanner = typeof props.onOpenScanQr === 'function' && canUseCurrentDeviceQrScanner();
     const reversePairing = useReversePairingSession({ enabled: true });
     const pairing = reversePairing.presentation;
+    const [showPairingLink, setShowPairingLink] = React.useState(false);
+    const claimOwnsNavigation = pairing.phase === 'connecting' || pairing.phase === 'adding';
+    usePreventRemove(claimOwnsNavigation, () => undefined);
     const targetLabel = 'descriptor' in pairing
         ? formatHomeEnrollmentTargetLabel(pairing.descriptor)
         : null;
     const scrollViewStyle: StyleProp<ViewStyle> = embedded
         ? [styles.scrollView, { backgroundColor: 'transparent' }]
         : styles.scrollView;
+
+    React.useEffect(() => {
+        props.onNavigationLockChange?.(claimOwnsNavigation);
+        return () => props.onNavigationLockChange?.(false);
+    }, [claimOwnsNavigation, props.onNavigationLockChange]);
+
+    React.useEffect(() => {
+        setShowPairingLink(false);
+    }, [pairing.phase === 'ready' ? pairing.link : null]);
 
     const restoreRedirectNotice: RestoreRedirectNotice | null = React.useMemo(() => {
         const providerId = (paramString(params, 'provider') ?? '').trim().toLowerCase();
@@ -235,22 +256,38 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
                                 )}
                             </View>
                             <Text style={styles.linkWarning}>{t('connect.pairingLinkSecurityWarning')}</Text>
+                            {showPairingLink ? (
+                                <Text testID="restore-requester-link-value" style={styles.linkValue} selectable>
+                                    {pairing.link}
+                                </Text>
+                            ) : null}
                             <View style={styles.footerButton}>
-                                <RoundButton
-                                    testID="restore-copy-requester-link"
-                                    size="small"
-                                    title={t('common.copy')}
-                                    display="inverted"
-                                    action={async () => {
-                                        const copied = await setClipboardStringSafe(pairing.link);
-                                        if (!copied) await Modal.alertAsync(t('common.error'), t('items.failedToCopyToClipboard'));
-                                    }}
-                                />
+                                {showPairingLink ? (
+                                    <RoundButton
+                                        testID="restore-copy-requester-link"
+                                        size="small"
+                                        title={t('common.copy')}
+                                        display="inverted"
+                                        action={async () => {
+                                            const copied = await setClipboardStringSafe(pairing.link);
+                                            if (!copied) await Modal.alertAsync(t('common.error'), t('items.failedToCopyToClipboard'));
+                                        }}
+                                    />
+                                ) : (
+                                    <RoundButton
+                                        testID="restore-show-requester-link"
+                                        size="small"
+                                        title={t('connect.showPairingLink')}
+                                        display="inverted"
+                                        onPress={() => setShowPairingLink(true)}
+                                    />
+                                )}
                             </View>
                         </>
                     ) : null}
                 </View>
 
+                {!claimOwnsNavigation ? (
                 <View style={[styles.footer, embedded ? styles.embeddedFooter : null]}>
                     {reversePairing.canCancel ? (
                         <>
@@ -266,7 +303,9 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
                             <View style={styles.footerButtonSpacer} />
                         </>
                     ) : null}
-                    {pairing.phase === 'expired' || pairing.phase === 'invalid' || pairing.phase === 'retryable_error' ? (
+                    {pairing.phase === 'expired'
+                        || pairing.phase === 'invalid'
+                        || (pairing.phase === 'retryable_error' && !pairing.partialCommit) ? (
                         <>
                             <View style={styles.footerButton}>
                                 <RoundButton
@@ -324,6 +363,7 @@ export const RestoreQrView = React.memo(function RestoreQrView(props: RestoreQrV
                         </>
                     ) : null}
                 </View>
+                ) : null}
             </View>
         </View>
     );

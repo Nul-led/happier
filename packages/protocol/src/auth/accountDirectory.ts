@@ -74,17 +74,9 @@ export const ACCOUNT_DIRECTORY_MAX_ID_UTF8_BYTES = 256;
 export const ACCOUNT_DIRECTORY_MAX_URL_UTF8_BYTES = 512;
 /** Existing ordinary Home-token boundary shared with direct enrollment. */
 export const ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES = 4_096;
-/**
- * Grammar-reachable maxima inside the strict bounded endpoint schemas. The
- * declared string bounds are looser than what the strict grammars can admit:
- * an EndpointId is 64 lowercase hex or 52 base32 characters, and a direct
- * address is a strict `IPv4:port` or bracketed `[IPv6]:port` socket address —
- * a fully expanded 8-group IPv6 socket caps at 47 characters
- * (`[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]:65535`).
- */
+const UTF8_ENCODER = new TextEncoder();
 const IROH_ENDPOINT_ID_MAX_ENCODING_UTF8_BYTES = 64;
 const IROH_DIRECT_ADDRESS_MAX_UTF8_BYTES = 47;
-const UTF8_ENCODER = new TextEncoder();
 /**
  * JSON.stringify escape worst case: a raw byte can expand to a six-byte
  * `\uXXXX` escape. Token and URL strings are admitted as arbitrary bounded

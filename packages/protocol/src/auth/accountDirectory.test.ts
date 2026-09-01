@@ -175,12 +175,15 @@ describe('Account Directory protocol DTOs', () => {
       connectionDescriptor: HTTPS_DESCRIPTOR,
     };
     expect(HomeLoginCredentialPayloadV1Schema.parse(ordinaryPayload)).toEqual(ordinaryPayload);
-    expect(HomeLoginCredentialPayloadV1Schema.safeParse({ token: 'ordinary-token' }).success).toBe(false);
-    expect(HomeLoginCredentialPayloadV1Schema.safeParse({ ...ordinaryPayload, credentials: { token: '' } }).success).toBe(false);
+    expect(HomeLoginCredentialPayloadV1Schema.safeParse({
+      ...ordinaryPayload,
+      credentials: { token: '' },
+    }).success).toBe(false);
     expect(HomeLoginCredentialPayloadV1Schema.safeParse({
       ...ordinaryPayload,
       credentials: { token: `${maximumToken}t` },
     }).success).toBe(false);
+    expect(HomeLoginCredentialPayloadV1Schema.safeParse({ token: 'legacy-token-only' }).success).toBe(false);
     expect(HomeLoginCredentialPayloadV1Schema.safeParse({ ...ordinaryPayload, extra: true }).success)
       .toBe(false);
     expect(HomeLoginCredentialPayloadV1Schema.safeParse({ ...maximalPayload, extra: true }).success).toBe(false);

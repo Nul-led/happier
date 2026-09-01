@@ -44,7 +44,10 @@ import {
 import { probeServerFeaturesAtUrl } from '@/sync/api/capabilities/serverFeaturesClient';
 import { enrollmentPollingBackoffMs } from '@/auth/enrollment/enrollmentPollingBackoff';
 import { completeTrustedHomeQrPairingRequest, InvalidTrustedHomeQrRequestError } from '@/auth/pairing/completeTrustedHomeQrPairingRequest';
-import { buildHomeConnectionDescriptorForProfile, getServerProfileById } from '@/sync/domains/server/serverProfiles';
+import {
+    buildHomeConnectionDescriptorForProfile,
+    resolveServerProfileForPortableIdentity,
+} from '@/sync/domains/server/serverProfiles';
 import { AccountCompletionError } from '@/auth/flows/accountCompletion';
 
 const DESKTOP_QR_SCAN_FEATURE_ID = 'auth.pairing.desktopQrMobileScan' as const;
@@ -327,7 +330,12 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                 if (link.invite.direction === 'requester_displays') {
                     // The enrolled scanner resolves the trusted Home from its stored registry by
                     // the invite identity. Focus is neither a selector nor a fallback.
-                    const storedProfile = getServerProfileById(link.invite.home.homeServerIdentityId);
+                    const storedProfileResolution = resolveServerProfileForPortableIdentity(
+                        link.invite.home.homeServerIdentityId,
+                    );
+                    const storedProfile = storedProfileResolution.kind === 'resolved'
+                        ? storedProfileResolution.profile
+                        : null;
                     const storedDescriptor = storedProfile
                         ? buildHomeConnectionDescriptorForProfile(storedProfile)
                         : null;

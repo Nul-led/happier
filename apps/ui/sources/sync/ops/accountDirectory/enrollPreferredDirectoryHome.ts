@@ -44,8 +44,9 @@ export function subscribePendingPreferredHomeEnrollment(listener: () => void): (
 
 export async function cancelPendingPreferredHomeEnrollment(): Promise<void> {
     const pending = pendingPreferredHomeEnrollment;
+    const cancellation = pending?.cancel().catch(() => {});
     publishPending({ kind: 'cancelled' });
-    await pending?.cancel().catch(() => {});
+    await cancellation;
 }
 
 export async function resumePendingPreferredHomeEnrollment(): Promise<HomeLoginContinuationResult | null> {
@@ -56,7 +57,10 @@ export async function resumePendingPreferredHomeEnrollment(): Promise<HomeLoginC
     }
     const resume = pending.resume().then((result) => {
         if (pendingPreferredHomeEnrollment === pending) {
-            publishPending(result, pending.serviceKey);
+            if (result.kind === 'approval_required') return pending;
+            if (result.kind !== 'transport_unavailable' || !result.resume) {
+                publishPending(result, pending.serviceKey);
+            }
         }
         return result;
     });
@@ -90,6 +94,12 @@ export async function enrollPreferredDirectoryHome(
     const entry = snapshot.homes.find((candidate) => candidate.homeServerIdentityId === preferredIdentity);
     if (!entry) return { kind: 'unavailable', reason: 'no_preferred_home' };
 
+    const retained = pendingPreferredHomeEnrollment;
+    if (
+        retained?.serviceKey === session.serviceKey
+        && retained.homeServerIdentityId === entry.homeServerIdentityId
+    ) return retained;
+
     await cancelPendingPreferredHomeEnrollment();
     if (options.shouldCancel?.()) return { kind: 'cancelled' };
     try {
@@ -111,7 +121,9 @@ export async function enrollPreferredDirectoryHome(
         });
         if (options.shouldCancel?.()) return { kind: 'cancelled' };
         publishPending(result, session.serviceKey);
-        return result;
+        return result.kind === 'approval_required'
+            ? pendingPreferredHomeEnrollment ?? result
+            : result;
     } catch (error) {
         return { kind: 'failed', error };
     }

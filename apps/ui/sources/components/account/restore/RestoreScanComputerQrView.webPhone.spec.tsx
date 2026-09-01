@@ -78,6 +78,9 @@ const restoreScanSuccessState = vi.hoisted(() => ({
         reason: 'not_found',
         status: 404,
     })),
+    pairingStartSpy: vi.fn(),
+    pairingStatusSpy: vi.fn(),
+    completeTrustedPairingSpy: vi.fn(async () => {}),
     authQRStartSpy: vi.fn<(keypair: QRAuthKeyPair, target: unknown, options?: EnrollmentRequestOptions) => Promise<AuthQrStartResult>>(async () => ({ ok: true })),
     authQRWaitSpy: vi.fn<(keypair: QRAuthKeyPair, target: unknown, options?: AuthQrWaitOptions) => Promise<AuthQrWaitResult>>(async () => ({
         ok: false,
@@ -174,6 +177,25 @@ vi.mock('@/sync/domains/server/serverProfiles', () => ({
         serverIdentityId: input.descriptor.homeServerIdentityId,
     }),
     adoptHomeProfile: (input: AdoptHomeProfileInput) => restoreScanSuccessState.adoptHomeProfileSpy(input),
+    resolveServerProfileForPortableIdentity: (identity: string) => identity === 'srv_home_b'
+        ? {
+            kind: 'resolved',
+            serverIdentityId: identity,
+            profile: {
+                id: 'profile-home-b',
+                serverUrl: 'https://home-b.test',
+                canonicalServerUrl: 'https://home-b.test',
+                serverIdentityId: identity,
+            },
+        }
+        : { kind: 'missing', serverIdentityId: identity },
+    buildHomeConnectionDescriptorForProfile: (profile: { serverIdentityId: string }) => ({
+        v: 1,
+        homeServerIdentityId: profile.serverIdentityId,
+        canonicalServerUrl: 'https://home-b.test',
+        revision: 1,
+        endpoints: [{ kind: 'https', url: 'https://home-b.test' }],
+    }),
 }));
 
 vi.mock('@/auth/storage/tokenStorage', () => ({
@@ -205,6 +227,13 @@ vi.mock('@/sync/domains/server/activeServerSwitch', () => ({
 
 vi.mock('@/sync/api/account/apiPairingAuth', () => ({
     pairingRequest: (params: PairingRequestParams, target?: HomeQrEnrollmentTarget, options?: EnrollmentRequestOptions) => restoreScanSuccessState.pairingRequestSpy(params, target, options),
+    pairingStart: (...args: unknown[]) => restoreScanSuccessState.pairingStartSpy(...args),
+    pairingStatus: (...args: unknown[]) => restoreScanSuccessState.pairingStatusSpy(...args),
+}));
+
+vi.mock('@/auth/pairing/completeTrustedHomeQrPairingRequest', () => ({
+    completeTrustedHomeQrPairingRequest: (...args: unknown[]) => restoreScanSuccessState.completeTrustedPairingSpy(...args),
+    InvalidTrustedHomeQrRequestError: class InvalidTrustedHomeQrRequestError extends Error {},
 }));
 
 vi.mock('@/auth/flows/qrStart', () => ({
@@ -258,6 +287,7 @@ vi.mock('@/track', () => ({
 const HOME_B_INVITE = {
     v: 2 as const,
     intent: 'home_device' as const,
+    direction: 'trusted_home_displays' as const,
     pairId: 'pair-b',
     home: {
         v: 1 as const,
@@ -305,6 +335,9 @@ describe('RestoreScanComputerQrView (web phone)', () => {
         restoreScanSuccessState.authQRStartSpy.mockResolvedValue({ ok: true });
         restoreScanSuccessState.authQRWaitSpy.mockClear();
         restoreScanSuccessState.authQRWaitSpy.mockResolvedValue({ ok: false, reason: 'cancelled' });
+        restoreScanSuccessState.pairingStartSpy.mockReset();
+        restoreScanSuccessState.pairingStatusSpy.mockReset();
+        restoreScanSuccessState.completeTrustedPairingSpy.mockClear();
     });
 
     it('renders the QR scanner in idle state on web', async () => {
@@ -465,6 +498,80 @@ describe('RestoreScanComputerQrView (web phone)', () => {
             'home-b.test',
             'connect.homeAddedPreservedFocusBody',
         );
+    });
+
+    it('resolves and completes a known-target requester-displayed invite through the stored Home identity', async () => {
+        const requesterPublicKey = new Uint8Array(32).fill(8);
+        const issuedAtMs = Date.now() - 1_000;
+        const expiresAtMs = Date.now() + 120_000;
+        const reverseInvite = {
+            ...HOME_B_INVITE,
+            direction: 'requester_displays' as const,
+            pairId: 'pair-reverse-b',
+            requesterPublicKeyBase64Url: encodeBase64(requesterPublicKey, 'base64url'),
+            issuedAtMs,
+            expiresAtMs,
+        };
+        const { computeHomeQrBindingProofV2 } = await import('@happier-dev/protocol');
+        const bindingProof = computeHomeQrBindingProofV2({
+            direction: reverseInvite.direction,
+            qrSecret: new Uint8Array(32).fill(4),
+            pairId: reverseInvite.pairId,
+            homeServerIdentityId: reverseInvite.home.homeServerIdentityId,
+            requesterPublicKey,
+            expiresAtMs,
+        });
+        restoreScanSuccessState.pairingStartSpy.mockResolvedValue({
+            ok: true,
+            data: { pairId: reverseInvite.pairId, expiresAt: new Date(expiresAtMs).toISOString() },
+        });
+        restoreScanSuccessState.pairingStatusSpy.mockResolvedValue({
+            ok: true,
+            data: {
+                state: 'requested',
+                pairId: reverseInvite.pairId,
+                expiresAt: new Date(expiresAtMs).toISOString(),
+                requestedPublicKey: encodeBase64(requesterPublicKey),
+                requestedDeviceLabel: null,
+                bindingProof,
+                homeServerIdentityId: reverseInvite.home.homeServerIdentityId,
+            },
+        });
+        const { buildHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
+        const { RestoreScanComputerQrView } = await import('./RestoreScanComputerQrView');
+        const screen = await renderScreen(<RestoreScanComputerQrView />);
+
+        await act(async () => {
+            await lastScannerProps.onScan(buildHomeQrInviteDeepLink({ invite: reverseInvite }));
+        });
+
+        expect(restoreScanSuccessState.pairingStartSpy).toHaveBeenCalledWith(
+            {
+                direction: 'requester_displays',
+                secretHash: expect.any(String),
+                pairId: reverseInvite.pairId,
+                expiresAtMs,
+            },
+            expect.objectContaining({
+                serverId: 'profile-home-b',
+                endpointUrl: 'https://home-b.test',
+                descriptor: expect.objectContaining({ homeServerIdentityId: 'srv_home_b' }),
+            }),
+        );
+        expect(restoreScanSuccessState.completeTrustedPairingSpy).toHaveBeenCalledWith(expect.objectContaining({
+            context: expect.objectContaining({
+                direction: 'requester_displays',
+                pairId: reverseInvite.pairId,
+                expiresAtMs,
+                expectedRequesterPublicKeyBase64: encodeBase64(requesterPublicKey),
+            }),
+        }));
+        expect(restoreScanSuccessState.authQRStartSpy).not.toHaveBeenCalled();
+        expect(restoreScanSuccessState.authQRWaitSpy).not.toHaveBeenCalled();
+        expect(restoreScanSuccessState.adoptHomeProfileSpy).not.toHaveBeenCalled();
+        expect(screen.findByTestId('restore-scan-confirm-code')).toBeNull();
+        expect(screen.getTextContent()).not.toContain('connect.confirmCodeComparisonBody');
+        expect(modalAlertSpy).toHaveBeenCalledWith('home-b.test', 'connect.requesterDeviceAddedBody');
     });
 
     it('retries transient initial auth and bound-request failures with the same key and proof until success', async () => {

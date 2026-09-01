@@ -130,7 +130,10 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
           Authorization: `Bearer ${desktopToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ secretHash: Buffer.from(rendezvousVerifier).toString('base64url') }),
+        body: JSON.stringify({
+          direction: 'trusted_home_displays',
+          secretHash: Buffer.from(rendezvousVerifier).toString('base64url'),
+        }),
         timeoutMs: 15_000,
       });
       expect(startRes.status).toBe(200);
@@ -143,6 +146,7 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
       const invite: HomeQrInviteV2 = {
         v: 2,
         intent: 'home_device',
+        direction: 'trusted_home_displays',
         pairId,
         home: {
           v: 1,
@@ -162,6 +166,7 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
       const mobileKp = tweetnacl.box.keyPair();
       const mobilePublicKeyBase64 = privacyKit.encodeBase64(toPrivacyKitBytes(mobileKp.publicKey));
       const joiningBindingParams = {
+        direction: 'trusted_home_displays' as const,
         qrSecret,
         pairId: parsedInvite.pairId,
         homeServerIdentityId: parsedInvite.home.homeServerIdentityId,
@@ -247,6 +252,7 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
       expect(statusRes.data?.homeServerIdentityId).toBe(homeServerIdentityId);
       expect(statusRes.data?.bindingProof).toBe(bindingProof);
       const trustedBindingParams = {
+        direction: 'trusted_home_displays' as const,
         qrSecret,
         pairId: String(statusRes.data?.pairId),
         homeServerIdentityId: String(statusRes.data?.homeServerIdentityId),

@@ -43,7 +43,9 @@ export type HomeLoginContinuationResult =
     }>
     | Readonly<{
         kind: 'transport_unavailable';
-        reason: HomeEnrollmentTransportFailureReason;
+        reason: HomeEnrollmentTransportFailureReason | 'request_failed';
+        resume?: () => Promise<HomeLoginContinuationResult>;
+        cancel?: () => Promise<HomeLoginContinuationResult>;
     }>
     | Readonly<{ kind: 'rejected' }>
     | Readonly<{ kind: 'expired' }>
@@ -109,6 +111,7 @@ type HomeLoginApprovalContinuation = Extract<
 type HomeLoginCancellationState = {
     cancelled: boolean;
     readonly externalShouldCancel?: () => boolean;
+    readonly retained?: true;
 };
 
 function isCancelled(state: HomeLoginCancellationState): boolean {
@@ -130,9 +133,9 @@ function createApprovalContinuation(
     // the service-scoped continuation must survive normal navigation/unmount;
     // explicit service change/disconnect still invokes this continuation's
     // cancel method and flips the detached state below.
-    const cancellationState: HomeLoginCancellationState = {
-        cancelled: input.cancellationState.cancelled,
-    };
+    const cancellationState: HomeLoginCancellationState = input.cancellationState.retained
+        ? input.cancellationState
+        : { cancelled: input.cancellationState.cancelled, retained: true };
     const continuationInput = { ...input, cancellationState };
     return {
         kind: 'approval_required',
@@ -141,6 +144,28 @@ function createApprovalContinuation(
         expiresAtMs,
         resume: async () => await continueHomeLoginEnrollment({
             ...continuationInput,
+            approvalId,
+            approvalExpiresAtMs: expiresAtMs,
+        }),
+        cancel: async () => {
+            cancellationState.cancelled = true;
+            return { kind: 'cancelled' };
+        },
+    };
+}
+
+function createExplicitResumeContinuation(
+    input: Parameters<typeof createApprovalContinuation>[0],
+    approvalId: string,
+    expiresAtMs: number,
+    reason: HomeEnrollmentTransportFailureReason | 'request_failed',
+): Extract<HomeLoginContinuationResult, { kind: 'transport_unavailable' }> {
+    const cancellationState = input.cancellationState;
+    return {
+        kind: 'transport_unavailable',
+        reason,
+        resume: async () => await continueHomeLoginEnrollment({
+            ...input,
             approvalId,
             approvalExpiresAtMs: expiresAtMs,
         }),
@@ -186,7 +211,12 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
             && input.approvalId
             && input.approvalExpiresAtMs !== undefined
         ) {
-            return createApprovalContinuation(continuationInput, input.approvalId, input.approvalExpiresAtMs);
+            return createExplicitResumeContinuation(
+                continuationInput,
+                input.approvalId,
+                input.approvalExpiresAtMs,
+                resolved.reason,
+            );
         }
         return { kind: 'transport_unavailable', reason: resolved.reason };
     }
@@ -202,7 +232,12 @@ export async function continueHomeLoginEnrollment(input: Readonly<{
         const terminalError = terminalRedemptionError(error);
         if (terminalError) return terminalError;
         if (input.approvalId && input.approvalExpiresAtMs !== undefined) {
-            return createApprovalContinuation(continuationInput, input.approvalId, input.approvalExpiresAtMs);
+            return createExplicitResumeContinuation(
+                continuationInput,
+                input.approvalId,
+                input.approvalExpiresAtMs,
+                'request_failed',
+            );
         }
         return { kind: 'failed' };
     } finally {

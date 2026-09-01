@@ -13,7 +13,6 @@ import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCata
 import { requirePresentUser, PresentUserRequiredResponseSchema } from "@/app/api/utils/requirePresentUser";
 import { auth } from "@/app/auth/auth";
 import { createHomeApprovalGate } from "@/app/api/routes/auth/homeApprovalGate";
-import { readRedemptionHomeConnectionDescriptor } from "@/app/features/homeConnectionDescriptorPublication";
 import {
     accountDirectoryProtocolErrorResponse,
 } from "./accountDirectoryErrors";
@@ -194,10 +193,8 @@ export function registerHomeLoginRoute(app: Fastify): void {
     }, async (request, reply) => {
         await auth.init();
         const body = request.body;
-        const connectionDescriptor = await readRedemptionHomeConnectionDescriptor(process.env);
         const result = await redeemHomeLoginAssertion({
             assertion: body.assertion,
-            connectionDescriptor,
             ...(body.approvalId ? { approvalId: body.approvalId } : {}),
             homeApprovalGate,
             issueHomeToken: async (tx, accountId) => await auth.createTokenInTx(

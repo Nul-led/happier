@@ -595,11 +595,7 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
         }
         return issueHomeToken(tx, currentLink.accountId);
     });
-    const credentialPayload = HomeLoginCredentialPayloadV1Schema.safeParse({
-        v: 1,
-        credentials: { token },
-        connectionDescriptor: connectionDescriptor.data,
-    });
+    const credentialPayload = HomeLoginCredentialPayloadV1Schema.safeParse({ token });
     if (!credentialPayload.success) {
         throw new AccountDirectoryError("home_redemption_unavailable", "Home token issuer returned invalid credentials");
     }

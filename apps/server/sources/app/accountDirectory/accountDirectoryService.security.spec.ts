@@ -109,18 +109,8 @@ describe("Account Directory Home redemption security", () => {
             bundle: decodeBase64(authorized.sealedHomeTokenBase64Url, "base64url"),
             recipientSecretKeyOrSeed: requesterBoxKeyPair.secretKey,
         });
-        if (!opened) throw new Error("expected coupled Home credential payload");
-        expect(JSON.parse(new TextDecoder().decode(opened))).toEqual({
-            v: 1,
-            credentials: { token: "home-local-token" },
-            connectionDescriptor: {
-                v: 1,
-                homeServerIdentityId: "srv_home",
-                canonicalServerUrl: "https://home.test",
-                revision: 1,
-                endpoints: [{ kind: "https", url: "https://home.test" }],
-            },
-        });
+        if (!opened) throw new Error("expected sealed Home credential payload");
+        expect(new TextDecoder().decode(opened)).toBe('{"token":"home-local-token"}');
 
         const forged = { ...signed, issuerSubjectId: "attacker" };
         await expect(redeemHomeLoginAssertion({ assertion: forged, nowMs: assertion.issuedAtMs + 1, homeApprovalGate: { evaluate: async () => ({ kind: "allowed" as const }) }, issueHomeToken: async () => "bad" })).rejects.toMatchObject({ code: "invalid_subject" });

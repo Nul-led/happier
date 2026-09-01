@@ -101,11 +101,7 @@ function sealCredentialPayload(
     recipientPublicKey: Uint8Array,
     connectionDescriptor = HOME_B.connectionDescriptor,
 ): string {
-    const payload = {
-        v: 1,
-        credentials: { token },
-        connectionDescriptor,
-    };
+    const payload = { v: 1, credentials: { token }, connectionDescriptor };
     return encodeBase64(
         encryptBox(
             new TextEncoder().encode(JSON.stringify(payload)),
@@ -228,7 +224,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         );
     });
 
-    it('uses the Home-coupled descriptor after redeeming through a different advisory route', async () => {
+    it('uses the Home-coupled descriptor after redeeming through an advisory route', async () => {
         const keyPair = sodium.crypto_box_keypair();
         const advisoryHome = {
             ...HOME_B,
@@ -240,19 +236,13 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
                 endpoints: [{ kind: 'https' as const, url: 'https://directory-advisory-route.test' }],
             },
         };
-        const homeSelectedDescriptor = {
-            ...HOME_B.connectionDescriptor,
-            canonicalServerUrl: 'https://home-selected-route.test',
-            revision: 7,
-            endpoints: [{ kind: 'https' as const, url: 'https://home-selected-route.test' }],
-        };
         endpointFetchMock.mockResolvedValueOnce(json(200, {
             v: 1,
             homeServerIdentityId: 'srv_home_b',
             sealedHomeTokenBase64Url: sealCredentialPayload(
                 'home-selected-token',
                 keyPair.publicKey,
-                homeSelectedDescriptor,
+                HOME_B.connectionDescriptor,
             ),
             issuedAtMs: Date.now() - 500,
             expiresAtMs: Date.now() + 120_000,
@@ -268,16 +258,16 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             endpointUrl: 'https://directory-advisory-route.test',
         }));
         expect(preflightHomeProfileAdoptionMock).toHaveBeenCalledWith(expect.objectContaining({
-            descriptor: homeSelectedDescriptor,
+            descriptor: HOME_B.connectionDescriptor,
             descriptorAuthority: 'redemption_coupled',
         }));
         expect(setCredentialsForServerUrlMock).toHaveBeenCalledWith(
-            'https://home-selected-route.test',
+            'https://home-b.test',
             { serverId: 'srv_home_b' },
             { token: 'home-selected-token' },
         );
         expect(adoptHomeProfileMock).toHaveBeenCalledWith(expect.objectContaining({
-            descriptor: homeSelectedDescriptor,
+            descriptor: HOME_B.connectionDescriptor,
             descriptorAuthority: 'redemption_coupled',
         }));
     });
@@ -666,10 +656,10 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         if (first.kind !== 'approval_required') return;
 
         const second = await first.resume();
-        expect(second).toMatchObject({ kind: 'approval_required', approvalId: 'approval-transient' });
+        expect(second).toMatchObject({ kind: 'transport_unavailable', resume: expect.any(Function) });
         expect(endpointFetchMock).toHaveBeenCalledTimes(2);
         expect(irohReleaseMock).toHaveBeenCalledTimes(2);
-        if (second.kind !== 'approval_required') return;
+        if (second.kind !== 'transport_unavailable' || !second.resume) return;
 
         await expect(second.resume()).resolves.toEqual({
             kind: 'enrolled',
@@ -911,14 +901,11 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         if (first.kind !== 'approval_required') throw new Error('Expected approval continuation');
 
         const retry = await first.resume();
-        expect(retry).toMatchObject({
-            kind: 'approval_required',
-            approvalId: 'approval-transport-retry',
-        });
+        expect(retry).toMatchObject({ kind: 'transport_unavailable', resume: expect.any(Function) });
         expect(endpointFetchMock).toHaveBeenCalledTimes(1);
         expect(acquireIrohHomeRuntimeOriginMock).toHaveBeenCalledTimes(2);
         expect(irohReleaseMock).toHaveBeenCalledTimes(1);
-        if (retry.kind !== 'approval_required') return;
+        if (retry.kind !== 'transport_unavailable' || !retry.resume) return;
 
         await expect(retry.resume()).resolves.toEqual({
             kind: 'enrolled',
