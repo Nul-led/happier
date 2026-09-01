@@ -234,8 +234,10 @@ export function createWorkspaceSyncHandoffAdapter(deps: WorkspaceSyncHandoffAdap
       } else if (prepared.action.kind === 'create_relationship' && prepared.relationshipId) {
         // prepareCreate's first flush proves the relationship is ready while
         // the source is live; this second flush captures the final delta only
-        // after the handoff coordinator has quiesced that source.
-        status = await relationshipController.flush(prepared.relationshipId, input.signal);
+        // after the handoff coordinator has quiesced that source. The new
+        // relationship is intentionally not durable yet, so it must use the
+        // daemon-local engine rather than the settings-backed controller.
+        status = await deps.sync.flush(prepared.relationshipId, input.signal);
       }
       // A newly-created relationship becomes durable only after the engine has
       // completed the final source-quiesced flush, and before target custody is
