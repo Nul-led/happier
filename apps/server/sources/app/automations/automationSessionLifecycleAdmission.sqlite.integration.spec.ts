@@ -466,7 +466,7 @@ describe("Session lifecycle Automation admission on SQLite", () => {
         await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
             tx,
             accountId: current.accountId,
-            occurrence: { ...first, occurredAt: first.occurredAt + 1 },
+            occurrence: first,
         }));
         await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
             tx,
