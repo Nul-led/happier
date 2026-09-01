@@ -26,9 +26,20 @@ describe('getLiveSystemTasksRunnerAdapter', () => {
       relocate: vi.fn(async () => ({})),
     };
     const createOperations = vi.fn(async () => operations);
+    const destinationStatus = vi.fn(async (operationId: string) => ({ operationId, status: 'absent' as const }));
+    const createRelocationDestination = vi.fn(async () => ({
+      stage: async () => { throw new Error('not used'); },
+      status: destinationStatus,
+      commit: async () => { throw new Error('not used'); },
+      abort: async () => { throw new Error('not used'); },
+    }));
     vi.doMock('./relayRuntime/liveRelayRuntime', async (importOriginal) => {
       const actual = await importOriginal<typeof import('./relayRuntime/liveRelayRuntime')>();
-      return { ...actual, createLivePersonalHomeSystemTaskOperations: createOperations };
+      return {
+        ...actual,
+        createLivePersonalHomeSystemTaskOperations: createOperations,
+        createLivePersonalHomeRelocationDestinationOwner: createRelocationDestination,
+      };
     });
     const module = await import('./liveSystemTasksRunner');
     const defaultAdapter = module.getLiveSystemTasksRunnerAdapter();
@@ -44,11 +55,28 @@ describe('getLiveSystemTasksRunnerAdapter', () => {
           kind: 'relay.runtime.personal_home.inspect.v1',
           params: {
             target: { kind: 'local' },
+            channel: adapter === explicitlyTargetedAdapter ? 'preview' : 'stable',
+            mode: adapter === explicitlyTargetedAdapter ? 'system' : 'user',
             purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
           },
         },
       });
       await waitForResult(adapter, String((started as { taskId?: unknown }).taskId ?? ''));
+
+      const relocationStatus = await adapter.start({
+        spec: {
+          protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+          kind: 'relay.runtime.personal_home.relocation_destination.status.v1',
+          params: {
+            target: { kind: 'local' },
+            channel: adapter === explicitlyTargetedAdapter ? 'preview' : 'stable',
+            mode: adapter === explicitlyTargetedAdapter ? 'system' : 'user',
+            purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+            operationId: adapter === explicitlyTargetedAdapter ? 'operation-preview' : 'operation-stable',
+          },
+        },
+      });
+      await waitForResult(adapter, String((relocationStatus as { taskId?: unknown }).taskId ?? ''));
     }
 
     expect(explicitlyTargetedAdapter).not.toBe(defaultAdapter);
@@ -57,6 +85,12 @@ describe('getLiveSystemTasksRunnerAdapter', () => {
       [{ channel: 'stable', mode: 'user' }],
       [{ channel: 'preview', mode: 'system' }],
     ]);
+    expect(createRelocationDestination.mock.calls).toEqual([
+      [{ channel: 'stable', mode: 'user' }],
+      [{ channel: 'preview', mode: 'system' }],
+    ]);
+    expect(destinationStatus).toHaveBeenCalledWith('operation-stable');
+    expect(destinationStatus).toHaveBeenCalledWith('operation-preview');
     vi.doUnmock('./relayRuntime/liveRelayRuntime');
   });
 
@@ -281,12 +315,16 @@ async function preparePersonalHomeFixture(homeDir: string, options: PersonalHome
   const database = new DatabaseSync(layout.databasePath);
   database.exec('PRAGMA journal_mode=WAL');
   database.exec('CREATE TABLE SimpleCache (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+  database.exec('CREATE TABLE "Account" (id TEXT PRIMARY KEY)');
+  database.exec('CREATE TABLE "Session" (id TEXT PRIMARY KEY)');
   database.exec('CREATE TABLE live_transcript (id TEXT PRIMARY KEY, body TEXT NOT NULL)');
   database.exec('CREATE TABLE _prisma_migrations (migration_name TEXT NOT NULL, checksum TEXT NOT NULL, finished_at TEXT, rolled_back_at TEXT)');
   database.prepare('INSERT INTO SimpleCache (key, value) VALUES (?, ?)').run(
     'server.identity.v1',
     identity,
   );
+  database.prepare('INSERT INTO "Account" (id) VALUES (?)').run('live-account-1');
+  database.prepare('INSERT INTO "Session" (id) VALUES (?)').run('live-session-1');
   for (const row of transcriptRows) {
     database.prepare('INSERT INTO live_transcript (id, body) VALUES (?, ?)').run(row.id, row.body);
   }
@@ -600,6 +638,8 @@ describe('relay runtime system tasks', () => {
         kind: 'relay.runtime.personal_home.inspect.v1',
         params: {
           target: { kind: 'local' },
+          channel: 'stable',
+          mode: 'user',
           purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
         },
       },
@@ -612,6 +652,44 @@ describe('relay runtime system tasks', () => {
       data: { purpose: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123', running: true },
     });
     expect(inspect).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes a destination relocation status command through the injected local authority', async () => {
+    const status = vi.fn(async () => ({
+      operationId: 'operation-1',
+      status: 'quarantined' as const,
+      bundleSha256: 'a'.repeat(64),
+      expectedHomeServerIdentityId: 'home-1',
+      sourceDescriptorRevision: 4,
+    }));
+    const module = await import('./liveSystemTasksRunner');
+    const adapter = module.getLiveSystemTasksRunnerAdapter({
+      loadPersonalHomeRelocationDestination: async (target) => {
+        expect(target).toEqual({ channel: 'stable', mode: 'user' });
+        return {
+          stage: async () => { throw new Error('not used'); },
+          status,
+          commit: async () => { throw new Error('not used'); },
+          abort: async () => { throw new Error('not used'); },
+        };
+      },
+    });
+    const started = await adapter.start({
+      spec: {
+        protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+        kind: 'relay.runtime.personal_home.relocation_destination.status.v1',
+        params: {
+          target: { kind: 'local' },
+          channel: 'stable',
+          mode: 'user',
+          purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:43123' },
+          operationId: 'operation-1',
+        },
+      },
+    });
+    const { result } = await waitForResult(adapter, String((started as { taskId?: unknown }).taskId ?? ''));
+    expect(result).toMatchObject({ ok: true, data: { operationId: 'operation-1', status: 'quarantined' } });
+    expect(status).toHaveBeenCalledWith('operation-1');
   });
 
   it('backs up and verifies every owned Personal Home byte family through the default live registry', { timeout: 60_000 }, async () => {
@@ -634,6 +712,8 @@ describe('relay runtime system tasks', () => {
     const adapter = await importRelayRunnerAdapter();
     const baseParams = {
       target: { kind: 'local' as const },
+      channel: 'stable' as const,
+      mode: 'user' as const,
       purpose: {
         kind: 'personal-home' as const,
         canonicalServerUrl: fixture.canonicalServerUrl,
@@ -761,6 +841,8 @@ describe('relay runtime system tasks', () => {
     const adapter = await importRelayRunnerAdapter();
     const baseParams = {
       target: { kind: 'local' as const },
+      channel: 'stable' as const,
+      mode: 'user' as const,
       purpose: { kind: 'personal-home' as const, canonicalServerUrl: fixture.canonicalServerUrl },
     };
     const backupStarted = await adapter.start({
@@ -836,7 +918,8 @@ describe('relay runtime system tasks', () => {
         },
       },
     });
-    expect((await waitForResult(adapter, String((emptyRestoreStarted as { taskId?: unknown }).taskId ?? ''))).result)
+    const emptyRestore = await waitForResult(adapter, String((emptyRestoreStarted as { taskId?: unknown }).taskId ?? ''));
+    expect(emptyRestore.result, JSON.stringify(emptyRestore.result))
       .toMatchObject({ ok: true, data: { outcome: 'restored' } });
     expect(await readTranscriptRows(fixture.layout.databasePath)).toEqual(fixture.transcriptRows);
     await expect(readFile(path.join(fixture.layout.publicFilesDir, 'public.txt'), 'utf8')).resolves.toBe(fixture.publicFileBytes);
@@ -950,6 +1033,8 @@ describe('relay runtime system tasks', () => {
       kind: 'relay.runtime.personal_home.erase.v1',
       params: {
         target: { kind: 'local' as const },
+        channel: 'stable' as const,
+        mode: 'user' as const,
         purpose: { kind: 'personal-home' as const, canonicalServerUrl: fixture.canonicalServerUrl },
       },
     };
@@ -964,7 +1049,8 @@ describe('relay runtime system tasks', () => {
       fixture.layout.derivedDataDir,
       fixture.layout.irohEndpointKeyPath,
       path.resolve(fixture.layout.dataDir, '.operations', 'restore-journal.json'),
-      path.resolve(fixture.layout.dataDir, '.operations', 'relocation.json'),
+      path.resolve(fixture.layout.dataDir, '.operations', 'relocation-source.json'),
+      path.resolve(fixture.layout.dataDir, '.operations', 'relocation-destination.json'),
       path.resolve(fixture.layout.configDir, 'server.env'),
     ].map((value) => path.resolve(value)))];
 

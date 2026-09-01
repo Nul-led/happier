@@ -38,6 +38,8 @@ export function createDaemonSettingsFixture(options: {
   servers?: Readonly<Record<string, unknown>>
   machineIdByServerId?: Readonly<Record<string, string | undefined>>
   machineIdByServerIdByAccountId?: Readonly<Record<string, Record<string, string | undefined> | undefined>>
+  machineIdConfirmedByServerByServerId?: Readonly<Record<string, boolean | undefined>>
+  lastTokenSubByServerId?: Readonly<Record<string, string | undefined>>
 } = {}) {
   return {
     schemaVersion: 5,
@@ -46,7 +48,8 @@ export function createDaemonSettingsFixture(options: {
     servers: options.servers ?? baselineServers,
     machineIdByServerId: options.machineIdByServerId ?? {},
     machineIdByServerIdByAccountId: options.machineIdByServerIdByAccountId ?? {},
-    machineIdConfirmedByServerByServerId: {},
+    machineIdConfirmedByServerByServerId: options.machineIdConfirmedByServerByServerId ?? {},
+    lastTokenSubByServerId: options.lastTokenSubByServerId ?? {},
     lastChangesCursorByServerIdByAccountId: {},
   }
 }
@@ -56,6 +59,8 @@ export async function writeDaemonSettingsFixture(homeDir: string, options: {
   servers?: Readonly<Record<string, unknown>>
   machineIdByServerId?: Readonly<Record<string, string | undefined>>
   machineIdByServerIdByAccountId?: Readonly<Record<string, Record<string, string | undefined> | undefined>>
+  machineIdConfirmedByServerByServerId?: Readonly<Record<string, boolean | undefined>>
+  lastTokenSubByServerId?: Readonly<Record<string, string | undefined>>
 } = {}): Promise<void> {
   await writeFile(
     join(homeDir, 'settings.json'),

@@ -3,7 +3,8 @@ import { createServerUrlComparableKey, type DoctorSnapshot } from '@happier-dev/
 
 import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
 import { configuration } from '@/configuration';
-import { readDaemonState, readSettings, readStoredCredentials } from '@/persistence';
+import { resolveActiveServerAuthReadiness } from '@/auth/resolveActiveServerAuthReadiness';
+import { readDaemonState, readSettings } from '@/persistence';
 import { resolveDaemonServiceInstallationSnapshotFromEnv } from '@/daemon/service/cli';
 
 export type DaemonStatusSnapshot = NonNullable<DoctorSnapshot['daemonStatus']>;
@@ -21,9 +22,9 @@ function resolveComparableKey(rawUrl: string): string | null {
 }
 
 export async function readDaemonStatusSnapshot(): Promise<DaemonStatusSnapshot> {
-  const [settings, credentials, daemonState] = await Promise.all([
+  const [settings, readiness, daemonState] = await Promise.all([
     readSettings(),
-    readStoredCredentials(),
+    resolveActiveServerAuthReadiness(),
     readDaemonState().catch(() => null),
   ]);
 
@@ -45,11 +46,9 @@ export async function readDaemonStatusSnapshot(): Promise<DaemonStatusSnapshot> 
     : typeof daemonState?.machineControlReady === 'boolean'
       ? daemonState.machineControlReady
       : null;
-  const machineId = typeof settings.machineId === 'string' && settings.machineId.trim()
-    ? settings.machineId.trim()
-    : null;
+  const machineId = readiness.machineId;
   const accountId = (() => {
-    const token = credentials?.token ?? '';
+    const token = readiness.credentials?.token ?? '';
     if (!token) {
       return null;
     }
@@ -104,10 +103,12 @@ export async function readDaemonStatusSnapshot(): Promise<DaemonStatusSnapshot> 
       running: serviceInstalled && daemonRunning,
     },
     auth: {
-      authenticated: credentials != null,
-      machineRegistered: machineId != null,
+      authenticated: readiness.authenticated,
+      credentialState: readiness.credentialState,
+      machineRegistered: readiness.machineRegistered,
+      machineRegistrationState: readiness.machineRegistrationState,
       machineId,
-      needsAuth: credentials == null || machineId == null,
+      needsAuth: !readiness.authenticated || !readiness.machineRegistered,
       accountId,
     },
   };

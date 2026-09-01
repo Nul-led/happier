@@ -124,7 +124,7 @@ export async function handleAuthLogin(args: string[]): Promise<void> {
         existingCreds = null;
     }
 
-    if (existingCreds && readiness.machineRegistered) {
+    if (readiness.authenticated && existingCreds && readiness.machineRegistered) {
       const out = createOutputBuilder();
       out.line(ok('Already authenticated'));
       out.definitionList([

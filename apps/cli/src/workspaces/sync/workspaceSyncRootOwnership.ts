@@ -1,32 +1,97 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, realpath, unlink } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { chmod, mkdir, readFile, readdir, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { normalizeSessionHandoffWorkspaceRootPath } from '@happier-dev/protocol';
 
+import { readProcessIdentityByPid } from '@/daemon/processIdentity';
 import { getPathRemainderWithinBase } from '@/session/handoff/paths/sessionHandoffPathNormalization';
-import { withJsonOwnerFileLock } from '@/utils/fs/jsonOwnerFileLock';
+import { reclaimJsonOwnerFileLockSnapshot, withJsonOwnerFileLock } from '@/utils/fs/jsonOwnerFileLock';
 import { writeJsonAtomic } from '@/utils/fs/writeJsonAtomic';
 import { computeWorkspaceSyncRootFingerprint } from './workspaceSyncRootIdentity';
 
-export type WorkspaceRootOwnershipRequest = Readonly<{ ownerId: string; canonicalRoot: string; operation: 'sync' | 'bootstrap' | 'handoff' }>;
+export type WorkspaceRootOwnershipRequest = Readonly<{
+  ownerId: string;
+  canonicalRoot: string;
+  operation: 'sync' | 'bootstrap' | 'handoff';
+  /** Bootstrap recovery may replace the current object while this reservation is held. */
+  deferRootIdentityBinding?: true;
+}>;
 export type WorkspaceRootOwnership = WorkspaceRootOwnershipRequest & Readonly<{ rootFingerprint: string | null }>;
 export type WorkspaceRootOwnershipHandle = Readonly<{
   owner: WorkspaceRootOwnership;
   bindCurrentRootIdentity: () => Promise<void>;
-  renew: () => Promise<void>;
   release: () => Promise<void>;
 }>;
-export type WorkspaceRootOwnershipResult = WorkspaceRootOwnershipHandle | Readonly<{ kind: 'overlap'; existing: WorkspaceRootOwnership }>;
+export type WorkspaceRootOwnershipResult = WorkspaceRootOwnershipHandle | Readonly<{
+  kind: 'overlap';
+  existing: WorkspaceRootOwnership;
+}>;
 
-const STALE_HEARTBEAT_MS = 5 * 60_000;
-
-type OwnershipRecord = WorkspaceRootOwnership & Readonly<{ v: 1; pid: number; heartbeatAtMs: number }>;
+type ProcessOwner = Readonly<{ pid: number; processStartedAtMs: number | null; ownerToken: string }>;
+type ProcessOwnerObservation =
+  | Readonly<{ kind: 'dead' }>
+  | Readonly<{ kind: 'alive'; processStartedAtMs: number | null }>;
+type OwnershipRecordV2 = WorkspaceRootOwnership & Readonly<{ v: 2; processOwner: ProcessOwner }>;
 type ActiveOwnership = {
   owner: { -readonly [Key in keyof WorkspaceRootOwnership]: WorkspaceRootOwnership[Key] };
   path: string;
-  references: number;
+  processOwner: ProcessOwner;
   lost: boolean;
 };
+type RecordSnapshot = Readonly<{ raw: string; record: OwnershipRecordV2 | null }>;
+
+const operations = new Set(['sync', 'bootstrap', 'handoff']);
+const ownerTokenPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
+function hasExactKeys(record: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(record).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function parseOwner(record: Record<string, unknown>): WorkspaceRootOwnership | null {
+  if (typeof record.ownerId !== 'string' || !record.ownerId) return null;
+  if (typeof record.canonicalRoot !== 'string' || !record.canonicalRoot) return null;
+  if (!operations.has(String(record.operation))) return null;
+  if (!(record.rootFingerprint === null
+    || (typeof record.rootFingerprint === 'string' && /^[a-f0-9]{64}$/u.test(record.rootFingerprint)))) return null;
+  return {
+    ownerId: record.ownerId,
+    canonicalRoot: record.canonicalRoot,
+    operation: record.operation as WorkspaceRootOwnership['operation'],
+    rootFingerprint: record.rootFingerprint,
+  };
+}
+
+function parseRecord(raw: string): OwnershipRecordV2 | null {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    const owner = parseOwner(record);
+    if (!owner) return null;
+    if (record.v !== 2
+      || !hasExactKeys(record, ['v', 'ownerId', 'canonicalRoot', 'operation', 'rootFingerprint', 'processOwner'])) return null;
+    if (!record.processOwner || typeof record.processOwner !== 'object' || Array.isArray(record.processOwner)) return null;
+    const processOwner = record.processOwner as Record<string, unknown>;
+    if (!hasExactKeys(processOwner, ['pid', 'processStartedAtMs', 'ownerToken'])) return null;
+    if (!Number.isSafeInteger(processOwner.pid) || Number(processOwner.pid) < 1) return null;
+    if (!(processOwner.processStartedAtMs === null
+      || (Number.isSafeInteger(processOwner.processStartedAtMs) && Number(processOwner.processStartedAtMs) >= 0))) return null;
+    if (typeof processOwner.ownerToken !== 'string' || !ownerTokenPattern.test(processOwner.ownerToken)) return null;
+    return {
+      v: 2,
+      ...owner,
+      processOwner: {
+        pid: Number(processOwner.pid),
+        processStartedAtMs: processOwner.processStartedAtMs === null ? null : Number(processOwner.processStartedAtMs),
+        ownerToken: processOwner.ownerToken,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
 
 async function resolveCanonicalRoot(input: string): Promise<string> {
   const normalized = normalizeSessionHandoffWorkspaceRootPath(input);
@@ -40,26 +105,51 @@ async function resolveCanonicalRoot(input: string): Promise<string> {
     return normalized;
   }
 }
+
 function overlaps(left: string, right: string): boolean {
   return getPathRemainderWithinBase(left, right) !== null
     || getPathRemainderWithinBase(right, left) !== null;
 }
+
 function recordPath(lockDirectory: string, canonicalRoot: string): string {
   return join(lockDirectory, `${createHash('sha256').update(canonicalRoot).digest('hex')}.json`);
 }
-function parseRecord(value: unknown): OwnershipRecord | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (record.v !== 1 || typeof record.ownerId !== 'string' || !record.ownerId
-    || typeof record.canonicalRoot !== 'string' || !record.canonicalRoot
-    || !['sync', 'bootstrap', 'handoff'].includes(String(record.operation))
-    || !(record.rootFingerprint === null || (typeof record.rootFingerprint === 'string' && /^[a-f0-9]{64}$/u.test(record.rootFingerprint)))
-    || !Number.isSafeInteger(record.pid) || Number(record.pid) < 1
-    || !Number.isFinite(record.heartbeatAtMs)) return null;
-  return record as OwnershipRecord;
+
+async function inspectProcessOwner(pid: number): Promise<ProcessOwnerObservation> {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EPERM') return { kind: 'dead' };
+  }
+  const identity = await readProcessIdentityByPid(pid);
+  return {
+    kind: 'alive',
+    processStartedAtMs: Number.isSafeInteger(identity?.processStartTimeMs) ? identity?.processStartTimeMs ?? null : null,
+  };
 }
-function defaultIsProcessAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+
+async function readSnapshot(path: string): Promise<RecordSnapshot | null> {
+  const raw = await readFile(path, 'utf8').catch(() => null);
+  return raw === null ? null : { raw, record: parseRecord(raw) };
+}
+
+function exactRecordOwner(record: OwnershipRecordV2, owner: WorkspaceRootOwnership, processOwner: ProcessOwner): boolean {
+  return record.ownerId === owner.ownerId
+    && record.canonicalRoot === owner.canonicalRoot
+    && record.operation === owner.operation
+    && record.rootFingerprint === owner.rootFingerprint
+    && record.processOwner.pid === processOwner.pid
+    && record.processOwner.processStartedAtMs === processOwner.processStartedAtMs
+    && record.processOwner.ownerToken === processOwner.ownerToken;
+}
+
+function ownerFromRecord(record: OwnershipRecordV2): WorkspaceRootOwnership {
+  return {
+    ownerId: record.ownerId,
+    canonicalRoot: record.canonicalRoot,
+    operation: record.operation,
+    rootFingerprint: record.rootFingerprint,
+  };
 }
 
 export type WorkspaceRootOwnershipManager = Readonly<{
@@ -68,17 +158,28 @@ export type WorkspaceRootOwnershipManager = Readonly<{
 
 export function createWorkspaceRootOwnershipManager(options: Readonly<{
   lockDirectory: string;
-  pid?: number;
-  nowMs?: () => number;
-  isProcessAlive?: (pid: number) => boolean;
+  processOwner?: ProcessOwner;
+  inspectProcessOwner?: (pid: number) => Promise<ProcessOwnerObservation>;
 }>): WorkspaceRootOwnershipManager {
   const lockDirectory = resolve(options.lockDirectory);
-  const pid = options.pid ?? process.pid;
-  const nowMs = options.nowMs ?? Date.now;
-  const isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
+  const observeProcessOwner = options.inspectProcessOwner ?? inspectProcessOwner;
   const inventoryLockPath = join(lockDirectory, '.inventory.lock');
   const activeOwnership = new Set<ActiveOwnership>();
   let serialization: Promise<void> = Promise.resolve();
+  let currentProcessOwner: Promise<ProcessOwner> | null = null;
+
+  const resolveCurrentProcessOwner = async (): Promise<ProcessOwner> => {
+    currentProcessOwner ??= (async () => {
+      if (options.processOwner) return options.processOwner;
+      const observation = await inspectProcessOwner(process.pid);
+      return {
+        pid: process.pid,
+        processStartedAtMs: observation.kind === 'alive' ? observation.processStartedAtMs : null,
+        ownerToken: randomUUID(),
+      };
+    })();
+    return await currentProcessOwner;
+  };
 
   const exclusive = async <T>(action: () => Promise<T>): Promise<T> => {
     const prior = serialization;
@@ -88,14 +189,33 @@ export function createWorkspaceRootOwnershipManager(options: Readonly<{
     try { return await action(); } finally { release(); }
   };
 
+  const withInventoryLock = async <T>(action: () => Promise<T>): Promise<T> => {
+    await mkdir(lockDirectory, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') await chmod(lockDirectory, 0o700);
+    return await withJsonOwnerFileLock({
+      lockPath: inventoryLockPath,
+      timeoutMs: 5_000,
+      staleAfterMs: 30_000,
+      errorCode: 'workspace_root_ownership_busy',
+      readProcessStartedAtMs: async (pid) => {
+        const identity = await readProcessIdentityByPid(pid);
+        return Number.isSafeInteger(identity?.processStartTimeMs) ? identity?.processStartTimeMs ?? null : null;
+      },
+    }, action);
+  };
+
+  const removeExactRecord = async (path: string, raw: string): Promise<boolean> => {
+    const result = await reclaimJsonOwnerFileLockSnapshot(path, raw);
+    if (result === 'ownership_unknown') {
+      throw Object.assign(new Error('workspace root ownership is compromised'), {
+        code: 'workspace_root_ownership_compromised',
+      });
+    }
+    return result === 'reclaimed';
+  };
+
   const createHandle = (entry: ActiveOwnership): WorkspaceRootOwnershipHandle => {
     let released = false;
-    const write = async () => await writeJsonAtomic(entry.path, {
-      v: 1,
-      ...entry.owner,
-      pid,
-      heartbeatAtMs: nowMs(),
-    } satisfies OwnershipRecord);
     return {
       owner: entry.owner,
       bindCurrentRootIdentity: async () => await exclusive(async () => {
@@ -103,123 +223,76 @@ export function createWorkspaceRootOwnershipManager(options: Readonly<{
           throw Object.assign(new Error('workspace root ownership lost'), { code: 'workspace_root_ownership_lost' });
         }
         const fingerprint = await computeWorkspaceSyncRootFingerprint(entry.owner.canonicalRoot).catch(() => null);
-        if (!fingerprint) {
-          throw Object.assign(new Error('workspace root ownership lost'), { code: 'workspace_root_ownership_lost' });
-        }
-        if (entry.owner.rootFingerprint !== null && entry.owner.rootFingerprint !== fingerprint) {
+        if (!fingerprint || (entry.owner.rootFingerprint !== null && entry.owner.rootFingerprint !== fingerprint)) {
           entry.lost = true;
-          activeOwnership.delete(entry);
           throw Object.assign(new Error('workspace root ownership lost'), { code: 'workspace_root_ownership_lost' });
         }
-        if (entry.owner.rootFingerprint === null) entry.owner.rootFingerprint = fingerprint;
-        await write();
-      }),
-      renew: async () => await exclusive(async () => {
-        if (released || entry.lost) {
-          throw Object.assign(new Error('workspace root ownership lost'), { code: 'workspace_root_ownership_lost' });
-        }
-        const current = await readFile(entry.path, 'utf8')
-          .then((raw) => parseRecord(JSON.parse(raw) as unknown))
-          .catch(() => null);
-        if (!current || current.ownerId !== entry.owner.ownerId || current.pid !== pid
-          || current.canonicalRoot !== entry.owner.canonicalRoot
-          || current.rootFingerprint !== entry.owner.rootFingerprint) {
-          entry.lost = true;
-          activeOwnership.delete(entry);
-          throw Object.assign(new Error('workspace root ownership lost'), { code: 'workspace_root_ownership_lost' });
-        }
-        if (entry.owner.rootFingerprint !== null) {
-          const fingerprint = await computeWorkspaceSyncRootFingerprint(entry.owner.canonicalRoot).catch(() => null);
-          if (fingerprint !== entry.owner.rootFingerprint) {
+        if (entry.owner.rootFingerprint === fingerprint) return;
+        await withInventoryLock(async () => {
+          const snapshot = await readSnapshot(entry.path);
+          if (!snapshot?.record || !exactRecordOwner(snapshot.record, entry.owner, entry.processOwner)) {
             entry.lost = true;
-            activeOwnership.delete(entry);
             throw Object.assign(new Error('workspace root ownership lost'), { code: 'workspace_root_ownership_lost' });
           }
-        }
-        await write();
+          const boundOwner = { ...entry.owner, rootFingerprint: fingerprint } satisfies WorkspaceRootOwnership;
+          await writeJsonAtomic(entry.path, { v: 2, ...boundOwner, processOwner: entry.processOwner } satisfies OwnershipRecordV2);
+          entry.owner.rootFingerprint = fingerprint;
+        });
       }),
       release: async () => await exclusive(async () => {
         if (released) return;
         released = true;
-        entry.references -= 1;
-        if (entry.references > 0) return;
         activeOwnership.delete(entry);
-        if (entry.lost) return;
-        const current = await readFile(entry.path, 'utf8')
-          .then((raw) => parseRecord(JSON.parse(raw) as unknown))
-          .catch(() => null);
-        if (current?.ownerId === entry.owner.ownerId && current.pid === pid
-          && current.canonicalRoot === entry.owner.canonicalRoot
-          && current.rootFingerprint === entry.owner.rootFingerprint) {
-          await unlink(entry.path).catch(() => undefined);
-        }
+        await withInventoryLock(async () => {
+          const snapshot = await readSnapshot(entry.path);
+          if (snapshot?.record && exactRecordOwner(snapshot.record, entry.owner, entry.processOwner)) {
+            await removeExactRecord(entry.path, snapshot.raw);
+          }
+        });
       }),
     };
   };
 
   return {
     tryAcquire: async (input) => await exclusive(async () => {
-      if (!input.ownerId.trim()) throw new Error('workspace root ownership ownerId must be non-empty');
+      const ownerId = input.ownerId.trim();
+      if (!ownerId) throw new Error('workspace root ownership ownerId must be non-empty');
       const canonicalRoot = await resolveCanonicalRoot(input.canonicalRoot);
-      const reusable = [...activeOwnership].find((entry) => (
-        entry.owner.ownerId === input.ownerId.trim()
-        && getPathRemainderWithinBase(entry.owner.canonicalRoot, canonicalRoot) === ''
-        && getPathRemainderWithinBase(canonicalRoot, entry.owner.canonicalRoot) === ''
-        && !entry.lost
-      ));
-      if (reusable) {
-        const currentFingerprint = await computeWorkspaceSyncRootFingerprint(reusable.owner.canonicalRoot).catch(() => null);
-        if (reusable.owner.rootFingerprint !== null && currentFingerprint !== reusable.owner.rootFingerprint) {
-          reusable.lost = true;
-          activeOwnership.delete(reusable);
-          throw Object.assign(new Error('workspace root ownership lost'), { code: 'workspace_root_ownership_lost' });
-        }
-        if (reusable.owner.rootFingerprint === null && currentFingerprint !== null) {
-          reusable.owner.rootFingerprint = currentFingerprint;
-          await writeJsonAtomic(reusable.path, {
-            v: 1,
-            ...reusable.owner,
-            pid,
-            heartbeatAtMs: nowMs(),
-          } satisfies OwnershipRecord);
-        }
-        reusable.references += 1;
-        return createHandle(reusable);
-      }
-      await mkdir(lockDirectory, { recursive: true, mode: 0o700 });
-      return await withJsonOwnerFileLock({
-        lockPath: inventoryLockPath,
-        timeoutMs: 5_000,
-        staleAfterMs: 30_000,
-        errorCode: 'workspace_root_ownership_busy',
-      }, async () => {
+      const processOwner = await resolveCurrentProcessOwner();
+      return await withInventoryLock(async () => {
         const names = await readdir(lockDirectory);
         for (const name of names) {
           if (!name.endsWith('.json')) continue;
           const path = join(lockDirectory, name);
-          const record = await readFile(path, 'utf8').then((raw) => parseRecord(JSON.parse(raw) as unknown)).catch(() => null);
-          // A malformed ownership record is occupied by definition. It must not
-          // be guessed stale or removed automatically.
-          if (!record) return { kind: 'overlap', existing: { ownerId: 'unknown', canonicalRoot, operation: 'sync', rootFingerprint: null } };
-          if (nowMs() - record.heartbeatAtMs > STALE_HEARTBEAT_MS && !isProcessAlive(record.pid)) {
-            await unlink(path).catch(() => undefined);
-            continue;
+          const snapshot = await readSnapshot(path);
+          if (!snapshot?.record) {
+            return {
+              kind: 'overlap',
+              existing: { ownerId: 'unknown', canonicalRoot, operation: 'sync', rootFingerprint: null },
+            };
           }
-          if (overlaps(record.canonicalRoot, canonicalRoot)) {
-            return { kind: 'overlap', existing: {
-              ownerId: record.ownerId,
-              canonicalRoot: record.canonicalRoot,
-              operation: record.operation,
-              rootFingerprint: record.rootFingerprint,
-            } };
+
+          const persistedProcess = snapshot.record.processOwner;
+          const observation = await observeProcessOwner(persistedProcess.pid);
+          const provenDead = observation.kind === 'dead';
+          const provenReused = observation.kind === 'alive'
+            && persistedProcess.processStartedAtMs !== null
+            && observation.processStartedAtMs !== null
+            && persistedProcess.processStartedAtMs !== observation.processStartedAtMs;
+          if ((provenDead || provenReused) && await removeExactRecord(path, snapshot.raw)) continue;
+
+          if (overlaps(snapshot.record.canonicalRoot, canonicalRoot)) {
+            return { kind: 'overlap', existing: ownerFromRecord(snapshot.record) };
           }
         }
 
-        const rootFingerprint = await computeWorkspaceSyncRootFingerprint(canonicalRoot).catch(() => null);
-        const owner = { ...input, ownerId: input.ownerId.trim(), canonicalRoot, rootFingerprint } satisfies WorkspaceRootOwnership;
+        const rootFingerprint = input.deferRootIdentityBinding
+          ? null
+          : await computeWorkspaceSyncRootFingerprint(canonicalRoot).catch(() => null);
+        const owner = { ownerId, canonicalRoot, operation: input.operation, rootFingerprint } satisfies WorkspaceRootOwnership;
         const path = recordPath(lockDirectory, canonicalRoot);
-        await writeJsonAtomic(path, { v: 1, ...owner, pid, heartbeatAtMs: nowMs() } satisfies OwnershipRecord);
-        const active = { owner, path, references: 1, lost: false } satisfies ActiveOwnership;
+        await writeJsonAtomic(path, { v: 2, ...owner, processOwner } satisfies OwnershipRecordV2);
+        const active = { owner, path, processOwner, lost: false } satisfies ActiveOwnership;
         activeOwnership.add(active);
         return createHandle(active);
       });

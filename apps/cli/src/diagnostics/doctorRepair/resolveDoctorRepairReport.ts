@@ -20,9 +20,10 @@ import {
   type DoctorSnapshot,
 } from '@/doctor/inv/snapshot';
 import { readSettings, readStoredCredentials } from '@/persistence';
+import { validateStoredAuthTokenAgainstServer } from '@/auth/validateStoredAuthTokenAgainstActiveServer';
+import { resolveMachineIdForServerFromSettings } from '@/daemon/resolveMachineIdForServerFromSettings';
 
 import type { AuthSignalsForProfile } from './classifyAuth';
-import { checkAuthLive } from './authLiveCheck';
 import { buildDoctorRepairReport } from './buildDoctorRepairReport';
 import { readLatestRelayVersion } from './relayUpdateCheck';
 import type {
@@ -447,8 +448,9 @@ function buildLocalRelayEntries(snapshot: DoctorSnapshot | null): readonly Local
 
 /**
  * Assemble auth signals for every configured server profile + the active
- * server URL, reading from persisted settings. A `machineId` present in
- * `machineIdByServerId` is treated as "machine registered" for that profile.
+ * server URL, reading from persisted settings. Machine registration comes
+ * only from the account-scoped server-confirmation fact written after the
+ * server accepts the local identity; local id allocation alone is not enough.
  *
  * Live-check policy: when a non-empty token exists we make a single
  * `GET /v1/account/profile` call for the *active* profile only, with a 3s
@@ -484,7 +486,7 @@ async function resolveAuthContext(params: Readonly<{
   ]);
   const servers = settings?.servers ?? {};
   const settingsActiveServerId = String(settings?.activeServerId ?? '').trim();
-  const machineIdByServerId = settings?.machineIdByServerId ?? {};
+  const machineIdConfirmedByServerByServerId = settings?.machineIdConfirmedByServerByServerId ?? {};
   const lastTokenSubByServerId = settings?.lastTokenSubByServerId ?? {};
   const profiles = Object.values(servers).filter((p): p is NonNullable<typeof p> => Boolean(p));
   const hasAnyServerProfile = profiles.length > 0;
@@ -508,14 +510,12 @@ async function resolveAuthContext(params: Readonly<{
   let activeExpired = false;
   let activeReachability: 'verified' | 'unreachable' | 'not-probed' = 'not-probed';
   if (activeProfile && activeToken) {
-    const result = await checkAuthLive({
-      serverUrl: activeProfile.serverUrl,
+    const result = await validateStoredAuthTokenAgainstServer({
+      baseUrl: activeProfile.serverUrl,
       token: activeToken,
     });
-    activeExpired = result === 'expired';
-    // 'ok' and 'expired' are both definitive answers from the server.
-    // 'unknown' means the server didn't respond — don't claim verified.
-    activeReachability = result === 'unknown' ? 'unreachable' : 'verified';
+    activeExpired = result.state === 'invalid';
+    activeReachability = result.state === 'unknown' ? 'unreachable' : 'verified';
   }
 
   const signals: AuthSignalsForProfile[] = profiles.map((profile) => {
@@ -525,7 +525,7 @@ async function resolveAuthContext(params: Readonly<{
     // get no sub until first login.
     const lastSub = String(lastTokenSubByServerId[profile.id] ?? '').trim();
     const hasCredentials = lastSub.length > 0;
-    const machineId = String(machineIdByServerId[profile.id] ?? '').trim();
+    const machineId = resolveMachineIdForServerFromSettings(settings, profile.id, lastSub || null);
     const isActive = profile.id === effectiveActiveServerId;
     return {
       serverId: profile.id,
@@ -533,7 +533,8 @@ async function resolveAuthContext(params: Readonly<{
       serverUrl: profile.serverUrl,
       hasCredentials,
       isExpired: isActive ? activeExpired : false,
-      machineRegistered: machineId.length > 0,
+      machineRegistered: machineId !== null
+        && machineIdConfirmedByServerByServerId[profile.id] === true,
       isActive,
       reachability: isActive ? activeReachability : 'not-probed',
     };

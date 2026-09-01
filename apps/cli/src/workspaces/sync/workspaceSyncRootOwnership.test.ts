@@ -1,10 +1,80 @@
-import { describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, readdir, rename, rm } from 'node:fs/promises';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
 import { createWorkspaceRootOwnershipManager } from './workspaceSyncRootOwnership';
 
+const childFixturePath = join(dirname(fileURLToPath(import.meta.url)), 'workspaceSyncRootOwnership.child.ts');
+
+function startOwnershipChild(input: Readonly<{
+  lockDirectory: string;
+  ownerId: string;
+  canonicalRoot: string;
+  resultPath: string;
+  releasePath: string;
+}>): Readonly<{ child: ChildProcess; completion: Promise<void> }> {
+  const child = spawn(process.execPath, [
+    '--import',
+    'tsx',
+    childFixturePath,
+    input.lockDirectory,
+    input.ownerId,
+    input.canonicalRoot,
+    input.resultPath,
+    input.releasePath,
+  ], {
+    cwd: join(dirname(childFixturePath), '../../..'),
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', (chunk: string) => { stderr += chunk; });
+  const completion = new Promise<void>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`workspace ownership child exited ${String(code)} (${String(signal)}): ${stderr}`));
+    });
+  });
+  return { child, completion };
+}
+
+async function waitForFile(path: string): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (!(await access(path).then(() => true, () => false))) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe('workspace root ownership', () => {
+  it('allows bootstrap recovery to bind the restored root after overlap arbitration', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-root-ownership-deferred-'));
+    const root = join(fixture, 'root');
+    const replacement = join(fixture, 'replacement');
+    await mkdir(root);
+    await writeFile(join(root, 'new.txt'), 'new');
+    await mkdir(replacement);
+    await writeFile(join(replacement, 'old.txt'), 'old');
+    const manager = createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') });
+    const acquired = await manager.tryAcquire({
+      ownerId: 'bootstrap',
+      canonicalRoot: root,
+      operation: 'bootstrap',
+      deferRootIdentityBinding: true,
+    });
+    expect('kind' in acquired).toBe(false);
+    if ('kind' in acquired) throw new Error('unexpected overlap');
+    await rm(root, { recursive: true, force: true });
+    await rename(replacement, root);
+    await expect(acquired.bindCurrentRootIdentity()).resolves.toBeUndefined();
+    await acquired.release();
+    await rm(fixture, { recursive: true, force: true });
+  });
+
   it('rejects both ancestor and descendant overlaps', async () => {
     const lockDirectory = await mkdtemp(join(tmpdir(), 'workspace-sync-root-locks-'));
     const manager = createWorkspaceRootOwnershipManager({ lockDirectory });
@@ -21,14 +91,17 @@ describe('workspace root ownership', () => {
     await rm(lockDirectory, { recursive: true, force: true });
   });
 
-  it('persists daemon-local ownership so a reconstructed manager cannot steal a live root', async () => {
+  it('persists exact process ownership so a reconstructed manager cannot steal a live root', async () => {
     const lockDirectory = await mkdtemp(join(tmpdir(), 'workspace-sync-root-locks-'));
-    const firstManager = createWorkspaceRootOwnershipManager({ lockDirectory, pid: 123, isProcessAlive: () => true });
+    const firstManager = createWorkspaceRootOwnershipManager({ lockDirectory });
     const first = await firstManager.tryAcquire({ ownerId: 'relationship-1', canonicalRoot: '/tmp/workspace-a', operation: 'sync' });
     expect('kind' in first).toBe(false);
     expect((await readdir(lockDirectory)).some((name) => name.endsWith('.json'))).toBe(true);
+    if (process.platform !== 'win32') expect((await stat(lockDirectory)).mode & 0o777).toBe(0o700);
 
-    const reconstructed = createWorkspaceRootOwnershipManager({ lockDirectory, pid: 456, isProcessAlive: () => true });
+    const reconstructed = createWorkspaceRootOwnershipManager({ lockDirectory });
+    await expect(reconstructed.tryAcquire({ ownerId: 'relationship-1', canonicalRoot: '/tmp/workspace-a', operation: 'sync' }))
+      .resolves.toMatchObject({ kind: 'overlap', existing: { ownerId: 'relationship-1' } });
     await expect(reconstructed.tryAcquire({ ownerId: 'relationship-2', canonicalRoot: '/tmp/workspace-a/child', operation: 'handoff' }))
       .resolves.toMatchObject({ kind: 'overlap', existing: { ownerId: 'relationship-1' } });
 
@@ -36,22 +109,31 @@ describe('workspace root ownership', () => {
     await rm(lockDirectory, { recursive: true, force: true });
   });
 
-  it('serializes the complete overlap transaction across manager instances', async () => {
+  it('serializes the complete overlap transaction across real child processes', async () => {
     const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-root-locks-race-'));
     const lockDirectory = join(fixture, 'locks');
     const root = join(fixture, 'workspace');
     await mkdir(root);
-    const firstManager = createWorkspaceRootOwnershipManager({ lockDirectory, pid: 111, isProcessAlive: () => true });
-    const secondManager = createWorkspaceRootOwnershipManager({ lockDirectory, pid: 222, isProcessAlive: () => true });
-
-    const results = await Promise.all([
-      firstManager.tryAcquire({ ownerId: 'first', canonicalRoot: root, operation: 'sync' }),
-      secondManager.tryAcquire({ ownerId: 'second', canonicalRoot: join(root, 'child'), operation: 'handoff' }),
-    ]);
-    expect(results.filter((result) => !('kind' in result))).toHaveLength(1);
-    expect(results.filter((result) => 'kind' in result)).toHaveLength(1);
-    for (const result of results) if (!('kind' in result)) await result.release();
-    await rm(fixture, { recursive: true, force: true });
+    const releasePath = join(fixture, 'release');
+    const firstResultPath = join(fixture, 'first.json');
+    const secondResultPath = join(fixture, 'second.json');
+    const children = [
+      startOwnershipChild({ lockDirectory, ownerId: 'first', canonicalRoot: root, resultPath: firstResultPath, releasePath }),
+      startOwnershipChild({ lockDirectory, ownerId: 'second', canonicalRoot: join(root, 'child'), resultPath: secondResultPath, releasePath }),
+    ];
+    try {
+      await Promise.all([waitForFile(firstResultPath), waitForFile(secondResultPath)]);
+      const results = await Promise.all([firstResultPath, secondResultPath].map(async (path) => (
+        JSON.parse(await readFile(path, 'utf8')) as { kind: string }
+      )));
+      expect(results.filter((result) => result.kind === 'acquired')).toHaveLength(1);
+      expect(results.filter((result) => result.kind === 'overlap')).toHaveLength(1);
+      await writeFile(releasePath, 'release', 'utf8');
+      await Promise.all(children.map(({ completion }) => completion));
+    } finally {
+      for (const { child } of children) child.kill('SIGKILL');
+      await rm(fixture, { recursive: true, force: true });
+    }
   });
 
   it('loses ownership when the filesystem object at the canonical root is replaced', async () => {
@@ -66,12 +148,12 @@ describe('workspace root ownership', () => {
 
     await rename(root, `${root}-replaced`);
     await mkdir(root);
-    await expect(acquired.renew()).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
+    await expect(acquired.bindCurrentRootIdentity()).rejects.toMatchObject({ code: 'workspace_root_ownership_lost' });
     await acquired.release();
     await rm(fixture, { recursive: true, force: true });
   });
 
-  it('shares an exact same-owner fence until every local caller releases it', async () => {
+  it('rejects an exact root even for the same owner within one manager', async () => {
     const lockDirectory = await mkdtemp(join(tmpdir(), 'workspace-sync-root-locks-'));
     const manager = createWorkspaceRootOwnershipManager({ lockDirectory });
     const bootstrap = await manager.tryAcquire({
@@ -86,16 +168,18 @@ describe('workspace root ownership', () => {
       canonicalRoot: '/tmp/workspace-shared-owner',
       operation: 'sync',
     });
-    expect('kind' in controller).toBe(false);
+    expect(controller).toMatchObject({
+      kind: 'overlap',
+      existing: { ownerId: 'relationship-1', operation: 'bootstrap' },
+    });
+    const sameOwnerDescendant = await manager.tryAcquire({
+      ownerId: 'relationship-1',
+      canonicalRoot: '/tmp/workspace-shared-owner/child',
+      operation: 'sync',
+    });
+    expect(sameOwnerDescendant).toMatchObject({ kind: 'overlap', existing: { ownerId: 'relationship-1' } });
 
     await (bootstrap as Exclude<typeof bootstrap, { kind: 'overlap' }>).release();
-    await expect(manager.tryAcquire({
-      ownerId: 'relationship-2',
-      canonicalRoot: '/tmp/workspace-shared-owner',
-      operation: 'sync',
-    })).resolves.toMatchObject({ kind: 'overlap', existing: { ownerId: 'relationship-1' } });
-
-    await (controller as Exclude<typeof controller, { kind: 'overlap' }>).release();
     const replacement = await manager.tryAcquire({
       ownerId: 'relationship-2',
       canonicalRoot: '/tmp/workspace-shared-owner',
@@ -104,6 +188,77 @@ describe('workspace root ownership', () => {
     expect('kind' in replacement).toBe(false);
     await (replacement as Exclude<typeof replacement, { kind: 'overlap' }>).release();
     await rm(lockDirectory, { recursive: true, force: true });
+  });
+
+  it('reclaims a live pid only when exact process-start evidence proves pid reuse', async () => {
+    const lockDirectory = await mkdtemp(join(tmpdir(), 'workspace-sync-root-pid-reuse-'));
+    const firstManager = createWorkspaceRootOwnershipManager({
+      lockDirectory,
+      processOwner: {
+        pid: 424_241,
+        processStartedAtMs: 1_000,
+        ownerToken: '11111111-1111-4111-8111-111111111111',
+      },
+      inspectProcessOwner: async () => ({ kind: 'alive', processStartedAtMs: 1_000 }),
+    });
+    const first = await firstManager.tryAcquire({ ownerId: 'first', canonicalRoot: '/tmp/workspace-pid-reuse', operation: 'sync' });
+    expect('kind' in first).toBe(false);
+
+    const replacementManager = createWorkspaceRootOwnershipManager({
+      lockDirectory,
+      processOwner: {
+        pid: 424_242,
+        processStartedAtMs: 3_000,
+        ownerToken: '22222222-2222-4222-8222-222222222222',
+      },
+      inspectProcessOwner: async () => ({ kind: 'alive', processStartedAtMs: 2_000 }),
+    });
+    const replacement = await replacementManager.tryAcquire({
+      ownerId: 'replacement',
+      canonicalRoot: '/tmp/workspace-pid-reuse',
+      operation: 'sync',
+    });
+    expect('kind' in replacement).toBe(false);
+
+    if (!('kind' in first)) await first.release();
+    const probe = createWorkspaceRootOwnershipManager({
+      lockDirectory,
+      inspectProcessOwner: async () => ({ kind: 'alive', processStartedAtMs: 3_000 }),
+    });
+    await expect(probe.tryAcquire({ ownerId: 'probe', canonicalRoot: '/tmp/workspace-pid-reuse', operation: 'sync' }))
+      .resolves.toMatchObject({ kind: 'overlap', existing: { ownerId: 'replacement' } });
+    if (!('kind' in replacement)) await replacement.release();
+    await rm(lockDirectory, { recursive: true, force: true });
+  });
+
+  it('reclaims a proven-dead process owner immediately without a heartbeat age', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-root-dead-owner-'));
+    const lockDirectory = join(fixture, 'locks');
+    const root = join(fixture, 'workspace');
+    const resultPath = join(fixture, 'owner.json');
+    const releasePath = join(fixture, 'never-release');
+    await mkdir(root);
+    const owner = startOwnershipChild({
+      lockDirectory,
+      ownerId: 'dead-owner',
+      canonicalRoot: root,
+      resultPath,
+      releasePath,
+    });
+    try {
+      await waitForFile(resultPath);
+      expect(JSON.parse(await readFile(resultPath, 'utf8'))).toMatchObject({ kind: 'acquired' });
+      owner.child.kill('SIGKILL');
+      await expect(owner.completion).rejects.toThrow();
+
+      const manager = createWorkspaceRootOwnershipManager({ lockDirectory });
+      const replacement = await manager.tryAcquire({ ownerId: 'replacement', canonicalRoot: root, operation: 'sync' });
+      expect('kind' in replacement).toBe(false);
+      if (!('kind' in replacement)) await replacement.release();
+    } finally {
+      owner.child.kill('SIGKILL');
+      await rm(fixture, { recursive: true, force: true });
+    }
   });
 
   it('reuses canonical carried-root safety and platform-aware containment', async () => {

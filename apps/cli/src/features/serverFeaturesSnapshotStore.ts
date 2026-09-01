@@ -31,6 +31,7 @@ export function createServerFeaturesSnapshotStore(params: {
   // The fetch source. Defaults to the canonical `/v1/features` client so the daemon does not
   // introduce a second fetch path.
   fetchSnapshot: () => Promise<CliServerFeaturesSnapshot>;
+  onReady?: (features: Extract<CliServerFeaturesSnapshot, { status: 'ready' }>['features']) => Promise<void> | void;
   onError?: (error: unknown) => void;
 }): ServerFeaturesSnapshotStore {
   let cached: CliServerFeaturesSnapshot | undefined;
@@ -41,6 +42,7 @@ export function createServerFeaturesSnapshotStore(params: {
     inFlight = (async () => {
       try {
         const next = await params.fetchSnapshot();
+        if (next.status === 'ready') await params.onReady?.(next.features);
         if (next.status === 'ready' || cached === undefined) {
           cached = next;
         }
@@ -67,16 +69,18 @@ export function createServerFeaturesSnapshotStore(params: {
  * the same fetch source as the local-services inventory and browser daemon gates.
  */
 export function createServerUrlServerFeaturesSnapshotStore(params: {
-  serverUrl: string;
+  serverUrl: string | (() => string);
   timeoutMs?: number;
+  onReady?: (features: Extract<CliServerFeaturesSnapshot, { status: 'ready' }>['features']) => Promise<void> | void;
   onError?: (error: unknown) => void;
 }): ServerFeaturesSnapshotStore {
   return createServerFeaturesSnapshotStore({
     fetchSnapshot: () =>
       fetchServerFeaturesSnapshot({
-        serverUrl: params.serverUrl,
+        serverUrl: typeof params.serverUrl === 'function' ? params.serverUrl() : params.serverUrl,
         ...(typeof params.timeoutMs === 'number' ? { timeoutMs: params.timeoutMs } : {}),
       }),
     ...(params.onError ? { onError: params.onError } : {}),
+    ...(params.onReady ? { onReady: params.onReady } : {}),
   });
 }

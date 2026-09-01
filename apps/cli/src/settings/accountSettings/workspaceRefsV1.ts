@@ -1,4 +1,5 @@
 import {
+    WorkspaceRefV1Schema,
     type WorkspaceRefV1,
 } from '@happier-dev/protocol';
 
@@ -31,4 +32,52 @@ export function resolveWorkspaceRefForMachineRoot(
         && getPathRemainderWithinBase(ref.rootPath, rootPath) === ''
     ));
     return matches.length === 1 ? matches[0] ?? null : null;
+}
+
+/**
+ * Canonical Account-settings materialization for a daemon-resolved workspace
+ * scope. Callers must supply an already-authorized canonical root; this owner
+ * only assigns/reuses its stable Account identity.
+ */
+export function materializeWorkspaceRefForMachineRoot(
+    workspaceRefs: readonly WorkspaceRefV1[],
+    input: Readonly<{
+        serverId: string;
+        machineId: string;
+        rootPath: string;
+        label?: string;
+        nowMs: number;
+        createId: () => string;
+    }>,
+): Readonly<{ workspaceRefs: readonly WorkspaceRefV1[]; workspaceRef: WorkspaceRefV1; created: boolean }> {
+    const serverId = normalizeIdentifier(input.serverId);
+    const machineId = normalizeIdentifier(input.machineId);
+    const rootPath = input.rootPath.trim();
+    if (!serverId || !machineId || !rootPath) {
+        throw Object.assign(new Error('Workspace scope is incomplete'), { code: 'workspace_ref_invalid' });
+    }
+    const matches = workspaceRefs.filter((ref) => (
+        normalizeIdentifier(ref.serverId) === serverId
+        && normalizeIdentifier(ref.machineId) === machineId
+        && getPathRemainderWithinBase(ref.rootPath, rootPath) === ''
+    ));
+    if (matches.length > 1) {
+        throw Object.assign(new Error('Workspace scope has multiple Account identities'), { code: 'workspace_ref_ambiguous' });
+    }
+    const existing = matches[0];
+    if (existing) return Object.freeze({ workspaceRefs, workspaceRef: existing, created: false });
+
+    const parsed = WorkspaceRefV1Schema.safeParse({
+        id: input.createId(),
+        serverId,
+        machineId,
+        rootPath,
+        ...(input.label?.trim() ? { label: input.label.trim() } : {}),
+        createdAtMs: input.nowMs,
+    });
+    if (!parsed.success) {
+        throw Object.assign(new Error('Workspace scope could not be materialized'), { code: 'workspace_ref_invalid' });
+    }
+    const next = Object.freeze([...workspaceRefs, parsed.data]);
+    return Object.freeze({ workspaceRefs: next, workspaceRef: parsed.data, created: true });
 }

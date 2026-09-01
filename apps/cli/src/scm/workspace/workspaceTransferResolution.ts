@@ -36,6 +36,7 @@ import {
     type ScmWorkspaceIntegrationWorkspaceTransferResult,
 } from './workspaceTransfer';
 import { buildNonPortableWorkspacePathError, WorkspaceTransferSourcePathError } from './workspaceTransferErrors';
+import { getPathRemainderWithinBase } from '@/session/handoff/paths/sessionHandoffPathNormalization';
 
 export { buildNonPortableWorkspacePathError } from './workspaceTransferErrors';
 
@@ -46,10 +47,55 @@ export type ScmWorkspaceIntegrationWorkspaceReplicationSourceInputs = Readonly<{
     isNestedRepoSourcePath: boolean;
 }>;
 
+export type ScmWorkspaceTransferRoot = Readonly<{
+    repositoryRoot: string;
+    sessionRelativeCwd: string;
+}>;
+
+/**
+ * Resolves the exact SCM worktree root that owns a finite transfer. The
+ * session cwd remains presentation/runtime state and is represented only as a
+ * contained relative path; it never narrows the repository materialization.
+ */
+export async function resolveWorkspaceTransferRootWithScmWorkspace(input: Readonly<{
+    sessionCwd: string;
+    registry?: ScmBackendRegistry;
+}>): Promise<ScmWorkspaceTransferRoot | null> {
+    return await runWithScmBackendRegistryLease(input.registry, async (registry) => {
+        const resolved = await resolveScmSelection({
+            workingDirectory: input.sessionCwd,
+            cwd: input.sessionCwd,
+            registry,
+        });
+        if (!resolved?.context.detection.isRepo || !resolved.context.detection.rootPath) return null;
+        const inspection = await resolved.selection.backend.workspaceIntegration?.inspectWorkspaceLocation?.({
+            context: resolved.context,
+        });
+        if (inspection?.scmProvider !== 'git') return null;
+        const [repositoryRoot, sessionCwd] = await Promise.all([
+            realpath(inspection.rootPath).catch(() => null),
+            realpath(input.sessionCwd).catch(() => null),
+        ]);
+        if (!repositoryRoot || !sessionCwd) {
+            throw Object.assign(new Error('Git worktree root or session directory is unavailable'), {
+                code: 'git_selection_unavailable',
+            });
+        }
+        const sessionRelativeCwd = getPathRemainderWithinBase(sessionCwd, repositoryRoot);
+        if (sessionRelativeCwd === null) {
+            throw Object.assign(new Error('Git session directory escapes the selected worktree root'), {
+                code: 'git_selection_unavailable',
+            });
+        }
+        return { repositoryRoot, sessionRelativeCwd };
+    });
+}
+
 async function resolveWorkspaceTransferStateWithScmWorkspace(
     input: Readonly<{
         sourcePath: string;
         workspaceTransfer: ScmWorkspaceIntegrationWorkspaceTransferRequestInput;
+        artifactDirectory?: string;
         registry: ScmBackendRegistry;
     }>,
 ): Promise<Readonly<{
@@ -97,6 +143,7 @@ async function resolveWorkspaceTransferStateWithScmWorkspace(
     const workspaceIntegrationInput = {
         context: resolved.context,
         workspaceTransfer,
+        ...(input.artifactDirectory ? { artifactDirectory: input.artifactDirectory } : {}),
     };
 
     if (workspaceIntegration?.resolveWorkspaceTransfer) {
@@ -245,7 +292,10 @@ export async function buildWorkspaceExportArtifactsWithBlobProviderFromWorkspace
     workspaceExportArtifacts: ScmWorkspaceIntegrationWorkspaceExportArtifacts;
     blobProvider?: WorkspaceExportBlobProvider;
 }>> {
-    const sourceInputs = await resolveWorkspaceReplicationSourceInputsWithScmWorkspace(input);
+    const sourceInputs = await resolveWorkspaceReplicationSourceInputsWithScmWorkspace({
+        ...input,
+        artifactDirectory: input.activeServerDir,
+    });
     const workspaceExportArtifacts = await buildWorkspaceExportArtifactsWithSourcePathBlobProviderFromTransferEntries({
         entries: sourceInputs.entries,
         shouldIgnoreAccessError: isIgnorableWorkspaceExportAccessError,
@@ -262,6 +312,7 @@ export async function buildWorkspaceExportArtifactsWithBlobProviderFromWorkspace
 export async function resolveWorkspaceReplicationSourceInputsWithScmWorkspace(input: Readonly<{
     sourcePath: string;
     workspaceTransfer: ScmWorkspaceIntegrationWorkspaceTransferRequestInput;
+    artifactDirectory?: string;
     registry?: ScmBackendRegistry;
 }>): Promise<ScmWorkspaceIntegrationWorkspaceReplicationSourceInputs> {
     return runWithScmBackendRegistryLease(input.registry, async (registry) => {

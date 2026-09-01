@@ -9,7 +9,6 @@ import { writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { configuration } from '@/configuration';
 import {
   writeCredentialsDataKey,
-  writeCredentialsLegacy,
   writeCredentialsTokenOnly,
   type Credentials,
   type StoredCredentials,
@@ -228,7 +227,7 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
           expiresAtMs: state.pairingExpiresAtMs,
         }
       : null;
-  if (pairingRequirement === 'v3' && !pairing) {
+  if (!pairing) {
     console.error(`${V3_REQUIRED_ERROR} Run \`happier auth request --json\` again.`);
     process.exit(1);
   }
@@ -291,26 +290,6 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
         process.exit(1);
       }
 
-      if (opened.type === 'legacy') {
-        await writeCredentialsLegacy({ secret: opened.key, token });
-        const credentials: Credentials = {
-          token,
-          encryption: {
-            type: 'legacy',
-            secret: opened.key,
-          },
-        };
-        const machineId = await completeClaimedCredentialHandoff({ credentials, statePath });
-        await writeJsonStdout({
-          success: true,
-          token,
-          encryptionType: 'legacy' as const,
-          pairingAuthentication: opened.authenticated ? 'v3' : 'legacy',
-          machineId,
-        });
-        return;
-      }
-
       if (opened.type === 'dataKey') {
         const machineKey = opened.key;
         const publicKey = tweetnacl.box.keyPair.fromSecretKey(machineKey).publicKey;
@@ -328,7 +307,7 @@ export async function handleAuthWait(argsRaw: string[]): Promise<void> {
           success: true,
           token,
           encryptionType: 'dataKey' as const,
-          pairingAuthentication: opened.authenticated ? 'v3' : 'legacy',
+          pairingAuthentication: 'v3' as const,
           machineId,
         });
         return;

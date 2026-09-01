@@ -4,35 +4,68 @@ import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
 
 import { isAuthenticationStatus } from '@/api/client/httpStatusError';
 import { resolveLoopbackHttpUrl } from '@/api/client/loopbackUrl';
+import { FeaturesResponseSchema } from '@happier-dev/protocol';
 
-export function createLoopbackReadinessProbe(params: Readonly<{
+export function createLoopbackHomeIdentityProbe(params: Readonly<{
   serverUrl: string;
-  token: string;
+  expectedServerIdentityId?: string;
 }>): () => Promise<ReadinessProbeResult> {
   const serverUrl = resolveLoopbackHttpUrl(params.serverUrl).replace(/\/+$/, '');
 
   return async () => {
     try {
-      const healthResponse = await axios.get(`${serverUrl}/health`, {
+      const featuresResponse = await axios.get(`${serverUrl}/v1/features`, {
         timeout: 5_000,
         validateStatus: () => true,
       });
 
-      if (healthResponse.status >= 500) {
+      if (featuresResponse.status >= 500) {
         return {
           status: 'retry_later',
-          errorMessage: `Health check returned ${healthResponse.status}`,
+          errorMessage: `Home identity probe returned ${featuresResponse.status}`,
         };
       }
+      if (featuresResponse.status >= 400) {
+        return {
+          status: 'server_unreachable',
+          errorMessage: `Home identity probe returned ${featuresResponse.status}`,
+        };
+      }
+      if (params.expectedServerIdentityId) {
+        const parsed = FeaturesResponseSchema.safeParse(featuresResponse.data);
+        const observedIdentity = parsed.success
+          ? parsed.data.capabilities.serverIdentity.serverIdentityId?.trim() ?? ''
+          : '';
+        if (observedIdentity !== params.expectedServerIdentityId) {
+          return {
+            status: 'auth_failed',
+            errorMessage: 'Home identity did not match the expected profile',
+          };
+        }
+      }
+      return { status: 'ready' };
     } catch (error) {
       return {
         status: 'server_unreachable',
         errorMessage: error instanceof Error ? error.message : String(error),
       };
     }
+  };
+}
+
+export function createLoopbackReadinessProbe(params: Readonly<{
+  serverUrl: string;
+  token: string;
+  expectedServerIdentityId?: string;
+}>): () => Promise<ReadinessProbeResult> {
+  const serverUrl = resolveLoopbackHttpUrl(params.serverUrl).replace(/\/+$/, '');
+
+  return async () => {
+    const identity = await createLoopbackHomeIdentityProbe(params)();
+    if (identity.status !== 'ready') return identity;
 
     try {
-      const authResponse = await axios.get(`${serverUrl}/v1/features`, {
+      const authResponse = await axios.get(`${serverUrl}/v1/auth/ping`, {
         timeout: 5_000,
         validateStatus: () => true,
         headers: {
@@ -52,6 +85,13 @@ export function createLoopbackReadinessProbe(params: Readonly<{
       if (authResponse.status >= 500) {
         return {
           status: 'retry_later',
+          errorMessage: `Authenticated probe returned ${authResponse.status}`,
+        };
+      }
+
+      if (authResponse.status >= 400) {
+        return {
+          status: 'server_unreachable',
           errorMessage: `Authenticated probe returned ${authResponse.status}`,
         };
       }

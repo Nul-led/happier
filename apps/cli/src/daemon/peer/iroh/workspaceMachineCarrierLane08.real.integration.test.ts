@@ -162,7 +162,9 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
     const rootOwnershipManager = createWorkspaceRootOwnershipManager({ lockDirectory });
     const snapshot = settingsSnapshot(sourceRoot, targetRoot);
     const callMachineRpc = vi.fn(async () => { throw new Error('Composed target ingress must remain local'); });
+    let targetIngressFailure: string | null = null;
     const targetAuthority = createWorkspaceSyncTargetAuthority({
+      localServerId: 'server-1',
       localMachineId: targetMachineId,
       getSettingsSnapshot: () => snapshot,
       callMachineRpc,
@@ -182,6 +184,7 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
       await targetAuthority.prepareBootstrapHere({
         v: 1,
         bootstrapOperationId: operationId,
+        targetBootstrap: 'use_existing',
         owner: {
           kind: 'copy_once',
           operation: {
@@ -247,13 +250,17 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
           localEndpointId: targetRuntime.endpoint.endpointId,
           role: 'acceptor',
           allowedFlows: ['workspace_sync'],
-          resolveApplicationPort: async ({ handshake }) => {
+          resolveApplicationTarget: async ({ handshake }) => {
+            if (handshake.initiator.kind !== 'machine') return null;
             const ingress = await targetAuthority.acquireWorkspaceSyncMachineIngress({
               operationId: handshake.operationId,
-              sourceMachineId: handshake.sourceMachineId,
-              targetMachineId: handshake.targetMachineId,
+              sourceMachineId: handshake.initiator.machineId,
+              targetMachineId: handshake.target.machineId,
+            }).catch((error: unknown) => {
+              targetIngressFailure = error instanceof Error ? error.message : String(error);
+              throw error;
             });
-            return ingress.port;
+            return { port: ingress.port, localCapability: ingress.localCapability };
           },
         },
       });
@@ -295,7 +302,7 @@ describe('production workspace opener -> native machine/1 -> Lane 08 ingress', (
           acceptorHandle ? native.getMachineAcceptorStatus(acceptorHandle) : null,
           tunnelStarted ? native.getMachineTunnelStatus(tunnelStarted.machineTunnelId) : null,
         ]);
-        throw new Error(`No composed echo: ${JSON.stringify({ rootedAgents: rootedAgents.length, acceptorStatus, tunnelStatus })}`, { cause: error });
+        throw new Error(`No composed echo: ${JSON.stringify({ rootedAgents: rootedAgents.length, targetIngressFailure, acceptorStatus, tunnelStatus })}`, { cause: error });
       }
       expect(Buffer.from(echoedBytes)).toEqual(payload);
       expect(payload.byteLength).toBeGreaterThan(0);

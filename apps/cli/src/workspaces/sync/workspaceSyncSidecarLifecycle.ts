@@ -64,7 +64,11 @@ export type WorkspaceSyncSidecarLifecycleDependencies = Readonly<{
   onRestartReady(): Promise<void>;
   /** Grace period for the acknowledged sidecar shutdown to exit naturally. */
   shutdownGraceMs?: number;
+  /** One deadline for child spawn, authenticated HELLO, and the initial manager probe. */
+  startupDeadlineMs?: number;
 }>;
+
+export const WORKSPACE_SYNC_SIDECAR_STARTUP_DEADLINE_MS = 15_000;
 
 export class WorkspaceSyncEngineError extends Error {
   constructor(readonly code: 'engine_unavailable', message: string, options?: ErrorOptions) {
@@ -201,16 +205,50 @@ export class WorkspaceSyncSidecarLifecycle {
         launchSecret,
         openExternalStream: this.dependencies.openExternalStream,
       });
-      process = await this.dependencies.spawn({
-        executablePath: runtime.managerPath,
-        args: ['--daemon', '--data-directory', runtime.dataDir, '--broker-descriptor', '3'],
-        inheritedBrokerDescriptor: broker.bootstrapDescriptor,
-        onSpawned: (pid) => broker?.setExpectedSidecarPid?.(pid),
+      const startupDeadlineMs = this.dependencies.startupDeadlineMs
+        ?? WORKSPACE_SYNC_SIDECAR_STARTUP_DEADLINE_MS;
+      let startupTimer: ReturnType<typeof setTimeout> | undefined;
+      const startupDeadline = new Promise<never>((_resolve, reject) => {
+        startupTimer = setTimeout(
+          () => reject(new Error('sidecar startup deadline exceeded')),
+          startupDeadlineMs,
+        );
+        startupTimer.unref();
       });
-      this.activeBroker = broker;
-      this.activeProcess = process;
-      await broker.waitForReady(process.pid);
-      await broker.command({ t: 'list', requestId: this.dependencies.randomId() });
+      let termination!: Promise<TerminationEvent>;
+      try {
+        const spawn = this.dependencies.spawn({
+          executablePath: runtime.managerPath,
+          args: ['--daemon', '--data-directory', runtime.dataDir, '--broker-descriptor', '3'],
+          inheritedBrokerDescriptor: broker.bootstrapDescriptor,
+          onSpawned: (pid) => broker?.setExpectedSidecarPid?.(pid),
+        });
+        try {
+          process = await Promise.race([spawn, startupDeadline]);
+        } catch (error) {
+          void spawn.then(
+            async (lateProcess) => await lateProcess.stop().catch(() => undefined),
+            () => undefined,
+          );
+          throw error;
+        }
+        this.activeBroker = broker;
+        this.activeProcess = process;
+        termination = process.waitForTermination();
+        const startup = (async () => {
+          await broker.waitForReady(process.pid);
+          await broker.command({ t: 'list', requestId: this.dependencies.randomId() });
+        })();
+        await Promise.race([
+          startup,
+          termination.then((event) => {
+            throw new Error(`sidecar terminated before readiness: ${JSON.stringify(event)}`);
+          }),
+          startupDeadline,
+        ]);
+      } finally {
+        if (startupTimer !== undefined) clearTimeout(startupTimer);
+      }
       this.authenticated = true;
       this.currentAuthenticatedReadiness?.resolve();
       this.currentAuthenticatedReadiness = null;
@@ -225,7 +263,7 @@ export class WorkspaceSyncSidecarLifecycle {
       this.completedInitialStart = true;
       this.currentReadiness?.resolve();
       this.currentReadiness = null;
-      return { pid: process.pid, waitForTermination: process.waitForTermination };
+      return { pid: process.pid, waitForTermination: async () => await termination };
     } catch (error) {
       await process?.stop().catch(() => undefined);
       await broker?.close().catch(() => undefined);

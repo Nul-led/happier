@@ -1,11 +1,11 @@
 import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { connect as netConnect, type Server, type Socket } from 'node:net';
+import { connect as netConnect, createServer, Socket } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { Duplex } from 'node:stream';
 import { once } from 'node:events';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { listenWorkspaceSyncBroker, createWorkspaceSyncBrokerEndpoint, type WorkspaceSyncBroker } from './workspaceSyncBroker';
 import { WorkspaceSyncBrokerClient } from './workspaceSyncBrokerClient';
@@ -256,6 +256,17 @@ describe('workspace sync broker moving bytes over real OS IPC', () => {
 });
 
 describe('workspace sync broker authentication and attach rules', () => {
+  it('settles unauthenticated readiness when the broker closes', async () => {
+    const fixture = await startBroker();
+    const outcome = Promise.race([
+      fixture.broker.whenReady.then(() => 'ready', (error: unknown) => error),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 100)),
+    ]);
+    await fixture.broker.close();
+    await expect(outcome).resolves.toMatchObject({ code: 'agent_unavailable' });
+    await rm(fixture.directory, { recursive: true, force: true });
+  });
+
   it('does not head-of-line block an independent open while another remote open is stalled', async () => {
     const stalledEndpoint = deriveWorkspaceSyncEndpointId('rel-stalled', 'alpha');
     const readyEndpoint = deriveWorkspaceSyncEndpointId('rel-ready', 'beta');
@@ -455,27 +466,39 @@ describe('workspace sync broker authentication and attach rules', () => {
     socket.destroy();
   });
 
-  it('creates private POSIX endpoints and keeps Windows pipe details behind one abstraction', async () => {
+  it('creates private POSIX endpoints and delegates Windows listening to the secured native relay', async () => {
     const fixture = await useFixture(await startBroker());
     if (process.platform !== 'win32') {
       expect((await stat(fixture.directory)).mode & 0o777).toBe(0o700);
       expect((await stat(fixture.socketPath)).mode & 0o777).toBe(0o600);
     }
-    const windows = createWorkspaceSyncBrokerEndpoint({ endpointPath: 'broker-id', platform: 'win32' });
+    let relayConnection: ((socket: Socket, peerPid: number) => void) | undefined;
+    const closeRelay = vi.fn(async () => {});
+    const startWindowsRelay = vi.fn(async (input: Readonly<{
+      pipeName: string;
+      onConnection(socket: Socket, peerPid: number): void;
+    }>) => {
+      relayConnection = input.onConnection;
+      return { close: closeRelay };
+    });
+    const windows = createWorkspaceSyncBrokerEndpoint({
+      endpointPath: 'broker-id',
+      platform: 'win32',
+      startWindowsRelay,
+    });
     expect(windows.kind).toBe('named_pipe');
     expect(windows.endpointPath).toMatch(/^\\\\\.\\pipe\\happier-workspace-sync-/u);
 
-    let listenCalls = 0;
-    const unsafeDefaultDaclServer = {
-      once: () => unsafeDefaultDaclServer,
-      off: () => unsafeDefaultDaclServer,
-      listen: () => {
-        listenCalls += 1;
-        throw new Error('bound with the process token default DACL');
-      },
-    } as unknown as Server;
-    await expect(windows.listen(unsafeDefaultDaclServer)).rejects.toThrow('user-only security descriptor');
-    expect(listenCalls).toBe(0);
+    const logicalServer = createServer();
+    const accepted = new Promise<Socket>((resolve) => logicalServer.once('connection', resolve));
+    await windows.listen(logicalServer);
+    expect(startWindowsRelay).toHaveBeenCalledWith(expect.objectContaining({ pipeName: windows.endpointPath }));
+    const relayedSocket = new Socket({ readable: false, writable: false });
+    relayConnection?.(relayedSocket, 4242);
+    await expect(accepted).resolves.toBe(relayedSocket);
+    expect(windows.peerPid(relayedSocket)).toBe(4242);
+    await windows.remove();
+    expect(closeRelay).toHaveBeenCalledOnce();
   });
 
   it('admits one authenticated sidecar owner and applies peer identity checks to control and data sockets', async () => {

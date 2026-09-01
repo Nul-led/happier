@@ -5,9 +5,10 @@
  * account still needs a registered machine identity. Auth login, auth status,
  * setup, and the installers all consume this same decision.
  *
- * An unreachable relay is not treated as a rejection. Only a definitive
- * invalid response makes `authenticated` false; transient reachability leaves
- * the stored sign-in intact.
+ * An unreachable relay is not treated as a rejection and never deletes the
+ * stored sign-in. It is also not reported as authenticated: callers receive
+ * the explicit `unknown` validation state and decide whether they can proceed
+ * without a current server fact.
  */
 
 import {
@@ -22,12 +23,16 @@ import {
 } from './validateStoredAuthTokenAgainstActiveServer';
 
 export type ActiveServerAuthUnusableReason = 'no-credentials' | 'credentials-rejected';
+export type CredentialReadinessState = 'missing' | 'valid' | 'invalid' | 'unknown';
+export type MachineRegistrationState = 'no-local-id' | 'local-only' | 'server-confirmed';
 
 export type ActiveServerAuthReadiness = Readonly<{
   credentials: StoredCredentials | null;
+  credentialState: CredentialReadinessState;
   authenticated: boolean;
   unusableReason: ActiveServerAuthUnusableReason | null;
   machineId: string | null;
+  machineRegistrationState: MachineRegistrationState;
   machineRegistered: boolean;
 }>;
 
@@ -55,25 +60,35 @@ export async function resolveActiveServerAuthReadiness(
   // `machineId` is only a locally allocated identity. The scoped confirmation
   // bit is written by the canonical registration owner after the Home accepts
   // that identity, and is cleared when credentials/account identity changes.
-  const machineRegistered = machineId !== null && settings?.machineIdConfirmedByServer === true;
+  const machineRegistrationState: MachineRegistrationState = machineId === null
+    ? 'no-local-id'
+    : settings?.machineIdConfirmedByServer === true
+      ? 'server-confirmed'
+      : 'local-only';
+  const machineRegistered = machineRegistrationState === 'server-confirmed';
 
   if (!credentials) {
     return {
       credentials: null,
+      credentialState: 'missing',
       authenticated: false,
       unusableReason: 'no-credentials',
       machineId,
-      machineRegistered: false,
+      machineRegistrationState,
+      machineRegistered,
     };
   }
 
   const validation = await validateTokenFn(credentials.token);
-  const rejected = validation.state === 'invalid';
+  const credentialState: CredentialReadinessState = validation.state;
+  const rejected = credentialState === 'invalid';
   return {
     credentials,
-    authenticated: !rejected,
+    credentialState,
+    authenticated: credentialState === 'valid',
     unusableReason: rejected ? 'credentials-rejected' : null,
     machineId,
+    machineRegistrationState,
     machineRegistered,
   };
 }

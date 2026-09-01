@@ -23,10 +23,13 @@ import {
 
 import {
     createPeerTcpTunnelApplicationSubstreamSession,
+    createLegacyJsonPeerTcpTunnelStreamSession,
     createPeerTcpTunnelSubstreamMuxSession,
     createPeerTcpTunnelStreamSession,
     decodePeerTcpTunnelBinaryFrameForSession,
     encodePeerTcpTunnelBinaryFrameForSession,
+    type LegacyJsonPeerTcpTunnelFrame,
+    type PeerTcpTunnelFrame,
 } from './frames';
 import { isPeerTcpTunnelLoopbackDestinationHost, type PeerTcpTunnelTcpConnection } from './open';
 import {
@@ -53,7 +56,8 @@ type PeerTcpTunnelRelaySocket = Readonly<{
 }>;
 
 type ActiveRelayTunnel = Readonly<{
-    session?: ReturnType<typeof createPeerTcpTunnelStreamSession>;
+    session?: ReturnType<typeof createPeerTcpTunnelStreamSession>
+        | ReturnType<typeof createLegacyJsonPeerTcpTunnelStreamSession>;
     applicationSubstreams?: ReturnType<typeof createPeerTcpTunnelApplicationSubstreamSession>;
     substreamMux?: ReturnType<typeof createPeerTcpTunnelSubstreamMuxSession>;
     encoding: PeerTcpTunnelEncoding;
@@ -112,9 +116,13 @@ function selectedOpenEncoding(frame: PeerTcpTunnelFrameV1): PeerTcpTunnelEncodin
         : PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1;
 }
 
-function dataFrameBytes(frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>): number {
+type SessionFrame = PeerTcpTunnelFrame | LegacyJsonPeerTcpTunnelFrame;
+
+function dataFrameBytes(frame: SessionFrame): number {
     if (frame.kind !== 'data') return 0;
-    return Buffer.byteLength(frame.payloadBase64, 'base64');
+    return 'payload' in frame
+        ? frame.payload.byteLength
+        : Buffer.byteLength(frame.payloadBase64, 'base64');
 }
 
 function buildEnvelope(input: Readonly<{
@@ -134,7 +142,7 @@ function buildEnvelope(input: Readonly<{
 function buildBinaryEnvelope(input: Readonly<{
     accountId: string;
     machineId: string;
-    frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>;
+    frame: PeerTcpTunnelFrame;
 }>): PeerTcpTunnelRelayBinaryEnvelopeV2 {
     return {
         v: 2,
@@ -243,7 +251,7 @@ export function registerPeerTcpTunnelRelayTerminator(
     }
 
     async function recordFrameBytes(
-        frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>,
+        frame: SessionFrame,
         maxTotalBytes?: number,
     ): Promise<boolean> {
         if (frame.kind !== 'data') return true;
@@ -276,16 +284,12 @@ export function registerPeerTcpTunnelRelayTerminator(
         }));
     }
 
-    function emitSessionFrame(encoding: PeerTcpTunnelEncoding, frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>): void {
-        if (encoding === PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2) {
-            options.socket.emit(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, buildBinaryEnvelope({
-                accountId: options.accountId,
-                machineId: options.machineId,
-                frame,
-            }));
-            return;
-        }
-        emitFrame(frame);
+    function emitBinarySessionFrame(frame: PeerTcpTunnelFrame): void {
+        options.socket.emit(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, buildBinaryEnvelope({
+            accountId: options.accountId,
+            machineId: options.machineId,
+            frame,
+        }));
     }
 
     function emitAbort(tunnelId: string, reasonCode: string): void {
@@ -358,7 +362,7 @@ export function registerPeerTcpTunnelRelayTerminator(
         return true;
     }
 
-    function isTerminalFrame(frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>): boolean {
+    function isTerminalFrame(frame: SessionFrame): boolean {
         return frame.kind === 'close' || frame.kind === 'abort';
     }
 
@@ -537,31 +541,40 @@ export function registerPeerTcpTunnelRelayTerminator(
         grantReservation.commit();
 
         const encoding = selectedOpenEncoding(envelope.frame);
-        const binarySessionCaps = encoding === PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2
+        const commonSessionInput = connection
             ? {
-                maxEncodedFrameBytes: Number.MAX_SAFE_INTEGER,
-                maxDecodedPayloadBytes: maxRawPayloadBytes,
-                maxSendChunkBytes: maxRawPayloadBytes,
+                tunnelId,
+                initialWindowBytes: options.initialWindowBytes ?? PEER_TCP_TUNNEL_DEFAULT_INITIAL_WINDOW_BYTES,
+                maxFrameBytes,
+                maxIdleMs: verification.payload.maxIdleMs,
+                maxDurationMs: verification.payload.maxDurationMs,
+                maxTotalBytes: verification.payload.maxTotalBytes,
+                connection,
+                nowMs: options.nowMs,
             }
-            : {};
-        const session = connection
-            ? createPeerTcpTunnelStreamSession({
-            tunnelId,
-            initialWindowBytes: options.initialWindowBytes ?? PEER_TCP_TUNNEL_DEFAULT_INITIAL_WINDOW_BYTES,
-            maxFrameBytes,
-            ...binarySessionCaps,
-            maxIdleMs: verification.payload.maxIdleMs,
-            maxDurationMs: verification.payload.maxDurationMs,
-            maxTotalBytes: verification.payload.maxTotalBytes,
-            connection,
-            sendFrame: async (frame) => {
-                if (frame.kind === 'open') return;
-                if (!await recordFrameBytes(frame, verification.payload.maxTotalBytes)) return;
-                emitSessionFrame(encoding, frame);
-            },
-            nowMs: options.nowMs,
-            })
-            : undefined;
+            : null;
+        const session = !commonSessionInput
+            ? undefined
+            : encoding === PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2
+                ? createPeerTcpTunnelStreamSession({
+                    ...commonSessionInput,
+                    maxDecodedPayloadBytes: maxRawPayloadBytes,
+                    maxSendChunkBytes: maxRawPayloadBytes,
+                    sendFrame: async (frame) => {
+                        if (!await recordFrameBytes(frame, verification.payload.maxTotalBytes)) return;
+                        emitBinarySessionFrame(frame);
+                    },
+                })
+                : createLegacyJsonPeerTcpTunnelStreamSession({
+                    ...commonSessionInput,
+                    maxEncodedFrameBytes: maxFrameBytes,
+                    maxDecodedPayloadBytes: maxRawPayloadBytes,
+                    maxSendChunkBytes: maxRawPayloadBytes,
+                    sendFrame: async (frame) => {
+                        if (!await recordFrameBytes(frame, verification.payload.maxTotalBytes)) return;
+                        emitFrame(frame);
+                    },
+                });
         const resolvedSubstreamCaps = resolveSubstreamCaps({
             configured: options.substreamCaps,
             authorization: verification.payload,
@@ -667,7 +680,7 @@ export function registerPeerTcpTunnelRelayTerminator(
         }
 
         let tunnelId: string;
-        let frame: Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>;
+        let frame: SessionFrame;
         if (envelope.v === 1) {
             tunnelId = frameTunnelId(envelope.frame);
             frame = envelope.frame as Exclude<PeerTcpTunnelFrameV1, { kind: 'open' }>;

@@ -27,6 +27,33 @@ describe('deleteWorkspaceSyncConflictLoserAtRoot', () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it('rejects a file deletion that omits the digest precondition', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'workspace-sync-conflict-'));
+    const path = join(root, 'loser.txt');
+    await writeFile(path, 'loser');
+    await expect(deleteWorkspaceSyncConflictLoserAtRoot({
+      rootPath: root,
+      relativePath: 'loser.txt',
+      expectedKind: 'file',
+    })).rejects.toMatchObject({ code: 'conflict_resolution_unsupported' });
+    await expect(readFile(path, 'utf8')).resolves.toBe('loser');
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('rejects a digest on a non-file deletion precondition', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'workspace-sync-conflict-'));
+    const path = join(root, 'loser-directory');
+    await writeFile(path, 'not-a-directory');
+    await expect(deleteWorkspaceSyncConflictLoserAtRoot({
+      rootPath: root,
+      relativePath: 'loser-directory',
+      expectedKind: 'directory',
+      expectedDigest: '0'.repeat(40),
+    })).rejects.toMatchObject({ code: 'conflict_resolution_unsupported' });
+    await expect(readFile(path, 'utf8')).resolves.toBe('not-a-directory');
+    await rm(root, { recursive: true, force: true });
+  });
+
   it('revalidates retained authority after file preconditions and immediately before mutation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'workspace-sync-conflict-'));
     const path = join(root, 'loser.txt');
@@ -48,7 +75,12 @@ describe('deleteWorkspaceSyncConflictLoserAtRoot', () => {
     const root = await mkdtemp(join(tmpdir(), 'workspace-sync-conflict-'));
     await expect(deleteWorkspaceSyncConflictLoserAtRoot({ rootPath: root, relativePath: '.', expectedKind: 'directory' }))
       .rejects.toMatchObject({ code: 'conflict_resolution_unsupported' });
-    await expect(deleteWorkspaceSyncConflictLoserAtRoot({ rootPath: root, relativePath: '../outside', expectedKind: 'file' }))
+    await expect(deleteWorkspaceSyncConflictLoserAtRoot({
+      rootPath: root,
+      relativePath: '../outside',
+      expectedKind: 'file',
+      expectedDigest: '0'.repeat(40),
+    }))
       .rejects.toMatchObject({ code: 'conflict_resolution_unsupported' });
     await rm(root, { recursive: true, force: true });
   });

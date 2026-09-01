@@ -118,6 +118,32 @@ afterEach(() => {
 });
 
 describe('handleHomeCommand', () => {
+  it('invokes the installed destination-local relocation task contract without exposing a data directory', async () => {
+    const staged = success('stage', { operationId: 'operation-1', status: 'quarantined' });
+    const { deps, start } = createDeps([homeStatus, staged]);
+    await handleHomeCommand([
+      'relocation-destination', 'stage',
+      '--operation-id', 'operation-1',
+      '--archive', '/incoming/home.tar',
+      '--bundle-sha256', 'a'.repeat(64),
+      '--expected-home-id', 'home-1',
+      '--expected-canonical-server-url', 'https://source.example.test',
+      '--source-descriptor-revision', '7',
+      '--json',
+    ], deps);
+    expect(start).toHaveBeenNthCalledWith(2, { spec: expect.objectContaining({
+      kind: PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationStage,
+      params: expect.objectContaining({
+        operationId: 'operation-1',
+        archivePath: '/incoming/home.tar',
+        expectedCanonicalServerUrl: 'https://source.example.test',
+        sourceDescriptorRevision: 7,
+      }),
+    }) });
+    const params = (start.mock.calls[1]?.[0] as { spec: SystemTaskSpec }).spec.params as Record<string, unknown>;
+    expect(params).not.toHaveProperty('destinationDataDir');
+  });
+
   it('selects the existing live task composition with explicit runtime channel and mode', async () => {
     const createRunner = vi.fn((runtime: Readonly<{ channel: 'stable' | 'preview' | 'dev'; mode: 'user' | 'system' }>) => createDeps([homeStatus, success('inspect', nonEmptyInspectionData)]).deps.createRunner(runtime));
     const deps: HomeCommandDeps = {
@@ -228,6 +254,8 @@ describe('handleHomeCommand', () => {
       kind: PERSONAL_HOME_SYSTEM_TASK_KINDS.backup,
       params: {
         target: { kind: 'local' },
+        channel: 'stable',
+        mode: 'user',
         purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:53288' },
         outputPath: '/work/backup.tar',
       },
@@ -295,6 +323,8 @@ describe('handleHomeCommand', () => {
       kind: PERSONAL_HOME_SYSTEM_TASK_KINDS.restore,
       params: {
         target: { kind: 'local' },
+        channel: 'stable',
+        mode: 'user',
         purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:53288' },
         archivePath: '/work/backup.tar',
         confirmOverwrite: true,
@@ -331,6 +361,8 @@ describe('handleHomeCommand', () => {
       kind: PERSONAL_HOME_SYSTEM_TASK_KINDS.restore,
       params: {
         target: { kind: 'local' },
+        channel: 'stable',
+        mode: 'user',
         purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:53288' },
         archivePath: '/work/backup.tar',
         expectedHomeServerIdentityId: 'home-from-backup',
@@ -375,10 +407,10 @@ describe('handleHomeCommand', () => {
     expect(respond).toHaveBeenCalledWith({ taskId: 'task-2', answer: { confirmed: true } });
   });
 
-  it('does not treat --yes as backup consent while keeping the interactive backup offer', async () => {
+  it('uses --yes only for erase and never adds a preliminary backup prompt', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const erased = success('erase', { removedPaths: ['/data/home'] });
-    const prompt = vi.fn(async () => 'no');
+    const prompt = vi.fn(async () => 'yes');
     const { deps, start, respond } = createDeps([homeStatus, erasePrompt(erased)], {
       isInteractiveTerminal: () => true,
       promptInput: prompt,
@@ -390,43 +422,23 @@ describe('handleHomeCommand', () => {
       'relay.runtime.status.v1',
       PERSONAL_HOME_SYSTEM_TASK_KINDS.erase,
     ]);
-    expect(prompt).toHaveBeenCalledOnce();
-    expect(prompt.mock.calls[0]?.[0]).toMatch(/verified Personal Home backup/i);
+    expect(prompt).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith({ taskId: 'task-2', answer: { confirmed: true } });
   });
 
-  it('creates a verified external backup before noninteractive erase only with --backup-first and --backup-output', async () => {
+  it('rejects retired embedded backup flags and keeps backup as a separate command', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    const backup = success('backup', { path: '/safe/verified.tar', sha256: 'abc', manifest: { homeServerIdentityId: 'home-1' } });
-    const erased = success('erase', { removedPaths: ['/data/home'] });
-    const { deps, start, respond } = createDeps([homeStatus, backup, erasePrompt(erased)]);
+    const { deps, start } = createDeps([homeStatus]);
 
-    await handleHomeCommand(['erase', '--backup-first', '--backup-output', '/safe/verified.tar', '--yes'], deps);
+    await expect(handleHomeCommand(['erase', '--backup-first', '--backup-output', '/safe/verified.tar', '--yes'], deps))
+      .rejects.toMatchObject({ code: 'invalid_params' });
 
-    expect(start.mock.calls.map(([input]) => input.spec.kind)).toEqual([
-      'relay.runtime.status.v1',
-      PERSONAL_HOME_SYSTEM_TASK_KINDS.backup,
-      PERSONAL_HOME_SYSTEM_TASK_KINDS.erase,
-    ]);
-    expect(start.mock.calls[1]?.[0].spec.params).toEqual(expect.objectContaining({ outputPath: '/safe/verified.tar', intent: 'erase-safety' }));
-    expect(respond).toHaveBeenCalledWith({ taskId: 'task-3', answer: { confirmed: true } });
+    expect(start.mock.calls.map(([input]) => input.spec.kind)).toEqual(['relay.runtime.status.v1']);
   });
 
-  it('refuses a safety backup inside any canonical erase or configuration root', async () => {
-    const rejected = failure('backup', 'unsafe_data_root', 'outside Home roots');
-    const { deps, start } = createDeps([homeStatus, rejected]);
-
-    await expect(handleHomeCommand(['erase', '--backup-first', '--backup-output', '/data/home/backups/will-be-erased.tar', '--yes'], deps))
-      .rejects.toMatchObject({ code: 'unsafe_data_root' });
-    expect(start.mock.calls.map(([input]) => input.spec.kind)).toEqual([
-      'relay.runtime.status.v1',
-      PERSONAL_HOME_SYSTEM_TASK_KINDS.backup,
-    ]);
-  });
-
-  it('interactive erase can skip backup and declines only at the exact owner-held path prompt', async () => {
+  it('interactive erase declines at the single exact owner-held path prompt', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    const answers = ['no', 'no'];
+    const answers = ['no'];
     const prompt = vi.fn(async (_message: string) => answers.shift() ?? 'no');
     const declined = failure('erase', 'confirmation_required', 'Personal Home data deletion was not explicitly confirmed.');
     const { deps, start } = createDeps([homeStatus, erasePrompt(declined)], {
@@ -435,89 +447,13 @@ describe('handleHomeCommand', () => {
     });
 
     await expect(handleHomeCommand(['erase'], deps)).rejects.toMatchObject({ code: 'confirmation_required' });
-    expect(prompt.mock.calls[1]?.[0]).toContain('/data/home/database/home.sqlite');
-    expect(prompt.mock.calls[1]?.[0]).toContain('4096');
-    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(prompt.mock.calls[0]?.[0]).toContain('http://127.0.0.1:53288');
+    expect(prompt.mock.calls[0]?.[0]).toContain('home-1');
+    expect(prompt.mock.calls[0]?.[0]).toContain('/data/home/database/home.sqlite');
+    expect(prompt.mock.calls[0]?.[0]).toContain('4096');
+    expect(prompt).toHaveBeenCalledTimes(1);
     expect(start.mock.calls.some(([input]) => input.spec.kind === PERSONAL_HOME_SYSTEM_TASK_KINDS.backup)).toBe(false);
     expect(start.mock.calls.some(([input]) => input.spec.kind === PERSONAL_HOME_SYSTEM_TASK_KINDS.erase)).toBe(true);
   });
 
-  it('interactive erase creates a verified backup first and then declines the owner-held erase prompt', async () => {
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-    const backup = success('backup', { path: '/safe/verified.tar', sha256: 'abc', manifest: { homeServerIdentityId: 'home-1' } });
-    const answers = ['yes', '/safe/verified.tar', 'no'];
-    const prompt = vi.fn(async (_message: string) => answers.shift() ?? 'no');
-    const declined = failure('erase', 'confirmation_required', 'Personal Home data deletion was not explicitly confirmed.');
-    const { deps, start } = createDeps([homeStatus, backup, erasePrompt(declined)], {
-      isInteractiveTerminal: () => true,
-      promptInput: prompt,
-    });
-
-    await expect(handleHomeCommand(['erase'], deps)).rejects.toMatchObject({ code: 'confirmation_required' });
-    expect(start.mock.calls.map(([input]) => input.spec.kind)).toEqual([
-      'relay.runtime.status.v1',
-      PERSONAL_HOME_SYSTEM_TASK_KINDS.backup,
-      PERSONAL_HOME_SYSTEM_TASK_KINDS.erase,
-    ]);
-    expect(prompt).toHaveBeenCalledTimes(3);
-  });
-
-  it('interactive erase starts only after verified backup and final explicit confirmation', async () => {
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-    const backup = success('backup', { path: '/safe/verified.tar', sha256: 'abc', manifest: { homeServerIdentityId: 'home-1' } });
-    const erased = success('erase', { removedPaths: ['/data/home/database/home.sqlite'] });
-    const answers = ['yes', '/safe/verified.tar', 'yes'];
-    const prompt = vi.fn(async (_message: string) => answers.shift() ?? 'no');
-    const { deps, start } = createDeps([homeStatus, backup, erasePrompt(erased)], {
-      isInteractiveTerminal: () => true,
-      promptInput: prompt,
-    });
-
-    await handleHomeCommand(['erase'], deps);
-    expect(start.mock.calls.map(([input]) => input.spec.kind)).toEqual([
-      'relay.runtime.status.v1',
-      PERSONAL_HOME_SYSTEM_TASK_KINDS.backup,
-      PERSONAL_HOME_SYSTEM_TASK_KINDS.erase,
-    ]);
-    expect(prompt).toHaveBeenCalledTimes(3);
-    expect(prompt.mock.calls[2]?.[0]).toContain('/data/home/database/home.sqlite');
-    expect(prompt.mock.calls[2]?.[0]).toContain('/data/home/files/public');
-    expect(prompt.mock.calls[2]?.[0]).toContain('4096');
-  });
-
-  it('fails relocation before the relocation task when the canonical target resolver is unavailable', async () => {
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-    const inspected = success('inspect', { identity: { homeServerIdentityId: 'home-1' } });
-    const { deps, start } = createDeps([homeStatus, inspected]);
-
-    await expect(handleHomeCommand(['relocate', '--target', 'machine-2', '--yes'], deps))
-      .rejects.toThrow(/destination descriptor resolver is unavailable/i);
-    expect(start.mock.calls.some(([input]) => input.spec.kind === PERSONAL_HOME_SYSTEM_TASK_KINDS.relocate)).toBe(false);
-  });
-
-  it('relocation passes only canonical destination target facts and no callbacks', async () => {
-    vi.spyOn(console, 'log').mockImplementation(() => {});
-    const inspected = success('inspect', { identity: { homeServerIdentityId: 'home-1' } });
-    const relocated = success('relocate', { homeServerIdentityId: 'home-1', destinationVerified: true });
-    const descriptor = {
-      v: 1 as const,
-      homeServerIdentityId: 'home-1',
-      canonicalServerUrl: 'https://home-2.example.test',
-      revision: 1,
-      endpoints: [{ kind: 'https' as const, url: 'https://home-2.example.test' }],
-    };
-    const { deps, start } = createDeps([homeStatus, inspected, relocated], {
-      resolveRelocationDestination: async (targetId) => ({ targetId, descriptor }),
-    });
-
-    await handleHomeCommand(['relocate', '--target', 'machine-2', '--yes'], deps);
-
-    const params = start.mock.calls[2]?.[0].spec.params;
-    expect(params).toEqual({
-      target: { kind: 'local' },
-      purpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:53288' },
-      destination: { targetId: 'machine-2', descriptor },
-    });
-    expect(JSON.stringify(params)).not.toMatch(/callback|transfer|commit/i);
-  });
 });

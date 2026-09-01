@@ -2,7 +2,7 @@ import { ApiClient } from '@/api/api';
 import { ensureMachineRegistered } from '@/api/machine/ensureMachineRegistered';
 import type { MachineMetadata } from '@/api/types';
 import { startCaffeinate } from '@/integrations/caffeinate';
-import { acquireDaemonLock } from '@/persistence';
+import { acquireDaemonLock, readStoredCredentials } from '@/persistence';
 import { logger } from '@/ui/logger';
 import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 
@@ -24,6 +24,12 @@ export async function prepareDaemonBootstrapContext(
         daemonLockHandle: Awaited<ReturnType<typeof acquireDaemonLock>>;
         initialMachineMetadata: MachineMetadata;
         startupSource: DaemonStartupSource;
+        prepareServerTransport?: (input: Readonly<{
+            persistedCredentials: Awaited<ReturnType<typeof readStoredCredentials>>;
+        }>) => Promise<void>;
+        verifyServerTransport?: (input: Readonly<{
+            credentials: Awaited<ReturnType<typeof authAndSetupMachineIfNeeded>>['credentials'];
+        }>) => Promise<void>;
     }>,
 ): Promise<Readonly<{
     daemonLockHandle: Awaited<ReturnType<typeof acquireDaemonLock>>;
@@ -35,11 +41,15 @@ export async function prepareDaemonBootstrapContext(
     machineId: string;
     deviceLocalSecretStorage: DeviceLocalSecretStorage;
 }>> {
+    const persistedCredentials = await readStoredCredentials();
+    await params.prepareServerTransport?.({ persistedCredentials });
+
     const auth = await authAndSetupMachineIfNeeded();
     const credentials = auth.credentials;
     let machineId = auth.machineId;
     logger.debug('[DAEMON RUN] Auth and machine setup complete');
 
+    await params.verifyServerTransport?.({ credentials });
     const api = await ApiClient.create(credentials);
     const preferredHost = await getPreferredHostName();
     const metadataForRegistration: MachineMetadata = { ...params.initialMachineMetadata, host: preferredHost };

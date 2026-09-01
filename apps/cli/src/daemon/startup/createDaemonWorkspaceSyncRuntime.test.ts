@@ -26,7 +26,7 @@ const relationship = {
   updatedAtMs: 1,
 };
 
-function session() {
+function session(overrides: Readonly<Record<string, unknown>> = {}) {
   return {
     identifier: 'mutagen-1', name: relationship.relationshipId,
     labels: {
@@ -38,22 +38,28 @@ function session() {
       'external.alpha_workspace_ref_id': relationship.alphaWorkspaceRefId,
       'external.beta_workspace_ref_id': relationship.betaWorkspaceRefId,
       'external.controller_machine_id': relationship.controllerMachineId,
+      'external.operation_kind': 'relationship',
+      'external.policy_selection': relationship.contentPolicy.selection,
+      'external.include_git_directory': 'false',
     },
     alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(relationship.relationshipId, 'alpha'), path: '', connected: true, scanned: true },
     beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId(relationship.relationshipId, 'beta'), path: '', connected: true, scanned: true },
     mode: 'one-way-safe', paused: false, status: 'watching', successfulCycles: 1, conflicts: [], excludedConflicts: 0,
+    ignore: { paths: ['.git/'] },
+    ...overrides,
   };
 }
 
 function snapshot(
   relationships = [relationship],
   rawRelationships: unknown = relationships,
+  settingsVersion = 1,
 ) {
   return {
     source: 'network' as const,
     settings: AccountSettingsSchema.parse({ workspaceSyncRelationshipsV1: relationships }),
     rawSettings: { workspaceSyncRelationshipsV1: rawRelationships },
-    settingsVersion: 1,
+    settingsVersion,
     loadedAtMs: 1,
     settingsSecretsReadKeys: [],
     scopeKey: 'account-1',
@@ -67,18 +73,40 @@ function boundaries(options: Readonly<{
 }> = {}) {
   let remainingArtifactFailures = options.artifactFailureCount ?? (options.artifactFailure ? Number.POSITIVE_INFINITY : 0);
   let activeRelationships = false;
+  let relationshipPaused = false;
   let listener: ((previous: ReturnType<typeof snapshot> | null, next: ReturnType<typeof snapshot> | null) => void) | undefined;
+  let terminateActiveSidecar: ((event: { type: 'exited'; code: number }) => void) | null = null;
   const command = vi.fn(async (input: Readonly<{ t: string }>) => {
+    if (input.t === 'shutdown') {
+      terminateActiveSidecar?.({ type: 'exited', code: 0 });
+      return [];
+    }
+    if (!activeRelationships && input.t === 'create') {
+      activeRelationships = true;
+      relationshipPaused = true;
+      return session({ paused: true, status: 'disconnected' });
+    }
     if (!activeRelationships) return [];
-    if (input.t === 'list') return [session()];
-    if (input.t === 'get') return session();
+    if (input.t === 'terminate') {
+      activeRelationships = false;
+      return null;
+    }
+    if (input.t === 'pause') relationshipPaused = true;
+    if (input.t === 'resume') relationshipPaused = false;
+    if (input.t === 'list') return [session({ paused: relationshipPaused })];
+    if (input.t === 'get' || input.t === 'pause' || input.t === 'resume') {
+      return session({ paused: relationshipPaused });
+    }
     return [];
   });
   const closeBroker = vi.fn(async () => undefined);
-  const stopSidecar = vi.fn(async () => undefined);
+  const stopSidecar = vi.fn(async () => terminateActiveSidecar?.({ type: 'exited', code: 0 }));
   const spawnSidecar = vi.fn<DaemonWorkspaceSyncRuntimeDependencies['spawnSidecar']>(async () => {
     if (options.spawnFailure) throw options.spawnFailure;
-    return { pid: 42, waitForTermination: async () => new Promise<never>(() => undefined), stop: stopSidecar };
+    const termination = new Promise<{ type: 'exited'; code: number }>((resolve) => {
+      terminateActiveSidecar = resolve;
+    });
+    return { pid: 42, waitForTermination: async () => await termination, stop: stopSidecar };
   });
   const brokerBootstrapDescriptor = new Uint8Array([1, 2, 3]);
   const createBroker = vi.fn<DaemonWorkspaceSyncRuntimeDependencies['createBroker']>(async () => ({ bootstrapDescriptor: brokerBootstrapDescriptor, waitForReady: async () => undefined, command, close: closeBroker }));
@@ -92,6 +120,10 @@ function boundaries(options: Readonly<{
       throw options.artifactFailure ?? new Error('invalid signed payload');
     }
     return { engineVersion: '0.18.1', protocolEpoch: 'external-stream-v1' };
+  });
+  const ensureInstalledComponent = vi.fn(async (input: Readonly<{ validatePayload(payloadRoot: string): void }>) => {
+    input.validatePayload('/installed/version');
+    return { currentPath: '/installed/current', resolvedCurrentPath: '/installed/version' } as any;
   });
   const resolveDataLayout = vi.fn(() => ({ rootDir: '/daemon/workspace-sync/mutagen', dataDir: '/daemon/workspace-sync/mutagen/data', brokerDir: '/daemon/workspace-sync/mutagen/broker', stagingDir: '/daemon/workspace-sync/mutagen/staging' }));
   const unsubscribeSettings = vi.fn();
@@ -120,18 +152,76 @@ function boundaries(options: Readonly<{
       randomBytes: () => new Uint8Array(32).fill(7), randomId: () => 'opaque-id',
       getSettingsSnapshot: () => null,
       subscribeSettingsSnapshot: (nextListener: typeof listener) => { listener = nextListener; return unsubscribeSettings; },
-      resolveInstalledComponentPaths, resolveArtifactPaths, assertArtifactPayload, resolveDataLayout,
+      resolveInstalledComponentPaths, ensureInstalledComponent, resolveArtifactPaths, assertArtifactPayload, resolveDataLayout,
     } satisfies DaemonWorkspaceSyncRuntimeDependencies,
-    activateRelationships: () => { activeRelationships = true; listener?.(null, snapshot()); },
+    activateRelationships: () => { activeRelationships = true; relationshipPaused = false; listener?.(null, snapshot()); },
     publishSnapshot: (next: ReturnType<typeof snapshot>) => { listener?.(null, next); },
     command, closeBroker, stopSidecar, spawnSidecar, createBroker, unsubscribeSettings,
-    resolveInstalledComponentPaths, resolveArtifactPaths, assertArtifactPayload, resolveDataLayout,
+    resolveInstalledComponentPaths, ensureInstalledComponent, resolveArtifactPaths, assertArtifactPayload, resolveDataLayout,
     deleteConflictLoserAtTarget, readFileAtTarget, brokerBootstrapDescriptor,
     prepareRelationshipTarget,
   };
 }
 
 describe('createDaemonWorkspaceSyncRuntime', () => {
+  it('keeps disabled settings relationships as paused sessions, resumes them, and terminates only on removal', async () => {
+    const harness = boundaries();
+    const runtime = createDaemonWorkspaceSyncRuntime(harness.deps);
+    await runtime.start();
+    harness.activateRelationships();
+    await runtime.whenSettingsSettled();
+    harness.command.mockClear();
+
+    harness.publishSnapshot(snapshot([{ ...relationship, enabled: false, updatedAtMs: 2 }], undefined, 2));
+    await runtime.whenSettingsSettled({ settingsVersion: 2, scopeKey: 'account-1' });
+    expect(harness.command).toHaveBeenCalledWith(expect.objectContaining({ t: 'pause' }), undefined);
+    expect(harness.command).not.toHaveBeenCalledWith(expect.objectContaining({ t: 'terminate' }), expect.anything());
+    await expect(runtime.managedWorkspaceSync.get(relationship.relationshipId)).resolves.toMatchObject({ state: 'paused' });
+
+    harness.command.mockClear();
+    harness.publishSnapshot(snapshot([{ ...relationship, updatedAtMs: 3 }], undefined, 3));
+    await runtime.whenSettingsSettled({ settingsVersion: 3, scopeKey: 'account-1' });
+    expect(harness.command).toHaveBeenCalledWith(expect.objectContaining({ t: 'resume' }), undefined);
+
+    harness.command.mockClear();
+    harness.publishSnapshot(snapshot([], undefined, 4));
+    await runtime.whenSettingsSettled({ settingsVersion: 4, scopeKey: 'account-1' });
+    expect(harness.command).toHaveBeenCalledWith(expect.objectContaining({ t: 'terminate' }), undefined);
+    await runtime.stop();
+  });
+
+  it('waits for the requested settings version even when its subscription callback is queued later', async () => {
+    const harness = boundaries();
+    const runtime = createDaemonWorkspaceSyncRuntime(harness.deps);
+    await runtime.start();
+
+    let settled = false;
+    const waiting = runtime.whenSettingsSettled({ settingsVersion: 2, scopeKey: 'account-1' })
+      .then(() => { settled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+
+    harness.publishSnapshot(snapshot([], undefined, 2));
+    await waiting;
+    expect(settled).toBe(true);
+    await runtime.stop();
+  });
+
+  it('recreates a missing session for a disabled restart record without starting synchronization', async () => {
+    const harness = boundaries();
+    const disabledSnapshot = snapshot([{ ...relationship, enabled: false, updatedAtMs: 2 }], undefined, 2);
+    const runtime = createDaemonWorkspaceSyncRuntime({
+      ...harness.deps,
+      getSettingsSnapshot: () => disabledSnapshot,
+    });
+
+    await runtime.start();
+    expect(harness.command).toHaveBeenCalledWith(expect.objectContaining({ t: 'create' }), undefined);
+    expect(harness.command).not.toHaveBeenCalledWith(expect.objectContaining({ t: 'resume' }), expect.anything());
+    await expect(runtime.managedWorkspaceSync.get(relationship.relationshipId)).resolves.toMatchObject({ state: 'paused' });
+    await runtime.stop();
+  });
+
   it('composes one shared lifecycle/controller/adapter, applies settings updates, and stops once', async () => {
     const harness = boundaries();
     const runtime = createDaemonWorkspaceSyncRuntime(harness.deps);
@@ -151,9 +241,65 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
     expect(await runtime.managedWorkspaceSync.get(relationship.relationshipId)).toMatchObject({ relationshipId: relationship.relationshipId });
 
     await Promise.all([runtime.stop(), runtime.stop()]);
-    expect(harness.stopSidecar).toHaveBeenCalledTimes(1);
+    expect(harness.stopSidecar).not.toHaveBeenCalled();
     expect(harness.closeBroker).toHaveBeenCalledTimes(1);
     expect(harness.unsubscribeSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries bootstrap root custody into the production controller without reacquiring the exact root', async () => {
+    const harness = boundaries();
+    const active = new Map<string, Readonly<{
+      owner: { ownerId: string; canonicalRoot: string; operation: 'sync' | 'bootstrap' | 'handoff'; rootFingerprint: null };
+      bindCurrentRootIdentity(): Promise<void>;
+      release(): Promise<void>;
+    }>>();
+    const releases = new Map<string, ReturnType<typeof vi.fn>>();
+    const tryAcquire = vi.fn(async (request: { ownerId: string; canonicalRoot: string; operation: 'sync' | 'bootstrap' | 'handoff' }) => {
+      const existing = active.get(request.canonicalRoot);
+      if (existing) return { kind: 'overlap' as const, existing: existing.owner };
+      const release = vi.fn(async () => { active.delete(request.canonicalRoot); });
+      releases.set(request.canonicalRoot, release);
+      const handle = Object.freeze({
+        owner: { ...request, rootFingerprint: null as null },
+        bindCurrentRootIdentity: async () => undefined,
+        release,
+      });
+      active.set(request.canonicalRoot, handle);
+      return handle;
+    });
+    const rootOwnershipManager = { tryAcquire };
+    const prepareRelationshipTarget = vi.fn(async () => {
+      const target = await rootOwnershipManager.tryAcquire({
+        ownerId: relationship.relationshipId,
+        canonicalRoot: '/canonical/beta',
+        operation: 'bootstrap',
+      });
+      if ('kind' in target) throw new Error('target bootstrap unexpectedly overlapped');
+      return { ownershipHandles: [target] };
+    });
+    const runtime = createDaemonWorkspaceSyncRuntime({
+      ...harness.deps,
+      resolveWorkspaceRef: (id) => ({
+        machineId: 'machine-1',
+        rootPath: id === 'alpha-ref' ? '/canonical/alpha' : '/canonical/beta',
+      }),
+      rootOwnershipManager,
+      prepareRelationshipTarget,
+    });
+
+    await runtime.start();
+    harness.activateRelationships();
+    await runtime.whenSettingsSettled();
+
+    expect(tryAcquire.mock.calls.map(([request]) => [request.canonicalRoot, request.operation])).toEqual([
+      ['/canonical/beta', 'bootstrap'],
+      ['/canonical/alpha', 'sync'],
+    ]);
+    await runtime.stop();
+    expect(releases.get('/canonical/alpha')).toHaveBeenCalledTimes(1);
+    expect(releases.get('/canonical/beta')).not.toHaveBeenCalled();
+    await active.get('/canonical/beta')?.release();
+    expect(releases.get('/canonical/beta')).toHaveBeenCalledTimes(1);
   });
 
   it('does not issue a Mutagen list/create command for a settings relationship before target preparation finishes', async () => {
@@ -210,22 +356,24 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
 
     await expect(runtime.start()).rejects.toMatchObject({ code: 'engine_unavailable' });
     expect(harness.resolveInstalledComponentPaths).toHaveBeenCalledWith({ componentId: 'mutagen-engine', channel: 'publicdev' });
-    expect(harness.resolveArtifactPaths).toHaveBeenCalledWith('/installed/version');
-    expect(harness.assertArtifactPayload).toHaveBeenCalledWith(expect.objectContaining({ payloadRoot: '/installed/version' }));
+    expect(harness.ensureInstalledComponent).toHaveBeenCalledTimes(1);
+    expect(harness.assertArtifactPayload).toHaveBeenCalledWith(expect.objectContaining({
+      payloadRoot: '/installed/version',
+      engineVersion: '0.18.1',
+    }));
+    expect(harness.resolveArtifactPaths).not.toHaveBeenCalled();
     expect(harness.createBroker).not.toHaveBeenCalled();
     expect(harness.spawnSidecar).not.toHaveBeenCalled();
     await runtime.stop();
     expect(harness.unsubscribeSettings).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps one settings subscription and retries after a transient artifact failure', async () => {
+  it('acquires and validates a transiently missing artifact before starting', async () => {
     const harness = boundaries({ artifactFailureCount: 1 });
     const runtime = createDaemonWorkspaceSyncRuntime(harness.deps);
 
-    await expect(runtime.start()).rejects.toMatchObject({ code: 'engine_unavailable' });
-    expect(harness.unsubscribeSettings).not.toHaveBeenCalled();
-
     await expect(runtime.start()).resolves.toBeUndefined();
+    expect(harness.ensureInstalledComponent).toHaveBeenCalledTimes(1);
     expect(harness.spawnSidecar).toHaveBeenCalledTimes(1);
 
     await runtime.stop();
@@ -280,6 +428,10 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
       const generation = brokerCommands.length + 1;
       const command = vi.fn(async (input: Readonly<{ t: string }>) => {
         brokerEvents.push(`${generation}:${input.t}`);
+        if (input.t === 'shutdown') {
+          exits[generation - 1]?.({ type: 'exited', code: 0 });
+          return [];
+        }
         if (input.t === 'create' || input.t === 'resume') return session();
         return [];
       });
@@ -340,7 +492,7 @@ describe('createDaemonWorkspaceSyncRuntime', () => {
       await runtime.openExternalStream({ endpointId: deriveWorkspaceSyncEndpointId(relationship.relationshipId, 'alpha') });
       expect(harness.deps.launchLocalAgent).toHaveBeenCalledWith({
         executablePath: '/installed/version/bin/happier-mutagen-agent',
-        args: ['synchronizer', '--root', root],
+        args: ['synchronizer', '--external', '--root', root],
       });
       await runtime.stop();
     } finally {

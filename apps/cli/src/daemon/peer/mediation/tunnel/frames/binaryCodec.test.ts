@@ -22,7 +22,7 @@ describe('peer TCP tunnel binary frame v2 codec', () => {
             tunnelId: 'tun_1',
             direction: 'client_to_daemon',
             sequence: 0,
-            payloadBase64: Buffer.from('hello').toString('base64'),
+            payload: new TextEncoder().encode('hello'),
         });
         expect(encoded).toBeInstanceOf(Uint8Array);
 
@@ -40,7 +40,7 @@ describe('peer TCP tunnel binary frame v2 codec', () => {
                 tunnelId: 'tun_1',
                 direction: 'client_to_daemon',
                 sequence: 0,
-                payloadBase64: Buffer.from('hello').toString('base64'),
+                payload: new TextEncoder().encode('hello'),
             },
             rawPayloadBytes: 5,
         });

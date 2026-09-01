@@ -17,6 +17,12 @@ describe('workspace sync handoff admission', () => {
     for (const workspaceAction of [
       { kind: 'none' },
       { kind: 'copy_once', contentPolicy: policy },
+      {
+        kind: 'create_relationship',
+        mode: 'keep_synced',
+        contentPolicy: policy,
+        flushBeforeCommit: true,
+      },
       { kind: 'relationship', relationshipId: 'relationship-1', flushBeforeCommit: true },
     ]) {
       expect(classifyWorkspaceSyncAdmission({ workspaceAction })).toEqual({ kind: 'canonical' });

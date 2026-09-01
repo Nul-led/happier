@@ -19,6 +19,8 @@ type AdapterHarness = Readonly<{
   ensureLocalFirstPartyComponentCommand: ReturnType<typeof vi.fn>;
   checkRelayRuntimeHealth: ReturnType<typeof vi.fn>;
   createCanonicalPersonalHomeOperations: ReturnType<typeof vi.fn>;
+  readPersonalHomeStartupReadiness: ReturnType<typeof vi.fn>;
+  removePersonalHomeStartupReadiness: ReturnType<typeof vi.fn>;
   runCommandStreaming: ReturnType<typeof vi.fn>;
 }>;
 
@@ -70,6 +72,13 @@ function createHarness(): AdapterHarness {
     ensureLocalFirstPartyComponentCommand: vi.fn(async (_params: Record<string, unknown>) => '/resolved/happier-server'),
     checkRelayRuntimeHealth: vi.fn(async (_params: Record<string, unknown>) => healthResult()),
     runCommandStreaming: vi.fn(async () => undefined),
+    readPersonalHomeStartupReadiness: vi.fn(async () => ({
+      authenticated: true as const,
+      homeServerIdentityId: 'home-ready',
+      accountCount: 1,
+      sessionCount: 2,
+    })),
+    removePersonalHomeStartupReadiness: vi.fn(async () => undefined),
     createCanonicalPersonalHomeOperations: vi.fn(async () => ({
       inspect: async () => ({
         purpose: 'personal-home' as const,
@@ -114,6 +123,10 @@ async function importAdapter(): Promise<typeof import('./liveRelayRuntime')> {
       checkRelayRuntimeHealth: harness.checkRelayRuntimeHealth as unknown as typeof actual.checkRelayRuntimeHealth,
       createCanonicalPersonalHomeOperations:
         harness.createCanonicalPersonalHomeOperations as unknown as typeof actual.createCanonicalPersonalHomeOperations,
+      readPersonalHomeStartupReadiness:
+        harness.readPersonalHomeStartupReadiness as unknown as typeof actual.readPersonalHomeStartupReadiness,
+      removePersonalHomeStartupReadiness:
+        harness.removePersonalHomeStartupReadiness as unknown as typeof actual.removePersonalHomeStartupReadiness,
     };
   });
   vi.doMock('@happier-dev/cli-common/process', async (importOriginal) => {
@@ -172,12 +185,14 @@ describe('liveRelayRuntime adapter delegation', () => {
 
     await expect(operations.inspect({
       requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:4123' },
+      runtimeTarget: { channel: 'stable', mode: 'user' },
       progress: () => undefined,
     })).resolves.toMatchObject({ purpose: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:4123' });
 
     expect(harness.createCanonicalPersonalHomeOperations).toHaveBeenCalledTimes(1);
     const composition = harness.createCanonicalPersonalHomeOperations.mock.calls[0]?.[0] as {
       lifecycle: { isRunning(): Promise<boolean>; stop(): Promise<void>; start(): Promise<void>; healthCheck(): Promise<boolean> };
+      attestActivatedHome(): Promise<Readonly<{ authenticated: true; homeServerIdentityId: string; accountCount: number; sessionCount: number }>>;
       readPurpose(): Promise<{ kind: 'personal-home'; canonicalServerUrl: string }>;
       readHappierVersion(): Promise<string>;
       runMigrationProcess(input: Readonly<{ command: string; args: readonly string[]; env: NodeJS.ProcessEnv }>): Promise<void>;
@@ -195,6 +210,7 @@ describe('liveRelayRuntime adapter delegation', () => {
     await expect(operations.restore({
       archivePath: '/tmp/home.tar',
       requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:4123' },
+      runtimeTarget: { channel: 'stable', mode: 'user' },
       progress: () => undefined,
     })).resolves.toEqual({});
     const migrationEnv = { DATABASE_URL: 'file:/tmp/staged.sqlite' };
@@ -213,6 +229,12 @@ describe('liveRelayRuntime adapter delegation', () => {
     await composition.lifecycle.stop();
     await composition.lifecycle.start();
     await expect(composition.lifecycle.healthCheck()).resolves.toBe(true);
+    await expect(composition.attestActivatedHome()).resolves.toMatchObject({
+      authenticated: true,
+      homeServerIdentityId: 'home-ready',
+    });
+    expect(harness.removePersonalHomeStartupReadiness).toHaveBeenCalledTimes(1);
+    expect(harness.readPersonalHomeStartupReadiness).toHaveBeenCalledTimes(1);
     expect(harness.engine.control).toHaveBeenCalledWith(expect.objectContaining({ action: 'stop' }));
     expect(harness.engine.control).toHaveBeenCalledWith(expect.objectContaining({ action: 'start' }));
   });
@@ -226,6 +248,7 @@ describe('liveRelayRuntime adapter delegation', () => {
 
     await operations.inspect({
       requestedPurpose: { kind: 'personal-home', canonicalServerUrl: 'http://127.0.0.1:4123' },
+      runtimeTarget: { channel: 'stable', mode: 'user' },
       progress: () => undefined,
     });
 

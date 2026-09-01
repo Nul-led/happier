@@ -122,12 +122,19 @@ import type {
 } from '@/plugins/runtime/invocation/services/managedServiceEndpointProjection';
 import { createCurrentMachineExecutionOriginContextResolver } from '@/api/machine/resolveCurrentMachineExecutionOriginContext';
 import { createServerUrlServerFeaturesSnapshotStore } from '@/features/serverFeaturesSnapshotStore';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { createDaemonPeerMediationObservabilityRuntime } from './machine/peerMediationObservabilityRuntime';
 import {
   createDaemonMachineIrohRuntime,
   type DaemonMachineIrohRuntime,
 } from './peer/iroh/daemonMachineIrohRuntime';
 import { createWorkspaceMachineCarrierTunnelOpen } from './peer/iroh/workspaceMachineCarrierTunnelOpen';
+import {
+  applyDaemonHomeDescriptorRefresh,
+  prepareDaemonHomeIrohTransport,
+  type DaemonHomeTransport,
+} from './peer/iroh/daemonHomeIrohTransport';
+import { getActiveServerProfile } from '@/server/serverProfiles';
 import { createDaemonSessionMutationCustody } from './connectedServices/usageLimitRecovery/createDaemonUsageLimitRecoveryMutationCustody';
 import { installPeerMediationObservabilityRuntimeActionContextProvider } from './peer/mediation/observability/runtimeActionContextProvider';
 import {
@@ -232,6 +239,11 @@ export async function startDaemon(
   let workspaceSyncRuntime: ProductionDaemonWorkspaceSyncRuntime | null = null;
   let workspaceSyncRuntimeMachineId: string | null = null;
   let machineIrohRuntime: DaemonMachineIrohRuntime | null = null;
+  let homeIrohTransport: DaemonHomeTransport | null = null;
+  const preparedIrohState: {
+    machine: DaemonMachineIrohRuntime | null;
+    home: DaemonHomeTransport | null;
+  } = { machine: null, home: null };
   let stopMachineIrohAcceptor: () => Promise<void> = async () => {};
   const stopWorkspaceSyncRuntime = async (): Promise<void> => {
     const runtime = workspaceSyncRuntime;
@@ -287,7 +299,36 @@ export async function startDaemon(
       daemonLockHandle,
       initialMachineMetadata,
       startupSource,
+      prepareServerTransport: async ({ persistedCredentials }) => {
+        const createdIrohRuntime = await createDaemonMachineIrohRuntime({
+          happyHomeDir: configuration.happyHomeDir,
+          relayConfig: readIrohRelayConfigFromEnv(process.env),
+        }).catch((error) => {
+          logger.warn('[DAEMON RUN] Optional Iroh endpoint is unavailable; retaining standard Home transport', error);
+          return null;
+        });
+        preparedIrohState.machine = createdIrohRuntime?.available ? createdIrohRuntime : null;
+        if (!preparedIrohState.machine) return;
+        preparedIrohState.home = await prepareDaemonHomeIrohTransport({
+          runtime: preparedIrohState.machine,
+          profile: await getActiveServerProfile(),
+          ...(persistedCredentials ? { token: persistedCredentials.token } : {}),
+        });
+        logger.info('[DAEMON RUN] Home transport prepared', {
+          carrier: preparedIrohState.home.carrier,
+          observedPath: preparedIrohState.home.observedPath,
+        });
+      },
+      verifyServerTransport: async ({ credentials }) => {
+        if (!preparedIrohState.home) return;
+        const readiness = await preparedIrohState.home.verifyAuthenticated(credentials.token);
+        if (readiness.status !== 'ready') {
+          throw new Error(readiness.errorMessage ?? `Authenticated Home transport probe failed: ${readiness.status}`);
+        }
+      },
     });
+    machineIrohRuntime = preparedIrohState.machine;
+    homeIrohTransport = preparedIrohState.home;
     daemonLockHandle = bootstrapContext.daemonLockHandle;
     const credentials = bootstrapContext.credentials;
     const api = bootstrapContext.api;
@@ -311,6 +352,8 @@ export async function startDaemon(
     let connectedServiceQuotasLoopHandle: ConnectedServiceQuotasLoopHandle | null = null;
     let daemonServerWorkScheduler: DaemonServerWorkScheduler | null = null;
     let apiMachineForSessions: ApiMachineClient | null = null;
+    let apiMachine: ApiMachineClient | null = null;
+    let homeTransportReplacementPending = false;
     const eventLoopStallMonitor = createDaemonEventLoopStallMonitor({
       getActiveRpcOperations: () =>
         apiMachineForSessions?.getActiveRpcHandlerExecutions() ?? [],
@@ -358,8 +401,20 @@ export async function startDaemon(
     // fails closed even when the server enables it. The store reuses the same `/v1/features` fetch
     // source the local-services inventory + browser daemon gates already use — no second fetch path.
     const serverFeaturesSnapshotStore = createServerUrlServerFeaturesSnapshotStore({
-      serverUrl: configuration.serverUrl,
+      serverUrl: resolveServerHttpBaseUrl,
       timeoutMs: 1_500,
+      onReady: async (features) => {
+        await applyDaemonHomeDescriptorRefresh({
+          features,
+          requestReconnect: () => {
+            if (!apiMachine?.requestServerTransportReconnect()) {
+              homeTransportReplacementPending = true;
+              return;
+            }
+            homeTransportReplacementPending = false;
+          },
+        });
+      },
       onError: (error) => {
         logger.debug('[DAEMON RUN] Server-features snapshot refresh failed (non-fatal)', error);
       },
@@ -388,7 +443,6 @@ export async function startDaemon(
     let voiceInferenceWorker: VoiceInferenceWorkerHandle | null = null;
     let pluginWebhookWorker: PluginWebhookDaemonWorkerHandleV1 | null = null;
     let pluginWebhookWakeCleanup: (() => void) | null = null;
-    let apiMachine: ApiMachineClient | null = null;
     let providerOperationsProducer: RuntimeProviderOperationsProducer | null = null;
     let externalSessionPluginAdmissionOwner:
       ExternalSessionPluginAdmissionOwner | null = null;
@@ -1427,15 +1481,6 @@ export async function startDaemon(
       );
     });
 
-    const createdMachineIrohRuntime = await createDaemonMachineIrohRuntime({
-      happyHomeDir: configuration.happyHomeDir,
-      relayConfig: readIrohRelayConfigFromEnv(process.env),
-    }).catch((error) => {
-      logger.warn('[DAEMON RUN] Iroh machine endpoint is unavailable', error);
-      return null;
-    });
-    machineIrohRuntime = createdMachineIrohRuntime?.available ? createdMachineIrohRuntime : null;
-
     const machineRegistrationRuntime = startDaemonMachineRegistrationRuntime({
       api,
       credentials,
@@ -1500,10 +1545,14 @@ export async function startDaemon(
           const created = await createProductionDaemonWorkspaceSyncRuntime({
             happyHomeDir: configuration.happyHomeDir,
             activeServerDir: configuration.activeServerDir,
+            activeServerId: configuration.activeServerId,
             localMachineId: registeredMachineId,
             releaseChannel: configuration.publicReleaseRing,
             credentials,
             ...(openMachineCarrierTunnel ? { openMachineCarrierTunnel } : {}),
+            ...(directPeerServerLifecycle
+              ? { requestDirectTransferPayloadFile: directPeerServerLifecycle.requestPayloadFile }
+              : {}),
           });
           workspaceSyncRuntime = created;
           workspaceSyncRuntimeMachineId = registeredMachineId;
@@ -1526,6 +1575,11 @@ export async function startDaemon(
         requestShutdown,
         directPeerServerLifecycle,
         ...(machineIrohRuntime ? { machineIrohRuntime } : {}),
+        prepareServerTransportForReconnect: async () => (
+          homeIrohTransport
+            ? await homeIrohTransport.reacquire()
+            : { status: 'ready' as const }
+        ),
         acquireWorkspaceSyncMachineIngress: async (input) => {
           const runtime = workspaceSyncRuntime;
           if (!runtime) throw new Error('Workspace sync runtime is not ready');
@@ -1687,6 +1741,9 @@ export async function startDaemon(
           machineSyncRuntime.sessionSpawnDirectTargetTransport ?? null;
         try {
           apiMachine = attemptedApiMachine;
+          if (homeTransportReplacementPending && attemptedApiMachine) {
+            homeTransportReplacementPending = !attemptedApiMachine.requestServerTransportReconnect();
+          }
           apiMachineForSessions = attemptedApiMachineForSessions;
           await reconcileSessionMachineAccessBindings();
           providerOperationsProducer = attemptedProviderOperationsProducer;
@@ -1829,6 +1886,7 @@ export async function startDaemon(
         await stopMachineIrohAcceptor();
         await stopPeerMediationLoopbackServer();
         await stopDirectPeerServer();
+        await homeIrohTransport?.release();
         await machineIrohRuntime?.shutdown();
       },
       stopTailscaleTransferServeLifecycle,
@@ -1841,7 +1899,8 @@ export async function startDaemon(
     await cleanupAndShutdown(shutdownRequest.source, shutdownRequest.errorMessage);
   } catch (error) {
     await stopWorkspaceSyncRuntime().catch(() => undefined);
-    await machineIrohRuntime?.shutdown().catch(() => undefined);
+    await (homeIrohTransport ?? preparedIrohState.home)?.release().catch(() => undefined);
+    await (machineIrohRuntime ?? preparedIrohState.machine)?.shutdown().catch(() => undefined);
     try {
       await releaseDaemonOwnershipAfterFatal({
         daemonLockHandle,

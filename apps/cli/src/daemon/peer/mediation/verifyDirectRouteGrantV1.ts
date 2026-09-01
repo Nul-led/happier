@@ -60,7 +60,7 @@ export type DirectRouteGrantTrustRoot = Readonly<{
     expiresAt?: number | null;
 }>;
 
-/** Full signed machine/1 relationship expected for `iroh_peer` admissions. */
+/** Full signed machine/1 initiator/target relationship expected for `iroh_peer` admissions. */
 export type DirectRouteGrantIrohExpectedBinding = IrohPeerRouteBindingV2;
 
 export type DirectRouteGrantExpectedBinding = Readonly<{
@@ -71,9 +71,8 @@ export type DirectRouteGrantExpectedBinding = Readonly<{
     endpointFingerprint?: string;
     /**
      * Required when `routeKind` is `iroh_peer` and forbidden otherwise: the full signed machine/1
-     * relationship. `role` is the signed transport role of the SOURCE machine (`initiator` dials,
-     * `acceptor` listens); a verifying side derives its own local role from its machine id
-     * (source machine → binding role, target machine → complementary role).
+     * relationship. The target daemon supplies its current Machine and Endpoint identities;
+     * authenticated Account clients have no synthetic source Machine identity.
      */
     iroh?: DirectRouteGrantIrohExpectedBinding;
 }>;
@@ -114,11 +113,17 @@ function matchesExpectedBinding(
         if (
             !expected.iroh
             || !grantIroh
-            || grantIroh.sourceMachineId !== expected.iroh.sourceMachineId
-            || grantIroh.targetMachineId !== expected.iroh.targetMachineId
-            || grantIroh.sourceEndpointId !== expected.iroh.sourceEndpointId
-            || grantIroh.targetEndpointId !== expected.iroh.targetEndpointId
-            || grantIroh.role !== expected.iroh.role
+            || grantIroh.initiator.kind !== expected.iroh.initiator.kind
+            || grantIroh.initiator.endpointId !== expected.iroh.initiator.endpointId
+            || (
+                grantIroh.initiator.kind === 'machine'
+                && (
+                    expected.iroh.initiator.kind !== 'machine'
+                    || grantIroh.initiator.machineId !== expected.iroh.initiator.machineId
+                )
+            )
+            || grantIroh.target.machineId !== expected.iroh.target.machineId
+            || grantIroh.target.endpointId !== expected.iroh.target.endpointId
             || grantIroh.operationKind !== expected.iroh.operationKind
         ) {
             return 'grant_iroh_binding_mismatch';

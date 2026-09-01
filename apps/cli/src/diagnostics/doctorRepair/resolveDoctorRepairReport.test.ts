@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { writeDaemonSettingsFixture } from '@/daemon/testkit/fakeDaemonLifecycle.testkit';
+import { reloadConfiguration } from '@/configuration';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { withTempDir } from '@/testkit/fs/tempDir';
 
@@ -59,6 +60,7 @@ describe('resolveDoctorRepairReport', () => {
 
   afterEach(() => {
     envScope.restore();
+    reloadConfiguration();
     resolveDaemonServiceCliRuntimeFromEnvMock.mockReset();
     resolveDaemonServiceInventoryEntriesMock.mockReset();
     resolveBackgroundServiceRepairPlanForCurrentRuntimeMock.mockReset();
@@ -67,9 +69,10 @@ describe('resolveDoctorRepairReport', () => {
     vi.resetModules();
   });
 
-  it('reads the installed CLI version directly from a daemon binary path snapshot', async () => {
+  it('reads the installed CLI version and does not infer machine registration from a local id', async () => {
     await withTempDir('doctor-repair-cli-version-binary-path-', async (homeDir) => {
       envScope.patch({ HAPPIER_HOME_DIR: homeDir });
+      reloadConfiguration();
 
       const binaryPath = join(homeDir, 'cli-preview', 'current', 'happier');
       mkdirSync(join(homeDir, 'cli-preview', 'current'), { recursive: true });
@@ -78,6 +81,9 @@ describe('resolveDoctorRepairReport', () => {
 
       await writeDaemonSettingsFixture(homeDir, {
         activeServerId: 'cloud',
+        machineIdByServerId: { cloud: 'machine-local-only' },
+        machineIdConfirmedByServerByServerId: {},
+        lastTokenSubByServerId: { cloud: 'account-local' },
         servers: {
           cloud: {
             id: 'cloud',
@@ -174,6 +180,16 @@ describe('resolveDoctorRepairReport', () => {
 
       expect(result.report.currentCli.binaryPath).toBe(binaryPath);
       expect(result.report.currentCli.version).toBe('9.9.9-preview');
+      expect(result.report.authProfiles).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          serverId: 'cloud',
+          hasCredentials: true,
+          machineRegistered: false,
+        }),
+      ]));
+      expect(result.report.findings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'machine_not_registered_for_profile' }),
+      ]));
       expect(readDoctorRuntimeInventoryMock).toHaveBeenCalledTimes(1);
     });
   });

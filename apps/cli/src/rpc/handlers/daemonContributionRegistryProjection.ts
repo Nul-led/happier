@@ -113,7 +113,6 @@ import type {
 } from '@/plugins/projection/registry/types';
 import { buildPluginProjectionV2 } from '@/plugins/projection/registry/projection/v2';
 import {
-    listComposerSurfaceDeclarations,
     projectDaemonEmbeddedPluginUiRenderer,
     readCurrentAutomationEventSetupReactNativeCrashStateBindings,
     projectDaemonComposerSurfaceCatalog,
@@ -1225,7 +1224,6 @@ async function resolveProjectionHostRuntimeWithCrashState(
 
 async function acquireProjectionRuntimeRegistryLease(
     opts: DaemonContributionRegistryProjectionRegistrationOptions | undefined,
-    allowColdInitialization = false,
 ): Promise<Readonly<{
     registry: ResolvedExecutablePluginRuntimeRegistry;
     resolveCurrentPluginMaterializationRef?: NonNullable<
@@ -1240,11 +1238,6 @@ async function acquireProjectionRuntimeRegistryLease(
             resolveCurrentPluginMaterializationRef: registry.resolveCurrentPluginMaterializationRef,
             release: async () => {},
         };
-    }
-
-    if (allowColdInitialization) {
-        const { pluginReloadController } = await import('@/plugins/runtime/reload/singleton');
-        return await pluginReloadController.acquireRuntimeRegistry();
     }
 
     return await acquireAuthoritativePluginRuntimeRegistryLease({
@@ -1647,7 +1640,7 @@ async function acquireProjectionContributionRegistryLease(
     release: () => Promise<void>;
 }>> {
     if (opts?.resolveRuntimeRegistry || requireRuntimeRegistry) {
-        const lease = await acquireProjectionRuntimeRegistryLease(opts, requireRuntimeRegistry);
+        const lease = await acquireProjectionRuntimeRegistryLease(opts);
         return {
             registry: lease.registry.contributes,
             pluginDiagnosticsByPluginId: lease.registry.pluginDiagnosticsByPluginId,
@@ -1672,13 +1665,11 @@ async function acquireProjectionContributionRegistryLease(
     }
 
     const registry = await (opts?.resolveRegistry ?? defaultResolveRegistry)();
-    const requiresColdComposerSurfaceCatalog = listComposerSurfaceDeclarations(registry).length > 0;
     if (
         (registry.scmBackends?.length ?? 0) > 0
         || (registry.scmHostingProviders?.length ?? 0) > 0
-        || requiresColdComposerSurfaceCatalog
     ) {
-        const lease = await acquireProjectionRuntimeRegistryLease(opts, requiresColdComposerSurfaceCatalog);
+        const lease = await acquireProjectionRuntimeRegistryLease(opts);
         return {
             registry: lease.registry.contributes,
             pluginDiagnosticsByPluginId: lease.registry.pluginDiagnosticsByPluginId,
@@ -2796,6 +2787,7 @@ export function registerDaemonContributionRegistryProjectionHandler(
                             assertPluginSettingFieldValue({
                                 pluginId: request.pluginId,
                                 field,
+                                fields,
                                 value: request.mutation.value,
                             });
                             await secrets.set(request.fieldId, request.mutation.value, {
@@ -2815,6 +2807,7 @@ export function registerDaemonContributionRegistryProjectionHandler(
                         assertPluginSettingFieldValue({
                             pluginId: request.pluginId,
                             field,
+                            fields,
                             value: request.mutation.value,
                         });
                         await service.set(request.fieldId, request.mutation.value as JsonValue, {

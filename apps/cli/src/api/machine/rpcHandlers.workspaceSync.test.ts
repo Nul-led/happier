@@ -40,6 +40,7 @@ describe('workspace sync machine RPC handlers', () => {
       deleteConflictLoser: vi.fn(async () => status),
       readFile: vi.fn(async () => ({ status: 'text' as const, text: 'hello', digest: 'a'.repeat(40), size: 5 })),
     };
+    const relationshipOwner = { setEnabled: vi.fn(async () => undefined), stop: vi.fn(async () => undefined) };
     const prepareBootstrapAtTarget = vi.fn(async () => ({
       v: 1 as const,
       bootstrapOperationId: 'bootstrap-op-1',
@@ -48,35 +49,51 @@ describe('workspace sync machine RPC handlers', () => {
       created: true,
       rootFingerprint: 'b'.repeat(64),
       policyDigest: 'a'.repeat(64),
-      manifestDigest: 'c'.repeat(64),
     }));
     const releaseBootstrapAtTarget = vi.fn(async () => ({ ok: true as const, released: true }));
-    const cleanupRetiredState = vi.fn(async () => ({ removed: true, restartRequired: true } as const));
+    const preflightHandoffTargetReplacement = vi.fn(async () => ({ type: 'not_required' as const }));
+    const inspectRetiredState = vi.fn(async () => ({
+      status: 'legacy_workspace_sync_state_unsupported' as const,
+      classification: 'retired_v1' as const,
+      quarantinePath: '/private/state/workspace-replication.retired-123',
+      schemaVersion: 1 as const,
+    }));
     registerMachineWorkspaceSyncRpcHandlers({
       rpcHandlerManager,
       service: {
         controller,
+        relationshipOwner,
         deleteConflictLoserAtTarget: vi.fn(async () => undefined),
         readFileAtTarget: vi.fn(async () => ({ status: 'missing' as const })),
+        preflightHandoffTargetReplacement,
         prepareBootstrapAtTarget,
         releaseBootstrapAtTarget,
-        cleanupRetiredState,
+        inspectRetiredState,
       },
     });
 
     await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_LIST)?.({})).resolves.toEqual({ statuses: [status] });
     await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_PAUSE)?.({ relationshipId: 'rel-1' }))
-      .resolves.toMatchObject({ status: { state: 'paused' } });
+      .resolves.toEqual({ ok: true });
     await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_CONFLICTS_LIST)?.({ relationshipId: 'rel-1' }))
       .resolves.toMatchObject({ relationshipId: 'rel-1', totalCount: 0 });
     await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_FILE_READ)?.({
       relationshipId: 'rel-1', side: 'alpha', path: 'src/index.ts', maxBytes: 1024,
     })).resolves.toMatchObject({ status: 'text', text: 'hello' });
-    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_LEGACY_CLEANUP)?.({}))
-      .resolves.toEqual({ removed: true, restartRequired: true });
-    expect(cleanupRetiredState).toHaveBeenCalledWith(expect.any(AbortSignal));
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_LEGACY_INSPECT)?.({}))
+      .resolves.toMatchObject({ classification: 'retired_v1', schemaVersion: 1 });
+    await expect(handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_REPLACEMENT_PREFLIGHT)?.({
+      v: 1,
+      serverId: 'server-1',
+      machineId: 'machine-b',
+      operationId: 'handoff-action-1',
+      targetPath: '/workspace/target',
+    })).resolves.toEqual({ type: 'not_required' });
+    expect(inspectRetiredState).toHaveBeenCalledWith(expect.any(AbortSignal));
+    expect(handlers.has('daemon.workspaceSync.legacy.cleanup.v1')).toBe(false);
 
-    expect(controller.pause).toHaveBeenCalledWith('rel-1', expect.any(AbortSignal));
+    expect(relationshipOwner.setEnabled).toHaveBeenCalledWith('rel-1', false, expect.any(AbortSignal));
+    expect(controller.pause).not.toHaveBeenCalled();
     expect(controller.readFile).toHaveBeenCalledWith(expect.objectContaining({
       relationshipId: 'rel-1', side: 'alpha', path: 'src/index.ts', maxBytes: 1024,
     }), expect.any(AbortSignal));
@@ -93,11 +110,13 @@ describe('workspace sync machine RPC handlers', () => {
           get: vi.fn(), list: vi.fn(), flush: vi.fn(), pause: vi.fn(), resume: vi.fn(), terminate: vi.fn(),
           listConflicts: vi.fn(), deleteConflictLoser: vi.fn(), readFile: vi.fn(),
         },
+        relationshipOwner: { setEnabled: vi.fn(), stop: vi.fn() },
         deleteConflictLoserAtTarget,
         readFileAtTarget,
+        preflightHandoffTargetReplacement: vi.fn(async () => ({ type: 'not_required' as const })),
         prepareBootstrapAtTarget: vi.fn(),
         releaseBootstrapAtTarget: vi.fn(),
-        cleanupRetiredState: vi.fn(),
+        inspectRetiredState: vi.fn(),
       },
     });
     await expect(first.handlers.get(RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_CONFLICT_DELETE)?.({
@@ -138,7 +157,6 @@ describe('workspace sync target bootstrap RPC handlers', () => {
       created: true,
       rootFingerprint: 'b'.repeat(64),
       policyDigest: 'a'.repeat(64),
-      manifestDigest: 'c'.repeat(64),
     };
     const prepareBootstrapAtTarget = vi.fn(async () => readyResult);
     const releaseBootstrapAtTarget = vi.fn(async () => ({ ok: true as const, released: false }));
@@ -149,11 +167,13 @@ describe('workspace sync target bootstrap RPC handlers', () => {
           get: vi.fn(), list: vi.fn(), flush: vi.fn(), pause: vi.fn(), resume: vi.fn(), terminate: vi.fn(),
           listConflicts: vi.fn(), deleteConflictLoser: vi.fn(), readFile: vi.fn(),
         },
+        relationshipOwner: { setEnabled: vi.fn(), stop: vi.fn() },
         deleteConflictLoserAtTarget: vi.fn(async () => undefined),
         readFileAtTarget: vi.fn(async () => ({ status: 'missing' as const })),
+        preflightHandoffTargetReplacement: vi.fn(async () => ({ type: 'not_required' as const })),
         prepareBootstrapAtTarget,
         releaseBootstrapAtTarget,
-        cleanupRetiredState: vi.fn(),
+        inspectRetiredState: vi.fn(),
       },
     });
 

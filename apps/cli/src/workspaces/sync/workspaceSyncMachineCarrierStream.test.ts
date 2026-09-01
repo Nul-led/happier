@@ -10,6 +10,7 @@ describe('connectWorkspaceSyncMachineTunnel', () => {
 
     await expect(connectWorkspaceSyncMachineTunnel({
       localPort: 47_321,
+      localCapability: 'a'.repeat(64),
       observedPath: 'direct',
       close,
     }, controller.signal)).rejects.toMatchObject({ code: 'cancelled' });

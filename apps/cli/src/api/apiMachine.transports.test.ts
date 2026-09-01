@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   bindApiSessionSocketMock,
+  bindApiSessionSocketSequenceMock,
   createApiSessionSocketStub,
 } from '@/testkit/backends/apiSessionSocketHarness';
 import { logger } from '@/ui/logger';
@@ -134,6 +135,38 @@ describe('ApiMachineClient transports', () => {
     expect(opts.transports).toEqual(['polling', 'websocket']);
     expect(opts.reconnection).toBe(false);
     expect(opts.autoConnect).toBe(false);
+  });
+
+  it('routes a descriptor replacement through the existing connection supervisor', async () => {
+    vi.useFakeTimers();
+    try {
+      const firstSocket = createApiSessionSocketStub();
+      const replacementSocket = createApiSessionSocketStub();
+      bindApiSessionSocketSequenceMock(mockIo, [firstSocket, replacementSocket]);
+      const prepareServerTransportForReconnect = vi.fn(async () => ({ status: 'ready' as const }));
+      const mod = await import('./apiMachine');
+      const client = new mod.ApiMachineClient('fake-token', {
+        id: 'test-machine',
+        encryptionKey: new Uint8Array(32),
+        encryptionVariant: 'legacy',
+        metadata: null,
+        metadataVersion: 0,
+        daemonState: null,
+        daemonStateVersion: 0,
+      });
+
+      client.connect({ prepareServerTransportForReconnect });
+      expect(mockIo).toHaveBeenCalledTimes(1);
+
+      expect(client.requestServerTransportReconnect()).toBe(true);
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(prepareServerTransportForReconnect).toHaveBeenCalledOnce();
+      expect(mockIo).toHaveBeenCalledTimes(2);
+      await client.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('uses the strict machine terminal capture/finalize socket contract', async () => {

@@ -2,7 +2,6 @@ import type { PeerTcpTunnelStreamConnection } from '@happier-dev/peer-transport'
 import {
     IrohMachineHandshakeV1Schema,
     type IrohMachineCarrierFlowV1,
-    type IrohMachineHandshakeRoleV1,
     type PeerFlowKindV1,
 } from '@happier-dev/protocol';
 import {
@@ -12,7 +11,7 @@ import {
 
 export const MACHINE_CARRIER_ALPN_V1 = 'happier/machine/1' as const;
 export type MachineCarrierOperationKind = IrohMachineCarrierFlowV1;
-export type MachineCarrierRole = IrohMachineHandshakeRoleV1;
+export type MachineCarrierRole = 'initiator' | 'acceptor';
 export const MACHINE_CARRIER_UNAVAILABLE_CODE = 'machine_carrier_unavailable' as const;
 export const MACHINE_CARRIER_ROUTE_MISMATCH_CODE = 'machine_carrier_route_mismatch' as const;
 
@@ -140,19 +139,22 @@ export function verifyMachineCarrierHandshakeV1(
         );
     }
     const handshake = parsedHandshake.data;
-    const localIsSource = handshake.sourceMachineId === input.machineId;
-    const localIsTarget = handshake.targetMachineId === input.machineId;
-    if (localIsSource === localIsTarget) {
+    const localIsMachineInitiator = handshake.initiator.kind === 'machine'
+        && handshake.initiator.machineId === input.machineId;
+    const localIsTarget = handshake.target.machineId === input.machineId;
+    if (localIsMachineInitiator === localIsTarget) {
         throw new MachineCarrierError('handshake_local_machine_mismatch', 'Machine handshake does not bind the local machine.');
     }
-    const localRole: MachineCarrierRole = localIsSource
-        ? handshake.role
-        : handshake.role === 'initiator' ? 'acceptor' : 'initiator';
+    const localRole: MachineCarrierRole = localIsMachineInitiator ? 'initiator' : 'acceptor';
     if (localRole !== input.role) {
         throw new MachineCarrierError('handshake_role_mismatch', 'Machine handshake role does not match the local side of its absolute orientation.');
     }
-    const localEndpointId = localIsSource ? handshake.sourceEndpointId : handshake.targetEndpointId;
-    const remoteEndpointId = localIsSource ? handshake.targetEndpointId : handshake.sourceEndpointId;
+    const localEndpointId = localIsMachineInitiator
+        ? handshake.initiator.endpointId
+        : handshake.target.endpointId;
+    const remoteEndpointId = localIsMachineInitiator
+        ? handshake.target.endpointId
+        : handshake.initiator.endpointId;
     if (handshake.accountId !== input.accountId) {
         throw new MachineCarrierError('handshake_account_mismatch', 'Machine handshake account mismatch.');
     }
@@ -166,16 +168,13 @@ export function verifyMachineCarrierHandshakeV1(
         nowMs: input.nowMs,
         expected: {
             accountId: input.accountId,
-            machineId: handshake.targetMachineId,
+            machineId: handshake.target.machineId,
             flowKind: handshake.grant.payload.flowKind as PeerFlowKindV1,
             routeKind: 'iroh_peer',
-            endpointFingerprint: handshake.targetEndpointId,
+            endpointFingerprint: handshake.target.endpointId,
             iroh: {
-                sourceMachineId: handshake.sourceMachineId,
-                targetMachineId: handshake.targetMachineId,
-                sourceEndpointId: handshake.sourceEndpointId,
-                targetEndpointId: handshake.targetEndpointId,
-                role: handshake.role,
+                initiator: handshake.initiator,
+                target: handshake.target,
                 operationKind: handshake.flow,
             },
         },
@@ -206,7 +205,7 @@ async function closeRejectedConnection(connection: MachineCarrierTransportConnec
 /**
  * Opens an authenticated machine/1 stream through a mandatory, fail-closed
  * handshake (canonical `IrohMachineHandshakeV1`). The handshake binds the
- * account, source/target machine IDs, source/target endpoint IDs, role,
+ * account, typed initiator, target Machine/current endpoint,
  * operation flow and id, and the signed `iroh_peer` grant with its verified
  * ephemeral nonce/proof (expiry is the signed grant's `exp`). The remote
  * endpoint identity is taken from the authenticated Iroh transport, compared

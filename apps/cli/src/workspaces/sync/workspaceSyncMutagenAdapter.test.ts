@@ -26,6 +26,9 @@ function labelsFor(id: string) {
     'external.alpha_workspace_ref_id': 'a',
     'external.beta_workspace_ref_id': 'b',
     'external.controller_machine_id': 'm1',
+    'external.operation_kind': id.startsWith('copy-') ? 'copy_once' : 'relationship',
+    'external.policy_selection': 'all_files',
+    'external.include_git_directory': 'false',
   };
 }
 
@@ -37,6 +40,7 @@ function genericSession(overrides: Record<string, unknown> = {}) {
     alpha: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('r1', 'alpha'), path: '', connected: true, scanned: true },
     beta: { protocol: 'external', host: deriveWorkspaceSyncEndpointId('r1', 'beta'), path: '', connected: true, scanned: true },
     mode: 'one-way-safe', paused: false, status: 'watching', successfulCycles: 1, conflicts: [], excludedConflicts: 0,
+    ignore: { paths: ['.git/'] },
     ...overrides,
   };
 }
@@ -53,6 +57,22 @@ function genericSessionFor(id: string, overrides: Record<string, unknown> = {}) 
 }
 
 describe('WorkspaceSyncMutagenAdapterClient', () => {
+  it('rehydrates and lists more than 32 valid claimed sessions', async () => {
+    const definitions = Array.from({ length: 33 }, (_, index) => ({
+      ...relationship,
+      relationshipId: `r${index + 1}`,
+    }));
+    const listed = definitions.map((definition) => genericSessionFor(definition.relationshipId));
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send: vi.fn(async () => listed),
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(adapter.rehydrate(definitions)).resolves.toHaveLength(33);
+    await expect(adapter.list()).resolves.toHaveLength(33);
+  });
+
   it('accepts the fork DTO shape for external://opaque-id without a persisted path', async () => {
     const send = vi.fn(async (command: { t: string }) => command.t === 'list' ? [] : genericSession({
       alpha: {
@@ -110,6 +130,9 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
             'external.alpha_workspace_ref_id': 'a',
             'external.beta_workspace_ref_id': 'b',
             'external.controller_machine_id': 'm1',
+            'external.operation_kind': 'relationship',
+            'external.policy_selection': 'all_files',
+            'external.include_git_directory': 'false',
           },
         },
       },
@@ -218,6 +241,63 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
     ]);
   });
 
+  it('discovers an exact persisted copy_once definition for restart recovery', async () => {
+    const persisted = genericSessionFor('copy-1', {
+      identifier: 'mutagen-copy-session',
+      labels: {
+        ...labelsFor('copy-1'),
+        'external.operation_kind': 'copy_once',
+        'external.policy_selection': 'all_files',
+        'external.include_git_directory': 'false',
+      },
+      ignore: { paths: ['.git/'] },
+      paused: true,
+      status: 'disconnected',
+      successfulCycles: 0,
+    });
+    const send = vi.fn(async (command: { t: string }) => command.t === 'list' ? [persisted] : null);
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send,
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(adapter.discoverCopyOnceRecoveries()).resolves.toEqual([copyOnceOperation]);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('terminates a claimed restart copy without sufficient exact policy labels', async () => {
+    const persisted = genericSessionFor('copy-1', {
+      identifier: 'mutagen-copy-session',
+      labels: {
+        ...labelsFor('copy-1'),
+        'external.operation_kind': 'copy_once',
+        'external.policy_selection': 'all_files',
+        'external.include_git_directory': 'false',
+        'external.policy_digest': '0'.repeat(64),
+      },
+      paused: true,
+      status: 'disconnected',
+      successfulCycles: 0,
+    });
+    const commands: Array<{ t: string; sessionIdentifier?: string }> = [];
+    const send = vi.fn(async (command: { t: string; sessionIdentifier?: string }) => {
+      commands.push(command);
+      return command.t === 'list' ? [persisted] : null;
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send,
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(adapter.discoverCopyOnceRecoveries()).resolves.toEqual([]);
+    expect(commands.map(({ t, sessionIdentifier }) => [t, sessionIdentifier])).toEqual([
+      ['list', undefined],
+      ['terminate', 'mutagen-copy-session'],
+    ]);
+  });
+
   it('adopts an exact operation-tagged copy_once session instead of creating a duplicate', async () => {
     const commands: Array<{ t: string; sessionIdentifier?: string }> = [];
     const existing = genericSessionFor('copy-1', {
@@ -306,6 +386,47 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
       ['flush', 'mutagen-copy-session'],
       ['terminate', 'mutagen-copy-session'],
     ]);
+  });
+
+  it('keeps a completed copy_once recoverable until terminal session cleanup succeeds', async () => {
+    const commands: string[] = [];
+    let created = false;
+    let terminateAttempts = 0;
+    const completed = () => genericSessionFor('copy-1', {
+      identifier: 'mutagen-copy-session',
+      paused: false,
+      status: 'watching',
+      successfulCycles: 1,
+    });
+    const send = vi.fn(async (command: { t: string }) => {
+      commands.push(command.t);
+      if (command.t === 'list') return created ? [completed()] : [];
+      if (command.t === 'create') {
+        created = true;
+        return genericSessionFor('copy-1', {
+          identifier: 'mutagen-copy-session', paused: true, status: 'disconnected', successfulCycles: 0,
+        });
+      }
+      if (command.t === 'terminate') {
+        terminateAttempts += 1;
+        if (terminateAttempts === 1) throw Object.assign(new Error('sidecar unavailable before cleanup dispatch'), { code: 'agent_unavailable' });
+        created = false;
+        return null;
+      }
+      return completed();
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send,
+      createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(adapter.copyOnce(copyOnceOperation)).rejects.toMatchObject({ code: 'indeterminate' });
+    expect(created).toBe(true);
+    await expect(adapter.copyOnce(copyOnceOperation)).resolves.toMatchObject({ relationshipId: 'copy-1', mode: 'copy_once' });
+    expect(created).toBe(false);
+    expect(commands.filter((command) => command === 'create')).toHaveLength(1);
+    expect(commands.filter((command) => command === 'terminate')).toHaveLength(2);
   });
 
   it.each([
@@ -400,6 +521,54 @@ describe('WorkspaceSyncMutagenAdapterClient', () => {
       ['list', undefined],
       ['terminate', 'mutagen-stale'],
     ]);
+  });
+
+  it('adopts a disabled relationship as paused and resumes it only after settings re-enable it', async () => {
+    let paused = false;
+    const commands: string[] = [];
+    const send = vi.fn(async (command: { t: string }) => {
+      commands.push(command.t);
+      if (command.t === 'list') return [genericSessionFor('r1', { paused })];
+      if (command.t === 'pause') paused = true;
+      if (command.t === 'resume') paused = false;
+      return genericSessionFor('r1', { paused });
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send, createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(adapter.rehydrate([{ ...relationship, enabled: false }])).resolves.toEqual([
+      expect.objectContaining({ relationshipId: 'r1', state: 'paused' }),
+    ]);
+    expect(commands).toEqual(['list', 'pause']);
+
+    commands.length = 0;
+    await expect(adapter.rehydrate([{ ...relationship, enabled: true }])).resolves.toEqual([
+      expect.objectContaining({ relationshipId: 'r1', state: 'watching' }),
+    ]);
+    expect(commands).toEqual(['list', 'resume']);
+  });
+
+  it('creates a missing disabled relationship in the paused state without resuming it', async () => {
+    let created = false;
+    const commands: string[] = [];
+    const send = vi.fn(async (command: { t: string }) => {
+      commands.push(command.t);
+      if (command.t === 'list') return created ? [genericSessionFor('r1', { paused: true })] : [];
+      if (command.t === 'create') {
+        created = true;
+        return genericSessionFor('r1', { paused: true, status: 'disconnected' });
+      }
+      return genericSessionFor('r1', { paused: true });
+    });
+    const adapter = createWorkspaceSyncMutagenAdapter({
+      send, createRequestId: () => 'request-1',
+      resolveWorkspaceRef: async (id) => ({ machineId: 'm1', rootPath: `/${id}` }),
+    });
+
+    await expect(adapter.ensure({ ...relationship, enabled: false })).resolves.toMatchObject({ state: 'paused' });
+    expect(commands).toEqual(['list', 'create']);
   });
 
   it('recreates a settings relationship when persisted Mutagen mode no longer matches', async () => {

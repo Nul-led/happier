@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { WorkspaceSyncCopyOnceV1Schema } from '@happier-dev/protocol';
 
 import type { WorkspaceSyncMutagenAdapter, WorkspaceSyncResolvedRef } from './workspaceSyncController';
 import {
@@ -13,6 +14,7 @@ import type {
   WorkspaceSyncRelationshipV1,
   WorkspaceSyncStatusV1,
 } from './workspaceSyncTypes';
+import { computeWorkspaceSyncPolicyDigest } from './workspaceSyncTypes';
 
 export type WorkspaceSyncMutagenCommandTransport = (command: MutagenControlCommandV1, signal?: AbortSignal) => Promise<unknown>;
 export type WorkspaceSyncMutagenAdapterOptions = Readonly<{
@@ -36,6 +38,7 @@ type GenericSession = Readonly<{
   successfulCycles: number;
   conflicts: readonly GenericConflict[];
   excludedConflicts: number;
+  ignorePaths: readonly string[];
   lastError?: string;
 }>;
 type GenericSessionCandidate = Readonly<{ raw: unknown; generic: GenericSession }>;
@@ -56,6 +59,9 @@ const expectedLabels = (definition: WorkspaceSyncRelationshipV1 | WorkspaceSyncC
     'external.alpha_workspace_ref_id': definition.alphaWorkspaceRefId,
     'external.beta_workspace_ref_id': definition.betaWorkspaceRefId,
     'external.controller_machine_id': definition.controllerMachineId,
+    'external.operation_kind': 'relationshipId' in definition ? 'relationship' : 'copy_once',
+    'external.policy_selection': definition.contentPolicy.selection,
+    'external.include_git_directory': String(definition.contentPolicy.includeGitDirectory),
   };
 };
 const modeByProduct = {
@@ -119,13 +125,79 @@ function session(value: unknown): GenericSession {
   if (!statuses.has(status) || typeof input.paused !== 'boolean') throw new Error('Invalid generic Mutagen status');
   const conflicts = input.conflicts === undefined ? [] : input.conflicts;
   if (!Array.isArray(conflicts) || conflicts.length > 1_000) throw new Error('Invalid generic Mutagen conflicts');
+  const ignore = record(input.ignore, 'session.ignore');
+  if (!Array.isArray(ignore.paths) || ignore.paths.length > 258) throw new Error('Invalid generic Mutagen ignore paths');
+  const ignorePaths = ignore.paths.map((path) => boundedString(path, 'session.ignore.paths'));
   return {
     identifier: boundedString(input.identifier, 'identifier', 256), name: boundedString(input.name, 'name', 256), labels,
     alpha: endpoint(input.alpha, 'alpha'), beta: endpoint(input.beta, 'beta'), mode: input.mode, paused: input.paused, status,
     successfulCycles: boundedCount(input.successfulCycles, 'successfulCycles'), conflicts: conflicts.map(conflict),
     excludedConflicts: boundedCount(input.excludedConflicts, 'excludedConflicts'),
+    ignorePaths,
     ...(input.lastError === undefined ? {} : { lastError: boundedString(input.lastError, 'lastError') }),
   };
+}
+
+function recoverCopyOnceDefinition(generic: GenericSession): WorkspaceSyncCopyOnceV1 | null {
+  const labels = generic.labels;
+  if (labels['external.owner'] !== 'happier-workspace-sync'
+    || labels['external.operation_kind'] !== 'copy_once') return null;
+  const operationId = labels['external.relationship_id'];
+  const selection = labels['external.policy_selection'];
+  const includeGitDirectory = labels['external.include_git_directory'];
+  if (!operationId || generic.name !== operationId
+    || labels['external.endpoint_role'] !== 'alpha|beta'
+    || labels['external.schema'] !== 'workspace-sync-v1'
+    || generic.mode !== 'one-way-safe'
+    || (selection !== 'git_worktree' && selection !== 'all_files')
+    || includeGitDirectory !== 'false'
+    || generic.alpha.endpointId !== deriveWorkspaceSyncEndpointId(operationId, 'alpha')
+    || generic.beta.endpointId !== deriveWorkspaceSyncEndpointId(operationId, 'beta')) return null;
+  const policySelection: 'git_worktree' | 'all_files' = selection;
+  const policyDigest = labels['external.policy_digest'];
+  const controllerMachineId = labels['external.controller_machine_id'];
+  const alphaWorkspaceRefId = labels['external.alpha_workspace_ref_id'];
+  const betaWorkspaceRefId = labels['external.beta_workspace_ref_id'];
+  if (!policyDigest || !controllerMachineId || !alphaWorkspaceRefId || !betaWorkspaceRefId
+    || alphaWorkspaceRefId === betaWorkspaceRefId) return null;
+  const paths = generic.ignorePaths;
+  if (paths.at(-1) !== '.git/') return null;
+  const body = paths.slice(0, -1);
+  const candidates: WorkspaceSyncCopyOnceV1[] = [];
+  for (let split = 0; split <= body.length; split += 1) {
+    let extraIgnorePatterns: readonly string[];
+    let extraIncludePatterns: readonly string[];
+    if (policySelection === 'git_worktree') {
+      if (body[0] !== ':git-worktree-v1' || split < 1) continue;
+      const includePaths = body.slice(split);
+      if (includePaths.some((path) => !path.startsWith(':git-worktree-include:'))) continue;
+      extraIgnorePatterns = body.slice(1, split);
+      extraIncludePatterns = includePaths.map((path) => path.slice(':git-worktree-include:'.length));
+    } else {
+      const includePaths = body.slice(split);
+      if (includePaths.some((path) => !path.startsWith('!'))) continue;
+      extraIgnorePatterns = body.slice(0, split);
+      extraIncludePatterns = includePaths.map((path) => path.slice(1));
+    }
+    const policyInput = {
+      v: 1 as const,
+      selection: policySelection,
+      extraIgnorePatterns,
+      extraIncludePatterns,
+      includeGitDirectory: false,
+    };
+    if (computeWorkspaceSyncPolicyDigest(policyInput) !== policyDigest) continue;
+    const candidate = WorkspaceSyncCopyOnceV1Schema.safeParse({
+      v: 1,
+      operationId,
+      controllerMachineId,
+      alphaWorkspaceRefId,
+      betaWorkspaceRefId,
+      contentPolicy: { ...policyInput, policyDigest },
+    });
+    if (candidate.success) candidates.push(candidate.data);
+  }
+  return candidates.length === 1 ? candidates[0]! : null;
 }
 
 function definitionConflict(message: string): Error {
@@ -162,14 +234,18 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
     this.nowMs = options.nowMs ?? Date.now;
   }
   private replaceDefinitions(definitions: readonly WorkspaceSyncRelationshipV1[]): void {
-    this.definitions.clear();
-    this.sessionIdentifiers.clear();
+    for (const [id, definition] of this.definitions) {
+      if ('relationshipId' in definition) {
+        this.definitions.delete(id);
+        this.sessionIdentifiers.delete(id);
+      }
+    }
     for (const definition of definitions) this.definitions.set(definition.relationshipId, definition);
   }
   private requestId(): string { const id = this.createRequestId().trim(); if (!id) throw new Error('Workspace sync request ID is empty'); return id; }
   private async findClaimedSession(identity: string, signal?: AbortSignal): Promise<GenericSessionCandidate | undefined> {
     const listed = await this.options.send({ t: 'list', requestId: this.requestId() }, signal);
-    if (!Array.isArray(listed) || listed.length > 32) {
+    if (!Array.isArray(listed)) {
       throw new Error('Invalid workspace sync list returned by Mutagen adapter');
     }
     const candidates = listed
@@ -229,41 +305,70 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
       ...(generic.lastError ? { errorCode: 'engine_error' } : {}),
     };
   }
+  private async reconcileRelationshipState(
+    value: unknown,
+    relationship: WorkspaceSyncRelationshipV1,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceSyncStatusV1> {
+    const generic = this.acceptSession(value, relationship);
+    if (generic.paused === !relationship.enabled) {
+      return await this.project(value, relationship, 'none');
+    }
+    return await this.project(await this.options.send({
+      t: relationship.enabled ? 'resume' : 'pause',
+      requestId: this.requestId(),
+      sessionIdentifier: generic.identifier,
+    }, signal), relationship, relationship.enabled ? 'first_cycle' : 'none');
+  }
+  async discoverCopyOnceRecoveries(signal?: AbortSignal): Promise<readonly WorkspaceSyncCopyOnceV1[]> {
+    const value = await this.options.send({ t: 'list', requestId: this.requestId() }, signal);
+    if (!Array.isArray(value)) throw new Error('Invalid workspace sync list returned by Mutagen adapter');
+    const validById = new Map<string, Readonly<{ definition: WorkspaceSyncCopyOnceV1; sessionIdentifier: string }>>();
+    const duplicates = new Set<string>();
+    for (const item of value) {
+      const generic = session(item);
+      if (generic.labels['external.operation_kind'] !== 'copy_once'
+        || generic.labels['external.owner'] !== 'happier-workspace-sync') continue;
+      const definition = recoverCopyOnceDefinition(generic);
+      if (!definition || Object.keys(generic.labels).length !== Object.keys(expectedLabels(definition)).length
+        || Object.entries(expectedLabels(definition)).some(([key, label]) => generic.labels[key] !== label)) {
+        await this.terminateRuntimeSession(generic.name, generic.identifier, signal);
+        continue;
+      }
+      const previous = validById.get(definition.operationId);
+      if (previous || duplicates.has(definition.operationId)) {
+        await this.terminateRuntimeSession(definition.operationId, generic.identifier, signal);
+        if (previous) {
+          await this.terminateRuntimeSession(definition.operationId, previous.sessionIdentifier, signal);
+          validById.delete(definition.operationId);
+        }
+        duplicates.add(definition.operationId);
+        continue;
+      }
+      validById.set(definition.operationId, { definition, sessionIdentifier: generic.identifier });
+    }
+    for (const { definition, sessionIdentifier } of validById.values()) {
+      this.definitions.set(definition.operationId, definition);
+      this.sessionIdentifiers.set(definition.operationId, sessionIdentifier);
+    }
+    return [...validById.values()].map(({ definition }) => definition);
+  }
   async ensure(relationship: WorkspaceSyncRelationshipV1, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1> {
     this.definitions.set(relationship.relationshipId, relationship);
     try {
       const existing = await this.findClaimedSession(relationship.relationshipId, signal);
       if (existing) {
-        const status = await this.project(existing.raw, relationship, 'none');
-        if (!existing.generic.paused) return status;
-        return await this.project(await this.options.send({
-          t: 'resume',
-          requestId: this.requestId(),
-          sessionIdentifier: existing.generic.identifier,
-        }, signal), relationship, 'first_cycle');
+        return await this.reconcileRelationshipState(existing.raw, relationship, signal);
       }
-      await this.project(
-        await this.options.send({
-          t: 'create',
-          requestId: this.requestId(),
-          session: sessionDefinition(relationship),
-        }, signal),
-        relationship,
-        'none',
-      );
+      return await this.reconcileRelationshipState(await this.options.send({
+        t: 'create',
+        requestId: this.requestId(),
+        session: sessionDefinition(relationship),
+      }, signal), relationship, signal);
     } catch (error) {
       this.definitions.delete(relationship.relationshipId);
       throw error;
     }
-    return await this.project(
-      await this.options.send({
-        t: 'resume',
-        requestId: this.requestId(),
-        sessionIdentifier: this.requireSessionIdentifier(relationship.relationshipId),
-      }, signal),
-      relationship,
-      'first_cycle',
-    );
   }
   async rehydrate(
     definitions: readonly WorkspaceSyncRelationshipV1[],
@@ -271,7 +376,7 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
   ): Promise<readonly WorkspaceSyncStatusV1[]> {
     this.replaceDefinitions(definitions);
     const value = await this.options.send({ t: 'list', requestId: this.requestId() }, signal);
-    if (!Array.isArray(value) || value.length > 32) {
+    if (!Array.isArray(value)) {
       throw new Error('Invalid workspace sync list returned by Mutagen adapter');
     }
     const results: WorkspaceSyncStatusV1[] = [];
@@ -292,7 +397,7 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
         continue;
       }
       try {
-        results.push(await this.project(item, definition, 'none'));
+        results.push(await this.reconcileRelationshipState(item, definition, signal));
       } catch (error) {
         if (!(error instanceof Error) || (error as Error & { code?: string }).code !== 'relationship_definition_conflict') {
           throw error;
@@ -360,11 +465,16 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
             Object.assign(operationError, { cleanupError });
           }
         }
+        if (operationError === undefined && cleanupFailure !== undefined) {
+          throw Object.assign(new Error('Workspace copy completed but terminal cleanup is pending'), {
+            code: 'indeterminate',
+            cleanupError: cleanupFailure,
+          });
+        }
         this.definitions.delete(operation.operationId);
         this.sessionIdentifiers.delete(operation.operationId);
         this.successfulCycles.delete(operation.operationId);
         this.lastSuccessfulSyncAtMs.delete(operation.operationId);
-        if (operationError === undefined && cleanupFailure !== undefined) throw cleanupFailure;
       }
     }
   }
@@ -383,7 +493,7 @@ export class WorkspaceSyncMutagenAdapterClient implements WorkspaceSyncMutagenAd
   }
   async list(signal?: AbortSignal): Promise<readonly WorkspaceSyncStatusV1[]> {
     const value = await this.options.send({ t: 'list', requestId: this.requestId() }, signal);
-    if (!Array.isArray(value) || value.length > 32) throw new Error('Invalid workspace sync list returned by Mutagen adapter');
+    if (!Array.isArray(value)) throw new Error('Invalid workspace sync list returned by Mutagen adapter');
     const results: WorkspaceSyncStatusV1[] = [];
     for (const item of value) {
       const generic = session(item);

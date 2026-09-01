@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { sealTerminalProvisioningV3TokenOnlyPayload } from '@happier-dev/protocol';
+import {
+  sealTerminalProvisioningV3TokenOnlyPayload,
+  type HomeConnectionDescriptorV1,
+} from '@happier-dev/protocol';
 
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
@@ -20,6 +23,7 @@ type ServerFeaturesSnapshotMock =
         capabilities: Readonly<{
           serverIdentity: Readonly<{ serverIdentityId: string }>;
         }>;
+        homeConnectionDescriptor?: HomeConnectionDescriptorV1;
       }>;
     }>
   | Readonly<{ status: 'unsupported'; reason: 'endpoint_missing' }>;
@@ -33,6 +37,7 @@ const fetchServerFeaturesSnapshotMock = vi.fn<
     },
   },
 }));
+const setActiveServerProfileHomeConnectionDescriptorMock = vi.fn(async () => ({}));
 
 vi.mock('@/integrations/tailscale/tailscaleCommand', () => ({
   runTailscaleServeStatus: (params: Readonly<{ timeoutMs: number; env: NodeJS.ProcessEnv; tailscaleBin: string }>) =>
@@ -45,6 +50,10 @@ vi.mock('./qrcode', () => ({
 
 vi.mock('@/features/serverFeaturesClient', () => ({
   fetchServerFeaturesSnapshot: fetchServerFeaturesSnapshotMock,
+}));
+
+vi.mock('@/server/serverProfiles', () => ({
+  setActiveServerProfileHomeConnectionDescriptor: setActiveServerProfileHomeConnectionDescriptorMock,
 }));
 
 vi.mock('node:crypto', async (importOriginal) => {
@@ -127,6 +136,7 @@ describe.sequential('doAuth (non-interactive)', () => {
     capturedPublicKeyBase64 = null;
     displayQRCodeMock.mockClear();
     fetchServerFeaturesSnapshotMock.mockClear();
+    setActiveServerProfileHomeConnectionDescriptorMock.mockClear();
     vi.spyOn(Date, 'now').mockReturnValue(fixedNowMs);
   });
 
@@ -173,6 +183,46 @@ describe.sequential('doAuth (non-interactive)', () => {
       expect(fetchServerFeaturesSnapshotMock).toHaveBeenCalledWith({
         serverUrl: 'https://server.example.test',
       });
+    } finally {
+      output.restore();
+      restoreTty();
+      envScope.restore();
+      await removeTempDir(home);
+    }
+  }, 15_000);
+
+  it('persists the exact Home descriptor only after authentication succeeds', async () => {
+    const home = await createTempDir('happier-cli-auth-home-descriptor-');
+    const envScope = createEnvKeyScope(envKeys);
+    const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
+    const output = captureConsoleLogAndMuteStdout();
+    const descriptor: HomeConnectionDescriptorV1 = {
+      v: 1,
+      homeServerIdentityId: 'srv_interactive_auth_home',
+      canonicalServerUrl: 'https://server.example.test',
+      revision: 3,
+      endpoints: [{ kind: 'iroh', endpointId: 'c'.repeat(64) }],
+    };
+    fetchServerFeaturesSnapshotMock.mockResolvedValueOnce({
+      status: 'ready',
+      features: {
+        capabilities: { serverIdentity: { serverIdentityId: 'srv_interactive_auth_home' } },
+        homeConnectionDescriptor: descriptor,
+      },
+    });
+
+    try {
+      envScope.patch({
+        HAPPIER_HOME_DIR: home,
+        HAPPIER_SERVER_URL: 'https://server.example.test',
+        HAPPIER_WEBAPP_URL: 'https://webapp.example.test',
+        HAPPIER_NO_BROWSER_OPEN: '1',
+        HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
+      });
+      vi.resetModules();
+      const { doAuth } = await import('./auth');
+      expect((await doAuth())?.token).toBe('tok');
+      expect(setActiveServerProfileHomeConnectionDescriptorMock).toHaveBeenCalledWith(descriptor);
     } finally {
       output.restore();
       restoreTty();
@@ -452,6 +502,51 @@ describe.sequential('doAuth (non-interactive)', () => {
       await removeTempDir(home);
     }
   }, 15_000);
+
+  it('routes fresh authentication through a published runtime origin while keeping canonical links', async () => {
+    const home = await createTempDir('happier-cli-auth-runtime-origin-');
+    const envScope = createEnvKeyScope(envKeys);
+    const restoreTty = setStdioTtyForTest({ stdin: false, stdout: false });
+    const output = captureConsoleLogAndMuteStdout();
+    let releaseRuntimeOrigin: (() => void) | null = null;
+
+    try {
+      envScope.patch({
+        HAPPIER_HOME_DIR: home,
+        HAPPIER_SERVER_URL: 'https://canonical-home.example.test',
+        HAPPIER_WEBAPP_URL: 'https://webapp.example.test',
+        HAPPIER_NO_BROWSER_OPEN: '1',
+        HAPPIER_AUTH_POLL_INTERVAL_MS: '1',
+        HAPPIER_AUTH_METHOD: 'web',
+      });
+
+      vi.resetModules();
+      const runtimeOrigin = 'http://127.0.0.1:48123';
+      const httpBase = await import('@/api/client/serverHttpBaseUrl');
+      releaseRuntimeOrigin = httpBase.publishServerHttpRuntimeOrigin(runtimeOrigin, 'iroh');
+      const axiosModule = await import('axios');
+      const axiosDefault = axiosModule.default as AxiosLike;
+      (axiosDefault.post as unknown as { mockClear: () => void }).mockClear();
+      (axiosDefault.get as unknown as { mockClear: () => void }).mockClear();
+
+      const { doAuth } = await import('./auth');
+      expect((await doAuth())?.token).toBe('tok');
+
+      expect(fetchServerFeaturesSnapshotMock).toHaveBeenCalledWith({ serverUrl: runtimeOrigin });
+      const postUrls = (axiosDefault.post as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .map((call) => String(call[0]));
+      const getUrls = (axiosDefault.get as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .map((call) => String(call[0]));
+      expect([...postUrls, ...getUrls].every((url) => url.startsWith(runtimeOrigin))).toBe(true);
+      expect(output.logs.join('\n')).toContain('https://canonical-home.example.test');
+    } finally {
+      releaseRuntimeOrigin?.();
+      output.restore();
+      restoreTty();
+      envScope.restore();
+      await removeTempDir(home);
+    }
+  }, 30_000);
 
   it('fails fast with a clear message when claim response token/response are invalid', async () => {
     const home = await createTempDir('happier-cli-auth-noninteractive-invalid-claim-');

@@ -1,6 +1,11 @@
 import { join } from 'node:path';
 
-import { IrohEndpointDescriptorV1Schema, type IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
+import {
+  HomeConnectionDescriptorV1Schema,
+  IrohEndpointDescriptorV1Schema,
+  type HomeConnectionDescriptorV1,
+  type IrohEndpointDescriptorV1,
+} from '@happier-dev/protocol';
 import {
   loadIrohNodeNative,
 } from '@happier-dev/iroh-native/node';
@@ -21,6 +26,13 @@ export type DaemonMachineIrohRelayConfig = Readonly<{
 export type DaemonMachineIrohRuntime = Readonly<{
   available: true;
   endpoint: IrohEndpointDescriptorV1;
+  ensureHomeTunnel?: (input: Readonly<{
+    descriptor: HomeConnectionDescriptorV1;
+  }>) => Promise<Readonly<{
+    runtimeOrigin: string;
+    observedPath: 'direct' | 'relay' | 'unknown';
+    release(): Promise<void>;
+  }>>;
   startAttemptAcceptor: (input: Readonly<{ admissionPort: number }>) => Promise<void>;
   stopActiveTunnels: () => Promise<void>;
   stopAttemptAcceptor: () => Promise<void>;
@@ -29,6 +41,7 @@ export type DaemonMachineIrohRuntime = Readonly<{
     endpoint: IrohEndpointDescriptorV1,
   ) => Promise<Readonly<{
     localPort: number;
+    localCapability: string;
     remoteEndpointId: string;
     observedPath: 'direct' | 'relay' | 'unknown';
     close(): Promise<void>;
@@ -81,22 +94,28 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
     ...(status.directAddresses.length > 0 ? { directAddresses: status.directAddresses } : {}),
   });
   const activeTunnelClosers = new Set<() => Promise<void>>();
+  const activeHomeTunnelClosers = new Set<() => Promise<void>>();
   let acceptorRunning = false;
-  let shutdown = false;
+  let shutdownRequested = false;
+  let endpointShutdown = false;
+  let shutdownComplete = false;
 
   const stopAttemptAcceptor = async (): Promise<void> => {
     if (!acceptorRunning) return;
-    acceptorRunning = false;
     await native.stopMachineAcceptor({ endpointHandle: created.endpointHandle });
+    acceptorRunning = false;
   };
   const stopActiveTunnels = async (): Promise<void> => {
-    await Promise.all([...activeTunnelClosers].map((close) => close()));
+    await Promise.all([
+      ...[...activeHomeTunnelClosers].map((close) => close()),
+      ...[...activeTunnelClosers].map((close) => close()),
+    ]);
   };
   const startTunnel = async (
     transportInput: MachineCarrierTransportOpenInput,
     remoteDescriptor: IrohEndpointDescriptorV1,
   ) => {
-    if (shutdown) throw new Error('Iroh machine runtime is shut down');
+    if (shutdownRequested) throw new Error('Iroh machine runtime is shut down');
     if (
       transportInput.flow !== transportInput.handshake.flow
       || transportInput.operationId !== transportInput.handshake.operationId
@@ -121,8 +140,35 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
   return {
     available: true,
     endpoint,
+    async ensureHomeTunnel({ descriptor }) {
+      if (shutdownRequested) throw new Error('Iroh daemon runtime is shut down');
+      const parsed = HomeConnectionDescriptorV1Schema.parse(descriptor);
+      const homeEndpoint = parsed.endpoints.find((candidate) => candidate.kind === 'iroh');
+      if (!homeEndpoint) throw new Error('Home descriptor does not contain an Iroh endpoint');
+      const tunnel = await native.ensureHomeTunnel({
+        endpointHandle: created.endpointHandle,
+        homeServerIdentityId: parsed.homeServerIdentityId,
+        endpointId: homeEndpoint.endpointId,
+        ...(homeEndpoint.directAddresses ? { directAddresses: homeEndpoint.directAddresses } : {}),
+        ...(homeEndpoint.relayUrls ? { relayUrls: homeEndpoint.relayUrls } : {}),
+        descriptorRevision: parsed.revision,
+      });
+      let released = false;
+      const release = async (): Promise<void> => {
+        if (released) return;
+        await native.releaseHomeTunnel(tunnel.tunnelId);
+        released = true;
+        activeHomeTunnelClosers.delete(release);
+      };
+      activeHomeTunnelClosers.add(release);
+      return {
+        runtimeOrigin: tunnel.runtimeOrigin,
+        observedPath: tunnel.observedPath,
+        release,
+      };
+    },
     async startAttemptAcceptor({ admissionPort }) {
-      if (shutdown) throw new Error('Iroh machine runtime is shut down');
+      if (shutdownRequested) throw new Error('Iroh machine runtime is shut down');
       await stopAttemptAcceptor();
       await native.startMachineAcceptor({
         endpointHandle: created.endpointHandle,
@@ -138,13 +184,14 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
       let closed = false;
       const close = async (): Promise<void> => {
         if (closed) return;
+        await native.stopMachineTunnel(tunnel.machineTunnelId);
         closed = true;
         activeTunnelClosers.delete(close);
-        await native.stopMachineTunnel(tunnel.machineTunnelId);
       };
       activeTunnelClosers.add(close);
       return {
         localPort: tunnel.localPort,
+        localCapability: tunnel.localCapability,
         remoteEndpointId: tunnel.remoteEndpointId,
         observedPath: tunnel.observedPath,
         close,
@@ -156,6 +203,8 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
       let stream: Awaited<ReturnType<typeof connectPeerTcpTunnelTcp>>;
       try {
         stream = await connectTcp({ host: '127.0.0.1', port: tunnel.localPort });
+        if (!stream.write) throw new Error('Iroh machine local hop is not writable');
+        await stream.write(Buffer.from(tunnel.localCapability, 'ascii'));
       } catch (error) {
         await native.stopMachineTunnel(tunnel.machineTunnelId).catch(() => undefined);
         throw error;
@@ -163,10 +212,10 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
       let closed = false;
       const close = async (): Promise<void> => {
         if (closed) return;
+        await Promise.resolve(stream.close());
+        await native.stopMachineTunnel(tunnel.machineTunnelId);
         closed = true;
         activeTunnelClosers.delete(close);
-        await Promise.resolve(stream.close()).catch(() => undefined);
-        await native.stopMachineTunnel(tunnel.machineTunnelId);
       };
       activeTunnelClosers.add(close);
       return {
@@ -177,14 +226,21 @@ export async function createDaemonMachineIrohRuntime(input: Readonly<{
       };
     },
     async shutdown() {
-      if (shutdown) return;
-      shutdown = true;
+      if (shutdownComplete) return;
+      shutdownRequested = true;
       let firstFailure: unknown = null;
       await stopActiveTunnels().catch((error) => { firstFailure ??= error; });
       await stopAttemptAcceptor().catch((error) => { firstFailure ??= error; });
-      await native.shutdownEndpoint({ endpointHandle: created.endpointHandle })
-        .catch((error) => { firstFailure ??= error; });
+      if (!endpointShutdown) {
+        try {
+          await native.shutdownEndpoint({ endpointHandle: created.endpointHandle });
+          endpointShutdown = true;
+        } catch (error) {
+          firstFailure ??= error;
+        }
+      }
       if (firstFailure) throw firstFailure;
+      shutdownComplete = true;
     },
   };
 }

@@ -115,7 +115,7 @@ describe('createTrackedSessionHandoffCoordinator', () => {
     });
     const policyInput = {
       v: 1 as const,
-      selection: 'all_files' as const,
+      selection: 'git_worktree' as const,
       extraIgnorePatterns: [],
       extraIncludePatterns: [],
       includeGitDirectory: false,
@@ -151,11 +151,12 @@ describe('createTrackedSessionHandoffCoordinator', () => {
       },
     }));
     const coordinate = createTrackedSessionHandoffCoordinator({
+      expectedAccountServerId: 'server-1',
       readCredentials: async () => ({ token: 'token' } as never),
       resolveSource: async () => ({
         ok: true,
         sourceMachineId: 'source-1',
-        sourceRootPath: '/source/workspace',
+        sourceRootPath: '/source/workspace/packages/app',
         sessionStorageMode: 'persisted',
       }),
       callMachine,
@@ -163,6 +164,10 @@ describe('createTrackedSessionHandoffCoordinator', () => {
       wait: async () => undefined,
       workspaceSyncAdapter,
       refreshWorkspaceSettings,
+      resolveWorkspaceTransferRoot: async () => ({
+        repositoryRoot: '/source/workspace',
+        sessionRelativeCwd: 'packages/app',
+      }),
     });
 
     const result = await coordinate({
@@ -171,10 +176,8 @@ describe('createTrackedSessionHandoffCoordinator', () => {
         sessionId: 'session-1',
         targetMachineId: 'target-1',
         targetPath: '/target/workspace',
+        accountServerId: 'server-1',
         workspaceAction: { kind: 'copy_once', contentPolicy },
-        workspaceSyncSourceWorkspaceRefId: 'source-ref',
-        workspaceSyncTargetWorkspaceRefId: 'target-ref',
-        workspaceSyncSettingsVersion: 8,
       },
       start: async () => ({
         ok: true,
@@ -202,16 +205,21 @@ describe('createTrackedSessionHandoffCoordinator', () => {
       ['source-1', RPC_METHODS.DAEMON_SESSION_HANDOFF_COMMIT_V3],
     ]);
     expect((calls[4]!.request as { sessionId?: string }).sessionId).toBe('session-1');
-    expect(calls[4]!.timeoutMs).toBe(5 * 60_000);
-    expect(refreshWorkspaceSettings).toHaveBeenCalledWith(expect.objectContaining({
-      minSettingsVersion: 8,
+    expect(calls[0]!.request).toEqual(expect.objectContaining({
+      targetPath: '/target/workspace/packages/app',
+      workspaceRootPath: '/target/workspace',
+      workspaceSessionRelativeCwd: 'packages/app',
     }));
+    expect(calls[4]!.timeoutMs).toBe(5 * 60_000);
+    expect(refreshWorkspaceSettings).not.toHaveBeenCalled();
     expect(workspaceSyncAdapter.prepare).toHaveBeenCalledWith(expect.objectContaining({
       operationId: 'action-request-1',
-      sourceWorkspaceRefId: 'source-ref',
-      targetWorkspaceRefId: 'target-ref',
+      accountServerId: 'server-1',
       sourceRootPath: '/source/workspace',
       targetRootPath: '/target/workspace',
+    }));
+    expect(workspaceSyncAdapter.prepare).not.toHaveBeenCalledWith(expect.objectContaining({
+      sourceWorkspaceRefId: expect.anything(),
     }));
   });
 });

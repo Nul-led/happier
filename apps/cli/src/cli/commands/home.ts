@@ -9,10 +9,9 @@ import {
   PERSONAL_HOME_SYSTEM_TASK_KINDS,
 } from '@happier-dev/cli-common/systemTasks';
 import { createPersonalHomeEraseConfirmationToken } from '@happier-dev/cli-common/firstPartyRuntime';
-import { isHappierRuntimePathWithinRoot } from '@happier-dev/cli-common/happierRuntime';
 import {
   SYSTEM_TASK_PROTOCOL_VERSION,
-  type HomeConnectionDescriptorV1,
+  SystemTaskJsonValueSchema,
   type SystemTaskEvent,
   type SystemTaskJsonObject,
   type SystemTaskJsonValue,
@@ -35,10 +34,6 @@ export type HomeCommandDeps = Readonly<{
   isInteractiveTerminal: () => boolean;
   promptInput: (prompt: string) => Promise<string>;
   sleep: (ms: number) => Promise<void>;
-  resolveRelocationDestination?: (targetId: string) => Promise<Readonly<{
-    targetId: string;
-    descriptor: HomeConnectionDescriptorV1;
-  }>>;
 }>;
 
 const DEFAULT_DEPS: HomeCommandDeps = {
@@ -101,8 +96,7 @@ function showHomeHelp(): void {
     '  happier home restore PATH [--yes]',
     '  happier home recover-restore [--yes]',
     '  happier home finalize-restore [--yes]',
-    '  happier home erase [--backup-first --backup-output PATH] [--yes]',
-    '  happier home relocate --target TARGET [--yes]',
+    '  happier home erase [--yes]',
     '',
     'Runtime targeting options:',
     '  --channel stable|preview|dev',
@@ -182,11 +176,16 @@ async function readPersonalHomePurpose(params: Readonly<{
   return { kind: 'personal-home', canonicalServerUrl };
 }
 
-function taskSpec(kind: string, purpose: PersonalHomePurpose, extra: Record<string, SystemTaskJsonValue> = {}): SystemTaskSpec {
+function taskSpec(
+  kind: string,
+  purpose: PersonalHomePurpose,
+  runtime: Readonly<{ channel: 'stable' | 'preview' | 'dev'; mode: 'user' | 'system' }>,
+  extra: Record<string, SystemTaskJsonValue> = {},
+): SystemTaskSpec {
   return {
     protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
     kind,
-    params: { target: { kind: 'local' }, purpose, ...extra },
+    params: { target: { kind: 'local' }, ...runtime, purpose, ...extra },
   };
 }
 
@@ -314,6 +313,8 @@ export async function handleHomeCommand(
     if (!interactive) return { confirmed: false };
     const answer = await deps.promptInput([
       'Permanently erase the owner-validated Personal Home paths below?',
+      `Home: ${canonicalServerUrl}`,
+      `Home identity: ${homeServerIdentityId ?? 'unavailable'}`,
       ...paths.map((path) => `- ${path}`),
       `Estimated owned bytes: ${estimatedBytes === null ? 'unknown' : String(estimatedBytes)}`,
       '[y/N]: ',
@@ -327,9 +328,67 @@ export async function handleHomeCommand(
     return data;
   };
 
+  if (subcommand === 'relocation-destination') {
+    const action = args[0];
+    args = args.slice(1);
+    const operationIdFlag = takeFlagValue(args, '--operation-id');
+    args = operationIdFlag.rest;
+    const operationId = operationIdFlag.value?.trim() ?? '';
+    if (!operationId) throw new Error('Relocation destination operation requires --operation-id.');
+    if (action === 'status' || action === 'abort') {
+      if (args.length > 0) throw new Error(`Unknown relocation destination ${action} arguments: ${args.join(' ')}`);
+      await run(taskSpec(
+        action === 'status'
+          ? PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationStatus
+          : PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationAbort,
+        purpose,
+        runtime,
+        { operationId },
+      ));
+      return;
+    }
+    if (action === 'stage') {
+      const archiveFlag = takeFlagValue(args, '--archive');
+      const digestFlag = takeFlagValue(archiveFlag.rest, '--bundle-sha256');
+      const homeIdFlag = takeFlagValue(digestFlag.rest, '--expected-home-id');
+      const canonicalUrlFlag = takeFlagValue(homeIdFlag.rest, '--expected-canonical-server-url');
+      const revisionFlag = takeFlagValue(canonicalUrlFlag.rest, '--source-descriptor-revision');
+      if (revisionFlag.rest.length > 0) throw new Error(`Unknown relocation destination stage arguments: ${revisionFlag.rest.join(' ')}`);
+      const sourceDescriptorRevision = Number(revisionFlag.value);
+      if (!Number.isSafeInteger(sourceDescriptorRevision) || sourceDescriptorRevision < 1) {
+        throw new Error('Relocation destination stage requires a positive --source-descriptor-revision.');
+      }
+      await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationStage, purpose, runtime, {
+        operationId,
+        archivePath: requirePath(archiveFlag.value ?? undefined, 'relocation bundle path', deps),
+        bundleSha256: digestFlag.value ?? '',
+        expectedHomeServerIdentityId: homeIdFlag.value ?? '',
+        expectedCanonicalServerUrl: canonicalUrlFlag.value ?? '',
+        sourceDescriptorRevision,
+      }));
+      return;
+    }
+    if (action === 'commit') {
+      const descriptorFlag = takeFlagValue(args, '--published-descriptor-json');
+      if (descriptorFlag.rest.length > 0) throw new Error(`Unknown relocation destination commit arguments: ${descriptorFlag.rest.join(' ')}`);
+      let publishedDescriptor: SystemTaskJsonValue;
+      try {
+        publishedDescriptor = SystemTaskJsonValueSchema.parse(JSON.parse(descriptorFlag.value ?? ''));
+      } catch {
+        throw new Error('Relocation destination commit requires valid --published-descriptor-json.');
+      }
+      await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationCommit, purpose, runtime, {
+        operationId,
+        publishedDescriptor,
+      }));
+      return;
+    }
+    throw new Error('Usage: happier home relocation-destination <stage|status|commit|abort> --operation-id ID ... --json');
+  }
+
   if (subcommand === 'status') {
     if (args.length > 0) throw new Error(`Unknown home status arguments: ${args.join(' ')}`);
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose));
+    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose, runtime));
     return;
   }
 
@@ -338,21 +397,21 @@ export async function handleHomeCommand(
     args = output.rest;
     if (args.length > 0) throw new Error(`Unknown home backup arguments: ${args.join(' ')}`);
     const outputPath = output.value === null ? null : requirePath(output.value, 'backup output path', deps);
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.backup, purpose, outputPath ? { outputPath } : {}));
+    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.backup, purpose, runtime, outputPath ? { outputPath } : {}));
     return;
   }
 
   if (subcommand === 'verify-backup') {
     if (args.length !== 1) throw new Error('Usage: happier home verify-backup PATH');
     const archivePath = requirePath(args[0], 'backup archive path', deps);
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup, purpose, { archivePath }));
+    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup, purpose, runtime, { archivePath }));
     return;
   }
 
   if (subcommand === 'restore') {
     if (args.length !== 1) throw new Error('Usage: happier home restore PATH [--yes]');
     const archivePath = requirePath(args[0], 'backup archive path', deps);
-    const inspection = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose));
+    const inspection = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose, runtime));
     const destinationEmpty = isRecord(inspection)
       && isRecord(inspection.storage)
       && inspection.storage.destinationEmpty === true;
@@ -362,7 +421,7 @@ export async function handleHomeCommand(
     if (!destinationEmpty && !destinationNonEmpty) {
       throw Object.assign(new Error('Personal Home inspection did not establish whether the restore destination is empty.'), { code: 'personal_home_inspection_incomplete' });
     }
-    const verification = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup, purpose, { archivePath }));
+    const verification = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup, purpose, runtime, { archivePath }));
     if (!isRecord(verification) || !isRecord(verification.manifest)) {
       throw Object.assign(new Error('Backup verification did not return a valid manifest; restore was not started.'), { code: 'invalid_backup_manifest' });
     }
@@ -386,7 +445,7 @@ export async function handleHomeCommand(
       ? verification.manifest.homeServerIdentityId
       : '';
     if (!expectedHomeServerIdentityId) throw Object.assign(new Error('Verified backup is missing its Home identity.'), { code: 'invalid_backup_manifest' });
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.restore, purpose, {
+    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.restore, purpose, runtime, {
       archivePath,
       ...(destinationNonEmpty ? { confirmOverwrite: true } : {}),
       expectedHomeServerIdentityId,
@@ -396,7 +455,7 @@ export async function handleHomeCommand(
 
   if (subcommand === 'recover-restore') {
     if (args.length > 0) throw new Error(`Unknown home recover-restore arguments: ${args.join(' ')}`);
-    const inspection = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose));
+    const inspection = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose, runtime));
     const { status, affectedTargets } = readRestoreRecoveryFacts(inspection);
     if (status === 'none') {
       if (!json) console.log('No interrupted Personal Home restore needs recovery.');
@@ -416,13 +475,13 @@ export async function handleHomeCommand(
       nonInteractiveMessage: 'Non-interactive restore recovery requires --yes.',
       deps,
     });
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.restore, purpose, { action: 'recover' }));
+    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.restore, purpose, runtime, { action: 'recover' }));
     return;
   }
 
   if (subcommand === 'finalize-restore') {
     if (args.length > 0) throw new Error(`Unknown home finalize-restore arguments: ${args.join(' ')}`);
-    const inspection = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose));
+    const inspection = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose, runtime));
     const { status, affectedTargets } = readRestoreRecoveryFacts(inspection);
     if (status === 'ambiguous') {
       throw Object.assign(new Error(`Restore finalization is ambiguous. Repair is required before mutation. Affected targets: ${affectedTargets.join(', ') || 'unknown'}`), { code: 'restore_recovery_ambiguous' });
@@ -438,67 +497,15 @@ export async function handleHomeCommand(
       nonInteractiveMessage: 'Non-interactive restore finalization requires --yes.',
       deps,
     });
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.restore, purpose, { action: 'finalize' }));
+    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.restore, purpose, runtime, { action: 'finalize' }));
     return;
   }
 
   if (subcommand === 'erase') {
-    const backupFirst = takeFlag(args, '--backup-first');
-    const backupOutput = takeFlagValue(backupFirst.rest, '--backup-output');
-    args = backupOutput.rest;
-    if (args.length > 0) throw new Error(`Unknown home erase arguments: ${args.join(' ')}`);
-    if (backupOutput.value !== null && !backupFirst.present) {
-      throw Object.assign(new Error('--backup-output requires --backup-first.'), { code: 'invalid_params' });
+    if (args.length > 0) {
+      throw Object.assign(new Error(`Unknown home erase arguments: ${args.join(' ')}`), { code: 'invalid_params' });
     }
-    const makeBackup = backupFirst.present
-      || (interactive
-        && /^y(?:es)?$/i.test((await deps.promptInput('Create a verified Personal Home backup before erasing data? [y/N]: ')).trim()));
-    if (makeBackup) {
-      const rawBackupOutput = backupOutput.value ?? (interactive
-        ? (await deps.promptInput('External path for the verified pre-erase backup: ')).trim()
-        : '');
-      if (!rawBackupOutput) {
-        throw Object.assign(new Error('A pre-erase safety backup requires --backup-output PATH outside the Personal Home data roots.'), { code: 'backup_output_required' });
-      }
-      const outputPath = requirePath(rawBackupOutput, 'pre-erase backup output path', deps);
-      const backup = await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.backup, purpose, { outputPath, intent: 'erase-safety' }));
-      if (!isRecord(backup)
-        || typeof backup.path !== 'string'
-        || typeof backup.sha256 !== 'string'
-        || !isRecord(backup.manifest)
-        || typeof backup.manifest.homeServerIdentityId !== 'string') {
-        throw Object.assign(new Error('Personal Home backup did not return verified final facts; erase was not started.'), { code: 'invalid_backup_result' });
-      }
-      const resultPathMatches = isHappierRuntimePathWithinRoot(backup.path, outputPath)
-        && isHappierRuntimePathWithinRoot(outputPath, backup.path);
-      if (!resultPathMatches) {
-        throw Object.assign(new Error('Personal Home backup did not verify the requested external safety destination; erase was not started.'), { code: 'invalid_backup_result' });
-      }
-    }
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.erase, purpose));
-    return;
-  }
-
-  if (subcommand === 'relocate') {
-    const target = takeFlagValue(args, '--target');
-    args = target.rest;
-    if (args.length > 0 || !target.value?.trim()) throw new Error('Usage: happier home relocate --target TARGET [--yes]');
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.inspect, purpose));
-    if (!deps.resolveRelocationDestination) {
-      throw Object.assign(new Error('Personal Home relocation destination descriptor resolver is unavailable; no relocation task was started.'), { code: 'relocation_resolver_unavailable' });
-    }
-    const destination = await deps.resolveRelocationDestination(target.value.trim());
-    if (!json) {
-      console.log(`Destination target: ${destination.targetId}\nDestination Home URL: ${destination.descriptor.canonicalServerUrl}`);
-    }
-    await confirmDestructive({
-      yes: yesFlag.present,
-      interactive: deps.isInteractiveTerminal() && !json,
-      prompt: `Move this Personal Home to ${destination.targetId} and stop the source after verified cutover?`,
-      nonInteractiveMessage: 'Non-interactive relocation requires --yes.',
-      deps,
-    });
-    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.relocate, purpose, { destination }));
+    await run(taskSpec(PERSONAL_HOME_SYSTEM_TASK_KINDS.erase, purpose, runtime));
     return;
   }
 
@@ -524,7 +531,6 @@ export async function handleHomeCliCommand(context: CommandContext): Promise<voi
       'invalid_backup_result',
       'personal_home_inspection_incomplete',
       'restore_recovery_ambiguous',
-      'relocation_resolver_unavailable',
       'invalid_runtime_target',
     ]);
     const mapped = rawCode && (errorRecord?.personalHomeTaskFailure === true || expectedHomeCodes.has(rawCode))

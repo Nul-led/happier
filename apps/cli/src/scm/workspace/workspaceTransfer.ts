@@ -21,6 +21,7 @@ export type ScmWorkspaceIntegrationWorkspaceTransferRequestInput = Readonly<{
 export type ScmWorkspaceIntegrationWorkspaceTransferEntry = Readonly<{
     relativePath: string;
     sourcePath: string;
+    disposeSource?: () => Promise<void> | void;
 }>;
 
 export type ScmWorkspaceIntegrationWorkspaceTransferMetadata = Readonly<Record<string, unknown>>;
@@ -46,6 +47,7 @@ export function createScmWorkspaceIntegrationWorkspaceTransferEntry(
     return {
         relativePath: input.relativePath,
         sourcePath: input.sourcePath,
+        ...(input.disposeSource ? { disposeSource: input.disposeSource } : {}),
     };
 }
 

@@ -92,6 +92,7 @@ export function createDaemonMachineBootstrapRuntime(
     requestShutdown: BootstrapRuntime['requestShutdown'];
     directPeerServerLifecycle: BootstrapRuntime['directPeerServerLifecycle'];
     machineIrohRuntime?: BootstrapRuntime['machineIrohRuntime'];
+    prepareServerTransportForReconnect?: BootstrapRuntime['prepareServerTransportForReconnect'];
     acquireWorkspaceSyncMachineIngress?: BootstrapRuntime['acquireWorkspaceSyncMachineIngress'];
     directTransferPromptAssetAdapterRegistry: BootstrapRuntime['directTransferPromptAssetAdapterRegistry'];
     directTransferPromptRegistryRegistry: BootstrapRuntime['directTransferPromptRegistryRegistry'];
@@ -129,6 +130,7 @@ export function createDaemonMachineBootstrapRuntime(
   }>,
 ): BootstrapRuntime {
   let connectedApiMachine: ApiMachineClient | null = null;
+  let workspaceSyncService: ApiMachineClientLifecycleDependencies['workspaceSync'];
   return {
     cliVersion: packageJson.version,
     credentials: params.credentials,
@@ -147,6 +149,9 @@ export function createDaemonMachineBootstrapRuntime(
       : {}),
     isShuttingDown: params.isShuttingDown,
     ...(params.machineIrohRuntime ? { machineIrohRuntime: params.machineIrohRuntime } : {}),
+    ...(params.prepareServerTransportForReconnect
+      ? { prepareServerTransportForReconnect: params.prepareServerTransportForReconnect }
+      : {}),
     ...(params.acquireWorkspaceSyncMachineIngress
       ? { acquireWorkspaceSyncMachineIngress: params.acquireWorkspaceSyncMachineIngress }
       : {}),
@@ -161,6 +166,7 @@ export function createDaemonMachineBootstrapRuntime(
       const workspaceSyncHandoffAdapter = workspaceRuntime?.handoffAdapter
         ?? params.workspaceSyncHandoffAdapter;
       const workspaceSync = workspaceRuntime?.workspaceSync ?? params.workspaceSync;
+      workspaceSyncService = workspaceSync;
       const apiMachine = params.api.machineSyncClient(registeredMachine, {
             runtimeId: params.runtimeId,
             cliVersion: packageJson.version,
@@ -178,6 +184,10 @@ export function createDaemonMachineBootstrapRuntime(
       connectedApiMachine = apiMachine;
       params.prepareApiMachineForSessions?.(apiMachine);
       return apiMachine;
+    },
+    prepareWorkspaceSyncSeedExport: async (request) => {
+      if (!workspaceSyncService?.prepareSourceSeedExport) throw new Error('Workspace sync source seed is unavailable');
+      return await workspaceSyncService.prepareSourceSeedExport(request);
     },
     attachTransferRuntimeStatePublisher: async (connectedApiMachine) => {
       if (!params.transferRuntimeStatePublisher) return;

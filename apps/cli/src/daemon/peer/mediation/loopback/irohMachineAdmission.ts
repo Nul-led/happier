@@ -4,16 +4,24 @@ import {
   IrohMachineHandshakeV1Schema,
   type IrohMachineCarrierFlowV1,
   type IrohMachineHandshakeV1,
-  type IrohMachineHandshakeRoleV1,
 } from '@happier-dev/protocol';
 import {
   IROH_MACHINE_ADMISSION_PATH,
+  IROH_MACHINE_APPLICATION_CAPABILITY_HEADER,
   IROH_MACHINE_APPLICATION_PORT_HEADER,
   IROH_MACHINE_REMOTE_ENDPOINT_HEADER,
 } from '@happier-dev/iroh-native/node';
 
-import { verifyMachineCarrierHandshakeV1 } from '../../iroh/machineCarrier';
+import {
+  verifyMachineCarrierHandshakeV1,
+  type MachineCarrierRole,
+} from '../../iroh/machineCarrier';
 import type { DirectRouteGrantTrustRoot } from '../verifyDirectRouteGrantV1';
+import {
+  isFirstBytesLocalCapability,
+  startFirstBytesLocalCapabilityProxy,
+  type FirstBytesLocalCapabilityProxy,
+} from './firstBytesLocalCapability';
 
 /**
  * Explicit machine-Iroh admission configuration for the peer-mediation loopback app
@@ -26,7 +34,7 @@ export type PeerMediationLoopbackIrohMachineAdmissionOptions = Readonly<{
   /** Local Iroh endpoint identity bound into every admitted handshake. */
   localEndpointId: string;
   /** Local role of this side (`initiator` dials, `acceptor` listens). */
-  role: IrohMachineHandshakeRoleV1;
+  role: MachineCarrierRole;
   /** Precise admitted carrier flows; a handshake flow outside this list fails closed. */
   allowedFlows: readonly IrohMachineCarrierFlowV1[];
   /**
@@ -34,10 +42,11 @@ export type PeerMediationLoopbackIrohMachineAdmissionOptions = Readonly<{
    * stream. The peer never supplies a destination: native Rust accepts only
    * this trusted response port and always connects to 127.0.0.1.
    */
-  resolveApplicationPort: (input: Readonly<{
+  resolveApplicationTarget: (input: Readonly<{
     handshake: IrohMachineHandshakeV1;
     authenticatedRemoteEndpointId: string;
-  }>) => number | null | Promise<number | null>;
+  }>) => Readonly<{ port: number; localCapability?: string }> | null
+    | Promise<Readonly<{ port: number; localCapability?: string }> | null>;
 }>;
 
 export type RegisterPeerMediationIrohMachineAdmissionRouteOptions = Readonly<{
@@ -60,6 +69,11 @@ export function registerPeerMediationIrohMachineAdmissionRoute(
   app: FastifyInstance,
   options: RegisterPeerMediationIrohMachineAdmissionRouteOptions,
 ): void {
+  const activeCapabilityProxies = new Set<FirstBytesLocalCapabilityProxy>();
+  app.addHook('onClose', async () => {
+    await Promise.all([...activeCapabilityProxies].map(async (proxy) => await proxy.close()));
+    activeCapabilityProxies.clear();
+  });
   const remoteEndpointHeaderName = IROH_MACHINE_REMOTE_ENDPOINT_HEADER.toLowerCase();
   app.post(IROH_MACHINE_ADMISSION_PATH, async (request, reply) => {
     // The Iroh transport supplies exactly one authenticated remote EndpointId. Node folds
@@ -95,25 +109,40 @@ export function registerPeerMediationIrohMachineAdmissionRoute(
         nowMs: options.nowMs(),
         authenticatedRemoteEndpointId,
       });
-      const applicationPort = await options.admission.resolveApplicationPort({
+      const resolvedApplicationTarget = await options.admission.resolveApplicationTarget({
         handshake: verified.handshake,
         authenticatedRemoteEndpointId: verified.remoteEndpointId,
       });
       if (
-        typeof applicationPort !== 'number'
-        || !Number.isInteger(applicationPort)
-        || applicationPort < 1
-        || applicationPort > 65_535
+        !resolvedApplicationTarget
+        || !Number.isInteger(resolvedApplicationTarget.port)
+        || resolvedApplicationTarget.port < 1
+        || resolvedApplicationTarget.port > 65_535
+        || (resolvedApplicationTarget.localCapability !== undefined
+          && !isFirstBytesLocalCapability(resolvedApplicationTarget.localCapability))
       ) {
         return reply.code(IROH_MACHINE_ADMISSION_REJECT_STATUS).send();
       }
+      let applicationTarget = resolvedApplicationTarget;
+      if (applicationTarget.localCapability === undefined) {
+        const proxy = await startFirstBytesLocalCapabilityProxy({ targetPort: applicationTarget.port });
+        activeCapabilityProxies.add(proxy);
+        void proxy.closed.finally(() => activeCapabilityProxies.delete(proxy));
+        applicationTarget = {
+          port: proxy.port,
+          localCapability: proxy.localCapability,
+        };
+      }
       // Bodyless 204 with both values required by the native acceptor: the
       // authenticated endpoint echo and the trusted, stream-specific local port.
-      return reply
+      const response = reply
         .code(204)
         .header(IROH_MACHINE_REMOTE_ENDPOINT_HEADER, verified.remoteEndpointId)
-        .header(IROH_MACHINE_APPLICATION_PORT_HEADER, String(applicationPort))
-        .send();
+        .header(IROH_MACHINE_APPLICATION_PORT_HEADER, String(applicationTarget.port));
+      if (applicationTarget.localCapability !== undefined) {
+        response.header(IROH_MACHINE_APPLICATION_CAPABILITY_HEADER, applicationTarget.localCapability);
+      }
+      return response.send();
     } catch {
       return reply.code(IROH_MACHINE_ADMISSION_REJECT_STATUS).send();
     }

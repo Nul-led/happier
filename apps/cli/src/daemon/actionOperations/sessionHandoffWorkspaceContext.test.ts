@@ -49,6 +49,7 @@ describe('resolveSessionHandoffWorkspaceContext', () => {
       sourceRootPath: '/source',
       targetRootPath: '/target',
       controllerMachineId: 'source-machine',
+      contentSelection: 'all_files',
     });
   });
 

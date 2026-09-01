@@ -85,6 +85,34 @@ describe('workspaceIntegration workspace export artifacts', () => {
         }
     });
 
+    it('retains one-shot disposal custody for an integration-owned finite artifact', async () => {
+        const root = await makeTempDir('scm-workspace-export-ephemeral-');
+        const artifactPath = join(root, 'git.bundle');
+        await writeFile(artifactPath, Buffer.from([0, 255, 1, 254]));
+        let disposeCalls = 0;
+        const { workspaceExportArtifacts, blobProvider } = await buildScmWorkspaceIntegrationWorkspaceExportArtifactsWithBlobProviderFromTransferEntries({
+            entries: [{
+                relativePath: '.happier-scm/git.bundle',
+                sourcePath: artifactPath,
+                disposeSource: async () => {
+                    disposeCalls += 1;
+                    await rm(artifactPath, { force: true });
+                },
+            }],
+        });
+        const entry = workspaceExportArtifacts.manifest.entries.find(
+            (candidate) => candidate.kind === 'file',
+        );
+        expect(entry?.kind).toBe('file');
+        if (!entry || entry.kind !== 'file') throw new Error('finite artifact was not packaged');
+        expect(await readFile(blobProvider.getBlobFilePath(entry.digest)!)).toEqual(Buffer.from([0, 255, 1, 254]));
+
+        await blobProvider.disposeBlobFilePath?.(entry.digest);
+        await blobProvider.disposeBlobFilePath?.(entry.digest);
+        expect(disposeCalls).toBe(1);
+        await expect(readFile(artifactPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
     it('clones the manifest and omits null workspace-integration metadata for manifest-only inputs', () => {
         const originalManifest = {
             entries: [{

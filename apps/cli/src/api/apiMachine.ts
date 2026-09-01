@@ -110,7 +110,10 @@ import {
 import type { PluginReloadController } from '@/plugins/runtime/reload/controller';
 import { pluginReloadController } from '@/plugins/runtime/reload/singleton';
 import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
-import { resolveServerHttpBaseUrl } from './client/serverHttpBaseUrl';
+import {
+    resolveServerHttpBaseUrl,
+    resolveServerSocketIoTransports,
+} from './client/serverHttpBaseUrl';
 import { createAuthenticationHttpStatusError, isAuthenticationError, isAuthenticationStatus } from './client/httpStatusError';
 import { serializeAxiosErrorForLog } from './client/serializeAxiosErrorForLog';
 import { handleRequestAuthenticationFailure } from '@/api/connection/requestSupervision/reportRequestOutcomeToSupervisor';
@@ -373,6 +376,7 @@ export class ApiMachineClient {
         'activatePurposeBindings' | 'listActionFormConnectedAccountOptions'
     > | null = null;
     private sessionSpawnV1OutcomeRequired = false;
+    private currentIrohMachineEndpointId: string | null = null;
     private agentCatalogObservation: AgentProviderCatalogObservationService | null = null;
     private activeTransportGeneration = 0;
     private advertisedOperationProtocolCapabilitiesGeneration: number | null = null;
@@ -896,6 +900,7 @@ export class ApiMachineClient {
                     ? { workspaceSync: this.lifecycleDependencies.workspaceSync }
                     : {}),
                 sessionHandoffCoordinator: createTrackedSessionHandoffCoordinator({
+                    expectedAccountServerId: configuration.activeServerId,
                     readCredentials: async () => await readStoredCredentials().catch(() => null),
                     callMachine: async (input) => input.machineId === this.machine.id
                         ? await this.rpcHandlerManager.invokeLocal(
@@ -1551,10 +1556,47 @@ export class ApiMachineClient {
         return response.revision;
     }
 
-    private currentMachineOperationProtocolCapabilities(): MachineOperationProtocolCapabilitiesV1 | null {
-        return this.sessionSpawnV1OutcomeRequired
-            ? CURRENT_MACHINE_OPERATION_PROTOCOL_CAPABILITIES_V1
-            : null;
+    private currentMachineOperationProtocolCapabilities(
+        includeSessionCapabilities = true,
+    ): MachineOperationProtocolCapabilitiesV1 | null {
+        const capabilities: MachineOperationProtocolCapabilitiesV1 = {
+            ...(includeSessionCapabilities && this.sessionSpawnV1OutcomeRequired
+                ? CURRENT_MACHINE_OPERATION_PROTOCOL_CAPABILITIES_V1
+                : {}),
+            ...(this.currentIrohMachineEndpointId
+                ? {
+                    irohMachineEndpoint: {
+                        protocolVersions: [1],
+                        endpointId: this.currentIrohMachineEndpointId,
+                    },
+                }
+                : {}),
+        };
+        return Object.keys(capabilities).length > 0 ? capabilities : null;
+    }
+
+    private async synchronizeIrohMachineEndpointAuthority(
+        state: DaemonState,
+    ): Promise<void> {
+        const nextEndpointId = state.peerMediation?.iroh?.endpoint.endpointId ?? null;
+        if (nextEndpointId === this.currentIrohMachineEndpointId) return;
+        const previousEndpointId = this.currentIrohMachineEndpointId;
+        this.currentIrohMachineEndpointId = nextEndpointId;
+
+        const socket = this.socket;
+        if (!socket || socket.connected !== true) return;
+        const capabilities = this.currentMachineOperationProtocolCapabilities(
+            this.machineControlRunningGeneration === this.activeTransportGeneration,
+        ) ?? {};
+        try {
+            await this.publishOperationProtocolCapabilitiesOnSocket(socket, capabilities);
+        } catch (error) {
+            this.currentIrohMachineEndpointId = previousEndpointId;
+            throw error;
+        }
+        if (this.socket === socket && socket.connected === true) {
+            this.advertisedOperationProtocolCapabilitiesGeneration = this.activeTransportGeneration;
+        }
     }
 
     async updateMachineMetadata(
@@ -1638,6 +1680,7 @@ export class ApiMachineClient {
             if (answer.result === 'success') {
                 this.machine.daemonState = this.machineContentCodec.decodeStored(answer.daemonState) as DaemonState;
                 this.machine.daemonStateVersion = answer.version;
+                await this.synchronizeIrohMachineEndpointAuthority(this.machine.daemonState);
                 logger.debug('[API MACHINE] Daemon state updated successfully');
                 return 'published';
             } else if (answer.result === 'version-mismatch') {
@@ -1714,9 +1757,9 @@ export class ApiMachineClient {
         onConnect?: () => void | Promise<void>;
         onOwnershipConflict?: (conflict: { owner: MachineOwnerConflictDetails }) => void;
         onMachineReplaced?: (event: { machineId: string }) => void;
+        prepareServerTransportForReconnect?: () => Promise<ReadinessProbeResult>;
     }) {
-        const serverUrl = resolveServerHttpBaseUrl();
-        logger.debug(`[API MACHINE] Connecting to ${serverUrl}`);
+        logger.debug(`[API MACHINE] Connecting to ${resolveServerHttpBaseUrl()}`);
         let takeoverOnNextConnect = params?.takeover === true;
 
         if (!this.connectionSupervisor) {
@@ -1724,6 +1767,7 @@ export class ApiMachineClient {
                 ...DEFAULT_MANAGED_CONNECTION_POLICY,
                 classifyTransportErrorToProbeResult: classifyMachineTransportErrorToProbeResult,
                 createTransport: () => {
+                    const serverUrl = resolveServerHttpBaseUrl();
                     const transportGeneration = this.activeTransportGeneration + 1;
                     this.activeTransportGeneration = transportGeneration;
                     const installationIdentity = configuration.installationIdentityFile
@@ -1749,7 +1793,7 @@ export class ApiMachineClient {
                             : null),
                         ...this.ownershipMetadata,
                         takeover: takeoverOnNextConnect,
-                        transports: configuration.socketIoTransports,
+                        transports: resolveServerSocketIoTransports(),
                         env: process.env,
                     });
                     this.connectedClientRpcMethods.clear();
@@ -1764,10 +1808,14 @@ export class ApiMachineClient {
                     });
                     return transport;
                 },
-                probeReadiness: createLoopbackReadinessProbe({
-                    serverUrl,
-                    token: this.token,
-                }),
+                probeReadiness: async () => {
+                    const prepared = await params?.prepareServerTransportForReconnect?.();
+                    if (prepared && prepared.status !== 'ready') return prepared;
+                    return await createLoopbackReadinessProbe({
+                        serverUrl: resolveServerHttpBaseUrl(),
+                        token: this.token,
+                    })();
+                },
                 onStateChange: (state) => {
                     this.currentConnectionState = state;
                     for (const listener of this.connectionStateListeners) {
@@ -1801,8 +1849,10 @@ export class ApiMachineClient {
                             missingCoreHandlers.length > 0
                             || this.currentMachineOperationProtocolCapabilities() === null
                         ) {
+                            const failClosedCapabilities =
+                                this.currentMachineOperationProtocolCapabilities(false) ?? {};
                             await this
-                                .publishOperationProtocolCapabilitiesOnSocket(socket, {})
+                                .publishOperationProtocolCapabilitiesOnSocket(socket, failClosedCapabilities)
                                 .catch(() => {
                                     logger.warn('[API MACHINE] Failed to publish the fail-closed operation protocol capability projection on connect');
                                 });
@@ -1904,6 +1954,17 @@ export class ApiMachineClient {
                 message: error instanceof Error ? error.message : String(error),
             });
         });
+    }
+
+    requestServerTransportReconnect(): boolean {
+        const supervisor = this.connectionSupervisor;
+        const scope = supervisor?.captureProbeReportScope?.();
+        if (!supervisor?.reportProbeResult || !scope) return false;
+        supervisor.reportProbeResult({
+            status: 'server_unreachable',
+            errorMessage: 'The active Home transport descriptor changed',
+        }, scope);
+        return true;
     }
 
     private installSocketEventHandlers(

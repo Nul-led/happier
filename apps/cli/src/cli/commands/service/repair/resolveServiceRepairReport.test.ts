@@ -5,11 +5,9 @@ const {
   discoverHappierInstallationsMock,
   discoverHappierServicesMock,
   listDaemonStatusesForAllKnownServersMock,
-  readCredentialsMock,
   readDaemonStatusSnapshotMock,
   readStatusMock,
   resolveBackgroundServiceRepairPlanForCurrentRuntimeMock,
-  validateStoredAuthTokenAgainstActiveServerMock,
 } = vi.hoisted(() => ({
   buildHappierRuntimeWarningsMock: vi.fn((_params: unknown) => []),
   discoverHappierInstallationsMock: vi.fn(async (_params: unknown) => ({
@@ -28,8 +26,10 @@ const {
       daemonStatePath: '/tmp/daemon-state.json',
       auth: {
         authenticated: true,
+        credentialState: 'valid',
         needsAuth: false,
         machineRegistered: true,
+        machineRegistrationState: 'server-confirmed',
         machineId: 'machine-1',
         accountId: 'account-1',
       },
@@ -50,10 +50,6 @@ const {
     },
   ]),
   readDaemonStatusSnapshotMock: vi.fn(async () => null),
-  readCredentialsMock: vi.fn(async () => ({
-    token: 'token-1',
-    encryption: { type: 'plain' },
-  })),
   readStatusMock: vi.fn(async (_params: unknown) => ({
     installed: false,
     baseUrl: null,
@@ -98,13 +94,6 @@ const {
       manualWarnings: [],
     },
   })),
-  validateStoredAuthTokenAgainstActiveServerMock: vi.fn(async (_token: string): Promise<
-    | Readonly<{ state: 'valid'; httpStatus: number }>
-    | Readonly<{ state: 'invalid'; httpStatus: number; reasonCode: string }>
-  > => ({
-    state: 'valid' as const,
-    httpStatus: 200,
-  })),
 }));
 
 vi.mock('@happier-dev/cli-common/happierRuntime', () => ({
@@ -127,18 +116,9 @@ vi.mock('@/daemon/statusSnapshot', () => ({
   readDaemonStatusSnapshot: () => readDaemonStatusSnapshotMock(),
 }));
 
-vi.mock('@/auth/validateStoredAuthTokenAgainstActiveServer', () => ({
-  validateStoredAuthTokenAgainstActiveServer: (token: string) =>
-    validateStoredAuthTokenAgainstActiveServerMock(token),
-}));
-
 vi.mock('@/diagnostics/backgroundServiceRepair/resolveBackgroundServiceRepairPlanForCurrentRuntime', () => ({
   resolveBackgroundServiceRepairPlanForCurrentRuntime: (params: unknown) =>
     resolveBackgroundServiceRepairPlanForCurrentRuntimeMock(params),
-}));
-
-vi.mock('@/persistence', () => ({
-  readCredentials: () => readCredentialsMock(),
 }));
 
 import { resolveServiceRepairReport } from './resolveServiceRepairReport';
@@ -173,11 +153,30 @@ describe('resolveServiceRepairReport', () => {
   });
 
   it('reports expired auth when active Relay credentials are rejected', async () => {
-    validateStoredAuthTokenAgainstActiveServerMock.mockResolvedValueOnce({
-      state: 'invalid',
-      httpStatus: 401,
-      reasonCode: 'not_authenticated',
-    });
+    listDaemonStatusesForAllKnownServersMock.mockResolvedValueOnce([
+      {
+        serverId: 'cloud',
+        name: 'Cloud',
+        serverUrl: 'https://relay.example.test',
+        comparableKey: 'https://relay.example.test',
+        daemonStatePath: '/tmp/daemon-state.json',
+        auth: {
+          authenticated: false,
+          credentialState: 'invalid',
+          needsAuth: true,
+          machineRegistered: true,
+          machineRegistrationState: 'server-confirmed',
+          machineId: 'machine-1',
+          accountId: 'account-1',
+        },
+        drift: {
+          activeComparableKey: 'https://relay.example.test',
+          matchesActiveRelay: true,
+        },
+        service: { installed: true, running: false },
+        daemon: { pid: null, httpPort: null, running: false, staleStateFile: false },
+      },
+    ]);
 
     const resolution = await resolveServiceRepairReport({
       preferredMode: 'user',
@@ -185,12 +184,11 @@ describe('resolveServiceRepairReport', () => {
       systemUser: '',
     });
 
-    expect(validateStoredAuthTokenAgainstActiveServerMock).toHaveBeenCalledWith('token-1');
     expect(resolution.report.authProfiles).toEqual([
       expect.objectContaining({
         id: 'cloud',
         active: true,
-        authenticated: true,
+        authenticated: false,
         authState: 'expired',
       }),
     ]);
@@ -198,6 +196,50 @@ describe('resolveServiceRepairReport', () => {
       expect.objectContaining({
         kind: 'auth_expired_for_active_profile',
       }),
+    ]));
+  });
+
+  it('preserves inconclusive validation without reporting stored credentials as missing', async () => {
+    listDaemonStatusesForAllKnownServersMock.mockResolvedValueOnce([
+      {
+        serverId: 'cloud',
+        name: 'Cloud',
+        serverUrl: 'https://relay.example.test',
+        comparableKey: 'https://relay.example.test',
+        daemonStatePath: '/tmp/daemon-state.json',
+        auth: {
+          authenticated: false,
+          credentialState: 'unknown',
+          needsAuth: true,
+          machineRegistered: true,
+          machineRegistrationState: 'server-confirmed',
+          machineId: 'machine-1',
+          accountId: 'account-1',
+        },
+        drift: {
+          activeComparableKey: 'https://relay.example.test',
+          matchesActiveRelay: true,
+        },
+        service: { installed: true, running: false },
+        daemon: { pid: null, httpPort: null, running: false, staleStateFile: false },
+      },
+    ]);
+
+    const resolution = await resolveServiceRepairReport({
+      preferredMode: 'user',
+      includeAllModes: true,
+      systemUser: '',
+    });
+
+    expect(resolution.report.authProfiles).toEqual([
+      expect.objectContaining({
+        id: 'cloud',
+        authenticated: false,
+        authState: 'unknown',
+      }),
+    ]);
+    expect(resolution.report.findings).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'auth_missing_for_profile' }),
     ]));
   });
 });

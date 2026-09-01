@@ -72,4 +72,27 @@ describe('validateStoredAuthTokenAgainstActiveServer', () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('validates an explicit profile without consulting the active-server URL', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ id: 'account-explicit' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ) as typeof fetch;
+
+    const { validateStoredAuthTokenAgainstServer } = await import('./validateStoredAuthTokenAgainstActiveServer');
+    await expect(validateStoredAuthTokenAgainstServer({
+      token: 'token-explicit',
+      baseUrl: 'https://other.example.test/',
+      fetchImpl: fetchMock,
+    })).resolves.toMatchObject({ state: 'valid', httpStatus: 200 });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://other.example.test/v1/account/profile',
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer token-explicit' }),
+      }),
+    );
+  });
 });

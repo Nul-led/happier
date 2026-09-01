@@ -38,7 +38,7 @@ describe('importSessionHandoffAgentBundle', () => {
                     homePath: '/tmp/codex',
                 },
                 launch: {
-                    directory: '/repo',
+                    directory: '/source/repo/packages/app',
                     environmentVariables: { CODEX_HOME: '/tmp/codex' },
                     sessionStateUpdates: [
                         {
@@ -75,7 +75,7 @@ describe('importSessionHandoffAgentBundle', () => {
                 remoteSessionId: 'codex_1',
                 files: [],
             },
-            targetPath: '/repo',
+            targetPath: '/target/repo/packages/app',
             sessionStorageMode: 'persisted',
         })).resolves.toEqual({
             remoteSessionId: 'codex_1',
@@ -93,7 +93,7 @@ describe('importSessionHandoffAgentBundle', () => {
                 },
             },
             resume: {
-                directory: '/repo',
+                directory: '/target/repo/packages/app',
                 agent: 'codex',
                 agentTarget: {
                     kind: 'agent',
@@ -113,7 +113,7 @@ describe('importSessionHandoffAgentBundle', () => {
                 remoteSessionId: 'codex_1',
                 files: [],
             },
-            targetDirectory: '/repo',
+            targetDirectory: '/target/repo/packages/app',
         });
     });
 

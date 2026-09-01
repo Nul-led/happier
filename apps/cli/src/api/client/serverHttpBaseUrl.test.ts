@@ -85,4 +85,26 @@ describe('resolveServerHttpBaseUrl', () => {
     expect(configuration.apiServerUrl).toBe('http://127.0.0.1:52755');
     expect(resolveServerHttpBaseUrl()).toBe('http://127.0.0.1:52755');
   });
+
+  it('publishes one daemon runtime origin without replacing the canonical configuration', async () => {
+    stubServerEnv({
+      HAPPIER_SERVER_URL: 'https://personal-home.example',
+    });
+
+    const { configuration } = await import('@/configuration');
+    const {
+      publishServerHttpRuntimeOrigin,
+      resolveServerHttpBaseUrl,
+      resolveServerSocketIoTransports,
+    } = await import('./serverHttpBaseUrl');
+
+    const release = publishServerHttpRuntimeOrigin('http://127.0.0.1:48123', 'iroh');
+    expect(configuration.serverUrl).toBe('https://personal-home.example');
+    expect(resolveServerHttpBaseUrl()).toBe('http://127.0.0.1:48123');
+    expect(resolveServerSocketIoTransports()).toEqual(['websocket']);
+
+    release();
+    expect(resolveServerHttpBaseUrl()).toBe('https://personal-home.example');
+    expect(resolveServerSocketIoTransports()).toBe(configuration.socketIoTransports);
+  });
 });

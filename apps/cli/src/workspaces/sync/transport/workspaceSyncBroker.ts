@@ -4,6 +4,12 @@ import { dirname, join } from 'node:path';
 import { connect as netConnect, createServer, type Server, type Socket } from 'node:net';
 
 import {
+  startProcessCustodySecurePipeRelay,
+  type ProcessCustodySecurePipeRelay,
+  type ProcessCustodySecurePipeRelayStart,
+} from '@/subprocess/supervision/processCustodySecurePipeRelay';
+
+import {
   BrokerControlFrameDecoder,
   BrokerProtocolError,
   BrokerRequestStateMachine,
@@ -32,6 +38,7 @@ export interface WorkspaceSyncBrokerPeerIdentityContext {
   kind: 'control' | 'data';
   socket: Socket;
   sidecarPid?: number;
+  witnessedPeerPid?: number;
 }
 
 export interface WorkspaceSyncBrokerConfig {
@@ -53,45 +60,64 @@ export interface WorkspaceSyncBrokerEndpoint {
   listen(server: Server, path?: string): Promise<void>;
   secure(path?: string): Promise<void>;
   remove(path?: string): Promise<void>;
+  peerPid(socket: Socket): number | undefined;
 }
 
 export function createWorkspaceSyncBrokerEndpoint(input: Readonly<{
   endpointPath: string;
   platform?: NodeJS.Platform;
+  startWindowsRelay?: ProcessCustodySecurePipeRelayStart;
 }>): WorkspaceSyncBrokerEndpoint {
   const isWindows = (input.platform ?? process.platform) === 'win32';
+  const startWindowsRelay = input.startWindowsRelay ?? startProcessCustodySecurePipeRelay;
   const endpointPath = isWindows && !input.endpointPath.startsWith('\\\\.\\pipe\\')
     ? `\\\\.\\pipe\\happier-workspace-sync-${Buffer.from(input.endpointPath).toString('hex').slice(-48)}`
     : input.endpointPath;
+  const peerPids = new WeakMap<Socket, number>();
+  let windowsRelay: ProcessCustodySecurePipeRelay | undefined;
   return {
     endpointPath,
     kind: isWindows ? 'named_pipe' : 'unix',
     connect: (path = endpointPath) => netConnect(path),
-    listen: (server, path = endpointPath) => new Promise<void>((resolve, reject) => {
+    listen: async (server, path = endpointPath) => {
       if (isWindows) {
-        reject(new Error(
-          'Windows workspace-sync named pipes require a native user-only security descriptor before listening',
-        ));
+        if (windowsRelay) throw new Error('workspace-sync named-pipe relay is already listening');
+        windowsRelay = await startWindowsRelay({
+          pipeName: path,
+          onConnection: (socket, peerPid) => {
+            peerPids.set(socket, peerPid);
+            server.emit('connection', socket);
+          },
+        });
         return;
       }
-      const onError = (error: Error) => {
-        server.off('listening', onListening);
-        reject(error);
-      };
-      const onListening = () => {
-        server.off('error', onError);
-        resolve();
-      };
-      server.once('error', onError);
-      server.once('listening', onListening);
-      server.listen(path);
-    }),
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => {
+          server.off('listening', onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          server.off('error', onError);
+          resolve();
+        };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(path);
+      });
+    },
     secure: async (path = endpointPath) => {
       if (!isWindows) await chmod(path, 0o600);
     },
     remove: async (path = endpointPath) => {
-      if (!isWindows) await rm(path, { force: true });
+      if (isWindows) {
+        const relay = windowsRelay;
+        windowsRelay = undefined;
+        await relay?.close();
+      } else {
+        await rm(path, { force: true });
+      }
     },
+    peerPid: (socket) => peerPids.get(socket),
   };
 }
 
@@ -156,12 +182,14 @@ export class WorkspaceSyncBroker {
   private readonly endpoint: WorkspaceSyncBrokerEndpoint;
   private readonly config: WorkspaceSyncBrokerConfig & { now: () => number; maxStreams: number };
   private readonly pending = new Map<string, PendingStream>();
+  private readonly attachRequestIds = new Map<string, string>();
   private readonly activeRequestIds = new Set<string>();
   private readonly commands = new Map<string, PendingCommand>();
   private readonly controlSockets = new Set<Socket>();
   private authenticatedControl: Socket | undefined;
   private authenticatedSidecarPidValue: number | undefined;
   private readyResolve!: () => void;
+  private readyReject!: (error: Error) => void;
   private closed = false;
 
   private constructor(
@@ -182,7 +210,11 @@ export class WorkspaceSyncBroker {
     this.launchNonceValue = launchNonce;
     this.launchSecret = Buffer.from(config.launchSecret);
     this.socketPath = endpoint.endpointPath;
-    this.whenReady = new Promise<void>((resolve) => { this.readyResolve = resolve; });
+    this.whenReady = new Promise<void>((resolve, reject) => {
+      this.readyResolve = resolve;
+      this.readyReject = reject;
+    });
+    void this.whenReady.catch(() => undefined);
   }
 
   get launchNonce(): string { return this.launchNonceValue; }
@@ -280,6 +312,7 @@ export class WorkspaceSyncBroker {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.readyReject(new BrokerProtocolError('agent_unavailable', 'workspace sync broker closed before sidecar authentication'));
     for (const socket of this.controlSockets) socket.destroy();
     for (const stream of [...this.pending.values()]) this.closePending(stream);
     this.failCommands(new BrokerProtocolError('indeterminate', 'sidecar command outcome is unknown after broker close'));
@@ -287,9 +320,19 @@ export class WorkspaceSyncBroker {
     await this.endpoint.remove();
   }
 
-  private async validatePeer(kind: 'control' | 'data', socket: Socket, sidecarPid?: number): Promise<boolean> {
+  private async validatePeer(
+    kind: 'control' | 'data',
+    socket: Socket,
+    sidecarPid?: number,
+    endpoint: WorkspaceSyncBrokerEndpoint = this.endpoint,
+  ): Promise<boolean> {
     try {
-      return await (this.config.validatePeerIdentity?.({ kind, socket, sidecarPid }) ?? true);
+      return await (this.config.validatePeerIdentity?.({
+        kind,
+        socket,
+        sidecarPid,
+        witnessedPeerPid: endpoint.peerPid(socket),
+      }) ?? true);
     } catch {
       return false;
     }
@@ -366,16 +409,17 @@ export class WorkspaceSyncBroker {
       case 'open_data': this.openData(socket, message); return;
       case 'attach_data': this.attachData(socket, message); return;
       case 'cancel': {
-        const stream = [...this.pending.values()].find((item) => item.requestId === message.requestId && item.control === socket);
+        const stream = this.pending.get(message.requestId);
         if (stream) {
+          if (stream.control !== socket) return;
           stream.openController.abort(new BrokerProtocolError('cancelled', 'request cancelled'));
           this.failPending(stream, 'cancelled', 'request cancelled');
         }
         return;
       }
       case 'close': {
-        const stream = [...this.pending.values()].find((item) => item.requestId === message.requestId && item.control === socket);
-        if (stream) this.closePending(stream);
+        const stream = this.pending.get(message.requestId);
+        if (stream?.control === socket) this.closePending(stream);
         this.send(socket, { t: 'close_ok', requestId: message.requestId });
         return;
       }
@@ -427,7 +471,8 @@ export class WorkspaceSyncBroker {
     stream.state.transition('CONTROL_READY');
     stream.state.transition('OPEN_VALIDATING');
     stream.state.transition('REMOTE_OPENING');
-    this.pending.set(stream.streamId, stream);
+    this.pending.set(stream.requestId, stream);
+    this.attachRequestIds.set(stream.streamId, stream.requestId);
     stream.openTimer = setTimeout(() => {
       if (stream.closed) return;
       const error = new BrokerProtocolError('expired_request', 'external stream open timed out');
@@ -496,7 +541,7 @@ export class WorkspaceSyncBroker {
       return;
     }
     stream.dataCandidate = data;
-    const valid = await this.validatePeer('data', data, this.authenticatedSidecarPidValue);
+    const valid = await this.validatePeer('data', data, this.authenticatedSidecarPidValue, stream.dataEndpoint);
     if (stream.closed || stream.dataCandidate !== data || !valid) {
       if (stream.dataCandidate === data) stream.dataCandidate = undefined;
       data.destroy();
@@ -512,7 +557,8 @@ export class WorkspaceSyncBroker {
   }
 
   private attachData(socket: Socket, message: Extract<BrokerControlV1, { t: 'attach_data' }>): void {
-    const stream = this.pending.get(message.streamId);
+    const requestId = this.attachRequestIds.get(message.streamId);
+    const stream = requestId === undefined ? undefined : this.pending.get(requestId);
     if (!stream || stream.control !== socket || stream.attachNonce !== message.attachNonce) {
       this.sendError(socket, undefined, 'unauthorized', 'invalid data attachment'); return;
     }
@@ -580,7 +626,8 @@ export class WorkspaceSyncBroker {
     stream.data?.destroy();
     if (stream.external && 'destroy' in stream.external && typeof stream.external.destroy === 'function') stream.external.destroy();
     if (stream.dataEndpoint) void stream.dataEndpoint.remove();
-    this.pending.delete(stream.streamId);
+    this.pending.delete(stream.requestId);
+    this.attachRequestIds.delete(stream.streamId);
     this.activeRequestIds.delete(stream.requestId);
   }
 

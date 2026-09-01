@@ -210,4 +210,50 @@ describe('rpcHandlers (direct transfer exports)', () => {
             asZip: false,
         });
     });
+
+    it('delegates a bounded Composer media inspection to the same direct export prepare owner', async () => {
+        const prepareExportSession = vi.fn(async () => ({
+            transferId: 'composer-inspection-1',
+            endpointCandidates: [],
+            expiresAt: 9_000,
+            name: 'camera.png',
+            sizeBytes: 2,
+        }));
+        const mgr = createRpcHandlerManager();
+        registerMachineRpcHandlers({
+            rpcHandlerManager: mgr as any,
+            handlers: {
+                spawnSession: async () => ({ type: 'error', errorCode: 'unknown', errorMessage: 'not implemented' }) as any,
+                stopSession: async () => true,
+                requestShutdown: () => {},
+                directTransferExport: { prepareExportSession },
+            },
+        });
+        const handler = mgr.handlers.get(RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_PREPARE);
+        if (!handler) throw new Error('expected direct transfer export prepare handler');
+        const request = {
+            t: 'composer_media_stage_inspect_v1',
+            handle: {
+                v: 1,
+                id: 'opaque-content-1',
+                executionTarget: { serverId: 'server-b', machineId: 'machine-b' },
+                owner: { pluginId: 'com.example.media', localId: 'composer' },
+                mediaKind: 'image',
+                mimeType: 'image/png',
+                name: 'camera.png',
+                sizeBytes: 5,
+                sha256: 'a'.repeat(64),
+            },
+            offset: 2,
+            maxBytes: 2,
+        } as const;
+
+        await expect(handler(request)).resolves.toMatchObject({
+            success: true,
+            transferId: 'composer-inspection-1',
+            name: 'camera.png',
+            sizeBytes: 2,
+        });
+        expect(prepareExportSession).toHaveBeenCalledWith(request);
+    });
 });

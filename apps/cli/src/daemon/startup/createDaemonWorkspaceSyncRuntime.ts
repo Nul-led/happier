@@ -1,5 +1,7 @@
 import {
   assertMutagenEngineArtifactPayload,
+  ensureInstalledFirstPartyComponent,
+  MUTAGEN_ENGINE_VERSION,
   resolveInstalledFirstPartyComponentPaths,
   resolveMutagenEngineArtifactPaths,
   resolveMutagenEngineArtifactTarget,
@@ -7,7 +9,7 @@ import {
   type MutagenEngineArtifactTarget,
 } from '@happier-dev/cli-common/firstPartyRuntime';
 import type { PublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
-import type { WorkspaceSyncRelationshipV1 } from '@happier-dev/protocol';
+import type { WorkspaceSyncCopyOnceV1, WorkspaceSyncRelationshipV1 } from '@happier-dev/protocol';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { chmod, mkdir } from 'node:fs/promises';
 import type { Duplex } from 'node:stream';
@@ -45,7 +47,8 @@ import {
   type SpawnWorkspaceSyncSidecar,
   type WorkspaceSyncSidecarLifecycleDependencies,
 } from '@/workspaces/sync/workspaceSyncSidecarLifecycle';
-import type { ManagedWorkspaceSync } from '@/workspaces/sync/workspaceSyncTypes';
+import type { ManagedWorkspaceSync, WorkspaceSyncRelationshipPreparation } from '@/workspaces/sync/workspaceSyncTypes';
+import type { WorkspaceSyncRelationshipOwner } from '@/workspaces/sync/workspaceSyncRelationshipOwner';
 
 type InstalledPaths = Readonly<{ currentPath: string; resolvedCurrentPath: string | null }>;
 type ArtifactPaths = Readonly<{ managerPath: string; agentPath: string }>;
@@ -65,7 +68,12 @@ export type DaemonWorkspaceSyncRuntimeDependencies = Readonly<{
   releaseChannel: PublicReleaseRingId;
   resolveWorkspaceRef(id: string): WorkspaceSyncResolvedRef | null | Promise<WorkspaceSyncResolvedRef | null>;
   rootOwnershipManager: WorkspaceRootOwnershipManager;
-  prepareRelationshipTarget(definition: WorkspaceSyncRelationshipV1, signal?: AbortSignal): Promise<void>;
+  prepareRelationshipTarget(definition: WorkspaceSyncRelationshipV1, signal?: AbortSignal, preparation?: WorkspaceSyncRelationshipPreparation): Promise<Readonly<{
+    ownershipHandles?: readonly WorkspaceRootOwnershipHandle[];
+  }> | void>;
+  recoverCopyOnceTarget?(operation: WorkspaceSyncCopyOnceV1): Promise<Readonly<{
+    release(reason: 'abort' | 'commit'): Promise<void>;
+  }>>;
   bootstrap(input: PrepareWorkspaceSyncHandoffInput): Promise<Readonly<{
     release(reason: 'abort' | 'commit'): Promise<void>;
     ownershipHandles?: readonly WorkspaceRootOwnershipHandle[];
@@ -75,13 +83,15 @@ export type DaemonWorkspaceSyncRuntimeDependencies = Readonly<{
   launchLocalAgent: LaunchWorkspaceSyncLocalAgent;
   openMachineCarrierTunnel?: WorkspaceSyncMachineTunnelOpen;
   handoffRelationshipController?: Pick<ManagedWorkspaceSync, 'flush'>;
+  relationshipOwner?: Pick<WorkspaceSyncRelationshipOwner, 'materializeEndpoints' | 'prepareCreate'>;
   deleteConflictLoserAtTarget?: WorkspaceSyncTargetConflictDelete;
   readFileAtTarget?: WorkspaceSyncTargetFileRead;
   getSettingsSnapshot?: () => ActiveAccountSettingsSnapshot | null;
   subscribeSettingsSnapshot?: (listener: ActiveAccountSettingsSnapshotListener) => () => void;
   resolveInstalledComponentPaths?: (input: Readonly<{ componentId: 'mutagen-engine'; channel: PublicReleaseRingId }>) => InstalledPaths;
+  ensureInstalledComponent?: typeof ensureInstalledFirstPartyComponent;
   resolveArtifactPaths?: (payloadRoot: string) => ArtifactPaths;
-  assertArtifactPayload?: (input: Readonly<{ payloadRoot: string; targetTriple: MutagenEngineArtifactTarget }>) => ArtifactManifest;
+  assertArtifactPayload?: (input: Readonly<{ payloadRoot: string; targetTriple: MutagenEngineArtifactTarget; engineVersion?: string }>) => ArtifactManifest;
   resolveArtifactTarget?: () => MutagenEngineArtifactTarget;
   resolveDataLayout?: (input: Readonly<{ daemonDataRoot: string; stackDevTargetMutagenDataDir?: string | null }>) => DataLayout;
   ensurePrivateDirectory?: (path: string) => Promise<void>;
@@ -102,7 +112,11 @@ export type DaemonWorkspaceSyncRuntime = Readonly<{
   openRootedAgent: WorkspaceSyncLocalAgentStreamOpen;
   start(): Promise<void>;
   stop(): Promise<void>;
-  whenSettingsSettled(): Promise<void>;
+  whenSettingsSettled(target?: Readonly<{
+    settingsVersion: number;
+    scopeKey?: string;
+    signal?: AbortSignal;
+  }>): Promise<void>;
 }>;
 
 async function ensurePrivateDirectory(path: string): Promise<void> {
@@ -119,6 +133,7 @@ export function createDaemonWorkspaceSyncRuntime(
   dependencies: DaemonWorkspaceSyncRuntimeDependencies,
 ): DaemonWorkspaceSyncRuntime {
   const resolveInstalled = dependencies.resolveInstalledComponentPaths ?? resolveInstalledFirstPartyComponentPaths;
+  const ensureInstalled = dependencies.ensureInstalledComponent ?? ensureInstalledFirstPartyComponent;
   const resolvePaths = dependencies.resolveArtifactPaths ?? resolveMutagenEngineArtifactPaths;
   const assertPayload = dependencies.assertArtifactPayload ?? assertMutagenEngineArtifactPayload;
   const resolveTarget = dependencies.resolveArtifactTarget ?? (() => resolveMutagenEngineArtifactTarget());
@@ -140,11 +155,27 @@ export function createDaemonWorkspaceSyncRuntime(
   }>> | null = null;
   const resolveRuntime = () => {
     if (verifiedRuntime) return verifiedRuntime;
-    const pending = Promise.resolve().then(() => {
-      const installed = resolveInstalled({ componentId: 'mutagen-engine', channel: dependencies.releaseChannel });
+    const pending = Promise.resolve().then(async () => {
+      const validatePayload = (payloadRoot: string) => assertPayload({
+        payloadRoot,
+        targetTriple: resolveTarget(),
+        engineVersion: MUTAGEN_ENGINE_VERSION,
+      });
+      let installed: InstalledPaths;
+      try {
+        installed = resolveInstalled({ componentId: 'mutagen-engine', channel: dependencies.releaseChannel });
+        validatePayload(installed.resolvedCurrentPath ?? installed.currentPath);
+      } catch {
+        installed = await ensureInstalled({
+          componentId: 'mutagen-engine',
+          channel: dependencies.releaseChannel,
+          versionId: MUTAGEN_ENGINE_VERSION,
+          validatePayload,
+        });
+      }
       const payloadRoot = installed.resolvedCurrentPath ?? installed.currentPath;
       const paths = resolvePaths(payloadRoot);
-      const manifest = assertPayload({ payloadRoot, targetTriple: resolveTarget() });
+      const manifest = assertPayload({ payloadRoot, targetTriple: resolveTarget(), engineVersion: MUTAGEN_ENGINE_VERSION });
       return { managerPath: paths.managerPath, agentPath: paths.agentPath, dataDir: layout.dataDir, brokerDir: layout.brokerDir, manifest };
     });
     verifiedRuntime = pending;
@@ -182,7 +213,7 @@ export function createDaemonWorkspaceSyncRuntime(
     const runtime = await resolveRuntime();
     return await dependencies.launchLocalAgent({
       executablePath: runtime.agentPath,
-      args: ['synchronizer', '--root', input.canonicalRoot],
+      args: ['synchronizer', '--external', '--root', input.canonicalRoot],
       ...(input.signal ? { signal: input.signal } : {}),
     });
   };
@@ -201,6 +232,7 @@ export function createDaemonWorkspaceSyncRuntime(
       return matches.length === 1 ? matches[0]! : null;
     },
     prepareRelationshipTarget: dependencies.prepareRelationshipTarget,
+    ...(dependencies.recoverCopyOnceTarget ? { recoverCopyOnceTarget: dependencies.recoverCopyOnceTarget } : {}),
     ...(dependencies.openMachineCarrierTunnel ? { openMachineCarrierTunnel: dependencies.openMachineCarrierTunnel } : {}),
     openLocalWorkspaceAgentStream: openRootedAgent,
     ...(dependencies.deleteConflictLoserAtTarget ? { deleteConflictLoserAtTarget: dependencies.deleteConflictLoserAtTarget } : {}),
@@ -212,11 +244,15 @@ export function createDaemonWorkspaceSyncRuntime(
     ...(dependencies.handoffRelationshipController
       ? { relationshipController: dependencies.handoffRelationshipController }
       : {}),
+    ...(dependencies.relationshipOwner ? { relationshipOwner: dependencies.relationshipOwner } : {}),
     bootstrap: dependencies.bootstrap,
   });
 
   let unsubscribe: (() => void) | null = null;
   let settingsTail: Promise<void> = Promise.resolve();
+  let settingsQueueRevision = 0;
+  let reconciledSnapshot: ActiveAccountSettingsSnapshot | null = null;
+  const settingsQueueWaiters = new Set<() => void>();
   let startPromise: Promise<void> | null = null;
   let stopPromise: Promise<void> | null = null;
   let started = false;
@@ -241,8 +277,12 @@ export function createDaemonWorkspaceSyncRuntime(
       await lifecycle.runReconciliation(async () => {
         await controller.rehydrateFromSettings(relationships);
       });
+      reconciledSnapshot = snapshot;
     });
     settingsTail = next;
+    settingsQueueRevision += 1;
+    for (const resolve of settingsQueueWaiters) resolve();
+    settingsQueueWaiters.clear();
     void next.catch(() => undefined);
     return next;
   };
@@ -267,6 +307,8 @@ export function createDaemonWorkspaceSyncRuntime(
   const stop = (): Promise<void> => {
     if (stopPromise) return stopPromise;
     stopped = true;
+    for (const resolve of settingsQueueWaiters) resolve();
+    settingsQueueWaiters.clear();
     stopPromise = (async () => {
       await startPromise?.catch(() => undefined);
       unsubscribe?.();
@@ -278,6 +320,62 @@ export function createDaemonWorkspaceSyncRuntime(
     return stopPromise;
   };
 
+  const matchesReconciliationTarget = (
+    snapshot: ActiveAccountSettingsSnapshot | null,
+    target: Readonly<{ settingsVersion: number; scopeKey?: string }>,
+  ): boolean => snapshot !== null
+    && snapshot.settingsVersion >= target.settingsVersion
+    && (target.scopeKey === undefined || snapshot.scopeKey === target.scopeKey);
+
+  const waitForSettingsQueueAdvance = (revision: number, signal?: AbortSignal): Promise<void> => {
+    if (settingsQueueRevision > revision || stopped) return Promise.resolve();
+    signal?.throwIfAborted();
+    return new Promise<void>((resolve, reject) => {
+      const finish = () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      };
+      const onAbort = () => {
+        settingsQueueWaiters.delete(finish);
+        reject(signal?.reason ?? Object.assign(new Error('Workspace sync settings wait cancelled'), {
+          name: 'AbortError',
+          code: 'cancelled',
+        }));
+      };
+      settingsQueueWaiters.add(finish);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (settingsQueueRevision > revision || stopped) {
+        settingsQueueWaiters.delete(finish);
+        finish();
+      }
+    });
+  };
+
+  const whenSettingsSettled = async (target?: Readonly<{
+    settingsVersion: number;
+    scopeKey?: string;
+    signal?: AbortSignal;
+  }>): Promise<void> => {
+    if (!target) {
+      await settingsTail;
+      return;
+    }
+    while (!matchesReconciliationTarget(reconciledSnapshot, target)) {
+      target.signal?.throwIfAborted();
+      if (stopped) throw new Error('Daemon workspace sync runtime is stopped');
+      const observedRevision = settingsQueueRevision;
+      await settingsTail;
+      if (matchesReconciliationTarget(reconciledSnapshot, target)) return;
+      if (settingsQueueRevision > observedRevision) continue;
+      const current = getSnapshot();
+      if (matchesReconciliationTarget(current, target)) {
+        await applySnapshot(current);
+        continue;
+      }
+      await waitForSettingsQueueAdvance(observedRevision, target.signal);
+    }
+  };
+
   return {
     handoffAdapter,
     managedWorkspaceSync: controller,
@@ -285,6 +383,6 @@ export function createDaemonWorkspaceSyncRuntime(
     openRootedAgent,
     start,
     stop,
-    whenSettingsSettled: async () => await settingsTail,
+    whenSettingsSettled,
   };
 }

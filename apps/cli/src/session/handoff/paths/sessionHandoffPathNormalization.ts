@@ -46,6 +46,24 @@ export function getPathRemainderWithinBase(path: string, basePath: string): stri
     return remainder.replace(/^\/+/, '');
 }
 
+export function resolveSessionHandoffWorkspaceSessionPath(input: Readonly<{
+    targetRoot: string;
+    sessionRelativeCwd: string;
+}>): string {
+    const targetRoot = trimTrailingSeparators(input.targetRoot);
+    const relativeCwd = normalizeRelativePath(input.sessionRelativeCwd.trim()).replace(/^\.\/+/, '');
+    if (!targetRoot || relativeCwd.startsWith('/') || isWindowsAbsolutePath(relativeCwd)) {
+        throw new Error('Workspace session path is not contained by its target repository root');
+    }
+    const segments = relativeCwd.split('/').filter((segment) => segment.length > 0 && segment !== '.');
+    if (segments.some((segment) => segment === '..')) {
+        throw new Error('Workspace session path is not contained by its target repository root');
+    }
+    if (segments.length === 0) return targetRoot;
+    const separator = isWindowsAbsolutePath(targetRoot) ? '\\' : '/';
+    return `${targetRoot}${separator}${segments.join(separator)}`;
+}
+
 export function resolveSessionHandoffLocalHomeDir(params: Readonly<{
     activeServerDir: string;
     fallbackHomeDir: string;

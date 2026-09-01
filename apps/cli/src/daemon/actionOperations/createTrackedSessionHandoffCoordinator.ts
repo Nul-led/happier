@@ -1,6 +1,7 @@
 import {
   AgentExecutionTargetV1Schema,
   HandoffWorkspaceActionV1Schema,
+  HandoffTargetReplacementApprovalV1Schema,
   normalizeSpawnSessionNonceResolution,
   readRuntimeDescriptorV1,
   SpawnSessionExecutionAuthorizationSchema,
@@ -21,6 +22,8 @@ import type { SpawnSessionOptions } from '@/session/shared/spawnSessionContract'
 import { createStableSpawnNonce } from '@/session/shared/spawnNonce';
 import { callMachineRpc } from '@/session/transport/rpc/machineRpc';
 import { refreshAccountSettingsForMinimumVersion } from '@/settings/accountSettings/refreshAccountSettingsForMinimumVersion';
+import { resolveWorkspaceTransferRootWithScmWorkspace } from '@/scm/workspace';
+import { resolveSessionHandoffWorkspaceSessionPath } from '@/session/handoff/paths/sessionHandoffPathNormalization';
 
 import type { ActionOperationOwnerUpdate } from './actionOperationTypes';
 import { coordinateTrackedSessionHandoff } from './sessionHandoffCoordinator';
@@ -47,6 +50,8 @@ type MachineCall = (input: Readonly<{
 }>) => Promise<unknown>;
 
 type CoordinatorDeps = Readonly<{
+  /** Daemon-host Account Home scope; caller payload may only prove it matches this owner. */
+  expectedAccountServerId: string;
   readCredentials: () => Promise<StoredCredentials | null>;
   resolveSource?: (
     credentials: StoredCredentials,
@@ -64,6 +69,7 @@ type CoordinatorDeps = Readonly<{
   }>) => Promise<Readonly<{ type: 'success'; sessionId: string } | { type: 'error'; errorCode: string; errorMessage: string }>>;
   wait?: (signal: AbortSignal) => Promise<void>;
   workspaceSyncAdapter?: WorkspaceSyncHandoffAdapter;
+  resolveWorkspaceTransferRoot?: typeof resolveWorkspaceTransferRootWithScmWorkspace;
   refreshWorkspaceSettings?: (input: Readonly<{
     credentials: StoredCredentials;
     minSettingsVersion?: number;
@@ -191,6 +197,7 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
       },
     };
   });
+  const resolveWorkspaceTransferRoot = deps.resolveWorkspaceTransferRoot ?? resolveWorkspaceTransferRootWithScmWorkspace;
 
   return async (hostInput: HostCoordinatorInput): Promise<ActionExecuteResult> => {
     const rawInput = hostInput.actionInput && typeof hostInput.actionInput === 'object'
@@ -200,7 +207,8 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
     const sessionId = readNonEmptyString(rawInput.sessionId);
     const targetMachineId = readNonEmptyString(rawInput.targetMachineId);
     const targetPath = readNonEmptyString(rawInput.targetPath);
-    const operationId = readNonEmptyString(hostInput.operationId);
+    const operationId = readNonEmptyString(rawInput.actionRequestId)
+      ?? readNonEmptyString(hostInput.operationId);
     if (!operationId || !sessionId || !targetMachineId) {
       return { ok: false, errorCode: 'invalid_input', error: 'invalid_input' };
     }
@@ -218,27 +226,56 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
       return { ok: false, errorCode: 'invalid_input', error: 'invalid_input' };
     }
     const workspaceAction = parsedWorkspaceAction?.data;
+    const parsedTargetReplacementApproval = rawInput.handoffTargetReplacementApproval === undefined
+      ? null
+      : HandoffTargetReplacementApprovalV1Schema.safeParse(rawInput.handoffTargetReplacementApproval);
+    if (parsedTargetReplacementApproval && !parsedTargetReplacementApproval.success) {
+      return { ok: false, errorCode: 'invalid_input', error: 'invalid_input' };
+    }
+    const targetReplacementApproval = parsedTargetReplacementApproval?.data;
+    const daemonMaterializesEndpoints = workspaceAction?.kind === 'create_relationship' || workspaceAction?.kind === 'copy_once';
+    const accountServerId = readNonEmptyString(rawInput.accountServerId);
+    if (daemonMaterializesEndpoints && accountServerId !== deps.expectedAccountServerId.trim()) {
+      return { ok: false, errorCode: 'workspace_ref_not_ready', error: 'workspace_ref_not_ready' };
+    }
+    if (targetReplacementApproval && (
+      !daemonMaterializesEndpoints
+      || targetReplacementApproval.operationId !== operationId
+      || targetReplacementApproval.serverId !== deps.expectedAccountServerId.trim()
+      || targetReplacementApproval.machineId !== targetMachineId
+    )) {
+      return { ok: false, errorCode: 'approval_stale', error: 'approval_stale' };
+    }
     let workspaceContext: ReturnType<typeof resolveSessionHandoffWorkspaceContext> | undefined;
-    if (workspaceAction && workspaceAction.kind !== 'none' && deps.workspaceSyncAdapter) {
+    let sessionRelativeCwd = '';
+    let sourceWorkspaceRootPath = source.sourceRootPath;
+    let relationshipContentSelection: 'git_worktree' | 'all_files' | undefined;
+    if (workspaceAction && workspaceAction.kind !== 'none' && !daemonMaterializesEndpoints && deps.workspaceSyncAdapter) {
       const minSettingsVersion = typeof rawInput.workspaceSyncSettingsVersion === 'number'
         && Number.isSafeInteger(rawInput.workspaceSyncSettingsVersion)
         && rawInput.workspaceSyncSettingsVersion >= 0
         ? rawInput.workspaceSyncSettingsVersion
         : undefined;
-      if (workspaceAction.kind === 'copy_once' && minSettingsVersion === undefined) {
-        return { ok: false, errorCode: 'workspace_ref_not_ready', error: 'workspace_ref_not_ready' };
-      }
       try {
         const settings = await refreshWorkspaceSettings({
           credentials,
           ...(minSettingsVersion === undefined ? {} : { minSettingsVersion }),
         });
+        relationshipContentSelection = settings.settings.workspaceSyncRelationshipsV1.find(
+          (relationship) => relationship.relationshipId === workspaceAction.relationshipId,
+        )?.contentPolicy.selection;
+        if (relationshipContentSelection === 'git_worktree' && source.sourceRootPath) {
+          const transferRoot = await resolveWorkspaceTransferRoot({ sessionCwd: source.sourceRootPath });
+          if (!transferRoot) throw Object.assign(new Error('Git worktree selection is unavailable'), { code: 'git_selection_unavailable' });
+          sourceWorkspaceRootPath = transferRoot.repositoryRoot;
+          sessionRelativeCwd = transferRoot.sessionRelativeCwd;
+        }
         workspaceContext = resolveSessionHandoffWorkspaceContext({
           action: workspaceAction,
           workspaceRefs: settings.settings.workspaceRefsV1,
           relationships: settings.settings.workspaceSyncRelationshipsV1,
           sourceMachineId: source.sourceMachineId,
-          sourceRootPath: source.sourceRootPath,
+          sourceRootPath: sourceWorkspaceRootPath,
           targetMachineId,
           ...(targetPath ? { targetRootPath: targetPath } : {}),
           ...(readNonEmptyString(rawInput.workspaceSyncSourceWorkspaceRefId)
@@ -250,6 +287,31 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
         });
       } catch (error) {
         return readWorkspaceFailure(error, 'workspace_ref_not_ready');
+      }
+    }
+    const directContentSelection = workspaceAction?.kind === 'copy_once' || workspaceAction?.kind === 'create_relationship'
+      ? workspaceAction.contentPolicy.selection
+      : undefined;
+    if (directContentSelection === 'git_worktree' && source.sourceRootPath) {
+      try {
+        const transferRoot = await resolveWorkspaceTransferRoot({ sessionCwd: source.sourceRootPath });
+        if (!transferRoot) throw Object.assign(new Error('Git worktree selection is unavailable'), { code: 'git_selection_unavailable' });
+        sourceWorkspaceRootPath = transferRoot.repositoryRoot;
+        sessionRelativeCwd = transferRoot.sessionRelativeCwd;
+      } catch (error) {
+        return readWorkspaceFailure(error, 'git_selection_unavailable');
+      }
+    }
+    const workspaceTargetRootPath = workspaceContext?.targetRootPath ?? targetPath ?? undefined;
+    let targetSessionPath = workspaceTargetRootPath;
+    if ((relationshipContentSelection ?? directContentSelection) === 'git_worktree' && workspaceTargetRootPath) {
+      try {
+        targetSessionPath = resolveSessionHandoffWorkspaceSessionPath({
+          targetRoot: workspaceTargetRootPath,
+          sessionRelativeCwd,
+        });
+      } catch (error) {
+        return readWorkspaceFailure(error, 'workspace_root_unsafe');
       }
     }
 
@@ -270,20 +332,24 @@ export function createTrackedSessionHandoffCoordinator(deps: CoordinatorDeps) {
         operationId,
         sessionId,
         targetMachineId,
-        ...(workspaceContext
-          ? { targetPath: workspaceContext.targetRootPath }
-          : targetPath
-            ? { targetPath }
-            : {}),
+        ...(targetSessionPath ? { targetPath: targetSessionPath } : {}),
+        ...((relationshipContentSelection ?? directContentSelection) === 'git_worktree' && workspaceTargetRootPath
+          ? { workspaceSyncTargetSessionRelativeCwd: sessionRelativeCwd }
+          : {}),
         ...(rawInput.targetSessionStorageMode === 'direct' || rawInput.targetSessionStorageMode === 'persisted'
           ? { targetSessionStorageMode: rawInput.targetSessionStorageMode }
           : {}),
         ...(workspaceAction ? { workspaceAction } : {}),
+        ...(daemonMaterializesEndpoints ? { accountServerId: deps.expectedAccountServerId.trim() } : {}),
+        ...(targetReplacementApproval ? { targetReplacementApproval } : {}),
         ...(workspaceContext ? {
           workspaceSyncSourceRootPath: workspaceContext.sourceRootPath,
           workspaceSyncTargetRootPath: workspaceContext.targetRootPath,
           workspaceSyncSourceWorkspaceRefId: workspaceContext.sourceWorkspaceRefId,
           workspaceSyncTargetWorkspaceRefId: workspaceContext.targetWorkspaceRefId,
+        } : daemonMaterializesEndpoints ? {
+          workspaceSyncSourceRootPath: sourceWorkspaceRootPath,
+          ...(targetPath ? { workspaceSyncTargetRootPath: targetPath } : {}),
         } : {}),
       },
       signal: hostInput.signal,

@@ -72,14 +72,6 @@ describe('runSessionHandoffPrepareTargetJob typed native-import failures', () =>
         prepareTargetJobLeaseTtlMs: 5_000,
         machineTransferChannel: undefined,
         directPeerTransfer: undefined,
-        workspaceReplicationAdapter: {
-          prepareTargetWorkspace: vi.fn(async () => ({
-            currentTargetManifest: { entries: [] },
-            sourceOffer: null,
-            importedWorkspace: { targetPath },
-          })),
-        } as never,
-        workspaceReplicationTransfers: {} as never,
         importSessionBundle,
         getTransferRouteCache: () => ({} as never),
         invalidateDirectPeerRouteCacheForHandoffMachines: () => undefined,
@@ -228,14 +220,6 @@ describe('runSessionHandoffPrepareTargetJob typed native-import failures', () =>
         prepareTargetJobLeaseTtlMs: 5_000,
         machineTransferChannel: undefined,
         directPeerTransfer: undefined,
-        workspaceReplicationAdapter: {
-          prepareTargetWorkspace: vi.fn(async () => ({
-            currentTargetManifest: { entries: [] },
-            sourceOffer: null,
-            importedWorkspace: { targetPath },
-          })),
-        } as never,
-        workspaceReplicationTransfers: {} as never,
         importSessionBundle,
         getTransferRouteCache: () => ({} as never),
         invalidateDirectPeerRouteCacheForHandoffMachines: () => undefined,

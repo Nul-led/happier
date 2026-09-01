@@ -25,6 +25,238 @@ describe('WorkspaceSyncHandoffAdapter', () => {
     await adapter.commit({ operationId: 'handoff-1', prepared });
   });
 
+  it('attempts every independent abort obligation and preserves every cleanup failure for retry', async () => {
+    const terminateFailure = new Error('copy termination failed');
+    const fenceFailure = new Error('fence release failed');
+    const terminate = vi.fn(async () => { throw terminateFailure; });
+    const fenceRelease = vi.fn(async () => { throw fenceFailure; });
+    const sync = managedSync({ terminate });
+    const adapter = createWorkspaceSyncHandoffAdapter({
+      sync,
+      relationshipOwner: {
+        materializeEndpoints: vi.fn(),
+        prepareCreate: vi.fn(async () => {
+          throw new Error('not used');
+        }),
+      },
+      bootstrap: vi.fn(async () => ({ release: fenceRelease })),
+    });
+    const prepared = await adapter.prepare(copyInput('all_files'));
+
+    const outcome = adapter.abort({ operationId: 'handoff-copy', prepared }).catch((error: unknown) => error);
+    await expect(outcome).resolves.toBeInstanceOf(AggregateError);
+    expect((await outcome as AggregateError).errors).toEqual([terminateFailure, fenceFailure]);
+    expect(terminate).toHaveBeenCalledOnce();
+    expect(fenceRelease).toHaveBeenCalledOnce();
+
+    // Failed cleanup retains operation custody, so the same operation can
+    // retry the idempotent obligations rather than losing evidence/state.
+    await adapter.abort({ operationId: 'handoff-copy', prepared }).catch(() => undefined);
+    expect(terminate).toHaveBeenCalledTimes(2);
+    expect(fenceRelease).toHaveBeenCalledTimes(2);
+  });
+
+  it('durably publishes create_relationship during finalization before post-target cleanup', async () => {
+    const relationship = {
+      v: 1 as const,
+      relationshipId: 'rel-created',
+      controllerMachineId: 'machine-a',
+      alphaWorkspaceRefId: 'workspace-created-a',
+      betaWorkspaceRefId: 'workspace-created-b',
+      mode: 'keep_synced' as const,
+      contentPolicy: allFilesPolicy(),
+      enabled: true,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    };
+    const commit = vi.fn(async () => relationship);
+    const abort = vi.fn(async () => undefined);
+    const prepareCreate = vi.fn(async () => ({
+      relationship,
+      status: { ...relationshipStatus, relationshipId: 'rel-created' },
+      reused: false as const,
+      commit,
+      abort,
+    }));
+    const bootstrap = vi.fn(async () => ({ release: vi.fn(async () => undefined) }));
+    const relationshipController = { flush: vi.fn(async () => ({ ...relationshipStatus, relationshipId: 'rel-created' })) };
+    const adapter = createWorkspaceSyncHandoffAdapter({
+      sync: managedSync(),
+      relationshipController,
+      relationshipOwner: { materializeEndpoints: vi.fn(), prepareCreate },
+      bootstrap,
+    });
+    const prepared = await adapter.prepare({
+      operationId: 'handoff-create',
+      accountServerId: 'server-a',
+      action: {
+        kind: 'create_relationship',
+        mode: 'keep_synced',
+        contentPolicy: allFilesPolicy(),
+        flushBeforeCommit: true,
+      },
+      sourceMachineId: 'machine-a',
+      targetMachineId: 'machine-b',
+      sourceRootPath: '/src',
+      targetRootPath: '/dst',
+    });
+
+    expect(prepareCreate).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: 'handoff-create',
+      serverId: 'server-a',
+      sourceMachineId: 'machine-a',
+      sourceRootPath: '/src',
+      targetMachineId: 'machine-b',
+      targetRootPath: '/dst',
+      mode: 'keep_synced',
+    }));
+    expect(bootstrap).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+
+    await expect(adapter.finalize({ operationId: 'handoff-create', prepared })).resolves.toMatchObject({
+      kind: 'create_relationship',
+      relationshipId: 'rel-created',
+    });
+    expect(relationshipController.flush).toHaveBeenCalledWith('rel-created', undefined);
+    expect(commit).toHaveBeenCalledOnce();
+    await expect(adapter.commit({ operationId: 'handoff-create', prepared })).resolves.toMatchObject({
+      kind: 'create_relationship',
+      relationshipId: 'rel-created',
+    });
+    expect(commit).toHaveBeenCalledOnce();
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it('compensates a relationship published during finalization when the target commit later aborts', async () => {
+    const relationship = {
+      v: 1 as const,
+      relationshipId: 'rel-created',
+      controllerMachineId: 'machine-a',
+      alphaWorkspaceRefId: 'workspace-created-a',
+      betaWorkspaceRefId: 'workspace-created-b',
+      mode: 'keep_synced' as const,
+      contentPolicy: allFilesPolicy(),
+      enabled: true,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    };
+    const commit = vi.fn(async () => relationship);
+    const abort = vi.fn(async () => undefined);
+    const adapter = createWorkspaceSyncHandoffAdapter({
+      sync: managedSync(),
+      relationshipController: { flush: vi.fn(async () => ({ ...relationshipStatus, relationshipId: relationship.relationshipId })) },
+      relationshipOwner: { materializeEndpoints: vi.fn(), prepareCreate: vi.fn(async () => ({
+        relationship,
+        status: { ...relationshipStatus, relationshipId: relationship.relationshipId },
+        reused: false as const,
+        commit,
+        abort,
+      })) },
+      bootstrap: vi.fn(async () => ({ release: vi.fn(async () => undefined) })),
+    });
+    const prepared = await adapter.prepare({
+      operationId: 'handoff-create',
+      accountServerId: 'server-a',
+      sourceMachineId: 'machine-a',
+      targetMachineId: 'machine-b',
+      sourceRootPath: '/src',
+      targetRootPath: '/dst',
+      action: {
+        kind: 'create_relationship',
+        mode: 'keep_synced',
+        contentPolicy: allFilesPolicy(),
+        flushBeforeCommit: true,
+      },
+    });
+
+    await adapter.finalize({ operationId: 'handoff-create', prepared });
+    await adapter.abort({ operationId: 'handoff-create', prepared });
+
+    expect(commit).toHaveBeenCalledOnce();
+    expect(abort).toHaveBeenCalledOnce();
+  });
+
+  it('reuses the same prepared relationship transaction when publication outcome is indeterminate', async () => {
+    const relationship = {
+      v: 1 as const,
+      relationshipId: 'rel-created',
+      controllerMachineId: 'machine-a',
+      alphaWorkspaceRefId: 'workspace-created-a',
+      betaWorkspaceRefId: 'workspace-created-b',
+      mode: 'keep_synced' as const,
+      contentPolicy: allFilesPolicy(),
+      enabled: true,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    };
+    const commit = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('settings outcome unknown'), { code: 'indeterminate' }))
+      .mockResolvedValueOnce(relationship);
+    const prepareCreate = vi.fn(async () => ({
+      relationship,
+      status: { ...relationshipStatus, relationshipId: relationship.relationshipId },
+      reused: false as const,
+      commit,
+      abort: vi.fn(async () => undefined),
+    }));
+    const adapter = createWorkspaceSyncHandoffAdapter({
+      sync: managedSync(),
+      relationshipController: { flush: vi.fn(async () => ({ ...relationshipStatus, relationshipId: relationship.relationshipId })) },
+      relationshipOwner: { materializeEndpoints: vi.fn(), prepareCreate },
+      bootstrap: vi.fn(async () => ({ release: vi.fn(async () => undefined) })),
+    });
+    const input = {
+      operationId: 'handoff-create',
+      accountServerId: 'server-a',
+      sourceMachineId: 'machine-a',
+      targetMachineId: 'machine-b',
+      sourceRootPath: '/src',
+      targetRootPath: '/dst',
+      action: {
+        kind: 'create_relationship' as const,
+        mode: 'keep_synced' as const,
+        contentPolicy: allFilesPolicy(),
+        flushBeforeCommit: true as const,
+      },
+    };
+
+    const prepared = await adapter.prepare(input);
+    await expect(adapter.finalize({ operationId: input.operationId, prepared })).rejects.toMatchObject({ code: 'indeterminate' });
+    const retried = await adapter.prepare(input);
+    await expect(adapter.finalize({ operationId: input.operationId, prepared: retried })).resolves.toMatchObject({
+      relationshipId: relationship.relationshipId,
+    });
+
+    expect(retried).toBe(prepared);
+    expect(prepareCreate).toHaveBeenCalledOnce();
+    expect(commit).toHaveBeenCalledTimes(2);
+  });
+
+  it('runs relationship cleanup even when the initiating operation signal is already aborted', async () => {
+    const abort = vi.fn(async () => undefined);
+    const adapter = createWorkspaceSyncHandoffAdapter({
+      sync: managedSync(),
+      relationshipController: { flush: vi.fn(async () => relationshipStatus) },
+      relationshipOwner: { materializeEndpoints: vi.fn(), prepareCreate: vi.fn(async () => ({
+        relationship: { v: 1 as const, relationshipId: 'rel-abort', controllerMachineId: 'machine-a', alphaWorkspaceRefId: 'workspace-a', betaWorkspaceRefId: 'workspace-b', mode: 'keep_synced' as const, contentPolicy: allFilesPolicy(), enabled: true, createdAtMs: 1, updatedAtMs: 1 },
+        status: { ...relationshipStatus, relationshipId: 'rel-abort' },
+        reused: false as const,
+        commit: vi.fn(async () => { throw new Error('unexpected commit'); }),
+        abort,
+      })) },
+      bootstrap: vi.fn(async () => ({ release: vi.fn(async () => undefined) })),
+    });
+    const prepared = await adapter.prepare({
+      operationId: 'handoff-abort', accountServerId: 'server-a', sourceMachineId: 'machine-a', targetMachineId: 'machine-b',
+      sourceRootPath: '/src', targetRootPath: '/dst',
+      action: { kind: 'create_relationship', mode: 'keep_synced', contentPolicy: allFilesPolicy(), flushBeforeCommit: true },
+    });
+    const controller = new AbortController();
+    controller.abort();
+    await adapter.abort({ operationId: 'handoff-abort', prepared, signal: controller.signal });
+    expect(abort).toHaveBeenCalledOnce();
+  });
+
   it('rejects a missing relationship rather than inventing one with default mode/policy', async () => {
     const sync = managedSync({
       flush: vi.fn(async () => { throw Object.assign(new Error('missing'), { code: 'relationship_not_ready' }); }),
@@ -97,7 +329,7 @@ describe('WorkspaceSyncHandoffAdapter', () => {
     await adapter.abort({ operationId: 'handoff-copy', prepared });
 
     expect(order).toEqual(['terminate', 'release']);
-    expect(sync.terminate).toHaveBeenCalledWith('handoff-copy', undefined);
+    expect(sync.terminate).toHaveBeenCalledWith('handoff-copy');
   });
 
   it('fails closed when copy commit has lost its prepared endpoint authority', async () => {
@@ -197,6 +429,11 @@ function relationshipInput() {
     sourceWorkspaceRefId: 'workspace-a', targetWorkspaceRefId: 'workspace-b',
     sourceRootPath: '/src', targetRootPath: '/dst',
   };
+}
+
+function allFilesPolicy() {
+  const input = { v: 1 as const, selection: 'all_files' as const, extraIgnorePatterns: [], extraIncludePatterns: [], includeGitDirectory: false };
+  return { ...input, policyDigest: computeWorkspaceSyncPolicyDigest(input) };
 }
 
 function copyInput(selection: 'all_files'): PrepareWorkspaceSyncHandoffInput;

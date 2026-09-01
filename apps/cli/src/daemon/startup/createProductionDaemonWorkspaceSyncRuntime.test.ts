@@ -68,6 +68,7 @@ function settingsSnapshot(): ActiveAccountSettingsSnapshot {
 
 describe('createProductionDaemonWorkspaceSyncRuntime', () => {
   it('composes one daemon-owned runtime and keeps it available after a transient engine start failure', async () => {
+    type ProductionInput = Parameters<typeof createProductionDaemonWorkspaceSyncRuntime>[0];
     const controller = Object.freeze({ marker: 'controller' });
     const handoffAdapter = Object.freeze({ marker: 'handoff' });
     const runtimeStartError = Object.assign(new Error('artifact unavailable'), { code: 'engine_unavailable' });
@@ -88,7 +89,6 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       created: true,
       rootFingerprint: 'a'.repeat(64),
       policyDigest: contentPolicy.policyDigest,
-      manifestDigest: 'b'.repeat(64),
     }));
     const releaseBootstrapAtTarget = vi.fn()
       .mockRejectedValueOnce(Object.assign(new Error('target temporarily unavailable'), { code: 'peer_unavailable' }))
@@ -126,11 +126,27 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       () => targetAuthority as unknown as ReturnType<ProductionDaemonWorkspaceSyncFactories['createTargetAuthority']>,
     );
     const createRootOwnershipManager = vi.fn(() => rootOwnershipManager);
+    const resolveRootOwnershipDirectory = vi.fn(() => '/user-home/.happier/runtime/workspace-sync-root-ownership');
     const createPeerIdentityValidator = vi.fn(() => peerIdentityValidator);
     const createBroker = vi.fn(async () => broker);
     const spawnSidecar = vi.fn();
     const launchLocalAgent = vi.fn();
     const prepareGitTarget = vi.fn(async () => undefined);
+    const relationshipOwner = {
+      materializeEndpoints: vi.fn(),
+      prepareCreate: vi.fn(),
+      setEnabled: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+    };
+    const createRelationshipOwner = vi.fn<ProductionDaemonWorkspaceSyncFactories['createRelationshipOwner']>(
+      () => relationshipOwner,
+    );
+    const refreshSettings = vi.fn(async () => ({
+      ...settingsSnapshot(),
+      settingsVersion: 7,
+      scopeKey: 'scope-1',
+      whenRefreshed: null,
+    }));
     const controllerStatus = {
       relationshipId: 'rel-1',
       controllerMachineId: 'machine-b',
@@ -143,14 +159,41 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       lastSuccessfulSyncAtMs: null,
     };
     const callMachineRpc = vi.fn(async (request: { method: string }) => (
-      request.method.startsWith('daemon.workspaceSync.')
+      request.method === 'daemon.directTransfer.export.prepare'
+        ? {
+            success: true, transferId: 'rel-1', expiresAt: Date.now() + 60_000,
+            endpointCandidates: [{
+              kind: 'http', url: 'http://127.0.0.1:9999/machine-transfers/direct/source',
+              expiresAt: Date.now() + 60_000,
+            }],
+            sizeBytes: 50, manifestHash: `sha256:${'a'.repeat(64)}`,
+          }
+        : request.method.startsWith('daemon.workspaceSync.')
         ? { status: controllerStatus }
         : { ok: true }
     ));
     const unsubscribeSettings = vi.fn();
     const subscribeSettingsSnapshot = vi.fn(() => unsubscribeSettings);
     const warn = vi.fn();
-    const openMachineCarrierTunnel = vi.fn();
+    const closeTunnel = vi.fn(async () => undefined);
+    const openMachineCarrierTunnel = vi.fn(async (
+      _request: Parameters<NonNullable<ProductionInput['openMachineCarrierTunnel']>>[0],
+    ) => ({
+      localPort: 48_123, localCapability: 'd'.repeat(64), observedPath: 'direct' as const, close: closeTunnel,
+    }));
+    const requestDirectTransferPayloadFile = vi.fn(async (
+      _request: Parameters<NonNullable<ProductionInput['requestDirectTransferPayloadFile']>>[0],
+    ) => undefined);
+    const materializeSeedExport = vi.fn(async (request: Parameters<typeof import('@/workspaces/sync/workspaceSyncSeedTransfer').materializeWorkspaceSyncSeedExport>[0]) => {
+      await request.requestPayload({ transferId: 'rel-1', destinationPath: '/tmp/manifest' });
+      await request.requestPayload({ transferId: 'rel-1:blob:one', destinationPath: '/tmp/one', expectedSizeBytes: 3, expectedManifestHash: `sha256:${'b'.repeat(64)}` });
+      await request.requestPayload({ transferId: 'rel-1:blob:two', destinationPath: '/tmp/two', expectedSizeBytes: 4, expectedManifestHash: `sha256:${'c'.repeat(64)}` });
+      return { commit: async () => undefined, abort: async () => undefined };
+    });
+    const materializeLocalSeed = vi.fn(async () => ({
+      commit: async () => undefined,
+      abort: async () => undefined,
+    }));
     const activeServerDir = join('/happier-home', 'servers', 'server-1');
     const inspectLegacyState = vi.fn(async () => ({
       status: 'absent',
@@ -160,15 +203,20 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       createDaemonRuntime,
       createTargetAuthority,
       createRootOwnershipManager,
+      resolveRootOwnershipDirectory,
       createPeerIdentityValidator,
       createBroker,
       spawnSidecar,
       launchLocalAgent,
       prepareGitTarget,
+      createRelationshipOwner,
+      refreshSettings,
       getSettingsSnapshot: settingsSnapshot,
       subscribeSettingsSnapshot,
       callMachineRpc,
       inspectLegacyState,
+      materializeSeedExport,
+      materializeLocalSeed,
       warn,
     } as unknown as ProductionDaemonWorkspaceSyncFactories;
 
@@ -179,13 +227,30 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       releaseChannel: 'publicdev',
       credentials: { token: 'secret-token', encryption: null },
       openMachineCarrierTunnel,
+      requestDirectTransferPayloadFile,
     }, factories);
+
+    const remoteMaterialize = createTargetAuthority.mock.calls[0]![0].bootstrap?.materializeRemoteSeed;
+    await remoteMaterialize?.({
+      operationId: 'rel-1', sourceMachineId: 'machine-b', sourceWorkspaceRefId: 'workspace-beta',
+      canonicalRoot: '/work/alpha', contentSelection: 'all_files',
+    });
+    expect(openMachineCarrierTunnel.mock.calls.map(([request]) => request.operationId)).toEqual([
+      'rel-1', 'rel-1:blob:one', 'rel-1:blob:two',
+    ]);
+    expect(requestDirectTransferPayloadFile).toHaveBeenCalledTimes(3);
+    for (const [request] of requestDirectTransferPayloadFile.mock.calls) {
+      expect(request.endpointCandidates).toHaveLength(1);
+      expect(new URL(request.endpointCandidates[0]!.url).hostname).toBe('127.0.0.1');
+      expect(new URL(request.endpointCandidates[0]!.url).port).not.toBe('9999');
+    }
 
     expect(inspectLegacyState).toHaveBeenCalledOnce();
     expect(inspectLegacyState).toHaveBeenCalledWith(expect.objectContaining({ activeServerDir }));
     expect(createRootOwnershipManager).toHaveBeenCalledOnce();
+    expect(resolveRootOwnershipDirectory).toHaveBeenCalledOnce();
     expect(createRootOwnershipManager).toHaveBeenCalledWith({
-      lockDirectory: join('/happier-home', 'daemon', 'workspace-sync', 'root-ownership'),
+      lockDirectory: '/user-home/.happier/runtime/workspace-sync-root-ownership',
     });
     expect(createTargetAuthority).toHaveBeenCalledOnce();
     expect(createDaemonRuntime).toHaveBeenCalledOnce();
@@ -196,8 +261,28 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
     );
     expect(production.handoffAdapter).toBe(handoffAdapter);
     expect(production.workspaceSync.controller).toBe(controller);
+    expect(production.workspaceSync.relationshipOwner).toBe(relationshipOwner);
+    expect(createRelationshipOwner).toHaveBeenCalledOnce();
+
+    const relationshipOwnerInput = createRelationshipOwner.mock.calls[0]![0];
+    const reconciliationSignal = new AbortController().signal;
+    await relationshipOwnerInput.waitForSettingsReconciliation(7, reconciliationSignal);
+    expect(refreshSettings).toHaveBeenCalledWith({
+      credentials: { token: 'secret-token', encryption: null },
+      minSettingsVersion: 7,
+      forceRefresh: true,
+    });
+    expect(runtime.whenSettingsSettled).toHaveBeenCalledWith({
+      settingsVersion: 7,
+      scopeKey: 'scope-1',
+      signal: reconciliationSignal,
+    });
 
     const daemonRuntimeInput = createDaemonRuntime.mock.calls[0]![0];
+    expect(daemonRuntimeInput.relationshipOwner).toEqual(expect.objectContaining({
+      materializeEndpoints: expect.any(Function),
+      prepareCreate: expect.any(Function),
+    }));
     expect(daemonRuntimeInput).toMatchObject({
       daemonDataRoot: join('/happier-home', 'daemon'),
       localMachineId: 'machine-a',
@@ -242,6 +327,17 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
 
     const targetAuthorityInput = createTargetAuthority.mock.calls[0]![0];
     expect(targetAuthorityInput.bootstrap?.prepareGitTarget).toBe(prepareGitTarget);
+    await targetAuthorityInput.bootstrap?.materializeLocalSeed?.({
+      operationId: 'local-op',
+      sourcePath: '/work/alpha',
+      canonicalRoot: '/work/beta',
+      contentSelection: 'all_files',
+    });
+    expect(materializeLocalSeed).toHaveBeenCalledWith(expect.objectContaining({
+      operationId: 'local-op',
+      sourcePath: '/work/alpha',
+      targetPath: '/work/beta',
+    }));
     await targetAuthorityInput.callMachineRpc({
       machineId: 'machine-b',
       method: 'daemon.test',
@@ -283,6 +379,7 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       endpointRole: 'beta',
       policyDigest: contentPolicy.policyDigest,
       createIfMissing: true,
+      targetBootstrap: 'materialize_from_source_workspace',
     });
     await expect(fence.release('commit')).rejects.toMatchObject({ code: 'peer_unavailable' });
     await expect(fence.release('commit')).resolves.toBeUndefined();
@@ -295,6 +392,15 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       reason: 'copy_committed',
     });
     expect(sourceOwnership.release).toHaveBeenCalledOnce();
+
+    await relationshipOwnerInput.commitRelationshipTarget(settingsSnapshot().settings.workspaceSyncRelationshipsV1[0]!);
+    expect(releaseBootstrapAtTarget).toHaveBeenLastCalledWith({
+      v: 1,
+      bootstrapOperationId: 'rel-1',
+      targetWorkspaceRefId: 'workspace-alpha',
+      targetMachineId: 'machine-a',
+      reason: 'relationship_committed',
+    });
 
     await production.stop();
     expect(unsubscribeSettings).toHaveBeenCalledOnce();
@@ -321,7 +427,6 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
             inventoryHash: 'a'.repeat(64),
           };
       const inspectLegacyState = vi.fn(async () => inspection);
-      const cleanupLegacyState = vi.fn(async () => ({ removed: true }));
       const spawnSidecar = vi.fn(async () => {
         throw new Error('sidecar must not spawn while the legacy gate is closed');
       });
@@ -340,7 +445,6 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
         spawnSidecar,
         launchLocalAgent,
         inspectLegacyState,
-        cleanupLegacyState,
         warn,
       } as unknown as ProductionDaemonWorkspaceSyncFactories;
       const production = await createProductionDaemonWorkspaceSyncRuntime({
@@ -358,7 +462,6 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
         callMachineRpc,
         warn,
         inspectLegacyState,
-        cleanupLegacyState,
         cleanup: async () => {
           await production.stop();
           await rm(activeServerDir, { recursive: true, force: true });
@@ -412,21 +515,24 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       }
     });
 
-    it('runs the explicit exact-quarantine cleanup only for classified retired state', async () => {
+    it('reinspects and reports retired state without exposing a cleanup action', async () => {
       const retired = await compose('legacy_workspace_sync_state_unsupported');
       try {
-        await expect(retired.production.workspaceSync.cleanupRetiredState())
-          .resolves.toEqual({ removed: true, restartRequired: true });
-        expect(retired.cleanupLegacyState).toHaveBeenCalledOnce();
+        await expect(retired.production.workspaceSync.inspectRetiredState())
+          .resolves.toMatchObject({
+            status: 'legacy_workspace_sync_state_unsupported',
+            classification: 'retired_v1',
+            schemaVersion: 1,
+          });
+        expect(retired.inspectLegacyState).toHaveBeenCalledTimes(2);
       } finally {
         await retired.cleanup();
       }
 
       const unknown = await compose('legacy_workspace_sync_state_unknown');
       try {
-        await expect(unknown.production.workspaceSync.cleanupRetiredState())
-          .rejects.toMatchObject({ code: 'legacy_workspace_sync_state_unknown' });
-        expect(unknown.cleanupLegacyState).not.toHaveBeenCalled();
+        await expect(unknown.production.workspaceSync.inspectRetiredState())
+          .resolves.toMatchObject({ status: 'legacy_workspace_sync_state_unknown', reason: 'test-fixture' });
       } finally {
         await unknown.cleanup();
       }

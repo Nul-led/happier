@@ -93,7 +93,9 @@ export async function importSessionHandoffAgentBundle(params: Readonly<{
     directSource: source,
     ...(runtimeDescriptorV1 ? { runtimeDescriptorV1 } : {}),
     resume: {
-      directory: imported.value.launch.directory ?? params.targetPath,
+      // The source Agent may report its original machine-local cwd. Target
+      // custody owns the already-validated handoff path.
+      directory: params.targetPath,
       agent: params.bundle.agentId as ImportedSessionHandoffBundle['resume']['agent'],
       agentTarget: currentRuntime.agentTarget,
       resume: imported.value.providerSessionId,

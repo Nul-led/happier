@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import tweetnacl from 'tweetnacl';
+import { once } from 'node:events';
+import { connect, createServer } from 'node:net';
 
 import {
   DIRECT_ROUTE_GRANT_AUDIENCE_V1,
@@ -18,6 +20,7 @@ import {
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import {
   IROH_MACHINE_ADMISSION_PATH,
+  IROH_MACHINE_APPLICATION_CAPABILITY_HEADER,
   IROH_MACHINE_APPLICATION_PORT_HEADER,
   IROH_MACHINE_REMOTE_ENDPOINT_HEADER,
 } from '@happier-dev/iroh-native/node';
@@ -202,16 +205,23 @@ const IROH_TARGET_ENDPOINT_ID = 'b'.repeat(64);
 const IROH_OPERATION_ID = 'operation_iroh_1';
 
 function createIrohMachineHandshake(input: Readonly<{
-  role?: 'initiator' | 'acceptor';
   flow?: 'file_transfer' | 'attachment_transfer' | 'workspace_sync';
   targetMachineId?: string;
   grantOverrides?: Partial<DirectRouteGrantPayloadV2>;
   breakProof?: boolean;
 }> = {}): IrohMachineHandshakeV1 {
-  const role = input.role ?? 'initiator';
   const flow = input.flow ?? 'file_transfer';
   const sourceMachineId = 'machine_source';
   const targetMachineId = input.targetMachineId ?? 'machine_1';
+  const initiator = {
+    kind: 'machine' as const,
+    machineId: sourceMachineId,
+    endpointId: IROH_SOURCE_ENDPOINT_ID,
+  };
+  const target = {
+    machineId: targetMachineId,
+    endpointId: IROH_TARGET_ENDPOINT_ID,
+  };
   const payload: DirectRouteGrantPayloadV2 = {
     v: 2,
     grantId: 'grant_iroh_1',
@@ -225,11 +235,8 @@ function createIrohMachineHandshake(input: Readonly<{
     aud: DIRECT_ROUTE_GRANT_AUDIENCE_V1,
     endpointFingerprint: IROH_TARGET_ENDPOINT_ID,
     iroh: {
-      sourceMachineId,
-      targetMachineId,
-      sourceEndpointId: IROH_SOURCE_ENDPOINT_ID,
-      targetEndpointId: IROH_TARGET_ENDPOINT_ID,
-      role,
+      initiator,
+      target,
       operationKind: flow,
     },
     proofKind: 'ephemeral_ed25519',
@@ -252,12 +259,9 @@ function createIrohMachineHandshake(input: Readonly<{
   const proof = handle.sign(grant);
   return {
     v: 1,
-    role,
     accountId: 'account_1',
-    sourceMachineId,
-    targetMachineId,
-    sourceEndpointId: IROH_SOURCE_ENDPOINT_ID,
-    targetEndpointId: IROH_TARGET_ENDPOINT_ID,
+    initiator,
+    target,
     flow,
     operationId: IROH_OPERATION_ID,
     grant,
@@ -301,7 +305,7 @@ function createIrohAdmissionTestApp() {
       localEndpointId: IROH_TARGET_ENDPOINT_ID,
       role: 'acceptor',
       allowedFlows: ['file_transfer', 'workspace_sync'],
-      resolveApplicationPort: () => 46_001,
+      resolveApplicationTarget: () => ({ port: 46_001 }),
     },
   });
 }
@@ -1185,8 +1189,83 @@ describe('peer mediation loopback server', () => {
 });
 
 describe('machine/1 Iroh admission route', () => {
+  it('gates the finite-transfer target listener with a fresh first-bytes capability and strips it before application bytes', async () => {
+    const applicationBytes: Buffer[] = [];
+    const applicationServer = createServer({ allowHalfOpen: true }, (socket) => {
+      socket.on('data', (chunk: Buffer) => applicationBytes.push(chunk));
+      socket.once('end', () => socket.end(Buffer.concat(applicationBytes)));
+    });
+    await new Promise<void>((resolve, reject) => {
+      applicationServer.once('error', reject);
+      applicationServer.listen({ host: '127.0.0.1', port: 0 }, resolve);
+    });
+    const applicationAddress = applicationServer.address();
+    if (!applicationAddress || typeof applicationAddress === 'string') throw new Error('application listener did not bind');
+    const app = createPeerMediationLoopbackApp({
+      nowMs: () => 2_000,
+      expected: {
+        accountId: 'account_1',
+        machineId: 'machine_1',
+        flowKind: 'bounded_transfer',
+        routeKind: 'loopback_direct',
+        endpointFingerprint: 'loopback_endpoint_1',
+      },
+      trustRoots: IROH_TRUST_ROOTS,
+      irohMachineAdmission: {
+        localEndpointId: IROH_TARGET_ENDPOINT_ID,
+        role: 'acceptor',
+        allowedFlows: ['file_transfer'],
+        resolveApplicationTarget: () => ({ port: applicationAddress.port }),
+      },
+    });
+
+    try {
+      const admission = await app.inject({
+        method: 'POST',
+        url: IROH_MACHINE_ADMISSION_PATH,
+        headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: IROH_SOURCE_ENDPOINT_ID },
+        payload: createIrohMachineHandshake(),
+      });
+      expect(admission.statusCode).toBe(204);
+      const capability = admission.headers[IROH_MACHINE_APPLICATION_CAPABILITY_HEADER.toLowerCase()];
+      const protectedPort = Number(admission.headers[IROH_MACHINE_APPLICATION_PORT_HEADER.toLowerCase()]);
+      expect(capability).toMatch(/^[0-9a-f]{64}$/);
+      expect(protectedPort).not.toBe(applicationAddress.port);
+
+      const scanner = connect({ host: '127.0.0.1', port: protectedPort });
+      await once(scanner, 'connect');
+      scanner.end(`${'0'.repeat(64)}unauthorized`);
+      await once(scanner, 'close');
+      expect(applicationBytes).toEqual([]);
+
+      const partialScanner = connect({ host: '127.0.0.1', port: protectedPort });
+      await once(partialScanner, 'connect');
+      const partialScannerClosed = once(partialScanner, 'close');
+      partialScanner.write('0');
+
+      const client = connect({ host: '127.0.0.1', port: protectedPort, allowHalfOpen: true });
+      await once(client, 'connect');
+      const echoed = Promise.race([
+        (once(client, 'data') as Promise<[Buffer]>).then(([chunk]) => chunk),
+        once(client, 'close').then(() => null),
+      ]);
+      client.end(Buffer.concat([
+        Buffer.from(String(capability), 'ascii'),
+        Buffer.from('finite-transfer-http-bytes'),
+      ]));
+      await expect(echoed).resolves.toEqual(Buffer.from('finite-transfer-http-bytes'));
+      expect(Buffer.concat(applicationBytes)).toEqual(Buffer.from('finite-transfer-http-bytes'));
+      await expect(partialScannerClosed).resolves.toBeDefined();
+      client.destroy();
+    } finally {
+      await app.close();
+      await new Promise<void>((resolve) => applicationServer.close(() => resolve()));
+    }
+  });
+
   it('admits a real signed machine/1 handshake with a bodyless 204 and the exact endpoint echo', async () => {
     const app = createIrohAdmissionTestApp();
+    const localCapabilities: string[] = [];
 
     for (const flow of ['file_transfer', 'workspace_sync'] as const) {
       const response = await app.inject({
@@ -1198,9 +1277,12 @@ describe('machine/1 Iroh admission route', () => {
 
       expect(response.statusCode).toBe(204);
       expect(response.headers[IROH_MACHINE_REMOTE_ENDPOINT_HEADER.toLowerCase()]).toBe(IROH_SOURCE_ENDPOINT_ID);
-      expect(response.headers[IROH_MACHINE_APPLICATION_PORT_HEADER.toLowerCase()]).toBe('46001');
+      expect(response.headers[IROH_MACHINE_APPLICATION_PORT_HEADER.toLowerCase()]).not.toBe('46001');
+      expect(response.headers[IROH_MACHINE_APPLICATION_CAPABILITY_HEADER.toLowerCase()]).toMatch(/^[0-9a-f]{64}$/);
+      localCapabilities.push(String(response.headers[IROH_MACHINE_APPLICATION_CAPABILITY_HEADER.toLowerCase()]));
       expect(response.body).toBe('');
     }
+    expect(new Set(localCapabilities).size).toBe(localCapabilities.length);
 
     await app.close();
   });
@@ -1244,7 +1326,7 @@ describe('machine/1 Iroh admission route', () => {
         localEndpointId: IROH_TARGET_ENDPOINT_ID,
         role: 'acceptor',
         allowedFlows: ['file_transfer'],
-        resolveApplicationPort: () => null,
+        resolveApplicationTarget: () => null,
       },
     });
 
@@ -1278,7 +1360,6 @@ describe('machine/1 Iroh admission route', () => {
       { name: 'duplicate endpoint header', headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: `${IROH_SOURCE_ENDPOINT_ID}, ${IROH_SOURCE_ENDPOINT_ID}` }, payload: validHandshake },
       { name: 'wrong endpoint header', headers: { [IROH_MACHINE_REMOTE_ENDPOINT_HEADER]: 'c'.repeat(64) }, payload: validHandshake },
       { name: 'wrong target machine', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ targetMachineId: 'machine_other' }) },
-      { name: 'role mismatch', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ role: 'acceptor' }) },
       { name: 'flow not admitted', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ flow: 'attachment_transfer' }) },
       { name: 'expired grant', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ grantOverrides: { exp: 2_000 } }) },
       { name: 'invalid proof', headers: remoteEndpointHeader, payload: createIrohMachineHandshake({ breakProof: true }) },

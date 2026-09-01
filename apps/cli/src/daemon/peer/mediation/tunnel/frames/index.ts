@@ -5,24 +5,24 @@
  * the directory barrel already import, so the 2026-08-23 split of the former 1,498-line
  * `frames.ts` changed no consumer and no behaviour.
  */
-// Shared binary implementation. The only legacy JSON/base64 compatibility
-// surface is the stream/codec adapter below.
+// The shared package owns binary sessions/codecs and the explicitly named
+// json_base64_v1 compatibility boundary. This directory contains tests only.
 export {
+    createLegacyJsonPeerTcpTunnelStreamSession,
     createPeerTcpTunnelApplicationSubstreamSession,
-    createPeerTcpTunnelSubstreamMuxSession,
     createPeerTcpTunnelFrameAccounting,
+    createPeerTcpTunnelStreamSession,
+    createPeerTcpTunnelSubstreamMuxSession,
+    decodePeerTcpTunnelBinaryFrameForSession,
+    encodePeerTcpTunnelBinaryFrameForSession,
     isSchedulableTimeoutMs,
     substreamAbortFrame,
 } from '@happier-dev/peer-transport';
 export type {
+    LegacyJsonPeerTcpTunnelFrame,
     PeerTcpTunnelApplicationSubstreamSessionResult,
-    PeerTcpTunnelSubstreamMuxSessionResult,
+    PeerTcpTunnelFrame,
     PeerTcpTunnelStreamConnection,
     PeerTcpTunnelStreamSessionResult,
+    PeerTcpTunnelSubstreamMuxSessionResult,
 } from '@happier-dev/peer-transport';
-
-export {
-    createPeerTcpTunnelStreamSession,
-    decodePeerTcpTunnelBinaryFrameForSession,
-    encodePeerTcpTunnelBinaryFrameForSession,
-} from './legacyJsonAdapter';

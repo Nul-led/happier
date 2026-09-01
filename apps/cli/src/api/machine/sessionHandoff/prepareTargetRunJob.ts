@@ -22,6 +22,7 @@ import {
   tryAcquireSessionHandoffPrepareTargetJobLease,
 } from '../../../session/handoff/prepare/sessionHandoffPrepareTargetJobLease';
 import type { SessionHandoffAgentBundle } from '../../../session/handoff/types';
+import { ensureSessionHandoffWorkspaceCwd } from '../../../session/handoff/paths/sessionHandoffWorkspaceCwd';
 
 import {
   directPeerTransferUnavailable,
@@ -324,6 +325,13 @@ export async function runSessionHandoffPrepareTargetJob(
         return;
       }
 
+      if (request.workspaceRootPath !== undefined && request.workspaceSessionRelativeCwd !== undefined) {
+        await ensureSessionHandoffWorkspaceCwd({
+          workspaceRootPath: request.workspaceRootPath,
+          sessionRelativeCwd: request.workspaceSessionRelativeCwd,
+          targetPath: request.targetPath,
+        });
+      }
       const imported = await importSessionBundle(
         agentBundle,
         request.targetPath,

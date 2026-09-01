@@ -119,22 +119,18 @@ describe('workspace sync peer identity validator', () => {
         await expect(validator.validate({ kind: 'control', socket: new Socket() })).resolves.toBe(false);
     });
 
-    it('on Windows the pipe ACL is the uid authority: null uid accepts, a uid fact rejects', async () => {
+    it('on Windows accepts only the native relay authenticated exact-pid witness', async () => {
+        const observed: ObserveRecord = { calls: [] };
         const windows = validatorWith({
             platform: 'win32',
             getUid: () => 1000,
-            observe: observeFactory({ calls: [] }, { pid: 4242, uid: null }),
+            observe: observeFactory(observed, { pid: 4242, uid: null }),
         });
         windows.setExpectedSidecarPid(4242);
-        await expect(windows.validate({ kind: 'control', socket: new Socket() })).resolves.toBe(true);
-
-        const windowsWithUid = validatorWith({
-            platform: 'win32',
-            getUid: () => 1000,
-            observe: observeFactory({ calls: [] }, { pid: 4242, uid: 1000 }),
-        });
-        windowsWithUid.setExpectedSidecarPid(4242);
-        await expect(windowsWithUid.validate({ kind: 'control', socket: new Socket() })).resolves.toBe(false);
+        await expect(windows.validate({ kind: 'control', socket: new Socket(), witnessedPeerPid: 4242 })).resolves.toBe(true);
+        await expect(windows.validate({ kind: 'control', socket: new Socket(), witnessedPeerPid: 999 })).resolves.toBe(false);
+        await expect(windows.validate({ kind: 'control', socket: new Socket() })).resolves.toBe(false);
+        expect(observed.calls).toHaveLength(0);
     });
 
     it('passes the exact accepted socket to the helper invocation and never invents one', async () => {

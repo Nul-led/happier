@@ -29,6 +29,21 @@ export async function handleAuthStatus(argv: string[] = []): Promise<void> {
   }
 
   if (!readiness.authenticated) {
+    if (readiness.credentialState === 'unknown') {
+      if (json) {
+        await printJsonEnvelope({
+          ok: false,
+          kind: 'auth_status',
+          error: { code: 'auth_status_unavailable', message: 'Stored credentials could not be verified against the selected server.' },
+        });
+        return;
+      }
+
+      console.log(warn('Stored credentials found, but server validation is unavailable'));
+      console.log('  Your local credentials were kept. Try again when the selected server is reachable.');
+      return;
+    }
+
     if (json) {
       await printJsonEnvelope({ ok: false, kind: 'auth_status', error: { code: 'not_authenticated' } });
       return;
@@ -56,8 +71,10 @@ export async function handleAuthStatus(argv: string[] = []): Promise<void> {
       kind: 'auth_status',
       data: {
         authenticated: true,
+        credentialState: readiness.credentialState,
         encryption: { type: credentials.encryption?.type ?? 'none' },
         machineRegistered,
+        machineRegistrationState: readiness.machineRegistrationState,
         ...(machineRegistered ? { machineId: machineId ?? '' } : {}),
         host: os.hostname(),
         happyHomeDir: configuration.happyHomeDir,

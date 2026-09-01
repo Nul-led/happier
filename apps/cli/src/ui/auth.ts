@@ -6,7 +6,6 @@ import axios from 'axios';
 import { displayQRCode } from "./qrcode";
 import { delay } from "@/utils/time";
 import {
-    writeCredentialsLegacy,
     readStoredCredentials,
     readSettings,
     updateSettings,
@@ -36,6 +35,8 @@ import {
     type TerminalPairingRequirement,
 } from '@/auth/terminalProvisioningResponse';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
+import { setActiveServerProfileHomeConnectionDescriptor } from '@/server/serverProfiles';
+import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 
 type InteractiveTerminalAuthContext = Readonly<{
     keypair: tweetnacl.BoxKeyPair;
@@ -207,7 +208,8 @@ export async function doAuth(): Promise<StoredCredentials | null> {
 
     await applyAutoPublicServerUrlFromTailscaleServeBestEffort();
 
-    const featuresSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: configuration.apiServerUrl });
+    const authRuntimeOrigin = resolveServerHttpBaseUrl();
+    const featuresSnapshot = await fetchServerFeaturesSnapshot({ serverUrl: authRuntimeOrigin });
     const serverIdentityId = featuresSnapshot.status === 'ready'
         ? featuresSnapshot.features.capabilities.serverIdentity.serverIdentityId?.trim() ?? ''
         : '';
@@ -235,7 +237,7 @@ export async function doAuth(): Promise<StoredCredentials | null> {
     try {
         const publicKey = encodeBase64(keypair.publicKey);
         if (debugEnabled) {
-            console.log(`[AUTH DEBUG] Sending auth request to: ${configuration.apiServerUrl}/v1/auth/request`);
+            console.log(`[AUTH DEBUG] Sending auth request to: ${authRuntimeOrigin}/v1/auth/request`);
             console.log(`[AUTH DEBUG] Public key: ${publicKey.substring(0, 20)}...`);
         }
         await postTerminalAuthRequestCompatible({
@@ -255,13 +257,26 @@ export async function doAuth(): Promise<StoredCredentials | null> {
     }
 
     // Handle authentication based on selected method
-    if (authMethod === 'mobile') {
-        return await doMobileAuth({ keypair, claimSecret: claimSecretB64Url, pairing, pairingRequirement, serverIdentityId });
+    const authContext = { keypair, claimSecret: claimSecretB64Url, pairing, pairingRequirement, serverIdentityId };
+    const credentials = authMethod === 'mobile'
+        ? await doMobileAuth(authContext)
+        : authMethod === 'web'
+            ? await doWebAuth(authContext)
+            : await doBothAuth(authContext);
+    const descriptor = featuresSnapshot.status === 'ready'
+        ? featuresSnapshot.features.homeConnectionDescriptor
+        : undefined;
+    if (credentials && descriptor) {
+        // The descriptor is persisted only after the same Home identity has
+        // authorized this credential. A non-persisted env-only server remains
+        // usable; its future profile adoption will write the descriptor there.
+        await setActiveServerProfileHomeConnectionDescriptor(descriptor).catch((error) => {
+            logger.debug('[AUTH] Authenticated Home descriptor was not persisted', {
+                message: error instanceof Error ? error.message : String(error),
+            });
+        });
     }
-    if (authMethod === 'web') {
-        return await doWebAuth({ keypair, claimSecret: claimSecretB64Url, pairing, pairingRequirement, serverIdentityId });
-    }
-    return await doBothAuth({ keypair, claimSecret: claimSecretB64Url, pairing, pairingRequirement, serverIdentityId });
+    return credentials;
 }
 
 function toTerminalConnectPairingContext(pairing: TerminalPairingAuthentication): Readonly<{
@@ -371,7 +386,7 @@ async function postTerminalAuthRequestCompatible(params: Readonly<{
     timeoutMs?: number;
 }>): Promise<PostTerminalAuthRequestCompatibleResponse> {
     try {
-        const res = await axios.post<PostTerminalAuthRequestCompatibleResponse>(`${configuration.apiServerUrl}/v1/auth/request`, {
+        const res = await axios.post<PostTerminalAuthRequestCompatibleResponse>(`${resolveServerHttpBaseUrl()}/v1/auth/request`, {
             publicKey: params.publicKey,
             ...(typeof params.supportsV2 === 'boolean' ? { supportsV2: params.supportsV2 } : {}),
             ...(typeof params.claimSecretHash === 'string' ? { claimSecretHash: params.claimSecretHash } : {}),
@@ -385,7 +400,7 @@ async function postTerminalAuthRequestCompatible(params: Readonly<{
         if (code === 400 || code === 422) {
             // Some legacy servers validate request bodies strictly and reject unknown keys.
             // Retry with the minimal legacy payload.
-            const res = await axios.post<PostTerminalAuthRequestCompatibleResponse>(`${configuration.apiServerUrl}/v1/auth/request`, {
+            const res = await axios.post<PostTerminalAuthRequestCompatibleResponse>(`${resolveServerHttpBaseUrl()}/v1/auth/request`, {
                 publicKey: params.publicKey,
             }, {
                 headers: buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
@@ -631,12 +646,6 @@ async function waitForAuthentication(params: InteractiveTerminalAuthContext): Pr
                         return null;
                     }
 
-                    if (opened.type === 'legacy') {
-                        await writeCredentialsLegacy({ secret: opened.key, token });
-                        console.log('\n\n✓ Authentication successful\n');
-                        return { encryption: { type: 'legacy', secret: opened.key }, token };
-                    }
-
                     if (opened.type === 'tokenOnly') {
                         await writeCredentialsTokenOnly({ token });
                         console.log('\n\n✓ Authentication successful\n');
@@ -674,7 +683,7 @@ async function waitForAuthentication(params: InteractiveTerminalAuthContext): Pr
                 } else {
                     let statusRes: any;
                     try {
-                        statusRes = await axios.get(`${configuration.apiServerUrl}/v1/auth/request/status`, {
+                        statusRes = await axios.get(`${resolveServerHttpBaseUrl()}/v1/auth/request/status`, {
                             params: { publicKey },
                             headers: buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
                             timeout: remainingRequestTimeoutMs(),
@@ -707,7 +716,7 @@ async function waitForAuthentication(params: InteractiveTerminalAuthContext): Pr
 
                     if (status === 'authorized') {
                         try {
-                            const claimRes = await axios.post(`${configuration.apiServerUrl}/v1/auth/request/claim`, {
+                            const claimRes = await axios.post(`${resolveServerHttpBaseUrl()}/v1/auth/request/claim`, {
                                 publicKey,
                                 claimSecret: params.claimSecret,
                             }, {

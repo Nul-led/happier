@@ -134,7 +134,10 @@ describe('happier auth login --print-configure-links', () => {
       token: 'plain-token',
       encryption: null,
     });
-    readSettingsMock.mockResolvedValue({ machineId: 'plain-machine' });
+    readSettingsMock.mockResolvedValue({
+      machineId: 'plain-machine',
+      machineIdConfirmedByServer: true,
+    });
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     try {
@@ -144,6 +147,35 @@ describe('happier auth login --print-configure-links', () => {
       expect(validateStoredAuthTokenAgainstActiveServerMock).toHaveBeenCalledWith('plain-token');
       expect(authAndSetupMachineIfNeededMock).not.toHaveBeenCalled();
       expect(consoleSpy.mock.calls.flat().join('\n')).toContain('Already authenticated');
+    } finally {
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('does not report unknown server validation as already authenticated', async () => {
+    readStoredCredentialsMock.mockResolvedValue({
+      token: 'offline-token',
+      encryption: null,
+    });
+    readSettingsMock.mockResolvedValue({
+      machineId: 'confirmed-machine',
+      machineIdConfirmedByServer: true,
+    });
+    validateStoredAuthTokenAgainstActiveServerMock.mockResolvedValue({
+      state: 'unknown',
+      httpStatus: null,
+      reasonCode: 'TimeoutError',
+    });
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const { handleAuthLogin } = await import('./login');
+      await handleAuthLogin([]);
+
+      expect(authAndSetupMachineIfNeededMock).toHaveBeenCalledOnce();
+      expect(clearCredentialsMock).not.toHaveBeenCalled();
+      expect(clearMachineIdMock).not.toHaveBeenCalled();
+      expect(consoleSpy.mock.calls.flat().join('\n')).not.toContain('Already authenticated');
     } finally {
       consoleSpy.mockRestore();
     }

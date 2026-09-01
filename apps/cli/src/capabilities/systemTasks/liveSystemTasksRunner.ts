@@ -14,7 +14,10 @@ import {
   createPersonalHomeBackupTaskKind,
   createPersonalHomeEraseTaskKind,
   createPersonalHomeInspectTaskKind,
-  createPersonalHomeRelocateTaskKind,
+  createPersonalHomeRelocationDestinationAbortTaskKind,
+  createPersonalHomeRelocationDestinationCommitTaskKind,
+  createPersonalHomeRelocationDestinationStageTaskKind,
+  createPersonalHomeRelocationDestinationStatusTaskKind,
   createPersonalHomeRestoreTaskKind,
   createPersonalHomeVerifyBackupTaskKind,
   PERSONAL_HOME_SYSTEM_TASK_KINDS,
@@ -30,10 +33,12 @@ import {
   type RelayRuntimeStatusSnapshot,
   type RelayRuntimeTaskParams,
   type PersonalHomeSystemTaskOperations,
+  type PersonalHomeTaskKindDeps,
 } from '@happier-dev/cli-common/systemTasks';
 import {
   checkLiveRelayRuntimeHealth,
   createLivePersonalHomeSystemTaskOperations,
+  createLivePersonalHomeRelocationDestinationOwner,
   installOrUpdateLiveRelayRuntime,
   readLiveRelayRuntimeStatus,
   restartLiveRelayRuntime,
@@ -198,12 +203,14 @@ let liveRunnerAdapter: SystemTasksRunnerAdapter | null = null;
 
 export function getLiveSystemTasksRunnerAdapter(params: Readonly<{
   personalHomeOperations?: PersonalHomeSystemTaskOperations;
+  loadPersonalHomeRelocationDestination?: PersonalHomeTaskKindDeps['loadRelocationDestination'];
   personalHomeRuntime?: Readonly<{
     channel: 'stable' | 'preview' | 'dev';
     mode: 'user' | 'system';
   }>;
 }> = {}): SystemTasksRunnerAdapter {
   const isExplicitInvocation = params.personalHomeOperations !== undefined
+    || params.loadPersonalHomeRelocationDestination !== undefined
     || params.personalHomeRuntime !== undefined;
   if (!isExplicitInvocation && liveRunnerAdapter) {
     return liveRunnerAdapter;
@@ -216,6 +223,7 @@ export function getLiveSystemTasksRunnerAdapter(params: Readonly<{
 
 function createLiveSystemTasksRunnerAdapter(params: Readonly<{
   personalHomeOperations?: PersonalHomeSystemTaskOperations;
+  loadPersonalHomeRelocationDestination?: PersonalHomeTaskKindDeps['loadRelocationDestination'];
   personalHomeRuntime?: Readonly<{
     channel: 'stable' | 'preview' | 'dev';
     mode: 'user' | 'system';
@@ -224,8 +232,18 @@ function createLiveSystemTasksRunnerAdapter(params: Readonly<{
   const personalHomeRuntime = params.personalHomeRuntime ?? { channel: 'stable', mode: 'user' } as const;
   const personalHomeOperations = params.personalHomeOperations
     ?? createDeferredPersonalHomeSystemTaskOperations(
-      async () => await createLivePersonalHomeSystemTaskOperations(personalHomeRuntime),
+      async (target) => {
+        if (params.personalHomeRuntime
+          && (target.channel !== personalHomeRuntime.channel || target.mode !== personalHomeRuntime.mode)) {
+          throw new Error('Personal Home task target does not match the configured runtime target.');
+        }
+        return await createLivePersonalHomeSystemTaskOperations(target);
+      },
     );
+  const personalHomeRelocationDestinationDeps = {
+    loadRelocationDestination: params.loadPersonalHomeRelocationDestination
+      ?? (async (target) => await createLivePersonalHomeRelocationDestinationOwner(target)),
+  };
 
   const runner = createSystemTasksRunner({
     kinds: {
@@ -330,7 +348,10 @@ function createLiveSystemTasksRunnerAdapter(params: Readonly<{
       [PERSONAL_HOME_SYSTEM_TASK_KINDS.verifyBackup]: createPersonalHomeVerifyBackupTaskKind({ operations: personalHomeOperations }),
       [PERSONAL_HOME_SYSTEM_TASK_KINDS.restore]: createPersonalHomeRestoreTaskKind({ operations: personalHomeOperations }),
       [PERSONAL_HOME_SYSTEM_TASK_KINDS.erase]: createPersonalHomeEraseTaskKind({ operations: personalHomeOperations }),
-      [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocate]: createPersonalHomeRelocateTaskKind({ operations: personalHomeOperations }),
+      [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationStage]: createPersonalHomeRelocationDestinationStageTaskKind(personalHomeRelocationDestinationDeps),
+      [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationStatus]: createPersonalHomeRelocationDestinationStatusTaskKind(personalHomeRelocationDestinationDeps),
+      [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationCommit]: createPersonalHomeRelocationDestinationCommitTaskKind(personalHomeRelocationDestinationDeps),
+      [PERSONAL_HOME_SYSTEM_TASK_KINDS.relocationDestinationAbort]: createPersonalHomeRelocationDestinationAbortTaskKind(personalHomeRelocationDestinationDeps),
     },
   });
 

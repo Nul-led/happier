@@ -2636,117 +2636,6 @@ describe('executeSpawnSessionRequest', () => {
     expect(hoisted.resolveMergedContributionRegistry).not.toHaveBeenCalled();
   });
 
-  it('carries a supported configured ACP fork through real daemon spawn preparation', async () => {
-    const configuredTarget = {
-      kind: 'backend',
-      sourceKind: 'configured',
-      backendId: 'review-bot',
-      configuredBackendId: 'review-bot',
-    } as const;
-    hoisted.requireCatalogEntry.mockReturnValue({});
-    hoisted.resolveSpawnBackendIdentity.mockResolvedValueOnce({
-      ok: true,
-      normalizedExistingSessionId: '',
-      effectiveResume: 'vendor-child-acp',
-      effectiveBackendTargetV2: configuredTarget,
-      sessionAttachPayload: null,
-      catalogAgentId: null,
-    });
-    hoisted.ensureSessionDirectory.mockResolvedValueOnce({
-      ok: true,
-      directoryCreated: false,
-    });
-    hoisted.acquireAuthoritativePluginRuntimeRegistryLease.mockResolvedValueOnce({
-      registry: createAdmittedRuntimeRegistry({
-        'review-bot': 'active.plugin.review-bot',
-      }),
-      source: 'active',
-      release: vi.fn(async () => undefined),
-    });
-
-    const { executeSpawnSessionRequest } = await import('./executeSpawnSessionRequest');
-    const { attemptAcpLatestFork } = await import(
-      '@/session/actions/lifecycle/fork/attemptAcpLatestFork'
-    );
-    const { resolveSpawnChildEnvironment } = await import(
-      '../spawn/resolveSpawnChildEnvironment'
-    );
-    const { routeSpawnModeAndWaitForWebhook } = await import(
-      '../spawn/routeSpawnModeAndWaitForWebhook'
-    );
-    vi.mocked(resolveSpawnChildEnvironment).mockResolvedValueOnce({
-      ok: true,
-      cleanupOnFailure: null,
-      cleanupOnExit: null,
-      expandedEnvironmentVariables: {},
-      extraEnvForChild: {},
-    });
-    vi.mocked(routeSpawnModeAndWaitForWebhook).mockResolvedValueOnce({
-      type: 'success',
-      sessionId: 'child-acp',
-    });
-
-    const fork = vi.fn(async () => ({
-      providerSessionId: 'vendor-child-acp',
-      launch: {},
-    }));
-    const result = await attemptAcpLatestFork({
-      requestedStrategy: 'acp_fork_latest',
-      credentials: createParams().credentials,
-      parentSessionId: 'parent-session',
-      parentMetadata: {},
-      directory: '/tmp/project',
-      effectiveCutoffSeqInclusive: 10,
-      spawnNonce: 'configured-acp-fork',
-      forkIsConfiguredAcp: true,
-      forkBackendResolution: {
-        ok: true,
-        catalogAgentId: null,
-        agentHintAgentId: 'acp:review-bot',
-        backendTargetV2: configuredTarget,
-        backendTarget: {
-          kind: 'configuredAcpBackend',
-          backendId: 'review-bot',
-        },
-        replayFlavor: 'acp:review-bot',
-        metadataOverlay: {},
-        configuredAcp: {
-          backendId: 'review-bot',
-          title: 'Review Bot',
-          providerSessionId: 'vendor-parent-acp',
-          resolvedBackend: {
-            backendId: 'review-bot',
-            capabilities: { supportsLoadSession: true },
-          },
-          accountSettings: { settingsVersion: 1 },
-        },
-      } as never,
-      inheritedForkOverrides: { metadata: {}, spawn: {} },
-      forkSurface: { fork },
-      spawnSession: async (options) => await executeSpawnSessionRequest({
-        ...createParams(),
-        options,
-      }),
-      stopSession: vi.fn(async () => false),
-    });
-
-    expect(result).toEqual({ ok: true, childSessionId: 'child-acp' });
-    expect(fork).toHaveBeenCalledOnce();
-    expect(hoisted.acquireAuthoritativePluginRuntimeRegistryLease).toHaveBeenCalledOnce();
-    expect(resolveSpawnChildEnvironment).toHaveBeenCalledWith(expect.objectContaining({
-      options: expect.objectContaining({
-        backendTarget: configuredTarget,
-        resume: 'vendor-child-acp',
-      }),
-    }));
-    expect(routeSpawnModeAndWaitForWebhook).toHaveBeenCalledWith(expect.objectContaining({
-      options: expect.objectContaining({
-        backendTarget: configuredTarget,
-        resume: 'vendor-child-acp',
-      }),
-    }));
-  });
-
   it('uses an explicit initial transcript cursor only for the attach payload', async () => {
     hoisted.requireCatalogEntry.mockReturnValue({});
     hoisted.resolveSpawnBackendIdentity.mockResolvedValueOnce({
@@ -3932,6 +3821,83 @@ describe('executeSpawnSessionRequest', () => {
       errorCode: SPAWN_SESSION_ERROR_CODES.RESUME_NOT_SUPPORTED,
       errorMessage: "Resume is not supported for agent 'codex' (experimental and not enabled).",
     });
+  });
+
+  it('carries configured ACP resume through the composed daemon spawn boundary from the active Account snapshot', async () => {
+    const configuredTarget = {
+      kind: 'backend',
+      sourceKind: 'configured',
+      backendId: 'review-bot',
+      configuredBackendId: 'review-bot',
+    } as const;
+    hoisted.getActiveAccountSettingsSnapshot.mockReturnValue({
+      settingsVersion: 1,
+      settings: {
+        acpCatalogSettingsV1: {
+          v: 2,
+          backends: [{
+            id: 'review-bot', name: 'review-bot', title: 'Review Bot', command: 'review-bot',
+            args: [], env: {}, transportProfile: 'generic',
+            capabilities: { supportsLoadSession: true }, createdAt: 1, updatedAt: 1,
+          }],
+        },
+      },
+    });
+    hoisted.resolveSpawnBackendIdentity.mockResolvedValueOnce({
+      ok: true,
+      normalizedExistingSessionId: 'parent-session',
+      effectiveResume: 'provider-session-1',
+      effectiveBackendTargetV2: configuredTarget,
+      sessionAttachPayload: { v: 2, encryptionMode: 'plain' },
+      catalogAgentId: null,
+      ownerMetadata: null,
+      existingSessionWorkspacePath: null,
+    });
+    hoisted.ensureSessionDirectory.mockResolvedValueOnce({ ok: true, directoryCreated: false });
+    hoisted.acquireAuthoritativePluginRuntimeRegistryLease.mockResolvedValueOnce({
+      registry: createAdmittedRuntimeRegistry({ 'review-bot': 'active.plugin.review-bot' }),
+      source: 'active',
+      release: vi.fn(async () => undefined),
+    });
+    const { createSessionAttachFile } = await import('../sessionAttachFile');
+    const { resolveSpawnChildEnvironment } = await import('../spawn/resolveSpawnChildEnvironment');
+    const { routeSpawnModeAndWaitForWebhook } = await import('../spawn/routeSpawnModeAndWaitForWebhook');
+    vi.mocked(createSessionAttachFile).mockResolvedValueOnce({
+      filePath: '/tmp/configured-resume-attach.json',
+      cleanup: vi.fn(async () => undefined),
+    });
+    vi.mocked(resolveSpawnChildEnvironment).mockResolvedValueOnce({
+      ok: true,
+      cleanupOnFailure: null,
+      cleanupOnExit: null,
+      expandedEnvironmentVariables: {},
+      extraEnvForChild: {},
+    });
+    vi.mocked(routeSpawnModeAndWaitForWebhook).mockResolvedValueOnce({
+      type: 'success',
+      sessionId: 'configured-resumed-session',
+    });
+
+    const { executeSpawnSessionRequest } = await import('./executeSpawnSessionRequest');
+    const baseParams = createParams();
+    const result = await executeSpawnSessionRequest({
+      ...baseParams,
+      options: {
+        ...baseParams.options,
+        backendTarget: configuredTarget,
+        resume: 'provider-session-1',
+        runtimeDescriptorV1: undefined,
+      },
+    });
+
+    expect(result).toEqual({ type: 'success', sessionId: 'configured-resumed-session' });
+    expect(resolveSpawnChildEnvironment).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        backendTarget: configuredTarget,
+        resume: 'provider-session-1',
+      }),
+    }));
+    expect(hoisted.getVendorResumeSupport).not.toHaveBeenCalled();
   });
 
   it('admits configured ACP resume only from the caller-provided Account snapshot', async () => {

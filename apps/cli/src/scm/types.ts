@@ -147,8 +147,9 @@ export type ScmWorkspaceIntegrationPostMaterializationInput = Readonly<{
 }>;
 
 export type ScmWorkspaceIntegrationWorkspaceTransferInput = Readonly<{
-    context: ScmBackendContext;
-    workspaceTransfer: ScmWorkspaceIntegrationWorkspaceTransferRequest;
+  context: ScmBackendContext;
+  workspaceTransfer: ScmWorkspaceIntegrationWorkspaceTransferRequest;
+  artifactDirectory?: string;
 }>;
 
 export type ScmWorkspaceIntegrationWorkspaceTransferEntryInput = ScmWorkspaceIntegrationWorkspaceTransferEntry;

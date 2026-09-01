@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   readOrCreateDeviceLocalSecretStorage: vi.fn(),
   startCaffeinate: vi.fn(),
   acquireDaemonLock: vi.fn(),
+  readStoredCredentials: vi.fn(),
   loggerDebug: vi.fn(),
 }));
 
@@ -37,6 +38,7 @@ vi.mock('@/integrations/caffeinate', () => ({
 
 vi.mock('@/persistence', () => ({
   acquireDaemonLock: mocks.acquireDaemonLock,
+  readStoredCredentials: mocks.readStoredCredentials,
 }));
 
 vi.mock('@/ui/logger', () => ({
@@ -65,6 +67,10 @@ describe('prepareDaemonBootstrapContext', () => {
     mocks.authAndSetupMachineIfNeeded.mockResolvedValue({
       credentials: { token: 'token', encryption: { key: 'enc' } },
       machineId: 'machine-1',
+    });
+    mocks.readStoredCredentials.mockResolvedValue({
+      token: 'persisted-token',
+      encryption: { key: 'persisted-enc' },
     });
     mocks.createApiClient.mockResolvedValue({ api: true });
     mocks.ensureMachineRegistered.mockResolvedValue({
@@ -109,6 +115,71 @@ describe('prepareDaemonBootstrapContext', () => {
       await lockHandle.close().catch(() => undefined);
       await rm(tempDir, { recursive: true, force: true });
     }
+  });
+
+  it('prepares a persisted trusted Home transport before fresh daemon authentication and API construction', async () => {
+    const { prepareDaemonBootstrapContext } = await import('./prepareDaemonBootstrapContext');
+    const order: string[] = [];
+    mocks.authAndSetupMachineIfNeeded.mockImplementation(async () => {
+      order.push('auth');
+      return {
+        credentials: { token: 'token', encryption: { key: 'enc' } },
+        machineId: 'machine-1',
+      };
+    });
+    mocks.createApiClient.mockImplementation(async () => {
+      order.push('api');
+      return { api: true };
+    });
+    mocks.isDaemonRunningCurrentlyInstalledHappyVersion.mockResolvedValue(false);
+    mocks.acquireDaemonLock.mockResolvedValue({ kind: 'acquired-lock' });
+
+    await prepareDaemonBootstrapContext({
+      daemonLockHandle: null,
+      initialMachineMetadata: { platform: 'darwin' } as never,
+      startupSource: 'manual',
+      prepareServerTransport: async ({ persistedCredentials }) => {
+        expect(persistedCredentials?.token).toBe('persisted-token');
+        order.push('transport');
+      },
+    });
+
+    expect(order).toEqual(['transport', 'auth', 'api']);
+  });
+
+  it('prepares a trusted descriptor transport before fresh auth and verifies it with the new credential', async () => {
+    const { prepareDaemonBootstrapContext } = await import('./prepareDaemonBootstrapContext');
+    mocks.readStoredCredentials.mockResolvedValue(null);
+    mocks.isDaemonRunningCurrentlyInstalledHappyVersion.mockResolvedValue(false);
+    mocks.acquireDaemonLock.mockResolvedValue({ kind: 'acquired-lock' });
+    const order: string[] = [];
+    mocks.authAndSetupMachineIfNeeded.mockImplementation(async () => {
+      order.push('auth');
+      return {
+        credentials: { token: 'fresh-token', encryption: { key: 'enc' } },
+        machineId: 'machine-1',
+      };
+    });
+    mocks.createApiClient.mockImplementation(async () => {
+      order.push('api');
+      return { api: true };
+    });
+
+    await prepareDaemonBootstrapContext({
+      daemonLockHandle: null,
+      initialMachineMetadata: { platform: 'darwin' } as never,
+      startupSource: 'manual',
+      prepareServerTransport: async ({ persistedCredentials }) => {
+        expect(persistedCredentials).toBeNull();
+        order.push('transport');
+      },
+      verifyServerTransport: async ({ credentials }) => {
+        expect(credentials.token).toBe('fresh-token');
+        order.push('verify');
+      },
+    });
+
+    expect(order).toEqual(['transport', 'auth', 'verify', 'api']);
   });
 
   it('does not ask the control client to stop the startup process after it owns the daemon lock', async () => {

@@ -39,8 +39,8 @@ const TARGET_MACHINE_ID = 'machine-2';
 const OPERATION_ID = 'operation-1';
 
 interface HandshakeOverrides {
-    role?: MachineCarrierRole;
     accountId?: string;
+    initiatorKind?: 'machine' | 'account_client';
     sourceMachineId?: string;
     targetMachineId?: string;
     sourceEndpointId?: string;
@@ -70,11 +70,15 @@ function createGrantPayload(overrides: Partial<DirectRouteGrantPayloadV2> = {}):
         aud: DIRECT_ROUTE_GRANT_AUDIENCE_V1,
         endpointFingerprint: TARGET_ENDPOINT_ID,
         iroh: {
-            sourceMachineId: SOURCE_MACHINE_ID,
-            targetMachineId: TARGET_MACHINE_ID,
-            sourceEndpointId: SOURCE_ENDPOINT_ID,
-            targetEndpointId: TARGET_ENDPOINT_ID,
-            role: 'initiator',
+            initiator: {
+                kind: 'machine',
+                machineId: SOURCE_MACHINE_ID,
+                endpointId: SOURCE_ENDPOINT_ID,
+            },
+            target: {
+                machineId: TARGET_MACHINE_ID,
+                endpointId: TARGET_ENDPOINT_ID,
+            },
             operationKind: 'file_transfer',
         },
         proofKind: 'ephemeral_ed25519',
@@ -99,7 +103,6 @@ function signGrant(payload: DirectRouteGrantPayloadV2): SignedDirectRouteGrantV2
 
 function createHandshake(overrides: HandshakeOverrides = {}): IrohMachineHandshakeV1 {
     const grantOverrides = overrides.grantOverrides ?? {};
-    const role = overrides.role ?? 'initiator';
     const sourceMachineId = overrides.sourceMachineId ?? SOURCE_MACHINE_ID;
     const targetMachineId = overrides.targetMachineId ?? TARGET_MACHINE_ID;
     const sourceEndpointId = overrides.sourceEndpointId ?? SOURCE_ENDPOINT_ID;
@@ -109,11 +112,10 @@ function createHandshake(overrides: HandshakeOverrides = {}): IrohMachineHandsha
         machineId: targetMachineId,
         endpointFingerprint: targetEndpointId,
         iroh: {
-            sourceMachineId,
-            targetMachineId,
-            sourceEndpointId,
-            targetEndpointId,
-            role,
+            initiator: overrides.initiatorKind === 'account_client'
+                ? { kind: 'account_client', endpointId: sourceEndpointId }
+                : { kind: 'machine', machineId: sourceMachineId, endpointId: sourceEndpointId },
+            target: { machineId: targetMachineId, endpointId: targetEndpointId },
             operationKind: flow,
         },
         ...grantOverrides,
@@ -123,12 +125,11 @@ function createHandshake(overrides: HandshakeOverrides = {}): IrohMachineHandsha
     const proof = handle.sign(grant);
     return {
         v: 1,
-        role,
         accountId: overrides.accountId ?? ACCOUNT_ID,
-        sourceMachineId,
-        targetMachineId,
-        sourceEndpointId,
-        targetEndpointId,
+        initiator: overrides.initiatorKind === 'account_client'
+            ? { kind: 'account_client', endpointId: sourceEndpointId }
+            : { kind: 'machine', machineId: sourceMachineId, endpointId: sourceEndpointId },
+        target: { machineId: targetMachineId, endpointId: targetEndpointId },
         flow,
         operationId: overrides.operationId ?? OPERATION_ID,
         grant,
@@ -225,6 +226,15 @@ describe('machine/1 carrier lifecycle', () => {
         await session.close();
     });
 
+    it('admits an authenticated Account client endpoint without requiring a source Machine', async () => {
+        const { adapter } = createRecordingAdapter();
+        const session = await adapter.open({ handshake: createHandshake({ initiatorKind: 'account_client' }) });
+
+        expect(session.remoteEndpointId).toBe(SOURCE_ENDPOINT_ID);
+        expect(session.operationKind).toBe('file_transfer');
+        await session.close();
+    });
+
     it('admits a validated initiator handshake against the mirrored transport identity', async () => {
         const { adapter } = createRecordingAdapter({
             machineId: SOURCE_MACHINE_ID,
@@ -232,7 +242,7 @@ describe('machine/1 carrier lifecycle', () => {
             role: 'initiator',
             remoteEndpointId: TARGET_ENDPOINT_ID,
         });
-        const session = await adapter.open({ handshake: createHandshake({ role: 'initiator' }) });
+        const session = await adapter.open({ handshake: createHandshake() });
 
         expect(session.remoteEndpointId).toBe(TARGET_ENDPOINT_ID);
         expect(session.stream).toBeDefined();
@@ -266,7 +276,7 @@ describe('machine/1 carrier lifecycle', () => {
     it('fails closed when the handshake is missing or malformed, before connecting', async () => {
         for (const handshake of [undefined, null, {}, { ...createHandshake(), extra: true }, { ...createHandshake(), v: 2 }, {
             ...createHandshake(),
-            sourceEndpointId: 'endpoint-1',
+            initiator: { kind: 'machine', machineId: SOURCE_MACHINE_ID, endpointId: 'endpoint-1' },
         }, { ...createHandshake(), grant: { ...createHandshake().grant, payload: { ...createHandshake().grant.payload, v: 1 } } }]) {
             const { adapter, connectInputs } = createRecordingAdapter();
             await expect(adapter.open({ handshake })).rejects.toMatchObject({
@@ -294,9 +304,13 @@ describe('machine/1 carrier lifecycle', () => {
         expect(closedStreams).toEqual(['stream']);
     });
 
-    it('fails closed on inverted or ambiguous roles', async () => {
-        const acceptor = createRecordingAdapter({ role: 'acceptor' });
-        await expect(acceptor.adapter.open({ handshake: createHandshake({ role: 'acceptor' }) }))
+    it('derives initiator/acceptor roles from the signed relationship and rejects a local mismatch', async () => {
+        const acceptor = createRecordingAdapter({
+            machineId: SOURCE_MACHINE_ID,
+            localEndpointId: SOURCE_ENDPOINT_ID,
+            role: 'acceptor',
+        });
+        await expect(acceptor.adapter.open({ handshake: createHandshake() }))
             .rejects.toMatchObject({ code: 'handshake_role_mismatch' });
         expect(acceptor.connectInputs).toEqual([]);
 
@@ -305,9 +319,14 @@ describe('machine/1 carrier lifecycle', () => {
             localEndpointId: SOURCE_ENDPOINT_ID,
             role: 'initiator',
         });
-        await expect(initiator.adapter.open({ handshake: createHandshake({ role: 'acceptor' }) }))
-            .rejects.toMatchObject({ code: 'handshake_role_mismatch' });
+        await expect(initiator.adapter.open({ handshake: createHandshake({ initiatorKind: 'account_client' }) }))
+            .rejects.toMatchObject({ code: 'handshake_local_machine_mismatch' });
         expect(initiator.connectInputs).toEqual([]);
+
+        const targetConfiguredAsInitiator = createRecordingAdapter({ role: 'initiator' });
+        await expect(targetConfiguredAsInitiator.adapter.open({ handshake: createHandshake() }))
+            .rejects.toMatchObject({ code: 'handshake_role_mismatch' });
+        expect(targetConfiguredAsInitiator.connectInputs).toEqual([]);
     });
 
     it('fails closed when the handshake does not bind the local machine, endpoint, or account', async () => {
@@ -327,9 +346,15 @@ describe('machine/1 carrier lifecycle', () => {
     it('fails closed on degenerate or inverted source/target orientation', async () => {
         const { adapter, connectInputs } = createRecordingAdapter();
         const valid = createHandshake();
-        await expect(adapter.open({ handshake: { ...valid, targetMachineId: SOURCE_MACHINE_ID } }))
+        await expect(adapter.open({ handshake: {
+            ...valid,
+            target: { ...valid.target, machineId: SOURCE_MACHINE_ID },
+        } }))
             .rejects.toMatchObject({ code: 'handshake_invalid' });
-        await expect(adapter.open({ handshake: { ...valid, targetEndpointId: SOURCE_ENDPOINT_ID } }))
+        await expect(adapter.open({ handshake: {
+            ...valid,
+            target: { ...valid.target, endpointId: SOURCE_ENDPOINT_ID },
+        } }))
             .rejects.toMatchObject({ code: 'handshake_invalid' });
         expect(connectInputs).toEqual([]);
     });

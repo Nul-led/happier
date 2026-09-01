@@ -1,8 +1,6 @@
 import {
   isTerminalProvisioningV3Payload,
-  openBoxBundle,
   openTerminalProvisioningV3Response,
-  parseTerminalProvisioningV2Plaintext,
 } from '@happier-dev/protocol';
 
 export type TerminalPairingAuthentication = Readonly<{
@@ -17,9 +15,9 @@ export const TERMINAL_PAIRING_REQUIRE_ENV = 'HAPPIER_TERMINAL_PAIRING_REQUIRE';
 
 export type OpenTerminalProvisioningResponseResult =
   | Readonly<{
-      type: 'legacy' | 'dataKey';
+      type: 'dataKey';
       key: Uint8Array;
-      authenticated: boolean;
+      authenticated: true;
     }>
   | Readonly<{
       type: 'tokenOnly';
@@ -86,20 +84,8 @@ export function openTerminalProvisioningResponse(params: Readonly<{
       : null;
   }
 
-  const opened = openBoxBundle({
-    bundle: params.payload,
-    recipientSecretKeyOrSeed: params.terminalSecretKey,
-  });
-  if (!opened) return null;
-  // Fail closed: the terminal holds an authenticated pairing context, so any
-  // unbound v1/v2 material cannot be trusted (a relay could have downgraded
-  // the exchange); it must never yield credentials.
-  if (params.pairing) return null;
-  if (opened.length === 32) {
-    return { type: 'legacy', key: opened, authenticated: false };
-  }
-  const parsed = parseTerminalProvisioningV2Plaintext(opened);
-  return parsed?.type === 'dataKey'
-    ? { type: 'dataKey', key: parsed.key, authenticated: false }
-    : null;
+  // Current requesters always carry authenticated v3 pairing context. No
+  // released or predecessor pending state can resume here without it, so an
+  // unbound v1/v2 response is an unsafe downgrade rather than compatibility.
+  return null;
 }

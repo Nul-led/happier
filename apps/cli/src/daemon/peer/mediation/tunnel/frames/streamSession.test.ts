@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 type FramesModule = typeof import('./index');
 
 type CreateStreamSessionForTest = (
-    input: Parameters<FramesModule['createPeerTcpTunnelStreamSession']>[0] & Readonly<{
+    input: Parameters<FramesModule['createLegacyJsonPeerTcpTunnelStreamSession']>[0] & Readonly<{
         ackAfterBytes?: number;
         ackAfterMs?: number;
         maxIdleMs?: number;
@@ -14,7 +14,7 @@ type CreateStreamSessionForTest = (
         maxTotalBytes?: number;
         nowMs?: () => number;
     }>,
-) => ReturnType<FramesModule['createPeerTcpTunnelStreamSession']>;
+) => ReturnType<FramesModule['createLegacyJsonPeerTcpTunnelStreamSession']>;
 
 async function loadFramesModule(): Promise<FramesModule | null> {
     const modulePath = './index.js';
@@ -24,7 +24,7 @@ async function loadFramesModule(): Promise<FramesModule | null> {
 describe('peer TCP tunnel stream session', () => {
     it('bridges client data frames to the bound TCP connection and emits receive credit acks', async () => {
         const mod = await loadFramesModule();
-        const createSession = mod?.createPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
+        const createSession = mod?.createLegacyJsonPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
         const writes: string[] = [];
         const sent: unknown[] = [];
         const session = createSession?.({
@@ -65,7 +65,7 @@ describe('peer TCP tunnel stream session', () => {
 
     it('rejects client-sent data frames that claim the daemon-to-client direction', async () => {
         const mod = await loadFramesModule();
-        const createSession = mod?.createPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
+        const createSession = mod?.createLegacyJsonPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
         const writes: string[] = [];
         const sent: unknown[] = [];
         const session = createSession?.({
@@ -103,7 +103,7 @@ describe('peer TCP tunnel stream session', () => {
 
     it('waits for the configured ack cadence before replenishing receive credit', async () => {
         const mod = await loadFramesModule();
-        const createSession = mod?.createPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
+        const createSession = mod?.createLegacyJsonPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
         const sent: unknown[] = [];
         const session = createSession?.({
             tunnelId: 'tun_1',
@@ -154,7 +154,7 @@ describe('peer TCP tunnel stream session', () => {
         vi.useFakeTimers();
         try {
             const mod = await loadFramesModule();
-            const createSession = mod?.createPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
+            const createSession = mod?.createLegacyJsonPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
             const sent: unknown[] = [];
             const writes: string[] = [];
             const session = createSession?.({
@@ -204,7 +204,7 @@ describe('peer TCP tunnel stream session', () => {
         const mod = await loadFramesModule();
         let dataHandler: ((bytes: Uint8Array) => Promise<void> | void) | undefined;
         const sent: unknown[] = [];
-        mod?.createPeerTcpTunnelStreamSession({
+        mod?.createLegacyJsonPeerTcpTunnelStreamSession({
             tunnelId: 'tun_1',
             initialWindowBytes: 8,
             maxFrameBytes: 1024,
@@ -234,7 +234,7 @@ describe('peer TCP tunnel stream session', () => {
 
     it('pauses daemon TCP reads instead of aborting when peer receive credit is exhausted', async () => {
         const mod = await loadFramesModule();
-        const createSession = mod?.createPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
+        const createSession = mod?.createLegacyJsonPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
         let dataHandler: ((bytes: Uint8Array) => Promise<void> | void) | undefined;
         const sent: unknown[] = [];
         const pauseRead = vi.fn();
@@ -295,7 +295,7 @@ describe('peer TCP tunnel stream session', () => {
 
     it('rejects ack frames that advance beyond sent daemon data', async () => {
         const mod = await loadFramesModule();
-        const createSession = mod?.createPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
+        const createSession = mod?.createLegacyJsonPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
         const sent: unknown[] = [];
         const session = createSession?.({
             tunnelId: 'tun_1',
@@ -327,7 +327,7 @@ describe('peer TCP tunnel stream session', () => {
 
     it('aborts when tunnel byte caps from the grant scope are exceeded before writing bytes', async () => {
         const mod = await loadFramesModule();
-        const createSession = mod?.createPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
+        const createSession = mod?.createLegacyJsonPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
         const sent: unknown[] = [];
         const writes: string[] = [];
         const session = createSession?.({
@@ -363,7 +363,7 @@ describe('peer TCP tunnel stream session', () => {
 
     it('aborts when tunnel duration or idle caps from the grant scope are exceeded', async () => {
         const mod = await loadFramesModule();
-        const createSession = mod?.createPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
+        const createSession = mod?.createLegacyJsonPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
         let now = 1_000;
         const sent: unknown[] = [];
         const durationSession = createSession?.({
@@ -423,7 +423,7 @@ describe('peer TCP tunnel stream session', () => {
         vi.useFakeTimers();
         try {
             const mod = await loadFramesModule();
-            const createSession = mod?.createPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
+            const createSession = mod?.createLegacyJsonPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
             const close = vi.fn(async () => undefined);
             const sent: unknown[] = [];
 
@@ -456,7 +456,7 @@ describe('peer TCP tunnel stream session', () => {
         vi.useFakeTimers();
         try {
             const mod = await loadFramesModule();
-            const createSession = mod?.createPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
+            const createSession = mod?.createLegacyJsonPeerTcpTunnelStreamSession as unknown as CreateStreamSessionForTest | undefined;
             const close = vi.fn(async () => undefined);
             const sent: unknown[] = [];
 
@@ -488,7 +488,7 @@ describe('peer TCP tunnel stream session', () => {
     it('aborts when a client sends data after a same-direction half-close', async () => {
         const mod = await loadFramesModule();
         const sent: unknown[] = [];
-        const session = mod?.createPeerTcpTunnelStreamSession({
+        const session = mod?.createLegacyJsonPeerTcpTunnelStreamSession({
             tunnelId: 'tun_1',
             initialWindowBytes: 8,
             maxFrameBytes: 1024,
@@ -532,7 +532,7 @@ describe('peer TCP tunnel stream session', () => {
         let dataHandler: ((bytes: Uint8Array) => Promise<void> | void) | undefined;
         const pauseRead = vi.fn();
         const sent: unknown[] = [];
-        const session = mod?.createPeerTcpTunnelStreamSession({
+        const session = mod?.createLegacyJsonPeerTcpTunnelStreamSession({
             tunnelId: 'tun_1',
             initialWindowBytes: 8,
             maxFrameBytes: 1024,

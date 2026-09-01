@@ -1875,7 +1875,11 @@ describe('bootstrapMachineSyncRuntime', () => {
             };
         });
         const ingressClose = vi.fn(async () => { lifecycleOrder.push('ingress:stop'); });
-        const acquireWorkspaceSyncMachineIngress = vi.fn(async () => ({ port: 48191, close: ingressClose }));
+        const acquireWorkspaceSyncMachineIngress = vi.fn(async () => ({
+            port: 48191,
+            localCapability: 'a'.repeat(64),
+            close: ingressClose,
+        }));
         const machineIrohRuntime = {
             available: true as const,
             endpoint: { endpointId: 'a'.repeat(64), directAddresses: ['127.0.0.1:7777'] },
@@ -1883,6 +1887,7 @@ describe('bootstrapMachineSyncRuntime', () => {
             stopActiveTunnels: vi.fn(async () => { lifecycleOrder.push('tunnels:stop'); }),
             stopAttemptAcceptor: vi.fn(async () => { lifecycleOrder.push('acceptor:stop'); }),
             openTransport: vi.fn(),
+            openTunnel: vi.fn(),
             shutdown: vi.fn(async () => {}),
         };
         const connectOptionsRef: { current: { onConnect?: () => Promise<void> | void } | null } = { current: null };
@@ -1991,20 +1996,34 @@ describe('bootstrapMachineSyncRuntime', () => {
         expect(lifecycleOrder).toEqual(['loopback:start', 'acceptor:start']);
         const admission = (loopbackStartOptions as StartPeerMediationLoopbackServerOptions | null)?.irohMachineAdmission;
         if (!admission) throw new Error('expected Iroh machine admission');
-        await expect(admission.resolveApplicationPort({
+        await expect(admission.resolveApplicationTarget({
             handshake: {
                 flow: 'workspace_sync',
                 operationId: 'operation-1',
-                sourceMachineId: 'machine-source',
-                targetMachineId: 'machine-1',
+                initiator: {
+                    kind: 'machine',
+                    machineId: 'machine-source',
+                    endpointId: 'b'.repeat(64),
+                },
+                target: { machineId: 'machine-1', endpointId: 'a'.repeat(64) },
             },
             authenticatedRemoteEndpointId: 'b'.repeat(64),
-        } as never)).resolves.toBe(48191);
+        } as never)).resolves.toEqual({ port: 48191, localCapability: 'a'.repeat(64) });
         expect(acquireWorkspaceSyncMachineIngress).toHaveBeenCalledWith({
             operationId: 'operation-1',
             sourceMachineId: 'machine-source',
             targetMachineId: 'machine-1',
         });
+        await expect(admission.resolveApplicationTarget({
+            handshake: {
+                flow: 'workspace_sync',
+                operationId: 'operation-account-client',
+                initiator: { kind: 'account_client', endpointId: 'c'.repeat(64) },
+                target: { machineId: 'machine-1', endpointId: 'a'.repeat(64) },
+            },
+            authenticatedRemoteEndpointId: 'c'.repeat(64),
+        } as never)).resolves.toBeNull();
+        expect(acquireWorkspaceSyncMachineIngress).toHaveBeenCalledTimes(1);
         expect(daemonState).toMatchObject({
             status: 'running',
             peerMediation: {
@@ -2032,6 +2051,147 @@ describe('bootstrapMachineSyncRuntime', () => {
             'ingress:stop',
             'loopback:stop',
         ]);
+        expect(stopPeerMediationLoopbackServer).toHaveBeenCalledOnce();
+    });
+
+    it('keeps peer mediation available when the optional Iroh acceptor fails to start', async () => {
+        const loopbackApp = fastify();
+        const stopPeerMediationLoopbackServer = vi.fn(async () => {});
+        const endpoint: PeerLoopbackEndpointCandidateV1 = {
+            v: 1,
+            routeKind: 'loopback_direct',
+            url: 'http://127.0.0.1:46012/peer-mediation/v1/probe',
+            endpointFingerprint: 'endpoint_standard_1',
+            expiresAt: 602_000,
+        };
+        const startPeerMediationLoopbackServer = vi.fn(async () => ({
+            app: loopbackApp,
+            url: endpoint.url,
+            endpoint,
+            stop: stopPeerMediationLoopbackServer,
+        }));
+        const machineIrohRuntime = {
+            available: true as const,
+            endpoint: { endpointId: 'a'.repeat(64), directAddresses: ['127.0.0.1:7777'] },
+            startAttemptAcceptor: vi.fn(async () => {
+                throw new Error('native Iroh unavailable');
+            }),
+            stopActiveTunnels: vi.fn(async () => {}),
+            stopAttemptAcceptor: vi.fn(async () => {}),
+            openTransport: vi.fn(),
+            openTunnel: vi.fn(),
+            shutdown: vi.fn(async () => {}),
+        };
+        const connectOptionsRef: { current: { onConnect?: () => Promise<void> | void } | null } = { current: null };
+        let daemonState: DaemonState | null = {
+            status: 'running',
+            peerMediation: {
+                iroh: {
+                    endpoint: {
+                        endpointId: 'b'.repeat(64),
+                        directAddresses: ['127.0.0.1:8888'],
+                    },
+                },
+            },
+        };
+        const updateDaemonState = vi.fn(async (handler: (state: DaemonState | null) => DaemonState) => {
+            daemonState = handler(daemonState);
+        });
+        const fakeConnectedApiMachine = {
+            setRPCHandlers: vi.fn(emptyMachineRpcLifecycleRegistration),
+            onUpdate: vi.fn(() => () => {}),
+            onConnectionStateChange: vi.fn(() => () => {}),
+            connect: vi.fn((options: { onConnect?: () => Promise<void> | void }) => {
+                connectOptionsRef.current = options;
+            }),
+            updateDaemonState,
+            updateMachineMetadata: vi.fn(async () => {}),
+            emitExternalSessionTranscriptUpdate: vi.fn(),
+            onMachineTransferEnvelope: vi.fn(() => () => {}),
+            sendMachineTransferEnvelope: vi.fn(),
+            onTransferRelayV2Envelope: vi.fn(() => () => {}),
+            sendTransferRelayV2Envelope: vi.fn(),
+            getPeerMediationMachineRpcHandlerManager: vi.fn(() => ({
+                invokeLocal: async () => ({ ok: true }),
+            })),
+        };
+        const connectedApiMachine = fakeConnectedApiMachine as unknown as ConnectedApiMachineForBootstrap;
+        const machine: Machine = {
+            id: 'machine-1',
+            encryptionKey: new Uint8Array(32).fill(7),
+            encryptionVariant: 'legacy',
+            metadata: null,
+            metadataVersion: 0,
+            daemonState,
+            daemonStateVersion: 1,
+        };
+
+        const result = await bootstrapMachineSyncRuntime({
+            cliVersion: '0.0.0-test',
+            machineId: 'machine-1',
+            machine,
+            preferredHost: 'host.local',
+            happyHomeDir: '/tmp/happy-home',
+            happyLibDir: '/tmp/happy-lib',
+            filesystemAccessPolicy: { kind: 'osUser' },
+            takeoverRequested: false,
+            isShuttingDown: () => false,
+            createConnectedApiMachine: vi.fn(() => connectedApiMachine),
+            attachTransferRuntimeStatePublisher: vi.fn(async () => {}),
+            startAutomationWorkerForMachine: vi.fn((): AutomationWorkerHandle => ({
+                stop: vi.fn(),
+                refreshAssignments: vi.fn(async () => {}),
+                pause: vi.fn(),
+                resume: vi.fn(),
+                handleServerUpdate: vi.fn(),
+            })),
+            startMemoryWorkerForMachine: vi.fn(async (): Promise<MemoryWorkerHandle | null> => null),
+            spawnSession: vi.fn(async (): Promise<SpawnSessionResult> => ({ type: 'success', sessionId: 'sess-1' })),
+            stopSession: vi.fn(async () => true),
+            isSessionAlreadyRunning: vi.fn(async () => false),
+            loadLocalSessionMetadataForHandoff: vi.fn(async () => null),
+            savePreparedTargetLocalMetadata: vi.fn(async () => {}),
+            beforeShutdown: vi.fn(async () => {}),
+            requestShutdown: vi.fn(),
+            directPeerServerLifecycle: null,
+            machineIrohRuntime,
+            directTransferPromptAssetAdapterRegistry: createPromptAssetAdapterRegistry(),
+            directTransferPromptRegistryRegistry: createPromptRegistryAdapterRegistry(),
+            connectedServiceRefreshLoopHandle: null,
+            connectedServiceQuotasLoopHandle: null,
+            daemonServerWorkScheduler: {} as never,
+            startVoiceInferenceWorkerForMachine: vi.fn(async (): Promise<VoiceInferenceWorkerHandle | null> => null),
+            peerMediationMachineRpc: {
+                accountId: 'account_1',
+                serverFeatures: createPeerMediationServerFeatures({
+                    rpcDirectPeerEnabled: true,
+                    tunnelDirectPeerEnabled: true,
+                    liveStreamDirectPeerEnabled: true,
+                }),
+                nowMs: () => 2_000,
+                endpointFingerprint: () => 'endpoint_standard_1',
+                startPeerMediationLoopbackServer,
+            },
+        });
+        const connectOptions = connectOptionsRef.current;
+        if (!connectOptions?.onConnect) throw new Error('expected machine connect options');
+        await connectOptions.onConnect();
+
+        expect(machineIrohRuntime.startAttemptAcceptor).toHaveBeenCalledWith({ admissionPort: 46012 });
+        expect(stopPeerMediationLoopbackServer).not.toHaveBeenCalled();
+        expect(daemonState).toMatchObject({
+            status: 'running',
+            peerMediation: {
+                loopback: {
+                    endpoint: {
+                        endpointFingerprint: 'endpoint_standard_1',
+                    },
+                },
+            },
+        });
+        expect(daemonState?.peerMediation?.iroh).toBeUndefined();
+
+        await result.stopPeerMediationLoopbackServer();
         expect(stopPeerMediationLoopbackServer).toHaveBeenCalledOnce();
     });
 });

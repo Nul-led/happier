@@ -4246,7 +4246,7 @@ describe('daemon contribution registry projection rpc handler', () => {
         }));
     });
 
-    it('cold-initializes the authoritative runtime before projecting Composer surface declarations', async () => {
+    it('does not activate a runtime registry while projecting cold Composer declarations', async () => {
         const pluginId = 'acme.composer';
         const rendererId = 'summary-renderer';
         const regionId = 'summary';
@@ -4314,24 +4314,9 @@ describe('daemon contribution registry projection rpc handler', () => {
 
             const raw = await handler({ machineId: 'machine-composer' });
 
-            expect(resolveRuntimeRegistry).toHaveBeenCalledExactlyOnceWith();
-            expect(resolvePluginProjectionExecutionOriginContext).toHaveBeenCalledExactlyOnceWith();
-            expect(getPluginUiResourceCapability).toHaveBeenCalledExactlyOnceWith(pluginId);
-            expect(raw.composerSurfaceCatalog).toMatchObject([{
-                contribution: { pluginId, localId: regionId },
-                immutableGenerationId: 'composer-generation',
-                projectionGeneration: 23,
-                role: 'region',
-                rendererChain: [{ pluginId, localId: rendererId }],
-                selectedRenderer: {
-                    identity: { pluginId, localId: rendererId },
-                    renderer: {
-                        kind: 'declarative',
-                        contributionId: rendererId,
-                    },
-                    availability: { state: 'available', reason: 'available', diagnostics: [] },
-                },
-            }]);
+            expect(resolveRuntimeRegistry).not.toHaveBeenCalled();
+            expect(getPluginUiResourceCapability).not.toHaveBeenCalled();
+            expect(raw.composerSurfaceCatalog).toBeUndefined();
         } finally {
             await controller.shutdown({ timeoutMs: 0 });
             if (previousHappyHomeDir === undefined) delete process.env.HAPPIER_HOME_DIR;

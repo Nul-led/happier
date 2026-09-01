@@ -15,6 +15,7 @@ export {
     resolveWorkspaceTransferEntriesWithScmWorkspace,
     resolveWorkspaceTransferMetadataWithScmWorkspace,
     resolveWorkspaceTransferWithScmWorkspace,
+    resolveWorkspaceTransferRootWithScmWorkspace,
 } from './workspace/workspaceTransferResolution';
 export {
     inspectWorkspaceLocationWithScmWorkspace,

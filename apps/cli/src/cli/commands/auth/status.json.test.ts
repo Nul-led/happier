@@ -74,9 +74,10 @@ describe('happier auth status --json', () => {
         try {
           envScope.patch({ HAPPIER_HOME_DIR: home });
           reloadConfiguration();
-          vi.stubGlobal('fetch', vi.fn(async () => {
-            throw new Error('network unavailable');
-          }));
+          vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ id: 'account-1' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })));
 
           const machineKey = new Uint8Array(32).fill(8);
           await writeCredentialsDataKey({
@@ -87,6 +88,10 @@ describe('happier auth status --json', () => {
           await updateSettings((settings) => ({
             ...settings,
             machineIdByServerId: { ...(settings.machineIdByServerId ?? {}), [configuration.activeServerId ?? 'cloud']: 'mid_123' },
+            machineIdConfirmedByServerByServerId: {
+              ...(settings.machineIdConfirmedByServerByServerId ?? {}),
+              [configuration.activeServerId ?? 'cloud']: true,
+            },
           }));
 
           await handleAuthCommand(['status', '--json']);
@@ -126,9 +131,10 @@ describe('happier auth status --json', () => {
         try {
           envScope.patch({ HAPPIER_HOME_DIR: home });
           reloadConfiguration();
-          vi.stubGlobal('fetch', vi.fn(async () => {
-            throw new Error('network unavailable');
-          }));
+          vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ id: 'plain-account' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })));
 
           await writeCredentialsTokenOnly({ token: 'token_plain_account' });
 
@@ -151,6 +157,49 @@ describe('happier auth status --json', () => {
           expect(parsed.data?.token).toBeUndefined();
           expect(raw).not.toContain('token_plain_account');
           expect(process.exitCode).toBe(0);
+        } finally {
+          output.restore();
+        }
+      });
+    } finally {
+      envScope.restore();
+      envScope = createEnvKeyScope(envKeys);
+      reloadConfiguration();
+      process.exitCode = prevExitCode;
+    }
+  });
+
+  it('reports validation as unavailable without deleting or declaring stored credentials authenticated', async () => {
+    const prevExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await withTempDir('happier-auth-status-json-unknown-', async (home) => {
+        const output = captureConsoleText();
+
+        try {
+          envScope.patch({ HAPPIER_HOME_DIR: home });
+          reloadConfiguration();
+          vi.stubGlobal('fetch', vi.fn(async () => {
+            throw new Error('network unavailable');
+          }));
+
+          await writeCredentialsTokenOnly({ token: 'token_kept_offline' });
+
+          await handleAuthCommand(['status', '--json']);
+
+          const raw = output.text().trim();
+          const parsed = JSON.parse(raw) as {
+            ok: boolean;
+            kind: string;
+            error?: { code?: string };
+            data?: { authenticated?: boolean; token?: string };
+          };
+          expect(parsed.ok).toBe(false);
+          expect(parsed.kind).toBe('auth_status');
+          expect(parsed.error?.code).toBe('auth_status_unavailable');
+          expect(parsed.data?.authenticated).not.toBe(true);
+          expect(raw).not.toContain('token_kept_offline');
+          expect(process.exitCode).toBe(1);
         } finally {
           output.restore();
         }

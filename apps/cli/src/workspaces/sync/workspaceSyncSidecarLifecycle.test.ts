@@ -4,6 +4,7 @@ import {
   WorkspaceSyncSidecarLifecycle,
   type SpawnWorkspaceSyncSidecar,
   type WorkspaceSyncSidecarLifecycleDependencies,
+  type WorkspaceSyncSidecarProcess,
 } from './workspaceSyncSidecarLifecycle';
 
 describe('WorkspaceSyncSidecarLifecycle', () => {
@@ -73,6 +74,150 @@ describe('WorkspaceSyncSidecarLifecycle', () => {
       shutdownGraceMs: 0,
     });
     await expect(lifecycle.start()).rejects.toMatchObject({ code: 'engine_unavailable' });
+  });
+
+  it('fails startup when the spawned sidecar exits before authenticating', async () => {
+    const stop = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({
+        managerPath: '/verified/manager', agentPath: '/verified/agent',
+        dataDir: '/private/data', brokerDir: '/private/broker',
+        manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' },
+      })),
+      createBroker: vi.fn(async () => ({
+        bootstrapDescriptor: new Uint8Array([1]),
+        waitForReady: async () => await new Promise<void>(() => {}),
+        command: async () => [],
+        close,
+      })),
+      openExternalStream: vi.fn(),
+      spawn: vi.fn(async () => ({
+        pid: 42,
+        waitForTermination: async () => ({ type: 'exited' as const, code: 23 }),
+        stop,
+      })),
+      ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady: async () => undefined,
+      shutdownGraceMs: 0,
+    });
+
+    const outcome = await Promise.race([
+      lifecycle.start().then(() => 'ready', (error: unknown) => error),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 100)),
+    ]);
+    expect(outcome).toMatchObject({ code: 'engine_unavailable' });
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    await lifecycle.stop();
+  });
+
+  it('fails and retires a sidecar that stalls before authenticated readiness', async () => {
+    let terminate!: (event: { type: 'exited'; code: number }) => void;
+    const termination = new Promise<{ type: 'exited'; code: number }>((resolve) => { terminate = resolve; });
+    const stop = vi.fn(async () => terminate({ type: 'exited', code: 0 }));
+    const close = vi.fn(async () => undefined);
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({
+        managerPath: '/verified/manager', agentPath: '/verified/agent',
+        dataDir: '/private/data', brokerDir: '/private/broker',
+        manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' },
+      })),
+      createBroker: vi.fn(async () => ({
+        bootstrapDescriptor: new Uint8Array([1]),
+        waitForReady: async () => await new Promise<void>(() => {}),
+        command: async () => [],
+        close,
+      })),
+      openExternalStream: vi.fn(),
+      spawn: vi.fn(async () => ({
+        pid: 42,
+        waitForTermination: async () => await termination,
+        stop,
+      })),
+      ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady: async () => undefined,
+      startupDeadlineMs: 25,
+      shutdownGraceMs: 0,
+    });
+
+    await expect(lifecycle.start()).rejects.toMatchObject({ code: 'engine_unavailable' });
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    await lifecycle.stop();
+  });
+
+  it('bounds a sidecar launcher that never resolves with the same startup deadline', async () => {
+    const close = vi.fn(async () => undefined);
+    const spawn = vi.fn<SpawnWorkspaceSyncSidecar>(async () => await new Promise<WorkspaceSyncSidecarProcess>(() => {}));
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({
+        managerPath: '/verified/manager', agentPath: '/verified/agent',
+        dataDir: '/private/data', brokerDir: '/private/broker',
+        manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' },
+      })),
+      createBroker: vi.fn(async () => ({
+        bootstrapDescriptor: new Uint8Array([1]),
+        waitForReady: async () => undefined,
+        command: async () => [],
+        close,
+      })),
+      openExternalStream: vi.fn(),
+      spawn,
+      ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady: async () => undefined,
+      startupDeadlineMs: 25,
+      shutdownGraceMs: 0,
+    });
+
+    const outcome = await Promise.race([
+      lifecycle.start().then(() => 'ready', (error: unknown) => error),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 100)),
+    ]);
+    expect(outcome).toMatchObject({ code: 'engine_unavailable' });
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+    await lifecycle.stop();
+  });
+
+  it('stops a sidecar process that arrives after its startup deadline', async () => {
+    let resolveSpawn!: (process: WorkspaceSyncSidecarProcess) => void;
+    const deferredSpawn = new Promise<WorkspaceSyncSidecarProcess>((resolve) => { resolveSpawn = resolve; });
+    const stop = vi.fn(async () => undefined);
+    const close = vi.fn(async () => undefined);
+    const lifecycle = new WorkspaceSyncSidecarLifecycle({
+      resolveRuntime: vi.fn(async () => ({
+        managerPath: '/verified/manager', agentPath: '/verified/agent',
+        dataDir: '/private/data', brokerDir: '/private/broker',
+        manifest: { engineVersion: '1', protocolEpoch: 'external-stream-v1' },
+      })),
+      createBroker: vi.fn(async () => ({
+        bootstrapDescriptor: new Uint8Array([1]),
+        waitForReady: async () => undefined,
+        command: async () => [],
+        close,
+      })),
+      openExternalStream: vi.fn(),
+      spawn: vi.fn(async () => await deferredSpawn),
+      ensurePrivateDirectory: vi.fn(async () => undefined),
+      randomBytes: () => new Uint8Array(32), randomId: () => 'opaque-id',
+      onRestartReady: async () => undefined,
+      startupDeadlineMs: 25,
+      shutdownGraceMs: 0,
+    });
+
+    await expect(lifecycle.start()).rejects.toMatchObject({ code: 'engine_unavailable' });
+    resolveSpawn({
+      pid: 42,
+      waitForTermination: async () => await new Promise<never>(() => {}),
+      stop,
+    });
+    await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
+    expect(close).toHaveBeenCalledTimes(1);
+    await lifecycle.stop();
   });
 
   it('supervises a crash restart without ever spawning a concurrent second sidecar', async () => {

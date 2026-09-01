@@ -17,7 +17,9 @@ const mergedTestEnv: NodeJS.ProcessEnv = {
     ...testEnv,
 };
 const workspaceSyncRealIntegrationTest = 'src/daemon/startup/createDaemonWorkspaceSyncRuntime.real.integration.test.ts';
+const workspaceSyncBrokerGoRealIntegrationTest = 'src/workspaces/sync/transport/workspaceSyncBroker.go.real.integration.test.ts';
 const workspaceMachineCarrierRealIntegrationTest = 'src/daemon/peer/iroh/workspaceMachineCarrierLane08.real.integration.test.ts';
+const workspaceMachineCarrierMutagenRealIntegrationTest = 'src/daemon/peer/iroh/workspaceMachineCarrierMutagen.real.integration.test.ts';
 
 if (mergedTestEnv.HAPPIER_SERVER_URL && !mergedTestEnv.HAPPIER_WEBAPP_URL) {
     mergedTestEnv.HAPPIER_WEBAPP_URL = mergedTestEnv.HAPPIER_SERVER_URL;
@@ -61,10 +63,14 @@ export default defineConfig({
             ...resolveVitestFeatureTestExcludeGlobs(process.env),
             ...(process.env.HAPPIER_RUN_MUTAGEN_REAL_INTEGRATION === '1'
                 ? []
-                : [workspaceSyncRealIntegrationTest]),
+                : [workspaceSyncRealIntegrationTest, workspaceSyncBrokerGoRealIntegrationTest]),
             ...(process.env.HAPPIER_RUN_HOME_IROH_REAL_INTEGRATION === '1'
                 ? []
                 : [workspaceMachineCarrierRealIntegrationTest]),
+            ...(process.env.HAPPIER_RUN_MUTAGEN_REAL_INTEGRATION === '1'
+                && process.env.HAPPIER_RUN_HOME_IROH_REAL_INTEGRATION === '1'
+                ? []
+                : [workspaceMachineCarrierMutagenRealIntegrationTest]),
         ],
         globalSetup: ['./src/test-setup.integration.ts'],
         coverage: {

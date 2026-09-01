@@ -56,6 +56,7 @@ async function buildWorkspaceExportManifestEntryWithSourcePath(params: Readonly<
 }>): Promise<Readonly<{
     manifestEntry: Extract<WorkspaceManifestEntry, { kind: 'file' | 'symlink' }>;
     sourcePath?: string;
+    disposeSource?: () => Promise<void> | void;
 }> | null> {
     let stats;
     try {
@@ -110,6 +111,7 @@ async function buildWorkspaceExportManifestEntryWithSourcePath(params: Readonly<
             fileDigest: digest,
         }) as Extract<WorkspaceManifestEntry, { kind: 'file' }>,
         sourcePath: params.entry.sourcePath,
+        ...(params.entry.disposeSource ? { disposeSource: params.entry.disposeSource } : {}),
     };
 }
 
@@ -119,6 +121,8 @@ export async function buildWorkspaceExportArtifactsWithSourcePathBlobProviderFro
 }>): Promise<WorkspaceExportArtifactsWithSourcePathBlobProviderResult> {
     const manifestEntries = new Map<string, WorkspaceManifestEntry>();
     const blobSourcePathsByDigest = new Map<string, string>();
+    const blobSourceDisposersByDigest = new Map<string, () => Promise<void> | void>();
+    const disposedDigests = new Set<string>();
 
     for (const entry of params.entries) {
         const manifestEntryWithSourcePath = await buildWorkspaceExportManifestEntryWithSourcePath({
@@ -145,6 +149,12 @@ export async function buildWorkspaceExportArtifactsWithSourcePathBlobProviderFro
                 manifestEntryWithSourcePath.manifestEntry.digest,
                 manifestEntryWithSourcePath.sourcePath,
             );
+            if (manifestEntryWithSourcePath.disposeSource) {
+                blobSourceDisposersByDigest.set(
+                    manifestEntryWithSourcePath.manifestEntry.digest,
+                    manifestEntryWithSourcePath.disposeSource,
+                );
+            }
         }
     }
 
@@ -159,6 +169,20 @@ export async function buildWorkspaceExportArtifactsWithSourcePathBlobProviderFro
         manifest,
         blobProvider: {
             getBlobFilePath: (digest) => blobSourcePathsByDigest.get(digest),
+            disposeBlobFilePath: async (digest) => {
+                if (disposedDigests.has(digest)) return;
+                const dispose = blobSourceDisposersByDigest.get(digest);
+                if (!dispose) return;
+                disposedDigests.add(digest);
+                await dispose();
+            },
+            dispose: async () => {
+                await Promise.all([...blobSourceDisposersByDigest.keys()].map(async (digest) => {
+                    if (disposedDigests.has(digest)) return;
+                    disposedDigests.add(digest);
+                    await blobSourceDisposersByDigest.get(digest)?.();
+                }));
+            },
         },
     };
 }

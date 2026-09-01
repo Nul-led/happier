@@ -141,7 +141,7 @@ describe('startPeerMediationLoopback', () => {
       localEndpointId: 'a'.repeat(64),
       role: 'acceptor' as const,
       allowedFlows: ['file_transfer', 'attachment_transfer', 'workspace_sync'] as const,
-      resolveApplicationPort: vi.fn(async () => 47321),
+      resolveApplicationTarget: vi.fn(async () => ({ port: 47321 })),
     };
     const startPeerMediationLoopbackServer = vi.fn(async (options) => ({
       app: {} as never,
@@ -184,7 +184,7 @@ describe('startPeerMediationLoopback', () => {
         localEndpointId: 'a'.repeat(64),
         role: 'acceptor',
         allowedFlows: ['workspace_sync'],
-        resolveApplicationPort: async () => 47321,
+        resolveApplicationTarget: async () => ({ port: 47321 }),
       },
       startPeerMediationLoopbackServer,
     })).resolves.toBeNull();

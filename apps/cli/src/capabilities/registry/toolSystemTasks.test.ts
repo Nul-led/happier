@@ -55,7 +55,6 @@ describe('systemTasksCapability', () => {
         'relay.runtime.personal_home.verify_backup.v1',
         'relay.runtime.personal_home.restore.v1',
         'relay.runtime.personal_home.erase.v1',
-        'relay.runtime.personal_home.relocate.v1',
       ],
       methods: ['start', 'poll', 'respond'],
       taskGroups: [

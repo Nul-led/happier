@@ -4,11 +4,31 @@ import { join } from 'node:path';
 import {
     expandHomeRelativePath,
     normalizeSessionHandoffTargetPathForLocalMachine,
+    resolveSessionHandoffWorkspaceSessionPath,
     resolveSessionHandoffLocalHomeDir,
     toHomeRelativePath,
 } from './sessionHandoffPathNormalization';
 
 describe('sessionHandoffPathNormalization', () => {
+    it('appends only a safe contained session-relative cwd to the target repository root', () => {
+        expect(resolveSessionHandoffWorkspaceSessionPath({
+            targetRoot: '/target/repository',
+            sessionRelativeCwd: 'packages/empty',
+        })).toBe('/target/repository/packages/empty');
+        expect(resolveSessionHandoffWorkspaceSessionPath({
+            targetRoot: 'C:\\target\\repository',
+            sessionRelativeCwd: 'packages/app',
+        })).toBe('C:\\target\\repository\\packages\\app');
+        expect(() => resolveSessionHandoffWorkspaceSessionPath({
+            targetRoot: '/target/repository',
+            sessionRelativeCwd: '../escape',
+        })).toThrow();
+        expect(() => resolveSessionHandoffWorkspaceSessionPath({
+            targetRoot: '/target/repository',
+            sessionRelativeCwd: '/escape',
+        })).toThrow();
+    });
+
     it('toHomeRelativePath converts a home-contained absolute path to ~/', () => {
         expect(toHomeRelativePath({
             absolutePath: '/Users/alice/projects/demo',

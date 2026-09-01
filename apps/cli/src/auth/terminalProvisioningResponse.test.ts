@@ -95,7 +95,7 @@ describe('openTerminalProvisioningResponse', () => {
     })).toBeNull();
   });
 
-  it('continues to accept historical unbound v2 and v1 responses only when the request carried no pairing context', () => {
+  it('rejects unbound v2 and v1 responses even when pairing context is missing', () => {
     const v2Plaintext = new Uint8Array(33);
     v2Plaintext[0] = 0;
     v2Plaintext.set(new Uint8Array(32).fill(7), 1);
@@ -117,7 +117,7 @@ describe('openTerminalProvisioningResponse', () => {
       pairing: null,
       requirement: null,
       nowMs: 2_000,
-    })).toEqual({ type: 'dataKey', key: new Uint8Array(32).fill(7), authenticated: false });
+    })).toBeNull();
     expect(openTerminalProvisioningResponse({
       payload: v1Payload,
       terminalSecretKey,
@@ -125,7 +125,7 @@ describe('openTerminalProvisioningResponse', () => {
       pairing: null,
       requirement: null,
       nowMs: 2_000,
-    })).toEqual({ type: 'legacy', key: new Uint8Array(32).fill(5), authenticated: false });
+    })).toBeNull();
   });
 
   it('fails closed for unbound v2 and v1 responses when an authenticated pairing context exists', () => {

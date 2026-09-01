@@ -32,6 +32,12 @@ export async function reconcilePostMaterializationWithScmWorkspace(input: Readon
             })
             : null;
         const fallback = fallbackResolved ?? sourceFallbackResolved;
+        const metadataProvider = typeof input.workspaceIntegrationMetadata?.provider === 'string'
+            ? input.workspaceIntegrationMetadata.provider
+            : null;
+        const metadataBackend = metadataProvider
+            ? registry.listBackends().find((backend) => backend.id === metadataProvider) ?? null
+            : null;
         const selected = resolved ?? (fallback ? {
             selection: fallback.selection,
             context: {
@@ -43,12 +49,18 @@ export async function reconcilePostMaterializationWithScmWorkspace(input: Readon
                 },
             },
         } : null);
-        if (!selected) {
+        const backend = selected?.selection.backend ?? metadataBackend;
+        if (!backend) {
             return;
         }
+        const context = selected?.context ?? {
+            cwd: input.targetPath,
+            projectKey: `workspace-materialization:${input.targetPath}`,
+            detection: { isRepo: false, rootPath: input.targetPath, mode: null },
+        };
 
-        await selected.selection.backend.workspaceIntegration?.reconcilePostMaterialization?.({
-            context: selected.context,
+        await backend.workspaceIntegration?.reconcilePostMaterialization?.({
+            context,
             checkoutMaterialization: createScmWorkspaceIntegrationCheckoutMaterializationRequest({
                 targetPath: input.targetPath,
                 sourcePath: input.sourcePath,

@@ -101,6 +101,9 @@ describe('multi-daemon helpers', () => {
             [accountId]: 'machine_abc',
           },
         },
+        machineIdConfirmedByServerByServerId: {
+          company: true,
+        },
       });
 
       const sleepy = spawnSleepyDetachedProcess();
@@ -125,9 +128,11 @@ describe('multi-daemon helpers', () => {
         expect(company).toBeTruthy();
         expect(company!.daemon.running).toBe(true);
         expect(company?.auth).toEqual({
-          authenticated: true,
-          needsAuth: false,
+          authenticated: false,
+          credentialState: 'unknown',
+          needsAuth: true,
           machineRegistered: true,
+          machineRegistrationState: 'server-confirmed',
           machineId: 'machine_abc',
           accountId,
         });
@@ -174,9 +179,11 @@ describe('multi-daemon helpers', () => {
         expect(company).toBeTruthy();
         expect(company!.daemon.running).toBe(true);
         expect(company?.auth).toEqual({
-          authenticated: true,
+          authenticated: false,
+          credentialState: 'unknown',
           needsAuth: true,
           machineRegistered: false,
+          machineRegistrationState: 'no-local-id',
           machineId: null,
           accountId: null,
         });

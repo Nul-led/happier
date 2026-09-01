@@ -7,7 +7,10 @@ policy.policyDigest = computeWorkspaceSyncPolicyDigest(policy);
 const relationship = (id: string, alpha = 'a', beta = 'b') => ({ v: 1 as const, relationshipId: id, controllerMachineId: 'machine-a', alphaWorkspaceRefId: alpha, betaWorkspaceRefId: beta, mode: 'keep_synced' as const, contentPolicy: policy, enabled: true, createdAtMs: 1, updatedAtMs: 1 });
 
 describe('workspace sync relationship settings', () => {
-  it('accepts bounded valid relationships', () => expect(validateWorkspaceSyncRelationships([relationship('r1')])).toEqual([relationship('r1')]));
+  it('accepts valid relationships without an arbitrary count limit', () => {
+    const relationships = Array.from({ length: 33 }, (_, index) => relationship(`r${index + 1}`, `a${index + 1}`, `b${index + 1}`));
+    expect(validateWorkspaceSyncRelationships(relationships)).toEqual(relationships);
+  });
   it('rejects duplicate ids and endpoints', () => {
     expect(() => validateWorkspaceSyncRelationships([relationship('r1'), relationship('r1')])).toThrow(/relationshipId/);
     expect(() => validateWorkspaceSyncRelationships([relationship('r1', 'a', 'a')])).toThrow(/distinct/);

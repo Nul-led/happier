@@ -1,10 +1,16 @@
 import { readSettings, updateSettings } from '@/persistence';
 import { deriveServerIdFromName, deriveServerIdFromUrl, sanitizeServerIdForFilesystem } from '@/server/serverId';
 import { isLocalishServerUrl } from '@/server/serverUrlClassification';
-import { createServerUrlComparableKey } from '@happier-dev/protocol';
+import {
+  createServerUrlComparableKey,
+  HomeConnectionDescriptorV1Schema,
+  mergePublicIrohEndpointObservation,
+  type HomeConnectionDescriptorV1,
+} from '@happier-dev/protocol';
 import { existsSync } from 'node:fs';
 import { chmod, copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { resolveHappyHomeDirFromEnvironment } from '@happier-dev/cli-common/agents';
 
 function normalizeServerUrlForEnvId(url: string): string {
@@ -66,6 +72,7 @@ export type ServerProfile = Readonly<{
   createdAt: number;
   updatedAt: number;
   lastUsedAt: number;
+  homeConnectionDescriptor?: HomeConnectionDescriptorV1;
 }>;
 
 export type RemoveServerProfileResult = Readonly<{
@@ -93,6 +100,7 @@ function coerceProfile(value: any): ServerProfile | null {
   const createdAt = Number.isFinite(value.createdAt) ? Number(value.createdAt) : 0;
   const updatedAt = Number.isFinite(value.updatedAt) ? Number(value.updatedAt) : 0;
   const lastUsedAt = Number.isFinite(value.lastUsedAt) ? Number(value.lastUsedAt) : 0;
+  const homeConnectionDescriptorResult = HomeConnectionDescriptorV1Schema.safeParse(value.homeConnectionDescriptor);
 
   const serverUrl =
     legacyPublicServerUrlRaw && legacyPublicServerUrlRaw !== serverUrlRaw
@@ -118,6 +126,9 @@ function coerceProfile(value: any): ServerProfile | null {
     createdAt,
     updatedAt,
     lastUsedAt,
+    ...(homeConnectionDescriptorResult.success
+      ? { homeConnectionDescriptor: homeConnectionDescriptorResult.data }
+      : {}),
   };
 }
 
@@ -312,6 +323,9 @@ export async function addServerProfile(opts: Readonly<{
       createdAt,
       updatedAt: now,
       lastUsedAt: shouldUse ? now : (existing && Number.isFinite(existing.lastUsedAt) ? Number(existing.lastUsedAt) : 0),
+      ...(existing?.homeConnectionDescriptor
+        ? { homeConnectionDescriptor: existing.homeConnectionDescriptor }
+        : {}),
     };
     return {
       ...current,
@@ -337,6 +351,85 @@ export async function addServerProfile(opts: Readonly<{
     throw new Error(`Failed to create server profile: ${id}`);
   }
   return created;
+}
+
+/**
+ * Persists the exact authenticated Home-published descriptor on the active CLI
+ * profile. The profile remains the daemon's only descriptor owner; callers do
+ * not reconstruct endpoint facts or replace canonical profile metadata.
+ */
+export async function reconcileActiveServerProfileHomeConnectionDescriptor(
+  descriptorInput: HomeConnectionDescriptorV1,
+  options: Readonly<{ observation?: 'exact' | 'public' }> = {},
+): Promise<Readonly<{
+  profile: ServerProfile;
+  outcome: 'updated' | 'unchanged' | 'stale';
+}>> {
+  let descriptor = HomeConnectionDescriptorV1Schema.parse(descriptorInput);
+  let outcome: 'updated' | 'unchanged' | 'stale' = 'unchanged';
+  await updateSettings((current) => {
+    const activeId = sanitizeServerIdForFilesystem(current.activeServerId ?? 'cloud', 'cloud');
+    const servers = current.servers ?? {};
+    const rawExisting = servers[activeId];
+    const existing = coerceProfile(rawExisting);
+    if (!existing) throw new Error(`Active server profile not found: ${activeId}`);
+    if (!urlsReferToSameServer(existing.serverUrl, descriptor.canonicalServerUrl)) {
+      throw new Error('Home descriptor canonical URL does not match the active server profile');
+    }
+    const previous = existing.homeConnectionDescriptor;
+    if (options.observation === 'public' && previous) {
+      const currentIrohEntry = previous.endpoints.find((endpoint) => endpoint.kind === 'iroh') ?? null;
+      const observedIrohEntry = descriptor.endpoints.find((endpoint) => endpoint.kind === 'iroh') ?? null;
+      const currentIroh = currentIrohEntry ? {
+        endpointId: currentIrohEntry.endpointId,
+        ...(currentIrohEntry.relayUrls ? { relayUrls: currentIrohEntry.relayUrls } : {}),
+        ...(currentIrohEntry.directAddresses ? { directAddresses: currentIrohEntry.directAddresses } : {}),
+      } : null;
+      const observedIroh = observedIrohEntry ? {
+        endpointId: observedIrohEntry.endpointId,
+        ...(observedIrohEntry.relayUrls ? { relayUrls: observedIrohEntry.relayUrls } : {}),
+        ...(observedIrohEntry.directAddresses ? { directAddresses: observedIrohEntry.directAddresses } : {}),
+      } : null;
+      const mergedIroh = mergePublicIrohEndpointObservation(currentIroh, observedIroh);
+      descriptor = {
+        ...descriptor,
+        endpoints: [
+          ...descriptor.endpoints.filter((endpoint) => endpoint.kind !== 'iroh'),
+          ...(mergedIroh ? [{ kind: 'iroh' as const, ...mergedIroh }] : []),
+        ],
+      };
+    }
+    if (previous && previous.revision > descriptor.revision) {
+      outcome = 'stale';
+      return current;
+    }
+    if (previous && previous.revision === descriptor.revision) {
+      if (!isDeepStrictEqual(previous, descriptor)) {
+        throw new Error('Home descriptor conflicts with the active profile revision');
+      }
+      return current;
+    }
+    outcome = 'updated';
+    return {
+      ...current,
+      servers: {
+        ...servers,
+        [activeId]: {
+          ...rawExisting,
+          homeConnectionDescriptor: descriptor,
+          updatedAt: Date.now(),
+        },
+      },
+    };
+  });
+  return { profile: await getActiveServerProfile(), outcome };
+}
+
+export async function setActiveServerProfileHomeConnectionDescriptor(
+  descriptorInput: HomeConnectionDescriptorV1,
+  options: Readonly<{ observation?: 'exact' | 'public' }> = {},
+): Promise<ServerProfile> {
+  return (await reconcileActiveServerProfileHomeConnectionDescriptor(descriptorInput, options)).profile;
 }
 
 export async function upsertServerProfileByUrl(opts: Readonly<{

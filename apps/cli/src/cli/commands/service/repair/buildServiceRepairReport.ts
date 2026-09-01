@@ -346,7 +346,12 @@ function buildStackFindings(params: Readonly<{
 }
 
 function resolveAuthState(profile: AuthProfileEntry): NonNullable<AuthProfileEntry['authState']> {
-  if (profile.authState === 'authenticated' || profile.authState === 'missing' || profile.authState === 'expired') {
+  if (
+    profile.authState === 'authenticated'
+    || profile.authState === 'missing'
+    || profile.authState === 'expired'
+    || profile.authState === 'unknown'
+  ) {
     return profile.authState;
   }
   if (profile.authenticated === true) return 'authenticated';
@@ -377,12 +382,12 @@ function buildAuthFindings(authProfiles?: readonly AuthProfileEntry[]): ServiceR
     : authProfiles;
   return targetProfiles.flatMap((profile): ServiceRepairFinding[] => {
     const authState = resolveAuthState(profile);
-    if (authState === 'missing' || profile.authenticated === false) {
+    if (authState === 'expired') {
       return [{
-        id: `auth:missing:${profile.id}`,
-        kind: 'auth_missing_for_profile' as const,
+        id: `auth:expired:${profile.id}`,
+        kind: 'auth_expired_for_active_profile' as const,
         severity: 'warning' as const,
-        title: `Sign in to Relay profile ${profile.id}.`,
+        title: `Refresh sign-in for Relay profile ${profile.id}.`,
         diagnostic: null,
         warningCode: null,
         entry: null,
@@ -394,12 +399,12 @@ function buildAuthFindings(authProfiles?: readonly AuthProfileEntry[]): ServiceR
         }],
       }];
     }
-    if (authState === 'expired') {
+    if (authState === 'missing') {
       return [{
-        id: `auth:expired:${profile.id}`,
-        kind: 'auth_expired_for_active_profile' as const,
+        id: `auth:missing:${profile.id}`,
+        kind: 'auth_missing_for_profile' as const,
         severity: 'warning' as const,
-        title: `Refresh sign-in for Relay profile ${profile.id}.`,
+        title: `Sign in to Relay profile ${profile.id}.`,
         diagnostic: null,
         warningCode: null,
         entry: null,

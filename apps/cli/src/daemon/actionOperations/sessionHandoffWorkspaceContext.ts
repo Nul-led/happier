@@ -14,6 +14,7 @@ export type SessionHandoffWorkspaceContext = Readonly<{
   sourceRootPath: string;
   targetRootPath: string;
   controllerMachineId: string;
+  contentSelection: 'git_worktree' | 'all_files';
 }>;
 
 export type ResolveSessionHandoffWorkspaceContextInput = Readonly<{
@@ -80,7 +81,12 @@ export function resolveSessionHandoffWorkspaceContext(
       sourceRootPath: sourceByScope.rootPath,
       targetRootPath: targetByScope.rootPath,
       controllerMachineId: sourceMachineId,
+      contentSelection: action.contentPolicy.selection,
     };
+  }
+
+  if (action.kind === 'create_relationship') {
+    throw contextError('workspace_ref_not_ready', 'Workspace relationship creation materializes endpoints in the daemon owner');
   }
 
   const relationshipMatches = input.relationships.filter((candidate) => (
@@ -117,5 +123,6 @@ export function resolveSessionHandoffWorkspaceContext(
     sourceRootPath: sourceByScope.rootPath,
     targetRootPath,
     controllerMachineId: relationship.controllerMachineId,
+    contentSelection: relationship.contentPolicy.selection,
   };
 }

@@ -72,6 +72,99 @@ describe('server profiles', () => {
     });
   });
 
+  it('persists the protocol-owned Home descriptor on the active profile without recomposing it', async () => {
+    await withTempDir('happier-cli-home-descriptor-', async (homeDir) => {
+      envScope.patch({
+        HAPPIER_HOME_DIR: homeDir,
+        HAPPIER_SERVER_URL: undefined,
+        HAPPIER_WEBAPP_URL: undefined,
+      });
+
+      vi.resetModules();
+      const {
+        addServerProfile,
+        getActiveServerProfile,
+        reconcileActiveServerProfileHomeConnectionDescriptor,
+        setActiveServerProfileHomeConnectionDescriptor,
+        setServerProfileEndpointsById,
+      } = await import('./serverProfiles');
+      const profile = await addServerProfile({
+        name: 'personal-home',
+        serverUrl: 'http://127.0.0.1:43123',
+        webappUrl: 'https://app.example.test',
+        use: true,
+      });
+      const descriptor = {
+        v: 1 as const,
+        homeServerIdentityId: 'srv_home_cli',
+        canonicalServerUrl: 'http://127.0.0.1:43123',
+        revision: 7,
+        endpoints: [{
+          kind: 'iroh' as const,
+          endpointId: 'c'.repeat(64),
+          relayUrls: ['https://relay.example.test/'],
+          directAddresses: ['127.0.0.1:7777'],
+        }],
+      };
+
+      await setActiveServerProfileHomeConnectionDescriptor(descriptor);
+      const firstPersisted = await getActiveServerProfile();
+      expect(firstPersisted.homeConnectionDescriptor).toEqual(descriptor);
+
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(firstPersisted.updatedAt + 1_000);
+      await setActiveServerProfileHomeConnectionDescriptor(descriptor);
+      nowSpy.mockRestore();
+      expect((await getActiveServerProfile()).updatedAt).toBe(firstPersisted.updatedAt);
+
+      await expect(reconcileActiveServerProfileHomeConnectionDescriptor({
+        ...descriptor,
+        revision: 8,
+        endpoints: [{
+          kind: 'iroh',
+          endpointId: 'c'.repeat(64),
+          relayUrls: ['https://relay-new.example.test/'],
+        }],
+      }, { observation: 'public' })).resolves.toMatchObject({ outcome: 'updated' });
+      expect((await getActiveServerProfile()).homeConnectionDescriptor).toEqual({
+        ...descriptor,
+        revision: 8,
+        endpoints: [{
+          kind: 'iroh',
+          endpointId: 'c'.repeat(64),
+          relayUrls: ['https://relay-new.example.test/'],
+          directAddresses: ['127.0.0.1:7777'],
+        }],
+      });
+
+      const currentDescriptor = (await getActiveServerProfile()).homeConnectionDescriptor;
+      expect(currentDescriptor).toBeDefined();
+      await expect(reconcileActiveServerProfileHomeConnectionDescriptor(
+        currentDescriptor!,
+        { observation: 'public' },
+      )).resolves.toMatchObject({ outcome: 'unchanged' });
+      await expect(reconcileActiveServerProfileHomeConnectionDescriptor({
+        ...descriptor,
+        revision: 7,
+      }, { observation: 'public' })).resolves.toMatchObject({ outcome: 'stale' });
+
+      await setServerProfileEndpointsById({
+        id: profile.id,
+        serverUrl: descriptor.canonicalServerUrl,
+        webappUrl: 'https://app.example.test',
+      });
+      expect((await getActiveServerProfile()).homeConnectionDescriptor).toEqual({
+        ...descriptor,
+        revision: 8,
+        endpoints: [{
+          kind: 'iroh',
+          endpointId: 'c'.repeat(64),
+          relayUrls: ['https://relay-new.example.test/'],
+          directAddresses: ['127.0.0.1:7777'],
+        }],
+      });
+    });
+  });
+
   it('refuses to remove the active server profile unless forced', async () => {
     await withTempDir('happier-cli-servers-remove-', async (homeDir) => {
       envScope.patch({

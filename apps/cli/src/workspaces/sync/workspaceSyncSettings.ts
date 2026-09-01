@@ -6,7 +6,6 @@ import {
 } from '@happier-dev/protocol';
 
 export const WORKSPACE_SYNC_SETTINGS_KEY = 'workspaceSyncRelationshipsV1' as const;
-export const MAX_WORKSPACE_SYNC_RELATIONSHIPS = 32;
 
 function validationError(name: string, issues: readonly Readonly<{ path: readonly PropertyKey[]; message: string }>[]): Error {
   const details = issues.map((issue) => `${issue.path.join('.') || name}: ${issue.message}`).join('; ');
@@ -29,7 +28,6 @@ export function validateWorkspaceSyncRelationship(value: unknown): WorkspaceSync
 
 export function validateWorkspaceSyncRelationships(value: unknown): readonly WorkspaceSyncRelationshipV1[] {
   if (!Array.isArray(value)) throw new Error('Invalid workspace sync settings: relationships must be an array');
-  if (value.length > MAX_WORKSPACE_SYNC_RELATIONSHIPS) throw new Error('Invalid workspace sync settings: relationship count exceeds limit');
   const relationships = value.map(validateWorkspaceSyncRelationship);
   const ids = new Set<string>();
   for (const relationship of relationships) {

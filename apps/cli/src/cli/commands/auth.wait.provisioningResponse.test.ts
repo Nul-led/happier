@@ -53,9 +53,9 @@ describe('auth wait provisioning response', () => {
 
   async function prepareState(params: Readonly<{
     keypair: ReturnType<typeof tweetnacl.box.keyPair>;
-    pairingSecret: Uint8Array;
-    createdAtMs: number;
-    expiresAtMs: number;
+    pairingSecret?: Uint8Array;
+    createdAtMs?: number;
+    expiresAtMs?: number;
     claimSecret?: string;
   }>): Promise<string> {
     envScope.patch({
@@ -84,10 +84,16 @@ describe('auth wait provisioning response', () => {
           secretKey: Buffer.from(params.keypair.secretKey).toString('base64'),
           claimSecret: params.claimSecret ?? Buffer.from(new Uint8Array(32).fill(1)).toString('base64url'),
           serverIdentityId,
-          pairingSecret: Buffer.from(params.pairingSecret).toString('base64url'),
-          pairingCreatedAtMs: params.createdAtMs,
-          pairingExpiresAtMs: params.expiresAtMs,
-          supportsTokenOnly: true,
+          ...(params.pairingSecret
+            && params.createdAtMs !== undefined
+            && params.expiresAtMs !== undefined
+            ? {
+                pairingSecret: Buffer.from(params.pairingSecret).toString('base64url'),
+                pairingCreatedAtMs: params.createdAtMs,
+                pairingExpiresAtMs: params.expiresAtMs,
+                supportsTokenOnly: true,
+              }
+            : {}),
           createdAt: new Date().toISOString(),
         },
         null,
@@ -97,6 +103,32 @@ describe('auth wait provisioning response', () => {
     );
     return statePath;
   }
+
+  it('requires a fresh v3 request when pending state has no pairing context', async () => {
+    const keypair = tweetnacl.box.keyPair();
+    await prepareState({ keypair });
+    vi.resetModules();
+    const { handleAuthWait } = await import('./auth/wait');
+    const getSpy = vi.spyOn(axios, 'get').mockRejectedValue(
+      new Error('network boundary must not be reached for unbound pending state'),
+    );
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((): never => {
+      throw new Error('process.exit:1');
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await expect(
+        handleAuthWait(['--public-key', Buffer.from(keypair.publicKey).toString('base64'), '--json']),
+      ).rejects.toThrow('process.exit:1');
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Authenticated terminal pairing v3 is required'));
+      expect(getSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+      exitSpy.mockRestore();
+      getSpy.mockRestore();
+    }
+  }, 20_000);
 
   function authServerApp(params: Readonly<{
     responseB64: string;

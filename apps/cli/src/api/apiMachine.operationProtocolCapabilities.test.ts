@@ -53,4 +53,39 @@ describe('ApiMachineClient operation protocol capability publication', () => {
 
     await expect(client.publishOperationProtocolCapabilities({})).rejects.toThrow();
   });
+
+  it('synchronizes the active daemon Iroh endpoint through the same replace-all projection', async () => {
+    const client = new ApiMachineClient('token', createMachine());
+    const emitWithAck = vi.fn(async (event: string, payload: { daemonState?: string }) => {
+      if (event === 'machine-update-state') {
+        return { result: 'success', version: 1, daemonState: payload.daemonState };
+      }
+      return { v: 1, result: 'success', revision: 4 };
+    });
+    const socket = {
+      connected: true,
+      timeout: vi.fn(() => ({ emitWithAck })),
+    };
+    (client as unknown as { socket: unknown }).socket = socket;
+
+    await expect(client.updateDaemonState(() => ({
+      status: 'running',
+      peerMediation: {
+        iroh: { endpoint: { endpointId: 'a'.repeat(64) } },
+      },
+    }))).resolves.toBe('published');
+
+    expect(emitWithAck).toHaveBeenCalledWith(
+      'machine-update-operation-protocol-capabilities',
+      {
+        machineId: 'machine-1',
+        capabilities: {
+          irohMachineEndpoint: {
+            protocolVersions: [1],
+            endpointId: 'a'.repeat(64),
+          },
+        },
+      },
+    );
+  });
 });

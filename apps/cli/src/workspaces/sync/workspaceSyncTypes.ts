@@ -8,6 +8,7 @@ import {
   type WorkspaceSyncCopyOnceV1,
   type WorkspaceSyncRelationshipV1,
   type WorkspaceSyncStatusV1,
+  type HandoffTargetReplacementApprovalV1,
 } from '@happier-dev/protocol';
 import type { WorkspaceRootOwnershipHandle } from './workspaceSyncRootOwnership';
 
@@ -29,12 +30,18 @@ export function computeWorkspaceSyncPolicyDigest(policy: Omit<WorkspaceContentPo
   return computeCanonicalWorkspaceSyncPolicyDigest(policy);
 }
 
+export type WorkspaceSyncRelationshipPreparation = Readonly<{
+  transient: true;
+  targetBootstrap: 'use_existing' | 'materialize_from_source_workspace';
+  targetReplacementApproval?: HandoffTargetReplacementApprovalV1;
+}>;
+
 /** Daemon-local lifecycle interface; wire shapes remain protocol-owned. */
 export interface ManagedWorkspaceSync {
   get(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1 | null>;
   list(signal?: AbortSignal): Promise<readonly WorkspaceSyncStatusV1[]>;
   subscribe(relationshipId: string, signal: AbortSignal): AsyncIterable<WorkspaceSyncStatusV1>;
-  ensure(definition: WorkspaceSyncRelationshipV1, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1>;
+  ensure(definition: WorkspaceSyncRelationshipV1, signal?: AbortSignal, preparation?: WorkspaceSyncRelationshipPreparation): Promise<WorkspaceSyncStatusV1>;
   copyOnce(input: WorkspaceSyncCopyOnceV1, signal?: AbortSignal, ownershipHandles?: readonly WorkspaceRootOwnershipHandle[]): Promise<WorkspaceSyncStatusV1>;
   flush(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1>;
   pause(relationshipId: string, signal?: AbortSignal): Promise<WorkspaceSyncStatusV1>;

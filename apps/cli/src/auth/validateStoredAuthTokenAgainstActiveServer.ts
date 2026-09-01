@@ -7,6 +7,13 @@ export type ActiveServerStoredTokenValidationResult = Readonly<
   | { state: 'unknown'; httpStatus: number | null; reasonCode: string }
 >;
 
+type StoredAuthTokenValidationParams = Readonly<{
+  token: string;
+  baseUrl: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}>;
+
 function readResponseCode(body: unknown, fallback: string): string {
   return typeof (body as { code?: unknown })?.code === 'string' && (body as { code: string }).code.trim()
     ? (body as { code: string }).code.trim()
@@ -25,25 +32,28 @@ async function readJsonBody(response: Response): Promise<unknown> {
   }
 }
 
-export async function validateStoredAuthTokenAgainstActiveServer(
-  token: string,
+export async function validateStoredAuthTokenAgainstServer(
+  params: StoredAuthTokenValidationParams,
 ): Promise<ActiveServerStoredTokenValidationResult> {
-  const trimmedToken = String(token ?? '').trim();
+  const trimmedToken = String(params.token ?? '').trim();
   if (!trimmedToken) {
     return { state: 'invalid', httpStatus: 401, reasonCode: 'missing-token' };
   }
-
-  const baseUrl = resolveServerHttpBaseUrl();
+  const baseUrl = String(params.baseUrl ?? '').trim().replace(/\/+$/, '');
+  if (!baseUrl) {
+    return { state: 'unknown', httpStatus: null, reasonCode: 'missing-server-url' };
+  }
+  const fetchImpl = params.fetchImpl ?? fetch;
 
   try {
-    const response = await fetch(`${baseUrl}/v1/account/profile`, {
+    const response = await fetchImpl(`${baseUrl}/v1/account/profile`, {
       method: 'GET',
       headers: {
         ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(),
         Authorization: `Bearer ${trimmedToken}`,
         'Content-Type': 'application/json',
       },
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(params.timeoutMs ?? 5_000),
     });
 
     const body = await readJsonBody(response);
@@ -75,5 +85,14 @@ export async function validateStoredAuthTokenAgainstActiveServer(
       reasonCode: error instanceof Error ? error.name : 'request-error',
     };
   }
+}
+
+export async function validateStoredAuthTokenAgainstActiveServer(
+  token: string,
+): Promise<ActiveServerStoredTokenValidationResult> {
+  return validateStoredAuthTokenAgainstServer({
+    token,
+    baseUrl: resolveServerHttpBaseUrl(),
+  });
 }
 import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/clientCompatibility/cliClientCompatibility';

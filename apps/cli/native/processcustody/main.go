@@ -19,6 +19,9 @@
 //     SO_PEERCRED on Linux, LOCAL_PEERPID plus LOCAL_PEERCRED on Darwin,
 //     GetNamedPipeClientProcessId on
 //     Windows — and emits the one proven peer identity or fails closed.
+//   - windows: `secure-pipe-relay` creates a current-user-only named pipe,
+//     witnesses each exact client PID, and relays opaque bytes to one fixed
+//     TypeScript-owned loopback broker. It never parses broker messages.
 //   - any other platform: every subcommand fails closed; Linux SVC09 custody
 //     stays on its process-group owner and never consumes this helper.
 //
@@ -60,7 +63,8 @@ usage:
   happier-process-custody terminate --job=<name> [--timeout-ms=<ms>]
   happier-process-custody query --job=<name>
   happier-process-custody pid-startidentity <pid>
-  happier-process-custody peer-identity [--pipe-handle=<handle>]`))
+  happier-process-custody peer-identity [--pipe-handle=<handle>]
+  happier-process-custody secure-pipe-relay --pipe-name=<name> --target-port=<port>`))
 }
 
 func main() {
@@ -82,6 +86,8 @@ func main() {
 		err = pidStartIdentityCommand(rest)
 	case "peer-identity":
 		err = peerIdentityCommand(rest)
+	case "secure-pipe-relay":
+		err = securePipeRelayCommand(rest)
 	default:
 		usage()
 		os.Exit(exitUsage)

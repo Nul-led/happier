@@ -4,6 +4,11 @@ import { join } from 'node:path';
 
 import { createServerUrlComparableKey } from '@happier-dev/protocol';
 import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
+import {
+  resolveActiveServerAuthReadiness,
+  type CredentialReadinessState,
+  type MachineRegistrationState,
+} from '@/auth/resolveActiveServerAuthReadiness';
 import { configuration } from '@/configuration';
 import { resolveDaemonStartupSourceServiceManagedState } from '@/daemon/ownership/daemonOwnershipMetadata';
 import { DaemonLocallyPersistedStateSchema, readSettings } from '@/persistence';
@@ -177,8 +182,10 @@ export type DaemonStatusEntry = Readonly<{
   daemonStatePath: string;
   auth?: Readonly<{
     authenticated: boolean;
+    credentialState: CredentialReadinessState;
     needsAuth: boolean;
     machineRegistered: boolean;
+    machineRegistrationState: MachineRegistrationState;
     machineId: string | null;
     accountId: string | null;
   }>;
@@ -275,6 +282,9 @@ export async function listDaemonStatusesForAllKnownServers(): Promise<DaemonStat
   const serverIds = Object.keys(servers);
   const results: DaemonStatusEntry[] = [];
   const activeComparableKey = resolveComparableKey(configuration.publicServerUrl || configuration.serverUrl);
+  const activeReadiness = activeServerId
+    ? await resolveActiveServerAuthReadiness().catch(() => null)
+    : null;
 
   for (const serverId of serverIds) {
     const profile = servers[serverId];
@@ -292,8 +302,18 @@ export async function listDaemonStatusesForAllKnownServers(): Promise<DaemonStat
     const token = await readAuthTokenForServerId(serverId);
     const accountId = resolveAccountIdFromToken(token);
     const machineId = resolveMachineIdForServerFromSettings(settings, serverId, accountId);
-    const authenticated = token != null;
-    const machineRegistered = machineId != null;
+    const credentialState: CredentialReadinessState = token == null
+      ? 'missing'
+      : serverId === activeServerId && activeReadiness
+        ? activeReadiness.credentialState
+        : 'unknown';
+    const machineRegistrationState: MachineRegistrationState = machineId == null
+      ? 'no-local-id'
+      : settings.machineIdConfirmedByServerByServerId?.[serverId] === true
+        ? 'server-confirmed'
+        : 'local-only';
+    const authenticated = credentialState === 'valid';
+    const machineRegistered = machineRegistrationState === 'server-confirmed';
     const needsAuth = !authenticated || !machineRegistered;
     const matchesActiveRelay = activeComparableKey && comparableKey ? activeComparableKey === comparableKey : null;
     results.push({
@@ -304,8 +324,10 @@ export async function listDaemonStatusesForAllKnownServers(): Promise<DaemonStat
       daemonStatePath,
       auth: {
         authenticated,
+        credentialState,
         needsAuth,
         machineRegistered,
+        machineRegistrationState,
         machineId,
         accountId,
       },

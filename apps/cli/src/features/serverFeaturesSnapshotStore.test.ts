@@ -1,10 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FeaturesResponseSchema } from '@happier-dev/protocol';
 
 import type { CliServerFeaturesSnapshot } from './serverFeaturesClient';
-import { createServerFeaturesSnapshotStore } from './serverFeaturesSnapshotStore';
+import {
+  createServerFeaturesSnapshotStore,
+  createServerUrlServerFeaturesSnapshotStore,
+} from './serverFeaturesSnapshotStore';
 
-function ready(features: Record<string, unknown>): CliServerFeaturesSnapshot {
+function ready(features: Record<string, unknown>): Extract<CliServerFeaturesSnapshot, { status: 'ready' }> {
   return { status: 'ready', features: FeaturesResponseSchema.parse({ features }) };
 }
 
@@ -12,6 +15,10 @@ const READY_ENABLED = ready({ localServices: { enabled: true } });
 const READY_DISABLED = ready({ localServices: { enabled: false } });
 
 describe('createServerFeaturesSnapshotStore', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('returns undefined before the first refresh (cold daemon)', () => {
     const store = createServerFeaturesSnapshotStore({
       fetchSnapshot: async () => READY_ENABLED,
@@ -20,11 +27,14 @@ describe('createServerFeaturesSnapshotStore', () => {
   });
 
   it('caches the ready snapshot after refresh and exposes it synchronously', async () => {
+    const onReady = vi.fn(async () => undefined);
     const store = createServerFeaturesSnapshotStore({
       fetchSnapshot: async () => READY_ENABLED,
+      onReady,
     });
     await store.refresh();
     expect(store.getSnapshot()).toEqual(READY_ENABLED);
+    expect(onReady).toHaveBeenCalledWith(READY_ENABLED.features);
   });
 
   it('reflects a server-disabled ready snapshot (fail-closed source of truth)', async () => {
@@ -78,5 +88,26 @@ describe('createServerFeaturesSnapshotStore', () => {
     await expect(store.refresh()).resolves.toBeUndefined();
     expect(onError).toHaveBeenCalledOnce();
     expect(store.getSnapshot()).toBeUndefined();
+  });
+
+  it('resolves the current runtime destination again after a Home tunnel replacement', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request) => new Response(JSON.stringify({ features: {}, capabilities: {} }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    let runtimeOrigin = 'http://127.0.0.1:41001';
+    const store = createServerUrlServerFeaturesSnapshotStore({
+      serverUrl: () => runtimeOrigin,
+    });
+
+    await store.refresh();
+    runtimeOrigin = 'http://127.0.0.1:41002';
+    await store.refresh();
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'http://127.0.0.1:41001/v1/features',
+      'http://127.0.0.1:41002/v1/features',
+    ]);
   });
 });

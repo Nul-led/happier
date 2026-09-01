@@ -5,12 +5,14 @@ export type WorkspaceSyncMachineTunnelOpenInput = Readonly<{
   operationId: string;
   sourceMachineId: string;
   targetMachineId: string;
-  flow: 'workspace_sync';
+  flow: 'workspace_sync' | 'file_transfer';
+  maxBytes?: number;
   signal?: AbortSignal;
 }>;
 
 export type WorkspaceSyncMachineTunnel = Readonly<{
   localPort: number;
+  localCapability: string;
   observedPath: 'direct' | 'relay' | 'unknown';
   close(): Promise<void>;
 }>;
@@ -35,6 +37,10 @@ export async function connectWorkspaceSyncMachineTunnel(
   signal?: AbortSignal,
 ): Promise<Socket> {
   if (!Number.isInteger(tunnel.localPort) || tunnel.localPort < 1 || tunnel.localPort > 65_535) {
+    await tunnel.close().catch(() => undefined);
+    throw invalidTunnelPort();
+  }
+  if (!/^[0-9a-f]{64}$/.test(tunnel.localCapability)) {
     await tunnel.close().catch(() => undefined);
     throw invalidTunnelPort();
   }
@@ -64,6 +70,7 @@ export async function connectWorkspaceSyncMachineTunnel(
   socket.once('close', () => { void closeTunnel().catch(() => undefined); });
   try {
     await once(socket, 'connect');
+    socket.write(tunnel.localCapability, 'ascii');
     if (signal?.aborted) {
       abort();
       signal.throwIfAborted();

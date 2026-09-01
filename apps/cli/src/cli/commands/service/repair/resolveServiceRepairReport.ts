@@ -7,14 +7,12 @@ import {
 import { createRelayHostEngine } from '@happier-dev/cli-common/relayHost';
 import { normalizePublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
-import { validateStoredAuthTokenAgainstActiveServer } from '@/auth/validateStoredAuthTokenAgainstActiveServer';
 import { resolveInvokerName } from '@/cli/runtime/resolveInvokerName';
 import { listDaemonStatusesForAllKnownServers, type DaemonStatusEntry } from '@/daemon/multiDaemon';
 import { readBackgroundServiceHealth } from '@/daemon/service/readBackgroundServiceHealth';
 import { readDaemonStatusSnapshot } from '@/daemon/statusSnapshot';
 import { resolveBackgroundServiceRepairPlanForCurrentRuntime } from '@/diagnostics/backgroundServiceRepair/resolveBackgroundServiceRepairPlanForCurrentRuntime';
 import type { DaemonServiceMode } from '@/daemon/service/plan';
-import { readStoredCredentials } from '@/persistence';
 
 import { buildServiceRepairReport } from './buildServiceRepairReport';
 import type {
@@ -120,12 +118,22 @@ function buildAuthProfilesFromDaemonStatuses(statuses: readonly DaemonStatusEntr
     return undefined;
   }
   return statuses.map((status) => {
-    const authenticated = status.auth?.authenticated ?? null;
+    const credentialState = status.auth?.credentialState;
+    const authenticated = credentialState
+      ? credentialState === 'valid'
+      : status.auth?.authenticated ?? null;
+    const authState = credentialState === 'valid'
+      ? 'authenticated'
+      : credentialState === 'invalid'
+        ? 'expired'
+        : credentialState === 'missing'
+          ? 'missing'
+          : 'unknown';
     return {
       id: status.serverId,
       active: status.drift?.matchesActiveRelay === true,
       authenticated,
-      authState: authenticated === true ? 'authenticated' : authenticated === false ? 'missing' : 'unknown',
+      authState,
       machineRegistered: status.auth?.machineRegistered ?? null,
     };
   });
@@ -134,40 +142,7 @@ function buildAuthProfilesFromDaemonStatuses(statuses: readonly DaemonStatusEntr
 async function resolveAuthProfilesFromDaemonStatuses(
   statuses: readonly DaemonStatusEntry[] | null,
 ): Promise<readonly AuthProfileEntry[] | undefined> {
-  const profiles = buildAuthProfilesFromDaemonStatuses(statuses);
-  const activeProfile = profiles?.find((profile) => profile.active) ?? null;
-  if (!profiles || !activeProfile) {
-    return profiles;
-  }
-
-  const credentials = await readStoredCredentials().catch(() => null);
-  const token = String(credentials?.token ?? '').trim();
-  if (!token) {
-    return profiles;
-  }
-
-  const validation = await validateStoredAuthTokenAgainstActiveServer(token).catch(() => null);
-  if (!validation || validation.state === 'unknown') {
-    return profiles;
-  }
-
-  return profiles.map((profile) => {
-    if (!profile.active) {
-      return profile;
-    }
-    if (validation.state === 'invalid') {
-      return {
-        ...profile,
-        authenticated: true,
-        authState: 'expired',
-      };
-    }
-    return {
-      ...profile,
-      authenticated: true,
-      authState: 'authenticated',
-    };
-  });
+  return buildAuthProfilesFromDaemonStatuses(statuses);
 }
 
 function buildStacksFromDaemonStatuses(params: Readonly<{

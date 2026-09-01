@@ -21,6 +21,8 @@ export type StageWorkspaceEntriesResult = Readonly<{
 
 export type WorkspaceExportBlobProvider = Readonly<{
     getBlobFilePath: (digest: string) => string | null | undefined;
+    disposeBlobFilePath?: (digest: string) => Promise<void> | void;
+    dispose?: () => Promise<void> | void;
 }>;
 
 export async function stageWorkspaceEntries(params: Readonly<{

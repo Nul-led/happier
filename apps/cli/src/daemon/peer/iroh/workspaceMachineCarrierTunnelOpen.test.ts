@@ -48,6 +48,7 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
     const close = vi.fn(async () => undefined);
     const openTunnel = vi.fn(async () => ({
       localPort: 48123,
+      localCapability: 'd'.repeat(64),
       remoteEndpointId: targetEndpointId,
       observedPath: 'direct' as const,
       close,
@@ -72,14 +73,30 @@ describe('createWorkspaceMachineCarrierTunnelOpen', () => {
       routeKind: 'iroh_peer',
       endpointFingerprint: targetEndpointId,
       scope: expect.objectContaining({ rpcScopeId: 'operation-1', maxCalls: 1 }),
-      iroh: expect.objectContaining({ sourceEndpointId: localEndpointId, targetEndpointId, operationKind: 'workspace_sync' }),
+      iroh: {
+        initiator: { kind: 'machine', machineId: 'machine-source', endpointId: localEndpointId },
+        target: { machineId: 'machine-target', endpointId: targetEndpointId },
+        operationKind: 'workspace_sync',
+      },
     }));
     expect(readTargetMachine).toHaveBeenCalledTimes(2);
     expect(openTunnel).toHaveBeenCalledWith(
-      expect.objectContaining({ handshake: expect.objectContaining({ operationId: 'operation-1', proof: expect.any(Object) }) }),
+      expect.objectContaining({
+        handshake: expect.objectContaining({
+          initiator: { kind: 'machine', machineId: 'machine-source', endpointId: localEndpointId },
+          target: { machineId: 'machine-target', endpointId: targetEndpointId },
+          operationId: 'operation-1',
+          proof: expect.any(Object),
+        }),
+      }),
       target.daemonState.peerMediation.iroh.endpoint,
     );
-    expect(tunnel).toEqual({ localPort: 48123, observedPath: 'direct', close });
+    expect(tunnel).toEqual({
+      localPort: 48123,
+      localCapability: 'd'.repeat(64),
+      observedPath: 'direct',
+      close,
+    });
   });
 
   it('fails closed without a stable exact descriptor revision and never opens a native tunnel', async () => {

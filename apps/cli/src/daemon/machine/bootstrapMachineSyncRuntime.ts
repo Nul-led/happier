@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import type { ApiMachineClient } from '@/api/apiMachine';
+import type { ReadinessProbeResult } from '@happier-dev/connection-supervisor';
 import type { DaemonState, Machine, MachineMetadata } from '@/api/types';
 import type { SessionHandoffDirectPeerTransferHandle } from '@/api/machine/sessionHandoff/handlers';
 import { createFileTransferPayloadSource } from '@/machines/transfer/transferPayloadSource';
@@ -11,7 +12,10 @@ import type { DirectTransferServerLifecycle } from '@/machines/transfer/directTr
 import { resolvePromptAssetDownloadSource } from '@/transfers/targets/resolvePromptAssetDownloadSource';
 import { resolvePromptRegistryItemDownloadSource } from '@/transfers/targets/resolvePromptRegistryItemDownloadSource';
 import { resolveWorkspaceFileDownloadSource } from '@/transfers/targets/resolveWorkspaceFileDownloadSource';
+import { resolveComposerMediaStageDownloadSource } from '@/transfers/targets/resolveComposerMediaStageDownloadSource';
+import { createActiveDaemonComposerMediaStageStore } from '@/transfers/staging/composerMediaStageStore';
 import type {
+  ComposerContentHandleV1,
   MachineLiveStreamControlLeaseV1,
   PromptAssetReadRequest,
   PromptRegistryFetchItemRequestV1,
@@ -321,29 +325,22 @@ function mergePeerMediationLoopbackEndpoint(
   };
 }
 
-function mergeMachineIrohEndpoint(
+function reconcileMachineIrohEndpoint(
   state: DaemonState,
   runtime: DaemonMachineIrohRuntime | undefined,
 ): DaemonState {
-  if (!runtime) return state;
   return {
     ...state,
     peerMediation: {
       ...state.peerMediation,
-      iroh: { endpoint: runtime.endpoint },
+      iroh: runtime ? { endpoint: runtime.endpoint } : undefined,
     },
   };
 }
 
 function removeMachineIrohEndpoint(state: DaemonState | null): DaemonState {
   if (!state) throw new Error('Cannot remove an Iroh endpoint from an unpublished daemon state');
-  return {
-    ...state,
-    peerMediation: {
-      ...state.peerMediation,
-      iroh: undefined,
-    },
-  };
+  return reconcileMachineIrohEndpoint(state, undefined);
 }
 
 async function maybeStartPeerMediationLoopback(params: Readonly<{
@@ -398,19 +395,20 @@ async function maybeStartPeerMediationLoopback(params: Readonly<{
         localEndpointId: params.machineIrohRuntime.endpoint.endpointId,
         role: 'acceptor' as const,
         allowedFlows: ['file_transfer', 'attachment_transfer', 'workspace_sync'] as const,
-        resolveApplicationPort: async ({ handshake }) => {
+        resolveApplicationTarget: async ({ handshake }) => {
           if (handshake.flow === 'file_transfer' || handshake.flow === 'attachment_transfer') {
             return params.directPeerServerLifecycle
-              ? await params.directPeerServerLifecycle.ensureListening()
+              ? { port: await params.directPeerServerLifecycle.ensureListening() }
               : null;
           }
           if (!params.acquireWorkspaceSyncMachineIngress) return null;
+          if (handshake.initiator.kind !== 'machine') return null;
           const ingress = await params.acquireWorkspaceSyncMachineIngress({
             operationId: handshake.operationId,
-            sourceMachineId: handshake.sourceMachineId,
-            targetMachineId: handshake.targetMachineId,
+            sourceMachineId: handshake.initiator.machineId,
+            targetMachineId: handshake.target.machineId,
           });
-          return ingress.port;
+          return { port: ingress.port, localCapability: ingress.localCapability };
         },
       },
     } : {}),
@@ -575,13 +573,19 @@ export type BootstrapMachineSyncRuntimeParams = Readonly<{
   beforeShutdown: () => Promise<void>;
   requestShutdown: (source: 'happier-app', errorMessage?: string) => void;
   directPeerServerLifecycle: DirectTransferServerLifecycle | null;
+  prepareWorkspaceSyncSeedExport?: NonNullable<import('@/api/machine/rpcHandlers.workspaceSync').MachineWorkspaceSyncRpcService['prepareSourceSeedExport']>;
   machineIrohRuntime?: DaemonMachineIrohRuntime;
+  prepareServerTransportForReconnect?: () => Promise<ReadinessProbeResult>;
   acquireWorkspaceSyncMachineIngress?: (input: Readonly<{
     operationId: string;
     sourceMachineId: string;
     targetMachineId: string;
     signal?: AbortSignal;
-  }>) => Promise<Readonly<{ port: number; close(): Promise<void> }>>;
+  }>) => Promise<Readonly<{
+    port: number;
+    localCapability: string;
+    close(): Promise<void>;
+  }>>;
   directTransferPromptAssetAdapterRegistry: ReturnType<typeof createPromptAssetAdapterRegistry>;
   directTransferPromptRegistryRegistry: PromptRegistryRegistry;
   connectedServiceRefreshLoopHandle: ConnectedServiceRefreshLoopHandle | null;
@@ -660,6 +664,7 @@ export async function bootstrapMachineSyncRuntime(
   let daemonConnectivityCoordinator: ReturnType<typeof createDaemonConnectivityCoordinator> | null = null;
   let machineConnectionStateCleanup: (() => void) | null = null;
   let peerMediationLoopback: StartedPeerMediationLoopback | null = null;
+  let activeMachineIrohRuntime: DaemonMachineIrohRuntime | undefined;
   let stopPeerMediationLoopbackServer: () => Promise<void> = async () => {};
   let stopMachineIrohAcceptor: () => Promise<void> = async () => {};
   const activeWorkspaceIrohIngresses = new Set<Readonly<{ close(): Promise<void> }>>();
@@ -731,6 +736,9 @@ export async function bootstrapMachineSyncRuntime(
       }
     : null;
 
+  const directTransferComposerMediaStageStore = createActiveDaemonComposerMediaStageStore({
+    machineId: params.machineId,
+  });
   const directTransferExportHandlers = directPeerServerLifecycle
     ? {
         prepareExportSession: async (
@@ -752,8 +760,36 @@ export async function bootstrapMachineSyncRuntime(
                 workingDirectory: string;
                 path: string;
                 asZip: boolean;
+              }>
+            | Readonly<{
+                t: 'workspace_sync_seed_v1';
+                operationId: string;
+                sourceWorkspaceRefId: string;
+                contentSelection: 'git_worktree' | 'all_files';
+              }>
+            | Readonly<{
+                t: 'composer_media_stage_inspect_v1';
+                handle: ComposerContentHandleV1;
+                offset: number;
+                maxBytes: number;
               }>,
         ) => {
+          if (input.t === 'workspace_sync_seed_v1') {
+            if (!params.prepareWorkspaceSyncSeedExport) throw new Error('Workspace sync source seed is unavailable');
+            const prepared = await params.prepareWorkspaceSyncSeedExport(input);
+            const published = await directPeerServerLifecycle.publishTransferWhenReady({
+              transferId: input.operationId,
+              payloadSource: prepared.payloadSource,
+              onDemandScope: prepared.onDemandScope,
+            });
+            return {
+              transferId: published.transferId,
+              endpointCandidates: published.endpointCandidates,
+              expiresAt: published.expiresAt,
+              ...(prepared.payloadSource.sizeBytes === undefined ? {} : { sizeBytes: prepared.payloadSource.sizeBytes }),
+              ...(prepared.payloadSource.manifestHash === undefined ? {} : { manifestHash: prepared.payloadSource.manifestHash }),
+            };
+          }
           const resolvedSource =
             input.t === 'prompt_asset_download_v1'
               ? await resolvePromptAssetDownloadSource({
@@ -781,10 +817,23 @@ export async function bootstrapMachineSyncRuntime(
                       accessPolicy: params.filesystemAccessPolicy,
                       sessionRpcTransferMaxBytes: null,
                     })
+                  : input.t === 'composer_media_stage_inspect_v1'
+                    ? await resolveComposerMediaStageDownloadSource({
+                        request: {
+                          ...input,
+                          recipientPublicKeyBase64: '',
+                        },
+                        deps: { store: directTransferComposerMediaStageStore },
+                        sessionRpcTransferMaxBytes: null,
+                      })
                   : { success: false as const, error: 'Unsupported direct transfer export request' };
           if (!resolvedSource.success) {
             throw new Error(resolvedSource.error);
           }
+          const sourceOffsetBytes = 'sourceOffsetBytes' in resolvedSource.source
+            && typeof resolvedSource.source.sourceOffsetBytes === 'number'
+            ? resolvedSource.source.sourceOffsetBytes
+            : undefined;
           const payloadSource = createFileTransferPayloadSource({
             filePath: resolvedSource.source.filePath,
             sizeBytes: resolvedSource.source.sizeBytes,
@@ -794,6 +843,9 @@ export async function bootstrapMachineSyncRuntime(
                   await fs.rm(resolvedSource.source.filePath, { force: true }).catch(() => undefined);
                 }
               : undefined,
+            ...(typeof sourceOffsetBytes === 'number'
+              ? { sourceOffsetBytes }
+              : {}),
           });
 
           const transferId = `${
@@ -801,6 +853,8 @@ export async function bootstrapMachineSyncRuntime(
               ? 'prompt-asset-download'
               : input.t === 'prompt_registry_download_v1'
                 ? 'prompt-registry-download'
+                : input.t === 'composer_media_stage_inspect_v1'
+                  ? 'composer-media-inspection'
                 : 'workspace-file-download'
           }:${randomUUID()}`;
           const published = await directPeerServerLifecycle.publishTransferWhenReady({
@@ -1207,10 +1261,12 @@ export async function bootstrapMachineSyncRuntime(
         const admissionPort = Number(new URL(peerMediationLoopback.endpoint.url).port);
         try {
           await params.machineIrohRuntime.startAttemptAcceptor({ admissionPort });
+          activeMachineIrohRuntime = params.machineIrohRuntime;
           let stopped = false;
           stopMachineIrohAcceptor = async () => {
             if (stopped) return;
             stopped = true;
+            activeMachineIrohRuntime = undefined;
             await params.machineIrohRuntime!.stopActiveTunnels().catch((error) => {
               logger.warn('[DAEMON RUN] Failed to close active Iroh machine tunnels', error);
             });
@@ -1230,9 +1286,6 @@ export async function bootstrapMachineSyncRuntime(
             });
           };
         } catch (error) {
-          await peerMediationLoopback.stop().catch(() => undefined);
-          peerMediationLoopback = null;
-          stopPeerMediationLoopbackServer = async () => {};
           logger.warn('[DAEMON RUN] Failed to start Iroh machine acceptor', error);
         }
       }
@@ -1550,13 +1603,13 @@ export async function bootstrapMachineSyncRuntime(
         const activePeerMediationLoopback = peerMediationLoopback;
         if (activePeerMediationLoopback) {
           const outcome = await connectedApiMachine
-            .updateDaemonState((state) => mergeMachineIrohEndpoint(
+            .updateDaemonState((state) => reconcileMachineIrohEndpoint(
               mergePeerMediationLoopbackEndpoint(
                 state,
                 activePeerMediationLoopback.endpoint,
                 activePeerMediationLoopback.activeFlows,
               ),
-              params.machineIrohRuntime,
+              activeMachineIrohRuntime,
             ))
             .catch((error) => {
               logger.warn('[DAEMON RUN] Failed to publish peer mediation loopback endpoint', error);
@@ -1589,6 +1642,9 @@ export async function bootstrapMachineSyncRuntime(
     resumeMachineConnectionPublications = refreshMachineConnectionPublications;
     connectedApiMachine.connect({
       takeover: params.takeoverRequested,
+      ...(params.prepareServerTransportForReconnect
+        ? { prepareServerTransportForReconnect: params.prepareServerTransportForReconnect }
+        : {}),
       onConnect: refreshMachineConnectionPublications,
       onOwnershipConflict: (conflict) => {
         logger.warn('[DAEMON RUN] Relay ownership conflict prevented machine connection', conflict);

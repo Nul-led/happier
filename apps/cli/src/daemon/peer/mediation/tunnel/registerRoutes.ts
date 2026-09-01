@@ -18,6 +18,7 @@ import {
 import { openPeerTcpTunnel, type OpenPeerTcpTunnelInput, type OpenPeerTcpTunnelResult } from './open';
 import {
     createPeerTcpTunnelApplicationSubstreamSession,
+    createLegacyJsonPeerTcpTunnelStreamSession,
     createPeerTcpTunnelSubstreamMuxSession,
     createPeerTcpTunnelStreamSession,
     decodePeerTcpTunnelBinaryFrameForSession,
@@ -73,7 +74,8 @@ type PeerTcpTunnelFastifyWebSocket = Readonly<{
 
 type PeerTcpTunnelLoopbackSession = Readonly<{
     flowKind: ActivePeerTcpTunnel['flowKind'];
-    session?: ReturnType<typeof createPeerTcpTunnelStreamSession>;
+    session?: ReturnType<typeof createPeerTcpTunnelStreamSession>
+        | ReturnType<typeof createLegacyJsonPeerTcpTunnelStreamSession>;
     applicationSubstreams?: ReturnType<typeof createPeerTcpTunnelApplicationSubstreamSession>;
     substreamMux?: ReturnType<typeof createPeerTcpTunnelSubstreamMuxSession>;
     encoding: ActivePeerTcpTunnel['response']['encoding'];
@@ -152,24 +154,31 @@ export function registerPeerTcpTunnelLoopbackRoutes(
                     clearTimeout(tunnel.openStreamTimeout);
                 }
                 const limits = tunnel.limits ?? DEFAULT_DIRECT_TUNNEL_LIMITS;
-                const session = tunnel.flowKind === 'tcp_tunnel' && tunnel.connection
-                    ? createPeerTcpTunnelStreamSession({
-                    tunnelId,
-                    initialWindowBytes: tunnel.response.initialWindowBytes,
-                    maxFrameBytes: tunnel.response.maxFrameBytes,
-                    maxIdleMs: limits.maxIdleMs,
-                    maxDurationMs: limits.maxDurationMs,
-                    maxTotalBytes: limits.maxTotalBytes,
-                    connection: tunnel.connection,
-                    sendFrame: (frame) => {
-                        if (tunnel.response.encoding === PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2 && frame.kind !== 'open') {
-                            socket.send(encodePeerTcpTunnelBinaryFrameForSession(frame));
-                            return;
-                        }
-                        socket.send(JSON.stringify(frame));
-                    },
-                    })
-                    : undefined;
+                const session = tunnel.flowKind !== 'tcp_tunnel' || !tunnel.connection
+                    ? undefined
+                    : tunnel.response.encoding === PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2
+                        ? createPeerTcpTunnelStreamSession({
+                            tunnelId,
+                            initialWindowBytes: tunnel.response.initialWindowBytes,
+                            maxFrameBytes: tunnel.response.maxFrameBytes,
+                            maxDecodedPayloadBytes: tunnel.response.maxFrameBytes,
+                            maxSendChunkBytes: tunnel.response.maxFrameBytes,
+                            maxIdleMs: limits.maxIdleMs,
+                            maxDurationMs: limits.maxDurationMs,
+                            maxTotalBytes: limits.maxTotalBytes,
+                            connection: tunnel.connection,
+                            sendFrame: (frame) => socket.send(encodePeerTcpTunnelBinaryFrameForSession(frame)),
+                        })
+                        : createLegacyJsonPeerTcpTunnelStreamSession({
+                            tunnelId,
+                            initialWindowBytes: tunnel.response.initialWindowBytes,
+                            maxFrameBytes: tunnel.response.maxFrameBytes,
+                            maxIdleMs: limits.maxIdleMs,
+                            maxDurationMs: limits.maxDurationMs,
+                            maxTotalBytes: limits.maxTotalBytes,
+                            connection: tunnel.connection,
+                            sendFrame: (frame) => socket.send(JSON.stringify(frame)),
+                        });
                 const substreamMux = tunnel.flowKind === 'tcp_tunnel'
                     && tunnel.response.encoding === PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2
                     ? createPeerTcpTunnelSubstreamMuxSession({

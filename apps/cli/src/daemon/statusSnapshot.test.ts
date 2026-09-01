@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { StoredCredentials } from '@/persistence';
+import type { ActiveServerAuthReadiness } from '@/auth/resolveActiveServerAuthReadiness';
 
 const {
     readSettingsMock,
@@ -7,6 +8,7 @@ const {
     readStoredCredentialsMock,
     readDaemonStateMock,
     resolveDaemonServiceInstallationSnapshotFromEnvMock,
+    resolveActiveServerAuthReadinessMock,
 } = vi.hoisted(() => ({
     readSettingsMock: vi.fn(async () => ({
         servers: {
@@ -41,6 +43,15 @@ const {
         installedPath: '/tmp/com.happier.cli.daemon.default.plist',
         label: 'com.happier.cli.daemon.default',
     })),
+    resolveActiveServerAuthReadinessMock: vi.fn(async (): Promise<ActiveServerAuthReadiness> => ({
+        credentials: null,
+        credentialState: 'missing' as const,
+        authenticated: false,
+        unusableReason: 'no-credentials' as const,
+        machineId: null,
+        machineRegistrationState: 'no-local-id' as const,
+        machineRegistered: false,
+    })),
 }));
 
 vi.mock('@/configuration', () => ({
@@ -64,6 +75,10 @@ vi.mock('@/daemon/service/cli', () => ({
         resolveDaemonServiceInstallationSnapshotFromEnvMock(),
 }));
 
+vi.mock('@/auth/resolveActiveServerAuthReadiness', () => ({
+    resolveActiveServerAuthReadiness: () => resolveActiveServerAuthReadinessMock(),
+}));
+
 describe('readDaemonStatusSnapshot', () => {
     afterEach(() => {
         readSettingsMock.mockClear();
@@ -71,6 +86,16 @@ describe('readDaemonStatusSnapshot', () => {
         readStoredCredentialsMock.mockClear();
         readDaemonStateMock.mockClear();
         resolveDaemonServiceInstallationSnapshotFromEnvMock.mockClear();
+        resolveActiveServerAuthReadinessMock.mockReset();
+        resolveActiveServerAuthReadinessMock.mockResolvedValue({
+            credentials: null,
+            credentialState: 'missing',
+            authenticated: false,
+            unusableReason: 'no-credentials',
+            machineId: null,
+            machineRegistrationState: 'no-local-id',
+            machineRegistered: false,
+        });
         vi.resetModules();
     });
 
@@ -80,6 +105,18 @@ describe('readDaemonStatusSnapshot', () => {
             token: `header.${payload}.signature`,
             encryption: null,
         });
+        resolveActiveServerAuthReadinessMock.mockResolvedValueOnce({
+            credentials: {
+                token: `header.${payload}.signature`,
+                encryption: null,
+            },
+            credentialState: 'valid',
+            authenticated: true,
+            unusableReason: null,
+            machineId: 'machine-confirmed',
+            machineRegistrationState: 'server-confirmed',
+            machineRegistered: true,
+        });
 
         const { readDaemonStatusSnapshot } = await import('./statusSnapshot');
 
@@ -87,10 +124,41 @@ describe('readDaemonStatusSnapshot', () => {
 
         expect(snapshot.auth).toMatchObject({
             authenticated: true,
+            credentialState: 'valid',
+            machineRegistrationState: 'server-confirmed',
+            machineRegistered: true,
             accountId: 'account-token-only',
         });
-        expect(readStoredCredentialsMock).toHaveBeenCalledOnce();
+        expect(resolveActiveServerAuthReadinessMock).toHaveBeenCalledOnce();
+        expect(readStoredCredentialsMock).not.toHaveBeenCalled();
         expect(readCredentialsMock).not.toHaveBeenCalled();
+    });
+
+    it('preserves unknown validation and local-only machine identity without declaring either ready', async () => {
+        resolveActiveServerAuthReadinessMock.mockResolvedValueOnce({
+            credentials: {
+                token: 'stored-token',
+                encryption: null,
+            },
+            credentialState: 'unknown',
+            authenticated: false,
+            unusableReason: null,
+            machineId: 'machine-local',
+            machineRegistrationState: 'local-only',
+            machineRegistered: false,
+        });
+
+        const { readDaemonStatusSnapshot } = await import('./statusSnapshot');
+        const snapshot = await readDaemonStatusSnapshot();
+
+        expect(snapshot.auth).toMatchObject({
+            authenticated: false,
+            credentialState: 'unknown',
+            machineId: 'machine-local',
+            machineRegistrationState: 'local-only',
+            machineRegistered: false,
+            needsAuth: true,
+        });
     });
 
     it('treats a matching running background-service owner as installed even when the filesystem probe lags', async () => {

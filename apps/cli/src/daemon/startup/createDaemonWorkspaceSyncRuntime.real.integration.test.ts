@@ -1,5 +1,7 @@
 import { AccountSettingsSchema } from '@happier-dev/protocol';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { access, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -21,6 +23,110 @@ import {
 const managerPath = process.env.HAPPIER_MUTAGEN_LIVE_MANAGER_BIN;
 const agentPath = process.env.HAPPIER_MUTAGEN_LIVE_AGENT_BIN;
 const custodyPath = process.env.HAPPIER_PROCESS_CUSTODY_LIVE_BIN;
+const runPerformanceAcceptance = process.env.HAPPIER_RUN_WORKSPACE_SYNC_PERFORMANCE === '1';
+const performanceFileSizeBytes = Number.parseInt(
+  process.env.HAPPIER_WORKSPACE_SYNC_PERFORMANCE_FILE_BYTES ?? String(1024 ** 3),
+  10,
+);
+const performanceDeltaBytes = 4 * 1024;
+
+function elapsedMs(startedAt: bigint): number {
+  return Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+}
+
+async function writeDeterministicFile(path: string, sizeBytes: number): Promise<void> {
+  const chunk = Buffer.allocUnsafe(1024 * 1024);
+  for (let index = 0; index < chunk.length; index += 1) chunk[index] = index % 251;
+  const handle = await open(path, 'w');
+  try {
+    let offset = 0;
+    while (offset < sizeBytes) {
+      const length = Math.min(chunk.length, sizeBytes - offset);
+      await handle.write(chunk, 0, length, offset);
+      offset += length;
+    }
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function applyDeterministicDelta(
+  path: string,
+  sizeBytes: number,
+): Promise<Readonly<{ offset: number; bytes: Buffer }>> {
+  const delta = Buffer.alloc(performanceDeltaBytes, 0xa7);
+  const offset = Math.max(0, Math.floor(sizeBytes / 2) - Math.floor(delta.length / 2));
+  const handle = await open(path, 'r+');
+  try {
+    await handle.write(delta, 0, delta.length, offset);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  return { offset, bytes: delta };
+}
+
+async function digestFile(path: string): Promise<string> {
+  const hash = createHash('sha256');
+  await new Promise<void>((resolveDigest, rejectDigest) => {
+    const stream = createReadStream(path);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('end', resolveDigest);
+    stream.once('error', rejectDigest);
+  });
+  return hash.digest('hex');
+}
+
+async function waitForFileDigest(
+  path: string,
+  expectedSizeBytes: number,
+  expectedDigest: string,
+  description: string,
+  deadlineMs = 20 * 60_000,
+): Promise<void> {
+  const deadline = Date.now() + deadlineMs;
+  let lastSize = -1;
+  let lastDigest = '';
+  while (Date.now() < deadline) {
+    const metadata = await stat(path).catch(() => null);
+    lastSize = metadata?.size ?? -1;
+    if (lastSize === expectedSizeBytes) {
+      lastDigest = await digestFile(path);
+      if (lastDigest === expectedDigest) return;
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+  }
+  throw new Error(`Timed out waiting for ${description}; size=${lastSize}; digest=${lastDigest}`);
+}
+
+async function waitForFileRegion(
+  path: string,
+  offset: number,
+  expected: Buffer,
+  description: string,
+  deadlineMs = 20 * 60_000,
+): Promise<void> {
+  const deadline = Date.now() + deadlineMs;
+  const observed = Buffer.alloc(expected.length);
+  while (Date.now() < deadline) {
+    const handle = await open(path, 'r').catch(() => null);
+    if (handle) {
+      try {
+        const { bytesRead } = await handle.read(observed, 0, observed.length, offset);
+        if (bytesRead === expected.length && observed.equals(expected)) return;
+      } finally {
+        await handle.close();
+      }
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+  }
+  throw new Error(`Timed out waiting for ${description}`);
+}
+
+function recordPerformanceMeasurement(measurement: Readonly<Record<string, string | number>>): void {
+  console.info(`[workspace-sync-performance] ${JSON.stringify(measurement)}`);
+}
 
 /**
  * The source-built lane fails closed: when the live lane runs without the
@@ -173,6 +279,10 @@ async function startLiveRuntime(input: Readonly<{
       });
       return await createDaemonWorkspaceSyncBroker({
         ...brokerInput,
+        openExternalStream: async (context) => await brokerInput.openExternalStream(context).catch((error: unknown) => {
+          peerIdentityEvents.push(`open:${error instanceof Error ? error.message : String(error)}:${typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : 'untyped'}`);
+          throw error;
+        }),
         peerIdentityValidator: {
           setExpectedSidecarPid: (pid) => {
             peerIdentityEvents.push(`expected:${pid}`);
@@ -223,6 +333,7 @@ async function withLiveRuntime(
   input: Readonly<{
     binaries: Readonly<{ manager: string; agent: string; custody: string }>;
     relationship: WorkspaceSyncRelationshipV1 | null;
+    prepareRoots?: (roots: Readonly<{ alphaRoot: string; betaRoot: string }>) => Promise<void>;
   }>,
   run: (context: Readonly<{
     runtime: DaemonWorkspaceSyncRuntime;
@@ -231,15 +342,25 @@ async function withLiveRuntime(
     root: string;
   }>) => Promise<void>,
 ): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), 'happier-workspace-sync-live-'));
+  // The per-stream broker endpoint also appends a UUID; keep the canonical
+  // fixture root below macOS's Unix-domain socket path limit.
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'hwsl-')));
   let runtime: DaemonWorkspaceSyncRuntime | null = null;
   try {
-    runtime = await startLiveRuntime({ root, binaries: input.binaries, relationship: input.relationship });
+    const alphaRoot = join(root, 'alpha');
+    const betaRoot = join(root, 'beta');
+    await Promise.all([mkdir(alphaRoot, { recursive: true }), mkdir(betaRoot, { recursive: true })]);
+    await input.prepareRoots?.({ alphaRoot, betaRoot });
+    runtime = await startLiveRuntime({
+      root,
+      binaries: input.binaries,
+      relationship: input.relationship,
+    });
     await run({
       runtime,
       root,
-      alphaRoot: join(root, 'alpha'),
-      betaRoot: join(root, 'beta'),
+      alphaRoot,
+      betaRoot,
     });
   } finally {
     await runtime?.stop().catch(() => undefined);
@@ -251,6 +372,55 @@ describe(
   'daemon workspace sync runtime with source-built Mutagen processes',
   { timeout: 150_000 },
   () => {
+    it.skipIf(!runPerformanceAcceptance)(
+      'records a verified large initial local copy and 4 KiB delta through the real managed process corridor',
+      async () => {
+        if (!Number.isSafeInteger(performanceFileSizeBytes) || performanceFileSizeBytes < performanceDeltaBytes) {
+          throw new Error(`Invalid HAPPIER_WORKSPACE_SYNC_PERFORMANCE_FILE_BYTES=${performanceFileSizeBytes}`);
+        }
+        const binaries = await requireLiveBinaries();
+        let initialWriteMs = 0;
+        let initialCopyStartedAt = 0n;
+        let initialDigest = '';
+        await withLiveRuntime(
+          {
+            binaries,
+            relationship: liveRelationship({ relationshipId: 'live-local-performance', mode: 'keep_synced' }),
+            prepareRoots: async ({ alphaRoot }) => {
+              const initialWriteStartedAt = process.hrtime.bigint();
+              await writeDeterministicFile(join(alphaRoot, 'performance.bin'), performanceFileSizeBytes);
+              initialWriteMs = elapsedMs(initialWriteStartedAt);
+              initialDigest = await digestFile(join(alphaRoot, 'performance.bin'));
+              initialCopyStartedAt = process.hrtime.bigint();
+            },
+          },
+          async ({ alphaRoot, betaRoot }) => {
+            const sourcePath = join(alphaRoot, 'performance.bin');
+            const targetPath = join(betaRoot, 'performance.bin');
+            await waitForFileDigest(targetPath, performanceFileSizeBytes, initialDigest, 'local initial performance copy');
+            const initialCopyMs = elapsedMs(initialCopyStartedAt);
+
+            const deltaStartedAt = process.hrtime.bigint();
+            const delta = await applyDeterministicDelta(sourcePath, performanceFileSizeBytes);
+            await waitForFileRegion(targetPath, delta.offset, delta.bytes, 'local 4 KiB delta region');
+            const deltaMs = elapsedMs(deltaStartedAt);
+            const deltaDigest = await digestFile(sourcePath);
+            await waitForFileDigest(targetPath, performanceFileSizeBytes, deltaDigest, 'local 4 KiB delta');
+
+            recordPerformanceMeasurement({
+              topology: 'local',
+              fileBytes: performanceFileSizeBytes,
+              deltaBytes: performanceDeltaBytes,
+              initialWriteMs,
+              initialCopyMs,
+              deltaMs,
+            });
+          },
+        );
+      },
+      30 * 60_000,
+    );
+
     it('moves non-empty bytes in both directions through the real manager, authenticated OS broker, controller, and rooted agents', async () => {
       const binaries = await requireLiveBinaries();
       await withLiveRuntime(

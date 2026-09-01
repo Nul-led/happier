@@ -52,7 +52,9 @@ export type ServiceRepairDaemonStatusSnapshot = Readonly<{
   }>;
   auth?: Readonly<{
     authenticated?: boolean | null;
+    credentialState?: 'missing' | 'valid' | 'invalid' | 'unknown' | null;
     machineRegistered?: boolean | null;
+    machineRegistrationState?: 'no-local-id' | 'local-only' | 'server-confirmed' | null;
     machineId?: string | null;
     needsAuth?: boolean | null;
   }>;

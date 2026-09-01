@@ -66,6 +66,13 @@ export function createWorkspaceSyncPeerIdentityValidator(
             if (expected === null) return false;
             if (context.sidecarPid !== undefined && context.sidecarPid !== expected) return false;
             if (!supportsExactPeerPrimitive) return false;
+            if (platform === 'win32') {
+                // The secured native pipe relay observes the real client PID
+                // before bridging to this loopback Socket and authenticates
+                // that witness with its inherited one-launch secret. The
+                // TypeScript broker never accepts an unwitnessed TCP peer.
+                return context.witnessedPeerPid === expected;
+            }
             const executablePath = resolveExecutable(platform);
             if (!executablePath) return false;
             let identity: ProcessCustodyPeerIdentity | null;
@@ -75,12 +82,6 @@ export function createWorkspaceSyncPeerIdentityValidator(
                 return false;
             }
             if (identity === null || identity.pid !== expected) return false;
-            if (platform === 'win32') {
-                // Windows has no uid fact here. This accepts only the exact
-                // process fact; the endpoint owner must independently enforce
-                // the user-only ACL (and currently refuses to bind without it).
-                return identity.uid === null;
-            }
             const uid = getUid();
             return uid !== undefined && identity.uid === uid;
         },

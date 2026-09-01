@@ -43,6 +43,12 @@ async function sha1File(path: string): Promise<string> {
 export async function deleteWorkspaceSyncConflictLoserAtRoot(
   input: DeleteWorkspaceSyncConflictLoserAtRootInput,
 ): Promise<void> {
+  if (input.expectedKind === 'file' && input.expectedDigest === undefined) {
+    throw conflictError('conflict_resolution_unsupported', 'file conflict deletion requires an expected digest');
+  }
+  if (input.expectedKind !== 'file' && input.expectedDigest !== undefined) {
+    throw conflictError('conflict_resolution_unsupported', 'non-file conflict deletion does not accept a digest');
+  }
   if (!input.rootPath.trim() || !input.relativePath.trim() || isAbsolute(input.relativePath)) {
     throw conflictError('conflict_resolution_unsupported', 'conflict path must be root-relative');
   }

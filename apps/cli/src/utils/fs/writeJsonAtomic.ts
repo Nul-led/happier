@@ -22,9 +22,14 @@ function isRetryableWindowsRenameError(error: unknown): boolean {
   return code === 'EBUSY' || code === 'EEXIST' || code === 'EPERM';
 }
 
-async function renameWithWindowsRetries(sourcePath: string, destinationPath: string): Promise<void> {
+async function renameWithWindowsRetries(
+  sourcePath: string,
+  destinationPath: string,
+  beforeAttempt?: () => void,
+): Promise<void> {
   for (let attempt = 1; attempt <= WINDOWS_RENAME_MAX_ATTEMPTS; attempt += 1) {
     try {
+      beforeAttempt?.();
       await rename(sourcePath, destinationPath);
       return;
     } catch (error) {
@@ -39,6 +44,8 @@ async function renameWithWindowsRetries(sourcePath: string, destinationPath: str
 export async function writeFileAtomically(input: Readonly<{
   path: string;
   writeTemporaryFile: (temporaryPath: string) => Promise<void>;
+  /** Synchronous currentness fence immediately before the final rename. */
+  beforeCommit?: () => void;
 }>): Promise<void> {
   const path = input.path;
   const dir = dirname(path);
@@ -47,7 +54,7 @@ export async function writeFileAtomically(input: Readonly<{
   try {
     await input.writeTemporaryFile(tmpPath);
     await bestEffortChmod0600(tmpPath);
-    await renameWithWindowsRetries(tmpPath, path);
+    await renameWithWindowsRetries(tmpPath, path, input.beforeCommit);
     await bestEffortChmod0600(path);
   } catch (error) {
     await unlink(tmpPath).catch(() => {});

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -19,6 +19,7 @@ import {
     reconcilePostMaterializationWithScmWorkspace,
     resolveWorkspaceReplicationSourceInputsWithScmWorkspace,
     resolveWorkspaceTransferWithScmWorkspace,
+    resolveWorkspaceTransferRootWithScmWorkspace,
     resolveWorkspaceTransferMetadataWithScmWorkspace,
     resolveWorkspaceTransferEntriesWithScmWorkspace,
 } from './workspace';
@@ -175,6 +176,44 @@ function createTestBackend(input: {
 }
 
 describe('scm workspace integration', () => {
+    it('derives a contained session cwd from the SCM-owned worktree root and rejects symlink escape', async () => {
+        const fixture = await mkdtemp(join(tmpdir(), 'workspace-transfer-root-'));
+        const repositoryRoot = join(fixture, 'linked-worktree');
+        const nested = join(repositoryRoot, 'packages', 'app');
+        const outside = join(fixture, 'outside');
+        await Promise.all([mkdir(nested, { recursive: true }), mkdir(outside)]);
+        const registry = createScmBackendRegistry([
+            createTestBackend({
+                id: 'git',
+                detectionRootPath: repositoryRoot,
+                workspaceIntegration: {
+                    inspectWorkspaceLocation: async () => ({
+                        rootPath: repositoryRoot,
+                        scmProvider: 'git',
+                        checkoutDiscovery: [{ kind: 'git_worktree', path: repositoryRoot }],
+                    }),
+                },
+            }),
+        ]);
+        try {
+            await expect(resolveWorkspaceTransferRootWithScmWorkspace({
+                sessionCwd: nested,
+                registry,
+            })).resolves.toEqual({
+                repositoryRoot: await realpath(repositoryRoot),
+                sessionRelativeCwd: 'packages/app',
+            });
+
+            const escaped = join(repositoryRoot, 'escaped');
+            await symlink(outside, escaped, 'dir');
+            await expect(resolveWorkspaceTransferRootWithScmWorkspace({
+                sessionCwd: escaped,
+                registry,
+            })).rejects.toMatchObject({ code: 'git_selection_unavailable' });
+        } finally {
+            await rm(fixture, { recursive: true, force: true });
+        }
+    });
     it('surfaces backend-declared checkout discovery details without assuming the backend id', async () => {
         const registry = createScmBackendRegistry([
             createTestBackend({
@@ -313,6 +352,36 @@ describe('scm workspace integration', () => {
         });
     });
 
+    it('dispatches portable artifact metadata to its SCM owner before the target is detectable', async () => {
+        const reconcilePostMaterialization = vi.fn(async () => undefined);
+        const registry = createScmBackendRegistry([
+            createTestBackend({
+                id: 'git',
+                detectionRootPath: '/unused',
+                detectRepo: async () => ({ isRepo: false, mode: null, rootPath: null }),
+                workspaceIntegration: {
+                    inspectWorkspaceLocation: async () => null,
+                    reconcilePostMaterialization,
+                },
+            }),
+        ]);
+        const workspaceIntegrationMetadata = {
+            provider: 'git',
+            portableBundle: { v: 1, relativePath: '.happier-scm/git.bundle' },
+        };
+
+        await reconcilePostMaterializationWithScmWorkspace({
+            targetPath: '/imports/target',
+            workspaceIntegrationMetadata,
+            registry,
+        });
+
+        expect(reconcilePostMaterialization).toHaveBeenCalledWith(expect.objectContaining({
+            context: expect.objectContaining({ cwd: '/imports/target' }),
+            workspaceIntegrationMetadata,
+        }));
+    });
+
     it('passes a backend-agnostic workspace transfer request through the shared workspace-integration hook', async () => {
         const resolveWorkspaceTransferEntries = vi.fn(async () => [
             {
@@ -359,6 +428,39 @@ describe('scm workspace integration', () => {
                 ignoredIncludeGlobs: ['dist/**'],
             },
         });
+    });
+
+    it('passes only the host-owned artifact directory to finite SCM transfer preparation', async () => {
+        const resolveWorkspaceTransferEntries = vi.fn(async () => [{
+            relativePath: 'README.md',
+            sourcePath: '/repo/README.md',
+        }]);
+        const registry = createScmBackendRegistry([
+            createTestBackend({
+                id: 'git',
+                detectionRootPath: '/repo',
+                workspaceIntegration: {
+                    inspectWorkspaceLocation: async () => null,
+                    resolveWorkspaceTransferEntries,
+                    resolveWorkspaceTransferMetadata: async () => ({ provider: 'git' }),
+                },
+            }),
+        ]);
+
+        await resolveWorkspaceReplicationSourceInputsWithScmWorkspace({
+            sourcePath: '/repo',
+            artifactDirectory: '/daemon/staging',
+            workspaceTransfer: {
+                strategy: 'transfer_snapshot',
+                includeIgnoredMode: 'exclude',
+                ignoredIncludeGlobs: [],
+            },
+            registry,
+        });
+
+        expect(resolveWorkspaceTransferEntries).toHaveBeenCalledWith(expect.objectContaining({
+            artifactDirectory: '/daemon/staging',
+        }));
     });
 
     it('prefers a backend-owned workspace transfer realization hook before legacy transfer hooks', async () => {

@@ -40,7 +40,10 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
   nowMs?: () => number;
 }>): WorkspaceSyncMachineTunnelOpen {
   return async (request) => {
-    if (request.sourceMachineId !== input.localMachineId || request.flow !== 'workspace_sync') {
+    if (request.sourceMachineId !== input.localMachineId) {
+      throw machineCarrierUnavailableError();
+    }
+    if (request.flow === 'file_transfer' && (!Number.isSafeInteger(request.maxBytes) || request.maxBytes! < 1)) {
       throw machineCarrierUnavailableError();
     }
     const target = await input.readTargetMachine(request.targetMachineId);
@@ -59,25 +62,33 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
         kind: 'ephemeral_ed25519',
         ephemeralPublicKeyBase64Url: proofHandle.publicKeyBase64Url,
         machineId: request.targetMachineId,
-        flowKind: 'machine_rpc',
+        flowKind: request.flow === 'file_transfer' ? 'bounded_transfer' : 'machine_rpc',
         routeKind: 'iroh_peer',
         endpointFingerprint: parsedEndpoint.data.endpointId,
-        ttlMs: DIRECT_ROUTE_GRANT_TTL_MS.loopbackMachineRpcDefault,
-        scope: {
-          kind: 'machine_rpc',
-          rpcScopeId: request.operationId,
-          allowedMethods: ['workspace.sync'],
-          maxCalls: 1,
-          maxIdleMs: DIRECT_ROUTE_GRANT_TTL_MS.loopbackMachineRpcDefault,
-          highRiskSingleUseMethods: ['workspace.sync'],
-        },
+        ttlMs: request.flow === 'file_transfer'
+          ? DIRECT_ROUTE_GRANT_TTL_MS.boundedTransferSingle
+          : DIRECT_ROUTE_GRANT_TTL_MS.loopbackMachineRpcDefault,
+        scope: request.flow === 'file_transfer'
+          ? { kind: 'bounded_transfer', mode: 'single', transferId: request.operationId, maxBytes: request.maxBytes! }
+          : {
+              kind: 'machine_rpc',
+              rpcScopeId: request.operationId,
+              allowedMethods: ['workspace.sync'],
+              maxCalls: 1,
+              maxIdleMs: DIRECT_ROUTE_GRANT_TTL_MS.loopbackMachineRpcDefault,
+              highRiskSingleUseMethods: ['workspace.sync'],
+            },
         iroh: {
-          sourceMachineId: input.localMachineId,
-          targetMachineId: request.targetMachineId,
-          sourceEndpointId: input.runtime.endpoint.endpointId,
-          targetEndpointId: parsedEndpoint.data.endpointId,
-          role: 'initiator',
-          operationKind: 'workspace_sync',
+          initiator: {
+            kind: 'machine',
+            machineId: input.localMachineId,
+            endpointId: input.runtime.endpoint.endpointId,
+          },
+          target: {
+            machineId: request.targetMachineId,
+            endpointId: parsedEndpoint.data.endpointId,
+          },
+          operationKind: request.flow,
         },
       });
       const grant = SignedDirectRouteGrantV2Schema.parse(await input.mintGrant(grantRequest));
@@ -97,13 +108,10 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
 
       const handshake = IrohMachineHandshakeV1Schema.parse({
         v: 1,
-        role: 'initiator',
         accountId: input.accountId,
-        sourceMachineId: input.localMachineId,
-        targetMachineId: request.targetMachineId,
-        sourceEndpointId: input.runtime.endpoint.endpointId,
-        targetEndpointId: parsedEndpoint.data.endpointId,
-        flow: 'workspace_sync',
+        initiator: grant.payload.iroh?.initiator,
+        target: grant.payload.iroh?.target,
+        flow: request.flow,
         operationId: request.operationId,
         grant,
         proof,
@@ -133,6 +141,7 @@ export function createWorkspaceMachineCarrierTunnelOpen(input: Readonly<{
       }
       return {
         localPort: tunnel.localPort,
+        localCapability: tunnel.localCapability,
         observedPath: tunnel.observedPath,
         close: tunnel.close,
       };

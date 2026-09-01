@@ -224,15 +224,18 @@ describe('verifyDirectRouteGrantV2', () => {
         const sourceEndpointId = 'a'.repeat(64);
         const targetEndpointId = 'b'.repeat(64);
         const iroh = {
-            sourceMachineId: 'machine_source',
-            targetMachineId: 'machine_target',
-            sourceEndpointId,
-            targetEndpointId,
-            role: 'initiator' as const,
+            initiator: {
+                kind: 'account_client' as const,
+                endpointId: sourceEndpointId,
+            },
+            target: {
+                machineId: 'machine_target',
+                endpointId: targetEndpointId,
+            },
             operationKind: 'file_transfer' as const,
         };
         const { grant, proof } = createV2GrantAndProof({
-            machineId: iroh.targetMachineId,
+            machineId: iroh.target.machineId,
             flowKind: 'bounded_transfer',
             routeKind: 'iroh_peer',
             scope: {
@@ -255,7 +258,7 @@ describe('verifyDirectRouteGrantV2', () => {
             ...baseInput,
             expected: {
                 accountId: 'account_1',
-                machineId: iroh.targetMachineId,
+                machineId: iroh.target.machineId,
                 flowKind: 'bounded_transfer',
                 routeKind: 'iroh_peer',
                 endpointFingerprint: targetEndpointId,
@@ -266,12 +269,27 @@ describe('verifyDirectRouteGrantV2', () => {
             ...baseInput,
             expected: {
                 accountId: 'account_1',
-                machineId: iroh.targetMachineId,
+                machineId: iroh.target.machineId,
                 flowKind: 'bounded_transfer',
                 routeKind: 'iroh_peer',
                 endpointFingerprint: targetEndpointId,
             },
         })).toEqual({ valid: false, reasonCode: 'grant_iroh_binding_mismatch' });
+
+        expect(verifyDirectRouteGrantV2({
+            ...baseInput,
+            expected: {
+                accountId: 'account_1',
+                machineId: iroh.target.machineId,
+                flowKind: 'bounded_transfer',
+                routeKind: 'iroh_peer',
+                endpointFingerprint: 'c'.repeat(64),
+                iroh: {
+                    ...iroh,
+                    target: { ...iroh.target, endpointId: 'c'.repeat(64) },
+                },
+            },
+        })).toEqual({ valid: false, reasonCode: 'grant_endpoint_mismatch' });
     });
 
     it('rejects a V2 machine grant after its signing trust root expires', () => {
