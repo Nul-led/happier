@@ -108,6 +108,7 @@ import {
 } from "./automationSessionLifecycleRegistration";
 import {
     automationSessionLifecycleConfigurationsEqual,
+    decodeAutomationSessionLifecycleConfiguration,
     encodeAutomationSessionLifecycleConfiguration,
 } from "./automationSessionLifecycleConfigurationCodec";
 import {
@@ -4621,15 +4622,8 @@ export async function reconcileAutomationDefinition(params: Readonly<{
                         automationTargetType: effectiveAutomation.targetType,
                         automationExistingSessionId: effectiveExistingSessionId,
                         input: {
-                            kind: "sessionLifecycle",
+                            ...decodeAutomationSessionLifecycleConfiguration(trigger).definition,
                             enabled: true,
-                            event: "parentTurnCompleted",
-                            scope: {
-                                kind: "exactTurn",
-                                sourceSessionId: trigger.sourceSessionId!,
-                                sourceTurnId: trigger.sourceTurnId!,
-                            },
-                            consumption: "once",
                         },
                     });
                 }
@@ -4953,15 +4947,8 @@ export async function updateAutomationTrigger(params: Readonly<{
                     automationTargetType: automation.targetType,
                     automationExistingSessionId: readAutomationExistingSessionTargetId(automation),
                     input: {
-                        kind: "sessionLifecycle",
+                        ...decodeAutomationSessionLifecycleConfiguration(existing).definition,
                         enabled: true,
-                        event: "parentTurnCompleted",
-                        scope: {
-                            kind: "exactTurn",
-                            sourceSessionId: existing.sourceSessionId!,
-                            sourceTurnId: existing.sourceTurnId!,
-                        },
-                        consumption: "once",
                     },
                 });
             }
