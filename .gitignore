@@ -193,6 +193,7 @@ _.env.pipeline.production.local
 /packages/plugin-sdk/protocolFacade.protocol-current.d.ts
 /packages/plugin-sdk/tsconfig.facade-current*.json
 /packages/plugin-sdk/tsconfig.facade-inference-current.json
+/packages/plugin-sdk/src/**/*.d.ts
 /packages/plugin-sdk/src/**/*.d.ts.map
 /packages/protocol/src/**/*.d.ts.map
 /packages/protocol/.released-account-scoped-reader-*/
