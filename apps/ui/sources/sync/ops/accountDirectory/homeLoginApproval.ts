@@ -59,9 +59,8 @@ export type HomeLoginContinuationResult =
     | Readonly<{ kind: 'failed' }>;
 
 /**
- * Decrypts and strictly parses the exact protocol-owned redemption-coupled
- * credential/descriptor plaintext. Legacy token-only wrappers and every extra
- * field fail closed.
+ * Decrypts and strictly parses the exact protocol-owned `{ token }` plaintext.
+ * Credential wrappers, descriptor envelopes, and every extra field fail closed.
  */
 function decodeHomeCredentialPayload(
     value: unknown,

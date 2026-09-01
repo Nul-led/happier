@@ -469,8 +469,7 @@ export type HomeLoginRedemptionRequestV1 = z.infer<typeof HomeLoginRedemptionReq
 /**
  * Locked five-field V1 success shape. `expiresAtMs` bounds assertion redemption;
  * it is not the expiry of the durable ordinary Home token inside the sealed envelope.
- * The sealed plaintext is exactly `HomeLoginCredentialPayloadV1`: the ordinary
- * Home credential and the redeeming Home's connection descriptor are coupled.
+ * The sealed plaintext is exactly `HomeLoginCredentialPayloadV1`: `{ token }`.
  */
 export const HomeLoginRedemptionResponseV1Schema = z.object({
   v: z.literal(1),

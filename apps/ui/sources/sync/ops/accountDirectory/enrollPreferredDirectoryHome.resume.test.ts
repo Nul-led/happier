@@ -106,9 +106,7 @@ function sealToken(token: string, recipientPublicKey: Uint8Array): string {
     return encodeBase64(
         encryptBox(
             new TextEncoder().encode(JSON.stringify({
-                v: 1,
-                credentials: { token },
-                connectionDescriptor: HOME_B.connectionDescriptor,
+                token,
             })),
             recipientPublicKey,
         ),

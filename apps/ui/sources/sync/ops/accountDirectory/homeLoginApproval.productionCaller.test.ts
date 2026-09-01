@@ -90,11 +90,7 @@ describe('Directory enrollment production composition', () => {
                 };
             }),
         };
-        const coupledPayload = {
-            v: 1,
-            credentials: { token: 'home-b-token' },
-            connectionDescriptor: home.connectionDescriptor,
-        };
+        const coupledPayload = { token: 'home-b-token' };
         const sealedTokenBase64Url = encodeBase64(
             encryptBox(new TextEncoder().encode(JSON.stringify(coupledPayload)), keyPair.publicKey),
             'base64url',

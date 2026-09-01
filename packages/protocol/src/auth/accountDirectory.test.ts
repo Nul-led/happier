@@ -124,11 +124,7 @@ describe('Account Directory protocol DTOs', () => {
 
   it('owns the strict bounded Home credential payload and requester fingerprint', () => {
     const maximumToken = 't'.repeat(ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES);
-    const maximalPayload = {
-      v: 1 as const,
-      credentials: { token: maximumToken },
-      connectionDescriptor: HTTPS_DESCRIPTOR,
-    };
+    const maximalPayload = { token: maximumToken };
     expect(HomeLoginCredentialPayloadV1Schema.safeParse(maximalPayload).success).toBe(true);
     expect(
       new TextEncoder().encode(JSON.stringify(maximalPayload)).byteLength,
@@ -136,9 +132,7 @@ describe('Account Directory protocol DTOs', () => {
     // Escape stress: 4096 quote characters serialize to 8192 bytes and must
     // still sit inside the derived bound.
     const escapeStressPayload = {
-      v: 1 as const,
-      credentials: { token: '"'.repeat(ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES) },
-      connectionDescriptor: HTTPS_DESCRIPTOR,
+      token: '"'.repeat(ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_TOKEN_UTF8_BYTES),
     };
     expect(HomeLoginCredentialPayloadV1Schema.safeParse(escapeStressPayload).success).toBe(true);
     expect(
@@ -169,21 +163,19 @@ describe('Account Directory protocol DTOs', () => {
       sealedHomeTokenBase64Url: oversizedSealedEnvelope,
     }).success).toBe(false);
 
-    const ordinaryPayload = {
-      v: 1 as const,
-      credentials: { token: 'ordinary-token' },
-      connectionDescriptor: HTTPS_DESCRIPTOR,
-    };
+    const ordinaryPayload = { token: 'ordinary-token' };
     expect(HomeLoginCredentialPayloadV1Schema.parse(ordinaryPayload)).toEqual(ordinaryPayload);
     expect(HomeLoginCredentialPayloadV1Schema.safeParse({
-      ...ordinaryPayload,
-      credentials: { token: '' },
+      token: '',
     }).success).toBe(false);
     expect(HomeLoginCredentialPayloadV1Schema.safeParse({
-      ...ordinaryPayload,
-      credentials: { token: `${maximumToken}t` },
+      token: `${maximumToken}t`,
     }).success).toBe(false);
-    expect(HomeLoginCredentialPayloadV1Schema.safeParse({ token: 'legacy-token-only' }).success).toBe(false);
+    expect(HomeLoginCredentialPayloadV1Schema.safeParse({
+      v: 1,
+      credentials: { token: 'ordinary-token' },
+      connectionDescriptor: HTTPS_DESCRIPTOR,
+    }).success).toBe(false);
     expect(HomeLoginCredentialPayloadV1Schema.safeParse({ ...ordinaryPayload, extra: true }).success)
       .toBe(false);
     expect(HomeLoginCredentialPayloadV1Schema.safeParse({ ...maximalPayload, extra: true }).success).toBe(false);

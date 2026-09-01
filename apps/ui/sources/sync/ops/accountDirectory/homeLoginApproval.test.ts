@@ -99,9 +99,8 @@ function json(status: number, payload: unknown): Response {
 function sealCredentialPayload(
     token: string,
     recipientPublicKey: Uint8Array,
-    connectionDescriptor = HOME_B.connectionDescriptor,
 ): string {
-    const payload = { v: 1, credentials: { token }, connectionDescriptor };
+    const payload = { token };
     return encodeBase64(
         encryptBox(
             new TextEncoder().encode(JSON.stringify(payload)),
@@ -215,7 +214,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             descriptor: HOME_B.connectionDescriptor,
             source: 'account-directory',
             preserveUserLabel: true,
-            descriptorAuthority: 'redemption_coupled',
+            descriptorAuthority: 'advisory',
         }));
         expect(setCredentialsForServerUrlMock).toHaveBeenCalledWith(
             'https://home-b.test',
@@ -224,7 +223,7 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
         );
     });
 
-    it('uses the Home-coupled descriptor after redeeming through an advisory route', async () => {
+    it('keeps the intended advisory descriptor after redeeming through its advisory route', async () => {
         const keyPair = sodium.crypto_box_keypair();
         const advisoryHome = {
             ...HOME_B,
@@ -242,7 +241,6 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             sealedHomeTokenBase64Url: sealCredentialPayload(
                 'home-selected-token',
                 keyPair.publicKey,
-                HOME_B.connectionDescriptor,
             ),
             issuedAtMs: Date.now() - 500,
             expiresAtMs: Date.now() + 120_000,
@@ -258,17 +256,17 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             endpointUrl: 'https://directory-advisory-route.test',
         }));
         expect(preflightHomeProfileAdoptionMock).toHaveBeenCalledWith(expect.objectContaining({
-            descriptor: HOME_B.connectionDescriptor,
-            descriptorAuthority: 'redemption_coupled',
+            descriptor: advisoryHome.connectionDescriptor,
+            descriptorAuthority: 'advisory',
         }));
         expect(setCredentialsForServerUrlMock).toHaveBeenCalledWith(
-            'https://home-b.test',
+            'https://directory-advisory-route.test',
             { serverId: 'srv_home_b' },
             { token: 'home-selected-token' },
         );
         expect(adoptHomeProfileMock).toHaveBeenCalledWith(expect.objectContaining({
-            descriptor: HOME_B.connectionDescriptor,
-            descriptorAuthority: 'redemption_coupled',
+            descriptor: advisoryHome.connectionDescriptor,
+            descriptorAuthority: 'advisory',
         }));
     });
 
