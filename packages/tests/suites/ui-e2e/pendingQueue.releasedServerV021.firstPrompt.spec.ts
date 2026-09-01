@@ -19,10 +19,13 @@ import { createRunDirs } from '../../src/testkit/runDir';
 import { authenticateAndStartDaemon } from '../../src/testkit/uiE2e/authenticateAndStartDaemon';
 import { createSessionFromNewSessionComposer } from '../../src/testkit/uiE2e/createSessionFromNewSessionComposer';
 import { waitForDaemonMachineIdFromCliSettings } from '../../src/testkit/uiE2e/daemonMachineId';
+import { secretBearingBrowserCapturePolicy } from '../../src/testkit/uiE2e/secretBearingBrowserCapture';
 import {
   gotoCommittedWithRetries,
   normalizeLoopbackBaseUrl,
 } from '../../src/testkit/uiE2e/pageNavigation';
+
+test.use(secretBearingBrowserCapturePolicy);
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
 const releasedServerArtifact = resolveReleasedServerV021ArtifactPrerequisite({

@@ -62,6 +62,35 @@ const TRACKED_ENROLLMENT_PATHS = new Set([
   ...REQUIRED_ENROLLMENT_PATHS,
   '/v1/auth/pairing/consume',
 ]);
+const FORBIDDEN_DIRECT_QR_UI_IDS = [
+  'restore-scan-confirm-code',
+  'add-phone-request-confirm-code',
+  'add-phone-approve',
+  'add-phone-reject',
+] as const;
+const FORBIDDEN_DIRECT_QR_OBSERVER_KEY = '__happierLane09ForbiddenDirectQrUi';
+
+async function observeForbiddenDirectQrUi(page: Page): Promise<void> {
+  await page.evaluate(({ key, testIds }) => {
+    const seen = new Set<string>();
+    const scan = () => {
+      for (const testId of testIds) {
+        if (document.querySelector(`[data-testid="${testId}"]`)) seen.add(testId);
+      }
+    };
+    scan();
+    const observer = new MutationObserver(scan);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    Reflect.set(window, key, { observer, seen });
+  }, { key: FORBIDDEN_DIRECT_QR_OBSERVER_KEY, testIds: FORBIDDEN_DIRECT_QR_UI_IDS });
+}
+
+async function readObservedForbiddenDirectQrUi(page: Page): Promise<readonly string[]> {
+  return await page.evaluate((key) => {
+    const state = Reflect.get(window, key) as { seen?: Set<string> } | undefined;
+    return state?.seen ? [...state.seen].sort() : [];
+  }, FORBIDDEN_DIRECT_QR_OBSERVER_KEY);
+}
 
 function withVisibleHomeAGroup(snapshot: AuthBootstrapStorageSnapshot): AuthBootstrapStorageSnapshot {
   const localStorage = { ...snapshot.localStorage };
@@ -159,22 +188,11 @@ function trackEnrollmentRequests(page: Page, sink: URL[]): void {
   });
 }
 
-async function dismissSuccessModalIfPresent(page: Page): Promise<void> {
-  const confirm = page.getByTestId('web-modal-confirm');
-  try {
-    await expect(confirm).toHaveCount(1, { timeout: 30_000 });
-    await confirm.click();
-  } catch {
-    // Credential persistence and authenticated readback are the deciding success surface.
-  }
-}
-
 async function runEnrollmentScenario(params: Readonly<{
   browser: Browser;
   uiBaseUrl: string;
   homeA: HomeFixture;
   homeB: HomeFixture;
-  decision?: 'approve' | 'reject';
 }>): Promise<void> {
   let homeAContext: BrowserContext | null = null;
   let homeBContext: BrowserContext | null = null;
@@ -234,59 +252,22 @@ async function runEnrollmentScenario(params: Readonly<{
     await manualLinkButton.click();
     await expect(joiningPage.getByTestId('web-prompt-input')).toHaveCount(1, { timeout: 30_000 });
     await joiningPage.getByTestId('web-prompt-input').fill(pairingLinkRaw);
+    await Promise.all([
+      observeForbiddenDirectQrUi(joiningPage),
+      observeForbiddenDirectQrUi(trustedHomeBPage),
+    ]);
     await joiningPage.getByTestId('web-prompt-confirm').click();
 
-    const joiningConfirmCode = joiningPage.getByTestId('restore-scan-confirm-code');
-    const trustedConfirmCode = trustedHomeBPage.getByTestId('add-phone-request-confirm-code');
-    await expect(joiningConfirmCode).toHaveCount(1, { timeout: 120_000 });
-    await expect(trustedConfirmCode).toHaveCount(1, { timeout: 120_000 });
-    expect((await joiningConfirmCode.innerText()).trim()).toBe((await trustedConfirmCode.innerText()).trim());
-
-    if (params.decision === 'reject') {
-      const terminalRejection = joiningPage.waitForResponse(async (response) => {
-        if (new URL(response.url()).pathname !== '/v2/auth/account/request' || !response.ok()) return false;
-        const payload: unknown = await response.json().catch(() => null);
-        return Boolean(payload && typeof payload === 'object' && (payload as Record<string, unknown>).state === 'rejected');
-      }, { timeout: 120_000 });
-
-      await trustedHomeBPage.getByTestId('add-phone-reject').click();
-      await terminalRejection;
-      await expect(joiningPage.getByTestId('web-modal-confirm')).toHaveCount(1, { timeout: 30_000 });
-
-      await expect.poll(
-        async () => await readCredentialsForStableIdentity(joiningPage, params.homeB.serverIdentityId)
-          .then(() => true)
-          .catch(() => false),
-        { timeout: 5_000 },
-      ).toBe(false);
-      const homeAAfterReject = await readHomeState(joiningPage);
-      expect(Object.values(homeAAfterReject.profiles)).not.toContainEqual(expect.objectContaining({
-        serverIdentityId: params.homeB.serverIdentityId,
-      }));
-      expect(homeAAfterReject.activeServerId).toBe(homeABefore.activeServerId);
-      expect(homeAAfterReject.homeViewState).toEqual(homeABefore.homeViewState);
-      expect(homeAAfterReject.activeProfile).toEqual(homeABefore.activeProfile);
-      expect(homeAAfterReject.credentialsByKey).toEqual(homeABefore.credentialsByKey);
-
-      await expect.poll(() => enrollmentRequests.map((url) => url.pathname), { timeout: 30_000 })
-        .toEqual(expect.arrayContaining([
-          '/v1/auth/pairing/start',
-          '/v1/auth/pairing/request',
-          '/v1/auth/pairing/status',
-          '/v1/auth/pairing/consume',
-          '/v2/auth/account/request',
-        ]));
-      expect(enrollmentRequests.map((url) => url.pathname)).not.toContain('/v1/auth/account/response');
-      for (const requestUrl of enrollmentRequests) expect(requestUrl.origin).toBe(params.homeB.server.baseUrl);
-      return;
-    }
-
-    await trustedHomeBPage.getByTestId('add-phone-approve').click();
-    await dismissSuccessModalIfPresent(trustedHomeBPage);
+    await expect(joiningPage.getByTestId('restore-scan-confirm-code')).toHaveCount(0);
+    await expect(trustedHomeBPage.getByTestId('add-phone-request-confirm-code')).toHaveCount(0);
+    await expect(trustedHomeBPage.getByTestId('add-phone-approve')).toHaveCount(0);
+    await expect(trustedHomeBPage.getByTestId('add-phone-reject')).toHaveCount(0);
     await expect.poll(
       async () => await readCredentialsForStableIdentity(joiningPage, params.homeB.serverIdentityId).then(() => true).catch(() => false),
       { timeout: 120_000 },
     ).toBe(true);
+    expect(await readObservedForbiddenDirectQrUi(joiningPage)).toEqual([]);
+    expect(await readObservedForbiddenDirectQrUi(trustedHomeBPage)).toEqual([]);
 
     const homeBCredentials = await readCredentialsForStableIdentity(joiningPage, params.homeB.serverIdentityId);
     const token = homeBCredentials.value.token;
@@ -411,12 +392,6 @@ test.describe('ui e2e: direct Home QR enrollment through production callers', ()
     test.setTimeout(540_000);
     if (!uiBaseUrl || !homeA || !plainHomeB) throw new Error('missing composed Home fixtures');
     await runEnrollmentScenario({ browser, uiBaseUrl, homeA, homeB: plainHomeB });
-  });
-
-  test('rejects plain Home B enrollment without persisting it or disturbing Home A', async ({ browser }) => {
-    test.setTimeout(540_000);
-    if (!uiBaseUrl || !homeA || !plainHomeB) throw new Error('missing composed Home fixtures');
-    await runEnrollmentScenario({ browser, uiBaseUrl, homeA, homeB: plainHomeB, decision: 'reject' });
   });
 
   test('enrolls E2EE Home B as dataKey without legacy collapse while Home A remains focused', async ({ browser }) => {

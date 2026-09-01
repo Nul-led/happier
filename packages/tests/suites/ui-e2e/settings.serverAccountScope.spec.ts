@@ -13,7 +13,10 @@ import {
   normalizeLoopbackBaseUrl,
 } from '../../src/testkit/uiE2e/pageNavigation';
 import { waitForInitialAppUi } from '../../src/testkit/uiE2e/waitForInitialAppUi';
+import { secretBearingBrowserCapturePolicy } from '../../src/testkit/uiE2e/secretBearingBrowserCapture';
 import { createSession, fetchSessionsV2 } from '../../src/testkit/sessions';
+
+test.use(secretBearingBrowserCapturePolicy);
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
 const DIFF_SYNTAX_TOGGLE_ID = 'settings-feature-toggle-files.diffSyntaxHighlighting';

@@ -1,8 +1,8 @@
 import type { PlaywrightWorkerOptions } from '@playwright/test';
 
 /**
- * Pairing and enrollment pages display credential-bearing QR payloads. Their browser context must
- * never produce retained images, video, or traces, including on failure.
+ * Credential-bearing browser journeys must never produce retained images, video, or traces,
+ * including on failure. Opaque Playwright trace archives cannot be safely scrubbed afterward.
  */
 export const secretBearingBrowserCapturePolicy = {
   trace: 'off',

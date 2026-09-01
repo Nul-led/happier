@@ -5,7 +5,6 @@ import test from 'node:test';
 
 const REPOSITORY_ROOT = path.resolve(import.meta.dirname, '../../..');
 const FIRST_PARTY_ROOTS = ['apps', 'packages'];
-const IGNORED_DIRECTORIES = new Set(['.agents', '.git', '.next', 'build', 'coverage', 'dist', 'node_modules']);
 
 function readConfiguredBudget(): number {
     const config = readFileSync(path.join(REPOSITORY_ROOT, '.codex/config.toml'), 'utf8');
@@ -14,17 +13,13 @@ function readConfiguredBudget(): number {
     return Number(match[1]);
 }
 
-function collectAgentFiles(directory: string): string[] {
-    if (!statSync(directory, { throwIfNoEntry: false })?.isDirectory()) {
-        return [];
-    }
-
+function collectPackageAgentFiles(directory: string): string[] {
     return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-        const entryPath = path.join(directory, entry.name);
-        if (entry.isDirectory() && !IGNORED_DIRECTORIES.has(entry.name)) {
-            return collectAgentFiles(entryPath);
+        if (!entry.isDirectory()) {
+            return [];
         }
-        return entry.isFile() && entry.name === 'AGENTS.md' ? [entryPath] : [];
+        const candidate = path.join(directory, entry.name, 'AGENTS.md');
+        return statSync(candidate, { throwIfNoEntry: false })?.isFile() ? [candidate] : [];
     });
 }
 
@@ -48,7 +43,7 @@ function instructionChainBytes(agentFile: string): number {
 
 test('Codex project instruction budget covers every first-party AGENTS.md chain', () => {
     const agentFiles = FIRST_PARTY_ROOTS.flatMap((directory) =>
-        collectAgentFiles(path.join(REPOSITORY_ROOT, directory)),
+        collectPackageAgentFiles(path.join(REPOSITORY_ROOT, directory)),
     );
     assert.ok(agentFiles.length > 0, 'expected at least one first-party package AGENTS.md');
 

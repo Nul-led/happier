@@ -5,8 +5,8 @@
  * test files that exist for that family today.
  *
  * This is routing metadata only. It owns no run status (`verified|failed|blocked|not-run`), no
- * evidence prose, no implementation diagnosis, no target identity, and no history: the sole
- * Lane 09 release report owns certification status. A green run of a mapped file is supporting
+ * evidence prose, no implementation diagnosis, no target identity, and no history: the A4
+ * journey rows in the sole Lane 09 report own certification status. A green mapped file is supporting
  * evidence and never completes an acceptance requirement by itself; a family with no entry in
  * `executableTestPaths` has no ordinary executable test yet.
  */
@@ -96,7 +96,7 @@ export const HOMES_SCENARIO_FAMILY_MAP: readonly HomesScenarioFamilyMapEntry[] =
       'F-QR-02 typedCredentialMatrix',
       'F-QR-03 qrFailures',
       'F-QR-04 v1Compatibility',
-      'F-QR-05 reversePhoneApproval',
+      'F-QR-05 reversePhoneEnrollment',
       'F-QR-06 directQrIrohOnly',
     ],
     productOwner: 'Lane 05 — QR enrollment and existing-device approval',

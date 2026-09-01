@@ -16,6 +16,7 @@ function resolveStackServerLogLevel({ baseEnv }) {
 export function buildServerRuntimeEnv({
   baseEnv,
   serverPort,
+  canonicalServerUrl = '',
   publicServerUrl,
   serveUi = false,
   uiRequired = false,
@@ -23,9 +24,21 @@ export function buildServerRuntimeEnv({
   uiBuildDirExists = false,
   uiPrefix = '/',
 }) {
+  const configuredCanonicalServerUrl = String(
+    canonicalServerUrl || baseEnv.HAPPIER_CANONICAL_SERVER_URL || '',
+  ).trim();
+  const explicitLegacyPublicServerUrl = String(
+    baseEnv.HAPPIER_PUBLIC_SERVER_URL_INFERRED === '1'
+      ? ''
+      : baseEnv.HAPPIER_PUBLIC_SERVER_URL || '',
+  ).trim();
+  const stableCanonicalServerUrl = configuredCanonicalServerUrl
+    || explicitLegacyPublicServerUrl
+    || `http://localhost:${serverPort}`;
   const nextEnv = {
     ...baseEnv,
     PORT: String(serverPort),
+    HAPPIER_CANONICAL_SERVER_URL: stableCanonicalServerUrl,
     HAPPIER_PUBLIC_SERVER_URL: publicServerUrl,
     PUBLIC_URL: publicServerUrl,
     METRICS_ENABLED: baseEnv.METRICS_ENABLED ?? 'false',

@@ -212,7 +212,7 @@ test('HStack and server candidate builders consume inert source artifacts withou
   ]) {
     const jobs = workflow(name).jobs;
     const prepare = jobs.prepare;
-    const build = jobs.build_candidate;
+    const build = name === 'publish-server-runtime.yml' ? jobs.build_native : jobs.build_candidate;
     assert.ok(prepare, `${name} trusted prepare job`);
     assert.ok(build, `${name} candidate builder`);
     assert.deepEqual(build.permissions, {}, `${name} candidate builder permissions`);
@@ -225,11 +225,16 @@ test('HStack and server candidate builders consume inert source artifacts withou
     assert.match(buildSource, new RegExp(`${sourceArtifactPrefix}.*needs\\.prepare\\.outputs\\.source_sha`));
     assert.match(buildSource, /Download exact candidate source transport/);
     assert.match(buildSource, /Materialize candidate source without repository authority/);
-    assert.match(
-      buildSource,
-      /verify-artifacts\.mjs[\s\S]*?--require-all-archives-checksummed[\s\S]*?find dist\/release-assets\/[^ ]+ -type f ! -name '\*\.tar\.gz' -delete/,
-      `${name} must retain archive admission and compatible-platform smoke before its unsigned handoff`,
-    );
+    if (name === 'publish-server-runtime.yml') {
+      assert.match(buildSource, /Verify extracted server archive loads its packaged Iroh addon/);
+      assert.match(buildSource, /server-runtime-native-/);
+    } else {
+      assert.match(
+        buildSource,
+        /verify-artifacts\.mjs[\s\S]*?--require-all-archives-checksummed[\s\S]*?find dist\/release-assets\/[^ ]+ -type f ! -name '\*\.tar\.gz' -delete/,
+        `${name} must retain archive admission and compatible-platform smoke before its unsigned handoff`,
+      );
+    }
     assert.doesNotMatch(
       buildSource,
       /github\.token|GH_TOKEN|GITHUB_TOKEN|id-token|attestations|artifact-metadata|secrets\./,
@@ -470,13 +475,13 @@ test('preview release forwards one complete CLI candidate identity and binds it 
 
 test('server candidate is secret-free and the privileged finalizer consumes only the frozen candidate identity', () => {
   const jobs = workflow('publish-server-runtime.yml').jobs;
-  const candidate = jobs.build_candidate;
+  const candidate = jobs.build_native;
   const finalizer = jobs.finalize_publish;
   assert.equal(candidate.environment, undefined);
   assert.doesNotMatch(JSON.stringify(candidate), /MINISIGN_SECRET_KEY.*secrets|RELEASE_BOT_PRIVATE_KEY|create-github-app-token/);
-  assert.deepEqual(finalizer.needs, ['prepare', 'build_candidate', 'finalize_darwin']);
+  assert.deepEqual(finalizer.needs, ['prepare', 'build_native', 'finalize_darwin']);
   const darwinFinalizer = jobs.finalize_darwin;
-  assert.deepEqual(darwinFinalizer.needs, ['prepare', 'build_candidate']);
+  assert.deepEqual(darwinFinalizer.needs, ['prepare', 'build_native']);
   assert.match(JSON.stringify(darwinFinalizer), /needs\.prepare\.outputs\.source_sha/);
   const finalizerSource = JSON.stringify(finalizer);
   assert.match(finalizerSource, /needs\.prepare\.outputs\.source_sha/);

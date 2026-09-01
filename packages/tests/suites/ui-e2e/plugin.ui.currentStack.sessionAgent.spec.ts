@@ -110,7 +110,7 @@ test.describe('current managed Stack external Session Agent', () => {
     };
 
     const lifecyclePhases: Array<Readonly<{ phase: string; generation: string }>> = [
-      { phase: 'installed', generation: fixture.installed.appliedGeneration },
+      { phase: 'source-installed', generation: fixture.installed.appliedGeneration },
     ];
     const wizardAgentOption = () => page.getByTestId(fixture.selectors.wizardOption);
     const ownedDraftIds: string[] = [];
@@ -173,7 +173,7 @@ test.describe('current managed Stack external Session Agent', () => {
       context = await restartCurrentManagedStackDaemon({ context, restartSessionRunners: true });
       fixture.reattach(context);
       const restartedGeneration = await fixture.generation();
-      lifecyclePhases.push({ phase: 'daemon-restarted', generation: restartedGeneration.appliedGeneration });
+      lifecyclePhases.push({ phase: 'source-daemon-restarted', generation: restartedGeneration.appliedGeneration });
       await assertCurrentManagedStackSessionAgentIdentity({ context, phase: 'active' });
       await visitRoute({
         urlPath: `/session/${sessionId}`,
@@ -191,7 +191,7 @@ test.describe('current managed Stack external Session Agent', () => {
       // apply a fresh current generation for the same plugin identity.
       const reloaded = await fixture.applySourceUpdate();
       expect(reloaded.appliedGeneration).not.toBe(fixture.installed.appliedGeneration);
-      lifecyclePhases.push({ phase: 'reloaded', generation: reloaded.appliedGeneration });
+      lifecyclePhases.push({ phase: 'source-reloaded', generation: reloaded.appliedGeneration });
       const reloadedIdentity = await assertCurrentManagedStackSessionAgentIdentity({ context, phase: 'active' });
       if (reloadedIdentity?.appliedGeneration !== reloaded.appliedGeneration) {
         throw new Error('session_agent_reload_generation_not_current');
@@ -211,14 +211,14 @@ test.describe('current managed Stack external Session Agent', () => {
 
       // Disable: the exact qualified option must disappear from the picker.
       const disabled = await fixture.disable();
-      lifecyclePhases.push({ phase: 'disabled', generation: disabled.appliedGeneration });
+      lifecyclePhases.push({ phase: 'source-disabled', generation: disabled.appliedGeneration });
       await assertCurrentManagedStackSessionAgentIdentity({ context, phase: 'present' });
       await visitRoute({ urlPath: '/new', requiredTestId: fixture.selectors.newSessionComposerInput });
       await expect(wizardAgentOption()).toHaveCount(0, { timeout: 180_000 });
 
       // Re-enable: the same qualified identity returns.
       const enabledGeneration = await fixture.enable();
-      lifecyclePhases.push({ phase: 'enabled', generation: enabledGeneration.appliedGeneration });
+      lifecyclePhases.push({ phase: 'source-enabled', generation: enabledGeneration.appliedGeneration });
       await visitRoute({ urlPath: '/new', requiredTestId: fixture.selectors.newSessionComposerInput });
       await selectNewSessionAgent({
         page,
@@ -228,10 +228,37 @@ test.describe('current managed Stack external Session Agent', () => {
 
       // Uninstall: the Agent identity disappears with the plugin.
       await fixture.uninstall();
-      lifecyclePhases.push({ phase: 'uninstalled', generation: enabledGeneration.appliedGeneration });
+      lifecyclePhases.push({ phase: 'source-uninstalled', generation: enabledGeneration.appliedGeneration });
       await assertCurrentManagedStackSessionAgentIdentity({ context, phase: 'absent' });
       await visitRoute({ urlPath: '/new', requiredTestId: fixture.selectors.newSessionComposerInput });
       await expect(wizardAgentOption()).toHaveCount(0, { timeout: 180_000 });
+
+      // Distinct packed-install evidence row: install the archive prepared by
+      // the same fixture through present-user review, then drive one real turn
+      // whose reasoning sentinel exists only in those packed bytes.
+      const packed = await fixture.installPackedDiscriminator();
+      lifecyclePhases.push({ phase: 'packed-installed', generation: packed.appliedGeneration });
+      await assertCurrentManagedStackSessionAgentIdentity({ context, phase: 'active' });
+      ownedDraftIds.push(await openNewSessionDraft());
+      await selectNewSessionAgent({
+        page,
+        agentId: fixture.qualifiedAgentId,
+        label: fixture.displayTitle,
+      });
+      await composerSend({
+        inputTestId: fixture.selectors.newSessionComposerInput,
+        sendTestId: fixture.selectors.newSessionComposerSend,
+        text: `${SESSION_AGENT_PROMPT} Packed archive discriminator.`,
+      });
+      await expect.poll(() => sessionPathname(page.url()), { timeout: 120_000 }).not.toBeNull();
+      const packedSessionId = sessionPathname(page.url())!.split('/')[2]!;
+      ownedSessionIds.push(packedSessionId);
+      await settleConfirmation();
+      await expect(page.getByText(fixture.packedReasoningText)).not.toHaveCount(0, { timeout: 120_000 });
+      await expect(page.getByText(fixture.assistantText).first()).toBeVisible({ timeout: 120_000 });
+      await fixture.uninstall();
+      lifecyclePhases.push({ phase: 'packed-uninstalled', generation: packed.appliedGeneration });
+      await assertCurrentManagedStackSessionAgentIdentity({ context, phase: 'absent' });
 
       // Hard trust revocation with a pending host confirmation: reinstall,
       // reopen the Agent, leave the confirmation pending, then forget trust
@@ -239,7 +266,7 @@ test.describe('current managed Stack external Session Agent', () => {
       // the late confirmation must settle without publishing a result, and
       // the Agent must stay unavailable.
       const reinstalled = await fixture.reinstall();
-      lifecyclePhases.push({ phase: 'reinstalled', generation: reinstalled.appliedGeneration });
+      lifecyclePhases.push({ phase: 'source-reinstalled', generation: reinstalled.appliedGeneration });
       await assertCurrentManagedStackSessionAgentIdentity({ context, phase: 'active' });
       ownedDraftIds.push(await openNewSessionDraft());
       await selectNewSessionAgent({
@@ -271,6 +298,7 @@ test.describe('current managed Stack external Session Agent', () => {
       });
       await expect(page.getByTestId(fixture.selectors.permissionAllow)).toHaveCount(0, { timeout: 180_000 });
       expect(await page.getByText(fixture.assistantText).count()).toBe(0);
+      lifecyclePhases.push({ phase: 'stale-generation-refused', generation: reinstalled.appliedGeneration });
       await assertCurrentManagedStackSessionAgentIdentity({ context, phase: 'present' });
       await visitRoute({ urlPath: '/new', requiredTestId: fixture.selectors.newSessionComposerInput });
       await expect(wizardAgentOption()).toHaveCount(0, { timeout: 180_000 });

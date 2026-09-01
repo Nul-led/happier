@@ -5,12 +5,14 @@ import { describe, expect, it } from 'vitest';
 import {
   assertCurrentManagedStackSessionAgentIdentity,
   buildCurrentManagedStackSessionAgentAuthorArgs,
+  buildCurrentManagedStackSessionAgentArchiveInstallArgs,
   buildCurrentManagedStackSessionAgentInstallArgs,
   buildCurrentManagedStackSessionAgentSelectors,
   CURRENT_SOURCE_SESSION_AGENT_ASSISTANT_TEXT,
   CURRENT_SOURCE_SESSION_AGENT_CONFIRMATION_TITLE,
   CURRENT_SOURCE_SESSION_AGENT_DISPLAY_TITLE,
   CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID,
+  CURRENT_SOURCE_SESSION_AGENT_PACKED_REASONING_TEXT,
   CURRENT_SOURCE_SESSION_AGENT_QUALIFIED_TARGET_ID,
   CURRENT_SOURCE_SESSION_AGENT_REASONING_TEXT,
   CURRENT_SOURCE_SESSION_AGENT_UPDATED_REASONING_TEXT,
@@ -133,8 +135,20 @@ function fakePostJson(params: Readonly<{
 }
 
 describe('current-source Session Agent harness boundaries', () => {
-  it('uses the public managed author commands for typecheck, test, build, and ephemeral pack proof', () => {
+  it('uses the public managed author commands for create, typecheck, test, build, and pack proof', () => {
     const sourceRoot = '/tmp/external-session-agent';
+    expect(buildCurrentManagedStackSessionAgentAuthorArgs({
+      command: 'create',
+      sourceRoot,
+      pluginId: CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID,
+    })).toEqual([
+      'plugins',
+      'create',
+      sourceRoot,
+      '--id',
+      CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID,
+      '--json',
+    ]);
     expect(buildCurrentManagedStackSessionAgentAuthorArgs({ command: 'typecheck', sourceRoot }))
       .toEqual(['plugins', 'dev', 'typecheck', sourceRoot]);
     expect(buildCurrentManagedStackSessionAgentAuthorArgs({ command: 'test', sourceRoot }))
@@ -165,6 +179,17 @@ describe('current-source Session Agent harness boundaries', () => {
     ]);
   });
 
+  it('installs the packed discriminator through the canonical archive review path', () => {
+    expect(buildCurrentManagedStackSessionAgentArchiveInstallArgs('/tmp/external-session-agent.tgz')).toEqual([
+      'plugins',
+      'install',
+      '/tmp/external-session-agent.tgz',
+      '--kind',
+      'archive',
+      '--json',
+    ]);
+  });
+
   it('derives the exact qualified identity and stable client selectors from one owner', () => {
     expect(CURRENT_SOURCE_SESSION_AGENT_QUALIFIED_TARGET_ID)
       .toBe('agent:examples.session-agent/session-agent');
@@ -173,6 +198,7 @@ describe('current-source Session Agent harness boundaries', () => {
     expect(CURRENT_SOURCE_SESSION_AGENT_ASSISTANT_TEXT).toBe('Deterministic check approved.');
     expect(CURRENT_SOURCE_SESSION_AGENT_REASONING_TEXT).toBe('Preparing the deterministic check.');
     expect(CURRENT_SOURCE_SESSION_AGENT_UPDATED_REASONING_TEXT).toBe('Preparing the updated deterministic check.');
+    expect(CURRENT_SOURCE_SESSION_AGENT_PACKED_REASONING_TEXT).toBe('Preparing the packed deterministic check.');
     expect(CURRENT_SOURCE_SESSION_AGENT_CONFIRMATION_TITLE).toBe('Run deterministic check?');
 
     const selectors = buildCurrentManagedStackSessionAgentSelectors();

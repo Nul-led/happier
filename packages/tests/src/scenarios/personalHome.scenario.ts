@@ -46,7 +46,8 @@ export async function assertPersonalHomeRuntimeSpecContract(): Promise<void> {
   require(spec.encryptionStoragePolicy === 'plaintext_only' && spec.defaultAccountMode === 'plain', 'Personal Home storage policy drifted');
   const env = renderPersonalHomeRuntimeEnv({ spec, port: 43123, anonymousSignupEnabled: false });
   require(env.AUTH_ANONYMOUS_SIGNUP_ENABLED === '0', 'Signup closure was not rendered');
-  require(env.HAPPIER_PUBLIC_SERVER_URL === 'http://127.0.0.1:43123', 'Canonical origin was changed');
+  require(env.HAPPIER_CANONICAL_SERVER_URL === 'http://127.0.0.1:43123', 'Canonical origin was changed');
+  require(env.HAPPIER_PUBLIC_SERVER_URL === '', 'Loopback-only Personal Home advertised public ingress');
   const layout = resolvePersonalHomeRuntimeLayout({ homeDir: '/tmp/personal-home-scenario', platform: 'linux', mode: 'user' });
   // Canonical layout-containment assertion owner; it throws when a Home path escapes the data root.
   assertLayoutPath(layout, layout.databasePath);

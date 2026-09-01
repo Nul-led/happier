@@ -59,6 +59,9 @@ import { maybeInstallCompanionCli } from './self_host/install_companion_cli.mjs'
 import { listVersionedDirectoryIdsNewestFirst, pruneVersionedDirectories } from './self_host/version_retention.mjs';
 
 const SUPPORTED_CHANNELS = new Set(PUBLIC_RELEASE_RING_IDS);
+const QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION =
+  '20260725100000_activate_qualified_connected_accounts_v4';
+const MIGRATION_NOT_APPLIED_EXIT_CODE = 3;
 const DEFAULTS = Object.freeze({
   githubRepo: 'happier-dev/happier',
   installRoot: '/opt/happier',
@@ -355,6 +358,77 @@ export async function applySelfHostServerMigrationsAtInstallTime({
   });
 }
 
+class SelfHostServerRollbackProhibitedError extends Error {
+  constructor(message, options = {}) {
+    super(message, options);
+    this.name = 'SelfHostServerRollbackProhibitedError';
+    this.code = 'SELF_HOST_SERVER_ROLLBACK_PROHIBITED';
+    this.rollbackProhibited = true;
+  }
+}
+
+export async function assertSelfHostServerRollbackAllowed({
+  config,
+  env,
+  runCommandImpl = runCommand,
+  candidateContainsBoundaryMigration,
+} = {}) {
+  const platform = config.platform ?? process.platform;
+  const containsBoundaryMigration = candidateContainsBoundaryMigration ?? [
+    join(dirname(config.serverBinaryPath), 'prisma', 'migrations', QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION),
+    join(dirname(config.serverBinaryPath), 'prisma', 'mysql', 'migrations', QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION),
+    join(config.dataDir, 'migrations', 'sqlite', QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION),
+  ].some((path) => existsSync(path));
+  if (!containsBoundaryMigration) return;
+  const migrationBinaryName = platform === 'win32'
+    ? 'happier-server-migrate.exe'
+    : 'happier-server-migrate';
+  const plan = {
+    command: platform === 'win32'
+      ? win32Path.join(win32Path.dirname(config.serverBinaryPath), migrationBinaryName)
+      : join(dirname(config.serverBinaryPath), migrationBinaryName),
+    args: [`--is-migration-applied=${QUALIFIED_CONNECTED_ACCOUNTS_V4_ACTIVATION_MIGRATION}`],
+  };
+  const completion = await runCommandImpl(plan.command, [...plan.args], {
+    cwd: config.installRoot,
+    env: { ...process.env, ...env },
+    allowFail: true,
+    stdio: 'pipe',
+  });
+  if (!completion?.error && completion?.status === MIGRATION_NOT_APPLIED_EXIT_CODE && completion?.signal == null) {
+    return;
+  }
+  if (!completion?.error && completion?.status === 0 && completion?.signal == null) {
+    throw new SelfHostServerRollbackProhibitedError(
+      '[self-host] Qualified Connected Accounts V4 is applied; old-server rollback is prohibited.',
+    );
+  }
+  const detail = completion?.error?.message
+    || String(completion?.stderr ?? '').trim()
+    || `migration ledger check exited with status ${completion?.status ?? 'unknown'}`;
+  throw new SelfHostServerRollbackProhibitedError(
+    `[self-host] cannot determine whether Qualified Connected Accounts V4 is applied; refusing old-server rollback: ${detail}`,
+  );
+}
+
+export async function runSelfHostPostMigrationStepWithRollbackProtection({
+  config,
+  env,
+  operation,
+  runCommandImpl = runCommand,
+  candidateContainsBoundaryMigration,
+} = {}) {
+  if (typeof operation !== 'function') {
+    throw new Error('[self-host] protected post-migration operation is required');
+  }
+  try {
+    return await operation();
+  } catch (error) {
+    await assertSelfHostServerRollbackAllowed({ config, env, runCommandImpl, candidateContainsBoundaryMigration });
+    throw error;
+  }
+}
+
 function resolveConfig({ channel, mode = 'user', platform = process.platform } = {}) {
   const defaults = resolveSelfHostDefaults({ platform, mode, channel, homeDir: homedir() });
   const installRoot = String(process.env.HAPPIER_SELF_HOST_INSTALL_ROOT ?? defaults.installRoot).trim();
@@ -468,6 +542,11 @@ function assertValidEnvKey(key) {
   const k = String(key ?? '').trim();
   if (!/^[A-Z][A-Z0-9_]*$/.test(k)) {
     throw new Error(`[self-host] invalid env key: ${k || '(empty)'}`);
+  }
+  if (k === 'HAPPIER_MANAGED_RELAY_PURPOSE') {
+    throw new Error(
+      '[self-host] managed runtime purpose is owned by the canonical relay host installer and cannot be set through self-host environment overrides.',
+    );
   }
   return k;
 }
@@ -1424,6 +1503,9 @@ async function promoteStagedSelfHostRuntimePayload({
       }
     }
   } catch (error) {
+    if (error?.rollbackProhibited === true) {
+      throw error;
+    }
     await rollbackFailClosedBinaryPromotionWindow(binaryPromotionWindow);
     for (const promotion of promoted.reverse()) {
       await rollbackPromotedDirectory(promotion);
@@ -1874,31 +1956,37 @@ async function performSelfHostPostPromoteSteps({
   await writeFile(config.configEnvPath, envTextWithOverrides, 'utf-8');
   const installEnv = parseEnvText(envTextWithOverrides);
   const healthPort = resolveSelfHostEffectiveServerPort({ config, env: installEnv });
-  await applySelfHostServerMigrationsAtInstallTime({ config, env: installEnv }).catch((e) => {
-    throw new Error(`[self-host] failed to apply database migrations at install time: ${String(e?.message ?? e)}`);
-  });
+  await runSelfHostPostMigrationStepWithRollbackProtection({
+    config,
+    env: installEnv,
+    operation: async () => {
+      await applySelfHostServerMigrationsAtInstallTime({ config, env: installEnv }).catch((e) => {
+        throw new Error(`[self-host] failed to apply database migrations at install time: ${String(e?.message ?? e)}`);
+      });
 
-  const serverShimPath = join(config.binDir, config.serverBinaryName);
-  await mkdir(config.binDir, { recursive: true });
-  await rm(serverShimPath, { force: true });
-  await symlink(config.serverBinaryPath, serverShimPath).catch(async () => {
-    await copyFile(config.serverBinaryPath, serverShimPath);
-    await chmod(serverShimPath, 0o755).catch(() => {});
-  });
+      const serverShimPath = join(config.binDir, config.serverBinaryName);
+      await mkdir(config.binDir, { recursive: true });
+      await rm(serverShimPath, { force: true });
+      await symlink(config.serverBinaryPath, serverShimPath).catch(async () => {
+        await copyFile(config.serverBinaryPath, serverShimPath);
+        await chmod(serverShimPath, 0o755).catch(() => {});
+      });
 
-  const serviceSpec = buildSelfHostServerServiceSpec({ config, envText: envTextWithOverrides });
-  await installManagedService({
-    platform: config.platform,
-    mode: config.mode,
-    homeDir: homedir(),
-    spec: serviceSpec,
-    persistent: true,
-  });
+      const serviceSpec = buildSelfHostServerServiceSpec({ config, envText: envTextWithOverrides });
+      await installManagedService({
+        platform: config.platform,
+        mode: config.mode,
+        homeDir: homedir(),
+        spec: serviceSpec,
+        persistent: true,
+      });
 
-  const healthy = await restartAndCheckHealth({ config, serviceSpec, port: healthPort });
-  if (!healthy) {
-    throw new Error('[self-host] service failed health checks after install');
-  }
+      const healthy = await restartAndCheckHealth({ config, serviceSpec, port: healthPort });
+      if (!healthy) {
+        throw new Error('[self-host] service failed health checks after install');
+      }
+    },
+  });
 
   const autoUpdateResult = autoUpdateMode === 'install'
     ? await installAutoUpdateJob({
@@ -2262,12 +2350,13 @@ async function cmdRollback({ channel, mode, argv, json }) {
         : '[self-host] no previous binary is available for rollback'
     );
   }
-  await copyFile(target, config.serverBinaryPath);
-  await chmod(config.serverBinaryPath, 0o755).catch(() => {});
   const envText = existsSync(config.configEnvPath)
     ? await readFile(config.configEnvPath, 'utf-8').catch(() => '')
     : '';
   const parsedEnv = parseEnvText(envText);
+  await assertSelfHostServerRollbackAllowed({ config, env: parsedEnv });
+  await copyFile(target, config.serverBinaryPath);
+  await chmod(config.serverBinaryPath, 0o755).catch(() => {});
   const effectivePort = parsePort(parsedEnv.PORT, config.serverPort);
   const configWithPort = effectivePort === config.serverPort ? config : { ...config, serverPort: effectivePort };
   const defaultsEnvText = renderServerEnvFile({
@@ -2618,6 +2707,60 @@ function isRelayHostForwardableSubcommand(subcommand) {
   return RELAY_HOST_FORWARDABLE_SUBCOMMANDS.has(String(subcommand ?? '').trim());
 }
 
+function isSelfHostFallbackMutation(parsed) {
+  const subcommand = String(parsed?.subcommand ?? '').trim();
+  if (subcommand === 'install' || subcommand === 'update' || subcommand === 'rollback' || subcommand === 'uninstall') {
+    return true;
+  }
+  if (subcommand !== 'config') return false;
+  return (pickFirstPositional(parsed?.rest) || 'view') !== 'view';
+}
+
+async function assertSelfHostFallbackMutationOwner({ config, parsed }) {
+  if (!isSelfHostFallbackMutation(parsed)) return;
+
+  let state = null;
+  if (existsSync(config.statePath)) {
+    const stateText = await readFile(config.statePath, 'utf8');
+    try {
+      state = JSON.parse(stateText);
+    } catch {
+      throw new Error('[self-host] cannot determine the persisted runtime purpose from self-host-state.json; refusing fallback mutation.');
+    }
+    if (state == null || typeof state !== 'object' || Array.isArray(state)) {
+      throw new Error('[self-host] cannot determine the persisted runtime purpose from self-host-state.json; refusing fallback mutation.');
+    }
+  }
+
+  const hasStatePurpose = state != null
+    && typeof state === 'object'
+    && Object.prototype.hasOwnProperty.call(state, 'purpose');
+  const statePurpose = state?.purpose?.kind == null ? '' : String(state.purpose.kind).trim();
+  if (hasStatePurpose && !statePurpose) {
+    throw new Error('[self-host] cannot determine the persisted runtime purpose; refusing fallback mutation.');
+  }
+  const envText = existsSync(config.configEnvPath)
+    ? await readFile(config.configEnvPath, 'utf8')
+    : '';
+  const envPurpose = envText
+    ? String(parseEnvText(envText).HAPPIER_MANAGED_RELAY_PURPOSE ?? '').trim()
+    : '';
+  const observedPurposes = [statePurpose, envPurpose].filter(Boolean);
+  const recognizedPurposes = new Set(['generic', 'personal-home']);
+
+  if (observedPurposes.some((purpose) => !recognizedPurposes.has(purpose))) {
+    throw new Error('[self-host] cannot determine the persisted runtime purpose; refusing fallback mutation.');
+  }
+  if (new Set(observedPurposes).size > 1) {
+    throw new Error('[self-host] persisted runtime purpose metadata conflicts; refusing fallback mutation.');
+  }
+  if (observedPurposes.includes('personal-home')) {
+    throw new Error(
+      '[self-host] Personal Home runtime mutations must use the canonical owner through happier relay host; canonical forwarding is unavailable or disabled.',
+    );
+  }
+}
+
 export async function runSelfHostCli(argv = process.argv.slice(2)) {
   const parsed = parseSelfHostInvocation(argv);
   const { flags, kv } = parseArgs(argv);
@@ -2665,6 +2808,11 @@ export async function runSelfHostCli(argv = process.argv.slice(2)) {
         (argv.includes('--system') ? 'system' : argv.includes('--user') ? 'user' : process.env.HAPPIER_SELF_HOST_MODE ?? 'user')
     )
   );
+
+  await assertSelfHostFallbackMutationOwner({
+    config: resolveConfig({ channel, mode, platform: process.platform }),
+    parsed,
+  });
 
   if (parsed.subcommand === 'install') {
     await cmdInstall({ channel, mode, argv: parsed.rest, json });

@@ -20,6 +20,18 @@ describe('redactHarnessLogText', () => {
     expect(redacted).toContain('ok=keep');
   });
 
+  it('redacts credential-suffixed environment assignments', () => {
+    const secret = 'sentinel-unregistered-environment-secret';
+    const redacted = redactHarnessLogText([
+      `HAPPIER_HOME_MASTER_SECRET=${secret}`,
+      `SERVICE_ACCESS_TOKEN=${secret}`,
+      'HAPPIER_STRESS_USERS=25',
+    ].join('\n'));
+
+    expect(redacted).not.toContain(secret);
+    expect(redacted).toContain('HAPPIER_STRESS_USERS=25');
+  });
+
   it('returns an empty string for empty input', () => {
     expect(redactHarnessLogText('')).toBe('');
   });

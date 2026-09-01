@@ -290,12 +290,41 @@ jobs:
             --resolve-version-only \
             --github-output "$GITHUB_OUTPUT"
 
-  build_candidate:
-    name: Build unsigned server candidate
+  build_native:
+    name: Build and verify server (${{ matrix.platform_key }})
     if: ${{ inputs.retry_version == '' && inputs.resume_version == '' }}
     needs: [prepare]
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform_key: linux-x64
+            runner: ubuntu-24.04
+            server_target: linux-x64
+            bun_target: bun-linux-x64-baseline
+            iroh_addon_target: linux-x64
+          - platform_key: linux-arm64
+            runner: ubuntu-24.04-arm
+            server_target: linux-arm64
+            bun_target: bun-linux-arm64
+            iroh_addon_target: linux-arm64
+          - platform_key: darwin-x64
+            runner: macos-15-intel
+            server_target: darwin-x64
+            bun_target: bun-darwin-x64
+            iroh_addon_target: darwin-x64
+          - platform_key: darwin-arm64
+            runner: macos-15
+            server_target: darwin-arm64
+            bun_target: bun-darwin-arm64
+            iroh_addon_target: darwin-arm64
+          - platform_key: windows-x64
+            runner: windows-2025
+            server_target: windows-x64
+            bun_target: bun-windows-x64
+            iroh_addon_target: win32-x64
     steps:
       - name: Download exact candidate source transport
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -319,48 +348,97 @@ jobs:
           cache: yarn
           cache-dependency-path: yarn.lock
       - name: Enable Corepack
+        shell: bash
         run: |
+          set -euo pipefail
           corepack enable
           corepack prepare yarn@1.22.22 --activate
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.3.5
+      - name: Setup pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.94.1 --profile minimal
+          rustup default 1.94.1
+          rustc --version | grep -F 'rustc 1.94.1 '
       - name: Install dependencies
         env:
           HAPPIER_UI_VENDOR_WEB_ASSETS: "0"
         uses: ./.github/actions/install-yarn-dependencies
         with:
-          args: --frozen-lockfile --ignore-engines --ignore-platform
-      - name: Build unsigned server archives
+          args: --frozen-lockfile --ignore-engines
+      - name: Build and load the target Iroh lifecycle addon
+        shell: bash
+        env:
+          BUN_TARGET: ${{ matrix.bun_target }}
+          IROH_SMOKE_SUFFIX: ${{ matrix.platform_key == 'windows-x64' && '.exe' || '' }}
+        run: |
+          set -euo pipefail
+          yarn workspace @happier-dev/iroh-native build
+          yarn workspace @happier-dev/iroh-native build:native
+          yarn workspace @happier-dev/iroh-native verify:native
+          yarn workspace @happier-dev/iroh-native verify:native:bun
+          IROH_COMPILED_SMOKE="${GITHUB_WORKSPACE}/dist/iroh-native-server-compiled-smoke${IROH_SMOKE_SUFFIX}"
+          mkdir -p "$(dirname "$IROH_COMPILED_SMOKE")"
+          bun build --compile --target "$BUN_TARGET" \
+            packages/iroh-native/scripts/verify-node-addon-load.mjs \
+            --outfile "$IROH_COMPILED_SMOKE"
+          "$IROH_COMPILED_SMOKE" --package-root "$GITHUB_WORKSPACE/packages/iroh-native"
+      - name: Build exact native server archive
+        shell: bash
         env:
           MINISIGN_SECRET_KEY: ""
           MINISIGN_PASSPHRASE: ""
+          HAPPIER_SERVER_REQUIRE_IROH_NATIVE: "1"
           HAPPIER_EMBEDDED_POLICY_ENV: ${{ needs.prepare.outputs.embedded_policy_env }}
           RELEASE_CHANNEL: ${{ inputs.channel }}
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SERVER_TARGET: ${{ matrix.server_target }}
         run: |
           set -euo pipefail
           node scripts/pipeline/release/build-server-binaries.mjs \
             --channel "$RELEASE_CHANNEL" \
-            --version "$RELEASE_VERSION"
-          node scripts/pipeline/release/verify-artifacts.mjs \
-            --artifacts-dir dist/release-assets/server \
-            --require-all-archives-checksummed
-          find dist/release-assets/server -type f ! -name '*.tar.gz' -delete
-          test "$(find dist/release-assets/server -maxdepth 1 -type f -name '*.tar.gz' | wc -l | tr -d ' ')" -gt 0
-      - name: Upload unsigned candidate
+            --version "$RELEASE_VERSION" \
+            --targets "$SERVER_TARGET"
+      - name: Verify extracted server archive loads its packaged Iroh addon
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          SERVER_TARGET: ${{ matrix.server_target }}
+          PLATFORM_KEY: ${{ matrix.platform_key }}
+          IROH_ADDON_TARGET: ${{ matrix.iroh_addon_target }}
+          IROH_SMOKE_SUFFIX: ${{ matrix.platform_key == 'windows-x64' && '.exe' || '' }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="${GITHUB_WORKSPACE}/dist/release-assets/server/happier-server-v${RELEASE_VERSION}-${SERVER_TARGET}.tar.gz"
+          EXTRACT_DIR="${RUNNER_TEMP}/packaged-server-${PLATFORM_KEY}"
+          rm -rf "$EXTRACT_DIR"
+          node scripts/pipeline/release/node-archive.mjs \
+            --extract-archive-path "$ARCHIVE" \
+            --extract-dir "$EXTRACT_DIR"
+          PACKAGED_PAYLOAD_PATH="${EXTRACT_DIR}/happier-server-v${RELEASE_VERSION}-${SERVER_TARGET}"
+          PACKAGED_IROH_ROOT="${PACKAGED_PAYLOAD_PATH}/node_modules/@happier-dev/iroh-native"
+          test -f "${PACKAGED_IROH_ROOT}/native/happier-iroh-native-lifecycle.${IROH_ADDON_TARGET}.node"
+          node "${PACKAGED_IROH_ROOT}/scripts/verify-node-addon-load.mjs" --package-root "$PACKAGED_IROH_ROOT"
+          bun "${PACKAGED_IROH_ROOT}/scripts/verify-node-addon-load.mjs" --package-root "$PACKAGED_IROH_ROOT"
+          PACKAGED_IROH_SMOKE="${PACKAGED_PAYLOAD_PATH}/iroh-native-server-compiled-smoke${IROH_SMOKE_SUFFIX}"
+          cp "${GITHUB_WORKSPACE}/dist/iroh-native-server-compiled-smoke${IROH_SMOKE_SUFFIX}" "$PACKAGED_IROH_SMOKE"
+          "$PACKAGED_IROH_SMOKE"
+      - name: Upload exact unsigned native server leaf
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: server-runtime-candidate-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.source_sha }}
-          path: dist/release-assets/server/*.tar.gz
+          name: server-runtime-native-${{ matrix.platform_key }}-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.source_sha }}
+          path: dist/release-assets/server/happier-server-v${{ needs.prepare.outputs.version }}-${{ matrix.server_target }}.tar.gz
           if-no-files-found: error
           retention-days: 2
 
   finalize_darwin:
     name: Sign and notarize server (${{ matrix.platform_key }})
     if: ${{ inputs.retry_version == '' && inputs.resume_version == '' }}
-    needs: [prepare, build_candidate]
+    needs: [prepare, build_native]
     runs-on: ${{ matrix.runner }}
     environment: release-shared
     permissions:
@@ -427,7 +505,7 @@ jobs:
       - name: Download unsigned candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: server-runtime-candidate-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.source_sha }}
+          name: server-runtime-native-${{ matrix.platform_key }}-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.source_sha }}
           path: dist/release-assets/server
       - name: Sign, notarize, and verify exact server archive
         env:
@@ -487,7 +565,7 @@ jobs:
   finalize_publish:
     name: Sign and publish exact server candidate
     if: ${{ inputs.retry_version == '' && inputs.resume_version == '' }}
-    needs: [prepare, build_candidate, finalize_darwin]
+    needs: [prepare, build_native, finalize_darwin]
     runs-on: ubuntu-24.04
     environment: release-shared
     permissions:
@@ -524,11 +602,12 @@ jobs:
         uses: ./.github/actions/install-yarn-dependencies
         with:
           args: --frozen-lockfile --ignore-engines
-      - name: Download exact unsigned candidate
+      - name: Download exact unsigned native server leaves
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: server-runtime-candidate-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.source_sha }}
+          pattern: server-runtime-native-*-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.source_sha }}
           path: dist/release-assets/server
+          merge-multiple: true
       - name: Download signed Darwin leaves
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:

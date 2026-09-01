@@ -20,7 +20,7 @@ test('requires an explicit Lane 09 evidence report path', () => {
   assert.match(result.stderr, /Usage:.*validateHomesCertificationReport\.ts <report-path>/u);
 });
 
-test('exposes a report completeness check rather than a scenario certification command', () => {
+test('exposes report structure lint rather than a scenario certification command', () => {
   const packageJson = JSON.parse(readFileSync(resolve(repository, 'package.json'), 'utf8')) as {
     scripts?: Record<string, string>;
   };

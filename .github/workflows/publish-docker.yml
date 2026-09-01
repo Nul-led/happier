@@ -52,6 +52,11 @@ on:
         required: true
         default: true
         type: boolean
+      build_iroh_relay:
+        description: "Build/push stock Iroh relay image"
+        required: true
+        default: true
+        type: boolean
   workflow_call:
     inputs:
       channel:
@@ -89,6 +94,10 @@ on:
         required: false
         default: true
         type: boolean
+      build_iroh_relay:
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -108,6 +117,7 @@ jobs:
         env:
           BUILD_RELAY: ${{ inputs.build_relay }}
           BUILD_DEV_BOX: ${{ inputs.build_dev_box }}
+          BUILD_IROH_RELAY: ${{ inputs.build_iroh_relay }}
           SERVER_VERSION: ${{ inputs.server_version }}
           CLI_VERSION: ${{ inputs.cli_version }}
           CHANNEL: ${{ inputs.channel }}
@@ -290,6 +300,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/docker-source-candidate/docker-source.tar.gz" -C .candidate-source
           test -f .candidate-source/Dockerfile
           test -f .candidate-source/docker/dev-box/Dockerfile
+          test -f .candidate-source/deploy/iroh-relay/Dockerfile
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
@@ -332,6 +343,7 @@ jobs:
           PUSH_LATEST: ${{ inputs.push_latest }}
           BUILD_RELAY: ${{ inputs.build_relay }}
           BUILD_DEV_BOX: ${{ inputs.build_dev_box }}
+          BUILD_IROH_RELAY: ${{ inputs.build_iroh_relay }}
           HAPPIER_DOCKER_SERVER_VERSION: ${{ inputs.server_version }}
           HAPPIER_DOCKER_CLI_VERSION: ${{ inputs.cli_version }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -350,6 +362,7 @@ jobs:
             --registries "$REGISTRIES" \
             --push-latest "$PUSH_LATEST" \
             --build-relay "$BUILD_RELAY" \
+            --build-iroh-relay "$BUILD_IROH_RELAY" \
             --build-dev-box "$BUILD_DEV_BOX"
 
       - name: Update Docker Hub README (relay-server)

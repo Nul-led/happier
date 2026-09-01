@@ -50,14 +50,14 @@ test('tracked root governance enforces bundled plugin projection drift', () => {
   assert.match(scripts['test:migration:governance'] ?? '', /test:migration:bundled-plugin-runtime-determinism/);
 });
 
-test('root migration governance runs the composed runtime-unification validator gate', () => {
+test('root migration governance runs tracked product validators without ignored plan-ledger closure', () => {
   const scripts = readRootScripts();
   const governanceScript = scripts['test:migration:governance'] ?? '';
 
   assert.match(governanceScript, /test:migration:bundled-plugin-projections/);
   assert.match(governanceScript, /test:migration:bundled-plugin-runtime-determinism/);
   assert.ok(governanceScript.includes(RUNTIME_UNIFICATION_VALIDATOR_COMMAND));
-  assert.ok(governanceScript.includes(FINAL_UNIFICATION_CHECK_COMMAND));
+  assert.ok(!governanceScript.includes(FINAL_UNIFICATION_CHECK_COMMAND));
   assert.doesNotMatch(governanceScript, /(?:^|\s)\.project\//);
   assert.doesNotMatch(governanceScript, /runAllValidators\.ts\b/);
   assert.doesNotMatch(governanceScript, /validateReleaseContract\.ts\s+--(?:list|json)\b/);

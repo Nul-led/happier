@@ -495,6 +495,9 @@ async function main() {
       sha: { type: 'string', default: '' },
       'push-latest': { type: 'string', default: 'true' },
       'build-relay': { type: 'string', default: 'true' },
+      // Workflow publication opts in explicitly. Keep direct/local invocations
+      // backward-compatible unless they select the new image.
+      'build-iroh-relay': { type: 'string', default: 'false' },
       'build-dev-box': { type: 'string', default: 'true' },
       'dry-run': { type: 'boolean', default: false },
     },
@@ -509,6 +512,7 @@ async function main() {
 
   const pushLatest = parseBool(values['push-latest'], '--push-latest');
   const buildRelay = parseBool(values['build-relay'], '--build-relay');
+  const buildIrohRelay = parseBool(values['build-iroh-relay'], '--build-iroh-relay');
   const buildDevBox = parseBool(values['build-dev-box'], '--build-dev-box');
   const dryRun = values['dry-run'] === true;
   const sourceRef = String(values['source-ref'] ?? '').trim();
@@ -520,17 +524,19 @@ async function main() {
   const ghcrNamespaceRaw = String(process.env.GHCR_NAMESPACE ?? 'ghcr.io/happier-dev').trim();
   const ghcrNamespace = ghcrNamespaceRaw.endsWith('/') ? ghcrNamespaceRaw.slice(0, -1) : ghcrNamespaceRaw;
 
-  /** @type {Partial<Record<'dockerhub' | 'ghcr', Readonly<{ relayBase: string; devBase: string }>>>} */
+  /** @type {Partial<Record<'dockerhub' | 'ghcr', Readonly<{ relayBase: string; irohRelayBase: string; devBase: string }>>>} */
   const basesByRegistry = {};
   if (registries.has('dockerhub')) {
     basesByRegistry.dockerhub = {
       relayBase: 'happierdev/relay-server',
+      irohRelayBase: 'happierdev/iroh-relay',
       devBase: 'happierdev/dev-box',
     };
   }
   if (registries.has('ghcr')) {
     basesByRegistry.ghcr = {
       relayBase: `${ghcrNamespace}/relay-server`,
+      irohRelayBase: `${ghcrNamespace}/iroh-relay`,
       devBase: `${ghcrNamespace}/dev-box`,
     };
   }
@@ -575,9 +581,21 @@ async function main() {
     ]).filter(Boolean),
   );
 
+  /** @type {ReadonlyArray<Readonly<{ registry: 'dockerhub' | 'ghcr'; tags: string[]; base: string }>>} */
+  const irohRelayTagSets = uniq(
+    /** @type {Array<Readonly<{ registry: 'dockerhub' | 'ghcr'; tags: string[]; base: string }>>} */ ([
+      basesByRegistry.dockerhub
+        ? { registry: 'dockerhub', base: basesByRegistry.dockerhub.irohRelayBase, tags: buildTagsForBase(basesByRegistry.dockerhub.irohRelayBase) }
+        : null,
+      basesByRegistry.ghcr
+        ? { registry: 'ghcr', base: basesByRegistry.ghcr.irohRelayBase, tags: buildTagsForBase(basesByRegistry.ghcr.irohRelayBase) }
+        : null,
+    ]).filter(Boolean),
+  );
+
   /**
    * @param {readonly string[]} tags
-   * @param {{ target: string; file: string; cacheScope: string; extraArgs?: string[] }} params
+   * @param {{ target: string; file: string; context?: string; cacheScope: string; extraArgs?: string[] }} params
    */
   const runBuildxForTags = async (tags, params) => {
     if (tags.length === 0) return;
@@ -598,7 +616,7 @@ async function main() {
       '--label',
       `org.opencontainers.image.revision=${sha}`,
       ...tags.flatMap((t) => ['--tag', t]),
-      '.',
+      params.context ?? '.',
     ];
 
     await runDockerBuildxBuildWithRetry({
@@ -664,6 +682,22 @@ async function main() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[pipeline] sentry release tracking failed (ignored): ${msg}`);
+    }
+  }
+
+  if (buildIrohRelay) {
+    run(process.execPath, ['packages/iroh-native/scripts/verify-iroh-lock-parity.mjs'], {
+      dryRun: false,
+      stdio: 'inherit',
+    });
+    for (const tagSet of irohRelayTagSets) {
+      await runBuildxForTags(tagSet.tags, {
+        target: '',
+        file: 'deploy/iroh-relay/Dockerfile',
+        context: 'deploy/iroh-relay',
+        cacheScope: 'iroh-relay',
+        extraArgs: ['--sbom=true', '--provenance=true'],
+      });
     }
   }
 

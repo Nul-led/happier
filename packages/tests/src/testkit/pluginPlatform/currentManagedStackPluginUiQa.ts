@@ -24,6 +24,10 @@ import {
   reloadTrustedLocalPluginFixture,
   uninstallTrustedLocalPluginFixture,
 } from '../externalSessionLiveLifecycleFixture';
+import {
+  decideAuthenticatedPluginInstallReview,
+  readPluginInstallReviewRequiredEnvelope,
+} from './authenticatedInstallReview';
 
 const INSPECTOR_PLUGIN_ID = 'happier.inspector';
 const INSPECTOR_PACKAGE_NAME = '@happier-dev/plugins-inspector';
@@ -47,7 +51,9 @@ export const CURRENT_SOURCE_SESSION_AGENT_DISPLAY_TITLE = 'Deterministic Session
 export const CURRENT_SOURCE_SESSION_AGENT_ASSISTANT_TEXT = 'Deterministic check approved.';
 export const CURRENT_SOURCE_SESSION_AGENT_REASONING_TEXT = 'Preparing the deterministic check.';
 export const CURRENT_SOURCE_SESSION_AGENT_UPDATED_REASONING_TEXT = 'Preparing the updated deterministic check.';
+export const CURRENT_SOURCE_SESSION_AGENT_PACKED_REASONING_TEXT = 'Preparing the packed deterministic check.';
 export const CURRENT_SOURCE_SESSION_AGENT_CONFIRMATION_TITLE = 'Run deterministic check?';
+const CURRENT_SOURCE_SESSION_AGENT_PACKED_VERSION = '0.2.0';
 const CURRENT_SOURCE_NATIVE_PUBLIC_FIXTURE_ROOT = join(
   REPOSITORY_ROOT,
   'packages/tests/fixtures/plugin-platform/current-source-native-public',
@@ -251,6 +257,7 @@ export type CurrentManagedStackSessionAgentFixture = Readonly<{
   assistantText: string;
   reasoningText: string;
   updatedReasoningText: string;
+  packedReasoningText: string;
   confirmationTitle: string;
   sourceRoot: string;
   /** Caller-owned example roots are never deleted; disposable copies are. */
@@ -271,6 +278,7 @@ export type CurrentManagedStackSessionAgentFixture = Readonly<{
   reattach(context: CurrentManagedStackPluginUiContext): void;
   generation(): Promise<CurrentManagedStackSourcePluginGeneration>;
   applySourceUpdate(): Promise<CurrentManagedStackSourcePluginGeneration>;
+  installPackedDiscriminator(): Promise<CurrentManagedStackSourcePluginGeneration>;
   disable(): Promise<CurrentManagedStackSourcePluginGeneration>;
   enable(): Promise<CurrentManagedStackSourcePluginGeneration>;
   reinstall(): Promise<CurrentManagedStackSourcePluginGeneration>;
@@ -1635,10 +1643,38 @@ async function prepareCurrentManagedStackSessionAgentSource(params: Readonly<{
 }>): Promise<void> {
   await cp(params.exampleRoot, params.sourceRoot, {
     recursive: true,
-    filter: (source) => !source.includes('/node_modules')
-      && !source.includes('/dist')
-      && !source.includes('/.happier-plugin'),
+    filter: (source) => !source.split(/[\\/]/u).some((segment) => (
+      segment === 'node_modules'
+      || segment === 'dist'
+      || segment === '.happier-plugin'
+    )),
   });
+}
+
+async function applyCurrentManagedStackSessionAgentExampleToScaffold(params: Readonly<{
+  sourceRoot: string;
+  exampleRoot: string;
+}>): Promise<void> {
+  await mkdir(join(params.sourceRoot, 'src', 'agent'), { recursive: true });
+  await Promise.all([
+    cp(join(params.exampleRoot, 'index.ts'), join(params.sourceRoot, 'src', 'index.ts')),
+    cp(
+      join(params.exampleRoot, 'agent', 'deterministicSessionAgent.ts'),
+      join(params.sourceRoot, 'src', 'agent', 'deterministicSessionAgent.ts'),
+    ),
+    cp(join(params.exampleRoot, 'test', 'index.test.mjs'), join(params.sourceRoot, 'test', 'index.test.mjs')),
+  ]);
+}
+
+async function resolveCurrentManagedStackSessionAgentSourceDirectory(sourceRoot: string): Promise<string> {
+  try {
+    const scaffoldEntry = await stat(join(sourceRoot, 'src', 'index.ts'));
+    if (scaffoldEntry.isFile()) return join(sourceRoot, 'src');
+  } catch {
+    // The maintained package-root example is also accepted by caller-owned
+    // fixture roots; it keeps index.ts and agent/ at the package root.
+  }
+  return sourceRoot;
 }
 
 /**
@@ -1648,9 +1684,20 @@ async function prepareCurrentManagedStackSessionAgentSource(params: Readonly<{
  * compiler, test-runner, or pack implementations.
  */
 export function buildCurrentManagedStackSessionAgentAuthorArgs(params: Readonly<
+  | { command: 'create'; sourceRoot: string; pluginId: string }
   | { command: 'typecheck' | 'test' | 'build'; sourceRoot: string }
   | { command: 'pack'; sourceRoot: string; archivePath: string }
 >): readonly string[] {
+  if (params.command === 'create') {
+    return Object.freeze([
+      'plugins',
+      'create',
+      params.sourceRoot,
+      '--id',
+      params.pluginId,
+      '--json',
+    ]);
+  }
   if (params.command === 'test') {
     return Object.freeze(['plugins', 'test', params.sourceRoot]);
   }
@@ -1672,11 +1719,21 @@ export function buildCurrentManagedStackSessionAgentAuthorArgs(params: Readonly<
  * typecheck, test, build, or pack responsibilities itself.
  */
 async function runCurrentManagedStackSessionAgentAuthorCommand(params: Readonly<{
-  command: 'typecheck' | 'test' | 'build' | 'pack';
+  command: 'create' | 'typecheck' | 'test' | 'build' | 'pack';
   sourceRoot: string;
   archivePath?: string;
+  pluginId?: string;
 }>): Promise<void> {
-  const args = params.command === 'pack'
+  const args = params.command === 'create'
+    ? buildCurrentManagedStackSessionAgentAuthorArgs({
+        command: 'create',
+        sourceRoot: params.sourceRoot,
+        pluginId: requireString(
+          params.pluginId,
+          'plugin_ui_current_stack_session_agent_create_plugin_id_missing',
+        ),
+      })
+    : params.command === 'pack'
     ? buildCurrentManagedStackSessionAgentAuthorArgs({
         command: 'pack',
         sourceRoot: params.sourceRoot,
@@ -1704,6 +1761,18 @@ export function buildCurrentManagedStackSessionAgentInstallArgs(sourceRoot: stri
     sourceRoot,
     '--dev',
     '--trust',
+    '--json',
+  ]);
+}
+
+/** The ordinary archive install command; present-user review remains separate. */
+export function buildCurrentManagedStackSessionAgentArchiveInstallArgs(archivePath: string): readonly string[] {
+  return Object.freeze([
+    'plugins',
+    'install',
+    archivePath,
+    '--kind',
+    'archive',
     '--json',
   ]);
 }
@@ -1736,6 +1805,57 @@ async function installCurrentManagedStackSessionAgentThroughCli(params: Readonly
   }
 }
 
+async function installCurrentManagedStackSessionAgentArchiveThroughCli(params: Readonly<{
+  context: CurrentManagedStackPluginUiContext;
+  archivePath: string;
+}>): Promise<void> {
+  let stdout: string;
+  try {
+    stdout = (await execFileAsync(
+      process.execPath,
+      [
+        join(REPOSITORY_ROOT, 'apps/cli/bin/happier.mjs'),
+        ...buildCurrentManagedStackSessionAgentArchiveInstallArgs(params.archivePath),
+      ],
+      {
+        cwd: REPOSITORY_ROOT,
+        env: { ...process.env, HAPPIER_HOME_DIR: params.context.cliHome },
+        maxBuffer: 32 * 1024 * 1024,
+        timeout: 300_000,
+      },
+    )).stdout;
+  } catch (error) {
+    const processError = error as Error & { stdout?: string | Buffer };
+    stdout = typeof processError.stdout === 'string'
+      ? processError.stdout
+      : Buffer.isBuffer(processError.stdout)
+        ? processError.stdout.toString('utf8')
+        : '';
+    if (!stdout.trim()) throw error;
+  }
+  const requested = readPluginInstallReviewRequiredEnvelope(JSON.parse(stdout.trim()));
+  if (
+    requested.review.source.kind !== 'archive'
+    || requested.review.pluginId !== CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID
+    || requested.review.version !== CURRENT_SOURCE_SESSION_AGENT_PACKED_VERSION
+  ) {
+    throw new Error('plugin_ui_current_stack_session_agent_archive_review_identity_mismatch');
+  }
+  const outcome = await decideAuthenticatedPluginInstallReview({
+    cliHomeDir: params.context.cliHome,
+    serverUrl: params.context.serverUrl,
+    pendingChangeId: requested.pendingChangeId,
+    optionalSelections: requested.review.optionalHostAccess.map((access) => ({
+      accessId: access.id,
+      selected: false,
+    })),
+    confirmPresentUser: async () => true,
+  });
+  if (outcome.kind !== 'committed' || outcome.pluginId !== CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID) {
+    throw new Error(`plugin_ui_current_stack_session_agent_archive_install_not_committed:${outcome.kind}`);
+  }
+}
+
 function nextSessionAgentSourceVersion(previousIndex: number): string {
   return `0.1.${10 + previousIndex}`;
 }
@@ -1744,7 +1864,8 @@ async function rewriteSessionAgentSourceVersion(params: Readonly<{
   sourceRoot: string;
   version: string;
 }>): Promise<void> {
-  const indexPath = join(params.sourceRoot, 'index.ts');
+  const sourceDirectory = await resolveCurrentManagedStackSessionAgentSourceDirectory(params.sourceRoot);
+  const indexPath = join(sourceDirectory, 'index.ts');
   const original = await readFile(indexPath, 'utf8');
   const updated = original.replace(
     /version: '[^']*',/u,
@@ -1754,7 +1875,7 @@ async function rewriteSessionAgentSourceVersion(params: Readonly<{
     throw new Error('plugin_ui_current_stack_session_agent_source_version_anchor_missing');
   }
   await writeFile(indexPath, updated, 'utf8');
-  const agentPath = join(params.sourceRoot, 'agent', 'deterministicSessionAgent.ts');
+  const agentPath = join(sourceDirectory, 'agent', 'deterministicSessionAgent.ts');
   const agentOriginal = await readFile(agentPath, 'utf8');
   const agentUpdated = agentOriginal.replace(
     CURRENT_SOURCE_SESSION_AGENT_REASONING_TEXT,
@@ -1764,6 +1885,33 @@ async function rewriteSessionAgentSourceVersion(params: Readonly<{
     throw new Error('plugin_ui_current_stack_session_agent_behavior_update_anchor_missing');
   }
   await writeFile(agentPath, agentUpdated, 'utf8');
+}
+
+async function rewriteSessionAgentPackedDiscriminator(params: Readonly<{
+  sourceRoot: string;
+}>): Promise<void> {
+  const sourceDirectory = await resolveCurrentManagedStackSessionAgentSourceDirectory(params.sourceRoot);
+  const indexPath = join(sourceDirectory, 'index.ts');
+  const indexSource = await readFile(indexPath, 'utf8');
+  const versioned = indexSource.replace(
+    /version: '[^']*',/u,
+    `version: '${CURRENT_SOURCE_SESSION_AGENT_PACKED_VERSION}',`,
+  );
+  if (versioned === indexSource) {
+    throw new Error('plugin_ui_current_stack_session_agent_packed_version_anchor_missing');
+  }
+  await writeFile(indexPath, versioned, 'utf8');
+
+  const agentPath = join(sourceDirectory, 'agent', 'deterministicSessionAgent.ts');
+  const agentSource = await readFile(agentPath, 'utf8');
+  const discriminated = agentSource.replace(
+    CURRENT_SOURCE_SESSION_AGENT_REASONING_TEXT,
+    CURRENT_SOURCE_SESSION_AGENT_PACKED_REASONING_TEXT,
+  );
+  if (discriminated === agentSource) {
+    throw new Error('plugin_ui_current_stack_session_agent_packed_behavior_anchor_missing');
+  }
+  await writeFile(agentPath, discriminated, 'utf8');
 }
 
 /**
@@ -1887,8 +2035,8 @@ export function buildCurrentManagedStackSessionAgentSelectors(): CurrentManagedS
  * commands prepare dependencies and run typecheck/test/build/pack;
  * installation uses the canonical dev-and-trust daemon change path. Every row
  * starts from the pristine example source and cleanup retires the fixture even
- * after a failed client flow. Pack output is ephemeral transport proof only
- * and is removed before the loaded lifecycle begins.
+ * after a failed client flow. One archive-only reasoning sentinel lets the
+ * browser row prove a deterministic Session turn actually used packed bytes.
  */
 export async function prepareCurrentManagedStackSessionAgentFixture(params: Readonly<{
   context: CurrentManagedStackPluginUiContext;
@@ -1901,13 +2049,17 @@ export async function prepareCurrentManagedStackSessionAgentFixture(params: Read
     ? resolve(params.exampleRoot)
     : CURRENT_SOURCE_SESSION_AGENT_EXAMPLE_ROOT;
   const ownsSourceRoot = !params.exampleRoot;
-  const sourceRoot = ownsSourceRoot
+  const sourceOutputRoot = ownsSourceRoot
     ? await mkdtemp(join(tmpdir(), 'happier-current-source-session-agent-'))
-    : exampleRoot;
+    : null;
+  const sourceRoot = sourceOutputRoot ? join(sourceOutputRoot, 'session-agent') : exampleRoot;
   const pluginId = CURRENT_SOURCE_SESSION_AGENT_PLUGIN_ID;
   let context = params.context;
   let installed = false;
   let sourceUpdateOrdinal = 0;
+  const packOutputRoot = await mkdtemp(join(tmpdir(), 'happier-current-source-session-agent-pack-'));
+  const packSourceRoot = join(packOutputRoot, 'source');
+  const packArchivePath = join(packOutputRoot, 'session-agent.tgz');
   const generation = async (): Promise<CurrentManagedStackSourcePluginGeneration> => (
     await attestCurrentManagedStackSourcePluginGeneration({
       context,
@@ -1948,25 +2100,26 @@ export async function prepareCurrentManagedStackSessionAgentFixture(params: Read
 
   try {
     if (ownsSourceRoot) {
-      await prepareCurrentManagedStackSessionAgentSource({ sourceRoot, exampleRoot });
+      await runCurrentManagedStackSessionAgentAuthorCommand({
+        command: 'create',
+        sourceRoot,
+        pluginId,
+      });
+      await applyCurrentManagedStackSessionAgentExampleToScaffold({ sourceRoot, exampleRoot });
     }
     await runCurrentManagedStackSessionAgentAuthorCommand({ command: 'typecheck', sourceRoot });
     await runCurrentManagedStackSessionAgentAuthorCommand({ command: 'test', sourceRoot });
     await runCurrentManagedStackSessionAgentAuthorCommand({ command: 'build', sourceRoot });
-    const packOutputRoot = await mkdtemp(join(tmpdir(), 'happier-current-source-session-agent-pack-'));
-    const packArchivePath = join(packOutputRoot, 'session-agent.tgz');
-    try {
-      await runCurrentManagedStackSessionAgentAuthorCommand({
-        command: 'pack',
-        sourceRoot,
-        archivePath: packArchivePath,
-      });
-      const packed = await stat(packArchivePath);
-      if (!packed.isFile() || packed.size === 0) {
-        throw new Error('plugin_ui_current_stack_session_agent_pack_output_invalid');
-      }
-    } finally {
-      await rm(packOutputRoot, { recursive: true, force: true });
+    await prepareCurrentManagedStackSessionAgentSource({ sourceRoot: packSourceRoot, exampleRoot: sourceRoot });
+    await rewriteSessionAgentPackedDiscriminator({ sourceRoot: packSourceRoot });
+    await runCurrentManagedStackSessionAgentAuthorCommand({
+      command: 'pack',
+      sourceRoot: packSourceRoot,
+      archivePath: packArchivePath,
+    });
+    const packed = await stat(packArchivePath);
+    if (!packed.isFile() || packed.size === 0) {
+      throw new Error('plugin_ui_current_stack_session_agent_pack_output_invalid');
     }
     const initial = await install();
     return Object.freeze({
@@ -1977,6 +2130,7 @@ export async function prepareCurrentManagedStackSessionAgentFixture(params: Read
       assistantText: CURRENT_SOURCE_SESSION_AGENT_ASSISTANT_TEXT,
       reasoningText: CURRENT_SOURCE_SESSION_AGENT_REASONING_TEXT,
       updatedReasoningText: CURRENT_SOURCE_SESSION_AGENT_UPDATED_REASONING_TEXT,
+      packedReasoningText: CURRENT_SOURCE_SESSION_AGENT_PACKED_REASONING_TEXT,
       confirmationTitle: CURRENT_SOURCE_SESSION_AGENT_CONFIRMATION_TITLE,
       sourceRoot,
       ownsSourceRoot,
@@ -2004,9 +2158,19 @@ export async function prepareCurrentManagedStackSessionAgentFixture(params: Read
           controlToken: context.daemon.controlToken,
           pluginRoot: sourceRoot,
           pluginId,
-          changedPaths: ['index.ts', 'agent/deterministicSessionAgent.ts', 'dist'],
+          changedPaths: ownsSourceRoot
+            ? ['src/index.ts', 'src/agent/deterministicSessionAgent.ts', 'dist']
+            : ['index.ts', 'agent/deterministicSessionAgent.ts', 'dist'],
           postJson: params.postJson,
         });
+        return await generation();
+      },
+      installPackedDiscriminator: async () => {
+        if (installed) {
+          throw new Error('plugin_ui_current_stack_session_agent_archive_install_requires_absent_plugin');
+        }
+        await installCurrentManagedStackSessionAgentArchiveThroughCli({ context, archivePath: packArchivePath });
+        installed = true;
         return await generation();
       },
       disable: async () => {
@@ -2034,9 +2198,10 @@ export async function prepareCurrentManagedStackSessionAgentFixture(params: Read
             postJson: params.postJson,
           });
         }
-        if (ownsSourceRoot) {
-          await rm(sourceRoot, { recursive: true, force: true });
+        if (sourceOutputRoot) {
+          await rm(sourceOutputRoot, { recursive: true, force: true });
         }
+        await rm(packOutputRoot, { recursive: true, force: true });
       },
     });
   } catch (error) {
@@ -2044,8 +2209,11 @@ export async function prepareCurrentManagedStackSessionAgentFixture(params: Read
     if (installed) {
       try { await uninstallOnce(); } catch (candidate) { cleanupError = candidate; }
     }
-    if (!cleanupError && ownsSourceRoot) {
-      await rm(sourceRoot, { recursive: true, force: true }).catch(() => {});
+    if (!cleanupError && sourceOutputRoot) {
+      await rm(sourceOutputRoot, { recursive: true, force: true }).catch(() => {});
+    }
+    if (!cleanupError) {
+      await rm(packOutputRoot, { recursive: true, force: true }).catch(() => {});
     }
     if (cleanupError) {
       throw new AggregateError(

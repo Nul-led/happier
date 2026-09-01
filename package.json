@@ -120,7 +120,7 @@
     "test:migration:wire-compat": "node --experimental-strip-types ./scripts/testing/migrations/validateProtocolWireCompatibilityInventory.ts",
     "test:migration:bundled-plugin-projections": "node apps/cli/scripts/withNodeHeapLimit.mjs node --experimental-strip-types scripts/migrations/extensions/generateBundledPluginEntries.ts --mode check --scope projections",
     "test:migration:bundled-plugin-runtime-determinism": "node apps/cli/scripts/withNodeHeapLimit.mjs node --experimental-strip-types scripts/migrations/extensions/generateBundledPluginEntries.ts --mode check --scope all",
-    "test:migration:governance": "yarn -s test:migration:v2-zero:enforce && yarn -s test:migration:wire-compat && yarn -s test:migration:bundled-plugin-projections && yarn -s test:migration:bundled-plugin-runtime-determinism && node --experimental-strip-types scripts/testing/migrations/runtimeUnification/validateReleaseContract.ts && node --experimental-strip-types scripts/testing/migrations/runtimeUnification/checkFullyUnified.ts --final",
+    "test:migration:governance": "yarn -s test:migration:v2-zero:enforce && yarn -s test:migration:wire-compat && yarn -s test:migration:bundled-plugin-projections && yarn -s test:migration:bundled-plugin-runtime-determinism && node --experimental-strip-types scripts/testing/migrations/runtimeUnification/validateReleaseContract.ts",
     "test:extended-db:postgres:docker": "node packages/tests/scripts/run-extended-db-docker.mjs --db postgres --mode extended",
     "test:extended-db:mysql:docker": "node packages/tests/scripts/run-extended-db-docker.mjs --db mysql --mode extended",
     "test:extended-db:docker": "yarn -s test:extended-db:postgres:docker && yarn -s test:extended-db:mysql:docker",

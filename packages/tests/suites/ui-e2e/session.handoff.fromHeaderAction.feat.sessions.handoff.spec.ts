@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import { createRunDirs } from '../../src/testkit/runDir';
+import { redactCredentialShapedValuesDeep } from '../../src/testkit/artifactSecretSafety';
 import { startTestDaemon, type StartedDaemon } from '../../src/testkit/daemon/daemon';
 import { fakeClaudeFixturePath, waitForFakeClaudeInvocation } from '../../src/testkit/fakeClaude';
 import { readCliAccessKey } from '../../src/testkit/cliAccessKey';
@@ -24,8 +25,11 @@ import {
 } from '../../src/testkit/uiE2e/pageNavigation';
 import { readLegacyAuthSecretFromLocalStorage } from '../../src/testkit/uiE2e/readLegacyAuthSecretFromLocalStorage';
 import { resolveTerminalConnectUrlForBrowser } from '../../src/testkit/uiE2e/resolveTerminalConnectUrlForBrowser';
+import { secretBearingBrowserCapturePolicy } from '../../src/testkit/uiE2e/secretBearingBrowserCapture';
 import { ensurePendingTerminalConnectReadyForApproval } from '../../src/testkit/uiE2e/terminalConnectApprovalFlow';
 import { spawnSessionFromDaemon } from '../../src/testkit/uiE2e/spawnSessionFromDaemon';
+
+test.use(secretBearingBrowserCapturePolicy);
 
 const run = createRunDirs({ runLabel: 'ui-e2e' });
 const uiWebExportTimeoutMs = process.env.HAPPIER_E2E_UI_WEB_EXPORT_TIMEOUT_MS ?? '900000';
@@ -344,6 +348,11 @@ async function collectBrowserStateDiagnostics(
 
   const storageSnapshotOrNull = storageSnapshot as BrowserStorageSnapshot | null;
   const machineListByServerIdSummaries = storageSnapshotOrNull ? summarizeMachineLists(storageSnapshotOrNull.localStorage) : [];
+  const redactedCookies = cookies.map(({ value: _value, ...cookie }) => ({
+    ...cookie,
+    value: '[REDACTED]',
+  }));
+  const redactedStorageSnapshot = redactCredentialShapedValuesDeep(storageSnapshot);
 
   return [
     '# Browser state',
@@ -357,12 +366,12 @@ async function collectBrowserStateDiagnostics(
     '',
     '## Cookies',
     '```json',
-    JSON.stringify(cookies, null, 2),
+    JSON.stringify(redactedCookies, null, 2),
     '```',
     '',
     '## Storage',
     '```json',
-    JSON.stringify(storageSnapshot, null, 2),
+    JSON.stringify(redactedStorageSnapshot, null, 2),
     '```',
     '',
     '## Derived active server state',

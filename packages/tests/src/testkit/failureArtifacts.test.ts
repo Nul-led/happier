@@ -47,7 +47,27 @@ describe('FailureArtifacts secret safety', () => {
     expect(readFileSync(join(testDir, 'events.json'), 'utf8')).toContain(REDACTED_SECRET_PLACEHOLDER);
     const log = readFileSync(join(testDir, 'server.log'), 'utf8');
     expect(log).not.toContain(masterSecret);
-    expect(log).toContain(`HANDY_MASTER_SECRET=${REDACTED_SECRET_PLACEHOLDER}`);
+    expect(log).toContain('HANDY_MASTER_SECRET=[REDACTED]');
+  });
+
+  it('redacts unregistered credentials embedded in free-form json and text', async () => {
+    const bearer = 'sentinel-unregistered-bearer-0123456789abcdef';
+    const password = 'sentinel-url-password-0123456789abcdef';
+    const envSecret = 'sentinel-env-secret-0123456789abcdef';
+    const artifacts = new FailureArtifacts();
+    artifacts.json('events.json', async () => ({
+      output: `Authorization: Bearer ${bearer}`,
+      url: `https://operator:${password}@example.test/path`,
+    }));
+    artifacts.text('server.log', async () => `HAPPIER_HOME_MASTER_SECRET=${envSecret}\n`);
+
+    await artifacts.dumpAll(testDir);
+
+    const json = readFileSync(join(testDir, 'events.json'), 'utf8');
+    const text = readFileSync(join(testDir, 'server.log'), 'utf8');
+    expect(json).not.toContain(bearer);
+    expect(json).not.toContain(password);
+    expect(text).not.toContain(envSecret);
   });
 
   it('records producer errors without leaking registered runtime secrets', async () => {

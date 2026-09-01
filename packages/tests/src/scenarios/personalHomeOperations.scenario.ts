@@ -143,7 +143,12 @@ async function runKind(
 }
 
 function base(): PersonalHomeTaskBaseParams {
-  return { target: { kind: 'local' }, purpose };
+  return {
+    target: { kind: 'local' },
+    channel: 'stable',
+    mode: 'user',
+    purpose,
+  };
 }
 
 function outcome(result: SystemTaskJsonValue): string | undefined {

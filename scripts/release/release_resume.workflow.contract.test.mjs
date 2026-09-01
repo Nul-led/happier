@@ -50,7 +50,7 @@ test('one trusted reusable workflow resolves prior release candidates by exact r
 for (const [name, buildJobs] of [
   ['publish-cli-binaries.yml', ['prepare', 'build_native', 'finalize_darwin', 'publish']],
   ['publish-hstack-binaries.yml', ['prepare', 'build_candidate', 'finalize_darwin', 'finalize_publish']],
-  ['publish-server-runtime.yml', ['build_candidate', 'finalize_darwin', 'finalize_publish']],
+  ['publish-server-runtime.yml', ['build_native', 'finalize_darwin', 'finalize_publish']],
   ['publish-ui-web.yml', ['prepare', 'build_candidate', 'publish']],
 ]) {
   test(`${name} reuses a verified immutable candidate without rebuilding or promoting it`, () => {

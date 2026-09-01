@@ -627,6 +627,23 @@ describe('writeTestManifest secret safety', () => {
     expect(raw).toContain(`route grant seed leaked: ${REDACTED_SECRET_PLACEHOLDER}`);
   });
 
+  it('redacts unregistered credentials embedded in free-form manifest strings', () => {
+    const bearer = 'sentinel-manifest-bearer-0123456789abcdef';
+    const password = 'sentinel-manifest-password-0123456789abcdef';
+    const manifestPath = writeTestManifest(testDir, {
+      startedAt: '2026-08-30T12:00:00.000Z',
+      observed: {
+        note: `Authorization: Bearer ${bearer}`,
+        endpoint: `https://operator:${password}@example.test/path`,
+      },
+    });
+
+    const raw = readFileSync(manifestPath, 'utf8');
+    expect(raw).not.toContain(bearer);
+    expect(raw).not.toContain(password);
+    expect(() => JSON.parse(raw)).not.toThrow();
+  });
+
   it('never treats benign secret_link values or reason codes as credentials', () => {
     const manifestPath = writeTestManifest(testDir, {
       startedAt: '2026-08-30T12:00:00.000Z',

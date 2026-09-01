@@ -3,9 +3,10 @@ import { resolve } from 'node:path';
 
 import {
   findCredentialShapedValuePath,
+  redactArtifactTextValuesDeep,
   scrubKnownSecretValues,
-  scrubKnownSecretValuesDeep,
 } from './artifactSecretSafety';
+import { redactHarnessLogText } from './process/harnessLogRedaction';
 
 type Producer<T> = () => T | Promise<T>;
 
@@ -42,18 +43,18 @@ export class FailureArtifacts {
           }
           writeFileSync(
             path,
-            `${JSON.stringify(scrubKnownSecretValuesDeep(value), null, 2)}\n`,
+            `${JSON.stringify(redactArtifactTextValuesDeep(value), null, 2)}\n`,
             'utf8',
           );
         } else {
           const text = await artifact.produce();
-          writeFileSync(path, scrubKnownSecretValues(text), 'utf8');
+          writeFileSync(path, redactHarnessLogText(scrubKnownSecretValues(text)), 'utf8');
         }
       } catch (e) {
         const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
         writeFileSync(
           path,
-          scrubKnownSecretValues(`FAILED_TO_WRITE_ARTIFACT: ${msg}\n`),
+          redactHarnessLogText(scrubKnownSecretValues(`FAILED_TO_WRITE_ARTIFACT: ${msg}\n`)),
           'utf8',
         );
       }

@@ -65,10 +65,11 @@ test('publish-server-runtime embeds build feature policy defaults by channel', a
   assert.doesNotMatch(raw, /inputs\.channel\s*==\s*'publicdev'/);
 });
 
-test('publish-server-runtime installs cross-target optional native packages for the candidate build', async () => {
+test('publish-server-runtime installs target-native packages on each native candidate runner', async () => {
   const raw = await loadWorkflow('publish-server-runtime.yml');
   const parsed = YAML.parse(raw);
-  const install = parsed.jobs.build_candidate.steps.find((step) => step.name === 'Install dependencies');
+  const install = parsed.jobs.build_native.steps.find((step) => step.name === 'Install dependencies');
 
-  assert.match(install.with.args, /(?:^|\s)--ignore-platform(?:\s|$)/);
+  assert.doesNotMatch(install.with.args, /(?:^|\s)--ignore-platform(?:\s|$)/);
+  assert.equal(parsed.jobs.build_native.strategy.matrix.include.length, 5);
 });

@@ -242,6 +242,97 @@ test('relay-host forwarding maps legacy HStack update onto the canonical idempot
   );
 });
 
+test('self-host fallback refuses to mutate a persisted Personal Home when canonical forwarding is unavailable', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'happier-self-host-personal-home-owner-'));
+  t.after(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  const installRoot = join(tmp, 'install');
+  const statePath = join(installRoot, 'self-host-state.json');
+  await mkdir(installRoot, { recursive: true });
+  const initialState = {
+    channel: 'stable',
+    mode: 'user',
+    version: '0.3.0',
+    purpose: {
+      kind: 'personal-home',
+      canonicalServerUrl: 'http://127.0.0.1:3005',
+    },
+  };
+  await writeFile(statePath, `${JSON.stringify(initialState, null, 2)}\n`, 'utf8');
+
+  const env = {
+    HAPPIER_STACK_SELF_HOST_FORWARD: '0',
+    HAPPIER_SELF_HOST_INSTALL_ROOT: installRoot,
+    HAPPIER_SELF_HOST_CONFIG_DIR: join(tmp, 'config'),
+    HAPPIER_SELF_HOST_DATA_DIR: join(tmp, 'data'),
+    HAPPIER_SELF_HOST_LOG_DIR: join(tmp, 'logs'),
+  };
+  const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  await assert.rejects(
+    selfHostRuntimeModule.runSelfHostCli(['config', 'set', '--no-apply', '--auto-update']),
+    /Personal Home.*canonical.*happier relay host/i,
+  );
+  await assert.rejects(
+    selfHostRuntimeModule.runSelfHostCli(['rollback', '--mode=user']),
+    /Personal Home.*canonical.*happier relay host/i,
+  );
+  assert.deepEqual(JSON.parse(await readFile(statePath, 'utf8')), initialState);
+});
+
+test('self-host fallback cannot create Personal Home ownership through a generic environment override', async (t) => {
+  const tmp = await mkdtemp(join(tmpdir(), 'happier-self-host-purpose-override-'));
+  t.after(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  const env = {
+    HAPPIER_STACK_SELF_HOST_FORWARD: '0',
+    HAPPIER_SELF_HOST_INSTALL_ROOT: join(tmp, 'install'),
+    HAPPIER_SELF_HOST_CONFIG_DIR: join(tmp, 'config'),
+    HAPPIER_SELF_HOST_DATA_DIR: join(tmp, 'data'),
+    HAPPIER_SELF_HOST_LOG_DIR: join(tmp, 'logs'),
+  };
+  const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  await assert.rejects(
+    selfHostRuntimeModule.runSelfHostCli([
+      'config',
+      'set',
+      '--no-apply',
+      '--env',
+      'HAPPIER_MANAGED_RELAY_PURPOSE=personal-home',
+    ]),
+    /managed.*purpose.*canonical.*relay host/i,
+  );
+  assert.equal(existsSync(join(tmp, 'config', 'server.env')), false);
+
+  await selfHostRuntimeModule.runSelfHostCli([
+    'config',
+    'set',
+    '--no-apply',
+    '--env',
+    'PORT=3444',
+  ]);
+  assert.match(await readFile(join(tmp, 'config', 'server.env'), 'utf8'), /^PORT=3444$/m);
+});
+
 test('self-host install-time migration delegates to the canonical provider migration plan', async () => {
   assert.equal(typeof selfHostRuntimeModule.applySelfHostServerMigrationsAtInstallTime, 'function');
   const calls = [];
@@ -253,6 +344,7 @@ test('self-host install-time migration delegates to the canonical provider migra
   };
   const config = {
     installRoot: '/opt/happier',
+    dataDir: '/var/lib/happier',
     serverBinaryPath: '/opt/happier/bin/happier-server',
   };
 
@@ -292,6 +384,72 @@ test('self-host install-time migration preserves canonical binary failure', asyn
       },
     }),
     (error) => error === failure,
+  );
+});
+
+test('self-host rollback admission permits pre-boundary rollback and blocks applied or unreadable boundaries', async () => {
+  const config = {
+    installRoot: '/opt/happier',
+    dataDir: '/var/lib/happier',
+    serverBinaryPath: '/opt/happier/bin/happier-server',
+    platform: 'linux',
+  };
+  const env = { HAPPIER_DB_PROVIDER: 'sqlite', DATABASE_URL: 'file:/var/lib/happier/home.sqlite' };
+
+  await selfHostRuntimeModule.assertSelfHostServerRollbackAllowed({
+    config,
+    env,
+    candidateContainsBoundaryMigration: true,
+    runCommandImpl: () => ({ status: 3, signal: null }),
+  });
+  await assert.rejects(
+    selfHostRuntimeModule.assertSelfHostServerRollbackAllowed({
+      config,
+      env,
+      candidateContainsBoundaryMigration: true,
+      runCommandImpl: () => ({ status: 0, signal: null }),
+    }),
+    /Qualified Connected Accounts V4.*applied.*rollback.*prohibited/i,
+  );
+  await assert.rejects(
+    selfHostRuntimeModule.assertSelfHostServerRollbackAllowed({
+      config,
+      env,
+      candidateContainsBoundaryMigration: true,
+      runCommandImpl: () => ({ status: 1, signal: null, stderr: 'database unavailable' }),
+    }),
+    /cannot determine.*Qualified Connected Accounts V4/i,
+  );
+});
+
+test('automatic installer recovery keeps the candidate selected after the irreversible boundary', async () => {
+  const config = {
+    installRoot: '/opt/happier',
+    serverBinaryPath: '/opt/happier/bin/happier-server',
+    platform: 'linux',
+  };
+  const env = { HAPPIER_DB_PROVIDER: 'sqlite', DATABASE_URL: 'file:/var/lib/happier/home.sqlite' };
+
+  await assert.rejects(
+    selfHostRuntimeModule.runSelfHostPostMigrationStepWithRollbackProtection({
+      config,
+      env,
+      candidateContainsBoundaryMigration: true,
+      operation: async () => { throw new Error('candidate health failed'); },
+      runCommandImpl: () => ({ status: 0, signal: null }),
+    }),
+    (error) => error?.code === 'SELF_HOST_SERVER_ROLLBACK_PROHIBITED'
+      && error?.rollbackProhibited === true,
+  );
+  await assert.rejects(
+    selfHostRuntimeModule.runSelfHostPostMigrationStepWithRollbackProtection({
+      config,
+      env,
+      candidateContainsBoundaryMigration: true,
+      operation: async () => { throw new Error('pre-boundary install failed'); },
+      runCommandImpl: () => ({ status: 3, signal: null }),
+    }),
+    /pre-boundary install failed/,
   );
 });
 

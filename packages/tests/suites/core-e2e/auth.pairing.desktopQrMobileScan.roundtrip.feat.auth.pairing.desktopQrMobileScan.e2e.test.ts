@@ -13,7 +13,6 @@ import { envFlag } from '../../src/testkit/env';
 import {
   FeaturesResponseSchema,
   computeHomeQrBindingProofV2,
-  computeHomeQrConfirmationCodeV2,
   deriveHomeQrBindingKeyV2,
   deriveHomeQrRendezvousSecretV2,
   deriveHomeQrRendezvousVerifierV2,
@@ -84,7 +83,7 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
     await server?.stop();
   });
 
-  it('restores a logged-out mobile device via desktop pairing QR', async () => {
+  it('automatically restores a logged-out mobile device after trusted QR proof verification', async () => {
     const testDir = run.testDir('auth-pairing-desktop-qr-mobile-scan');
     const saveArtifactsOnSuccess = envFlag(['HAPPIER_E2E_SAVE_ARTIFACTS', 'HAPPY_E2E_SAVE_ARTIFACTS'], false);
     const startedAt = new Date().toISOString();
@@ -170,7 +169,6 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
         expiresAtMs: parsedInvite.expiresAtMs,
       };
       const bindingProof = computeHomeQrBindingProofV2(joiningBindingParams);
-      const joiningConfirmationCode = computeHomeQrConfirmationCodeV2(joiningBindingParams);
 
       const requestAuthRes = await fetchJson<{ state?: string }>(`${startedServer.baseUrl}/v1/auth/account/request`, {
         method: 'POST',
@@ -258,9 +256,6 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
       expect(verifyHomeQrBindingProofV2(trustedBindingParams, String(statusRes.data?.bindingProof))).toBe(true);
       const wrongBindingProof = `${bindingProof[0] === 'A' ? 'B' : 'A'}${bindingProof.slice(1)}`;
       expect(verifyHomeQrBindingProofV2(trustedBindingParams, wrongBindingProof)).toBe(false);
-      const trustedConfirmationCode = computeHomeQrConfirmationCodeV2(trustedBindingParams);
-      expect(trustedConfirmationCode).toBe(joiningConfirmationCode);
-      expect(trustedConfirmationCode).toMatch(/^\d{6}$/u);
 
       const legacyCompletionRes = await fetchJson<{ error?: string }>(`${startedServer.baseUrl}/v1/auth/account/response`, {
         method: 'POST',
@@ -277,6 +272,8 @@ describe('core e2e: auth pairing (desktop QR → mobile scan)', () => {
       expect(legacyCompletionRes.status).toBe(426);
       expect(legacyCompletionRes.data?.error).toBe('account_provisioning_update_required');
 
+      // Once the trusted client verifies the exact binding proof, it completes
+      // through the existing authenticated response route without a manual step.
       const encryptedResponse = sealTerminalProvisioningV3TokenOnlyPayload({
         terminalEphemeralPublicKey: mobileKp.publicKey,
         pairingSecret: deriveHomeQrBindingKeyV2(qrSecret),

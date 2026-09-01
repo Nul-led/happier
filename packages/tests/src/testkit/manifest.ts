@@ -3,8 +3,8 @@ import { resolve } from 'node:path';
 
 import {
   findCredentialShapedValuePath,
+  redactArtifactTextValuesDeep,
   redactCredentialShapedRecord,
-  scrubKnownSecretValuesDeep,
 } from './artifactSecretSafety';
 
 type DaemonRunnerContinuityPhaseValues<T> = Readonly<{
@@ -593,16 +593,6 @@ export type TestManifest = {
   lane?: string;
   /** Source revision used by the test process; never a credential or runtime secret. */
   commit?: string;
-  /** Exact loaded target observed by the scenario runner for current/current release evidence. */
-  targetIdentity?: {
-    repository: string;
-    head: string;
-    dirtyStatus: string;
-    changedPathsManifest: string;
-    processBuild: string;
-    stackSession: string;
-    planRevision: string;
-  };
   seed?: number;
   ports?: { server?: number };
   baseUrl?: string;
@@ -695,7 +685,7 @@ export function writeTestManifest(testDir: string, manifest: TestManifest): stri
           ),
         },
       };
-  const sanitizedManifest = scrubKnownSecretValuesDeep({
+  const sanitizedManifest = redactArtifactTextValuesDeep({
     ...continuitySanitizedManifest,
     ...(env === undefined ? {} : { env: redactCredentialShapedRecord(env) }),
   });

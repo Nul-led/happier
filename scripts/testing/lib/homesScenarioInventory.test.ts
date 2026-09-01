@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -28,10 +28,15 @@ test('the inventory is a small obligations-only requirement map with no mutable 
 
   const ids = map.flatMap((family: { requirementIds: readonly string[] }) => family.requirementIds);
   assert.equal(new Set(ids).size, ids.length, 'a requirement id is mapped by two families');
-  assert.equal(
-    ids.length,
-    41,
-    'the mapped requirement set must match the 41 acceptance rows in lane-09-integration-validation.md §7',
+  const lanePlan = readFileSync(join(
+    REPO_ROOT,
+    '.project/plans/new-architecture/implementation/lane-09-integration-validation.md',
+  ), 'utf8');
+  const plannedIds = [...lanePlan.matchAll(/`(F-[A-Z]+-\d+ [^`\n]+)`/gu)].map((match) => match[1]);
+  assert.deepEqual(
+    [...ids].sort(),
+    [...new Set(plannedIds)].sort(),
+    'routing inventory must match the current plan obligations without owning their status',
   );
   for (const family of map) {
     assert.ok(family.productOwner.length > 0, `${family.familyId}: product owner is required`);

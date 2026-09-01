@@ -46,7 +46,7 @@ for (const product of [
     workflow: 'publish-server-runtime.yml',
     archiveProduct: 'happier-server',
     evidenceSuffix: 'server',
-    publishNeeds: ['prepare', 'build_candidate', 'finalize_darwin'],
+    publishNeeds: ['prepare', 'build_native', 'finalize_darwin'],
   },
 ]) {
   test(`${product.id} publisher replaces both Darwin leaves with native Developer-ID signed and notarized archives before publication`, async () => {

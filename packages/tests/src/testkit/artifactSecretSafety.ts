@@ -1,3 +1,5 @@
+import { redactHarnessLogText } from './process/harnessLogRedaction';
+
 export const REDACTED_SECRET_PLACEHOLDER = '__redacted_secret__';
 
 export class CredentialShapedArtifactFieldError extends Error {
@@ -88,6 +90,22 @@ export function scrubKnownSecretValuesDeep<T>(value: T): T {
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value).map(([key, entry]) => [key, scrubKnownSecretValuesDeep(entry)]),
+    ) as T;
+  }
+  return value;
+}
+
+/** Preserves structured JSON while redacting registered and recognizable free-form credentials. */
+export function redactArtifactTextValuesDeep<T>(value: T): T {
+  if (typeof value === 'string') {
+    return redactHarnessLogText(scrubKnownSecretValues(value)) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactArtifactTextValuesDeep(entry)) as T;
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, redactArtifactTextValuesDeep(entry)]),
     ) as T;
   }
   return value;

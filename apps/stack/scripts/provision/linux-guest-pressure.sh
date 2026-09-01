@@ -92,6 +92,7 @@ else
   if [[ "${current_bytes}" != "${desired_bytes}" ]]; then
     if swap_is_active; then as_root swapoff "${SWAP_FILE}"; fi
     as_root install -d -o root -g root -m 0755 "$(dirname "${SWAP_FILE}")"
+    as_root rm -f "${SWAP_FILE}"
     as_root fallocate -l "${SWAP_GIB}G" "${SWAP_FILE}"
     as_root chmod 0600 "${SWAP_FILE}"
     as_root mkswap "${SWAP_FILE}" >/dev/null

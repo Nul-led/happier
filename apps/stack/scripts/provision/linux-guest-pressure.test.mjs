@@ -13,7 +13,7 @@ async function writeExecutable(path, source) {
   await chmod(path, 0o755);
 }
 
-test('guest pressure reserves swap extents without physically zero-filling the sparse VM disk', async () => {
+test('guest pressure replaces stale swap extents without physically zero-filling the sparse VM disk', async () => {
   const root = await mkdtemp(join(tmpdir(), 'happier-guest-pressure-'));
   const bin = join(root, 'bin');
   const log = join(root, 'commands.log');
@@ -24,7 +24,7 @@ test('guest pressure reserves swap extents without physically zero-filling the s
   await writeExecutable(join(bin, 'sudo'), '#!/bin/sh\nexec "$@"\n');
   await writeExecutable(join(bin, 'stat'), [
     '#!/bin/sh',
-    'if [ "$1" = "-c" ] && [ "$2" = "%s" ]; then echo 0; exit 0; fi',
+    'if [ "$1" = "-c" ] && [ "$2" = "%s" ]; then echo 137438953472; exit 0; fi',
     'exit 1',
   ].join('\n'));
   await writeExecutable(join(bin, 'df'), '#!/bin/sh\nprintf "Avail\\n1099511627776\\n"\n');
@@ -46,7 +46,7 @@ test('guest pressure reserves swap extents without physically zero-filling the s
     '#!/bin/sh',
     'target=""',
     'for argument do target="$argument"; done',
-    'case "$target" in /tmp/*|/private/tmp/*) /bin/rm "$@" ;; *) exit 0 ;; esac',
+    `case "$target" in /tmp/*|/private/tmp/*) /bin/rm "$@" ;; /var/lib/happier/swapfile) printf 'rm %s\\n' "$*" >> ${JSON.stringify(log)} ;; *) exit 0 ;; esac`,
   ].join('\n'));
 
   const result = spawnSync('bash', [join(here, 'linux-guest-pressure.sh')], {
@@ -62,6 +62,7 @@ test('guest pressure reserves swap extents without physically zero-filling the s
 
   assert.equal(result.status, 0, result.stderr);
   const commands = await readFile(log, 'utf8');
+  assert.match(commands, /rm -f \/var\/lib\/happier\/swapfile\n.*fallocate -l 64G/s);
   assert.match(commands, /fallocate -l 64G \/var\/lib\/happier\/swapfile/);
   assert.doesNotMatch(commands, /^dd /m);
 });
