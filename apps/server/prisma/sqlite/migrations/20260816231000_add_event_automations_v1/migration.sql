@@ -38,7 +38,10 @@ CREATE TABLE "AutomationTrigger" (
     "watcherPluginId" TEXT,
     "watcherMaterializationId" TEXT,
     "definitionEnvelope" TEXT,
-    "sessionLifecycleEvent" TEXT,
+    "sessionLifecycleEventsJson" TEXT,
+    "sessionLifecyclePolicyKind" TEXT,
+    "sessionLifecycleMatchCount" INTEGER,
+    "remainingOccurrences" INTEGER,
     "sourceSessionId" TEXT,
     "sourceTurnId" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -53,7 +56,9 @@ CREATE TABLE "AutomationTrigger" (
             AND "webhookEndpointId" IS NULL AND "observationStartsAt" IS NULL
             AND "watcherMachineId" IS NULL AND "watcherMachineInstallationId" IS NULL
             AND "watcherPluginId" IS NULL AND "watcherMaterializationId" IS NULL
-            AND "sessionLifecycleEvent" IS NULL AND "sourceSessionId" IS NULL AND "sourceTurnId" IS NULL)
+            AND "sessionLifecycleEventsJson" IS NULL AND "sessionLifecyclePolicyKind" IS NULL
+            AND "sessionLifecycleMatchCount" IS NULL AND "remainingOccurrences" IS NULL
+            AND "sourceSessionId" IS NULL AND "sourceTurnId" IS NULL)
         OR ("deletedAt" IS NOT NULL AND "enabled" = false AND "kind" = 'pluginEvent'
             AND "scheduleKind" IS NULL AND "scheduleExpr" IS NULL AND "everyMs" IS NULL
             AND "timezone" IS NULL AND "nextRunAt" IS NULL
@@ -63,7 +68,9 @@ CREATE TABLE "AutomationTrigger" (
             AND "webhookEndpointId" IS NULL AND "observationStartsAt" IS NULL
             AND "watcherMachineId" IS NULL AND "watcherMachineInstallationId" IS NULL
             AND "watcherPluginId" IS NULL AND "watcherMaterializationId" IS NULL
-            AND "sessionLifecycleEvent" IS NULL AND "sourceSessionId" IS NULL AND "sourceTurnId" IS NULL)
+            AND "sessionLifecycleEventsJson" IS NULL AND "sessionLifecyclePolicyKind" IS NULL
+            AND "sessionLifecycleMatchCount" IS NULL AND "remainingOccurrences" IS NULL
+            AND "sourceSessionId" IS NULL AND "sourceTurnId" IS NULL)
         OR ("deletedAt" IS NULL AND "kind" = 'schedule' AND "scheduleKind" IS NOT NULL
             AND (("scheduleKind" = 'cron' AND "scheduleExpr" IS NOT NULL AND "everyMs" IS NULL)
                 OR ("scheduleKind" = 'interval' AND "scheduleExpr" IS NULL AND "everyMs" IS NOT NULL))
@@ -73,14 +80,18 @@ CREATE TABLE "AutomationTrigger" (
             AND "watcherMachineId" IS NULL AND "watcherMachineInstallationId" IS NULL
             AND "watcherPluginId" IS NULL AND "watcherMaterializationId" IS NULL
             AND "definitionEnvelope" IS NULL
-            AND "sessionLifecycleEvent" IS NULL AND "sourceSessionId" IS NULL AND "sourceTurnId" IS NULL)
+            AND "sessionLifecycleEventsJson" IS NULL AND "sessionLifecyclePolicyKind" IS NULL
+            AND "sessionLifecycleMatchCount" IS NULL AND "remainingOccurrences" IS NULL
+            AND "sourceSessionId" IS NULL AND "sourceTurnId" IS NULL)
         OR ("deletedAt" IS NULL AND "kind" = 'pluginEvent' AND "scheduleKind" IS NULL AND "scheduleExpr" IS NULL
             AND "everyMs" IS NULL AND "timezone" IS NULL AND "nextRunAt" IS NULL
             AND "eventPluginId" IS NOT NULL AND "eventLocalId" IS NOT NULL
             AND "sourceSelectorId" IS NOT NULL AND "sourceContractVersion" IS NOT NULL
             AND "observationTransport" IS NOT NULL
             AND "definitionEnvelope" IS NOT NULL
-            AND "sessionLifecycleEvent" IS NULL AND "sourceSessionId" IS NULL AND "sourceTurnId" IS NULL
+            AND "sessionLifecycleEventsJson" IS NULL AND "sessionLifecyclePolicyKind" IS NULL
+            AND "sessionLifecycleMatchCount" IS NULL AND "remainingOccurrences" IS NULL
+            AND "sourceSessionId" IS NULL AND "sourceTurnId" IS NULL
             AND (("observationTransport" = 'checkpointedPull' AND "webhookEndpointId" IS NULL
                     AND "observationStartsAt" IS NULL
                     AND (("watcherMachineId" IS NULL AND "watcherMachineInstallationId" IS NULL
@@ -103,9 +114,24 @@ CREATE TABLE "AutomationTrigger" (
             AND "watcherMachineId" IS NULL AND "watcherMachineInstallationId" IS NULL
             AND "watcherPluginId" IS NULL AND "watcherMaterializationId" IS NULL
             AND "definitionEnvelope" IS NULL
-            AND "sessionLifecycleEvent" IS NOT NULL
-            AND "sessionLifecycleEvent" = 'parentTurnCompleted'
-            AND "sourceSessionId" IS NOT NULL AND "sourceTurnId" IS NOT NULL)
+            AND "sessionLifecycleEventsJson" IS NOT NULL
+            AND json_valid("sessionLifecycleEventsJson")
+            AND json_type("sessionLifecycleEventsJson") = 'array'
+            AND json_array_length("sessionLifecycleEventsJson") > 0
+            AND "sessionLifecyclePolicyKind" IN ('currentTurn', 'firstMatch', 'nextMatches', 'everyMatch')
+            AND "sourceSessionId" IS NOT NULL
+            AND (("sessionLifecyclePolicyKind" = 'currentTurn'
+                    AND "sourceTurnId" IS NOT NULL AND "sessionLifecycleMatchCount" IS NULL
+                    AND "remainingOccurrences" BETWEEN 0 AND 1)
+                OR ("sessionLifecyclePolicyKind" = 'firstMatch'
+                    AND "sourceTurnId" IS NULL AND "sessionLifecycleMatchCount" IS NULL
+                    AND "remainingOccurrences" BETWEEN 0 AND 1)
+                OR ("sessionLifecyclePolicyKind" = 'nextMatches'
+                    AND "sourceTurnId" IS NULL AND "sessionLifecycleMatchCount" > 0
+                    AND "remainingOccurrences" BETWEEN 0 AND "sessionLifecycleMatchCount")
+                OR ("sessionLifecyclePolicyKind" = 'everyMatch'
+                    AND "sourceTurnId" IS NULL AND "sessionLifecycleMatchCount" IS NULL
+                    AND "remainingOccurrences" IS NULL)))
     )
 );
 
@@ -148,6 +174,10 @@ CREATE TABLE "new_AutomationRun" (
     "causeSessionLifecycleEvent" TEXT,
     "causeSourceSessionId" TEXT,
     "causeSourceTurnId" TEXT,
+    "causeSessionLifecycleRequestId" TEXT,
+    "causeSessionLifecycleRequestKind" TEXT,
+    "causeSessionLifecyclePolicyKind" TEXT,
+    "causeSessionLifecycleConfiguredCount" INTEGER,
     "occurrenceKey" TEXT,
     "idempotencyKey" TEXT,
     "occurrenceEvidenceEqualityTag" TEXT,
@@ -199,10 +229,14 @@ CREATE TABLE "new_AutomationRun" (
                 ("causeTriggerKind" = 'schedule' AND "causeEventPluginId" IS NULL AND "causeEventLocalId" IS NULL
                     AND "causeScheduledFor" IS NOT NULL
                     AND "causeSessionLifecycleEvent" IS NULL AND "causeSourceSessionId" IS NULL AND "causeSourceTurnId" IS NULL
+                    AND "causeSessionLifecycleRequestId" IS NULL AND "causeSessionLifecycleRequestKind" IS NULL
+                    AND "causeSessionLifecyclePolicyKind" IS NULL AND "causeSessionLifecycleConfiguredCount" IS NULL
                     AND "causeSourceSelectorId" IS NULL AND "triggerEvidenceEnvelope" IS NULL AND "occurrenceEvidenceEqualityTag" IS NULL)
                 OR ("causeTriggerKind" = 'pluginEvent' AND "causeEventPluginId" IS NOT NULL AND "causeEventLocalId" IS NOT NULL
                     AND "causeScheduledFor" IS NULL
                     AND "causeSessionLifecycleEvent" IS NULL AND "causeSourceSessionId" IS NULL AND "causeSourceTurnId" IS NULL
+                    AND "causeSessionLifecycleRequestId" IS NULL AND "causeSessionLifecycleRequestKind" IS NULL
+                    AND "causeSessionLifecyclePolicyKind" IS NULL AND "causeSessionLifecycleConfiguredCount" IS NULL
                     AND "causeSourceSelectorId" IS NOT NULL AND "triggerEvidenceEnvelope" IS NOT NULL
                     AND ((json_valid("triggerEvidenceEnvelope") AND json_extract("triggerEvidenceEnvelope", '$.t') = 'plain' AND "occurrenceEvidenceEqualityTag" IS NULL)
                         OR (json_valid("triggerEvidenceEnvelope") AND json_extract("triggerEvidenceEnvelope", '$.t') = 'encrypted'
@@ -210,21 +244,38 @@ CREATE TABLE "new_AutomationRun" (
                             AND "occurrenceEvidenceEqualityTag" NOT GLOB '*[^A-Za-z0-9_-]*')))
                 OR ("causeTriggerKind" = 'sessionLifecycle' AND "causeEventPluginId" IS NULL AND "causeEventLocalId" IS NULL
                     AND "causeScheduledFor" IS NULL
-                    AND "causeSessionLifecycleEvent" IS NOT NULL
-                    AND "causeSessionLifecycleEvent" = 'parentTurnCompleted' AND "causeSourceSessionId" IS NOT NULL
+                    AND "causeSessionLifecycleEvent" IN ('parentTurnCompleted', 'parentTurnFailed', 'parentTurnCancelled', 'userActionRequired')
+                    AND "causeSourceSessionId" IS NOT NULL
                     AND "causeSourceTurnId" IS NOT NULL AND "causeSourceSelectorId" IS NULL
+                    AND "causeSessionLifecyclePolicyKind" IN ('currentTurn', 'firstMatch', 'nextMatches', 'everyMatch')
+                    AND (("causeSessionLifecycleEvent" = 'userActionRequired'
+                            AND "causeSessionLifecycleRequestId" IS NOT NULL
+                            AND "causeSessionLifecycleRequestKind" IN ('permission', 'user_action'))
+                        OR ("causeSessionLifecycleEvent" <> 'userActionRequired'
+                            AND "causeSessionLifecycleRequestId" IS NULL
+                            AND "causeSessionLifecycleRequestKind" IS NULL))
+                    AND (("causeSessionLifecyclePolicyKind" = 'nextMatches'
+                            AND "causeSessionLifecycleConfiguredCount" > 0)
+                        OR ("causeSessionLifecyclePolicyKind" <> 'nextMatches'
+                            AND "causeSessionLifecycleConfiguredCount" IS NULL))
                     AND "triggerEvidenceEnvelope" IS NULL AND "occurrenceEvidenceEqualityTag" IS NULL)
             ))
         OR ("causeKind" = 'manual' AND "triggerId" IS NULL AND "causeTriggerKind" IS NULL
             AND "causeTriggerRevision" IS NULL AND "causeEventPluginId" IS NULL AND "causeEventLocalId" IS NULL
             AND "causeOccurredAt" IS NOT NULL AND "causeScheduledFor" IS NULL AND "causeSessionLifecycleEvent" IS NULL AND "causeSourceSessionId" IS NULL
-            AND "causeSourceTurnId" IS NULL AND "occurrenceKey" IS NULL AND "causeSourceSelectorId" IS NULL
+            AND "causeSourceTurnId" IS NULL AND "causeSessionLifecycleRequestId" IS NULL
+            AND "causeSessionLifecycleRequestKind" IS NULL AND "causeSessionLifecyclePolicyKind" IS NULL
+            AND "causeSessionLifecycleConfiguredCount" IS NULL
+            AND "occurrenceKey" IS NULL AND "causeSourceSelectorId" IS NULL
             AND "triggerEvidenceEnvelope" IS NULL AND "occurrenceEvidenceEqualityTag" IS NULL)
         OR ("causeKind" = 'conversation' AND "idempotencyKey" IS NULL
             AND "triggerId" IS NULL AND "causeTriggerKind" IS NULL
             AND "causeTriggerRevision" IS NULL AND "causeEventPluginId" IS NULL AND "causeEventLocalId" IS NULL
             AND "causeOccurredAt" IS NOT NULL AND "causeScheduledFor" IS NULL AND "causeSessionLifecycleEvent" IS NULL AND "causeSourceSessionId" IS NULL
-            AND "causeSourceTurnId" IS NULL AND "occurrenceKey" IS NOT NULL AND "causeSourceSelectorId" IS NULL
+            AND "causeSourceTurnId" IS NULL AND "causeSessionLifecycleRequestId" IS NULL
+            AND "causeSessionLifecycleRequestKind" IS NULL AND "causeSessionLifecyclePolicyKind" IS NULL
+            AND "causeSessionLifecycleConfiguredCount" IS NULL
+            AND "occurrenceKey" IS NOT NULL AND "causeSourceSelectorId" IS NULL
             AND "triggerEvidenceEnvelope" IS NOT NULL
             AND ((json_valid("triggerEvidenceEnvelope") AND json_extract("triggerEvidenceEnvelope", '$.t') = 'plain' AND "occurrenceEvidenceEqualityTag" IS NULL)
                 OR (json_valid("triggerEvidenceEnvelope") AND json_extract("triggerEvidenceEnvelope", '$.t') = 'encrypted'
