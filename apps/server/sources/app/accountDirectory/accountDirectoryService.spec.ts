@@ -819,7 +819,6 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
-                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate,
                 issueHomeToken,
@@ -851,7 +850,6 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
-                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
@@ -882,7 +880,6 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
-                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
@@ -898,7 +895,6 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
-                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
@@ -915,7 +911,6 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
-                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
@@ -934,7 +929,6 @@ describe("Account Directory service", () => {
                 assertion: signedAssertion({
                     clientBoxPublicKeyBase64: privacyKit.encodeBase64(new Uint8Array(clientBoxKeyPair.publicKey)),
                 }),
-                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken,
@@ -1012,7 +1006,6 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
-                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: {
                     evaluate: async () => ({
@@ -1031,7 +1024,6 @@ describe("Account Directory service", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: signedAssertion(),
-                connectionDescriptor: homeDescriptor,
                 nowMs,
                 homeApprovalGate: allowedGate,
                 issueHomeToken: async () => "t".repeat(4_097),

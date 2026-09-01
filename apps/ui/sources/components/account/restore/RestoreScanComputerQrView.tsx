@@ -349,6 +349,10 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                         return;
                     }
                     const transportResolution = await resolveHomeEnrollmentTransport(storedDescriptor);
+                    if (!isCurrentAttempt(attempt.id)) {
+                        if (transportResolution.ok) await transportResolution.transport.close().catch(() => {});
+                        return;
+                    }
                     if (!transportResolution.ok) {
                         await Modal.alertAsync(t('connect.scanComputerQrUnavailableTitle'), t('connect.scanComputerQrUnavailableBody'));
                         return;
@@ -426,7 +430,9 @@ export const RestoreScanComputerQrView = React.memo(function RestoreScanComputer
                                     status: status.data,
                                     signal: attempt.controller.signal,
                                 });
+                                if (!isCurrentAttempt(attempt.id)) return;
                             } catch (error) {
+                                if (!isCurrentAttempt(attempt.id)) return;
                                 if (error instanceof AccountCompletionError && error.retryable) {
                                     statusFailures += 1;
                                 } else if (error instanceof InvalidTrustedHomeQrRequestError) {

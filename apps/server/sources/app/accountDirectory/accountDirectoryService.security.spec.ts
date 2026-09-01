@@ -81,13 +81,6 @@ describe("Account Directory Home redemption security", () => {
 
         const authorized = await redeemHomeLoginAssertion({
             assertion: signed,
-            connectionDescriptor: {
-                v: 1,
-                homeServerIdentityId: "srv_home",
-                canonicalServerUrl: "https://home.test",
-                revision: 1,
-                endpoints: [{ kind: "https", url: "https://home.test" }],
-            },
             nowMs: assertion.issuedAtMs + 1,
             homeApprovalGate: { evaluate: async () => ({ kind: "allowed" as const }) },
             issueHomeToken: async () => "home-local-token",
