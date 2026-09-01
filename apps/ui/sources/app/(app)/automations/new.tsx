@@ -56,13 +56,12 @@ function NewAutomationComposerHost(props: Readonly<{
                 definition: {
                     kind: 'sessionLifecycle' as const,
                     enabled: true,
-                    event: 'parentTurnCompleted' as const,
-                    scope: {
-                        kind: 'exactTurn' as const,
-                        sourceSessionId: props.observed.sourceSessionId,
+                    sourceSessionId: props.observed.sourceSessionId,
+                    events: ['parentTurnCompleted'] as const,
+                    policy: {
+                        kind: 'currentTurn' as const,
                         sourceTurnId: props.observed.sourceTurnId,
                     },
-                    consumption: 'once' as const,
                 },
             }] : [],
         };

@@ -22,6 +22,13 @@ import type {
 } from '@happier-dev/protocol/automations/result-delivery';
 import type { PluginJsonSchema } from './identity.js';
 
+type PluginAutomationSessionLifecyclePolicy = Readonly<
+    | { kind: 'currentTurn' }
+    | { kind: 'firstMatch' }
+    | { kind: 'nextMatches'; count: number }
+    | { kind: 'everyMatch' }
+>;
+
 /**
  * Declaration-neutral projection of the canonical immutable automation
  * provenance. Protocol owns parsing and persistence; the SDK owns this
@@ -59,9 +66,17 @@ export type PluginAutomationRunCause =
         occurrenceKey: string;
         occurredAt: number;
         evidence: Readonly<{
-            event: 'parentTurnCompleted';
+            event: 'parentTurnCompleted' | 'parentTurnFailed' | 'parentTurnCancelled';
             sourceSessionId: string;
             sourceTurnId: string;
+            policy: PluginAutomationSessionLifecyclePolicy;
+        }> | Readonly<{
+            event: 'userActionRequired';
+            sourceSessionId: string;
+            sourceTurnId: string;
+            requestId: string;
+            requestKind: 'permission' | 'user_action';
+            policy: PluginAutomationSessionLifecyclePolicy;
         }>;
     }>
     | Readonly<{ kind: 'manual'; invokedAt: number }>
