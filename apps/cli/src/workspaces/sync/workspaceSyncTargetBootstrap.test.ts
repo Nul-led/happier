@@ -421,6 +421,7 @@ describe('workspaceSyncTargetBootstrap', () => {
       relationshipId: 'relationship-1',
       targetState: 'nonempty',
       targetBootstrap: 'materialize_from_source_workspace',
+      materializationReceiptPath: join(fixture, 'materialization.json'),
     }, { realizeWorkspaceCheckout, inspectWorkspaceLocation });
     await custody?.abort();
     await expect(readFile(join(target, 'existing.txt'), 'utf8')).resolves.toBe('preserve');
@@ -435,6 +436,7 @@ describe('workspaceSyncTargetBootstrap', () => {
       relationshipId: 'relationship-1',
       targetState: 'missing',
       targetBootstrap: 'materialize_from_source_workspace',
+      materializationReceiptPath: '/tmp/.unreachable-target.happier-materialization.json',
     })).rejects.toMatchObject({ code: 'target_bootstrap_offline' });
   });
 

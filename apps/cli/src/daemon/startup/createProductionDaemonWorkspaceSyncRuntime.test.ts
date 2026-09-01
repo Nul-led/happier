@@ -234,6 +234,8 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
     await remoteMaterialize?.({
       operationId: 'rel-1', sourceMachineId: 'machine-b', sourceWorkspaceRefId: 'workspace-beta',
       canonicalRoot: '/work/alpha', contentSelection: 'all_files',
+      materializationReceiptPath: '/work/.alpha.happier-materialization.json',
+      originalTargetExists: false,
     });
     expect(openMachineCarrierTunnel.mock.calls.map(([request]) => request.operationId)).toEqual([
       'rel-1', 'rel-1:blob:one', 'rel-1:blob:two',
@@ -332,6 +334,8 @@ describe('createProductionDaemonWorkspaceSyncRuntime', () => {
       sourcePath: '/work/alpha',
       canonicalRoot: '/work/beta',
       contentSelection: 'all_files',
+      materializationReceiptPath: '/work/.beta.happier-materialization.json',
+      originalTargetExists: false,
     });
     expect(materializeLocalSeed).toHaveBeenCalledWith(expect.objectContaining({
       operationId: 'local-op',

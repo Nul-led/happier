@@ -22,11 +22,11 @@ import { FEATURE_ENV_KEYS } from '../../../../../../../../server/sources/app/fea
 import { registerPeerMediationGrantRoutes } from '../../../../../../../../server/sources/app/api/routes/machines/peer/mediation/registerPeerMediationGrantRoutes';
 import { createRouteTestBuilder } from '../../../../../../../../server/sources/app/api/testkit/routeTestBuilder';
 import { registerPeerMediationIrohMachineAdmissionRoute } from '../../../../../../../../cli/src/daemon/peer/mediation/loopback/irohMachineAdmission';
-import { acquireMachineCarrierHttpLease } from './machineCarrierHttpLease';
 import { uploadBulkPayloadFromFileWithCarrierFallbacks } from './uploadBulkPayloadFromFileWithCarrierFallbacks';
 
 const prepareDirectImportMock = vi.hoisted(() => vi.fn());
 const nativeBoundary = vi.hoisted(() => ({ current: null as ReturnType<typeof createIrohNodeNativeModule> | null }));
+const machineTunnelBoundary = vi.hoisted(() => ({ calls: [] as unknown[], errors: [] as string[] }));
 
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/guardedMachineRpc', () => ({
     callGuardedMachineRpcWithPolicy: (...args: unknown[]) => prepareDirectImportMock(...args),
@@ -129,7 +129,22 @@ describeReal('production transfer caller over native MachineHttpTunnel', () => {
     const endpointKeyRoots: string[] = [];
 
     beforeEach(() => {
-        nativeBoundary.current = native;
+        machineTunnelBoundary.calls = [];
+        machineTunnelBoundary.errors = [];
+        nativeBoundary.current = {
+            ...native,
+            startMachineHttpTunnel: async (input) => {
+                machineTunnelBoundary.calls.push(input);
+                try {
+                    return await native.startMachineHttpTunnel!(input);
+                } catch (error) {
+                    machineTunnelBoundary.errors.push(error instanceof Error
+                        ? `${error.name}: ${error.message}`
+                        : String(error));
+                    throw error;
+                }
+            },
+        };
         prepareDirectImportMock.mockReset();
         resetServerFeaturesClientForTests();
         setRuntimeFetch(globalThis.fetch.bind(globalThis));
@@ -220,6 +235,7 @@ describeReal('production transfer caller over native MachineHttpTunnel', () => {
             }),
         });
         const grantRequests: unknown[] = [];
+        const grantResponses: unknown[] = [];
         const grantAuthorizationHeaders: Array<string | undefined> = [];
         const grantServer = createHttpServer(async (request, response) => {
             if (request.method === 'GET' && request.url === '/v1/auth/ping') {
@@ -248,6 +264,7 @@ describeReal('production transfer caller over native MachineHttpTunnel', () => {
                     },
                 }
                 : routeResponse;
+            grantResponses.push(outbound);
             response.writeHead(200, { 'content-type': 'application/json' });
             response.end(JSON.stringify(outbound));
         });
@@ -364,27 +381,9 @@ describeReal('production transfer caller over native MachineHttpTunnel', () => {
         });
 
         const acceptorStatus = await native.getMachineAcceptorStatus(target.endpointHandle);
-        let acquireDiagnostic: string | null = null;
-        if (grantRequests.length === 0) {
-            try {
-                const diagnosticLease = await acquireMachineCarrierHttpLease({
-                    operationId,
-                    machineId,
-                    serverId,
-                    flow: input.transferKind === 'attachment' ? 'attachment_transfer' : 'file_transfer',
-                    maxBytes: payload.byteLength,
-                });
-                await diagnosticLease.release();
-                acquireDiagnostic = 'unexpectedly_succeeded';
-            } catch (error) {
-                acquireDiagnostic = error instanceof Error
-                    ? `${error.name}: ${error.message}`
-                    : String(error);
-            }
-        }
         expect(
             grantRequests,
-            JSON.stringify({ result, standardFallbackStarted: relay.init.mock.calls.length > 0, acquireDiagnostic }),
+            JSON.stringify({ result, standardFallbackStarted: relay.init.mock.calls.length > 0 }),
         ).toHaveLength(1);
         expect(grantAuthorizationHeaders).toEqual([`Bearer ${accountToken}`]);
         expect(grantRequests[0]).toMatchObject({
@@ -408,7 +407,18 @@ describeReal('production transfer caller over native MachineHttpTunnel', () => {
             expect(acceptorStatus?.streamsAccepted).toBe(0);
             expect(acceptorStatus?.streamsRejected).toBe(1);
         } else {
-            expect(result, JSON.stringify(result)).toMatchObject({ success: true, sizeBytes: payload.byteLength });
+            expect(result, JSON.stringify({
+                result,
+                acceptorStatus,
+                receivedPayloads,
+                verifiedHandshakes,
+                machineTunnelBoundary,
+                targetDescriptor,
+                grantResponses,
+            })).toMatchObject({
+                success: true,
+                sizeBytes: payload.byteLength,
+            });
             expect(receivedPayloads).toHaveLength(1);
             expect(Buffer.from(receivedPayloads[0]!, 'base64').byteLength).toBeGreaterThan(0);
             expect(verifiedHandshakes.length).toBeGreaterThan(0);

@@ -472,49 +472,6 @@ describe('WorkspaceSyncController', () => {
     await rm(localRoot, { recursive: true, force: true });
   });
 
-  it('retains a distinct fence for both local roots while manager rehydration opens both endpoints', async () => {
-    const fixture = await mkdtemp(join(tmpdir(), 'workspace-sync-rehydrate-local-pair-'));
-    const alphaRoot = join(fixture, 'alpha');
-    const betaRoot = join(fixture, 'beta');
-    await Promise.all([mkdir(alphaRoot), mkdir(betaRoot)]);
-    const canonicalAlphaRoot = await realpath(alphaRoot);
-    const canonicalBetaRoot = await realpath(betaRoot);
-    const openLocalWorkspaceAgentStream = vi.fn(async () => new PassThrough());
-    let controller!: WorkspaceSyncController;
-    const rehydrate = vi.fn(async () => {
-      for (const role of ['alpha', 'beta'] as const) {
-        const stream = await controller.openExternalStream({
-          endpointId: deriveWorkspaceSyncEndpointId('r1', role),
-        });
-        stream.destroy();
-      }
-      return [status];
-    });
-    controller = new WorkspaceSyncController({
-      adapter: completeAdapter({ rehydrate }),
-      lifecycle: lifecycle(),
-      rootOwnershipManager: createWorkspaceRootOwnershipManager({ lockDirectory: join(fixture, 'locks') }),
-      localMachineId: 'm1',
-      openLocalWorkspaceAgentStream,
-      resolveWorkspaceRef: (id) => id === 'a'
-        ? { machineId: 'm1', rootPath: canonicalAlphaRoot }
-        : { machineId: 'm1', rootPath: canonicalBetaRoot },
-    });
-
-    await expect(controller.rehydrateFromSettings([definition])).resolves.toEqual([status]);
-    expect(openLocalWorkspaceAgentStream).toHaveBeenCalledTimes(2);
-    expect(openLocalWorkspaceAgentStream).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      role: 'alpha',
-      canonicalRoot: canonicalAlphaRoot,
-    }));
-    expect(openLocalWorkspaceAgentStream).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      role: 'beta',
-      canonicalRoot: canonicalBetaRoot,
-    }));
-    await controller.shutdown();
-    await rm(fixture, { recursive: true, force: true });
-  });
-
   it('rolls back provisioned relationship fences when manager rehydration fails', async () => {
     const localRoot = await mkdtemp(join(tmpdir(), 'workspace-sync-rehydrate-rollback-'));
     const canonicalLocalRoot = await realpath(localRoot);

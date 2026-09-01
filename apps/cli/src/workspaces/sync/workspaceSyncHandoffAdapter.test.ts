@@ -79,9 +79,16 @@ describe('WorkspaceSyncHandoffAdapter', () => {
       abort,
     }));
     const bootstrap = vi.fn(async () => ({ release: vi.fn(async () => undefined) }));
-    const relationshipController = { flush: vi.fn(async () => ({ ...relationshipStatus, relationshipId: 'rel-created' })) };
+    const sync = managedSync({
+      flush: vi.fn(async () => ({ ...relationshipStatus, relationshipId: 'rel-created' })),
+    });
+    const relationshipController = {
+      flush: vi.fn(async () => {
+        throw Object.assign(new Error('relationship is not durable yet'), { code: 'relationship_not_ready' });
+      }),
+    };
     const adapter = createWorkspaceSyncHandoffAdapter({
-      sync: managedSync(),
+      sync,
       relationshipController,
       relationshipOwner: { materializeEndpoints: vi.fn(), prepareCreate },
       bootstrap,
@@ -117,7 +124,8 @@ describe('WorkspaceSyncHandoffAdapter', () => {
       kind: 'create_relationship',
       relationshipId: 'rel-created',
     });
-    expect(relationshipController.flush).toHaveBeenCalledWith('rel-created', undefined);
+    expect(sync.flush).toHaveBeenCalledWith('rel-created', undefined);
+    expect(relationshipController.flush).not.toHaveBeenCalled();
     expect(commit).toHaveBeenCalledOnce();
     await expect(adapter.commit({ operationId: 'handoff-create', prepared })).resolves.toMatchObject({
       kind: 'create_relationship',
