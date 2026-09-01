@@ -1435,14 +1435,17 @@ export function createRelayHostEngine(deps: RelayHostEngineDeps): RelayHostEngin
       ?? (!installed ? parsed.purpose : undefined);
     const envPath = join(defaults.configDir, 'server.env');
     const envText = existsSync(envPath) ? await readFile(envPath, 'utf8').catch(() => '') : '';
+    const defaultBaseUrl = `http://${defaults.serverHost}:${defaults.serverPort}`;
     let baseUrl = resolveConfiguredSelfHostBaseUrl({
-      fallbackBaseUrl: `http://${defaults.serverHost}:${defaults.serverPort}`,
+      // Persisted Personal Home purpose remains the canonical origin authority when erase or
+      // recovery removes the managed environment but intentionally retains classification.
+      fallbackBaseUrl: runtimePurpose?.kind === 'personal-home'
+        ? runtimePurpose.canonicalServerUrl
+        : defaultBaseUrl,
       envText,
     });
     if (!installed && !envText.trim()) {
-      if (runtimePurpose?.kind === 'personal-home') {
-        baseUrl = runtimePurpose.canonicalServerUrl;
-      } else {
+      if (runtimePurpose?.kind !== 'personal-home') {
         const plannedPort = await resolveNonCollidingRelayPort({
           platform: process.platform,
           mode,

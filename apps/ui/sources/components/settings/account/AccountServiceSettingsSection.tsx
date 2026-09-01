@@ -297,10 +297,16 @@ export function AccountServiceSettingsSection(): React.ReactElement {
         const homeServerIdentityId = pendingEnrollment.homeServerIdentityId;
         if (pendingResumeInFlightRef.current) return 'success';
         const resumedServiceKey = serviceKey;
+        const resumedAttemptRevision = attemptSequenceRef.current;
         pendingResumeInFlightRef.current = true;
         try {
             const result = await resumePendingPreferredHomeEnrollment();
-            if (serviceKeyRef.current !== resumedServiceKey || !result || result.kind === 'approval_required') return 'success';
+            if (
+                serviceKeyRef.current !== resumedServiceKey
+                || attemptSequenceRef.current !== resumedAttemptRevision
+                || !result
+                || result.kind === 'approval_required'
+            ) return 'success';
             if (result.kind === 'cancelled') return 'success';
             setEnrollmentFailures((current) => {
                 const next = { ...current };
@@ -312,7 +318,10 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                 ? 'transient'
                 : 'success';
         } catch {
-            if (serviceKeyRef.current === resumedServiceKey) {
+            if (
+                serviceKeyRef.current === resumedServiceKey
+                && attemptSequenceRef.current === resumedAttemptRevision
+            ) {
                 setEnrollmentFailures((current) => ({ ...current, [homeServerIdentityId]: true }));
             }
             return 'transient';

@@ -408,6 +408,31 @@ describe('RelayHostEngine (Personal Home mutation seam)', () => {
     }
   });
 
+  it('uses the persisted Personal Home origin when an installed erased runtime has no environment', async () => {
+    const runtime = await createInstalledPersonalHomeRuntime();
+    try {
+      mockLinuxHost(runtime.homeDir);
+      mockStoppedLocalHome();
+      await rm(join(runtime.defaults.configDir, 'server.env'));
+
+      const engine = await createTestEngine();
+      const status = await engine.readStatus({
+        target: { kind: 'local' },
+        mode: 'user',
+        channel: 'preview',
+      });
+
+      expect(status).toMatchObject({
+        installed: true,
+        purpose: PERSONAL_HOME_PURPOSE,
+        baseUrl: CANONICAL_SERVER_URL,
+        canonicalServerUrl: CANONICAL_SERVER_URL,
+      });
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it('generic runtime uninstall does not retain a caller-requested Personal Home classification', async () => {
     const runtime = await createInstalledPersonalHomeRuntime();
     try {

@@ -95,6 +95,7 @@ async function approveAssertionRequest(params: Readonly<{
 }>): Promise<string> {
     const pending = await redeemHomeLoginAssertion({
         assertion: params.assertion,
+        connectionDescriptor: descriptor("srv_home_tx_test"),
         nowMs: params.nowMs,
         env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
         homeApprovalGate: createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "1" }),
@@ -364,6 +365,7 @@ describe("Account Directory database contract", () => {
             await upsertAccountDirectoryLink(originalLink);
             await expect(redeemHomeLoginAssertion({
                 assertion,
+                connectionDescriptor: descriptor("srv_home_tx_test"),
                 nowMs,
                 env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
                 homeApprovalGate: {
@@ -379,6 +381,7 @@ describe("Account Directory database contract", () => {
             await upsertAccountDirectoryLink(originalLink);
             await expect(redeemHomeLoginAssertion({
                 assertion,
+                connectionDescriptor: descriptor("srv_home_tx_test"),
                 nowMs,
                 env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
                 homeApprovalGate: {
@@ -425,6 +428,7 @@ describe("Account Directory database contract", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion,
+                connectionDescriptor: descriptor("srv_home_tx_test"),
                 approvalId,
                 nowMs,
                 env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
@@ -441,7 +445,7 @@ describe("Account Directory database contract", () => {
                     issueCalls += 1;
                     return "must-never-issue";
                 },
-            })).rejects.toMatchObject({ code: "home_unavailable" });
+            })).rejects.toMatchObject({ code: "approval_invalid" });
             expect(issueCalls).toBe(0);
         } finally {
             await db.account.delete({ where: { id: account.id }, select: { id: true } });
@@ -473,6 +477,7 @@ describe("Account Directory database contract", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: freshAssertion,
+                connectionDescriptor: descriptor("srv_home_tx_test"),
                 approvalId,
                 nowMs: nowMs + 1,
                 env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
@@ -481,7 +486,7 @@ describe("Account Directory database contract", () => {
                     issueCalls += 1;
                     return "must-never-issue";
                 },
-            })).rejects.toMatchObject({ code: "home_unavailable" });
+            })).rejects.toMatchObject({ code: "approval_invalid" });
             expect(issueCalls).toBe(0);
         } finally {
             await db.account.delete({ where: { id: account.id }, select: { id: true } });
@@ -521,6 +526,7 @@ describe("Account Directory database contract", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion: replacementAssertion,
+                connectionDescriptor: descriptor("srv_home_tx_test"),
                 approvalId,
                 nowMs: nowMs + 1,
                 env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
@@ -529,7 +535,7 @@ describe("Account Directory database contract", () => {
                     issueCalls += 1;
                     return "must-never-issue";
                 },
-            })).rejects.toMatchObject({ code: "home_unavailable" });
+            })).rejects.toMatchObject({ code: "approval_invalid" });
             expect(issueCalls).toBe(0);
             await expect(db.authPairingSession.findUnique({ where: { id: approvalId } })).resolves.toBeNull();
         } finally {
@@ -564,6 +570,7 @@ describe("Account Directory database contract", () => {
 
             await expect(redeemHomeLoginAssertion({
                 assertion,
+                connectionDescriptor: descriptor("srv_home_tx_test"),
                 approvalId,
                 nowMs,
                 env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" } as NodeJS.ProcessEnv,
@@ -572,7 +579,7 @@ describe("Account Directory database contract", () => {
                     issueCalls += 1;
                     return "must-never-issue";
                 },
-            })).rejects.toMatchObject({ code: "home_unavailable" });
+            })).rejects.toMatchObject({ code: "approval_invalid" });
             expect(issueCalls).toBe(0);
             await expect(db.authPairingSession.findUnique({ where: { id: approvalId } })).resolves.toBeNull();
         } finally {

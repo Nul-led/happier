@@ -747,11 +747,14 @@ describe('AccountServiceSettingsSection', () => {
             .toBe('https://accounts.example.test');
         expect(endpointDetails?.props.detail)
             .toBe('directory-1');
-        expect(screen.findByTestId('settings-account-service-technical-last-refresh')?.props.detail).toBeTruthy();
-        expect(screen.findByTestId('settings-account-service-technical-preferred')?.props.detail).toBe('Home B');
+        expect(screen.findAllByTestId('settings-account-service-technical-last-refresh')
+            .some((node) => Boolean(node.props.detail))).toBe(true);
+        expect(screen.findAllByTestId('settings-account-service-technical-preferred')
+            .some((node) => node.props.detail === 'Home B')).toBe(true);
         expect(screen.findByTestId('settings-account-service-home-home-b')?.props.subtitle).toBeUndefined();
-        expect(screen.findByTestId('settings-account-service-technical-home-home-b')?.props.subtitle)
-            .toContain('https://home-b.test');
+        expect(screen.findAllByTestId('settings-account-service-technical-home-home-b')
+            .some((node) => typeof node.props.subtitle === 'string'
+                && node.props.subtitle.includes('https://home-b.test'))).toBe(true);
     });
 
     it('renders local Link actions and Directory state in one coherent Homes surface', async () => {
@@ -1118,13 +1121,7 @@ describe('AccountServiceSettingsSection', () => {
 
         await screen.pressByTestIdAsync('settings-account-service-refresh');
 
-        expect(createAccountDirectorySessionMock).toHaveBeenCalledWith(
-            {
-                endpoint: 'https://accounts.example.test',
-                serverIdentityId: 'directory-1',
-            },
-            { capability: supportedCapability },
-        );
+        expect(createAccountDirectorySessionMock).not.toHaveBeenCalled();
         expect(provisionAuthenticatedHomeLinkMock).not.toHaveBeenCalled();
         expect(refreshMock).toHaveBeenCalledWith(session, expect.objectContaining({
             shouldCancel: expect.any(Function),
@@ -1382,13 +1379,7 @@ describe('AccountServiceSettingsSection', () => {
 
         await screen.pressByTestIdAsync('settings-account-service-refresh');
 
-        expect(createAccountDirectorySessionMock).toHaveBeenCalledWith(
-            {
-                endpoint: 'https://accounts.example.test',
-                serverIdentityId: 'directory-1',
-            },
-            { capability: supportedCapability },
-        );
+        expect(createAccountDirectorySessionMock).not.toHaveBeenCalled();
         expect(refreshMock).toHaveBeenCalledWith(session, expect.objectContaining({
             shouldCancel: expect.any(Function),
         }));
@@ -1589,6 +1580,12 @@ describe('AccountServiceSettingsSection', () => {
     });
 
     it('invalidates a late refresh when the selected Account Service identity changes', async () => {
+        credentialGetMock.mockImplementation(async (target?: unknown) => {
+            const identity = target && typeof target === 'object' && 'serverIdentityId' in target
+                ? target.serverIdentityId
+                : null;
+            return identity === 'directory-1' ? { token: 'directory-token' } : null;
+        });
         let resolveRefresh: ((value: typeof session.snapshot) => void) | null = null;
         refreshMock.mockImplementationOnce((_session, options?: { shouldCancel?: () => boolean }) => new Promise((resolve) => {
             resolveRefresh = (snapshot) => {
@@ -1677,7 +1674,12 @@ describe('AccountServiceSettingsSection', () => {
         provisionAuthenticatedHomeLinkMock.mockClear();
         enrollMock.mockClear();
         getCredentialsMock.mockClear();
-        await screen.pressByTestIdAsync('settings-account-service-home-home-a-remove');
+        const actions = screen.findAllByType(ItemRowActions)
+            .find((node) => node.props.title === 'Home A')
+            ?.props.actions as Array<{ id: string; onPress: () => void | Promise<void> }> | undefined;
+        const remove = actions?.find((action) => action.id === 'settings-account-service-home-home-a-remove');
+        expect(remove).toBeDefined();
+        await act(async () => remove?.onPress());
 
         expect(confirmMock).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ destructive: true }));
         expect(deleteHomeMock).toHaveBeenCalledWith('home-a');

@@ -2446,11 +2446,11 @@ class Sync {
 
         this.resetServerScopedRuntimeState();
         apiSocket.initialize({ endpoint: getActiveServerSnapshot().serverUrl, token: credentials.token }, encryption);
+        await this.restore(credentials, encryption);
         fireAndForget(
             refreshAuthenticatedServerFeaturesSnapshot({ credentials, force: true }),
             { tag: 'Sync.refreshAuthenticatedServerFeatures.switchServer' },
         );
-        await this.restore(credentials, encryption);
     }
 
     public disconnectServer(): void {
@@ -9784,10 +9784,6 @@ async function syncInit(credentials: AuthCredentials, restore: boolean) {
 
     // Initialize socket connection
     apiSocket.initialize({ endpoint: getActiveServerSnapshot().serverUrl, token: credentials.token }, encryption);
-    fireAndForget(
-        refreshAuthenticatedServerFeaturesSnapshot({ credentials, force: true }),
-        { tag: 'Sync.refreshAuthenticatedServerFeatures.init' },
-    );
 
     // Wire socket status to storage
     apiSocket.onStatusChange((status) => {
@@ -9823,4 +9819,8 @@ async function syncInit(credentials: AuthCredentials, restore: boolean) {
     } else {
         await sync.create(credentials, encryption);
     }
+    fireAndForget(
+        refreshAuthenticatedServerFeaturesSnapshot({ credentials, force: true }),
+        { tag: 'Sync.refreshAuthenticatedServerFeatures.init' },
+    );
 }

@@ -251,6 +251,7 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
             ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', false],
             ['relay.runtime.status.v1', undefined],
+            ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', false],
             ['relay.runtime.status.v1', undefined],
             ['relay.runtime.status.v1', undefined],
@@ -301,6 +302,7 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
             'relay.runtime.status.v1',
             'relay.runtime.installOrUpdate.v1',
             'relay.runtime.status.v1',
+            'relay.runtime.status.v1',
             'relay.runtime.installOrUpdate.v1',
             'relay.runtime.status.v1',
             'relay.runtime.status.v1',
@@ -319,6 +321,7 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(harness.taskCalls.map((entry) => [entry.kind, entry.options.anonymousSignupEnabled])).toEqual([
             ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', true],
+            ['relay.runtime.status.v1', undefined],
             ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', false],
             ['relay.runtime.status.v1', undefined],
@@ -359,6 +362,7 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(harness.taskCalls.map((entry) => entry.kind)).toEqual([
             'relay.runtime.status.v1',
             'relay.runtime.installOrUpdate.v1',
+            'relay.runtime.status.v1',
             'relay.runtime.status.v1',
             'relay.runtime.installOrUpdate.v1',
             'relay.runtime.status.v1',
@@ -534,6 +538,7 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(harness.taskCalls.map((entry) => [entry.kind, entry.options.anonymousSignupEnabled])).toEqual([
             ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', false],
+            ['relay.runtime.status.v1', undefined],
             ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', false],
             ['relay.runtime.status.v1', undefined],
@@ -761,6 +766,7 @@ describe('runPersonalHomeBootstrapFromSystemTasks', () => {
         expect(harness.taskCalls.map((entry) => [entry.kind, entry.options.anonymousSignupEnabled])).toEqual([
             ['relay.runtime.status.v1', undefined],
             ['relay.runtime.start.v1', undefined],
+            ['relay.runtime.status.v1', undefined],
             ['relay.runtime.status.v1', undefined],
             ['relay.runtime.installOrUpdate.v1', false],
             ['relay.runtime.status.v1', undefined],
